@@ -3,150 +3,30 @@ import {
   type Completion,
   type CompletionContext,
   type CompletionResult,
-  closeBrackets,
-  closeBracketsKeymap,
-  closeCompletion,
-  completionKeymap,
-  completionStatus,
   startCompletion,
 } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript, localCompletionSource } from "@codemirror/lang-javascript";
+import { syntaxTree } from "@codemirror/language";
+import type { EditorState, Extension } from "@codemirror/state";
 import {
-  bracketMatching,
-  HighlightStyle,
-  indentOnInput,
-  syntaxHighlighting,
-  syntaxTree,
-} from "@codemirror/language";
-import {
-  Annotation,
-  Compartment,
-  EditorState,
-  type Extension,
-  Transaction,
-} from "@codemirror/state";
-import {
-  EditorView,
+  type EditorView,
   hoverTooltip,
   type KeyBinding,
   keymap,
-  lineNumbers,
-  placeholder as placeholderExt,
 } from "@codemirror/view";
-import { tags } from "@lezer/highlight";
 import type { TFunction } from "i18next";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { cn } from "@/client/lib/utils";
 import {
   CODE_TOOL_CONTEXT_VARS,
   CODE_TOOL_GLOBALS,
 } from "@/lib/code-tool-vocabulary";
-import { claimEscape } from "./escapeClaim";
-import { mergeDescribedBy, useFormField } from "./FormFieldContext";
+import { CodeMirrorField } from "./CodeMirrorField";
 
-// The code tool's editor (issue #538). CodeMirror 6 rather than Monaco for one reason that is a
-// property of this deployment and not a preference: the production CSP grants neither `unsafe-eval`
-// nor `wasm-unsafe-eval` (src/api/lib/csp.ts), which Monaco needs and CodeMirror does not.
-// CodeMirror's one requirement under a strict policy is an injected `<style>` element, and
-// `styleSrc` already carries `'unsafe-inline'` in every environment, not only dev.
-//
-// The theme is written against the console's CSS CUSTOM PROPERTIES rather than against colours, so
-// light mode costs nothing: `html[data-theme="light"]` swaps the variables and the editor follows,
-// with no theme prop, no re-render and no second `EditorView.theme` to keep in step.
-
-// A tiny highlight style. Deliberately six rules and not a full palette: a body here is thirty lines
-// of arithmetic over `input`, and the thing worth seeing at a glance is which words are STRINGS and
-// which are keywords, because an unterminated string is the mistake a textarea hides best.
-const highlight = HighlightStyle.define([
-  { tag: tags.keyword, color: "var(--color-purple)" },
-  {
-    tag: [tags.string, tags.special(tags.string)],
-    color: "var(--color-success)",
-  },
-  { tag: [tags.number, tags.bool, tags.null], color: "var(--color-warning)" },
-  {
-    tag: tags.comment,
-    color: "var(--color-text-muted)",
-    fontStyle: "italic",
-  },
-  {
-    tag: [tags.propertyName, tags.definition(tags.variableName)],
-    color: "var(--color-accent)",
-  },
-  { tag: tags.invalid, color: "var(--color-error)" },
-]);
-
-const theme = EditorView.theme({
-  "&": {
-    backgroundColor: "var(--color-bg-tertiary)",
-    color: "var(--color-text-primary)",
-    borderRadius: "0.5rem",
-    border: "1px solid var(--color-border)",
-    fontSize: "0.75rem",
-  },
-  "&.cm-focused": {
-    outline: "none",
-    borderColor: "var(--color-border-focus)",
-  },
-  ".cm-content": {
-    fontFamily: "var(--font-mono)",
-    padding: "0.5rem 0",
-    caretColor: "var(--color-text-primary)",
-  },
-  ".cm-gutters": {
-    backgroundColor: "transparent",
-    color: "var(--color-text-placeholder)",
-    border: "none",
-    fontFamily: "var(--font-mono)",
-  },
-  ".cm-activeLineGutter": { backgroundColor: "transparent" },
-  ".cm-cursor": { borderLeftColor: "var(--color-text-primary)" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
-    {
-      backgroundColor: "var(--color-accent-muted)",
-    },
-  ".cm-placeholder": { color: "var(--color-text-placeholder)" },
-  ".cm-tooltip": {
-    backgroundColor: "var(--color-bg-secondary)",
-    border: "1px solid var(--color-border)",
-    borderRadius: "0.5rem",
-    color: "var(--color-text-primary)",
-  },
-  ".cm-tooltip-autocomplete ul li[aria-selected]": {
-    backgroundColor: "var(--color-bg-hover)",
-    color: "var(--color-text-primary)",
-  },
-  ".cm-completionDetail": {
-    color: "var(--color-text-muted)",
-    fontStyle: "normal",
-    marginLeft: "0.5rem",
-  },
-  ".cm-completionInfo": {
-    backgroundColor: "var(--color-bg-secondary)",
-    border: "1px solid var(--color-border)",
-    borderRadius: "0.5rem",
-    color: "var(--color-text-secondary)",
-    maxWidth: "22rem",
-    padding: "0.5rem 0.625rem",
-  },
-  ".cm-scopeHover": { maxWidth: "22rem", padding: "0.5rem 0.625rem" },
-  ".cm-scopeHoverHead": {
-    alignItems: "baseline",
-    display: "flex",
-    gap: "0.5rem",
-  },
-  ".cm-scopeHoverName": { fontWeight: "500" },
-  ".cm-scopeHoverDetail": {
-    color: "var(--color-text-muted)",
-    fontSize: "0.75rem",
-  },
-  ".cm-scopeHoverInfo": {
-    color: "var(--color-text-secondary)",
-    margin: "0.25rem 0 0",
-  },
-});
+// The code tool's editor (issue #538): the JavaScript half of the console's CodeMirror field, which
+// is `CodeMirrorField` (issue #562). Everything below is about the LANGUAGE — the grammar, what
+// `input.` completes to, the scope hover, the key that shows it — and nothing below knows how a view
+// is built or how a document is kept controlled.
 
 // The context descriptions as they reach the POPUP, which is console text and therefore bilingual.
 // Twelve static `t()` calls rather than one keyed by `v.name`: a computed key is invisible to
@@ -220,16 +100,6 @@ function contextCompletions(t: TFunction): Completion[] {
     info: described[v.name] ?? v.description,
   }));
 }
-
-// Below this fraction of the cap the counter is noise, exactly as in `Textarea`.
-const COUNTER_FROM = 0.8;
-
-// The mark on a write that came from the PROP rather than from the keyboard. The cap below refuses
-// an edit, and a controlled write is not an edit: refusing one leaves CodeMirror showing a document
-// the form no longer holds, silently, and the operator's next keystroke then writes that stale text
-// back over the value they never saw. A body arriving over the cap is exactly the case this
-// component exists to let them shorten.
-const CONTROLLED = Annotation.define<boolean>();
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -645,21 +515,6 @@ export function sourceFor(
   };
 }
 
-// The attributes that go on CodeMirror's contenteditable, which is the element it gives the
-// `textbox` role to. On the wrapper `div` below they would be dropped by the accessibility tree:
-// a `div` has no role, so it has no name to label and no validity to report.
-function contentAttrs(
-  label: string | undefined,
-  describedBy: string | undefined,
-  invalid: boolean,
-): Record<string, string> {
-  return {
-    ...(label ? { "aria-label": label } : {}),
-    ...(describedBy ? { "aria-describedby": describedBy } : {}),
-    ...(invalid ? { "aria-invalid": "true" } : {}),
-  };
-}
-
 // The identity of a declared-argument LIST, for the effect that reconfigures the completion source.
 // Joining on a separator is wrong here because an argument name is not required to be an identifier:
 // it can hold the separator itself, so `["first name", "age"]` and `["first", "name age"]` join to
@@ -694,263 +549,58 @@ export function CodeEditor({
   className,
   ...rest
 }: CodeEditorProps) {
-  const host = useRef<HTMLDivElement | null>(null);
-  const view = useRef<EditorView | null>(null);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
   const { t, i18n } = useTranslation();
-  const field = useFormField();
-  // NOTE: a compartment so a renamed argument reconfigures the completion source in place.
-  // Rebuilding the whole editor would drop the cursor and the undo history on every keystroke in
-  // the panel above.
-  const completionSlot = useMemo(() => new Compartment(), []);
-  // NOTE: a second compartment for the same reason: the label, the invalid state and the
-  // description all change while the editor stays mounted, and `contentAttributes` is read at
-  // construction. Without it the attributes freeze at whatever they were when the body first
-  // rendered, which for `aria-invalid` means never.
-  const attrsSlot = useMemo(() => new Compartment(), []);
-  // NOTE: and a third, for the same event the completion source reconfigures for. The placeholder
-  // is console text (`starterCode(t)`), so it changes when the operator switches the language with
-  // the modal open, and as a lifecycle dependency that switch rebuilt the whole view: cursor,
-  // selection and undo history gone, mid-body. The cap below is NOT one of these, because it is a
-  // constant of the sandbox and cannot change under a mounted editor.
-  const holderSlot = useMemo(() => new Compartment(), []);
   const names = useMemo(() => [...argumentNames], [argumentNames]);
   const namesKey = namesKeyOf(names);
-  // How far past the cap the last refused change would have gone, and 0 while nothing is refused.
-  // The ref is what the filter reads: it runs on every keystroke, and a setState per keystroke to
-  // write the same 0 is a render pass for nothing.
-  const [refusedExcess, setRefusedExcess] = useState(0);
-  const refused = useRef(0);
-  // NOTE: the label and the description go on the element CodeMirror gives the textbox role to, not
-  // on the wrapper below. A wrapper `div` has no role, so `aria-label` on it is dropped by the
-  // accessibility tree and the field reads as unlabelled.
-  const label = rest["aria-label"];
-  // NOTE: the counter `<Textarea>` renders, kept when the body moved off one: the change filter
-  // REFUSES an edit at the cap, so without it the field simply stops accepting characters with
-  // nothing on screen saying why. Same threshold as the textarea's, so warning arrives before the
-  // wall rather than at it, and the same over-limit line for a body that arrived past the cap and
-  // has to be edited down.
-  const count = value.length;
-  const over = typeof maxLength === "number" && count > maxLength;
-  const showCount =
-    typeof maxLength === "number" &&
-    (refusedExcess > 0 || count >= maxLength * COUNTER_FROM);
-  // NOTE: the over-limit line is the only thing on screen that says why this body cannot be saved,
-  // so it has to reach the accessibility tree the way `<Textarea>`'s does: an id the textbox points
-  // at, plus `aria-invalid` on the textbox itself. Both live on CodeMirror's contenteditable, which
-  // is the element carrying the `textbox` role.
-  const overId = useId();
-  const invalidNow = !!invalid || !!field.invalid || over;
-  const describedBy = mergeDescribedBy(
-    field.describedById,
-    over ? overId : undefined,
-  );
-
-  // NOTE: the editor is built ONCE. `value` is applied by the effect below and the completion source
-  // by its compartment; listing either here would tear the editor down on every keystroke, taking
-  // the cursor and the undo history with it.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the two effects below apply them
-  useEffect(() => {
-    const parent = host.current;
-    if (!parent) return;
-    const extensions: Extension[] = [
-      lineNumbers(),
-      history(),
-      indentOnInput(),
-      bracketMatching(),
-      closeBrackets(),
-      javascript(),
-      syntaxHighlighting(highlight),
-      theme,
-      EditorView.lineWrapping,
-      keymap.of([
-        ...SHOW_SCOPE_KEYS,
-        ...closeBracketsKeymap,
-        ...defaultKeymap,
-        ...historyKeymap,
-        ...completionKeymap,
-      ]),
-      completionSlot.of(completionExt(names, t)),
-      EditorView.updateListener.of((u) => {
-        if (!u.docChanged) return;
-        // NOTE: a write from the PROP is not an edit, and reporting it hands the form a string it
-        // never chose. CodeMirror splits an incoming document on `\r\n?|\n` and re-serializes with
-        // `\n`, so a body stored with CRLF (saved over MCP from a Windows client, or imported) can
-        // never be held as written: the sync effect sees a document that differs from the prop,
-        // writes the prop in again, and the form would take the normalized text as the operator's
-        // work. The tool would then be dirty the moment it opens, with Escape offering to discard
-        // changes nobody made. `every` and not `some` so that a batch carrying a real edit
-        // alongside a controlled write is still reported; the two are indistinguishable today,
-        // because the sync effect dispatches alone, and no test can separate them from out here.
-        if (u.transactions.every((tr) => tr.annotation(CONTROLLED))) return;
-        onChangeRef.current(u.state.doc.toString());
-      }),
-      attrsSlot.of(
-        EditorView.contentAttributes.of(
-          contentAttrs(label, describedBy, invalidNow),
-        ),
-      ),
-    ];
-    extensions.push(
-      holderSlot.of(placeholder ? placeholderExt(placeholder) : []),
-    );
-    if (typeof maxLength === "number") {
-      // NOTE: the change is refused WHOLE rather than trimmed to fit, which is where this parts
-      // from `<textarea maxLength>` on purpose. Measured: the browser truncates a paste into a
-      // textarea, and for prose losing the tail is harmless. A JavaScript body truncated to fit is
-      // a body missing its last lines that saves clean and fails when the agent calls it. So the
-      // paste is refused, and the refusal is SAID below: a refusal nobody sees is a field that
-      // stopped accepting text for no reason, and on a short body there is not even a counter on
-      // screen to hint at a cap. A value already past the cap (imported, or written through the
-      // API before the cap existed) still opens and still edits down, because the filter only asks
-      // about the length the change would PRODUCE.
-      extensions.push(
-        EditorState.changeFilter.of((tr) => {
-          if (!tr.docChanged) return true;
-          if (tr.annotation(CONTROLLED)) return true;
-          const before = tr.startState.doc.length;
-          const after = tr.newDoc.length;
-          const excess =
-            after > maxLength && after > before ? after - maxLength : 0;
-          if (refused.current !== excess) {
-            refused.current = excess;
-            setRefusedExcess(excess);
-          }
-          return excess === 0;
-        }),
-      );
-    }
-    const v = new EditorView({
-      state: EditorState.create({ doc: value, extensions }),
-      parent,
-    });
-    view.current = v;
-    // NOTE: Escape belongs to the completion popup while it is open. The dialog around this editor
-    // closes on Escape, and Radix hears it first (capture phase on `document`), so the editor
-    // cannot stop the event: it declares the claim and `<Modal>` cancels the dismissal. The popup
-    // itself is closed here, because a claim that only reported would leave it open when the press
-    // it answered was the press meant to close it.
-    const release = claimEscape((target) => {
-      if (!(target instanceof Node) || !v.dom.contains(target)) return false;
-      // NOTE: `null` is the only status that gives Escape back to the dialog. `"pending"` is the
-      // debounce window CodeMirror opens the moment a trigger is typed, so an operator who types
-      // `context.` and reaches for Escape within ~75 ms would otherwise be asked whether to discard
-      // the body: the popup they were dismissing had not finished arriving. `closeCompletion`
-      // cancels a pending query as well as an open one.
-      if (completionStatus(v.state) === null) return false;
-      closeCompletion(v);
-      return true;
-    });
-    return () => {
-      release();
-      v.destroy();
-      view.current = null;
-    };
-  }, [completionSlot, attrsSlot, holderSlot, maxLength]);
-
-  // NOTE: an external change (the form resetting, a starter body applied) written into the document
-  // without disturbing a cursor that is already where the operator put it, and kept OUT of the undo
-  // history: it is not an edit the operator made, so Ctrl-Z must not resurrect what it replaced.
-  // Measured on the tree as it stands, the reachable openings are already safe by accident — the
-  // dialog unmounts its content on close, so a reopening builds a new view with an empty history,
-  // and an edit's body only arrives before the editor mounts, behind the loading skeleton. This
-  // makes it true by construction instead, for the first caller that writes `value` while the
-  // editor is on screen.
-  useEffect(() => {
-    const v = view.current;
-    if (!v) return;
-    const current = v.state.doc.toString();
-    if (current === value) return;
-    v.dispatch({
-      changes: { from: 0, to: current.length, insert: value },
-      annotations: [Transaction.addToHistory.of(false), CONTROLLED.of(true)],
-    });
-    // NOTE: the refusal described a paste against the body being replaced here, so it does not
-    // describe anything any more.
-    if (refused.current !== 0) {
-      refused.current = 0;
-      setRefusedExcess(0);
-    }
-  }, [value]);
-
-  // NOTE: the attributes the accessibility tree reads, reapplied whenever they change. `invalid`
-  // and the over-limit description are runtime state, so a construction-time read of them would be
-  // a `aria-invalid` that is decided once, before the operator has typed anything.
-  useEffect(() => {
-    const v = view.current;
-    if (!v) return;
-    v.dispatch({
-      effects: attrsSlot.reconfigure(
-        EditorView.contentAttributes.of(
-          contentAttrs(label, describedBy, invalidNow),
-        ),
-      ),
-    });
-  }, [attrsSlot, label, describedBy, invalidNow]);
-
-  useEffect(() => {
-    const v = view.current;
-    if (!v) return;
-    v.dispatch({
-      effects: holderSlot.reconfigure(
-        placeholder ? placeholderExt(placeholder) : [],
-      ),
-    });
-  }, [holderSlot, placeholder]);
-
   // NOTE: `namesKey` and not `names`: a new array holding the same names is not a change worth
   // reconfiguring for, and the parent rebuilds that array on every render. The language is here for
   // the other half of what the source closes over: the popup's own text, which has to follow a
-  // language switch without the operator reopening the modal.
+  // language switch without the operator reopening the modal. The memo IS the reconfiguration
+  // trigger — `CodeMirrorField` reconfigures on this value's identity — so a fresh array per render
+  // would reconfigure per render.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `namesKey` and the language are what change
-  useEffect(() => {
-    const v = view.current;
-    if (!v) return;
-    v.dispatch({
-      effects: completionSlot.reconfigure(completionExt(names, t)),
-    });
-  }, [namesKey, completionSlot, i18n.language]);
-
+  const extensions = useMemo(
+    () => [
+      javascript(),
+      completionExt(names, t),
+      // NOTE: its own keymap, ahead of the field's defaults, because that is the precedence the
+      // shell gives a caller's extensions.
+      keymap.of([...SHOW_SCOPE_KEYS]),
+    ],
+    [namesKey, i18n.language],
+  );
+  const cap = useMemo(
+    () =>
+      typeof maxLength === "number"
+        ? {
+            max: maxLength,
+            overLimit: (excess: number, max: number) =>
+              t(
+                "codeTools.codeOverLimit",
+                "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",
+                { count: excess, max },
+              ),
+            refused: (excess: number, max: number) =>
+              t(
+                "codeTools.codeChangeRefused",
+                "Nothing was inserted: the body would be {{count}} character over the {{max}} limit.",
+                { count: excess, max },
+              ),
+          }
+        : undefined,
+    [maxLength, t],
+  );
   return (
-    <div className="w-full">
-      <div
-        ref={host}
-        className={cn(
-          "w-full overflow-hidden [&_.cm-editor]:min-h-[var(--code-min-h)]",
-          invalid || field.invalid || over ? "[&_.cm-editor]:border-error" : "",
-          className,
-        )}
-        style={{ "--code-min-h": minHeight } as React.CSSProperties}
-      />
-      {showCount && (
-        <span
-          className={cn(
-            "mt-1 block text-right text-xs",
-            over ? "text-error" : "text-text-muted",
-          )}
-        >
-          {`${count}/${maxLength}`}
-        </span>
-      )}
-      {over && typeof maxLength === "number" && (
-        <span id={overId} className="mt-1 block text-error text-xs">
-          {t(
-            "codeTools.codeOverLimit",
-            "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",
-            { count: count - maxLength, max: maxLength },
-          )}
-        </span>
-      )}
-      {refusedExcess > 0 && typeof maxLength === "number" && (
-        <span role="status" className="mt-1 block text-error text-xs">
-          {t(
-            "codeTools.codeChangeRefused",
-            "Nothing was inserted: the body would be {{count}} character over the {{max}} limit.",
-            { count: refusedExcess, max: maxLength },
-          )}
-        </span>
-      )}
-    </div>
+    <CodeMirrorField
+      value={value}
+      onChange={onChange}
+      extensions={extensions}
+      cap={cap}
+      placeholder={placeholder}
+      minHeight={minHeight}
+      invalid={invalid}
+      className={className}
+      aria-label={rest["aria-label"]}
+    />
   );
 }

@@ -14,6 +14,8 @@ import {
 import { scopeKeyLabel, ToastProvider } from "@/client/components";
 import { useModalController } from "@/client/components/Modal";
 import i18n from "@/client/lib/i18n";
+import enLocale from "@/client/locales/en.json";
+import ptLocale from "@/client/locales/pt-BR.json";
 import {
   type CodeTool,
   CodeToolEditModal,
@@ -690,6 +692,36 @@ test("the starter body is two lines, and names the platform's key", () => {
     expect(lines[0]).not.toContain(other);
     // And never the keys that measured as unreachable.
     expect(/Ctrl-Space|Alt-i|Alt-`/.test(lines[0] ?? "")).toBe(false);
+  }
+});
+
+// The other place the key is named, and the one that went stale in ENGLISH ONLY while every fence
+// stayed green: `code-tools-locale-defaults` compares each `t()` default against the English catalog,
+// so a chord hard-coded in BOTH agrees with itself and passes. pt-BR was right, English pointed at a
+// key that had already been measured as unreachable on a Mac, and the starter body two fields up
+// said something else. So the assertion is about the class rather than that line: nothing the
+// operator reads may spell a chord: the key has two names and only `scopeKeyLabel` knows which.
+test("no codeTools string spells a hotkey, they interpolate it", () => {
+  const CHORD = /Ctrl-|Cmd-|Alt-|\u2318|\u2325|Ctrl\+|Shift\+/;
+  const flat: Array<[string, string]> = [];
+  const walk = (node: unknown, path: string) => {
+    if (typeof node === "string") return void flat.push([path, node]);
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node))
+      walk(v, path ? `${path}.${k}` : k);
+  };
+  for (const [lang, cat] of [
+    ["en", enLocale.codeTools],
+    ["pt-BR", ptLocale.codeTools],
+  ] as const) {
+    walk(cat, lang);
+  }
+  expect(flat.filter(([, v]) => CHORD.test(v)).map(([k]) => k)).toEqual([]);
+  // And the two that talk about it do interpolate, in both catalogs, or the sweep above would pass
+  // on a text that simply stopped mentioning the key at all.
+  for (const cat of [enLocale.codeTools, ptLocale.codeTools]) {
+    expect(cat.starterHint).toContain("{{hotkey}}");
+    expect(cat.codeHelp).toContain("{{hotkey}}");
   }
 });
 

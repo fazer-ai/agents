@@ -363,14 +363,42 @@ export function hoverInfo(
     if (objectNode?.name !== "VariableName") continue;
     const root = state.doc.sliceString(objectNode.from, objectNode.to);
     if (root !== "context" && root !== "input") continue;
-    // A quoted subscript carries its quotes; the label never does.
-    const name = quoted ? text.slice(1, -1) : text;
+    // A quoted subscript carries its quotes AND its escapes; the label never does. Stripping the
+    // two quote characters is not enough, and the case is one the editor writes itself: an argument
+    // named `sa"id` completes through `bracketApply` as `input["sa\"id"]` (JSON.stringify), and
+    // `sa\"id` matches no declared name, so the pointer went silent over code this editor generated.
+    const name = quoted ? decodeStringLiteral(text) : text;
+    if (name === null) continue;
     const found = completionsFor(root, argumentNames, t).find(
       (c) => c.label === name,
     );
     if (found) return { ...range, completion: found };
   }
   return null;
+}
+
+// The text a quoted subscript actually names. Not `JSON.parse`, which reads the double-quoted form
+// this editor writes and refuses the single-quoted one an operator types by hand, and not a regex,
+// which cannot tell `\\\\` from an escaped quote. Unterminated returns null: a literal being typed is
+// not a name yet, and answering for a prefix would put the wrong sentence under the pointer.
+function decodeStringLiteral(literal: string): string | null {
+  const quote = literal[0];
+  if (quote !== '"' && quote !== "'") return null;
+  if (literal.length < 2 || literal[literal.length - 1] !== quote) return null;
+  let out = "";
+  for (let i = 1; i < literal.length - 1; i++) {
+    const ch = literal[i];
+    if (ch !== "\\") {
+      out += ch;
+      continue;
+    }
+    const escaped = literal[++i];
+    if (escaped === undefined) return null;
+    // The escapes `JSON.stringify` emits, plus the pass-through that makes `\"` and `\\` the
+    // characters they stand for. A name spelled with `\u0041` is not a case this has to serve.
+    out += escaped === "n" ? "\n" : escaped === "t" ? "\t" : escaped;
+  }
+  return out;
 }
 
 // The tooltip itself. `above` so it does not cover the line being read, and no `strictSide` because
@@ -516,7 +544,7 @@ function isRootWord(ctx: CompletionContext, from: number): boolean {
 //
 // `\u26a0` is the parser saying it could not place what is here at all, which is what `const context.`
 // and `class A { context.` look like: a member dot the grammar cannot accept there. Measured, the
-// positions where Ctrl-Space is worth pressing produce none of it: an empty body and a fresh line
+// positions where the scope key is worth pressing produce none of it: an empty body and a fresh line
 // are `Script`, and `const x = `, `a + `, `let z=`, `foo(` and `{a: ` all name a node of their own.
 function atRootPosition(ctx: CompletionContext): boolean {
   const name = syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name;
@@ -572,7 +600,7 @@ export function sourceFor(
     }
     const word = ctx.matchBefore(new RegExp(`[${WORD_CHARS}]+`, "u"));
     // NOTE: `matchBefore` needs a character to match, so on a blank line it answers `null`. That is
-    // exactly where Ctrl-Space is worth pressing: an operator staring at an empty body asking what
+    // exactly where the scope key is worth pressing: an operator staring at an empty body asking what
     // exists. An EXPLICIT request answers at the cursor; typing whitespace still opens nothing on
     // its own. The root check runs either way, so a request made after `foo.` still offers nothing:
     // `context` and `input` are variables, never members of somebody else's object.

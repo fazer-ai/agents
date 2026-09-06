@@ -927,6 +927,31 @@ describe("hover answers with the completion the list would have offered", () => 
     );
   });
 
+  // An argument name is any non-empty string, so a quote is declarable, and the subscript the
+  // COMPLETION writes for it is `JSON.stringify`'d. Stripping the two quote characters then leaves
+  // the escape in the middle, matching no declared name: the pointer went silent over a line this
+  // editor had just generated. Both quote styles, because the operator types the other one.
+  test("a name whose subscript carries an escape", () => {
+    const state = (doc: string) =>
+      EditorState.create({ doc, extensions: [javascript()] });
+    const askNamed = (doc: string, at: number, names: string[]) =>
+      hoverInfo(state(doc), at, names, i18n.t);
+    const doubled = 'input["sa\\"id"]';
+    expect(
+      askNamed(doubled, doubled.indexOf("sa") + 1, ['sa"id'])?.completion.label,
+    ).toBe('sa"id');
+    const single = "context['contact_id']";
+    expect(
+      askNamed(single, single.indexOf("contact_id") + 1, [])?.completion.label,
+    ).toBe("contact_id");
+    // A literal still being typed names nothing yet. The case that pins the terminator check is a
+    // PREFIX that happens to be another declared name: without it the last character is simply
+    // dropped, so `input["cpf` while typing would answer with the sentence for an argument called
+    // `cp`, under a pointer resting on a name the operator has not finished writing.
+    const open = 'input["cpf';
+    expect(askNamed(open, open.length - 2, ["cp", "cpf"])).toBeNull();
+  });
+
   test("the two roots and a sandbox global", () => {
     for (const [doc, label] of [
       ["context.contact_id", "context"],

@@ -522,7 +522,7 @@ export function CodeToolEditModal({
                     label={t("codeTools.code", "Code")}
                     content={t(
                       "codeTools.codeHelp",
-                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` the conversation's values. Type `input.` or `context.`, or press Ctrl-Shift-Space, to list what is available with each type and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` the conversation's values. Type `input.` or `context.`, or press {{hotkey}}, to list what is available with each type and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
                       { hotkey: scopeKeyLabel() },
                     )}
                   />

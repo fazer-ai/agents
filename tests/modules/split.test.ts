@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ChatwootApiError,
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
@@ -1277,6 +1278,190 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     // message that is not there.
     expect(attempted).toEqual([ONE, ONE]);
     expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+
+  // THE ANCHOR IS WHAT STOPS THE WALK WHEN THE FIRST SEND IS THE ONE THAT FAILS (issue #499).
+  // Nothing has been sent, so no completed send can supply a stopping point, and a conversation with
+  // real history fills every page the ceiling allows with rows that were there before the attempt.
+  // Without the anchor that runs out of pages and answers `unknown` — which now means the chunk is
+  // dropped and the reply never arrives at all.
+  test("a long history does not exhaust the walk when the caller names an anchor", async () => {
+    const attempted: string[] = [];
+    let stored = 0;
+    const HISTORY_TOP = 4000;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        stored += 1;
+        throw new Error("chatwoot timeout");
+      },
+      // A hundred and forty messages of history, all older than the anchor: five full pages plus
+      // more behind them, so the ceiling is reached before the top of the history ever is.
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? HISTORY_TOP + 1;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa antiga",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      // Everything the read can see is at or below this, so the first page already reaches it.
+      HISTORY_TOP,
+    );
+    // TWICE, and that is the anchor working rather than a duplicate: the read PROVED the balloon is
+    // not in the conversation, so the reply is genuinely owed and the consolidated retry sends it.
+    // The retry is rejected too and proved absent in turn, which is why nothing is reported as
+    // delivered. Without the anchor the first verdict is `unknown`, there is no retry at all, and
+    // the customer gets nothing while the turn settles the burst.
+    expect(attempted).toEqual([ONE, ONE]);
+    expect(stored).toBe(2);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+  });
+
+  // AND THE SAME ON THE PATH WITH NO SPLITTING, which has even less to fall back on: it never has a
+  // completed send to stop at, so the caller's anchor is the only stopping point it will ever get.
+  test("split disabled: a long history does not exhaust the walk either", async () => {
+    const attempted: string[] = [];
+    const HISTORY_TOP = 4000;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? HISTORY_TOP + 1;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa antiga",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+      undefined,
+      undefined,
+      HISTORY_TOP,
+    );
+    // One send, no retry on this path, and a proven absence so the turn may run again.
+    expect(attempted).toEqual([ONE]);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+  });
+
+  // The same conversation with NO anchor is the case the anchor exists for: honestly unknown.
+  test("the same long history with no anchor is unknown, not absent", async () => {
+    const client = {
+      sendMessage: async () => {
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? 4001;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa antiga",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  });
+
+  // A STATUS CHATWOOT ANSWERS WITHOUT WRITING A MESSAGE is a proven absence, like the missing token.
+  // Read as unknown, an expired credential would stop answering customers in silence: every turn
+  // would settle its burst and retire its delivery with nothing sent.
+  test.each([
+    ["401", 401],
+    ["403", 403],
+    ["404", 404],
+    ["422", 422],
+  ])(
+    "a %s is a proven absence, so the reply is still owed",
+    async (_label, status) => {
+      let reads = 0;
+      const client = {
+        sendMessage: async () => {
+          throw new ChatwootApiError(status, "POST /messages");
+        },
+        getMessages: async () => {
+          reads += 1;
+          return { payload: [] };
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const out = await deliverReply(
+        client,
+        1,
+        ONE,
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+      expect(reads).toBe(0);
+    },
+  );
+
+  // And the ones that CAN have been served before the response was lost stay ambiguous, which is the
+  // whole reason the read-back exists. A list that swallowed these would be back to guessing.
+  test.each([
+    ["500", 500],
+    ["502", 502],
+    ["429", 429],
+  ])("a %s is still ambiguous and is read back", async (_label, status) => {
+    let reads = 0;
+    const client = {
+      sendMessage: async () => {
+        throw new ChatwootApiError(status, "POST /messages");
+      },
+      getMessages: async () => {
+        reads += 1;
+        throw new Error("chatwoot 500");
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(reads).toBeGreaterThan(0);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
   });
 
   // A SPENT BUDGET IS UNKNOWN TOO, and this is the exit an overloaded Chatwoot actually takes: the

@@ -1111,6 +1111,10 @@ async function runTurnBody(
       params.deps?.sleep,
       flow,
       writeCalledOff,
+      // The customer message this turn is answering, which the reply is by definition newer than.
+      // It is what the read-back stops at when the FIRST send is the one that fails, and it costs
+      // nothing: the claim already named it (issue #499).
+      params.claimReply?.toMessageId ?? null,
     );
     logger.info(
       "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d partial=%s",

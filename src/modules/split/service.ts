@@ -1,5 +1,6 @@
 import logger from "@/api/lib/logger";
 import {
+  ChatwootApiError,
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
@@ -223,6 +224,16 @@ export async function deliverReply(
   // keep typing the rest into a conversation the operator was told had been cleared. Returns how
   // many actually landed, so the caller still reports what the customer received.
   calledOff: () => Promise<boolean> = async () => false,
+  // THE NEWEST MESSAGE THAT EXISTED BEFORE THIS REPLY, when the caller knows one — the customer
+  // message this turn is answering (issue #499). Anything this reply writes is newer than it, so it
+  // is the point past which the read-back stops looking.
+  //
+  // Without it, the FIRST send failing has nothing to stop at: a conversation with a hundred
+  // messages of history fills all five pages with rows that were there before, and the walk runs out
+  // of pages and answers `unknown` — which now means the chunk is dropped and the reply never
+  // arrives. It costs no read, unlike the pre-send `readBoundary` this replaces: the caller already
+  // holds the id.
+  anchor: number | null = null,
 ): Promise<ReplyDelivery> {
   return withFlowStage(
     flow,
@@ -250,9 +261,9 @@ export async function deliverReply(
             client,
             conversationId,
             sendId,
-            // No boundary: nothing has been sent on this path before now. The read pages to its own
-            // ceiling instead of stopping early, and a short page ends it.
-            null,
+            // The caller's anchor is all there is here: nothing has been sent on this path before
+            // now, so no completed send can supply one.
+            anchor,
             e,
             flow,
           );
@@ -276,7 +287,7 @@ export async function deliverReply(
       //
       // Now identity decides and this only bounds cost: null simply means the read-back pages to
       // its own ceiling instead of stopping early. Correctness no longer depends on it.
-      let boundary: number | null = null;
+      let boundary: number | null = anchor;
       // THE ONE PLACE A DELIVERY IS RECORDED, because there are four ways to learn of one — a send
       // that returned, a rejected send the read-back found, and the same two for the consolidated
       // retry — and each is also a new boundary. Two of them used to count without moving it, which
@@ -491,6 +502,20 @@ type LandedVerdict =
   // there, and this is the ONE case where the send is neither confirmed nor safe to repeat.
   | { known: false };
 
+// STATUSES CHATWOOT ANSWERS WITHOUT HAVING WRITTEN A MESSAGE. Authentication and authorization are
+// decided before the controller runs, and 404 and 422 are the route and the payload being refused —
+// in none of them does a row exist on the far side.
+//
+// 5xx is deliberately NOT here, and neither is 429. A 500 is Chatwoot failing at an unknown point in
+// its own transaction and a 502 is a proxy that may or may not have forwarded the request, which is
+// the whole reason this function exists; a 429 can be answered by a proxy after the write. The list
+// is what is definitively pre-create, never what is merely likely.
+const PRE_CREATE_STATUSES = new Set([400, 401, 403, 404, 405, 422]);
+
+function isPreCreateStatus(status: number): boolean {
+  return PRE_CREATE_STATUSES.has(status);
+}
+
 // WHAT A REJECTED SEND MEANS, asked in ONE place so the two delivery paths cannot answer it
 // differently (issue #499). Splitting on or off, the question is the same — did those words reach
 // the customer? — and the path with no remainder to salvage used to skip it entirely, reporting
@@ -504,12 +529,16 @@ async function accountForRejectedSend(
   flow: FlowContext | undefined,
 ): Promise<LandedVerdict> {
   reportFailedSend(flow, conversationId, err);
-  // AN ERROR THAT NEVER LEFT THE PROCESS IS A PROVEN ABSENCE, not an ambiguous one. The whole reason
-  // a rejection is ambiguous is that the request may have been served before the response was lost;
-  // a client that refuses to dial because it holds no token never made one. Reading it as unknown
-  // costs the customer their answer: the turn would report `posted-partial`, settle the burst and
-  // retire the delivery as answered, with nothing sent and nothing ever retrying.
+  // A REJECTION THAT COULD NOT HAVE CREATED A MESSAGE IS A PROVEN ABSENCE, not an ambiguous one.
+  // Ambiguity has one source: the request may have been served before the response was lost. Two
+  // families cannot have been.
+  //
+  // Reading either as unknown is expensive now that unknown means "do not resend": the turn reports
+  // `posted-partial`, settles the burst and retires the delivery as answered, with nothing sent and
+  // nothing ever retrying. A credential that expired would silently stop answering customers.
   if (err instanceof ChatwootMissingTokenError)
+    return { known: true, id: null };
+  if (err instanceof ChatwootApiError && isPreCreateStatus(err.status))
     return { known: true, id: null };
   return findLandedMessage(client, conversationId, sendId, after);
 }

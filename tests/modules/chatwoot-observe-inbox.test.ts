@@ -1385,4 +1385,266 @@ describe.skipIf(!dbUp)("the observer binding", () => {
         .filter((c) => c.path.includes("agent_bot_observers")),
     ).toEqual([]);
   });
+
+  // TWO CLASSIFIERS, ONE FLAT LABEL SET: a value both claim is written by one and cleared by the
+  // other on every burst, with whatever the label triggers firing on each flip. Neither taxonomy is
+  // wrong alone, so the PAIRING is what is refused (issue #477 review, round 16).
+  test("a second classifier may not claim a value the first already owns", async () => {
+    const taxonomy = (values: string[]) => ({
+      monitoring: { labelGroups: [{ name: "assunto", values }] },
+    });
+    const before = await suDb.agent.findMany({
+      where: { id: { in: [monitoringAgent, productionAgent] } },
+      select: { id: true, settings: true, mode: true },
+    });
+    try {
+      // The responder classifies too — #209's first rung — and owns `urgente`.
+      await suDb.agent.update({
+        where: { id: productionAgent },
+        data: { mode: "monitoring", settings: taxonomy(["urgente", "normal"]) },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxRowId },
+        data: { agentId: productionAgent },
+      });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inboxRowId },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inboxRowId, agentId: monitoringAgent },
+      });
+      // Disjoint is fine.
+      await expect(
+        updateAgent(
+          ctx(tenantId),
+          monitoringAgent,
+          { settings: taxonomy(["cancelamento"]) },
+          appDb,
+        ),
+      ).resolves.toBeDefined();
+      // Sharing `urgente` is not, and the message names the value and the other classifier.
+      await expect(
+        updateAgent(
+          ctx(tenantId),
+          monitoringAgent,
+          { settings: taxonomy(["urgente"]) },
+          appDb,
+        ),
+      ).rejects.toThrow(/urgente/);
+      // A DORMANT peer blocks nobody: the flap needs two live writers (round 19).
+      await suDb.agent.update({
+        where: { id: productionAgent },
+        data: { mode: "production" },
+      });
+      await expect(
+        updateAgent(
+          ctx(tenantId),
+          monitoringAgent,
+          { settings: taxonomy(["urgente"]) },
+          appDb,
+        ),
+      ).resolves.toBeDefined();
+      // ...and the FLIP that makes it live is where the collision is caught, even though the patch
+      // names no settings at all.
+      await expect(
+        updateAgent(
+          ctx(tenantId),
+          productionAgent,
+          { mode: "monitoring" },
+          appDb,
+        ),
+      ).rejects.toThrow(/urgente/);
+      // Same for a re-enable.
+      await suDb.agent.update({
+        where: { id: productionAgent },
+        data: { mode: "monitoring", enabled: false },
+      });
+      await expect(
+        updateAgent(ctx(tenantId), productionAgent, { enabled: true }, appDb),
+      ).rejects.toThrow(/urgente/);
+    } finally {
+      await suDb.agent.update({
+        where: { id: productionAgent },
+        data: { enabled: true },
+      });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inboxRowId },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxRowId },
+        data: { agentId: null },
+      });
+      for (const a of before)
+        await suDb.agent.update({
+          where: { id: a.id },
+          data: { settings: a.settings ?? {}, mode: a.mode },
+        });
+    }
+  });
+
+  // A REJECTION AFTER THE REMOTE CALL IS COMPENSATED (issue #477 review, round 24). The taxonomy is
+  // re-asked inside the persistence transaction, which runs AFTER Chatwoot was told to switch bots;
+  // the usual answer — report it, a retry repairs it — is false for this one rejection, because the
+  // preflight sees the same collision and refuses the retry before Chatwoot is called. The inbox
+  // would be left routing to a bot the mirror does not name.
+  test("a taxonomy collision found after the attach puts the previous bot back", async () => {
+    const taxonomy = (values: string[]) => ({
+      monitoring: { labelGroups: [{ name: "assunto", values }] },
+    });
+    const before = await suDb.agent.findMany({
+      where: { id: { in: [monitoringAgent, productionAgent] } },
+      select: { id: true, settings: true, mode: true, enabled: true },
+    });
+    const outgoing = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Saindo",
+        systemPrompt: "Você atende.",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        mode: "production",
+      },
+    });
+    const observing = new Set<string>();
+    const answering = new Map<number, number>();
+    try {
+      // The observer owns nothing the incoming responder claims — yet.
+      await suDb.agent.update({
+        where: { id: monitoringAgent },
+        data: { mode: "monitoring", settings: taxonomy(["cancelamento"]) },
+      });
+      await suDb.agent.update({
+        where: { id: productionAgent },
+        data: { mode: "monitoring", settings: taxonomy(["urgente"]) },
+      });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inboxRowId },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inboxRowId, agentId: monitoringAgent },
+      });
+      // The inbox answers with `outgoing` today, and Chatwoot knows it.
+      const seed = fakeChatwoot({ observerRoute: true, observing, answering });
+      await bindInbox(ctx(tenantId), inboxRowId, outgoing.id, seed, appDb);
+      const botBefore = answering.get(INBOX_ID);
+      expect(botBefore).toBeGreaterThan(0);
+
+      // The observer adopts the incoming responder's value while Chatwoot is switching bots: too
+      // late for the preflight, in time for the check inside the transaction.
+      const racing = fakeChatwoot({
+        observerRoute: true,
+        observing,
+        answering,
+        onSetAgentBot: async () => {
+          await suDb.agent.update({
+            where: { id: monitoringAgent },
+            data: { settings: taxonomy(["urgente"]) },
+          });
+        },
+      });
+      await expect(
+        bindInbox(ctx(tenantId), inboxRowId, productionAgent, racing, appDb),
+      ).rejects.toThrow(/urgente/);
+      // The local binding never moved...
+      expect(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: inboxRowId },
+            select: { agentId: true },
+          })
+        ).agentId,
+      ).toBe(outgoing.id);
+      // ...and neither did Chatwoot's, which is what the compensation is for: without it the inbox
+      // routes to the refused bot and no retry can repair it. Asserted on the CALLS: this fake hands
+      // every bot the same id, so the map alone cannot tell the two attachments apart.
+      const switches = racing.calls
+        .filter((c) => c.path.endsWith("/set_agent_bot"))
+        .map(
+          (c) =>
+            (c.body as { agent_bot?: number | null } | undefined)?.agent_bot ??
+            null,
+        );
+      expect(switches.length).toBe(2);
+      expect(switches[1]).toBe(botBefore);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inboxRowId },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxRowId },
+        data: { agentId: null },
+      });
+      await suDb.chatwootAgentBot.deleteMany({
+        where: { tenantId, agentId: outgoing.id },
+      });
+      await suDb.agent.delete({ where: { id: outgoing.id } });
+      for (const a of before)
+        await suDb.agent.update({
+          where: { id: a.id },
+          data: { settings: a.settings ?? {}, mode: a.mode },
+        });
+    }
+  });
+
+  // The responder standing on the inbox when a BIND asks is one the same call is about to remove
+  // (issue #477 review, round 21), so it is not a peer — the two never classify together.
+  test("the responder being replaced is not a peer of the one replacing it", async () => {
+    const taxonomy = (values: string[]) => ({
+      monitoring: { labelGroups: [{ name: "assunto", values }] },
+    });
+    const before = await suDb.agent.findMany({
+      where: { id: { in: [monitoringAgent, productionAgent] } },
+      select: { id: true, settings: true, mode: true },
+    });
+    const observing = new Set<string>();
+    const answering = new Map<number, number>();
+    const cw = fakeChatwoot({ observerRoute: true, observing, answering });
+    try {
+      // Two monitoring agents with the SAME taxonomy, one of them answering the inbox.
+      for (const id of [monitoringAgent, productionAgent])
+        await suDb.agent.update({
+          where: { id },
+          data: { mode: "monitoring", settings: taxonomy(["urgente"]) },
+        });
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inboxRowId },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxRowId },
+        data: { agentId: productionAgent },
+      });
+      // Handing the inbox from one to the other is a swap, not a pairing.
+      const rebound = await bindInbox(
+        ctx(tenantId),
+        inboxRowId,
+        monitoringAgent,
+        cw,
+        appDb,
+      );
+      expect(rebound.agentId).toBe(String(monitoringAgent));
+      // The OBSERVER beside it is untouched by the swap, so it is still a peer and still refuses.
+      await suDb.inbox.update({
+        where: { id: inboxRowId },
+        data: { agentId: null },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inboxRowId, agentId: productionAgent },
+      });
+      await expect(
+        bindInbox(ctx(tenantId), inboxRowId, monitoringAgent, cw, appDb),
+      ).rejects.toThrow(/urgente/);
+    } finally {
+      await suDb.inboxObserver.deleteMany({
+        where: { tenantId, inboxId: inboxRowId },
+      });
+      await suDb.inbox.update({
+        where: { id: inboxRowId },
+        data: { agentId: null },
+      });
+      for (const a of before)
+        await suDb.agent.update({
+          where: { id: a.id },
+          data: { settings: a.settings ?? {}, mode: a.mode },
+        });
+    }
+  });
 });

@@ -232,7 +232,17 @@ const SETTINGS_DESC_CEILING = 2_000;
 // native name is published on: `toolGuidance` and `toolPreconditions` carry one key per native, so
 // a native costs its name twice plus the precondition pattern — 393 characters, with no field of its
 // own anywhere in this schema. Re-measured on the tree that ships: 22,960.
-const SETTINGS_SCHEMA_CEILING = 23_000;
+//
+// RAISED again for issue #477, and the raise is again the decision the ceiling forces. The
+// `monitoring` block is what a watching agent DOES: an `analysis` enum, two small sub-objects, a
+// boolean, and `labelGroups` — an array of objects with a name, an `exclusive` flag and an array of
+// label titles. Trimming was tried first and taken as far as it goes: every `.describe()` in the
+// block is one clause, and the trim bought 360 characters, measured before the native above landed. What is left is the
+// shape — a nested block with an array of objects inside it costs more than its own sentences, the
+// way `takeover` above cost more than one boolean — and none of it is discretionary: a client that
+// cannot see `values` cannot write a group, and a group is the whole feature. Re-measured on the
+// tree that ships: 24,261. Headroom stays tighter than a block.
+const SETTINGS_SCHEMA_CEILING = 24_400;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -529,6 +539,18 @@ describe("MCP tool descriptions", () => {
   // 55,367 — the same 15 and 16 the paragraphs above keep, so the next tool has to be measured too.
   // The deltas came out the same across both rebases (+447 and +412), which is what a description
   // that names its own tools rather than the tree around it should do.
+  //
+  // The `monitoring` block of `agent_settings_set` (#477) leaves the description total where it is —
+  // no tool added and no sentence beyond the block's own — and grows the schema side alone. The
+  // 1,321 is the shape and not the prose: `labelGroups` is an array of objects with a name, an
+  // `exclusive` flag and an array of titles, and a nested block with an array of objects inside it
+  // costs more than its own sentences, the way `takeover` cost more than one boolean. It is not
+  // discretionary either — a client that cannot see `values` cannot write a group, and a group is
+  // the whole feature. Round 23 then bounded the two strings' LENGTH, which publishes as `maxLength`
+  // on the name and on the value: 76 characters more, for a rule a client would otherwise learn by
+  // having its save refused. REMEASURED on this base after the rebase over #543/#547/#548, never
+  // summed from the earlier reading: 30,417 and 56,748 on this tree, so the ceilings are 30,432 and
+  // 56,764 — the description one is #476's, untouched, and the schema one keeps the same 16.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -538,7 +560,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_432);
-    expect(schema).toBeLessThanOrEqual(55_367);
+    expect(schema).toBeLessThanOrEqual(56_764);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

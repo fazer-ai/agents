@@ -70,6 +70,7 @@ enum SchedulerJobKind {
   DELIVERY_RECOVERY
   TAKEOVER_RECOVERY
   SPEND_CEILING_POLL
+  OBSERVE
 }
 
 enum SchedulerJobStatus {

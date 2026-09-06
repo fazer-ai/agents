@@ -70,7 +70,8 @@ export type SchedulerJobKind =
   | "DELIVERY_SWEEP"
   | "DELIVERY_RECOVERY"
   | "TAKEOVER_RECOVERY"
-  | "SPEND_CEILING_POLL";
+  | "SPEND_CEILING_POLL"
+  | "OBSERVE";
 
 export interface ClaimedJob {
   id: bigint;
@@ -297,6 +298,44 @@ export async function cancelPendingJobsByPrefix(
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const res = await db.schedulerJob.updateMany({
       where: { kind, status: "PENDING", dedupeKey: { startsWith: prefix } },
+      data: { status: "DONE" },
+    });
+    return res.count;
+  });
+}
+
+// The same cancel, FENCED ON THE EPISODE the rows belong to (issue #477 review, round 21).
+//
+// `/reset` retires the verdicts armed before it, and the plain prefix cancel above cannot tell them
+// from the ones armed after: the command's own work takes seconds — a live refresh, the memory
+// clear, a dozen Chatwoot calls — and a customer message landing in that stretch arrives AFTER the
+// reset, arms a burst the operator wants classified, and was then marked DONE by a cancel that ran
+// later and asked nothing. Moving the cancel earlier only narrows the window; the boundary closes
+// it, and the boundary is the one the whole command is already written in — the command's own
+// message id in Chatwoot's sequence (../../graph/reset-episode.ts).
+//
+// AT OR BELOW, and only for a row that NAMES a message, exactly as `resetLandedAfter` reads it: a
+// row with no `atMessageId` is a resolve verdict, which orders against nothing here and is stood
+// down by the tick's own reopen fence instead — the command is an incoming message, so a
+// conversation that was resolved no longer is.
+//
+// One statement, not read-then-update: a burst joining the row between a read and a write would
+// raise its `atMessageId` past the boundary, and the cancel would retire the episode it just became.
+export async function cancelPendingJobsByPrefixUpToMessage(
+  tenantId: bigint,
+  kind: SchedulerJobKind,
+  prefix: string,
+  atOrBelowMessageId: number,
+  base: PrismaClient = basePrisma,
+): Promise<number> {
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const res = await db.schedulerJob.updateMany({
+      where: {
+        kind,
+        status: "PENDING",
+        dedupeKey: { startsWith: prefix },
+        payload: { path: ["atMessageId"], lte: atOrBelowMessageId },
+      },
       data: { status: "DONE" },
     });
     return res.count;

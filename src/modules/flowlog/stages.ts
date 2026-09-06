@@ -33,6 +33,11 @@ export const FLOW_STAGES = [
   "split", // humanized balloon delivery
   "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)
+  // A watching agent's verdict on a conversation it does not answer: what it is about, written as
+  // labels by the OBSERVE job (issue #477). One line per tick, whether or not anything changed,
+  // because "the observer ran and agreed with the label already there" is the answer an operator
+  // asks for when a label looks stale.
+  "observe",
   // NOT a turn step, and the only stage here that is not: an outbound webhook delivery the bus gave
   // up on. It happens on a worker tick long after whatever produced the event, so it hangs off no
   // conversation and no contact. It is in this vocabulary because the vocabulary is what an alert

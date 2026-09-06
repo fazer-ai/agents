@@ -37,6 +37,7 @@ import {
   startCompactionWorker,
   stopCompactionWorker,
 } from "@/modules/memory/worker";
+import { registerObserveHandler } from "@/modules/observe/job";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import { startScheduler, stopScheduler } from "@/modules/scheduler/worker";
 import { ensureAllSpendPolls } from "@/modules/spend-ceiling/arm";
@@ -178,6 +179,7 @@ if (config.schedulerWorker.enabled) {
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
+  registerObserveHandler();
   registerDeliverySweepHandler();
   registerDeliveryRecoveryHandler();
   registerTakeoverRecoveryHandler();

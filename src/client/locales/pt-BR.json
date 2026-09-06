@@ -649,6 +649,7 @@
     "loading": "Carregando conversas…",
     "loadMore": "Carregar mais",
     "noInbox": "Sem caixa de entrada",
+    "observedBy": "Observada por {{names}}",
     "search": "Buscar por contato ou nº da conversa…",
     "status": {
       "open": "Aberta",
@@ -1888,6 +1889,7 @@
       "handoff": "Transferência",
       "memory": "Memória",
       "normalize": "Reescrita para fala",
+      "observe": "Observação",
       "route": "Roteamento",
       "spend_ceiling": "Teto de tokens",
       "split": "Entrega",

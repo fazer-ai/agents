@@ -73,6 +73,12 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // notices. Budget: it spends no model at all, only two or three Chatwoot calls, and the shared
   // lane's provider concurrency is not the resource that bounds those.
   TAKEOVER_RECOVERY: "shared",
+  // Shared, and neither reason applies. Cadence: what it writes is a label on a conversation a person
+  // is answering, and a label that lands one shared tick after the burst it describes is not a
+  // delay anyone feels. Budget: it spends the model, and the shared lane's provider concurrency is
+  // the cap it wants — the same pool a customer's turn queues on, so a busy inbox's observers cannot
+  // starve the replies on it.
+  OBSERVE: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -121,6 +127,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // model. Folded into DELIVERY_RECOVERY it would take a permit from the semaphore a customer's turn
   // queues on, to make two HTTP calls.
   TAKEOVER_RECOVERY: false,
+  // One model call per tick, on the agent's own model.
+  OBSERVE: true,
 };
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER
@@ -163,6 +171,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // Same key, same shape, same answer: it names ONE ledger row, nothing reuses it, and the row that
   // records the work is the ledger row.
   TAKEOVER_RECOVERY: true,
+  // The key names ONE CONVERSATION (`observe:<thread>`), like DEBOUNCE's, and the row is re-armed by
+  // every burst on it; a DONE row is the record of the last verdict.
+  OBSERVE: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -220,6 +231,17 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // no age ceiling to discard it, because what it recovers does not go stale (recover-takeover.ts).
   // A conversation the agent is wrongly holding stays wrong however long the queue was.
   TAKEOVER_RECOVERY: true,
+  // TRUE, and DEBOUNCE being false is not the precedent it looks like (issue #477 review, round 8).
+  // The shape is the same — one row per conversation, re-armed by every burst — but DEBOUNCE has a
+  // LANE of its own, so however many of its rows a busy inbox arms, none of them is ever claimed in
+  // the same batch as an appointment reminder. OBSERVE is on `shared`, and there it is the only kind
+  // whose row count follows how much contacts write: every other one is per agent, per appointment,
+  // per closed attendance, per tenant, per retry. A resolve arms for `now` and a burst for `now`
+  // plus a window measured in seconds, so within a tick or two they are as old as anything else in
+  // the lane, and a claim ordered by `run_at` fills the batch with them. On an inbox under
+  // observation and under load that is exactly the starvation the separate traffic claim exists to
+  // prevent, and the kind it would starve is the one that has to arrive BEFORE something.
+  OBSERVE: true,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -298,6 +320,10 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // NEXT reply from that person takes over on its own. An `error` here would announce, at the level
   // of a customer's lost message, something that self-heals.
   TAKEOVER_RECOVERY: "warn",
+  // `warn`, by the rule above: what dies is a label that was not refreshed, on a conversation a person
+  // is already reading and can label by hand, and the next burst on it arms the same row again. No
+  // customer message was lost and nothing they wait on stopped.
+  OBSERVE: "warn",
 };
 
 export function kindsInLane(

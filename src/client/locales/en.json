@@ -633,6 +633,7 @@
     "loading": "Loading conversations…",
     "loadMore": "Load more",
     "noInbox": "No inbox",
+    "observedBy": "Observed by {{names}}",
     "search": "Search by contact or conversation #…",
     "status": {
       "open": "Open",
@@ -1846,6 +1847,7 @@
       "handoff": "Handoff",
       "memory": "Memory",
       "normalize": "Speech rewrite",
+      "observe": "Observation",
       "route": "Routing",
       "spend_ceiling": "Token ceiling",
       "split": "Delivery",

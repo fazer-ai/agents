@@ -73,6 +73,9 @@ export const USAGE_NODE_IS_AGENT_TURN: Readonly<Record<string, boolean>> =
     tts_normalize: true,
     memory_compact: true,
     vision: false,
+    // The OBSERVE job classifying a conversation the agent watches (issue #477): a model call on a
+    // conversation nobody of ours answers, so it is involvement in nothing the agent said.
+    observer: false,
   });
 
 // Consumed as an EXCLUSION, with `node: null` kept beside it: a row from before this column was

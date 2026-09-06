@@ -357,6 +357,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/guardrails/gate.ts": [2, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
+  "src/modules/observe/job.ts": [1, "flow-event"],
   "src/modules/scheduler/service.ts": [4, "guarded + cleared"],
   // The balloon send that no longer reports its failure by throwing (issue #429): the flow line is
   // the only place an operator can see that part of a reply went missing.

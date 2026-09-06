@@ -306,6 +306,49 @@ describe("the new blocks declare type and choice", () => {
       }).success,
     ).toBe(true);
   });
+
+  // SIZE IS A DESCRIPTION, NOT A REFUSAL (issue #477 review, round 1). `readMonitoringConfig` rounds
+  // and clamps every number here and truncates both lists, so copying those bounds into zod turned a
+  // clamp into a refusal: the same write succeeded in the console and failed through MCP. What the
+  // block still declares is type and choice — `analysis` is an enum, and a string where a number
+  // belongs is still refused.
+  test("a monitoring size the reader CLAMPS still parses", () => {
+    for (const monitoring of [
+      { window: { messages: 100 } },
+      { window: { messages: 4.5 } },
+      { debounce: { windowSeconds: 1, maxWindowSeconds: 10_000 } },
+      {
+        // Distinct values per group: sharing one is refused on its own terms (a label is one row
+        // in a flat set, issue #477 review, round 9), and this fixture is about SIZE.
+        labelGroups: Array.from({ length: 9 }, (_, i) => ({
+          name: `g${i}`,
+          values: [`a${i}`],
+        })),
+      },
+      {
+        labelGroups: [
+          {
+            name: "assunto",
+            values: Array.from({ length: 90 }, (_, i) => `v${i}`),
+          },
+        ],
+      },
+    ]) {
+      expect(patch.safeParse({ monitoring }).success).toBe(true);
+    }
+  });
+
+  test("monitoring still declares type and choice", () => {
+    expect(
+      patch.safeParse({ monitoring: { analysis: "sometimes" } }).success,
+    ).toBe(false);
+    expect(
+      patch.safeParse({ monitoring: { window: { messages: "vinte" } } })
+        .success,
+    ).toBe(false);
+    for (const analysis of ["incremental", "on_resolve"])
+      expect(patch.safeParse({ monitoring: { analysis } }).success).toBe(true);
+  });
 });
 
 // The two name-keyed blocks PUBLISH the catalog, and that is their whole difference from a

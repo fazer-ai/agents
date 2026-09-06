@@ -16,6 +16,7 @@ import { updateTenant } from "@/api/v1/tenants.admin.service";
 import { assertTenantUpdatable, getTenant } from "@/api/v1/tenants.service";
 import { parseDbId } from "@/lib/db-id";
 import { AppError } from "@/lib/errors";
+import { withEntityLock } from "@/lib/locks";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -33,11 +34,13 @@ import {
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import {
+  assertNoClassifierOverlap,
   assertPromptSize,
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
   assertSettingsTextSizes,
   assertSettingsToolPreconditions,
+  classifierTaxonomyLock,
   getAgent,
   listAgents,
   updateAgent,
@@ -718,6 +721,23 @@ export async function agentSettingsSet(
       afterProj[key] = afterPreview[key];
     }
     const diff = diffFields(beforeProj, afterProj);
+
+    // THE PREVIEW ANSWERS WHAT THE APPLY WOULD (issue #477 review, round 17). The taxonomy-collision
+    // rule is the first refusal on this path that needs the DATABASE — every other one is a
+    // statement about the bag — so it sat behind the dry-run return, and the same payload previewed
+    // as valid and then failed. Asked here, in the same shape and against the same merged bag.
+    if (ctx.tenantId !== null) {
+      const lockTenant = ctx.tenantId;
+      await runScopedOn(base, ctx, (db) =>
+        withEntityLock(db, classifierTaxonomyLock(lockTenant), () =>
+          assertNoClassifierOverlap(db, agentId, {
+            settings: nextBag,
+            enabled: current.enabled,
+            mode: current.mode,
+          }),
+        ),
+      );
+    }
 
     // dry-run is the default: apply ONLY when dry_run is explicitly false.
     if (args.dry_run !== false) {

@@ -21,6 +21,7 @@ import type {
   CustomAttributeDef,
 } from "@/modules/chatwoot/client";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
+import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   attributesForModel,
   type ChatwootVocab,
@@ -737,15 +738,25 @@ function assignLabelTool(ctx: ToolCtx) {
         ]);
         return `Label "${clean}" added to the contact.`;
       }
-      const current = await ctx.client.getConversationLabels(
+      // Inside the conversation's label queue, with the observer's verdict and the nudge's own
+      // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
+      // another writer added between the two (issue #477 review, round 3).
+      return withConversationLabels(
+        ctx.tenantId,
         ctx.conversationId,
+        async () => {
+          const current = await ctx.client.getConversationLabels(
+            ctx.conversationId,
+          );
+          if (current.includes(clean))
+            return `Label "${clean}" was already set.`;
+          await ctx.client.setConversationLabels(ctx.conversationId, [
+            ...current,
+            clean,
+          ]);
+          return `Label "${clean}" added to the conversation.`;
+        },
       );
-      if (current.includes(clean)) return `Label "${clean}" was already set.`;
-      await ctx.client.setConversationLabels(ctx.conversationId, [
-        ...current,
-        clean,
-      ]);
-      return `Label "${clean}" added to the conversation.`;
     },
     {
       name: "assign_label",

@@ -241,6 +241,7 @@ red test.
 | `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked **after** the file is known to be readable and immediately before the provider call |
 | `guardrail`, `tts_normalize` | covered by the unit above them |
 | `memory_compact` | **ungated, by decision** — see below |
+| `observer` | the `OBSERVE` job (`observe/job.ts`), asked after the agent and its label groups are known to still want the tick and immediately before its one model call; a refusal is a `skipped` line and a label left as it was |
 
 A refusal says that **spend** was what stood in the way, so it is asked only where spend was
 actually next: after everything that would have stopped the call anyway, and immediately before the

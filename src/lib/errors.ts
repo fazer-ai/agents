@@ -133,3 +133,12 @@ export class ServiceUnavailableError extends AppError {
     super(message, 503);
   }
 }
+
+// NOTE: the taxonomy collision two classifiers on one inbox are refused with
+// (`assertNoClassifierOverlap`). It carries no sentence and no key of its own — the throw site
+// writes both, with its values — and exists ONLY so a caller can recognise it: `bindInbox`'s
+// persistence transaction has already told Chatwoot to switch bots by the time this can be raised,
+// and it is the one failure there a retry cannot repair, since the preflight raises the same
+// refusal on the way back in. So that caller compensates instead of reporting, and keying off the
+// class is what keeps the translation key written exactly once, at the throw.
+export class ClassifierOverlapError extends AppError {}

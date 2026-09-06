@@ -436,3 +436,32 @@ test("the offer carries an accessible name of its own", async () => {
       : "");
   expect((label ?? "").trim().length).toBeGreaterThan(0);
 });
+
+// AND A PICK IS NOT ONE THING EITHER (round 2 of review).
+//
+// The suppression above belongs to the template, whose `onPick` refocuses the textarea at the caret
+// it wrote. The three single-path fields only write a value, so suppressing the return there
+// unmounts the focused option with nothing to catch the focus, and it falls to the document body —
+// the same defect the round-1 fix was for, moved to the other three sites. The picker cannot tell
+// them apart by watching: the caller's focus move happens a frame later, which is why the
+// suppression exists at all. So the caller declares it, and this is that declaration's fence.
+test("picking a single-path field returns focus to the control that opened it", async () => {
+  await openBookForm();
+  const idField = controlFor<HTMLInputElement>(
+    /onde está o id|where the id is/i,
+  );
+  const opener = openerFor(idField);
+  fireEvent.click(opener);
+  const leaf = await waitFor(() => {
+    const el = Array.from(document.querySelectorAll("li button")).find((x) =>
+      (x.textContent ?? "").trim().startsWith("data.appointment.id"),
+    );
+    if (!el) throw new Error("the id leaf was not offered");
+    return el as HTMLButtonElement;
+  });
+  fireEvent.click(leaf);
+
+  await waitFor(() => expect(idField.value).toBe("data.appointment.id"));
+  await waitFor(() => expect(document.activeElement === opener).toBe(true));
+  expect(document.activeElement === document.body).toBe(false);
+});

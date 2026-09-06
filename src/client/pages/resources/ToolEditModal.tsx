@@ -616,6 +616,7 @@ export function PathPicker({
   closeLabel,
   listsLabel,
   listLength,
+  restoresFocus = false,
 }: {
   leaves: SampleLeaf[];
   lists?: SampleList[];
@@ -631,12 +632,19 @@ export function PathPicker({
   closeLabel: string;
   listsLabel?: string;
   listLength?: (n: number) => string;
+  // Declares that this caller's `onPick` puts focus somewhere ITSELF, so Radix's return to the
+  // trigger has to be suppressed or it would land after and take the focus back. Only the template
+  // does that (it refocuses the textarea at the caret it wrote); the single-path fields just write
+  // a value, and for them the trigger IS the right place to come back to. The picker cannot observe
+  // the difference: the caller's focus move happens in a later frame, which is the whole reason the
+  // suppression exists (round 2 of review).
+  restoresFocus?: boolean;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  // Set by a pick, read once by `onCloseAutoFocus`. A pick restores focus itself, at the caret;
-  // every other way out of the offer keeps Radix's return to the trigger (round 1 of review).
+  // Set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`. Every
+  // other way out of the offer keeps Radix's return to the trigger (round 1 of review).
   const pickedRef = useRef(false);
   // The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
   // Every caller closes by setting the controlled `open` prop from its own `onPick`, which Radix
@@ -706,9 +714,11 @@ export function PathPicker({
           // Radix's default close behaviour focuses the TRIGGER, which lands after that frame and
           // takes the caret away from the box the operator is writing in.
           //
-          // Only for a pick: on Escape or an outside click nothing refocuses anything, so preventing
-          // it there unmounts the content under the focused element and drops focus to the document
-          // body, restarting the keyboard operator's next Tab from the top of the page.
+          // Only for a pick BY A CALLER THAT RESTORES FOCUS: everywhere else nothing refocuses
+          // anything, so preventing it unmounts the content under the focused element and drops
+          // focus to the document body, restarting the keyboard operator's next Tab from the top of
+          // the page. That covers Escape and an outside click, and also a pick on the three
+          // single-path fields, whose `onPick` only writes a value (round 2 of review).
           onCloseAutoFocus={(e) => {
             if (!pickedRef.current) return;
             pickedRef.current = false;
@@ -746,7 +756,7 @@ export function PathPicker({
                 <button
                   type="button"
                   onClick={() => {
-                    pickedRef.current = true;
+                    pickedRef.current = restoresFocus;
                     onPick(leaf.path);
                   }}
                   className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
@@ -770,7 +780,7 @@ export function PathPicker({
                 <button
                   type="button"
                   onClick={() => {
-                    pickedRef.current = true;
+                    pickedRef.current = restoresFocus;
                     onPickList?.(list.path);
                   }}
                   className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
@@ -2060,6 +2070,7 @@ export function ToolEditModal({
                     : undefined
                 }
                 open={templatePickerOpen}
+                restoresFocus
                 onToggle={() => {
                   if (!templatePickerOpen) {
                     setTemplateCaret(

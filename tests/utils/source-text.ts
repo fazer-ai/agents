@@ -470,6 +470,40 @@ export function codeOnly(source: string): string {
   return scan(source, { strings: true }).text;
 }
 
+// WHERE THE COMMENTS WERE — the same scan read from the other side, so nothing here has to know what
+// a comment looks like a second time. `withoutComments` blanks every comment to spaces and keeps the
+// offsets, so a run of blanks the source did not spell IS a comment, and a `//` inside a string stays
+// unblanked and is therefore not one.
+//
+// It MERGES comments separated by nothing but whitespace, so `// a` above `// b` comes back as one
+// span, which is what a reader means by "the comment". That merging is why a caller asking about a
+// per-LINE shape (a `biome-ignore`, which biome only honours at the start of its own comment) has to
+// look at the line rather than at the span. Two JSX comments never merge: the `}` and `{` between
+// them are code.
+export function commentSpans(source: string): Array<[number, number]> {
+  const blanked = withoutComments(source);
+  const spans: Array<[number, number]> = [];
+  let start = -1;
+  for (let i = 0; i <= source.length; i++) {
+    const removed =
+      i < source.length && blanked[i] === " " && source[i] !== " ";
+    if (start < 0) {
+      if (removed) start = i;
+      continue;
+    }
+    // Inside a span, a blank in the BLANKED text continues it. The comment's own spaces and newlines
+    // survive the blanking untouched, so requiring a difference at every position would cut a
+    // comment into one span per word.
+    if (i < source.length && (blanked[i] === " " || blanked[i] === "\n"))
+      continue;
+    let end = i;
+    while (end > start && /\s/.test(source[end - 1] as string)) end--;
+    spans.push([start, end]);
+    start = removed ? i : -1;
+  }
+  return spans;
+}
+
 // What the scan still had open when the file ended, or `null`. This is the self-check a misread `/` or
 // `<` trips: it opens a literal that never closes and swallows every site after it. Cheap enough to
 // assert over the whole tree, and the only check available that does not need a second parser to

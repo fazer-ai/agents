@@ -25,7 +25,7 @@ export function Layout({ children }: LayoutProps) {
       <AnnouncementBanner />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        {/* NOTE: `relative` is load-bearing, and it is about `sr-only` rather than about anything
+        {/* `relative` is load-bearing, and it is about `sr-only` rather than about anything
             this element positions. `sr-only` is `position: absolute`, so a screen-reader label
             anywhere in the page tree resolves against the nearest POSITIONED ancestor — and with
             this one static, that was the initial containing block, i.e. the document. A label far

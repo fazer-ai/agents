@@ -41,6 +41,8 @@ const ROOT = join(import.meta.dir, "..");
 //     (`function jobFor(p, id = 1n)`), which is how chatwoot-recover-delivery.test.ts spelled it and
 //     how a property-only sweep missed that file for a whole round;
 //   - a quoted key (`"id": 1n`), which a JSON-shaped literal carries;
+//   - a TYPED default parameter (`function job(id: bigint = 1n)`), where the annotation sits between
+//     the name and the operator, and a parenthesised value (`id: (1n)`);
 //   - every numeric base plus separators (`0x1n`, `0o7n`, `0b11n`, `1_000n`), all of which a
 //     decimal-only pattern reads as absent;
 //   - every argument `BigInt` itself accepts and turns into a reachable id: `BigInt(1)`,
@@ -59,7 +61,7 @@ const ROOT = join(import.meta.dir, "..");
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
 const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
-  String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})n?["'\`]?\s*\))`,
+  String.raw`(?:\bid|["']id["'])(?:\s*:\s*[A-Za-z_$][\w$]*)?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})n?["'\`]?\s*\))`,
   "g",
 );
 
@@ -82,6 +84,11 @@ const NEARBY = 14;
 // variable produces, `"claimSeq": 0` in a JSON-shaped literal and `row.claimSeq` in the line
 // that fills it are all the same signal, and a marker spelled with a colon sees only the first.
 const MARKERS = /\bclaimSeq\b/;
+// Asked of the code, so `note: "claimSeq"` and the SQL alias `claim_seq AS "claimSeq"` (which
+// src/modules/scheduler/service.ts writes for real) are data rather than a job. That strip also
+// blanks a quoted KEY, which is a spelling of the field and not data, so the key is asked for
+// separately, against the unblanked window and by its shape: quoted, then a colon.
+const QUOTED_MARKER = /["']claimSeq["']\s*:/;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -109,16 +116,19 @@ export function fixtureIdHits(source: string): number[] {
   // inside a string body is text that spells a fixture (`payload: "id: 1n"`), not one.
   const code = codeOnly(source);
   const lines = src.split("\n");
+  const codeLines = code.split("\n");
   const hits: number[] = [];
   for (const m of src.matchAll(LITERAL_ID)) {
     const value = m[1] ?? m[2];
     if (!value || !reachableBySequence(value)) continue;
     if (m.index === undefined || code[m.index] !== src[m.index]) continue;
     const line = src.slice(0, m.index).split("\n").length;
-    const window = lines
-      .slice(Math.max(0, line - 1 - NEARBY), line + NEARBY)
-      .join("\n");
-    if (!MARKERS.test(window)) continue;
+    const from = Math.max(0, line - 1 - NEARBY);
+    const to = line + NEARBY;
+    const marked =
+      MARKERS.test(codeLines.slice(from, to).join("\n")) ||
+      QUOTED_MARKER.test(lines.slice(from, to).join("\n"));
+    if (!marked) continue;
     hits.push(line);
   }
   return hits;
@@ -222,6 +232,14 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       "function jobFor(p: object, id = 1n) {\n  claimSeq: 0;",
       true,
     ],
+    // The annotation sits between the name and the operator, which is where a pattern reading
+    // "name, then operator, then number" stops.
+    [
+      "a typed default parameter",
+      "function job(id: bigint = 1n) {\n  claimSeq: 0;",
+      true,
+    ],
+    ["a parenthesised value", fixture("(7n)"), true],
     ["a marker ten lines off", fixture("7n", 10), true],
     // The shape is the fixture, whether or not the file ever names the type. This is
     // terminal-failure-announces.test.ts, which hands a handler a job literal and imports nothing.
@@ -271,6 +289,17 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
   // The whole word, not a prefix of it: `claimDueJobs`, `claimed` and `claimOf` sit beside every real
   // row in the scheduler tests, and a marker matching "claim" would call each of those rows a
   // fixture.
+  // The marker has the same two sides as the id. `claimSeq` inside string DATA is not a field, and
+  // the case is not hypothetical: src/modules/scheduler/service.ts aliases a column as "claimSeq" in
+  // a raw query, and a test doing the same beside any id literal would fail the whole tree.
+  test("the marker inside string data is not the field", () => {
+    const src = [
+      '  const rows = await suDb.$queryRaw`SELECT claim_seq AS "claimSeq"`;',
+      "  const msg = { id: 7n, note: 'oi' };",
+    ].join("\n");
+    expect(fixtureIdHits(src)).toEqual([]);
+  });
+
   // Neither is a string that spells one. A payload or an expected message can carry the shape as
   // DATA, and a sweep that reads it as code fails the tree over somebody's fixture text, which is
   // the same red-for-nothing that a comment produces.

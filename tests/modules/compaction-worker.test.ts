@@ -12,6 +12,9 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 const base = {} as PrismaClient;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// The reaped rows below carry `id: 0n`, a number no sequence hands out. Nothing here reaches a
+// database, so any id would run; the point is that a fixture copied out of this file into one
+// that DOES insert jobs cannot then name a real row. tests/utils/scheduler.ts covers that case.
 function job(id: number): ClaimedJob {
   return {
     id: BigInt(id),
@@ -60,7 +63,7 @@ describe("runCompactionTick", () => {
       run: async () => {},
       reap: async () => [
         {
-          id: 9n,
+          id: 0n,
           tenantId: 1n,
           kind: "MEMORY_COMPACT" as const,
           payload: {},
@@ -141,7 +144,7 @@ describe("runCompactionTick", () => {
           seen.push(kind);
           return [
             {
-              id: 9n,
+              id: 0n,
               tenantId: 1n,
               kind: "MEMORY_COMPACT",
               payload: {},

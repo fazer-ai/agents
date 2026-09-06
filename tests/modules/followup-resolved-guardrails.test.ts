@@ -23,6 +23,7 @@ import {
 } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // NOTE: Guardrails da cadeia "follow-up em conversa resolvida" (post da comunidade "Followup indo como
 // conversa privada", 2026-08-06). O incidente: espelho local preso em `pending` (resolve perdido /
@@ -71,8 +72,9 @@ let inboxAId = 0n;
 let agentBId = 0n;
 let inboxBId = 0n;
 
-// O `id` de um ClaimedJob fabricado é QUEIMADO da sequência real, nunca escrito como literal — veja
-// `jobFor` para o que um literal custou.
+// O `id` de um ClaimedJob fabricado é QUEIMADO da sequência real, nunca escrito como literal. Veja
+// `jobFor` para o que um literal custou, e tests/utils/scheduler.ts para a queima em si, hoje
+// compartilhada com os outros sete arquivos que fabricavam job (#500).
 let phantomJobId = 0n;
 
 const INBOX_A = 71;
@@ -221,11 +223,7 @@ async function seedConversation(
 
 describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
   beforeAll(async () => {
-    const [burned] = await suDb.$queryRaw<{ nextval: bigint }[]>`
-      SELECT nextval('scheduler_jobs_id_seq')`;
-    if (!burned)
-      throw new Error("nextval('scheduler_jobs_id_seq') devolveu nada");
-    phantomJobId = BigInt(burned.nextval);
+    phantomJobId = await burnSchedulerJobId(suDb);
     const t = await suDb.tenant.create({
       data: { name: "FU-GUARD", slug: `fu-guard-${process.pid}` },
     });

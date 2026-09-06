@@ -12,6 +12,7 @@ import { getConversationDetail } from "@/modules/conversations/service";
 import { followUpHandler } from "@/modules/followups/handlers";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // Issue #129, wiring end. A BusinessHours profile only modelled the week, so a holiday had no
 // representation and every consumer read September 7 as an ordinary Monday. The RULE (which ranges
@@ -46,6 +47,9 @@ if (appUrl && suUrl) {
 }
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
+
+// Burned from `scheduler_jobs_id_seq`, never a literal: tests/utils/scheduler.ts says why.
+let phantomJobId = 0n;
 
 const TZ = "America/Sao_Paulo";
 // TEST-NET-3 on a closed port: passes the SSRF check without a DNS lookup, and nothing can reach it
@@ -168,6 +172,7 @@ async function seedConversation(
 
 describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
   beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
     installChatwootDouble();
     const t = await suDb.tenant.create({
       data: { name: "BHEXC", slug: `bhexc-${process.pid}` },
@@ -339,7 +344,7 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
     await seedConversation(convId);
     const s = stubClient();
     const job: ClaimedJob = {
-      id: 1n,
+      id: phantomJobId,
       tenantId,
       kind: "FOLLOWUP",
       payload: { threadId: threadOf(convId) },
@@ -472,7 +477,7 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
     const s = stubClient();
     const result = await followUpHandler(
       {
-        id: 2n,
+        id: phantomJobId,
         tenantId,
         kind: "FOLLOWUP",
         payload: { threadId: threadOf(convId) },

@@ -6,6 +6,7 @@ import { registerFlowlogRetentionHandler } from "@/modules/flowlog/retention";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler, type JobResult } from "@/modules/scheduler/worker";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // FLOWLOG_SWEEP retention handler: deletes execution_logs (+ terminal alert_deliveries) older than
 // the retention window, RLS-scoped to the job's tenant, and reschedules +24h (no attempt consumed).
@@ -33,10 +34,14 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
+// Burned from `scheduler_jobs_id_seq`, never a literal: tests/utils/scheduler.ts says why.
+let phantomJobId = 0n;
+
 let tenantId = 0n;
 
 describe.skipIf(!dbUp)("flowlog retention", () => {
   beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
     tenantId = (
       await suDb.tenant.create({
         data: { name: "FlowR", slug: `flow-r-${process.pid}` },
@@ -71,7 +76,7 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     const handler = getJobHandler("FLOWLOG_SWEEP");
     expect(handler).toBeDefined();
     const job: ClaimedJob = {
-      id: 1n,
+      id: phantomJobId,
       tenantId,
       kind: "FLOWLOG_SWEEP",
       payload: {},

@@ -57,6 +57,29 @@ function isJsxComment(src: string, start: number, end: number): boolean {
   );
 }
 
+// THE TWO WAYS OF COUNTING THE SAME SHAPE, kept side by side on purpose.
+//
+// `commentSpans` reads through the shared scan, which by a measured decision does not understand JSX
+// TEXT (see the header of `tests/utils/source-text.ts`): a quote in visible text opens a string
+// literal and a non-HTTP `scheme://` opens a line comment, and either swallows a `{/* … */}` whole.
+// A swallowed comment is neither an offender nor a `seen`, so the gate would pass and the count floor
+// with it. Review named `<p>He said "hi {/* NOTE: hidden */} bye"</p>`, and it does swallow.
+//
+// The raw pattern has the opposite weakness: a string literal that spells the shape counts as a
+// comment. So it is a CROSS-CHECK and never the gate — a divergence means one of the two is wrong
+// about that file, and both answers need a person to look. Zero divergence across `src/**/*.tsx`.
+function jsxComments(src: string): {
+  spans: Array<[number, number]>;
+  raw: number;
+} {
+  return {
+    spans: commentSpans(src).filter(([start, end]) =>
+      isJsxComment(src, start, end),
+    ),
+    raw: (src.match(/\{\/\*[\s\S]*?\*\/\}/g) ?? []).length,
+  };
+}
+
 // The formatter as the suite runs it, over stdin so nothing is written to the tree.
 async function format(source: string): Promise<string> {
   const proc = Bun.spawn(
@@ -72,32 +95,69 @@ async function format(source: string): Promise<string> {
   return out;
 }
 
+// The sweep itself, over (path, source) pairs rather than over the glob, so the tree it audits can be
+// a fixture. Without that the wiring is unprovable: a `blind` list nothing populates and an assertion
+// nothing exercises both read as a healthy tree, which is the exact shape review said could pass
+// silently.
+function auditTree(files: Array<[string, string]>): {
+  offenders: string[];
+  blind: string[];
+  seen: number;
+} {
+  const offenders: string[] = [];
+  const blind: string[] = [];
+  let seen = 0;
+  for (const [path, src] of files) {
+    const { spans, raw } = jsxComments(src);
+    seen += spans.length;
+    for (const [start, end] of spans) {
+      const text = src.slice(start, end);
+      if (!ASIDE_TAG.test(text)) continue;
+      const line = src.slice(0, start).split("\n").length;
+      offenders.push(
+        `${path}:${line}  ${text.slice(0, 60).replace(/\s+/g, " ")}`,
+      );
+    }
+    if (raw !== spans.length) {
+      blind.push(`${path}: scan ${spans.length}, raw ${raw}`);
+    }
+  }
+  return { offenders, blind, seen };
+}
+
 describe("a comment in markup documents the element below it, and carries no NOTE:", () => {
-  test("no JSX comment in src/client is tagged", async () => {
+  test("no JSX comment under src/ is tagged, and none is hidden from the scan", async () => {
     const { Glob } = await import("bun");
-    const offenders: string[] = [];
-    let seen = 0;
     // EVERY `.tsx` IN `src`, not just the client. `src/modules/documents/render.tsx` renders JSX for
     // the document pipeline and a glob rooted at the console would never look at it (review, round 2).
+    const files: Array<[string, string]> = [];
     for await (const rel of new Glob("**/*.tsx").scan("src")) {
-      const path = `src/${rel}`;
-      const src = await Bun.file(path).text();
-      for (const [start, end] of commentSpans(src)) {
-        if (!isJsxComment(src, start, end)) continue;
-        seen++;
-        const text = src.slice(start, end);
-        if (!ASIDE_TAG.test(text)) continue;
-        const line = src.slice(0, start).split("\n").length;
-        offenders.push(
-          `${path}:${line}  ${text.slice(0, 60).replace(/\s+/g, " ")}`,
-        );
-      }
+      files.push([`src/${rel}`, await Bun.file(`src/${rel}`).text()]);
     }
+    const { offenders, blind, seen } = auditTree(files);
+    expect(blind).toEqual([]);
     expect(offenders).toEqual([]);
-    // …AND THE SWEEP IS LOOKING AT SOMETHING. A detector that stops recognising `{/* … */}` reports
-    // a clean tree, which is the same output as a clean tree. 140 today; the floor is what a
-    // refactor of the client would have to fall below before this file quietly stopped checking.
+    // …AND THE SWEEP IS LOOKING AT SOMETHING. A detector that stops recognising `{/* … */}` reports a
+    // clean tree, which is the same output as a clean tree. 140 today; the floor is what a refactor of
+    // the console would have to fall below before this file quietly stopped checking.
     expect(seen).toBeGreaterThanOrEqual(100);
+  });
+
+  test("the sweep reports a file the scan cannot see into, instead of skipping it", () => {
+    // The wiring, driven over a fixture tree: one healthy file and one whose visible text carries a
+    // quote. Removing the cross-check from the loop is invisible against the real tree, where nothing
+    // diverges, and fails here.
+    const { offenders, blind, seen } = auditTree([
+      ["ok.tsx", "const a = <p>label {/* fine */}</p>;\n"],
+      [
+        "hidden.tsx",
+        'const b = <p>He said "hi {/* NOTE: hidden */} bye"</p>;\n',
+      ],
+    ]);
+    expect(blind).toEqual(["hidden.tsx: scan 0, raw 1"]);
+    // …and the tag really is invisible to the gate, which is why the count above has to speak.
+    expect(offenders).toEqual([]);
+    expect(seen).toBe(1);
   });
 });
 
@@ -143,6 +203,25 @@ describe("the detector is not fooled by prose that spells the shape", () => {
     for (const [start, end] of spans) {
       expect(isJsxComment(out, start, end)).toBe(true);
     }
+  });
+
+  test("a quote in JSX text hides a comment, and the raw count is what says so", () => {
+    // The premise under the cross-check in the sweep, driven rather than asserted. Both shapes are
+    // ones the shared scan is documented not to handle, and in both the raw pattern still sees the
+    // comment the scan lost.
+    for (const src of [
+      'const x = <p>He said "hi {/* NOTE: hidden */} bye"</p>;\n',
+      "const x = <p>ws://host {/* NOTE: hidden */}</p>;\n",
+    ]) {
+      const { spans, raw } = jsxComments(src);
+      expect(spans.length).toBe(0);
+      expect(raw).toBe(1);
+    }
+    // …and a healthy file agrees with itself, which is what the sweep requires of every file.
+    const healthy = "const x = <p>label {/* NOTE: seen */}</p>;\n";
+    const both = jsxComments(healthy);
+    expect(both.spans.length).toBe(1);
+    expect(both.raw).toBe(1);
   });
 
   test("an empty catch body between braces is not markup", () => {

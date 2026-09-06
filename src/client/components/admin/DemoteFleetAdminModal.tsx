@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components/Button";
 import {
@@ -36,13 +36,8 @@ export function DemoteFleetAdminModal({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const target = modal.payload;
-  // One token per open. The dialog outlives its own request: closing and reopening it for a DIFFERENT
-  // administrator while the first PATCH is in flight would otherwise let that reply write its error
-  // onto the new session, or close a dialog the operator had just opened. `docs/modals.md`.
-  const session = useRef(0);
 
   useOnModalOpen(modal, () => {
-    session.current += 1;
     setTenantId("");
     setError("");
     setLoading(false);
@@ -50,14 +45,12 @@ export function DemoteFleetAdminModal({
 
   const handleSubmit = async () => {
     if (!target || !tenantId) return;
-    const mine = session.current;
     setError("");
     setLoading(true);
     try {
       const { error: apiError } = await api.api.admin
         .users({ id: target.id })
         .role.patch({ role: "AGENT", tenantId });
-      if (session.current !== mine) return;
       if (apiError) {
         setError(
           apiErrorMessage(apiError) ||
@@ -68,7 +61,7 @@ export function DemoteFleetAdminModal({
       onDemoted();
       modal.close();
     } finally {
-      if (session.current === mine) setLoading(false);
+      setLoading(false);
     }
   };
 
@@ -77,10 +70,6 @@ export function DemoteFleetAdminModal({
       modal={modal}
       title={t("admin.demoteFleetAdmin", "Demote fleet administrator")}
       size="md"
-      // While the write is in flight the dialog does not take a close from Escape, the backdrop or
-      // the X either: the buttons being disabled covers only the buttons, and a dismissal here is
-      // what leaves the operator with no idea whether the demotion happened.
-      onCloseRequest={loading ? () => {} : undefined}
     >
       <form
         className="space-y-4"

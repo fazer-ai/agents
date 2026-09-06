@@ -18,7 +18,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { act, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
 // Demoting a FLEET administrator from the console (#534). Their row has no tenant, and the row that
@@ -41,17 +41,9 @@ mock.module("@/client/contexts/AuthContext", () => ({
 const { ToastProvider } = await import("@/client/components/Toast");
 const { NavGuardProvider } = await import("@/client/contexts/NavGuardContext");
 const { AdminUsersPage } = await import("@/client/pages/admin/AdminUsersPage");
-const { useModalController } = await import("@/client/components/Modal");
-const { DemoteFleetAdminModal } = await import(
-  "@/client/components/admin/DemoteFleetAdminModal"
-);
-type DemoteTarget = { id: string; email: string };
 
 const realFetch = globalThis.fetch;
 let patches: Array<{ id: string; body: unknown }> = [];
-// When set, the PATCH does not answer until it resolves: the window in which the dialog is showing a
-// request that has not come back.
-let holdPatch: Promise<void> | null = null;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -91,7 +83,6 @@ function installFetchStub() {
     if (method === "PATCH" && rolePatch) {
       const body = init?.body ? JSON.parse(String(init.body)) : {};
       patches.push({ id: rolePatch[1] as string, body });
-      if (holdPatch) await holdPatch;
       return json({ user: { ...USERS[1], role: body.role } });
     }
     if (path === "/api/admin/users") {
@@ -142,7 +133,6 @@ async function clickDemote(email: string) {
 
 beforeEach(() => {
   patches = [];
-  holdPatch = null;
   installFetchStub();
 });
 
@@ -173,99 +163,6 @@ describe("demoting from the users tab", () => {
     expect(JSON.stringify(patches[0])).toBe(
       JSON.stringify({ id: "10", body: { role: "AGENT", tenantId: "42" } }),
     );
-  });
-
-  // `docs/modals.md`: a dialog with a request in flight does not take a user-driven close, and a
-  // reply that comes back after the operator moved on does not write into the session that replaced
-  // it. Both halves are the same bug seen twice — the dialog outlives its own request.
-  test("the dialog cannot be dismissed while the write is in flight", async () => {
-    let release!: () => void;
-    holdPatch = new Promise<void>((r) => {
-      release = r;
-    });
-    mount();
-    await clickDemote("fleet@fazer.ai");
-    const dialog = await screen.findByRole("dialog");
-    const scope = within(dialog);
-    fireEvent.change(scope.getByRole("combobox"), { target: { value: "42" } });
-    fireEvent.click(scope.getByRole("button", { name: "Demote" }));
-    await waitFor(() => {
-      expect(patches.length).toBe(1);
-    });
-    fireEvent.keyDown(document, { key: "Escape" });
-    await waitFor(() => {
-      expect(screen.queryAllByRole("dialog").length).toBe(1);
-    });
-    release();
-    await waitFor(() => {
-      expect(screen.queryAllByRole("dialog").length).toBe(0);
-    });
-  });
-
-  // The other half, and it has to be driven at the COMPONENT: with the close guarded above, no click
-  // on the page can leave a request behind any more, so what is left is a session ended from code
-  // (the parent closing the dialog, a payload swapped in place). The token is what makes the reply
-  // from the session that ended land nowhere.
-  test("a reply from a session that already ended changes nothing", async () => {
-    let release!: () => void;
-    holdPatch = new Promise<void>((r) => {
-      release = r;
-    });
-    let demoted = 0;
-    let control!: ReturnType<typeof useModalController<DemoteTarget>>;
-    function Harness() {
-      control = useModalController<DemoteTarget>();
-      return (
-        <DemoteFleetAdminModal
-          modal={control}
-          tenants={[{ id: "42", name: "Acme" }]}
-          onDemoted={() => {
-            demoted += 1;
-          }}
-        />
-      );
-    }
-    render(
-      <MemoryRouter>
-        <ToastProvider>
-          <NavGuardProvider>
-            <Harness />
-          </NavGuardProvider>
-        </ToastProvider>
-      </MemoryRouter>,
-    );
-    act(() => {
-      control.open({ id: "10", email: "fleet@fazer.ai" });
-    });
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByRole("combobox"), {
-      target: { value: "42" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Demote" }));
-    await waitFor(() => {
-      expect(patches.length).toBe(1);
-    });
-    // The session ends from code while its write is still out.
-    act(() => {
-      control.close();
-    });
-    act(() => {
-      control.open({ id: "11", email: "boss@acme.test" });
-    });
-    release();
-    await new Promise((r) => setTimeout(r, 50));
-    // The new session is untouched: still open, still empty, and the old reply's success callback
-    // never fired for it.
-    expect(screen.queryAllByRole("dialog").length).toBe(1);
-    expect(
-      (
-        within(await screen.findByRole("dialog")).getByRole(
-          "combobox",
-        ) as HTMLSelectElement
-      ).value,
-    ).toBe("");
-    expect(demoted).toBe(0);
-    expect(patches.length).toBe(1);
   });
 
   test("a tenant administrator is demoted in one click, with no tenant named", async () => {

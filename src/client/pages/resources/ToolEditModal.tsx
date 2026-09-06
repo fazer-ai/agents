@@ -2557,7 +2557,15 @@ export function ToolEditModal({
       <ToolTestModal
         modal={testModal}
         onResponse={(raw, status) => {
-          setSample(raw);
+          // FORMATTED ON ARRIVAL. This body is not something the operator wrote: it is what we just
+          // fetched, and an API answers minified. Landing on one unreadable line and asking them to
+          // press Format is a step that has one right answer, so it is not a step. What comes back
+          // unreadable — an HTML error page, XML, plain text — is kept exactly as the server sent
+          // it, because then there is nothing to format and the raw body IS the diagnosis.
+          //
+          // Safe to do here for the same reason Format is safe at all: `reindentJson` copies every
+          // literal out verbatim, so an id no JavaScript number can hold survives the trip.
+          setSample(reindentJson(raw) ?? raw);
           setSampleStatus(status);
         }}
       />

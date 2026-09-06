@@ -37,12 +37,24 @@ export interface JsonSpot {
   column: number;
 }
 
+// What CodeMirror draws as a line break, which is what the reader of these coordinates is looking
+// at: it splits a document on `\r\n?|\n` (round 3 of review). A bare CR cannot arrive by typing or
+// pasting, because the editor normalizes what it is handed — it arrives through the door this field
+// advertises, since "Send a test request" writes the RAW response body here and an HTTP body is
+// whatever the server sent.
+const BREAK = /\r\n?|\n/;
+
 function spotAt(text: string, offset: number): JsonSpot {
   const before = text.slice(0, offset);
-  const lastBreak = before.lastIndexOf("\n");
+  // NOTE: whichever comes last, which for a CRLF pair is the `\n` and leaves the column starting
+  // after both.
+  const lastBreak = Math.max(
+    before.lastIndexOf("\n"),
+    before.lastIndexOf("\r"),
+  );
   return {
     offset,
-    line: before.split("\n").length,
+    line: before.split(BREAK).length,
     column: [...before.slice(lastBreak + 1)].length + 1,
   };
 }

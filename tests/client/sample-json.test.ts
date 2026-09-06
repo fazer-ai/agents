@@ -75,6 +75,28 @@ describe("firstJsonProblem", () => {
     });
   });
 
+  // AND A LINE BREAK IS WHATEVER THE EDITOR DRAWS AS ONE (round 3 of review).
+  //
+  // CodeMirror breaks a document on `\r\n?|\n`, so a bare CR is a line on screen. It cannot arrive
+  // by typing or pasting — the editor normalizes what it is given — but it arrives through the door
+  // this field advertises: "Send a test request" writes the RAW response body here, and an HTTP body
+  // is whatever the server sent.
+  test("counts a bare carriage return as the line break the editor draws", () => {
+    expect(firstJsonProblem("{\r  a}")).toEqual({
+      offset: 4,
+      line: 2,
+      column: 3,
+    });
+  });
+
+  test("counts a CRLF pair as one break", () => {
+    expect(firstJsonProblem("{\r\n  a}")).toEqual({
+      offset: 5,
+      line: 2,
+      column: 3,
+    });
+  });
+
   // A response is not a fragment: two objects pasted back to back are a mistake worth naming, and
   // `JSON.parse` names it too. What must not happen is the tree reporting only the first value and
   // calling the rest fine.

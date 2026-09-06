@@ -230,3 +230,81 @@ test("format is spent once the sample is already formatted", async () => {
   fireEvent.click(formatButton());
   await waitFor(() => expect(formatButton().disabled).toBe(true));
 });
+
+// AND THE OTHER DOOR INTO THIS FIELD LANDS READABLE TOO.
+//
+// "Send a test request" writes the RAW response body here, and an API answers minified. Landing on
+// one unreadable line and asking the operator to press Format is a step with exactly one right
+// answer, so it is not a step. Safe for the same reason Format is safe at all: the formatter copies
+// every literal out verbatim, which this drives with an id no JavaScript number can hold.
+test("a response from the test request arrives formatted", async () => {
+  const raw =
+    '{"data":{"id":12345678901234567890,"tags":["a","b"]},"status":"ok"}';
+  globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof i === "string" ? i : i.toString();
+    if (url.includes("/tools/test"))
+      return new Response(
+        JSON.stringify({
+          result: {
+            raw,
+            status: 200,
+            rawClipped: false,
+            notes: [],
+            ok: true,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    if ((init?.method ?? "GET").toUpperCase() === "POST")
+      return new Response(JSON.stringify({ tool: { id: "1", name: "x" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    return new Response(JSON.stringify({ items: [], entries: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  render(
+    <MemoryRouter>
+      <ToastProvider>
+        <Harness />
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+  await waitFor(() => sampleView());
+
+  const url = document.querySelector<HTMLInputElement>(
+    'input[placeholder^="https://api.example.com"]',
+  );
+  if (!url) throw new Error("no URL template field");
+  fireEvent.change(url, { target: { value: "https://api.example.com/x" } });
+
+  const open = Array.from(document.querySelectorAll("button")).find((b) =>
+    /requisição de teste|test request/i.test(b.textContent ?? ""),
+  ) as HTMLButtonElement;
+  await waitFor(() => expect(open.disabled).toBe(false));
+  fireEvent.click(open);
+
+  const send = await waitFor(() => {
+    const b = Array.from(document.querySelectorAll("button")).find((el) =>
+      /^(enviar requisição|send request)$/i.test((el.textContent ?? "").trim()),
+    );
+    if (!b) throw new Error("the test dialog never opened");
+    return b as HTMLButtonElement;
+  });
+  fireEvent.click(send);
+
+  await waitFor(() =>
+    expect(sampleView().state.doc.toString()).toBe(`{
+  "data": {
+    "id": 12345678901234567890,
+    "tags": [
+      "a",
+      "b"
+    ]
+  },
+  "status": "ok"
+}`),
+  );
+});

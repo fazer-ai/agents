@@ -103,7 +103,8 @@ const MARKERS = /\bclaimSeq\b/g;
 // there.
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // An annotation over a literal WRITTEN AT THAT POINT, and the literal is the load-bearing half:
-// `= {`, `= [`, `=> ({`, or a `satisfies`/`as` that follows a literal's own closing bracket, which
+// `= {`, `= [`, `=> ({`, `<ClaimedJob>{`, or a `satisfies`/`as` that follows a literal's own
+// closing bracket, which
 // is what tells `({…}) as unknown as ClaimedJob` (spend-ceiling-poll.test.ts, a fixture) from
 // `claimed.find(…) as ClaimedJob` (scheduler-claim-token.test.ts, a row that was found). Whatever
 // type-level words sit in between are a repeat of one pair, `as unknown as` and `as const satisfies`
@@ -119,7 +120,7 @@ const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // a case that is already narrow: a fixture is only invisible to `claimSeq` when the field arrives by
 // spread from another module, and then also has to spell a reachable id.
 const TYPE_MARKER =
-  /:\s*ClaimedJob(?:\[\])?\s*(?:=>\s*\(\s*|=\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
+  /(?::\s*ClaimedJob(?:\[\])?\s*(?:=>\s*\(\s*|=\s*)|(?<![\w$])<\s*ClaimedJob\s*>\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -284,6 +285,14 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     [
       "a spread fixture named by its type",
       "  const job: ClaimedJob = { id: 1n, ...baseJob };",
+      true,
+    ],
+    // The angle-bracket assertion is the same annotation written in front of the literal. Nothing in
+    // this tree spells one, and it costs one alternative to read, plus the lookbehind that keeps it
+    // from reading the `<ClaimedJob>` inside `Promise<ClaimedJob> {`, where the brace is a body.
+    [
+      "an angle-bracket assertion",
+      "  const job = <ClaimedJob>{ id: 1n, ...baseJob };",
       true,
     ],
     [

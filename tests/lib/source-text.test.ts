@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { bigIntArgs } from "@/tests/lib/caller-id-spelling.test";
 import {
   codeOnly,
+  commentSpans,
   countInSrc,
   unterminatedLiteral,
   withoutComments,
@@ -501,6 +502,43 @@ describe("the scan is positionally transparent", () => {
   test("an index into the stripped text names the same line", () => {
     const at = codeOnly(source).indexOf("s.slice(0, 10)");
     expect(source.slice(0, at).split("\n").length).toBe(2);
+  });
+});
+
+describe("the same scan says where the comments were", () => {
+  const spans = (src: string) =>
+    commentSpans(src).map(([a, b]) => src.slice(a, b));
+
+  test("a span is exactly the comment, with no trailing whitespace", () => {
+    // The caller that cares is the one slicing the span to read it: an untrimmed span ends in the
+    // indentation of the line BELOW, so `endsWith("*/")` stops being true of a block comment.
+    expect(spans("const a = 1; // aside\nconst b = 2;\n")).toEqual([
+      "// aside",
+    ]);
+    expect(spans("<div>\n  {/* label */}\n  <X />\n</div>\n")).toEqual([
+      "/* label */",
+    ]);
+  });
+
+  test("comments separated by nothing but whitespace come back as one span", () => {
+    // Which is what a reader means by "the comment", and the reason a per-LINE question (a
+    // `biome-ignore`, honoured only at the start of its own comment) is asked of the line.
+    expect(spans("// one\n// two\nconst a = 1;\n")).toEqual(["// one\n// two"]);
+    // …and code between them splits them again.
+    expect(spans("// one\nconst a = 1;\n// two\n")).toEqual([
+      "// one",
+      "// two",
+    ]);
+  });
+
+  test("a comment spelled inside a literal is not one", () => {
+    expect(spans('const s = "// not a comment";\n')).toEqual([]);
+    expect(spans('const s = "{/* NOTE: nor this */}";\n')).toEqual([]);
+  });
+
+  test("a comment that runs to the end of the file still closes", () => {
+    expect(spans("const a = 1;\n// trailing")).toEqual(["// trailing"]);
+    expect(spans("const a = 1;\n/* unterminated")).toEqual(["/* unterminated"]);
   });
 });
 

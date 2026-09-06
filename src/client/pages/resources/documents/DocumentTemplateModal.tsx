@@ -503,7 +503,7 @@ export function DocumentTemplateModal({
           </div>
         </div>
 
-        {/* NOTE: `self-start` is what makes the sticky actually stick. A grid item stretches to the
+        {/* `self-start` is what makes the sticky actually stick. A grid item stretches to the
             row height by default, so `sticky` has nothing to travel within and the preview scrolls
             away as soon as the form below it is longer than the viewport — which is exactly when it
             is being used.

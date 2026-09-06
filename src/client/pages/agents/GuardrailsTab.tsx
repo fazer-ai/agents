@@ -192,7 +192,7 @@ export function GuardrailsTab({
                 ))}
               </Select>
             </FormField>
-            {/* NOTE: Shown for "generated" too, because that action falls back to this text whenever no
+            {/* Shown for "generated" too, because that action falls back to this text whenever no
                 replacement is written: when the model returns none, and always when the relevance
                 check is what tripped. Hiding it here left the operator unable to see or edit the
                 message their customers actually receive. */}
@@ -238,7 +238,7 @@ export function GuardrailsTab({
                 />
               </FormField>
             )}
-            {/* NOTE: Output only. On the customer's message nothing is ever composed, so this field
+            {/* Output only. On the customer's message nothing is ever composed, so this field
                 would steer nothing — and a control that visibly does nothing is worse than one that
                 is not offered. The template hint above says why, where the operator is looking. */}
             {d.action === "generated" && dir === "output" && (

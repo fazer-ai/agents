@@ -353,7 +353,7 @@ export function GeneralTab({
         </Button>
       </Card>
 
-      {/* NOTE: Expand-to-modal view: the SAME editor/preview toggle, taller, sharing the lifted
+      {/* Expand-to-modal view: the SAME editor/preview toggle, taller, sharing the lifted
           prompt state so edits here and inline stay in sync. */}
       <Modal
         modal={promptModal}

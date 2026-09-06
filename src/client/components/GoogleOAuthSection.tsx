@@ -667,7 +667,7 @@ export function GoogleOAuthSection({
         </div>
       )}
 
-      {/* NOTE: render-always per docs/modals.md */}
+      {/* render-always per docs/modals.md */}
       <ConfirmDialog modal={disconnectModal} />
     </div>
   );

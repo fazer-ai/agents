@@ -2190,7 +2190,7 @@ export function BehaviorTab({
                           "The provider enables it by default; pick a value only to override that.",
                         )}
                       >
-                        {/* NOTE: a Select, not a Switch: this knob has THREE states, and a switch
+                        {/* a Select, not a Switch: this knob has THREE states, and a switch
                             would render the untouched "leave it to the voice" as visibly off while
                             the provider actually turns it on. */}
                         <Select

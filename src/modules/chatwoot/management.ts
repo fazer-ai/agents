@@ -1922,15 +1922,29 @@ export async function bindInbox(
   try {
     return await persistBinding();
   } catch (err) {
-    logger.error(
-      {
-        err,
-        tenantId: String(tenantId),
-        inboxId: String(inboxId),
-        agentId: agentId === null ? null : String(agentId),
-      },
-      "chatwoot: the bot was attached in Chatwoot and the binding was not saved — retry the bind",
-    );
+    // Two different states reach here and only one of them is a repair away. A FAILURE (the audit
+    // insert, a lock) left a binding that a retry writes; a REFUSAL decided inside the transaction
+    // (the account disconnected under us, the agent deleted under us) answered the operator, and a
+    // retry refuses the same way for the same reason. Both leave the bot attached upstream, which is
+    // why both are logged, and only one of them may say "retry".
+    const refused = err instanceof AppError;
+    const line = {
+      err,
+      tenantId: String(tenantId),
+      inboxId: String(inboxId),
+      agentId: agentId === null ? null : String(agentId),
+    };
+    if (refused) {
+      logger.warn(
+        line,
+        "chatwoot: the bot was attached in Chatwoot and the write refused the binding; a retry refuses the same way",
+      );
+    } else {
+      logger.error(
+        line,
+        "chatwoot: the bot was attached in Chatwoot and the binding was not saved — retry the bind",
+      );
+    }
     throw err;
   }
 
@@ -1956,6 +1970,41 @@ export async function bindInbox(
           409,
           "errors.chatwootAccountDisconnected",
         );
+      }
+      // NOTE: The AGENT next, and LOCKED, with the lock a foreign key would have taken. `Inbox.agentId`
+      // is a plain column with no `@relation`, so nothing has ever refused a binding to an agent that
+      // is gone, and the reading step 1 took predates the Chatwoot calls: `deleteAgent` takes the
+      // agent `FOR UPDATE`, nulls every inbox pointing at it (this one does not yet), deletes it, and
+      // this transaction would then commit a binding to a row that no longer exists. What is left is
+      // an inbox the console shows as bound, with a bot still attached upstream, that nothing answers.
+      //
+      // `FOR KEY SHARE` is what an FK's referencing write takes: among the row-lock modes it conflicts
+      // only with `FOR UPDATE`, so two binds on the same agent do not serialise against each other and
+      // a child insert (which takes KEY SHARE too) cannot be blocked by one. That it also leaves an
+      // ordinary SAVE of the agent alone is NOT free: `updateAgent` and `replaceAgentToolSelections`
+      // took `FOR UPDATE` until #546 and were weakened to `FOR NO KEY UPDATE` for exactly this, since
+      // a bind that waits here is waiting while HOLDING the Chatwoot account row, and would stall
+      // every other bind, sync and disconnect on that account behind an unrelated agent edit. Deleting
+      // is the one that still takes `FOR UPDATE`, which is the conflict this read wants.
+      //
+      // BEFORE the inbox row, which is the half that is not about existence: `deleteAgent` takes the
+      // agent and then the inboxes that point at it, so taking them in the other order here is a
+      // deadlock between two writes that are each individually correct. Measured rather than argued,
+      // on a re-bind of the agent an inbox already names (what re-submitting the editor does, and the
+      // one shape where the two transactions want each other's row): with this read moved below the
+      // inbox lock, Postgres answers `40P01 deadlock detected` and kills the bind; in the order
+      // written here, both transactions commit. Same argument and same order as `updateExperiment`,
+      // which answered this shape for `Experiment.agentId` in #501. An unbind names no agent and
+      // makes no reference, so it takes nothing here.
+      if (agentId !== null) {
+        const alive = await db.$queryRaw<Array<{ id: bigint }>>`
+      SELECT id
+        FROM agents
+       WHERE id = ${agentId}
+         FOR KEY SHARE`;
+        if (alive.length === 0) {
+          throw new NotFoundError("agent not found", "errors.agentNotFound");
+        }
       }
       // NOTE: Read INSIDE the transaction and with the row LOCKED, because it is what the audit
       // compares against. The reading taken at the top predates the Chatwoot calls, which are a window

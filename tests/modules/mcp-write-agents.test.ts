@@ -18,6 +18,7 @@ import {
   agentUpdate,
   toolCreate,
 } from "@/modules/mcp/write-agents";
+import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Agent-builder write tools: gate (scope + tenant target) is DB-free; dry-run/apply/audit, the
 // credential-by-NAME resolution and tenant fencing need a real Postgres (skipIf).
@@ -511,6 +512,71 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     if (!r.ok) expect(r.error).toContain("not found");
     const row = await suDb.agent.findUnique({ where: { id: agentA } });
     expect(row?.name).toBe("Builder");
+  });
+
+  // BOTH REFUSALS THE OBSERVER BINDING ADDED (issue #476 review, round 46), asked by the PREVIEW too.
+  // `updateAgent` refuses to save a non-monitoring mode on an agent that observes an inbox, and
+  // `deleteAgent` refuses to delete one; a preview that cannot ask either approves the one write the
+  // apply is certain to reject, and the caller learns the truth from the 422.
+  test("the previews refuse an observing agent exactly as the applies do", async () => {
+    const p = principal({ tenantId: tenantA });
+    const inst = await seedChatwootInstance(suDb, {
+      tenantId: tenantA,
+      accountId: 8123,
+      baseUrl: "https://chat.mcp-observer.example",
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenantA,
+        chatwootInstanceId: inst.id,
+        chatwootInboxId: 8123,
+        name: "Observada",
+      },
+      select: { id: true },
+    });
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId: tenantA,
+        name: "Watcher",
+        systemPrompt: "p",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId: tenantA, inboxId: inbox.id, agentId: watcher.id },
+    });
+
+    try {
+      const demote = await agentUpdate(
+        p,
+        { agent_id: String(watcher.id), mode: "production" },
+        { base: appDb },
+      );
+      expect(demote.ok).toBe(false);
+      if (!demote.ok) expect(demote.error).toContain("observes inboxes");
+
+      const del = await agentDelete(
+        p,
+        { agent_id: String(watcher.id) },
+        { base: appDb },
+      );
+      expect(del.ok).toBe(false);
+      if (!del.ok) expect(del.error).toContain("observes inboxes");
+
+      // ...and a mode change that STAYS monitoring is not refused by either.
+      const rename = await agentUpdate(
+        p,
+        { agent_id: String(watcher.id), name: "Watcher 2" },
+        { base: appDb },
+      );
+      expect(rename.ok).toBe(true);
+    } finally {
+      await suDb.inboxObserver.deleteMany({ where: { inboxId: inbox.id } });
+      await suDb.inbox.delete({ where: { id: inbox.id } });
+      await suDb.agent.delete({ where: { id: watcher.id } });
+      await suDb.chatwootInstance.delete({ where: { id: inst.id } });
+    }
   });
 
   test("agent_delete dry-run keeps the agent; apply removes it", async () => {

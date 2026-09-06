@@ -17,6 +17,7 @@ import {
   deploymentConnect,
   deploymentSetAccounts,
   inboxBind,
+  inboxObserve,
   inboxRemove,
   instanceDisconnect,
 } from "@/modules/mcp/write-channels";
@@ -345,6 +346,41 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     expect(await suDb.inbox.count({ where: { id: inboxA } })).toBe(1);
   });
 
+  // `InboxObserver` cascades on the inbox's foreign key, so the removal discards bindings the caller
+  // never named — and those bindings are what refuse the agent's mode change and its deletion
+  // elsewhere. A preview that omits them shows a removal smaller than the one it approves.
+  test("inbox_remove dry-run names the observers the cascade will take", async () => {
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId: tenantA,
+        name: "Watcher",
+        systemPrompt: "p",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId: tenantA, inboxId: inboxA, agentId: watcher.id },
+    });
+    try {
+      const cw = fakeChatwoot([]);
+      const r = await inboxRemove(
+        principal({ tenantId: tenantA }),
+        { inbox_id: String(inboxA) },
+        { base: appDb, makeClient: cw.makeClient },
+      );
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.data.current).toMatchObject({
+          observerAgentIds: [String(watcher.id)],
+        });
+      }
+    } finally {
+      await suDb.inboxObserver.deleteMany({ where: { inboxId: inboxA } });
+      await suDb.agent.delete({ where: { id: watcher.id } });
+    }
+  });
+
   // The reason the preview calls Chatwoot at all: without it this dry run would report a removal
   // that the apply refuses, which is the shape of defect issue #248 removed one layer up.
   test("inbox_remove dry-run says so when the inbox is still live", async () => {
@@ -443,6 +479,83 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/agent not found/i);
+  });
+
+  // A PREVIEW ANSWERS WITH THE APPLY'S OWN "no" (issue #476 review, round 25). A dry run that
+  // approves an operation the apply then refuses is worse than no preview: the caller reads `ok`
+  // and learns the truth from the 422.
+  test("inbox_observe and inbox_bind dry runs refuse what their applies refuse", async () => {
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId: tenantA,
+        name: "Vigia",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    const answerer = await suDb.agent.create({
+      data: {
+        tenantId: tenantA,
+        name: "Atendente",
+        systemPrompt: "x",
+        mode: "production",
+      },
+      select: { id: true },
+    });
+    const p = principal({ tenantId: tenantA });
+
+    // A monitoring agent on a free inbox: the preview says yes, and it means it.
+    const okDry = await inboxObserve(
+      p,
+      { inbox_id: String(inboxA), agent_id: String(watcher.id) },
+      { base: appDb },
+    );
+    expect(okDry.ok).toBe(true);
+
+    // A production agent cannot observe, and the preview says so without calling Chatwoot.
+    const notMonitoring = await inboxObserve(
+      p,
+      { inbox_id: String(inboxA), agent_id: String(answerer.id) },
+      { base: appDb },
+    );
+    expect(notMonitoring.ok).toBe(false);
+    if (!notMonitoring.ok) expect(notMonitoring.error).toMatch(/monitoring/i);
+
+    // An agent that does not exist, likewise.
+    const noAgent = await inboxObserve(
+      p,
+      { inbox_id: String(inboxA), agent_id: "999999999" },
+      { base: appDb },
+    );
+    expect(noAgent.ok).toBe(false);
+
+    // With the watcher observing, an inbox takes no second one — and binding THAT agent as the
+    // responder is the refusal `inbox_bind`'s preview owes its caller.
+    await suDb.inboxObserver.create({
+      data: { tenantId: tenantA, inboxId: inboxA, agentId: watcher.id },
+    });
+    const second = await inboxObserve(
+      p,
+      { inbox_id: String(inboxA), agent_id: String(answerer.id) },
+      { base: appDb },
+    );
+    expect(second.ok).toBe(false);
+    const bindWatcher = await inboxBind(
+      p,
+      { inbox_id: String(inboxA), agent_id: String(watcher.id) },
+      { base: appDb },
+    );
+    expect(bindWatcher.ok).toBe(false);
+    if (!bindWatcher.ok) expect(bindWatcher.error).toMatch(/observes/i);
+    // Another agent is still bindable: the refusal is about the pair, not the inbox.
+    const bindOther = await inboxBind(
+      p,
+      { inbox_id: String(inboxA), agent_id: String(answerer.id) },
+      { base: appDb },
+    );
+    expect(bindOther.ok).toBe(true);
+    await suDb.inboxObserver.deleteMany({ where: { inboxId: inboxA } });
   });
 
   test("binding an inbox of a disconnected account is refused", async () => {

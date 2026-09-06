@@ -12,6 +12,7 @@ import {
   connectChatwootDeployment,
   disconnectChatwootDeployment,
   normalizeChatwootBaseUrl,
+  observeInbox,
   reconcileInboxBots,
   reconnectChatwootInstance,
   reconnectInbox,
@@ -21,6 +22,7 @@ import {
   setConnectedAccounts,
   softDisconnectChatwootInstance,
   syncInboxes,
+  unobserveInbox,
 } from "@/modules/chatwoot/management";
 import { routeTokenCacheGeneration } from "@/modules/chatwoot/route-token-cache";
 
@@ -128,6 +130,20 @@ function stubClient(over: Record<string, unknown> = {}) {
     ...over,
   };
   return { calls, makeClient: async () => client as unknown as ChatwootClient };
+}
+
+// The stub with the fork's observer route on it (issue #476): the bot is provisioned as for a bind,
+// under an id of its own, and attached/detached as an observer.
+function observingClient() {
+  return stubClient({
+    createAgentBot: async () => ({
+      id: 902,
+      access_token: "bot-token",
+      secret: "bot-secret",
+    }),
+    addInboxObserver: async () => ({}),
+    removeInboxObserver: async () => ({}),
+  });
 }
 
 // A client that lets a CONCURRENT request land in the one window `setConnectedAccounts` cannot see:
@@ -1201,6 +1217,79 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
+  // The OBSERVER binding (issue #476) joins the family here: same row shape as the bind, the list of
+  // observers on both sides, written by the service and by nothing else — the MCP twin used to
+  // record it from the transport, which is the door-shaped trail #395 retired.
+  test("observing an inbox records the observer it gained", async () => {
+    await clearAudit();
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 71 },
+      select: { id: true },
+    });
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Observadora",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    await observeInbox(
+      ctx(),
+      inbox.id,
+      watcher.id,
+      { makeClient: observingClient().makeClient },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("inbox.observe");
+    expect(row?.target).toBe(`inbox:${inbox.id}`);
+    expect(row?.before).toEqual({ observerAgentIds: [] });
+    expect(row?.after).toEqual({ observerAgentIds: [String(watcher.id)] });
+    await collect();
+  });
+
+  test("observing the same inbox again records nothing", async () => {
+    await clearAudit();
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 71 },
+      select: { id: true, observers: { select: { agentId: true } } },
+    });
+    const watcherId = inbox.observers[0]?.agentId;
+    expect(watcherId).toBeDefined();
+    await observeInbox(
+      ctx(),
+      inbox.id,
+      watcherId as bigint,
+      { makeClient: observingClient().makeClient },
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
+  });
+
+  test("unobserving an inbox records the observer it lost", async () => {
+    await clearAudit();
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 71 },
+      select: { id: true, observers: { select: { agentId: true } } },
+    });
+    const watcherId = inbox.observers[0]?.agentId as bigint;
+    await unobserveInbox(
+      ctx(),
+      inbox.id,
+      watcherId,
+      { makeClient: observingClient().makeClient },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("inbox.unobserve");
+    expect(row?.target).toBe(`inbox:${inbox.id}`);
+    expect(row?.before).toEqual({ observerAgentIds: [String(watcherId)] });
+    expect(row?.after).toEqual({ observerAgentIds: [] });
+    await collect();
+  });
+
   test("unbinding an inbox records the agent it lost", async () => {
     await clearAudit();
     const inbox = await suDb.inbox.findFirstOrThrow({
@@ -1244,6 +1333,55 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(row?.target).toBe(`inbox:${inbox.id}`);
     expect(row?.before).toMatchObject({ chatwootInboxId: 71 });
     await collect();
+  });
+
+  // `InboxObserver` cascades on the inbox's foreign key, so the removal takes the watchers with it
+  // and no `inbox.unobserve` is ever written for them. Left out of the projection, the trail says an
+  // inbox was removed and never says who was watching it — on the one action that cannot be undone.
+  test("removing an inbox records the observers the cascade took with it", async () => {
+    // Its own account and inbox: the case above removes 71, and this one has to exist to be removed.
+    const fx = await connectedFixture(4479, "Observada", { bound: false });
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: `Watcher ${process.pid}`,
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: fx.inboxId, agentId: watcher.id },
+    });
+
+    try {
+      await removeInbox(
+        ctx(),
+        fx.inboxId,
+        {
+          makeClient: stubClient({
+            getInbox: async () => {
+              throw new ChatwootApiError(
+                404,
+                `GET /inboxes/${fx.chatwootInboxId}`,
+              );
+            },
+          }).makeClient,
+        },
+        appDb,
+      );
+
+      const [row] = await rows();
+      expect(row?.action).toBe("inbox.remove");
+      expect(row?.before).toMatchObject({
+        observerAgentIds: [String(watcher.id)],
+      });
+    } finally {
+      await fx.cleanup();
+      await suDb.agent.delete({ where: { id: watcher.id } });
+    }
   });
 
   // The remote list a sync reconciles against, as Chatwoot spells it.

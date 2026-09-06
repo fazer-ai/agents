@@ -160,6 +160,20 @@ export async function retireCoveredDeliveries(
       ? { ...scope, id: params.deliveryRowId }
       : {
           ...scope,
+          // AN OBSERVER'S ROW IS NEVER ANOTHER ROUTE'S TO CLOSE (issue #476 review, round 34). The
+          // wide scope exists because a human, a command or a gate answers the MESSAGE, whichever
+          // route carried it — true of every route that could have answered, and false of the one
+          // that never could. The observer owes the memory instead, and it pays that on its own
+          // schedule: its ingestion can fail, and the throw that leaves the row for the sweep is
+          // the only thing standing between that and a message nothing remembers. Retired from
+          // here the row is terminal before the observer is done with it, the sweep can no longer
+          // see it, and the loss is silent — the one failure this whole subsystem exists to
+          // prevent. The observer settles its own row, always `this-delivery` scoped, so nothing
+          // legitimate reaches an observer's row through this branch.
+          // Spelled as an explicit list rather than `not: true`: the column is nullable, and
+          // `NOT (col = true)` is NULL for a NULL row, which would exclude rows this filter has to
+          // keep and settle nothing at all.
+          OR: [{ routeObserved: null }, { routeObserved: false }],
           inboundMessageId:
             params.messageIds !== undefined
               ? { in: params.messageIds }
@@ -210,7 +224,29 @@ export async function retireCoveredDeliveries(
     sysCtx(params.tenantId),
     (db) =>
       db.chatwootWebhookDelivery.updateMany({
-        where: { ...where, status: "PROCESSING" },
+        // A ROLE NOT YET STATED IS NOT A ROLE OF `false` (issue #476 review, round 35), and this
+        // is the one statement where the difference bites. The receiver writes the role just after
+        // the claim, so an observer's row is briefly PROCESSING having said nothing — and settling
+        // that row closes it before the observer is done with its ingestion, the same silent loss
+        // the observer exclusion above exists to prevent. A row still being WORKED therefore
+        // settles only once it has said it is not an observer's. Nothing is stranded by this: the
+        // `route_observed` migration stamped `false` on every row still on the worklist, so a null
+        // one being worked is a live delivery between its claim and its statement, and its own tx2
+        // closes it a moment later. The DEAD statement below is unaffected — a terminal row has no
+        // owner left to state anything, and leaving it unsettled would keep a reported loss open
+        // for a message a turn did handle.
+        where: {
+          ...where,
+          // ONLY ON THE WIDE SCOPE (issue #476 review, round 39). A single-row settlement already
+          // names the row it may touch, and the observer's own — the one path that settles after
+          // recording `routeObserved: true` — is exactly that shape: required to say `false` here,
+          // it matched nothing, and a process exiting between the ingestion and tx2 left a handled
+          // delivery for the sweep to report and replay.
+          ...(params.deliveryRowId === undefined
+            ? { routeObserved: false }
+            : {}),
+          status: "PROCESSING",
+        },
         data: { status: "PROCESSED", processedAt: new Date() },
       }),
   );
@@ -317,6 +353,7 @@ interface StrandedRow {
   conversationId: number | null;
   inboundMessageId: number | null;
   humanReplyShape: string | null;
+  routeObserved: boolean | null;
 }
 
 export interface SweepCounts {
@@ -329,6 +366,11 @@ export interface SweepCounts {
   // Counted apart from `closed` because they are opposite outcomes wearing the same terminal state —
   // one is a row that needed nothing, the other a row that needed something and got it late.
   owed: number;
+  // Terminal and nothing a customer sent is at stake, but an OBSERVER's route lost the ingestion of
+  // a colleague's reply (issue #476). Counted apart because it is neither `closed` (a row that owed
+  // nothing) nor `owed` (a row whose side effect was armed for recovery): nothing can replay it, so
+  // the count and the line beside it are the whole record.
+  observerStrands: number;
   // The row moved under the sweep (a redelivery claimed it) between the scan and the write.
   raced: number;
 }
@@ -343,10 +385,17 @@ async function mirrorOf(
   row: StrandedRow,
   tenantId: bigint,
   base: PrismaClient,
+  // Asked only by the verdict that reports it, and asked HERE so it is read before the terminal
+  // transition: after `finish` the row is never scanned again, so a lookup that threw there would
+  // take the only record of an unrecoverable gap with it (issue #476 review, round 31).
+  withResponderRoute = false,
 ): Promise<{
   conversationRowId: bigint;
   inboxId: bigint | null;
   agentId: bigint | null;
+  // Whether that responder has a ROUTE of its own — a bot row the fork could have delivered to.
+  // Null when it was not asked (the loss verdict does not need it) or could not be read.
+  responderHasRoute: boolean | null;
 } | null> {
   if (row.conversationId === null) return null;
   const conversationId = row.conversationId;
@@ -368,10 +417,21 @@ async function mirrorOf(
           select: { agentId: true },
         })
       : null;
+    const agentId = inbox?.agentId ?? null;
     return {
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
-      agentId: inbox?.agentId ?? null,
+      agentId,
+      responderHasRoute:
+        !withResponderRoute || agentId === null
+          ? null
+          : (await db.chatwootAgentBot.count({
+              where: {
+                tenantId,
+                chatwootInstanceId: row.chatwootInstanceId,
+                agentId,
+              },
+            })) > 0,
     };
   });
 }
@@ -424,7 +484,13 @@ export async function sweepStrandedDeliveries(
   // Overridable so the batch's FAIRNESS can be asked with three rows instead of five hundred. A test
   // that has to build a real backlog to reach the boundary is a test nobody writes.
   const batch = params.batch ?? BATCH;
-  const counts: SweepCounts = { closed: 0, lost: 0, owed: 0, raced: 0 };
+  const counts: SweepCounts = {
+    closed: 0,
+    lost: 0,
+    owed: 0,
+    observerStrands: 0,
+    raced: 0,
+  };
 
   // BOTH non-terminal states, because both strand and for the same reason. The ack is spent before
   // the ledger row is even written, so a death between the insert and the CAS leaves PENDING — and
@@ -467,6 +533,7 @@ export async function sweepStrandedDeliveries(
         conversationId: true,
         inboundMessageId: true,
         humanReplyShape: true,
+        routeObserved: true,
       },
     }),
   )) as StrandedRow[];
@@ -486,8 +553,24 @@ export async function sweepStrandedDeliveries(
     // `record` returns before the line for any other verdict, so reading it anyway changes no
     // outcome and no test can hold this (a mutation that widens it to the owed row survives the
     // suite, which is what the sentence says).
+    // A read that throws must not cost the report: the observer verdict's line is the ONLY record
+    // of its gap, and `record` marks the row terminal before it could be written. Null here is
+    // "could not tell", which the line says out loud rather than resolving one way (round 31).
     const mirror =
-      verdict === "lost" ? await mirrorOf(row, tenantId, base) : null;
+      verdict === "lost" || verdict === "observer-strand"
+        ? await mirrorOf(
+            row,
+            tenantId,
+            base,
+            verdict === "observer-strand",
+          ).catch((err) => {
+            logger.warn(
+              { err, deliveryId: row.deliveryId },
+              "chatwoot delivery sweep: the mirror of a stranded delivery could not be read",
+            );
+            return null;
+          })
+        : null;
     await record(verdict, row, tenantId, mirror, counts, base);
   }
   return counts;
@@ -513,6 +596,35 @@ async function record(
     // something was owed is the job armed below plus the line it writes if it lands, and if that job
     // never runs the state is the one every install had before issue #430 — a conversation the next
     // reply takes over on its own.
+    if (verdict === "observer-strand") {
+      counts.observerStrands += 1;
+      // WHAT THIS LINE MAY CLAIM, and it is less than the first draft of it claimed (issue #476
+      // review, round 30). Beside a responder of ours, that responder's own delivery of the same
+      // reply folds it into the shared memory and owes the takeover, so the row lost nothing. With
+      // none, the observer's memory is the only one the inbox has and this reply is simply not in
+      // it, and nothing will replay it.
+      //
+      // The question is about RECEIPT TIME and this runs half an hour later, so the binding read
+      // here is evidence and not an answer: an inbox bound in between reads as covered when it was
+      // not. Asked of a responder with a ROUTE rather than of `Inbox.agentId` alone — a binding
+      // whose persona bot was deleted upstream receives no delivery of its own, which is the same
+      // reading the receiver makes when it decides whether to remember beside one — and reported at
+      // one level, `warn`, that says what is known and no more. An `error` on the read alone would
+      // page an operator for the ordinary shared inbox; an `info` would file the real gap where
+      // nobody looks.
+      logger.warn(
+        "chatwoot delivery sweep: %s stranded on an observer's route carrying a colleague's reply (%s) on conversation %s; the watcher never folded it into its memory and nothing can replay it. The inbox %s NOW, which is not what it had when the event arrived",
+        label,
+        String(row.humanReplyShape),
+        String(row.conversationId),
+        mirror === null
+          ? "could not be read"
+          : mirror.responderHasRoute === true
+            ? "has a responder with a route (so that responder's own delivery of the same reply probably owns it)"
+            : "has no responder with a route",
+      );
+      return;
+    }
     if (verdict === "owed-takeover") {
       counts.owed += 1;
       // BEST-EFFORT, and armed AFTER the CAS for the same reason the loss recovery is armed after

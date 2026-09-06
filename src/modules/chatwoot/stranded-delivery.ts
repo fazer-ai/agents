@@ -56,6 +56,11 @@ export interface StrandedDeliveryRow {
   // every row an older build wrote — which is why it is read only where the answer would otherwise
   // be the benign `no-message`, never as evidence about a customer message.
   humanReplyShape: string | null;
+  // WHOSE ROUTE it arrived on (issue #476): true an observer's, false the responder's, null a row
+  // written before the column or one stranded before the receiver could state it. Read only where
+  // `humanReplyShape` already decided the row owed a side effect, to say WHICH side effect that is —
+  // never as evidence about a customer message.
+  routeObserved: boolean | null;
 }
 
 export interface StrandedDeliveryPolicy {
@@ -93,6 +98,19 @@ export type StrandedVerdict =
   // sized for indexed queries, and answering it wrong in the safe direction costs the takeover this
   // verdict exists to recover.
   | "owed-takeover"
+  // Stranded on an OBSERVER's route, carrying a colleague's reply (issue #476 review, round 27). It
+  // owes no takeover: the handover steps the RESPONDER off the conversation, and an observer was
+  // never on it. On an inbox with a responder of ours, that responder's own delivery of the same
+  // reply carries the shape and owes the takeover there, so this row owes nothing at all; on an
+  // inbox nobody of ours answers, there is no takeover to owe and no responder to hand back to.
+  //
+  // What it DID owe is the observer's ingestion — the colleague's reply folded into the memory the
+  // observer keeps — and that cannot be recovered from here: the payload is never stored (issue
+  // #228) and the delivery recovery needs a customer message id to anchor on, which a colleague's
+  // reply has by construction not got. So the row is terminal like its neighbours and the gap is
+  // REPORTED rather than replayed: on an observer-only inbox the observer's memory is the only one
+  // there is, and a hole in it that nothing names is the silence this sweep exists to remove.
+  | "observer-strand"
   // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
   // cannot be read. Nothing will answer it.
   //
@@ -150,9 +168,18 @@ export function classifyStrandedDelivery(
     // The one place the column is read, and only from the arm that was already going to answer
     // benign: a row that carries a customer message is `lost` whatever it also owed, because the
     // recovery for THAT re-runs the delivery path, takeover included.
-    return isHumanReplyShape(row.humanReplyShape) && row.conversationId !== null
-      ? "owed-takeover"
-      : "no-message";
+    if (
+      !isHumanReplyShape(row.humanReplyShape) ||
+      row.conversationId === null
+    ) {
+      return "no-message";
+    }
+    // The ROLE decides which of the two, and it is read only here: a takeover is the responder's to
+    // owe, and arming one for an observer's row spends a job that answers `not-owed` and reports
+    // nothing (issue #476 review, round 27). Null is not an observer's — the receiver states the
+    // role on every delivery, and a row that predates the column or stranded before the statement is
+    // one this build does not read as a watcher's.
+    return row.routeObserved === true ? "observer-strand" : "owed-takeover";
   }
   return "lost";
 }

@@ -379,6 +379,259 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     expect(row.inboxId).toBe(inboxDbId);
   });
 
+  // On an OBSERVER's route (issue #476) the runtime is the observer's, and so is the media: the
+  // STT and vision configs used to resolve from `Inbox.agentId`, which on an inbox a human team
+  // answers is nobody — a voice note on such an inbox was never transcribed for the observer.
+  test("on an observer's route the media resolves against the observer, not the inbox's responder", async () => {
+    const OBSERVER_BOT_ID = 78;
+    const OBS_INBOX_ID = 4413;
+    const OBS_CONV_ID = 9714;
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Observadora",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: { stt: { enabled: true, provider: "openai" } },
+      },
+      select: { id: true },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: watcher.id,
+        chatwootAgentBotId: OBSERVER_BOT_ID,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `eager-obs-${process.pid}`,
+        name: "Observadora",
+      },
+    });
+    const humans = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OBS_INBOX_ID,
+        name: "Humanos",
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: humans.id, agentId: watcher.id },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: 5004,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      attachments: [
+        {
+          id: 91,
+          file_type: "audio",
+          data_url: "https://chat.eager.example/audio/91.ogg",
+        },
+      ],
+      conversation: {
+        id: OBS_CONV_ID,
+        inbox_id: OBS_INBOX_ID,
+        status: "open",
+        contact_inbox: { id: 60_000 + OBS_CONV_ID },
+        meta: {
+          assignee_type: "User",
+          assignee: { id: 9, name: "Humana" },
+          sender: { id: 24, name: "Cliente" },
+        },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `eager-media-observer-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OBSERVER_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeClient: (async () =>
+          ({
+            downloadAttachment: async () => {
+              throw new Error(
+                "the audio must not be downloaded: no credential",
+              );
+            },
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => {
+          throw new Error("an observer's delivery must not run a turn");
+        },
+      },
+    });
+    const threadId = `${tenantId}:${instanceId}:${OBS_CONV_ID}`;
+    let row: { agentId: bigint | null; inboxId: bigint | null } | undefined;
+    for (let i = 0; i < 200 && !row; i++) {
+      row =
+        (await flowLogRow(suDb, {
+          where: { tenantId, threadId, stage: "stt" },
+          select: { agentId: true, inboxId: true },
+        })) ?? undefined;
+      if (!row) await new Promise((r) => setTimeout(r, 20));
+    }
+    if (!row)
+      throw new Error("no stt line was written on the observer's route");
+    expect(row.agentId).toBe(watcher.id);
+    expect(row.inboxId).toBe(humans.id);
+  });
+
+  // BESIDE A RESPONDER the same audio arrives on both routes, and both would transcribe it: twice
+  // the provider bill, and two writes racing into the same attachment's stash. The pass follows the
+  // memory, and beside a responder that remembers, the observer's route remembers nothing.
+  test("beside a responder of ours, the observer's route runs no second media pass", async () => {
+    const OBSERVER_BOT_ID = 79;
+    const RESPONDER_BOT_ID = 80;
+    const OBS_INBOX_ID = 4414;
+    const OBS_CONV_ID = 9715;
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Observadora 2",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: { stt: { enabled: true, provider: "openai" } },
+      },
+      select: { id: true },
+    });
+    const responder = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Atendente",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "production",
+        settings: { stt: { enabled: true, provider: "openai" } },
+      },
+      select: { id: true },
+    });
+    for (const [agentId, botId, name] of [
+      [watcher.id, OBSERVER_BOT_ID, "Observadora 2"],
+      [responder.id, RESPONDER_BOT_ID, "Atendente"],
+    ] as const) {
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId,
+          chatwootAgentBotId: botId,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `eager-both-${botId}-${process.pid}`,
+          name,
+        },
+      });
+    }
+    const shared = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OBS_INBOX_ID,
+        name: "Compartilhada",
+        agentId: responder.id,
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: shared.id, agentId: watcher.id },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: 5005,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      attachments: [
+        {
+          id: 92,
+          file_type: "audio",
+          data_url: "https://chat.eager.example/audio/92.ogg",
+        },
+      ],
+      conversation: {
+        id: OBS_CONV_ID,
+        inbox_id: OBS_INBOX_ID,
+        status: "open",
+        contact_inbox: { id: 60_000 + OBS_CONV_ID },
+        meta: {
+          assignee_type: "User",
+          assignee: { id: 9, name: "Humana" },
+          sender: { id: 24, name: "Cliente" },
+        },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `eager-media-both-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OBSERVER_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeClient: (async () =>
+          ({
+            downloadAttachment: async () => {
+              throw new Error(
+                "the audio must not be downloaded: no credential",
+              );
+            },
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => {
+          throw new Error("an observer's delivery must not run a turn");
+        },
+      },
+    });
+    const threadId = `${tenantId}:${instanceId}:${OBS_CONV_ID}`;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      await flowLogRow(suDb, {
+        where: { tenantId, threadId, stage: "stt" },
+        select: { agentId: true },
+      }),
+    ).toBeNull();
+  });
+
   test("names them on the answer path too, where a test-mode episode gets its media", async () => {
     const n = normalizeChatwootEvent({
       event: "message_created",

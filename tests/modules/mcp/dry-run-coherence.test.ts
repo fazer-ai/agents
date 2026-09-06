@@ -288,6 +288,18 @@ const TABLE: Record<string, Row> = {
     pastOwnership:
       "measured on an inbox that EXISTS: already coherent — the preview calls Chatwoot exactly as the apply does, so an inbox still live there is refused by both.",
   },
+  inbox_observe: {
+    args: { inbox_id: NOPE, agent_id: NOPE },
+    why: "inbox does not exist",
+    pastOwnership:
+      "measured on an inbox that EXISTS: the preview runs every check `observeInbox` makes before it touches Chatwoot (`readObserveTarget`), so a non-monitoring agent, the inbox's own responder, a second observer and a disconnected account are refused by both halves.",
+  },
+  inbox_unobserve: {
+    args: { inbox_id: NOPE, agent_id: NOPE },
+    why: "inbox does not exist",
+    pastOwnership:
+      "measured on an inbox that EXISTS: there is nothing to re-ask — `unobserveInbox` is idempotent on both sides (it asks the fork whether or not a row is there), so it refuses nothing the preview could have caught.",
+  },
   instance_disconnect: {
     args: { instance_id: NOPE },
     why: "instance does not exist",

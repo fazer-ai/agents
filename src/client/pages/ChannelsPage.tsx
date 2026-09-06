@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ExternalLink,
+  Eye,
   Inbox as InboxIcon,
   KeyRound,
   Loader2,
@@ -13,6 +14,7 @@ import {
   SlidersHorizontal,
   Trash2,
   Unplug,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -66,8 +68,239 @@ type ReachableAccount = NonNullable<ReachableData>["accounts"][number];
 const CHANNELS_ACCOUNT_KEYS = ["acct-0", "acct-1"];
 const CHANNELS_INBOX_KEYS = ["inbox-0", "inbox-1", "inbox-2"];
 
+// EVERY agent, not the first page (issue #476 review, round 4). This page does not list agents, it
+// RESOLVES them: an id bound to an inbox or observing one is rendered by looking it up here, so an
+// agent past the first page reads as no agent at all — a responder the picker cannot show, an
+// observer whose chip and remove button vanish. `/agents` answers 20 at a time and caps a page at
+// 100, so the pages are walked to the total the first one reports.
+const AGENTS_PAGE_SIZE = 100;
+
+// The reconcile answers `${inboxId}:${agentId}`; the strip asks by agent, for one inbox.
+function observerStatusFor(
+  statuses: Record<string, "active" | "missing">,
+  inboxId: string,
+): Record<string, "active" | "missing"> {
+  const prefix = `${inboxId}:`;
+  const out: Record<string, "active" | "missing"> = {};
+  for (const [key, value] of Object.entries(statuses)) {
+    if (key.startsWith(prefix)) out[key.slice(prefix.length)] = value;
+  }
+  return out;
+}
+
+// One walk of the roster. Null on a failed page; `changed` when the roster moved underneath it, so
+// the caller can start over rather than render what came back.
+async function walkAgentsOnce(): Promise<
+  { agents: AgentLite[] } | "changed" | null
+> {
+  // BY CREATION, ascending: the default ordering is `updatedAt`, which another admin can move while
+  // the pages are being walked — a row sliding from a later page into the first one is read twice
+  // and another is never read at all, which here is an observer whose chip and remove button
+  // disappear. `createdAt` does not move, and an agent created meanwhile lands at the end.
+  const query = { orderBy: "createdAt" as const, order: "asc" as const };
+  const first = await api.api.v1.agents.get({
+    query: { ...query, page: 1, pageSize: AGENTS_PAGE_SIZE },
+  });
+  if (!first.data) return null;
+  const agents: AgentLite[] = [...first.data.agents];
+  const seen = new Set(agents.map((a) => a.id));
+  const total = first.data.total;
+  // The freshest count the walk saw. Offsets are computed against the roster as it stands at each
+  // request, so a DELETION on an already-read page slides every later row one place forward and the
+  // walk steps straight over one of them (issue #476 review, round 37): after reading 100 of 150,
+  // deleting one of those 100 makes page 2 return the 49 rows from offset 100 of a 149-row roster,
+  // and the row that WAS 101 is never read. The counts still add up — 149 held against a total of
+  // 149 — so the shortfall cannot detect it; the total MOVING is what does.
+  let latestTotal = total;
+  for (
+    let page = 2;
+    agents.length < latestTotal && first.data.agents.length > 0;
+    page += 1
+  ) {
+    const next = await api.api.v1.agents.get({
+      query: { ...query, page, pageSize: AGENTS_PAGE_SIZE },
+    });
+    // A page that failed makes the list INCOMPLETE, and a partial list here is not a smaller list:
+    // it is a bound responder rendered as "No agent" and an observer whose chip and remove button
+    // are gone. The page says it could not load instead.
+    if (next.error) return null;
+    if (!next.data) break;
+    if (next.data.total !== total) return "changed";
+    latestTotal = next.data.total;
+    // An EMPTY page with the total unchanged is the end of the roster.
+    if (next.data.agents.length === 0) break;
+    for (const a of next.data.agents) {
+      if (seen.has(a.id)) continue;
+      seen.add(a.id);
+      agents.push(a);
+    }
+  }
+  // A short walk against a total that never moved is a page that quietly returned less than it
+  // should have. Same answer: do not render a roster with holes in it.
+  return agents.length < total ? "changed" : { agents };
+}
+
+const AGENTS_WALK_ATTEMPTS = 3;
+
+async function loadAllAgents(): Promise<AgentLite[] | null> {
+  for (let attempt = 0; attempt < AGENTS_WALK_ATTEMPTS; attempt += 1) {
+    const walk = await walkAgentsOnce();
+    if (walk === null) return null;
+    if (walk !== "changed") return walk.agents;
+  }
+  // A roster that moved under three consecutive walks is not one this page can render honestly.
+  return null;
+}
+
 const pickerItemCls =
   "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary";
+
+// The inbox's OBSERVERS (issue #476): monitoring agents attached to the inbox on Chatwoot as
+// observers, receiving every event and answering nothing. Chips for the current ones, each with
+// its remove, and a dropdown over the monitoring agents not yet observing. Both calls go to
+// Chatwoot, so the strip shows a spinner while one is in flight and the list is controlled by the
+// row's own `observerAgentIds`, which only moves on success.
+function InboxObserversStrip({
+  observerAgentIds,
+  responderAgentId,
+  statusByAgentId,
+  agents,
+  canAdd = true,
+  onObserve,
+  onUnobserve,
+}: {
+  observerAgentIds: string[];
+  // The inbox's answering agent, which cannot observe it too (the two bindings are exclusive per
+  // inbox and agent), so the menu does not offer what the write refuses.
+  responderAgentId: string | null;
+  // Each observer's bot on Chatwoot, from the live reconcile: "missing" is one whose bot was deleted
+  // out-of-band, which stops its deliveries silently. Absent = unverified (assume ok).
+  statusByAgentId: Record<string, "active" | "missing">;
+  agents: AgentLite[];
+  // False on a disconnected account: observing needs the account (it provisions and attaches a bot
+  // upstream), removal does not, and the strip is the only place an observer can be removed from.
+  // The reconnect on a missing chip is an observe too, so it goes with it: `observeInbox` answers
+  // 409 on a disconnected instance, and an action guaranteed to fail is worse than none.
+  canAdd?: boolean;
+  onObserve: (agentId: string) => Promise<void>;
+  onUnobserve: (agentId: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState(false);
+  const observing = observerAgentIds
+    .map((id) => agents.find((a) => a.id === id))
+    .filter((a): a is AgentLite => a !== undefined);
+  // An inbox has ONE watcher (the memory thread is the contact-inbox's, not the agent's), so the
+  // menu offers nothing while one is bound: the write would refuse it.
+  const candidates =
+    observerAgentIds.length > 0
+      ? []
+      : agents.filter(
+          (a) => a.mode === "monitoring" && a.id !== responderAgentId,
+        );
+
+  async function run(action: () => Promise<void>) {
+    setPending(true);
+    try {
+      await action();
+    } catch {
+      // handled by the caller (toast); the list only moves on success
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="flex w-56 shrink-0 flex-wrap items-center justify-end gap-1">
+      {observing.map((a) => {
+        const missing = statusByAgentId[a.id] === "missing";
+        return (
+          <Badge
+            key={a.id}
+            variant="secondary"
+            className="inline-flex items-center gap-1"
+          >
+            <Eye
+              className={`h-3 w-3 ${missing ? "text-danger" : ""}`}
+              aria-hidden="true"
+            />
+            <span
+              className={`max-w-32 truncate ${missing ? "text-danger" : ""}`}
+            >
+              {a.name}
+            </span>
+            {missing && canAdd ? (
+              <button
+                type="button"
+                disabled={pending}
+                aria-label={t(
+                  "channels.reconnectObserver",
+                  "Reconnect observer {{name}}: its bot no longer exists on Chatwoot, so it receives nothing",
+                  { name: a.name },
+                )}
+                className="rounded text-text-muted hover:text-text-primary disabled:opacity-60"
+                onClick={() => run(() => onObserve(a.id))}
+              >
+                <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={pending}
+              aria-label={t(
+                "channels.removeObserver",
+                "Remove observer {{name}}",
+                {
+                  name: a.name,
+                },
+              )}
+              className="rounded text-text-muted hover:text-text-primary disabled:opacity-60"
+              onClick={() => run(() => onUnobserve(a.id))}
+            >
+              <X className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </Badge>
+        );
+      })}
+      {canAdd && candidates.length > 0 ? (
+        <DropdownMenuPrimitive.Root>
+          <DropdownMenuPrimitive.Trigger asChild>
+            <button
+              type="button"
+              disabled={pending || candidates.length === 0}
+              aria-label={t("channels.addObserver", "Add observer")}
+              className="flex items-center gap-1 rounded-md border border-border border-dashed px-2 py-1 text-text-muted text-xs hover:text-text-primary disabled:opacity-60"
+            >
+              {pending ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              ) : (
+                <Eye className="h-3 w-3" aria-hidden="true" />
+              )}
+              {t("channels.addObserver", "Add observer")}
+            </button>
+          </DropdownMenuPrimitive.Trigger>
+          <DropdownMenuPrimitive.Portal>
+            <DropdownMenuPrimitive.Content
+              align="end"
+              sideOffset={4}
+              className="z-50 max-h-72 w-56 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+            >
+              {candidates.map((a) => (
+                <DropdownMenuPrimitive.Item
+                  key={a.id}
+                  className={pickerItemCls}
+                  onSelect={() => run(() => onObserve(a.id))}
+                >
+                  <span className="truncate">{a.name}</span>
+                </DropdownMenuPrimitive.Item>
+              ))}
+            </DropdownMenuPrimitive.Content>
+          </DropdownMenuPrimitive.Portal>
+        </DropdownMenuPrimitive.Root>
+      ) : null}
+    </div>
+  );
+}
 
 // Custom value-picker (Radix dropdown) for the inbox → answering-agent binding. Binding is a network
 // call (it lazily provisions + connects the bot on Chatwoot), so the trigger shows a spinner while
@@ -272,13 +505,46 @@ export function ChannelsPage() {
   const [botStatus, setBotStatus] = useState<
     Record<string, "active" | "missing">
   >({});
+  // The same reading for each observer binding, keyed `${inboxId}:${agentId}`: an observer's bot
+  // deleted out-of-band stops the deliveries the same way, and observing again repairs it.
+  const [observerStatus, setObserverStatus] = useState<
+    Record<string, "active" | "missing">
+  >({});
   const [reconnecting, setReconnecting] = useState<string | null>(null);
   const [removingInbox, setRemovingInbox] = useState<string | null>(null);
+
+  // WHAT A REPAIR ACTUALLY CONFIRMS, and rounds 41 and 49 pull opposite ways on it.
+  //
+  // One bot serves every role its agent holds, so a call that re-provisions a bot that was gone
+  // repairs every inbox this persona answers and every one it observes — round 41 asked the page to
+  // say so, since sibling bindings otherwise keep offering a Reconnect for a bot the backend already
+  // considers active. But that repair is BEST-EFFORT per inbox: `ensureAgentBotAndReattach` logs a
+  // failed sibling attachment at `error` and lets the requested operation succeed anyway, so marking
+  // them all active clears the Reconnect from an inbox that is receiving nothing (round 49). The
+  // reconcile does not catch it either, because it asks whether the BOT exists.
+  //
+  // Between an extra Reconnect that repairs nothing (a no-op click, the call is idempotent) and a
+  // missing one that hides an inbox getting no deliveries, this module's rule picks the first: wrong
+  // and visible over quiet and wrong. So the page marks ONLY the binding the operation itself
+  // attached, which is the one whose success the call actually reports by not throwing.
+  //
+  // Closing it properly is the reconcile asking the ATTACHMENT per binding rather than the bot —
+  // named in docs/chatwoot.md as the real fix, and out of this PR's scope.
+  const markBindingActive = useCallback(
+    (key: string, kind: "responder" | "observer") => {
+      const set = kind === "responder" ? setBotStatus : setObserverStatus;
+      set((prev) => ({ ...prev, [key]: "active" }));
+    },
+    [],
+  );
 
   const loadBotStatus = useCallback(async () => {
     try {
       const { data } = await api.api.v1.chatwoot.inboxes["bot-status"].get();
-      if (data) setBotStatus({ ...data.statuses });
+      if (data) {
+        setBotStatus({ ...data.statuses });
+        setObserverStatus({ ...data.observerStatuses });
+      }
     } catch {
       // ignore — leave statuses unverified
     }
@@ -366,7 +632,7 @@ export function ChannelsPage() {
       const [dep, inb, ag] = await Promise.all([
         api.api.v1.chatwoot.deployment.get(),
         api.api.v1.chatwoot.inboxes.get(),
-        api.api.v1.agents.get(),
+        loadAllAgents(),
       ]);
       if (dep.error || !dep.data) {
         setError(true);
@@ -375,7 +641,11 @@ export function ChannelsPage() {
       setDeployment(dep.data.deployment);
       setAccounts([...dep.data.accounts]);
       if (inb.data) setInboxes([...inb.data.inboxes]);
-      if (ag.data) setAgents([...ag.data.agents]);
+      if (ag === null) {
+        setError(true);
+        return;
+      }
+      setAgents(ag);
       // Only active accounts: a soft-disconnected account must not be re-synced (its mirror is
       // frozen until it is reconnected).
       void autoSyncInboxes(
@@ -776,7 +1046,68 @@ export function ChannelsPage() {
       else delete next[inboxId];
       return next;
     });
+
     showToast(t("channels.bound", "Inbox updated."), "success");
+  }
+
+  // The observer binding (issue #476): both calls reach Chatwoot, and the row's list moves only on
+  // success, like the responder binding above.
+  async function observeInbox(inboxId: string, agentId: string) {
+    const { data, error: err } = await api.api.v1.chatwoot
+      .inboxes({ id: inboxId })
+      .observers.post({ agentId });
+    if (err || !data) {
+      showToast(
+        apiErrorMessage(err) ||
+          t("channels.observeError", "Could not add the observer."),
+        "error",
+      );
+      throw err;
+    }
+    const next = data.inbox.observerAgentIds;
+    setInboxes((prev) =>
+      prev.map((i) =>
+        i.id === inboxId ? { ...i, observerAgentIds: next } : i,
+      ),
+    );
+    // The call attaches on Chatwoot and re-provisions a bot that was gone, so it is also the
+    // reconnect for an observer the reconcile reported missing: the pair is active again, and the
+    // chip has to stop asking to be reconnected without waiting for the next status read. And the
+    // repair is the PERSONA's, not this binding's — see `markAgentBotActive`.
+    setObserverStatus((prev) => ({
+      ...prev,
+      [`${inboxId}:${agentId}`]: "active",
+    }));
+    markBindingActive(`${inboxId}:${agentId}`, "observer");
+    showToast(t("channels.observed", "Observer added."), "success");
+  }
+
+  async function unobserveInbox(inboxId: string, agentId: string) {
+    const { data, error: err } = await api.api.v1.chatwoot
+      .inboxes({ id: inboxId })
+      .observers({ agentId })
+      .delete();
+    if (err || !data) {
+      showToast(
+        apiErrorMessage(err) ||
+          t("channels.unobserveError", "Could not remove the observer."),
+        "error",
+      );
+      throw err;
+    }
+    const next = data.inbox.observerAgentIds;
+    setInboxes((prev) =>
+      prev.map((i) =>
+        i.id === inboxId ? { ...i, observerAgentIds: next } : i,
+      ),
+    );
+    // Forgotten with the binding, so a later re-add does not inherit the verdict about the binding
+    // that was removed.
+    setObserverStatus((prev) => {
+      const { [`${inboxId}:${agentId}`]: _gone, ...rest } = prev;
+      return rest;
+    });
+    showToast(t("channels.unobserved", "Observer removed."), "success");
   }
 
   async function reconnectBot(inboxId: string) {
@@ -787,6 +1118,7 @@ export function ChannelsPage() {
         .reconnect.post();
       if (err) throw err;
       setBotStatus((prev) => ({ ...prev, [inboxId]: "active" }));
+
       showToast(t("channels.reconnected", "Bot reconnected."), "success");
     } catch (e) {
       showToast(
@@ -1209,19 +1541,75 @@ export function ChannelsPage() {
                           onRemove={() => removeInboxMirror(ib)}
                         >
                           {disconnected ? (
-                            <span className="shrink-0 text-text-muted text-xs">
-                              {t(
-                                "channels.accountDisconnectedOff",
-                                "Account disconnected",
-                              )}
-                            </span>
+                            // NOTE: A disconnect keeps the observers it finds, and removing one
+                            // stays allowed while it lasts (`unobserveInbox` asks no account) —
+                            // while `updateAgent` and `deleteAgent` refuse the agent until its
+                            // rows are gone. So the chips and their remove buttons stay here;
+                            // only adding, which needs the account, does not.
+                            <div className="flex flex-col items-end gap-1.5">
+                              <span className="shrink-0 text-text-muted text-xs">
+                                {t(
+                                  "channels.accountDisconnectedOff",
+                                  "Account disconnected",
+                                )}
+                              </span>
+                              {ib.observerAgentIds.length > 0 ? (
+                                <InboxObserversStrip
+                                  observerAgentIds={ib.observerAgentIds}
+                                  responderAgentId={ib.agentId}
+                                  statusByAgentId={observerStatusFor(
+                                    observerStatus,
+                                    ib.id,
+                                  )}
+                                  agents={agents}
+                                  canAdd={false}
+                                  onObserve={(agentId) =>
+                                    observeInbox(ib.id, agentId)
+                                  }
+                                  onUnobserve={(agentId) =>
+                                    unobserveInbox(ib.id, agentId)
+                                  }
+                                />
+                              ) : null}
+                            </div>
                           ) : (
-                            <InboxAgentPicker
-                              value={ib.agentId}
-                              agents={agents}
-                              label={t("channels.bindLabel", "Answering agent")}
-                              onChange={(agentId) => bindInbox(ib.id, agentId)}
-                            />
+                            <div className="flex flex-col items-end gap-1.5">
+                              <InboxAgentPicker
+                                value={ib.agentId}
+                                // WITHOUT THIS INBOX'S OBSERVERS (issue #476 review, round 48). The
+                                // two bindings are exclusive per (inbox, agent), so `bindInbox`
+                                // refuses an agent that already observes this inbox — offered here,
+                                // the option is one the request is certain to reject, and the
+                                // operator learns that from an error toast. The CURRENT responder
+                                // is never among them (the same exclusivity), so nothing selectable
+                                // is lost.
+                                agents={agents.filter(
+                                  (a) => !ib.observerAgentIds.includes(a.id),
+                                )}
+                                label={t(
+                                  "channels.bindLabel",
+                                  "Answering agent",
+                                )}
+                                onChange={(agentId) =>
+                                  bindInbox(ib.id, agentId)
+                                }
+                              />
+                              <InboxObserversStrip
+                                observerAgentIds={ib.observerAgentIds}
+                                responderAgentId={ib.agentId}
+                                statusByAgentId={observerStatusFor(
+                                  observerStatus,
+                                  ib.id,
+                                )}
+                                agents={agents}
+                                onObserve={(agentId) =>
+                                  observeInbox(ib.id, agentId)
+                                }
+                                onUnobserve={(agentId) =>
+                                  unobserveInbox(ib.id, agentId)
+                                }
+                              />
+                            </div>
                           )}
                         </InboxRow>
                       ))}

@@ -149,6 +149,30 @@ function openerFor(field: Element): HTMLButtonElement {
   return own as HTMLButtonElement;
 }
 
+// The filter box has to belong to the OFFER, not merely be on screen: this modal is full of empty
+// text inputs, and any of them would satisfy a document-wide search while typing into it narrows
+// nothing.
+//
+// Walks out from an option until a container also holds a text input. That container IS "the offer
+// owning a filter", and the walk is safe to run to the end because the offer is portalled: it never
+// reaches the form, so finding nothing means there is nothing rather than meaning the search
+// wandered into the page. Stopping at the smallest container of all the options would be too tight —
+// the filter sits BESIDE the list, not inside it.
+function filterOfTheOffer(): HTMLInputElement {
+  const options = Array.from(
+    document.querySelectorAll("li button, [role='option'], [role='menuitem']"),
+  ).filter((el) => (el.textContent ?? "").trim().startsWith("data."));
+  let offer: Element | null = options[0] ?? null;
+  while (offer && offer !== document.body) {
+    const filter = offer.querySelector<HTMLInputElement>(
+      "input[type='text'], input[type='search'], input:not([type])",
+    );
+    if (filter) return filter;
+    offer = offer.parentElement;
+  }
+  throw new Error("the offer has no filter box of its own");
+}
+
 test("opening a path offer does not push the field below it down", async () => {
   await openBookForm();
   const idField = controlFor<HTMLInputElement>(
@@ -187,29 +211,7 @@ test("a path offer can be narrowed by typing", async () => {
   await waitFor(() => expect(offeredPaths().length).toBeGreaterThan(4));
   const before = offeredPaths().length;
 
-  // The filter box has to belong to the OFFER, not merely be on screen: this modal is full of empty
-  // text inputs, and any of them would satisfy a document-wide search while typing into it narrows
-  // nothing. Scoped to the smallest subtree holding every option, which is the offer itself whatever
-  // it is built from.
-  const options = Array.from(
-    document.querySelectorAll("li button, [role='option'], [role='menuitem']"),
-  ).filter((el) => (el.textContent ?? "").trim().startsWith("data."));
-  // Walk out from an option until a container also holds a text input. That container IS "the offer
-  // owning a filter", and the walk is safe to run to the end because the offer is portalled: it
-  // never reaches the form, so finding nothing means there is nothing rather than meaning the search
-  // wandered into the page. Stopping at the smallest container of all the options would be too
-  // tight — the filter sits BESIDE the list, not inside it.
-  let offer: Element | null = options[0] ?? null;
-  let filter: HTMLInputElement | null = null;
-  while (offer && offer !== document.body) {
-    filter = offer.querySelector<HTMLInputElement>(
-      "input[type='text'], input[type='search'], input:not([type])",
-    );
-    if (filter) break;
-    offer = offer.parentElement;
-  }
-  if (!filter) throw new Error("the offer has no filter box of its own");
-  fireEvent.change(filter, { target: { value: "customer" } });
+  fireEvent.change(filterOfTheOffer(), { target: { value: "customer" } });
 
   await waitFor(() => {
     const after = offeredPaths();
@@ -336,4 +338,101 @@ test("the offer is portalled inside the dialog, not into the body", async () => 
   let flow: Element | null = idField;
   while (flow && !flow.contains(startField)) flow = flow.parentElement;
   expect(flow?.contains(anOption)).toBe(false);
+});
+
+// Round 1 of review, three findings, all of them costs the portal introduced.
+
+// THE FILTER IS PER VISIT, and a pick does not close the popover the way Radix thinks it does.
+//
+// Every caller closes by setting the controlled `open` prop to false from its own `onPick`, which
+// Radix never sees: `onOpenChange` fires for the interactions IT handles (Escape, an outside click,
+// the trigger), not for a prop the parent changed. So clearing the query there covers dismissal and
+// misses the ordinary path, and the next visit opens onto a list already narrowed by a word the
+// operator typed for a different field.
+test("the filter does not survive a pick into the next visit", async () => {
+  await openBookForm();
+  const idField = controlFor<HTMLInputElement>(
+    /onde está o id|where the id is/i,
+  );
+  fireEvent.click(openerFor(idField));
+  await waitFor(() => expect(offeredPaths().length).toBeGreaterThan(4));
+
+  const filter = filterOfTheOffer();
+  fireEvent.change(filter, { target: { value: "customer" } });
+  await waitFor(() =>
+    expect(offeredPaths().every((p) => p.includes("customer"))).toBe(true),
+  );
+
+  const picked = await waitFor(() => {
+    const el = Array.from(document.querySelectorAll("li button")).find((x) =>
+      (x.textContent ?? "").trim().startsWith("data.appointment.customer_name"),
+    );
+    if (!el) throw new Error("the filtered leaf was not offered");
+    return el as HTMLButtonElement;
+  });
+  fireEvent.click(picked);
+  await waitFor(() => expect(offeredPaths().length).toBe(0));
+
+  fireEvent.click(openerFor(idField));
+  await waitFor(() => {
+    const again = offeredPaths();
+    expect(again.length).toBeGreaterThan(0);
+    // The whole sample again, including the paths that word hides.
+    expect(again.some((p) => !p.includes("customer"))).toBe(true);
+  });
+});
+
+// ESCAPE LEAVES THE OPERATOR SOMEWHERE, and `onCloseAutoFocus` is prevented for the pick.
+//
+// Preventing it unconditionally covers a case that does not exist here: on Escape nothing refocuses
+// the textarea, so the content unmounts under the focused element and focus falls to the document
+// body — the keyboard operator's next Tab restarts from the top of the page. The prevention belongs
+// to the pick, which restores focus itself; every other way out keeps Radix's return to the trigger.
+test("escaping the offer returns focus to the control that opened it", async () => {
+  await openBookForm();
+  const idField = controlFor<HTMLInputElement>(
+    /onde está o id|where the id is/i,
+  );
+  const opener = openerFor(idField);
+  fireEvent.click(opener);
+  await waitFor(() => expect(offeredPaths().length).toBeGreaterThan(4));
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(offeredPaths().length).toBe(0));
+  expect(document.activeElement === opener).toBe(true);
+  expect(document.activeElement === document.body).toBe(false);
+});
+
+// THE OFFER IS A DIALOG TO A SCREEN READER, so it has to say which one.
+//
+// Radix renders the Content as `role="dialog"`. Unnamed, entering it is announced as a bare dialog,
+// and this screen opens three of them from three fields that differ only in what they fill. The
+// filter's own label names the input, never the dialog around it.
+test("the offer carries an accessible name of its own", async () => {
+  await openBookForm();
+  const idField = controlFor<HTMLInputElement>(
+    /onde está o id|where the id is/i,
+  );
+  fireEvent.click(openerFor(idField));
+  const anOption = await waitFor(() => {
+    const el = Array.from(document.querySelectorAll("li button")).find((x) =>
+      (x.textContent ?? "").trim().startsWith("data."),
+    );
+    if (!el) throw new Error("the offer never appeared");
+    return el;
+  });
+
+  // The dialog is the Content itself, which is the popper wrapper's own child, never found by
+  // `closest('[role=dialog]')` from the option: the modal around it answers to that too.
+  const wrapper = anOption.closest("[data-radix-popper-content-wrapper]");
+  const content = wrapper?.querySelector("[role='dialog']");
+  if (!content) throw new Error("the offer is not a dialog to begin with");
+  const label =
+    content.getAttribute("aria-label") ??
+    (content.getAttribute("aria-labelledby")
+      ? (document.getElementById(
+          content.getAttribute("aria-labelledby") as string,
+        )?.textContent ?? "")
+      : "");
+  expect((label ?? "").trim().length).toBeGreaterThan(0);
 });

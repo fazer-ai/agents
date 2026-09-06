@@ -1,7 +1,14 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { AlertTriangle, Braces, Plus, Trash2 } from "lucide-react";
-import { type ReactNode, useId, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -628,6 +635,16 @@ export function PathPicker({
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  // Set by a pick, read once by `onCloseAutoFocus`. A pick restores focus itself, at the caret;
+  // every other way out of the offer keeps Radix's return to the trigger (round 1 of review).
+  const pickedRef = useRef(false);
+  // The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
+  // Every caller closes by setting the controlled `open` prop from its own `onPick`, which Radix
+  // never sees: `onOpenChange` fires for the interactions IT handles, not for a prop the parent
+  // changed. So the transition itself is what clears, whoever caused it (round 1 of review).
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
   const q = query.trim().toLowerCase();
   // Filtered by PATH, never by the sample value beside it: the value is a preview of one response
   // and typing part of it would offer paths that hold something else on the next call.
@@ -644,7 +661,6 @@ export function PathPicker({
       open={open}
       onOpenChange={(next) => {
         if (next !== open) onToggle();
-        if (!next) setQuery("");
       }}
     >
       <div className="-mt-2 flex flex-col gap-1" ref={anchorRef}>
@@ -681,11 +697,23 @@ export function PathPicker({
           // dialog — positioned correctly, sized correctly, and invisible. Found by opening it in a
           // browser; happy-dom has no stacking context to fail in.
           className="z-(--z-popover) w-[min(28rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-secondary shadow-lg"
-          // The caret restore wins over Radix's focus return. `insertToken` refocuses the textarea in
-          // a `requestAnimationFrame` and puts the caret after the token it wrote; Radix's default
-          // close behaviour focuses the TRIGGER, which lands after that frame and takes the caret
-          // away from the box the operator is writing in.
-          onCloseAutoFocus={(e) => e.preventDefault()}
+          // Radix renders this as `role="dialog"`, and this screen opens three of them from three
+          // fields that differ only in what they fill. The filter's own label names the input, never
+          // the dialog around it, so an unnamed one is announced as a bare dialog.
+          aria-label={openLabel}
+          // The caret restore wins over Radix's focus return, FOR A PICK. `insertToken` refocuses
+          // the textarea in a `requestAnimationFrame` and puts the caret after the token it wrote;
+          // Radix's default close behaviour focuses the TRIGGER, which lands after that frame and
+          // takes the caret away from the box the operator is writing in.
+          //
+          // Only for a pick: on Escape or an outside click nothing refocuses anything, so preventing
+          // it there unmounts the content under the focused element and drops focus to the document
+          // body, restarting the keyboard operator's next Tab from the top of the page.
+          onCloseAutoFocus={(e) => {
+            if (!pickedRef.current) return;
+            pickedRef.current = false;
+            e.preventDefault();
+          }}
         >
           <div className="border-border border-b p-2">
             <input
@@ -717,7 +745,10 @@ export function PathPicker({
               <li key={leaf.path}>
                 <button
                   type="button"
-                  onClick={() => onPick(leaf.path)}
+                  onClick={() => {
+                    pickedRef.current = true;
+                    onPick(leaf.path);
+                  }}
                   className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
                 >
                   <code className="shrink-0 text-text-primary">
@@ -738,7 +769,10 @@ export function PathPicker({
               <li key={`each:${list.path}`}>
                 <button
                   type="button"
-                  onClick={() => onPickList?.(list.path)}
+                  onClick={() => {
+                    pickedRef.current = true;
+                    onPickList?.(list.path);
+                  }}
                   className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
                 >
                   <code className="shrink-0 text-text-primary">

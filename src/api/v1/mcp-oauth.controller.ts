@@ -1,21 +1,19 @@
 import { randomBytes } from "node:crypto";
 import { Elysia, t } from "elysia";
 import type { UserRole } from "@/../generated/prisma/client";
-import logger from "@/api/lib/logger";
 import { doc, errors, OAuthErrorResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
 import { requireSession } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
-import type { AuditAction } from "@/lib/audit/actions";
-import { NotFoundError, UnauthorizedError } from "@/lib/errors";
+import { ConflictError, NotFoundError, UnauthorizedError } from "@/lib/errors";
 import {
-  asSuperAdmin,
+  asPrincipalOn,
   roleAtLeast,
   runScoped,
   type TenantContext,
 } from "@/lib/tenancy";
-import { recordAudit } from "@/modules/audit/service";
+import { auditMutationOn } from "@/modules/audit/service";
 import {
   consumePendingAuthorization,
   createPendingAuthorization,
@@ -83,36 +81,6 @@ function authorizeRedirect(
   if (params.state) url.searchParams.set("state", params.state);
   url.searchParams.set("iss", issuerUrl());
   return url.toString();
-}
-
-// Best-effort audit of a consent decision; a failure here never blocks the user flow. SUPER_ADMIN
-// writes via the audited fleet path (any tenantId, incl. null); a tenant user writes scoped to their
-// tenant (the pending's tenantId always equals their own).
-async function auditConsentDecision(
-  user: { id: bigint; role: UserRole },
-  tenantId: bigint | null,
-  action: AuditAction,
-  clientId: string,
-  scopes: string[],
-): Promise<void> {
-  const entry = {
-    actorId: user.id,
-    actorType: "user" as const,
-    action,
-    target: `client:${clientId}`,
-    after: { scopes },
-  };
-  try {
-    if (user.role === "SUPER_ADMIN") {
-      await asSuperAdmin((db) => recordAudit(db, tenantId, entry));
-    } else if (tenantId !== null) {
-      await runScoped({ tenantId, userId: user.id, role: user.role }, (db) =>
-        recordAudit(db, tenantId, entry),
-      );
-    }
-  } catch (err) {
-    logger.warn({ err }, "MCP consent audit failed");
-  }
 }
 
 export const mcpOAuthController = new Elysia({
@@ -446,57 +414,86 @@ export const mcpOAuthController = new Elysia({
   // and remembers the approval. Returns the redirect URL for the SPA to navigate to.
   .post(
     "/consent/:req",
-    async ({ getAuthUser, params, body }) => {
-      const user = await getAuthUser();
-      if (!user) throw new UnauthorizedError();
-      requireSession(user);
-      const pending = await consumePendingAuthorization(
-        params.req,
-        user.id,
-        body.csrfToken,
-      );
-      if (!pending) throw new NotFoundError();
+    async ({ tenantContext, params, body }) => {
+      const ctx = tenantContext;
+      if (!ctx?.userId) throw new UnauthorizedError();
+      requireSession(ctx);
+      // Mirrors /authorize, which parks a tenant-less pending for a fleet-level SUPER_ADMIN: the
+      // console's `X-Tenant-Id` SELECTOR must not decide which trail a decision joins.
+      const scopeTenantId = ctx.role === "SUPER_ADMIN" ? null : ctx.tenantId;
+      const userId = ctx.userId;
 
-      if (body.decision === "deny") {
-        await auditConsentDecision(
-          user,
-          pending.tenantId,
-          "mcp_oauth_consent.deny",
+      // ONE TRANSACTION FOR THE DECISION AND ITS ROW. Consuming the pending, minting the code and
+      // remembering the approval used to commit first, and the row was appended afterwards through
+      // a `try/catch` that logged at warn — so a granted consent could leave nothing behind, and a
+      // reader cannot tell that from a consent that never happened. A DENIAL is a mutation too: the
+      // consumption is the write, and the row belongs to it.
+      const decided = await asPrincipalOn(basePrisma, ctx, async (db) => {
+        const pending = await consumePendingAuthorization(
+          params.req,
+          userId,
+          body.csrfToken,
+          db,
+        );
+        if (!pending) throw new NotFoundError();
+        // THE PRINCIPAL CHANGED UNDER THE REQUEST, and this used to be a fourth branch that wrote
+        // nothing and did not even warn. The pending's tenant is written from the role held at
+        // /authorize; if the role held now would file the row somewhere else, the decision cannot be
+        // attributed, and consenting on an unreadable trail is worse than refusing. Unreachable
+        // today and measured as such: only a SUPER_ADMIN parks a tenant-less pending,
+        // `users_role_tenant_check` forbids a SUPER_ADMIN with a tenant, and `updateUserRole` writes
+        // only the role — so the demotion this needs fails at the database (#534). It says so
+        // instead of falling through, because that is a constraint away from being reachable.
+        if (pending.tenantId !== scopeTenantId) {
+          throw new ConflictError(
+            "the signed-in principal no longer matches this authorization request",
+          );
+        }
+
+        if (body.decision === "deny") {
+          await auditMutationOn(db, ctx, pending.tenantId, {
+            action: "mcp_oauth_consent.deny",
+            target: `client:${pending.clientId}`,
+            after: { scopes: pending.scopes },
+          });
+          return {
+            redirect: authorizeRedirect(pending.redirectUri, {
+              error: "access_denied",
+              state: pending.state,
+            }),
+          };
+        }
+
+        const code = await createAuthorizationCode({
+          clientId: pending.clientId,
+          userId: pending.userId,
+          tenantId: pending.tenantId,
+          redirectUri: pending.redirectUri,
+          scopes: pending.scopes,
+          codeChallenge: pending.codeChallenge,
+          codeChallengeMethod: pending.codeChallengeMethod,
+          resource: pending.resource,
+          base: db,
+        });
+        await upsertApproval(
+          pending.userId,
           pending.clientId,
           pending.scopes,
+          db,
         );
+        await auditMutationOn(db, ctx, pending.tenantId, {
+          action: "mcp_oauth_consent.grant",
+          target: `client:${pending.clientId}`,
+          after: { scopes: pending.scopes },
+        });
         return {
           redirect: authorizeRedirect(pending.redirectUri, {
-            error: "access_denied",
+            code,
             state: pending.state,
           }),
         };
-      }
-
-      const code = await createAuthorizationCode({
-        clientId: pending.clientId,
-        userId: pending.userId,
-        tenantId: pending.tenantId,
-        redirectUri: pending.redirectUri,
-        scopes: pending.scopes,
-        codeChallenge: pending.codeChallenge,
-        codeChallengeMethod: pending.codeChallengeMethod,
-        resource: pending.resource,
       });
-      await upsertApproval(pending.userId, pending.clientId, pending.scopes);
-      await auditConsentDecision(
-        user,
-        pending.tenantId,
-        "mcp_oauth_consent.grant",
-        pending.clientId,
-        pending.scopes,
-      );
-      return {
-        redirect: authorizeRedirect(pending.redirectUri, {
-          code,
-          state: pending.state,
-        }),
-      };
+      return decided;
     },
     {
       detail: doc(
@@ -504,7 +501,7 @@ export const mcpOAuthController = new Elysia({
         "Approves or denies a pending authorization. Verifies the CSRF token and single-use-consumes the request; on approve, mints the authorization code from the stored record and remembers the approval (revocable). Returns { redirect } for the SPA to navigate to.",
       ),
       requireAuth: true,
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 409, 422),
       params: t.Object({
         req: t.String({
           minLength: 1,

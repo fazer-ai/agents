@@ -125,3 +125,40 @@ test("the over-limit line is the caller's sentence, not one of the shell's", () 
   );
   expect(document.body.textContent).toContain("SAMPLE over by 2 of 4");
 });
+
+// AND THE FIELD HAS A CEILING, or the document decides how tall the form is (round 4 of review).
+//
+// `minHeight` alone means the editor grows with its content, so a response with a thousand records
+// makes a field a thousand lines tall and pushes everything under it off the screen. The textarea it
+// replaced had `rows`, which is a bounded viewport that scrolls inside itself. Asserted on the style
+// the wrapper carries, because happy-dom has no layout to measure.
+test("a maximum height reaches the editor, and is absent when not asked for", () => {
+  render(
+    <CodeMirrorField
+      value=""
+      onChange={() => {}}
+      minHeight="6rem"
+      maxHeight="24rem"
+      aria-label="Field"
+    />,
+  );
+  const host = document.body.querySelector(".cm-editor")
+    ?.parentElement as HTMLElement;
+  expect(host.style.getPropertyValue("--code-max-h")).toBe("24rem");
+  expect(host.className).toContain("max-h-");
+
+  // A SECOND mount, not a rerender of the first: `cleanup` unmounts the root, and rerendering an
+  // unmounted one throws instead of asserting anything.
+  cleanup();
+  render(
+    <CodeMirrorField
+      value=""
+      onChange={() => {}}
+      minHeight="6rem"
+      aria-label="Field"
+    />,
+  );
+  const bare = document.body.querySelector(".cm-editor")
+    ?.parentElement as HTMLElement;
+  expect(bare?.className ?? "").not.toContain("max-h-");
+});

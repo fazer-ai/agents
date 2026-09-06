@@ -195,3 +195,42 @@ describe("reindentJson", () => {
     expect(reindentJson("")).toBeNull();
   });
 });
+
+// FORMATTING IS FOR READING, AND IT HAS A CEILING (round 4 of review).
+//
+// Indentation is depth-sized, so a deeply nested document expands by a factor of its depth: measured,
+// 4001 characters of nested arrays produce 8,008,001 — from a document well under the 100,000-char
+// cap the test endpoint puts on a raw response. That output is not something anyone reads, it is
+// re-parsed on the next keystroke, and since #562 it is produced automatically when a test request
+// answers. So the writer carries a budget and gives up rather than building it.
+describe("reindentJson under a ceiling", () => {
+  function nested(depth: number): string {
+    let doc = "1";
+    for (let i = 0; i < depth; i++) doc = `[${doc}]`;
+    return doc;
+  }
+
+  test("refuses a document whose formatted form nobody could read", () => {
+    expect(reindentJson(nested(2000))).toBeNull();
+  });
+
+  test("still formats an ordinary response", () => {
+    const wide = JSON.stringify({
+      data: Array.from({ length: 500 }, (_, i) => ({
+        id: `ap_${i}`,
+        name: `Nome ${i}`,
+        at: "2026-09-02T14:00:00-03:00",
+      })),
+    });
+    const out = reindentJson(wide);
+    expect(out).not.toBeNull();
+    expect(JSON.parse(out ?? "")).toEqual(JSON.parse(wide));
+  });
+
+  // The ceiling is on the OUTPUT, not on the input: what makes a document unreadable here is what
+  // comes out of it, and a small input is exactly how the big output is reached.
+  test("judges the formatted size, not the pasted size", () => {
+    expect(nested(2000).length).toBeLessThan(10_000);
+    expect(reindentJson(nested(2000))).toBeNull();
+  });
+});

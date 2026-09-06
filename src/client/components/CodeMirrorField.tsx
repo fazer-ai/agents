@@ -190,6 +190,10 @@ export interface CodeMirrorFieldProps {
   cap?: EditorCap;
   placeholder?: string;
   minHeight?: string;
+  // A ceiling on the field, so the DOCUMENT does not decide how tall the form is: past it the editor
+  // scrolls inside itself, which is what the `rows` of a textarea gives for free. Optional, because
+  // an editor that is the whole point of its screen (the code tool's body) wants to grow.
+  maxHeight?: string;
   invalid?: boolean;
   "aria-label"?: string;
   className?: string;
@@ -202,6 +206,7 @@ export function CodeMirrorField({
   cap,
   placeholder,
   minHeight = "18rem",
+  maxHeight,
   invalid,
   className,
   ...rest
@@ -424,10 +429,18 @@ export function CodeMirrorField({
         ref={host}
         className={cn(
           "w-full overflow-hidden [&_.cm-editor]:min-h-[var(--code-min-h)]",
+          // NOTE: on the editor, so CodeMirror's own scroller (already `overflow: auto`) takes over
+          // past the ceiling instead of the page growing.
+          maxHeight ? "[&_.cm-editor]:max-h-[var(--code-max-h)]" : "",
           invalid || field.invalid || over ? "[&_.cm-editor]:border-error" : "",
           className,
         )}
-        style={{ "--code-min-h": minHeight } as React.CSSProperties}
+        style={
+          {
+            "--code-min-h": minHeight,
+            ...(maxHeight ? { "--code-max-h": maxHeight } : {}),
+          } as React.CSSProperties
+        }
       />
       {showCount && (
         <span

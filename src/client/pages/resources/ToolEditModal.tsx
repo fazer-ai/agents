@@ -1980,6 +1980,11 @@ export function ToolEditModal({
                   extensions={SAMPLE_LANGUAGE}
                   invalid={sampleParse.state === "invalid"}
                   minHeight="6rem"
+                  // A response with a thousand records would otherwise make this field a thousand
+                  // lines tall and push the template and the appointment controls off the screen.
+                  // Past this it scrolls inside itself, which is what the `rows` of the textarea it
+                  // replaced gave for free (round 4 of review).
+                  maxHeight="24rem"
                   placeholder='{"data": {"id": "ap_1", "start": "2026-09-02T14:00:00-03:00"}}'
                   aria-label={t("tools.sample", "Sample response (optional)")}
                 />

@@ -22,6 +22,14 @@ import type { SyntaxNode, Tree } from "@lezer/common";
 const parser = jsonLanguage.parser;
 const INDENT = "  ";
 
+// What a formatted sample may grow to. Indentation is depth-sized, so expansion is a factor of the
+// document's DEPTH and not of its length: measured, 4001 characters of nested arrays produce
+// 8,008,001, from a document well under the 100,000-character cap `test-run.ts` puts on a raw
+// response (round 4 of review). Nobody reads that, it is re-parsed on the next keystroke, and since
+// this field formats a test response on arrival it is produced without anyone asking. Ten times the
+// wire cap leaves every ordinary response — which expands by a small factor — far below it.
+const MAX_FORMATTED = 1_000_000;
+
 // A place in the document, in the three coordinates the two readers of it want: the offset for a
 // selection, the line and column for a sentence.
 export interface JsonSpot {
@@ -129,32 +137,66 @@ export function reindentJson(text: string): string | null {
   const tree = parser.parse(body);
   const top = tree.topNode.firstChild;
   if (!top) return null;
-  return render(top, body, 0);
+  // NOTE: written into a budget rather than measured afterwards. The point of the ceiling is to not
+  // BUILD the thing, and a check on the finished string has already spent the memory it was meant
+  // to refuse.
+  const out: string[] = [];
+  if (!write(top, body, 0, out, { left: MAX_FORMATTED })) return null;
+  return out.join("");
 }
 
-function render(node: SyntaxNode, text: string, depth: number): string {
+interface Budget {
+  left: number;
+}
+
+function put(out: string[], budget: Budget, piece: string): boolean {
+  budget.left -= piece.length;
+  if (budget.left < 0) return false;
+  out.push(piece);
+  return true;
+}
+
+function write(
+  node: SyntaxNode,
+  text: string,
+  depth: number,
+  out: string[],
+  budget: Budget,
+): boolean {
   if (node.name === "Object" || node.name === "Array") {
     const open = node.name === "Object" ? "{" : "[";
     const close = node.name === "Object" ? "}" : "]";
     const items = childValues(node);
-    if (items.length === 0) return `${open}${close}`;
+    if (items.length === 0) return put(out, budget, `${open}${close}`);
+    if (!put(out, budget, `${open}\n`)) return false;
     const pad = INDENT.repeat(depth + 1);
-    const inner = items
-      .map((item) => pad + renderItem(item, text, depth + 1))
-      .join(",\n");
-    return `${open}\n${inner}\n${INDENT.repeat(depth)}${close}`;
+    for (const [i, item] of items.entries()) {
+      if (i > 0 && !put(out, budget, ",\n")) return false;
+      if (!put(out, budget, pad)) return false;
+      if (!writeItem(item, text, depth + 1, out, budget)) return false;
+    }
+    return put(out, budget, `\n${INDENT.repeat(depth)}${close}`);
   }
   // NOTE: every leaf is copied out of the document, which is the whole point: a number is whatever
   // the API wrote, not whatever JavaScript would write back.
-  return text.slice(node.from, node.to);
+  return put(out, budget, text.slice(node.from, node.to));
 }
 
-function renderItem(node: SyntaxNode, text: string, depth: number): string {
-  if (node.name !== "Property") return render(node, text, depth);
+function writeItem(
+  node: SyntaxNode,
+  text: string,
+  depth: number,
+  out: string[],
+  budget: Budget,
+): boolean {
+  if (node.name !== "Property") return write(node, text, depth, out, budget);
   const name = node.getChild("PropertyName");
   const value = name?.nextSibling?.nextSibling ?? null;
-  if (!name || !value) return text.slice(node.from, node.to);
-  return `${text.slice(name.from, name.to)}: ${render(value, text, depth)}`;
+  if (!name || !value) {
+    return put(out, budget, text.slice(node.from, node.to));
+  }
+  if (!put(out, budget, `${text.slice(name.from, name.to)}: `)) return false;
+  return write(value, text, depth, out, budget);
 }
 
 // The values inside a container: its children minus the punctuation the grammar also hangs there.

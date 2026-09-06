@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { mcpResourceId } from "./metadata";
@@ -30,6 +30,12 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+// The base client OR a scoped transaction, for the mint alone. What the code needs from its client
+// is not a role but a TRANSACTION: the consent decision, the code it mints and the row that records
+// the decision commit together or not at all (#497). Deliberately NOT applied to the rest of this
+// module — `/token` mints from its own request and shares no transaction with anything.
+type CodeDb = Prisma.TransactionClient;
+
 export interface CreateCodeParams {
   clientId: string;
   userId: bigint;
@@ -39,7 +45,7 @@ export interface CreateCodeParams {
   codeChallenge: string;
   codeChallengeMethod: string;
   resource?: string | null;
-  base?: PrismaClient;
+  base?: CodeDb;
 }
 
 // Mints an authorization code (returned once, in clear). Requires PKCE S256.

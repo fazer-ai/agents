@@ -1,10 +1,15 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type {
   McpOAuthPendingAuthorization,
-  PrismaClient,
+  Prisma,
 } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 
+// The base client OR a scoped transaction. These tables are global (no RLS), so what a write needs
+// from its client is not a role but a TRANSACTION: the consent decision and the row that records it
+// commit together or not at all (#497), and `Prisma.TransactionClient` is the surface both a plain
+// `PrismaClient` and the `ScopedDb` handed out by `runScopedOn` satisfy.
+type Db = Prisma.TransactionClient;
 // OAuth 2.1 consent state. A /authorize that is NOT auto-skipped (first-party client or a
 // sufficient prior approval) parks a pending record here and redirects the user to the SPA consent
 // screen; the screen reads the record and the user approves/denies. Security model mirrors the
@@ -36,7 +41,7 @@ export interface CreatePendingParams {
   codeChallengeMethod: string;
   resource?: string | null;
   state?: string | null;
-  base?: PrismaClient;
+  base?: Db;
 }
 
 // Parks a pending authorization; returns the opaque request id (in clear, once) that goes in the
@@ -69,7 +74,7 @@ export async function createPendingAuthorization(
 export async function getPendingAuthorization(
   requestId: string,
   userId: bigint,
-  base: PrismaClient = basePrisma,
+  base: Db = basePrisma,
 ): Promise<McpOAuthPendingAuthorization | null> {
   const row = await base.mcpOAuthPendingAuthorization.findUnique({
     where: { requestHash: sha256(requestId) },
@@ -87,7 +92,7 @@ export async function getPendingAuthorization(
 export async function issueConsentCsrf(
   requestId: string,
   userId: bigint,
-  base: PrismaClient = basePrisma,
+  base: Db = basePrisma,
 ): Promise<string | null> {
   const row = await getPendingAuthorization(requestId, userId, base);
   if (!row) return null;
@@ -107,7 +112,7 @@ export async function consumePendingAuthorization(
   requestId: string,
   userId: bigint,
   csrfToken: string,
-  base: PrismaClient = basePrisma,
+  base: Db = basePrisma,
 ): Promise<McpOAuthPendingAuthorization | null> {
   const row = await getPendingAuthorization(requestId, userId, base);
   if (!row) return null;
@@ -130,7 +135,7 @@ export async function consumePendingAuthorization(
 export async function findApproval(
   userId: bigint,
   clientId: string,
-  base: PrismaClient = basePrisma,
+  base: Db = basePrisma,
 ) {
   return base.mcpOAuthClientApproval.findUnique({
     where: { userId_clientId: { userId, clientId } },
@@ -148,19 +153,34 @@ export function isApprovalSufficient(
 
 // Records (or widens) the user's approval for a client. Stores the UNION so a later narrower
 // request stays covered; a wider one grows the set on the next approval.
+//
+// THE UNION IS COMPUTED BY THE DATABASE, INSIDE THE WRITE, and that is the whole point of the raw
+// statement (#497). Read-then-merge-then-upsert closes over a value read before the write: two
+// grants for the same (user, client) in flight together each merge against the set as it was BEFORE
+// either landed, so the second write replaces the first's scopes instead of adding to them. Both
+// calls return normally and the row is there, so the loss is silent — measured by blocking one
+// read until the other grant committed (`tests/modules/mcp-oauth-consent.test.ts`).
+//
+// `ON CONFLICT DO UPDATE` evaluates its SET against the row as it exists AT THE WRITE, under the
+// row lock the conflict takes, so there is nothing for a concurrent grant to slip between. No
+// `SELECT … FOR UPDATE` and no transaction: one statement cannot be interleaved.
+//
+// Prisma has no expression for this — `upsert` takes scalars it computed in JS — so it is raw. The
+// `ORDER BY 1` is not cosmetic: `DISTINCT unnest` has no defined order, and the stored order is
+// what every reader and every audit projection of this row sees.
 export async function upsertApproval(
   userId: bigint,
   clientId: string,
   scopes: string[],
-  base: PrismaClient = basePrisma,
+  base: Db = basePrisma,
 ): Promise<void> {
-  const existing = await findApproval(userId, clientId, base);
-  const merged = existing
-    ? Array.from(new Set([...existing.scopes, ...scopes]))
-    : scopes;
-  await base.mcpOAuthClientApproval.upsert({
-    where: { userId_clientId: { userId, clientId } },
-    create: { userId, clientId, scopes: merged },
-    update: { scopes: merged },
-  });
+  await base.$executeRaw`
+    INSERT INTO mcp_oauth_client_approvals (user_id, client_id, scopes, created_at, updated_at)
+         VALUES (${userId}, ${clientId}, ${scopes}, NOW(), NOW())
+    ON CONFLICT (user_id, client_id) DO UPDATE
+            SET scopes = ARRAY(
+                  SELECT DISTINCT unnest(mcp_oauth_client_approvals.scopes || EXCLUDED.scopes)
+                   ORDER BY 1
+                ),
+                updated_at = NOW()`;
 }

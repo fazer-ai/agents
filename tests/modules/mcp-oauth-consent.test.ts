@@ -29,6 +29,16 @@ if (suUrl) {
 const suDb = su as PrismaClient;
 
 const CLIENT = `consent-${process.pid}`;
+
+// Whether SOMETHING holds a row/tuple lock on the approvals table right now. The first grant's write
+// is uncommitted, so it cannot be read; what is observable is the lock it took.
+async function findApprovalUncommitted(_client: string): Promise<boolean> {
+  const rows = await suDb.$queryRaw<{ n: bigint }[]>`
+    SELECT count(*) AS n FROM pg_locks l
+      JOIN pg_class c ON c.oid = l.relation
+     WHERE c.relname = 'mcp_oauth_client_approvals' AND l.mode = 'RowExclusiveLock'`;
+  return (rows[0]?.n ?? 0n) > 0n;
+}
 const REDIRECT = "https://client.example/cb";
 let tenantId = 0n;
 let userId = 0n;
@@ -154,6 +164,83 @@ describe.skipIf(!dbUp)("mcp oauth consent (pending + approvals)", () => {
 
     await upsertApproval(userId, CLIENT, ["mcp:write"], suDb);
     approval = await findApproval(userId, CLIENT, suDb);
+    expect(new Set(approval?.scopes)).toEqual(
+      new Set(["mcp:read", "mcp:write"]),
+    );
+  });
+
+  // What the union has to be a union OF, pinned in the two directions the SQL can get wrong: a scope
+  // granted twice must not accumulate, and the stored ORDER is not incidental — it is what every
+  // reader of this row sees, including an audit projection of `{ scopes }`, where a re-grant that
+  // reshuffled the array would read as a change that did not happen.
+  test("re-granting a scope neither duplicates it nor reshuffles the row", async () => {
+    const client = `${CLIENT}-dup`;
+    await upsertApproval(userId, client, ["mcp:write", "mcp:read"], suDb);
+    await upsertApproval(userId, client, ["mcp:read"], suDb);
+    await upsertApproval(userId, client, ["mcp:read", "mcp:write"], suDb);
+    const approval = await findApproval(userId, client, suDb);
+    expect(approval?.scopes).toEqual(["mcp:read", "mcp:write"]);
+  });
+
+  // TWO GRANTS FOR THE SAME (user, client) AT ONCE, and the union has to hold across them (#497).
+  //
+  // The widening above is sequential, so it passes on a merge computed in application code from a
+  // value read earlier. This one is not: the first grant runs inside a transaction held open, so it
+  // keeps the row lock while the second one runs. A merge that closes over a read taken before that
+  // lock was released writes a set that never saw the other's scope, and the last write wins —
+  // silently, since both calls return normally and the approval row is there.
+  //
+  // THE RENDEZVOUS IS THE DATABASE'S OWN LOCK, not a hook on either implementation's queries. An
+  // earlier version of this blocked the approval's `findUnique`, which measured the SHAPE of the
+  // read-then-write and hung the moment the fix stopped reading. What both shapes must do is wait
+  // for that row, so the test waits for Postgres to say someone is waiting for it, and fails if
+  // nobody ever does rather than sleeping and hoping.
+  test("two grants at once keep both scopes, not the last writer's", async () => {
+    const client = `${CLIENT}-race`;
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const blocked = async (): Promise<boolean> => {
+      const rows = await suDb.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock'
+           AND query ILIKE '%mcp_oauth_client_approvals%'`;
+      return (rows[0]?.n ?? 0n) > 0n;
+    };
+
+    const first = suDb.$transaction(
+      async (tx) => {
+        await upsertApproval(
+          userId,
+          client,
+          ["mcp:read"],
+          tx as unknown as PrismaClient,
+        );
+        await held;
+      },
+      { timeout: 20_000 },
+    );
+    // The lock has to be taken before the second grant can queue behind it.
+    while (!(await findApprovalUncommitted(client))) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const second = upsertApproval(userId, client, ["mcp:write"], suDb);
+
+    let waited = false;
+    for (let i = 0; i < 200 && !waited; i++) {
+      waited = await blocked();
+      if (!waited) await new Promise((r) => setTimeout(r, 10));
+    }
+    // Without this the whole test is two sleeps with a better name: it would go green on a build
+    // where the second grant never contended at all.
+    expect(waited).toBe(true);
+
+    release();
+    await Promise.all([first, second]);
+
+    const approval = await findApproval(userId, client, suDb);
     expect(new Set(approval?.scopes)).toEqual(
       new Set(["mcp:read", "mcp:write"]),
     );

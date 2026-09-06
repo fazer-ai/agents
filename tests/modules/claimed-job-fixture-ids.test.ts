@@ -33,11 +33,25 @@ import { join } from "node:path";
 // is where a contributor's fixture arrives.
 const ROOT = join(import.meta.dir, "..");
 
-// `id` GIVEN a decimal literal, in either spelling a bigint takes and on either side of the two
-// operators that hand a fixture its id: a property (`id: 1n`) and a default parameter
-// (`function jobFor(p, id = 1n)`), which is how chatwoot-recover-delivery.test.ts spelled the same
-// landmine and how a property-only sweep missed it for a whole round.
-const LITERAL_ID = /\bid\s*[:=]\s*(?:(-?\d+)n|BigInt\(\s*(-?\d+)\s*\))/g;
+// `id` GIVEN a number, in every spelling that reaches the same value, because the sweep is only as
+// good as the grammar it admits and a fixture is written by whoever writes it next:
+//
+//   - both operators that hand a fixture its id: a property (`id: 1n`) and a default parameter
+//     (`function jobFor(p, id = 1n)`), which is how chatwoot-recover-delivery.test.ts spelled it and
+//     how a property-only sweep missed that file for a whole round;
+//   - a quoted key (`"id": 1n`), which a JSON-shaped literal carries;
+//   - every numeric base plus separators (`0x1n`, `0o7n`, `0b11n`, `1_000n`), all of which a
+//     decimal-only pattern reads as absent;
+//   - `BigInt(1)` and `BigInt("1")`, the constructor's two argument forms.
+//
+// `reachableBySequence` normalises what is captured, so the grammar lives here and the arithmetic
+// lives there.
+// Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
+const NUMBER = String.raw`-?\d[\d_]*|0[xX][\dA-Fa-f_]+|0[oO][0-7_]+|0[bB][01_]+`;
+const LITERAL_ID = new RegExp(
+  String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["']?(${NUMBER})["']?\s*\))`,
+  "g",
+);
 
 // What tells a `ClaimedJob` literal from every other object with an `id`: `claimSeq`, a required
 // field of the type that nothing else in the tree carries. Deliberately NOT `kind`, and not a
@@ -58,8 +72,10 @@ const MARKERS = /\bclaimSeq:/;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
+// `Number` reads every base the pattern above admits once the separators are gone, and answers NaN
+// for what it cannot read, which is not a positive number either.
 function reachableBySequence(value: string): boolean {
-  return Number(value) > 0;
+  return Number(value.replace(/_/g, "")) > 0;
 }
 
 export function fixtureIdHits(src: string): number[] {
@@ -148,6 +164,16 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
   test.each([
     ["a bigint literal", fixture("7n"), true],
     ["a BigInt() call", fixture("BigInt(7)"), true],
+    ["a BigInt() call over a string", fixture('BigInt("7")'), true],
+    // Every base and the separator, because they all reach the same 7 and a decimal-only pattern
+    // reads each of them as no id at all.
+    ["a hex literal", fixture("0x7n"), true],
+    ["an octal literal", fixture("0o7n"), true],
+    ["a binary literal", fixture("0b111n"), true],
+    ["digit separators", fixture("1_000n"), true],
+    ["a quoted key", fixture("7n").replace("id:", '"id":'), true],
+    // The sign test is about the VALUE, so it has to survive the spelling too.
+    ["a hex zero", fixture("0x0n"), false],
     [
       "a default parameter",
       "function jobFor(p: object, id = 1n) {\n  claimSeq: 0;",

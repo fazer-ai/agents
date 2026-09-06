@@ -25,8 +25,15 @@ const INDENT = "  ";
 // A place in the document, in the three coordinates the two readers of it want: the offset for a
 // selection, the line and column for a sentence.
 export interface JsonSpot {
+  // A UTF-16 index, which is what a selection in the editor is measured in.
   offset: number;
   line: number;
+  // Counted in CHARACTERS, because the only reader of this number is a person counting along a line
+  // (round 2 of review). The offset is UTF-16 and an emoji is two of those, so a response carrying
+  // one before the break — a name, a message, a status, which a customer-facing API sends all day —
+  // named the character after the one it meant, once per astral character. Code points and not
+  // grapheme clusters: a ZWJ sequence still counts as its parts, which is a smaller error than the
+  // one this fixes and would cost `Intl.Segmenter` to remove.
   column: number;
 }
 
@@ -36,7 +43,7 @@ function spotAt(text: string, offset: number): JsonSpot {
   return {
     offset,
     line: before.split("\n").length,
-    column: offset - lastBreak,
+    column: [...before.slice(lastBreak + 1)].length + 1,
   };
 }
 

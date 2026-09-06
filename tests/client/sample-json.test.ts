@@ -61,6 +61,20 @@ describe("firstJsonProblem", () => {
     });
   });
 
+  // THE COLUMN IS COUNTED IN CHARACTERS, because a person counts characters (round 2 of review).
+  //
+  // The offset is a UTF-16 index and an emoji is two of those. A response from a customer-facing API
+  // carries emoji routinely — a name, a message, a status — so a sample with one before the break
+  // named a column one past the brace it was pointing at, per astral character.
+  test("counts a column in characters, not in UTF-16 units", () => {
+    // The `}` is the seventh character of the line and the eighth UTF-16 unit.
+    expect(firstJsonProblem('{"\u{1F600}": }')).toEqual({
+      offset: 7,
+      line: 1,
+      column: 7,
+    });
+  });
+
   // A response is not a fragment: two objects pasted back to back are a mistake worth naming, and
   // `JSON.parse` names it too. What must not happen is the tree reporting only the first value and
   // calling the rest fine.

@@ -1,3 +1,4 @@
+import { CHATWOOT_SEND_ID_KEY } from "./constants";
 import { firstLocationAttachment, messageTypeOf } from "./normalize";
 import {
   cleanTranscription,
@@ -36,6 +37,11 @@ export interface ChatwootMessageRow {
   inReplyTo: number | null;
   // content_attributes.is_reaction — true when this message is an emoji reaction (content = emoji).
   isReaction: boolean;
+  // The name the send gave itself on the way out (issue #499), when this message is one of ours and
+  // the sender asked for one. Null on every message nobody named: everything inbound, everything a
+  // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
+  // be proved by identity instead of by matching text.
+  sendId: string | null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -110,6 +116,22 @@ function attachmentTypesFrom(attachments: unknown): string[] {
 
 // Parses the raw response into normalized rows sorted by id ascending (Chatwoot ids are globally
 // increasing per account, so id order is chronological and drives the watermark comparison).
+// HOW MANY MESSAGES THE RESPONSE ACTUALLY CARRIED, before any of them were parsed — or `null` when
+// the response was not a list at all (issue #499).
+//
+// `parseChatwootMessages` folds three different answers into one empty array: a page that really is
+// empty, a body that was not a list (`{}`, `null`, a 200 with prose), and a full page whose rows
+// were all unreadable. A caller asking "did I reach the end of the history?" needs to tell the first
+// from the other two — the first is an answer and the other two are a degraded read, and treating a
+// degraded read as the end of the history is how "I could not tell" turns back into "it is not
+// there". Callers that only want the messages have no use for this and should keep using the parser
+// alone.
+export function chatwootMessageListLength(raw: unknown): number | null {
+  if (Array.isArray(raw)) return raw.length;
+  if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload.length;
+  return null;
+}
+
 export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
   const list: unknown[] = Array.isArray(raw)
     ? raw
@@ -137,6 +159,13 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,
+      // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
+      // whatever an operator's automation writes there, so a value of another shape is somebody
+      // else's key that happens to collide, not a name this build wrote.
+      sendId:
+        typeof ca?.[CHATWOOT_SEND_ID_KEY] === "string"
+          ? (ca[CHATWOOT_SEND_ID_KEY] as string)
+          : null,
     });
   }
   out.sort((a, b) => a.id - b.id);

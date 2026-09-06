@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  ChatwootMissingTokenError,
+} from "@/modules/chatwoot/client";
 import {
   deliverReply,
   readSplitConfig,
@@ -268,23 +272,35 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
   ) {
     let n = 0;
     let nextId = 100;
-    // What Chatwoot HOLDS, which is not the same as what the client believes it sent.
-    const stored: Array<{ id: number; content: string }> = (
-      opts.history ?? ["oi"]
-    ).map((content) => ({ id: nextId++, content }));
+    // What Chatwoot HOLDS, which is not the same as what the client believes it sent. The name the
+    // send gave itself travels with the row, the way the fork stores `content_attributes`.
+    const stored: Array<{
+      id: number;
+      content: string;
+      sendId: string | null;
+    }> = (opts.history ?? ["oi"]).map((content) => ({
+      id: nextId++,
+      content,
+      sendId: null,
+    }));
     return {
-      sendMessage: async (_c: number, content: string) => {
+      sendMessage: async (
+        _c: number,
+        content: string,
+        o?: { sendId?: string },
+      ) => {
         n += 1;
         const id = nextId++;
+        const sendId = o?.sendId ?? null;
         if (failOn(content, n)) {
-          if (opts.storeOnFailure?.(n)) stored.push({ id, content });
+          if (opts.storeOnFailure?.(n)) stored.push({ id, content, sendId });
           for (let k = 0; k < (opts.noiseOnFailure ?? 0); k += 1) {
-            stored.push({ id: nextId++, content: `ruído ${k}` });
+            stored.push({ id: nextId++, content: `ruído ${k}`, sendId: null });
           }
           throw new Error("chatwoot 502");
         }
         rec.sent.push(content);
-        stored.push({ id, content });
+        stored.push({ id, content, sendId });
         // Chatwoot answers a create with the row it made; the boundary reads the id off it.
         return { id };
       },
@@ -304,6 +320,8 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
             content: m.content,
             message_type: 1,
             private: false,
+            content_attributes:
+              m.sendId === null ? {} : { fazer_ai_send_id: m.sendId },
           })),
         };
       },
@@ -361,11 +379,13 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
     expect(out.failed).toBe(false);
     expect(out.delivered).toBe(3);
-    // The boundary read, then exactly two pages: the newest twenty (all noise) and the one holding
-    // the landed balloon. Counted because stopping AT the boundary is a COST rule and has no other
-    // witness — `m.id > after` already makes an older message unable to match, so a loop that kept
-    // paging would answer the same and only spend reads.
-    expect(calls.getMessages).toBe(3);
+    // Exactly two pages: the newest twenty (all noise) and the one holding the landed balloon.
+    // There is no third read — the pre-send boundary read is gone (issue #499), so a reply that
+    // never fails now pays nothing at all, and a reply that does pays only for the pages it walks.
+    // Counted because stopping at a completed send is a COST rule and has no other witness: the id
+    // match already makes an older message unable to answer, so a loop that kept paging would
+    // return the same verdict and only spend reads.
+    expect(calls.getMessages).toBe(2);
   });
 
   // The other side of that rule, so the pagination cannot be "always page until something matches":
@@ -425,30 +445,28 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent.filter((s) => s === "Como vai?")).toHaveLength(1);
   });
 
-  // OVERLAPPING IS NOT THE SAME AS BEING FREE. `getMessages` carries a 10s deadline of its own and
-  // the default pause is 800ms, so an unbounded read would hold every SUCCESSFUL reply for up to
-  // nine extra seconds — latency paid on the path that does not fail, to prepare for the one that
-  // does. The read is handed the pause as its budget.
-  test("the pre-send read is bounded by the typing pause, not by the client default", async () => {
+  // THE SUCCESSFUL PATH READS NOTHING, which is the cost half of issue #499.
+  //
+  // A dedicated pre-send read used to run on EVERY reply to establish a boundary, because a match
+  // on content needed one to mean "this send". It had to be kept short so it would not tax replies
+  // that never fail (measured then: 2181ms added to a successful three-balloon reply unbounded,
+  // 34ms bounded) — and that short budget is exactly what an overloaded Chatwoot misses, which is
+  // how the proof came to fail precisely when it was needed.
+  //
+  // A send that names itself needs no boundary, so the read is gone rather than tuned: a reply that
+  // succeeds now pays zero reads, and there is no budget left to be too small.
+  test("a reply that does not fail reads the conversation zero times", async () => {
     const rec = { sent: [] as string[], typing: [] as boolean[] };
-    const timeouts: Array<number | undefined> = [];
-    const client = {
-      sendMessage: async (_c: number, content: string) => {
-        rec.sent.push(content);
-        return { id: 1 };
-      },
-      getMessages: async (_c: number, _o: unknown, timeoutMs?: number) => {
-        timeouts.push(timeoutMs);
-        return { payload: [] };
-      },
-      toggleTyping: async () => ({}),
-    } as unknown as ChatwootClient;
-
-    const cfgSlow = { ...SPLIT_DEFAULTS, enabled: true, minDelayMs: 1234 };
-    await deliverReply(client, 1, three, cfgSlow, noSleep);
-    // The budget is the pause the first balloon would wait anyway — never the client's own default.
-    expect(timeouts).toEqual([typingDelayMs("Olá!", cfgSlow)]);
-    expect(timeouts[0]).toBe(1234);
+    const calls = { getMessages: 0 };
+    const out = await deliverReply(
+      failingStub(rec, () => false, { calls }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true, minDelayMs: 1234 },
+      noSleep,
+    );
+    expect(calls.getMessages).toBe(0);
+    expect(out).toEqual({ delivered: 3, failed: false, unproven: false });
   });
 
   // A REJECTED SEND IS NOT AN UNDELIVERED ONE. The request has a 15s deadline, so a timeout — or a
@@ -470,12 +488,12 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    // Two reads: the boundary before the first send, and the reconciliation after the failure.
-    expect(calls.getMessages).toBe(2);
+    // ONE read, the reconciliation after the failure. The successful path reads nothing.
+    expect(calls.getMessages).toBe(1);
     // Balloon 2 is NOT in the retry — the customer has it already. Only balloon 3 is owed.
     expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
     // And it still counts: two landed by send, one by the far side accepting it.
-    expect(out).toEqual({ delivered: 3, failed: false });
+    expect(out).toEqual({ delivered: 3, failed: false, unproven: false });
   });
 
   test("a send that failed and did NOT land is included in the retry", async () => {
@@ -488,9 +506,9 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    expect(calls.getMessages).toBe(2);
+    expect(calls.getMessages).toBe(1);
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
-    expect(out).toEqual({ delivered: 2, failed: false });
+    expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
@@ -511,7 +529,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // The whole reply is still owed: the old "Olá!" predates the boundary and proves nothing.
     expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 
   // The same hazard from inside one reply: two balloons with identical text. The boundary advances
@@ -527,7 +545,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Balloon 1 landed; balloon 2 is identical to it and did NOT land, so it is still owed.
     expect(rec.sent).toEqual(["Certo!", "Certo!\n\nJá te retorno."]);
-    expect(out).toEqual({ delivered: 2, failed: false });
+    expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
   // THE LAST STRETCH OF I/O, which the earlier recheck does not cover: the consolidated retry and
@@ -553,7 +571,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     expect(rec.sent).toEqual([]);
     // Nothing delivered, and standing down is NOT a failure — so the caller does not throw.
-    expect(out).toEqual({ delivered: 0, failed: false });
+    expect(out).toEqual({ delivered: 0, failed: false, unproven: false });
   });
 
   // A CONFIRMATION IS ALSO A BOUNDARY, and this is the case that proves it: `A / B / B`, where the
@@ -575,34 +593,41 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Two landed: "Certo!" by send, the middle "Já te retorno." by read-back. The third never did,
     // and must be reported as missing rather than matched against its own twin.
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: false });
   });
 
   // TWO messages past the boundary carrying the same text, which the boundary alone cannot rule out:
   // it advances past what WE write, and a human writing from the console mid-reply is not us. Taking
   // the oldest match then leaves the newer one — the human's — available to answer for a later
   // balloon that never landed, reporting a truncated reply as complete.
-  test("with two identical messages past the boundary, the newest is this send's", async () => {
+  test("a person's identical message cannot answer for our send", async () => {
     const sent: string[] = [];
     let n = 0;
     let nextId = 100;
-    const stored: Array<{ id: number; content: string }> = [
-      { id: nextId++, content: "antigo" },
-    ];
+    const stored: Array<{
+      id: number;
+      content: string;
+      sendId: string | null;
+    }> = [{ id: nextId++, content: "antigo", sendId: null }];
     const client = {
-      sendMessage: async (_c: number, content: string) => {
+      sendMessage: async (
+        _c: number,
+        content: string,
+        o?: { sendId?: string },
+      ) => {
         n += 1;
         const id = nextId++;
         if (n === 2) {
           // Our balloon lands and the response is lost...
-          stored.push({ id, content });
-          // ...and an operator types the very same words from the console right after it.
-          stored.push({ id: nextId++, content });
+          stored.push({ id, content, sendId: o?.sendId ?? null });
+          // ...and an operator types the very same words from the console right after it. A person
+          // typing in Chatwoot writes no `content_attributes`, so their copy carries no name.
+          stored.push({ id: nextId++, content, sendId: null });
           throw new Error("chatwoot 502");
         }
         if (n === 3) throw new Error("chatwoot 502");
         sent.push(content);
-        stored.push({ id, content });
+        stored.push({ id, content, sendId: o?.sendId ?? null });
         return { id };
       },
       getMessages: async () => ({
@@ -611,6 +636,8 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
           content: m.content,
           message_type: 1,
           private: false,
+          content_attributes:
+            m.sendId === null ? {} : { fazer_ai_send_id: m.sendId },
         })),
       }),
       toggleTyping: async () => ({}),
@@ -625,7 +652,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Balloon 1 sent, balloon 2 confirmed by read-back, balloon 3 genuinely lost — and the human's
     // copy must not be mistaken for it.
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: false });
   });
 
   // The consolidated retry is a send like any other: it carries the same 15s deadline, so a
@@ -648,10 +675,15 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(out.delivered).toBe(1);
   });
 
-  // Fails CLOSED for the resend. The two ways to be wrong are not symmetric: a false "landed"
-  // leaves the customer permanently missing part of the answer with nothing to notice it, while a
-  // false "not landed" costs one duplicated balloon that both they and the operator can see.
-  test("an unreadable conversation resends rather than assuming delivery", async () => {
+  // AN UNREADABLE CONVERSATION IS `unknown`, AND UNKNOWN IS NOT ABSENT — the distinction issue #499
+  // is about. The balloon was written on the far side and the read that would prove it fails,
+  // which is one event and not two: the overloaded Chatwoot that loses the POST's response is the
+  // one that cannot answer the read either.
+  //
+  // The base tree resent on this, and that is the duplicate two customers received. What it leaves
+  // instead is a gap, and a gap is reported — `failed` is the partial badge on the conversation,
+  // where the duplicate was reported as plain success.
+  test("an unreadable conversation leaves the chunk out instead of risking a duplicate", async () => {
     const rec = { sent: [] as string[], typing: [] as boolean[] };
     const out = await deliverReply(
       failingStub(rec, (_c, n) => n === 2, {
@@ -663,20 +695,21 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
-    expect(out.failed).toBe(false);
+    // Balloon 2 is not in the retry: it may already be there. Balloon 3 was never attempted, so it
+    // is owed for certain and still goes.
+    expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
   });
 
-  // A READ THAT SUCCEEDS AND SAYS NOTHING is unknown, not "boundary zero". `{}`, a transiently
-  // empty page and an unparseable body all reduce to the same empty list, and calling that `0`
-  // states a boundary every message in history sits above — so an older twin of the first balloon
-  // would answer for it and be dropped from what is owed, with the reply reported complete.
+  // A READ THAT SUCCEEDS AND SAYS NOTHING is unknown, and the three shapes of "nothing" that a
+  // successful HTTP call can carry all reduce to the same empty list. Reading that as absence would
+  // resend a balloon that may be sitting in the conversation.
   test.each([
     ["an empty page", { payload: [] }],
     ["a response with no payload", {}],
     ["a null body", null],
   ])(
-    "a boundary read returning %s resends rather than matching history",
+    "a read-back answering %s leaves the chunk out rather than resending it",
     async (_label, body) => {
       const rec = { sent: [] as string[], typing: [] as boolean[] };
       let n = 0;
@@ -687,15 +720,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
           rec.sent.push(content);
           return { id: 900 + n };
         },
-        // The pre-send read says nothing; the post-failure read shows an OLD identical message.
-        getMessages: async () =>
-          n === 0
-            ? body
-            : {
-                payload: [
-                  { id: 1, content: "Olá!", message_type: 1, private: false },
-                ],
-              },
+        getMessages: async () => body,
         toggleTyping: async () => ({}),
       } as unknown as ChatwootClient;
 
@@ -706,27 +731,26 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
         { ...SPLIT_DEFAULTS, enabled: true },
         noSleep,
       );
-      // The whole reply is still owed: id 1 is history, and without a boundary nothing proves
-      // otherwise.
-      expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
-      expect(out).toEqual({ delivered: 1, failed: false });
+      // Balloon 1 is unaccounted for and stays out. The two that were never attempted still go, as
+      // one consolidated send.
+      expect(rec.sent).toEqual(["Como vai?\n\nPosso ajudar?"]);
+      expect(out).toEqual({ delivered: 1, failed: true, unproven: true });
     },
   );
 
-  // NO BOUNDARY AT ALL, which needs both of its sources to fail at once: the pre-send read AND the
-  // id of a successful send (the first balloon is the one that failed, so there is none). Only then
-  // is `after` null — which is why the case above, where balloon 1 landed, never reaches this rule:
-  // its id had already established the boundary despite the read failing.
+  // THE FIRST BALLOON FAILING, which is the exact shape of both production incidents (issue #499):
+  // nothing has been sent yet, so there is no completed send to page back to, and on the base tree
+  // there was no boundary either — `findLandedMessage` answered "not landed" without reading
+  // anything, and the retry put the WHOLE reply back on the wire.
   //
-  // Without a boundary the reconciliation cannot tell this send's message from an older twin, so it
-  // must not claim delivery. Fails closed: resend.
-  test("no boundary at all still resends rather than assuming delivery", async () => {
+  // Here the read fails too, so the verdict is honestly unknown, and the chunk stays out.
+  test("the first balloon, unprovable, is not put back on the wire", async () => {
     const rec = { sent: [] as string[], typing: [] as boolean[] };
     const out = await deliverReply(
       failingStub(rec, (_c, n) => n === 1, {
         // The first send lands on the far side and is reported as failed to us...
         storeOnFailure: (n) => n === 1,
-        // ...and the conversation cannot be read, before or after.
+        // ...and the conversation cannot be read either.
         readFails: true,
       }),
       1,
@@ -734,10 +758,9 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    // The duplicate is the accepted cost: visible to the customer and the operator, where the other
-    // error (claiming delivery) is a silently truncated reply.
-    expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    // Never `["Olá!\n\nComo vai?\n\nPosso ajudar?"]`, which is the whole reply a second time.
+    expect(rec.sent).toEqual(["Como vai?\n\nPosso ajudar?"]);
+    expect(out).toEqual({ delivered: 1, failed: true, unproven: true });
   });
 
   // The failed request burned up to 15s and the read-back is more I/O, so the fence answered before
@@ -762,7 +785,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // The remainder never went out, and standing down is not a failure.
     expect(rec.sent).toEqual(["Olá!"]);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 
   test("the remainder is retried ONCE: a second failure stops, it does not walk the rest", async () => {
@@ -806,7 +829,12 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.typing.at(-1)).toBe(false);
   });
 
-  test("split disabled: the single send failing is a failed delivery, not a throw", async () => {
+  // SPLITTING OFF ASKS THE SAME QUESTION (issue #499). There is no remainder to salvage here, so
+  // nothing is ever resent — but whether the TURN may run again does not depend on how many balloons
+  // the reply had, and this path used to skip the read-back entirely and report every rejection as
+  // unaccounted for. That settles the burst and retires the delivery on a reply that may never have
+  // been written.
+  test("split disabled: a rejected send is checked, and a proven absence is not unproven", async () => {
     const rec = { sent: [] as string[], typing: [] as boolean[] };
     const out = await deliverReply(
       failingStub(rec, () => true),
@@ -815,8 +843,69 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: false },
       noSleep,
     );
-    expect(out).toEqual({ delivered: 0, failed: true });
+    // The conversation was read and does not hold it, so the turn may run again.
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
   });
+
+  test("split disabled: a send the far side accepted is not reported as lost", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, () => true, { storeOnFailure: () => true }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+    );
+    // Rejected to us, written on the far side, and the read-back finds it by name.
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+
+  test("split disabled: a rejection nobody could check is unproven", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, () => true, { readFails: true }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+    );
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  });
+
+  // AN ERROR THAT NEVER LEFT THE PROCESS IS A PROVEN ABSENCE. `ChatwootMissingTokenError` is raised
+  // before any request is built, so there is no far side to ask and nothing to be uncertain about.
+  // Read as unknown it would cost the customer their answer: the turn reports `posted-partial`, the
+  // burst is settled and the delivery retired, with nothing sent and nothing ever retrying.
+  test.each([
+    ["split enabled", true],
+    ["split disabled", false],
+  ])(
+    "%s: a send that never reached the wire is a proven absence, not an unknown",
+    async (_label, enabled) => {
+      let reads = 0;
+      const client = {
+        sendMessage: async () => {
+          throw new ChatwootMissingTokenError("POST /messages");
+        },
+        getMessages: async () => {
+          reads += 1;
+          return { payload: [] };
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const out = await deliverReply(
+        client,
+        1,
+        three,
+        { ...SPLIT_DEFAULTS, enabled },
+        noSleep,
+      );
+      expect(out.unproven).toBe(false);
+      expect(out.delivered).toBe(0);
+      // And it does not even ask: there is nothing on the far side to ask about.
+      expect(reads).toBe(0);
+    },
+  );
 
   // `calledOff` is the operator clearing the conversation, not a failure — the same distinction
   // `deliverPendingAttachments` draws between a revocation and a failed send. Reported as a failure,
@@ -837,6 +926,645 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
         return off;
       },
     );
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+});
+
+// A DELIVERY PROVES ITSELF BY NAME, NOT BY TEXT (issue #499).
+//
+// Two production duplicates (conversations 1382 and 1445, 18s and 18.5s apart) came from the same
+// place: the POST hit its 15s deadline with the message already written on the far side, the
+// read-back could not prove it, and the consolidated retry sent the whole reply again. On a
+// one-balloon reply that retry is not a remainder at all — it is the answer, a second time.
+//
+// The reconciliation could not prove it because it was looking for TEXT, which is not an identity:
+// it needed a boundary to tell one occurrence from another, the boundary needed its own read, and
+// that read is bounded by the typing pause (1680ms for the reply in 1445) — so the overloaded
+// Chatwoot that caused the timeout is the one that also loses the proof. Measured, on the base
+// tree: either half of the proof failing is enough to duplicate, and the loop reports
+// `delivered: 1, failed: false` while it happens.
+//
+// The send now carries an id of its own in `content_attributes`, so the read-back asks for THAT
+// message rather than for those words.
+describe("deliverReply: a send that proves itself by name (issue #499)", () => {
+  // Personifies the fork as measured against it (chatwoot-pro, `Messages::MessageBuilder`):
+  // `content_attributes` given to the create is persisted verbatim and comes back on the read.
+  function identityStub(o: {
+    // The far side accepted and STORED it, and only the response was lost — the shape the error
+    // type cannot distinguish from a write that never happened.
+    failOn: (n: number) => boolean;
+    // Every read fails, which is the same overloaded Chatwoot that made the POST time out.
+    readFails?: boolean;
+    // Only the PRE-SEND read fails — the one the base tree makes to establish a boundary, whose
+    // budget is the typing pause (1680ms for the reply in conversation 1445, against 10s for the
+    // read-back that follows a failure). It is the half that breaks first under the load that
+    // causes the timeout, and on the base tree its failure ALONE duplicates the reply:
+    // `findLandedMessage` had no boundary, so it answered "not landed" without reading anything.
+    // This tree makes no such read, so this option leaves it with nothing to fail.
+    boundaryReadFails?: boolean;
+    history?: string[];
+  }) {
+    let n = 0;
+    let nextId = 100;
+    const stored: Array<{
+      id: number;
+      content: string;
+      sendId: string | null;
+    }> = (o.history ?? ["oi"]).map((content) => ({
+      id: nextId++,
+      content,
+      sendId: null,
+    }));
+    const client = {
+      sendMessage: async (
+        _c: number,
+        content: string,
+        opts?: { sendId?: string },
+      ) => {
+        n += 1;
+        const id = nextId++;
+        stored.push({ id, content, sendId: opts?.sendId ?? null });
+        if (o.failOn(n)) throw new Error("chatwoot timeout");
+        return { id };
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        if (o.readFails) throw new Error("chatwoot 500");
+        // The PRE-SEND read, told apart by the only thing that distinguishes it: nothing has been
+        // sent yet. On the base tree that is `readBoundary`; on this one there is no such read at
+        // all, which is the point of the test that uses this.
+        if (n === 0 && o.boundaryReadFails) {
+          throw new Error("chatwoot 500 (boundary read)");
+        }
+        const upTo =
+          q?.before === undefined
+            ? stored
+            : stored.filter((m) => m.id < (q.before as number));
+        return {
+          payload: upTo.map((m) => ({
+            id: m.id,
+            content: m.content,
+            message_type: 1,
+            private: false,
+            content_attributes:
+              m.sendId === null ? {} : { fazer_ai_send_id: m.sendId },
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    // WHAT THE CUSTOMER READS, which is the only thing this issue is about. Counted over what the
+    // far side HOLDS, not over what the client believes it sent: the whole defect is the gap
+    // between those two.
+    const timesRead = (text: string): number =>
+      stored.filter((m) => m.content.includes(text.trim())).length;
+    return { client, stored, timesRead };
+  }
+  const noSleep = async () => {};
+  const ONE = "Qual faixa de investimento você tá pensando?";
+
+  // The issue itself. Every read fails, so the identity cannot be checked either — and the answer
+  // to "I cannot prove it" must not be to send the whole reply a second time.
+  test("a one-balloon reply is never sent twice, even when nothing can be proved", async () => {
+    const s = identityStub({ failOn: (n) => n === 1, readFails: true });
+    const out = await deliverReply(
+      s.client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(s.timesRead(ONE)).toBe(1);
+    // Nothing could be proved, so the turn is told so: `runLoadedTurn` throws on this pair, which
+    // is what writes `lastError` and the private note. The measured alternative was reporting
+    // success while the customer read it twice.
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  });
+
+  // The half that used to be missing: with no boundary at all (the FIRST send is the one that
+  // failed), the base tree returned "not landed" without reading anything. The id is readable with
+  // no boundary, so this now proves the delivery and sends nothing.
+  test("the first send proves itself when the boundary read is the thing that failed", async () => {
+    const s = identityStub({ failOn: (n) => n === 1, boundaryReadFails: true });
+    const out = await deliverReply(
+      s.client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(s.timesRead(ONE)).toBe(1);
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+
+  // WHY AN ID AND NOT THE TEXT, on the one balloon where the text can never decide: the first.
+  // Nothing has been sent yet, so the only boundary is the one the failed read was supposed to
+  // bring — and a reply that says the same thing twice cannot be told apart without it. The base
+  // tree resends both balloons here, so the customer reads the word a third time.
+  test("two balloons of the same text cannot answer for each other", async () => {
+    const s = identityStub({ failOn: (n) => n === 1, boundaryReadFails: true });
+    const out = await deliverReply(
+      s.client,
+      1,
+      "Certo!\n\nCerto!",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Exactly two: the one whose response was lost, proved by its id, and the second sent normally.
+    expect(s.timesRead("Certo!")).toBe(2);
+    expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
+  });
+
+  // OUT OF PAGES IS UNKNOWN, NOT ABSENT. The walk has a ceiling, and reaching it means the message
+  // was never found NOR ruled out — a conversation that moved faster than the read could page back.
+  // Treating that as absence is the same collapse the whole issue is about, one exit deeper.
+  test("running out of pages is unknown, not proof that nothing landed", async () => {
+    const nextId = 100;
+    const attempted: string[] = [];
+    // Always a full page of strangers, so the walk never runs out of history and never matches.
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? nextId + 1000;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa que andou",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // ONE attempt. Read as absence, the ceiling would put the reply back on the wire — which is
+    // the duplicate, reached through the exit rather than through the read.
+    expect(attempted).toEqual([ONE]);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  });
+
+  // THE CONSOLIDATED RETRY IS A SEND LIKE ANY OTHER, so it can also end unknown — and an unknown
+  // retry is not a delivered one. Counting it would tell the caller the customer has an answer
+  // nobody can show, which is `posted` on a conversation that may hold nothing.
+  test("a retry that cannot be proved is not counted as delivered", async () => {
+    const s = identityStub({ failOn: () => true, readFails: true });
+    const out = await deliverReply(
+      s.client,
+      1,
+      "Olá!\n\nComo vai?",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Balloon 1 unprovable and left out; the remainder sent and also unprovable.
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+    expect(s.timesRead("Como vai?")).toBe(1);
+  });
+
+  // A DEGRADED LATER PAGE IS UNKNOWN, NOT THE TOP OF THE HISTORY. Reaching the end of the history is
+  // what lets a read prove absence with no boundary to stop at, and the signature for it — an empty
+  // list — is also what a body that is not a list at all, and a page whose rows are all unreadable,
+  // both reduce to once parsed. Reading either as the end resends a chunk that may be sitting on
+  // that very page: the same collapse this function exists to undo, one page deeper.
+  //
+  // The first read is already unknown on any empty answer, so the walk has to get PAST it: the
+  // newest page carries strangers, and the degraded response is the one behind them.
+  test.each([
+    ["a body that is not a list", {}],
+    ["a null body", null],
+    ["a page whose rows are all unreadable", { payload: [{ nope: 1 }, {}] }],
+    // The one that turned three shapes into one rule: a page that MOSTLY parsed. The entry that did
+    // not could be the message being looked for, and a cursor taken from the rows that did parse
+    // would walk straight past it.
+    [
+      "a page where only some rows are readable",
+      {
+        payload: [
+          { id: 8999, content: "legível", message_type: 1, private: false },
+          { nope: 1 },
+        ],
+      },
+    ],
+  ])(
+    "a later page answering %s is unknown, not the end of the history",
+    async (_label, second) => {
+      const attempted: string[] = [];
+      let page = 0;
+      const client = {
+        sendMessage: async (_c: number, content: string) => {
+          attempted.push(content);
+          throw new Error("chatwoot timeout");
+        },
+        getMessages: async (_c: number, q?: { before?: number }) => {
+          page += 1;
+          if (page > 1) return second;
+          const top = q?.before ?? 9000;
+          return {
+            payload: Array.from({ length: 20 }, (_v, k) => ({
+              id: top - 1 - k,
+              content: "conversa que andou",
+              message_type: 1,
+              private: false,
+              content_attributes: {},
+            })),
+          };
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const out = await deliverReply(
+        client,
+        1,
+        ONE,
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      // One attempt. Read as the end of the history, this would put the reply back on the wire.
+      expect(attempted).toEqual([ONE]);
+      expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+    },
+  );
+
+  // THE CASE THAT MADE THE RULE, spelled out on its own because the table above cannot reach it: it
+  // needs a boundary, and a boundary only exists once a send has succeeded. Balloon 1 lands and
+  // gives one; balloon 2 times out with the message written; the read-back comes back with a page
+  // whose readable rows reach BACK PAST that boundary — and one row it could not read, which is our
+  // message. Proving absence off that page drops the chunk into the retry and duplicates it.
+  test("an unreadable row on a page that reaches the boundary still blocks the proof", async () => {
+    const sent: string[] = [];
+    let n = 0;
+    let nextId = 500;
+    let firstSendId: number | null = null;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        n += 1;
+        const id = nextId++;
+        if (n === 2) throw new Error("chatwoot timeout"); // escrita feita, resposta perdida
+        sent.push(content);
+        if (n === 1) firstSendId = id;
+        return { id };
+      },
+      // Everything readable is OLDER than balloon 1, so the page reaches the boundary; the message
+      // we are asking about is the entry that could not be read.
+      getMessages: async () => ({
+        payload: [
+          { nope: "a mensagem que estamos procurando, ilegível" },
+          {
+            id: (firstSendId as number) - 1,
+            content: "oi",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      "Olá!\n\nComo vai?\n\nPosso ajudar?",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Balloon 2 must NOT be in the retry: it may be the row nothing could read.
+    expect(sent).toEqual(["Olá!", "Posso ajudar?"]);
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
+  });
+
+  // The other side of that rule, so "degraded" cannot become "every empty page": a WELL-FORMED empty
+  // list on a later page IS the top of the history. Without this the walk could never prove absence
+  // with no boundary, and a send that genuinely failed on the first balloon would never be resent.
+  test("a well-formed empty later page is the end of the history, and the chunk is resent", async () => {
+    const attempted: string[] = [];
+    let page = 0;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        if (attempted.length === 1) throw new Error("chatwoot timeout");
+        return { id: 1 };
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        page += 1;
+        if (page > 1) return { payload: [] };
+        const top = q?.before ?? 9000;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa que andou",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Proved absent, so the reply is owed and goes again — nothing can be duplicated by sending a
+    // message that is not there.
+    expect(attempted).toEqual([ONE, ONE]);
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+
+  // THE ANCHOR IS WHAT STOPS THE WALK WHEN THE FIRST SEND IS THE ONE THAT FAILS (issue #499).
+  // Nothing has been sent, so no completed send can supply a stopping point, and a conversation with
+  // real history fills every page the ceiling allows with rows that were there before the attempt.
+  // Without the anchor that runs out of pages and answers `unknown` — which now means the chunk is
+  // dropped and the reply never arrives at all.
+  test("a long history does not exhaust the walk when the caller names an anchor", async () => {
+    const attempted: string[] = [];
+    let stored = 0;
+    const HISTORY_TOP = 4000;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        stored += 1;
+        throw new Error("chatwoot timeout");
+      },
+      // A hundred and forty messages of history, all older than the anchor: five full pages plus
+      // more behind them, so the ceiling is reached before the top of the history ever is.
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? HISTORY_TOP + 1;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa antiga",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      // Everything the read can see is at or below this, so the first page already reaches it.
+      HISTORY_TOP,
+    );
+    // TWICE, and that is the anchor working rather than a duplicate: the read PROVED the balloon is
+    // not in the conversation, so the reply is genuinely owed and the consolidated retry sends it.
+    // The retry is rejected too and proved absent in turn, which is why nothing is reported as
+    // delivered. Without the anchor the first verdict is `unknown`, there is no retry at all, and
+    // the customer gets nothing while the turn settles the burst.
+    expect(attempted).toEqual([ONE, ONE]);
+    expect(stored).toBe(2);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+  });
+
+  // AND THE SAME ON THE PATH WITH NO SPLITTING, which has even less to fall back on: it never has a
+  // completed send to stop at, so the caller's anchor is the only stopping point it will ever get.
+  test("split disabled: a long history does not exhaust the walk either", async () => {
+    const attempted: string[] = [];
+    const HISTORY_TOP = 4000;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? HISTORY_TOP + 1;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa antiga",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+      undefined,
+      undefined,
+      HISTORY_TOP,
+    );
+    // One send, no retry on this path, and a proven absence so the turn may run again.
+    expect(attempted).toEqual([ONE]);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+  });
+
+  // The same conversation with NO anchor is the case the anchor exists for: honestly unknown.
+  test("the same long history with no anchor is unknown, not absent", async () => {
+    const client = {
+      sendMessage: async () => {
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        const top = q?.before ?? 4001;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa antiga",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  });
+
+  // A STATUS CHATWOOT ANSWERS WITHOUT WRITING A MESSAGE is a proven absence, like the missing token.
+  // Read as unknown, an expired credential would stop answering customers in silence: every turn
+  // would settle its burst and retire its delivery with nothing sent.
+  test.each([
+    ["401", 401],
+    ["403", 403],
+    ["404", 404],
+    ["422", 422],
+  ])(
+    "a %s is a proven absence, so the reply is still owed",
+    async (_label, status) => {
+      let reads = 0;
+      const client = {
+        sendMessage: async () => {
+          throw new ChatwootApiError(status, "POST /messages");
+        },
+        getMessages: async () => {
+          reads += 1;
+          return { payload: [] };
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const out = await deliverReply(
+        client,
+        1,
+        ONE,
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+      expect(reads).toBe(0);
+    },
+  );
+
+  // And the ones that CAN have been served before the response was lost stay ambiguous, which is the
+  // whole reason the read-back exists. A list that swallowed these would be back to guessing.
+  test.each([
+    ["500", 500],
+    ["502", 502],
+    ["429", 429],
+  ])("a %s is still ambiguous and is read back", async (_label, status) => {
+    let reads = 0;
+    const client = {
+      sendMessage: async () => {
+        throw new ChatwootApiError(status, "POST /messages");
+      },
+      getMessages: async () => {
+        reads += 1;
+        throw new Error("chatwoot 500");
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(reads).toBeGreaterThan(0);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  });
+
+  // A SPENT BUDGET IS UNKNOWN TOO, and this is the exit an overloaded Chatwoot actually takes: the
+  // read does answer, just too slowly to walk far enough. Read as absence it resends, which is the
+  // duplicate of issue #499 reached through the clock instead of through an error.
+  //
+  // Ten seconds of real time, because the budget is a wall-clock constant and nothing in this path
+  // takes an injectable one. Paid once, for the exit that the incident's own conditions produce.
+  test("a budget spent mid-walk is unknown, not proof that nothing landed", async () => {
+    const attempted: string[] = [];
+    let page = 0;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        page += 1;
+        // The FIRST page eats the whole budget, so the second is entered with nothing left.
+        if (page === 1) await new Promise((r) => setTimeout(r, 10_050));
+        const top = q?.before ?? 9000;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa que andou",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(attempted).toEqual([ONE]);
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
+  }, 20_000);
+
+  // THE READ-BACK'S BUDGET IS SHARED ACROSS ITS PAGES, so a conversation that needs three of them
+  // is not three times the wait: each page is handed what is LEFT of one deadline, never a fresh
+  // one. Asserted on the timeouts the client receives, because that is where the sharing shows.
+  test("every page of a read-back spends the same one budget", async () => {
+    const timeouts: number[] = [];
+    const nextId = 500;
+    const client = {
+      sendMessage: async () => {
+        throw new Error("chatwoot timeout");
+      },
+      getMessages: async (_c: number, q?: { before?: number }, ms?: number) => {
+        if (ms !== undefined) timeouts.push(ms);
+        // Real wall clock, and the reason the assertion below can be strict: pages that return in
+        // the same millisecond spend nothing, and a shared budget is indistinguishable from a fresh
+        // one until time actually passes.
+        await new Promise((r) => setTimeout(r, 2));
+        const top = q?.before ?? nextId + 1000;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa que andou",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(timeouts.length).toBeGreaterThan(1);
+    // Strictly decreasing: a fresh deadline per page would hand out the same number every time.
+    for (let k = 1; k < timeouts.length; k += 1) {
+      expect(timeouts[k] as number).toBeLessThan(timeouts[k - 1] as number);
+    }
+    expect(timeouts[0] as number).toBeLessThanOrEqual(10_000);
+  });
+
+  // THE CHUNK THAT COULD NOT BE PROVED IS NEVER RESENT. It is the one message that may already be
+  // on the far side, so including it is the duplication; everything after it is owed for certain.
+  test("an unprovable chunk is left out of the retry, and the rest still goes", async () => {
+    const s = identityStub({ failOn: (n) => n === 2, readFails: true });
+    const out = await deliverReply(
+      s.client,
+      1,
+      "Olá!\n\nComo vai?\n\nPosso ajudar?",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(s.timesRead("Como vai?")).toBe(1);
+    expect(s.timesRead("Posso ajudar?")).toBe(1);
+    // Balloon 1 and the consolidated remainder. `failed` because balloon 2 is unaccounted for, and
+    // that is what puts the partial badge on the conversation.
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
   });
 });

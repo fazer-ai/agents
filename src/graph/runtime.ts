@@ -198,13 +198,21 @@ async function notePartialDelivery(params: {
   instanceId: bigint;
   conversationId: number;
   base: PrismaClient;
+  // WHETHER THE LOSS IS A FACT OR A DOUBT, because the operator acts on the difference (issue
+  // #499). "Part of it did not arrive" sends them to re-send what is missing; on the timeout this
+  // change is about, the message may be sitting in the conversation, and the same sentence would
+  // have them post a duplicate by hand. Default false, so every existing caller keeps saying what
+  // it already said.
+  unproven?: boolean;
 }): Promise<void> {
   await recordConversationError({
     tenantId: params.tenantId,
     instanceId: params.instanceId,
     chatwootConversationId: params.conversationId,
     error: new Error(
-      "a entrega ficou incompleta: parte do que o turno prometeu não chegou ao cliente, e não será reenviada",
+      params.unproven
+        ? "não foi possível confirmar a entrega: o envio foi rejeitado e o Chatwoot não respondeu à releitura, então parte da resposta pode ou não ter chegado ao cliente. Confira a conversa antes de reenviar."
+        : "a entrega ficou incompleta: parte do que o turno prometeu não chegou ao cliente, e não será reenviada",
     ),
     base: params.base,
   });
@@ -1077,7 +1085,11 @@ async function runTurnBody(
             threadId,
             text.length,
           );
-          return { delivered: 1, failed: false };
+          // The audio send RETURNED, so there is nothing unaccounted for. A rejected one never
+          // reaches this line: it is caught below and the reply falls back to text, which is its
+          // own delivery question and a different mechanism from this one (issue #499 covers the
+          // text path only).
+          return { delivered: 1, failed: false, unproven: false };
         }
       } catch (e) {
         logger.warn(
@@ -1099,6 +1111,10 @@ async function runTurnBody(
       params.deps?.sleep,
       flow,
       writeCalledOff,
+      // The customer message this turn is answering, which the reply is by definition newer than.
+      // It is what the read-back stops at when the FIRST send is the one that fails, and it costs
+      // nothing: the claim already named it (issue #499).
+      params.claimReply?.toMessageId ?? null,
     );
     logger.info(
       "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d partial=%s",
@@ -1992,7 +2008,14 @@ async function runTurnBody(
       delivered.failed &&
       delivered.delivered === 0
     ) {
-      if (!attachments.sent) {
+      // ...AND ONLY WHEN NOTHING LANDED IS A FACT rather than an absence of evidence (issue #499).
+      // `unproven` means a send was rejected and Chatwoot could not be asked whether it landed, so
+      // the reply may be sitting in the conversation. Throwing on that is not a louder report, it is
+      // a different action: the throw is what eventually marks the ledger row DEAD and hands it to
+      // the delivery recovery, which re-runs this turn in full — every side-effecting tool included
+      // — over a message that may already have been answered. The operator still hears about it
+      // through the badge the branch below writes.
+      if (!attachments.sent && !delivered.unproven) {
         throw new Error(
           "envio da resposta: nenhum balão foi entregue ao cliente",
         );
@@ -2007,6 +2030,20 @@ async function runTurnBody(
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
     if (delivered === "stale" || delivered.delivered === 0) {
+      // An UNPROVEN zero is not a stand-down either: standing down hands the burst back to the next
+      // flush, which would answer it again — the same duplicate the throw above was just kept from
+      // arming, arriving through the other door. It is reported instead, so the burst is consumed,
+      // the conversation stays open and the badge says a delivery could not be accounted for.
+      if (delivered !== "stale" && delivered.unproven) {
+        await notePartialDelivery({
+          tenantId,
+          instanceId,
+          conversationId,
+          base,
+          unproven: true,
+        });
+        return "posted-partial";
+      }
       if (!attachments.sent) return refuse(standDown());
       // The attachment IS the answer the customer got, and this is the third shape of a partial
       // delivery rather than a fourth kind of success: a text send that failed outright leaves them
@@ -2045,7 +2082,15 @@ async function runTurnBody(
       attachmentFailed: attachments.failed,
     });
     if (posted === "posted-partial") {
-      await notePartialDelivery({ tenantId, instanceId, conversationId, base });
+      await notePartialDelivery({
+        tenantId,
+        instanceId,
+        conversationId,
+        base,
+        // Some of the reply landed and one send could not be accounted for, so what is missing is
+        // a doubt rather than a fact here too.
+        unproven: delivered.unproven,
+      });
       return posted;
     }
     // Same rule as the branch above: the reply is out, the resolve is a separate write.

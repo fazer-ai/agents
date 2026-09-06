@@ -1,6 +1,6 @@
 import { withKeyedQueue } from "@/lib/locks";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
-import { CHATWOOT_AUTH_HEADER } from "./constants";
+import { CHATWOOT_AUTH_HEADER, CHATWOOT_SEND_ID_KEY } from "./constants";
 
 // Chatwoot Application API client with the dual-identity profiles (validated against the
 // chatwoot-pro fork's BOT_ACCESSIBLE_ENDPOINTS):
@@ -268,7 +268,15 @@ export class ChatwootClient {
   sendMessage(
     conversationId: number,
     content: string,
-    opts: { private?: boolean; messageType?: ChatwootMessageType } = {},
+    opts: {
+      private?: boolean;
+      messageType?: ChatwootMessageType;
+      // A NAME FOR THIS SEND, echoed back by Chatwoot so a delivery can be proved without comparing
+      // text (issue #499). Opt-in, and passed only by the callers that have a resend to decide:
+      // everywhere else there is nothing to reconcile, and a key written for nobody to read is the
+      // hypothesis-shaped debt this repo asks callers not to leave behind.
+      sendId?: string;
+    } = {},
   ): Promise<unknown> {
     return this.request(
       this.config.botToken,
@@ -278,6 +286,12 @@ export class ChatwootClient {
         content,
         private: opts.private ?? false,
         message_type: opts.messageType ?? "outgoing",
+        // Omitted rather than sent empty, so a send with no name leaves the bag untouched: the fork
+        // stores `content_attributes` verbatim, and an always-present key would put ours on every
+        // message whether or not anything will ever ask for it.
+        ...(opts.sendId === undefined
+          ? {}
+          : { content_attributes: { [CHATWOOT_SEND_ID_KEY]: opts.sendId } }),
       },
     );
   }

@@ -1183,14 +1183,35 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
 
     const sent: Array<[number, string]> = [];
     let sends = 0;
+    let nextId = 9000;
+    // Holds what it accepted and answers a read, the way the fork does: the reconciliation after a
+    // failed send asks it whether the balloon landed, and a stub that answers an empty page to that
+    // is a DEGRADED read, not a conversation with nothing in it (issue #499).
+    const stored: Array<{ id: number; content: string; type: number }> = [
+      { id: messageId, content: "oi", type: 0 },
+    ];
     const client = {
-      getMessages: async () => ({ payload: [] }),
+      getMessages: async (_c: number, q?: { before?: number }) => ({
+        payload: (q?.before === undefined
+          ? stored
+          : stored.filter((m) => m.id < (q.before as number))
+        ).map((m) => ({
+          id: m.id,
+          content: m.content,
+          message_type: m.type,
+          private: false,
+          content_attributes: {},
+        })),
+      }),
       sendMessage: async (conversationId: number, content: string) => {
         sends += 1;
-        // The second balloon AND the consolidated retry of the remainder.
+        // The second balloon AND the consolidated retry of the remainder. Neither reaches the far
+        // side, so the read-back proves their absence rather than leaving it in doubt.
         if (sends >= 2) throw new Error("chatwoot 502");
         sent.push([conversationId, content]);
-        return {};
+        const id = nextId++;
+        stored.push({ id, content, type: 1 });
+        return { id };
       },
       toggleTyping: async () => ({}),
     } as unknown as ChatwootClient;

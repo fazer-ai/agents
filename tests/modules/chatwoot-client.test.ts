@@ -69,6 +69,36 @@ describe("ChatwootClient", () => {
     });
   });
 
+  // THE NAME TRAVELS OUT WITH THE REQUEST (issue #499), because the send that fails never returns
+  // anything: an id assigned by the response cannot help the attempt that timed out. Verified
+  // against the fork that `content_attributes` handed to the create is persisted verbatim and comes
+  // back on the read.
+  test("sendMessage carries the send id in content_attributes when asked", async () => {
+    const { fetchImpl, calls } = stub(200, { id: 1 });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendMessage(42, "olá", { sendId: "abc-123" });
+    expect(calls[0]?.body).toMatchObject({
+      content: "olá",
+      content_attributes: { fazer_ai_send_id: "abc-123" },
+    });
+  });
+
+  // And OMITTED otherwise, rather than sent empty: the fork stores the bag verbatim, so a key
+  // written on every message whether or not anything will read it is exactly the hypothesis-shaped
+  // debt this repo asks callers not to leave behind.
+  test("sendMessage sends no content_attributes when no id was asked for", async () => {
+    const { fetchImpl, calls } = stub(200, { id: 1 });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendMessage(42, "olá");
+    expect(calls[0]?.body).not.toHaveProperty("content_attributes");
+  });
+
   test("sendPrivateNote sets private:true", async () => {
     const { fetchImpl, calls } = stub();
     const client = await createChatwootClient(baseConfig, {

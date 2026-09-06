@@ -2052,28 +2052,55 @@ describe.skipIf(!dbUp)("debounce", () => {
   // Which is why what already landed decides: the turn reports, the watermark moves, and no retry is
   // armed. Written against the flush rather than as a unit test because the unit cannot see the
   // watermark, and the watermark is the whole mechanism.
+  // Personifies the fork on the three properties the reconciliation depends on (issue #499): it
+  // ASSIGNS an id to what it accepts, it STORES the `content_attributes` the create carried, and it
+  // honours `before` when paging. A stub missing any of them sends every reply here down the
+  // "cannot prove delivery" road, which is green for the wrong reason.
   function makeFailingStub(opts: {
-    pages: unknown[];
+    // The conversation as it stands before the reply: the customer's own messages, INCOMING like
+    // the `page` helper writes them, because this same read is what the flush coalesces from.
+    history: Array<{ id: number; content: string }>;
     sent: Array<[number, string]>;
     calls: { getMessages: number };
     failOn: (n: number) => boolean;
   }) {
-    let i = 0;
     let n = 0;
+    let nextId = 900;
+    const stored: Array<{
+      id: number;
+      content: string;
+      type: number;
+      sendId: string | null;
+    }> = opts.history.map((m) => ({ ...m, type: 0, sendId: null }));
     const client = {
-      getMessages: async () => {
-        const pg = opts.pages[Math.min(i, opts.pages.length - 1)] ?? {
-          payload: [],
-        };
-        i += 1;
+      getMessages: async (_c: number, q?: { before?: number }) => {
         opts.calls.getMessages += 1;
-        return pg;
+        const upTo =
+          q?.before === undefined
+            ? stored
+            : stored.filter((m) => m.id < (q.before as number));
+        return {
+          payload: upTo.map((m) => ({
+            id: m.id,
+            content: m.content,
+            message_type: m.type,
+            private: false,
+            content_attributes:
+              m.sendId === null ? {} : { fazer_ai_send_id: m.sendId },
+          })),
+        };
       },
-      sendMessage: async (conversationId: number, content: string) => {
+      sendMessage: async (
+        conversationId: number,
+        content: string,
+        o?: { sendId?: string },
+      ) => {
         n += 1;
+        const id = nextId++;
         if (opts.failOn(n)) throw new Error("chatwoot 502");
         opts.sent.push([conversationId, content]);
-        return {};
+        stored.push({ id, content, type: 1, sendId: o?.sendId ?? null });
+        return { id };
       },
       toggleTyping: async () => ({}),
     } as unknown as ChatwootClient;
@@ -2114,7 +2141,7 @@ describe.skipIf(!dbUp)("debounce", () => {
               responses: ["Olá!\n\nComo vai?\n\nPosso ajudar?"],
             }) as unknown as BaseChatModel,
           makeClient: makeFailingStub({
-            pages: [page([{ id: 7, content: "oi" }])],
+            history: [{ id: 7, content: "oi" }],
             sent,
             calls: { getMessages: 0 },
             // The SECOND balloon, with the first already in the conversation.
@@ -2186,7 +2213,7 @@ describe.skipIf(!dbUp)("debounce", () => {
               responses: ["Olá!\n\nComo vai?\n\nPosso ajudar?"],
             }) as unknown as BaseChatModel,
           makeClient: makeFailingStub({
-            pages: [page([{ id: 7, content: "oi" }])],
+            history: [{ id: 7, content: "oi" }],
             sent,
             calls: { getMessages: 0 },
             // The second balloon AND the consolidated retry of the remainder.
@@ -2237,7 +2264,7 @@ describe.skipIf(!dbUp)("debounce", () => {
               responses: ["Olá!\n\nComo vai?"],
             }) as unknown as BaseChatModel,
           makeClient: makeFailingStub({
-            pages: [page([{ id: 7, content: "oi" }])],
+            history: [{ id: 7, content: "oi" }],
             sent,
             calls: { getMessages: 0 },
             failOn: () => true,

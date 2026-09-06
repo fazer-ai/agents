@@ -2166,11 +2166,11 @@ function AgentEditor() {
           'Business hours "{{name}}" already existed and were reused; check the schedule is right.',
           p,
         );
-      // `importWarningCount` is the other half of the rolling-deploy overlap (see `transfer.ts`): it
+      // NOTE: `importWarningCount` is the other half of the rolling-deploy overlap (see `transfer.ts`): it
       // reads the count under either name, because an editor from THIS release can reach a container
       // from the previous one, which sends `n` only.
       //
-      // The four counters below hand `count` in as a LITERAL property, next to the spread, and the
+      // NOTE: The four counters below hand `count` in as a LITERAL property, next to the spread, and the
       // repetition is load-bearing: `i18next-parser` reads the call site, not the runtime, so a
       // shared helper that returned the same object would leave the parser seeing only the spread
       // and, with `keepRemoved: false`, delete the plural forms on the next `i18n:extract`. That is

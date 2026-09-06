@@ -39,7 +39,7 @@ describe.each(["en", "pt-BR"])("import warnings read as %s", (lng: string) => {
     expect(one).not.toBe(two);
     expect(one).not.toMatch(PARENTHETICAL_PLURAL);
     expect(two).not.toMatch(PARENTHETICAL_PLURAL);
-    // The count reaches the sentence: a form that dropped `{{count}}` while being pluralized would
+    // NOTE: The count reaches the sentence: a form that dropped `{{count}}` while being pluralized would
     // otherwise pass every check above.
     expect(one).toContain("1");
     expect(two).toContain("2");

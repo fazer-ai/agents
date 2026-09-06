@@ -290,7 +290,7 @@ describe.each(Object.entries(LOCALES))(
       expect(dodging.sort()).toEqual([]);
     });
 
-    // A waiver that no longer names a real string is a hole: the next dodge to land under that key
+    // NOTE: A waiver that no longer names a real string is a hole: the next dodge to land under that key
     // would be waved through by a reason written about something else.
     test("every declared dodge waiver still names a string that dodges", async () => {
       const entries = await catalog(locale);
@@ -300,7 +300,7 @@ describe.each(Object.entries(LOCALES))(
         );
         return hits.length === 0;
       });
-      // A waiver can be legitimately quiet in ONE locale (`channels.synced` dodges only in pt-BR),
+      // NOTE: A waiver can be legitimately quiet in ONE locale (`channels.synced` dodges only in pt-BR),
       // so this asserts per locale only that the key still exists at all.
       const missing = dangling.filter(
         (key) => !Object.keys(entries).some((k) => stripPlural(k) === key),

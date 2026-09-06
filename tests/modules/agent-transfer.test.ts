@@ -1622,13 +1622,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       tampered as never,
       appDb,
     );
-    // The count travels under the name `count`, and the name is the assertion: the console reads
-    // `p.count` to pluralize the sentence, so a producer that goes back to `n` renders "0 tool
-    // grants" with nothing failing anywhere (issue #513).
     const skipped = warnings.find(
       (w) => w.code === "unknownGrantSourceSkipped",
     );
-    // BOTH names, and the pair is the assertion. `count` is what the console pluralizes on; `n` is
+    // NOTE: BOTH names, and the pair is the assertion. `count` is what the console pluralizes on; `n` is
     // what an editor from the previous release still reads, and dropping it mid-overlap would render
     // a literal "{{n}}" there (issue #513, docs/deploy.md).
     expect(skipped?.params).toEqual({ count: 1, n: 1 });
@@ -3121,7 +3118,7 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
     });
     const { warnings } = await importAgent(dstCtx(), exp, appDb);
     const reused = warnings.find((w) => w.code === "kbReusedDocsSkipped");
-    // Field NAMES pinned, for the same reason as `unknownGrantSourceSkipped` above: `n` here would
+    // NOTE: Field NAMES pinned, for the same reason as `unknownGrantSourceSkipped` above: `n` here would
     // pluralize on a count that is not there (issue #513).
     expect(Object.keys(reused?.params ?? {}).sort()).toEqual([
       "count",
@@ -3130,7 +3127,7 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
     ]);
     expect(reused?.params?.name).toBe("DocsKB");
     expect(reused?.params?.count).toBeGreaterThan(0);
-    // The legacy name carries the SAME number, not a stale one.
+    // NOTE: The legacy name carries the SAME number, not a stale one.
     expect(reused?.params?.n).toBe(reused?.params?.count);
     const kb = await suDb.knowledgeBase.findFirst({
       where: { tenantId: dstTenant, name: "DocsKB" },

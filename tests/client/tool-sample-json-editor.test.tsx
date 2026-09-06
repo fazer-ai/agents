@@ -308,3 +308,72 @@ test("a response from the test request arrives formatted", async () => {
 }`),
   );
 });
+
+// A BODY THE MODEL READS VERBATIM IS KEPT VERBATIM (round 5 of review).
+//
+// `templatePreviewFor` shows a non-2xx sample RAW, clipped exactly the way the runtime clips it,
+// because that is what the model gets: the file already refuses to trim it for that reason, since
+// dropping leading whitespace slides the 4000-character window and shows tail content the model
+// would never reach. Reformatting the same body does more than slide the window — the preview would
+// show a document the API never sent. So while a status says the body goes verbatim, this field
+// neither formats on arrival nor offers to.
+test("a non-2xx response is kept exactly as the API sent it", async () => {
+  const raw = '{"error":{"code":"not_found","message":"no such id"}}';
+  globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof i === "string" ? i : i.toString();
+    if (url.includes("/tools/test"))
+      return new Response(
+        JSON.stringify({
+          result: { raw, status: 404, rawClipped: false, notes: [], ok: true },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    if ((init?.method ?? "GET").toUpperCase() === "POST")
+      return new Response(JSON.stringify({ tool: { id: "1", name: "x" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    return new Response(JSON.stringify({ items: [], entries: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  render(
+    <MemoryRouter>
+      <ToastProvider>
+        <Harness />
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+  await waitFor(() => sampleView());
+
+  const url = document.querySelector<HTMLInputElement>(
+    'input[placeholder^="https://api.example.com"]',
+  );
+  if (!url) throw new Error("no URL template field");
+  fireEvent.change(url, { target: { value: "https://api.example.com/x" } });
+  const open = Array.from(document.querySelectorAll("button")).find((b) =>
+    /requisição de teste|test request/i.test(b.textContent ?? ""),
+  ) as HTMLButtonElement;
+  await waitFor(() => expect(open.disabled).toBe(false));
+  fireEvent.click(open);
+  const send = await waitFor(() => {
+    const b = Array.from(document.querySelectorAll("button")).find((el) =>
+      /^(enviar requisição|send request)$/i.test((el.textContent ?? "").trim()),
+    );
+    if (!b) throw new Error("the test dialog never opened");
+    return b as HTMLButtonElement;
+  });
+  fireEvent.click(send);
+
+  // Exactly as it arrived: one line, not expanded.
+  await waitFor(() => expect(sampleView().state.doc.toString()).toBe(raw));
+  // And the button does not offer to change it, because changing it would change the preview —
+  // with a sentence saying so, since a disabled button and no reason is the silent refusal this
+  // field exists to remove.
+  expect(formatButton().disabled).toBe(true);
+  expect(document.body.textContent).toMatch(/404/);
+  expect(document.body.textContent).toMatch(
+    /exatamente como a API|exactly as the API sent it/i,
+  );
+});

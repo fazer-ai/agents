@@ -56,6 +56,7 @@ import {
   type ProjectedResponse,
   projectToolResponse,
   readResponseTemplateResult,
+  readsBodyVerbatim,
   templateItemLeaves,
   templateLeaves,
   templateListAt,
@@ -1451,9 +1452,14 @@ export function ToolEditModal({
   // round 1 of review found the first pair, where a byte-order mark parsed (`String.trim` eats it)
   // and the formatter refused — and the disagreement showed up as an enabled button doing nothing.
   const sampleTidy = useMemo(() => {
+    // NOTE: a body the model reads VERBATIM is kept verbatim. `templatePreviewFor` shows a non-2xx
+    // sample raw, clipped the way the runtime clips it, so reformatting it would preview a document
+    // the API never sent (round 5 of review). The status question is asked of the runtime's own
+    // function rather than answered again here, which is the rule this file already lives by.
+    if (sampleStatus !== null && readsBodyVerbatim(sampleStatus)) return null;
     const tidy = reindentJson(sample);
     return tidy === null || tidy === sample ? null : tidy;
-  }, [sample]);
+  }, [sample, sampleStatus]);
   // What the template picker offers for the caret it was opened at: outside every block, the
   // absolute fields and the lists; inside one, the fields of that list's items, relative. The
   // block is read leniently (`enclosingBlock`), because at the moment the operator most wants the
@@ -2032,9 +2038,12 @@ export function ToolEditModal({
                 >
                   {t("tools.sampleFormat", "Format")}
                 </Button>
-                {/* ONE sentence, and a sample that cannot be read wins it: the hint explains a
-                    button, the refusal explains why nothing on the screen below works, and it
-                    names the line. The hint comes back the moment the sample parses. */}
+                {/* ONE sentence, in the order of what the operator needs. A sample that cannot be
+                    read wins it: the hint explains a button, the refusal explains why nothing on
+                    the screen below works, and it names the line. Then the reason Format is off on
+                    a body that reads fine, because a disabled button with no sentence is the
+                    silent refusal this field exists to remove. The hint comes back when neither
+                    applies. */}
                 {sampleParse.state === "invalid" ? (
                   <span className="text-error text-xs">
                     {sampleParse.problem
@@ -2050,6 +2059,14 @@ export function ToolEditModal({
                           "tools.sampleInvalid",
                           "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
                         )}
+                  </span>
+                ) : sampleStatus !== null && readsBodyVerbatim(sampleStatus) ? (
+                  <span className="text-text-secondary text-xs">
+                    {t(
+                      "tools.sampleVerbatimStatus",
+                      "Kept exactly as the API sent it: with status {{status}} the agent reads this body as it arrived, so the preview below has to show the same thing.",
+                      { status: sampleStatus },
+                    )}
                   </span>
                 ) : (
                   <span className="text-text-secondary text-xs">
@@ -2562,15 +2579,22 @@ export function ToolEditModal({
       <ToolTestModal
         modal={testModal}
         onResponse={(raw, status) => {
-          // FORMATTED ON ARRIVAL. This body is not something the operator wrote: it is what we just
-          // fetched, and an API answers minified. Landing on one unreadable line and asking them to
-          // press Format is a step that has one right answer, so it is not a step. What comes back
-          // unreadable — an HTML error page, XML, plain text — is kept exactly as the server sent
-          // it, because then there is nothing to format and the raw body IS the diagnosis.
+          // FORMATTED ON ARRIVAL, on a status whose body gets a template. This is not something the
+          // operator wrote: it is what we just fetched, and an API answers minified. Landing on one
+          // unreadable line and asking them to press Format is a step that has one right answer, so
+          // it is not a step. What comes back unreadable — an HTML error page, XML, plain text — is
+          // kept exactly as the server sent it, because then there is nothing to format and the raw
+          // body IS the diagnosis.
+          //
+          // And a body the model reads VERBATIM is kept verbatim whatever it holds: the preview
+          // shows a non-2xx sample raw, clipped the way the runtime clips it, so reformatting would
+          // preview a document the API never sent (round 5 of review).
           //
           // Safe to do here for the same reason Format is safe at all: `reindentJson` copies every
           // literal out verbatim, so an id no JavaScript number can hold survives the trip.
-          setSample(reindentJson(raw) ?? raw);
+          setSample(
+            readsBodyVerbatim(status) ? raw : (reindentJson(raw) ?? raw),
+          );
           setSampleStatus(status);
         }}
       />

@@ -105,7 +105,9 @@ const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // An annotation over a literal WRITTEN AT THAT POINT, and the literal is the load-bearing half:
 // `= {`, `= [`, `=> ({`, or a `satisfies`/`as` that follows a literal's own closing bracket, which
 // is what tells `({…}) as unknown as ClaimedJob` (spend-ceiling-poll.test.ts, a fixture) from
-// `claimed.find(…) as ClaimedJob` (scheduler-claim-token.test.ts, a row that was found). Four rounds
+// `claimed.find(…) as ClaimedJob` (scheduler-claim-token.test.ts, a row that was found). Whatever
+// type-level words sit in between are a repeat of one pair, `as unknown as` and `as const satisfies`
+// alike, written as a repetition rather than as the list those two would start. Four rounds
 // of review were spent on the annotations that name a job WITHOUT one, and each answer bought the
 // next question, because they are all the same shape: `job: ClaimedJob` on a parameter, defaulted or
 // not, `function jobFor(): ClaimedJob {`, `Promise<ClaimedJob>` on an async factory. None of them
@@ -117,7 +119,7 @@ const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // a case that is already narrow: a fixture is only invisible to `claimSeq` when the field arrives by
 // spread from another module, and then also has to spell a reachable id.
 const TYPE_MARKER =
-  /:\s*ClaimedJob(?:\[\])?\s*(?:=>\s*\(\s*|=\s*)[[{]|[}\]]\s*\)?\s*(?:satisfies|as)\s+(?:unknown\s+as\s+)?ClaimedJob\b/g;
+  /:\s*ClaimedJob(?:\[\])?\s*(?:=>\s*\(\s*|=\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -293,6 +295,18 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     [
       "a literal cast through unknown",
       "  const job = ({ id: 1n, ...b }) as unknown as ClaimedJob;",
+      true,
+    ],
+    [
+      "a literal asserted const",
+      "  const job = { id: 1n, ...b } as const satisfies ClaimedJob;",
+      true,
+    ],
+    // Written as a repetition rather than as the list those two would start, so a third bridge is
+    // not a fourteenth round.
+    [
+      "a literal behind two bridges",
+      "  const job = { id: 1n, ...b } as const as unknown as ClaimedJob;",
       true,
     ],
     [

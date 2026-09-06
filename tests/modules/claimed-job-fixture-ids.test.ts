@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { withoutComments } from "../utils/source-text";
 
 // A `ClaimedJob` built by hand in a test is a FIXTURE, not a row: the handler only ever reads it
 // back. `jobRetired` (modules/scheduler/service.ts) looks the id up to find the tombstone a `/reset`
@@ -42,14 +43,17 @@ const ROOT = join(import.meta.dir, "..");
 //   - a quoted key (`"id": 1n`), which a JSON-shaped literal carries;
 //   - every numeric base plus separators (`0x1n`, `0o7n`, `0b11n`, `1_000n`), all of which a
 //     decimal-only pattern reads as absent;
-//   - `BigInt(1)` and `BigInt("1")`, the constructor's two argument forms.
+//   - every argument `BigInt` itself accepts and turns into a reachable id: `BigInt(1)`,
+//     `BigInt("1")`, `` BigInt(`1`) ``, `BigInt(1e3)`, `BigInt(1.0)`. The fraction and the exponent
+//     are not valid in a bigint LITERAL, so they only ever appear here, and admitting them costs
+//     nothing: an `id: 1.5n` that matched would be a syntax error long before this sweep read it.
 //
 // `reachableBySequence` normalises what is captured, so the grammar lives here and the arithmetic
 // lives there.
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
-const NUMBER = String.raw`-?\d[\d_]*|0[xX][\dA-Fa-f_]+|0[oO][0-7_]+|0[bB][01_]+`;
+const NUMBER = String.raw`-?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|0[xX][\dA-Fa-f_]+|0[oO][0-7_]+|0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
-  String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["']?(${NUMBER})["']?\s*\))`,
+  String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})["'\`]?\s*\))`,
   "g",
 );
 
@@ -81,7 +85,13 @@ function reachableBySequence(value: string): boolean {
   return Number(value.replace(/_/g, "")) > 0;
 }
 
-export function fixtureIdHits(src: string): number[] {
+export function fixtureIdHits(source: string): number[] {
+  // Prose that NAMES the shape is not the shape. A comment explaining what a fixture used to spell
+  // sits within the window of the fixture it explains, so a raw scan turns documentation into a red
+  // sweep, and the cheap way out of that is deleting the sentence that explained the trap. The strip
+  // preserves offsets, so the line numbers below still name the line the reader will open. Comments
+  // only, not string bodies: a quoted key (`"id": 1n`) is code, and this pattern reads it.
+  const src = withoutComments(source);
   const lines = src.split("\n");
   const hits: number[] = [];
   for (const m of src.matchAll(LITERAL_ID)) {
@@ -170,6 +180,10 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     ["a bigint literal", fixture("7n"), true],
     ["a BigInt() call", fixture("BigInt(7)"), true],
     ["a BigInt() call over a string", fixture('BigInt("7")'), true],
+    ["a BigInt() call over a template", fixture("BigInt(`7`)"), true],
+    // Neither is a bigint literal, and both are what BigInt turns into one.
+    ["a BigInt() call over an exponent", fixture("BigInt(1e3)"), true],
+    ["a BigInt() call over a whole float", fixture("BigInt(1.0)"), true],
     // Every base and the separator, because they all reach the same 7 and a decimal-only pattern
     // reads each of them as no id at all.
     ["a hex literal", fixture("0x7n"), true],
@@ -233,6 +247,20 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
   // The whole word, not a prefix of it: `claimDueJobs`, `claimed` and `claimOf` sit beside every real
   // row in the scheduler tests, and a marker matching "claim" would call each of those rows a
   // fixture.
+  // Prose about a fixture is not a fixture. The comment that explains what a line used to spell sits
+  // inside the window of the line it explains, so a sweep reading raw text turns the explanation into
+  // a red CI, and the cheapest way to green is deleting the explanation.
+  test("a comment naming the old spelling is not a fixture", () => {
+    const src = [
+      "  const job: ClaimedJob = {",
+      "    // was id: 1n, which the sequence hands out",
+      "    id: phantomJobId,",
+      "    claimSeq: 0,",
+      "  };",
+    ].join("\n");
+    expect(fixtureIdHits(src)).toEqual([]);
+  });
+
   test("a claim in the neighbourhood is not the field", () => {
     const src = [
       "  const [claimed] = await claimDueJobs(1, appDb, new Date(), tenantId);",

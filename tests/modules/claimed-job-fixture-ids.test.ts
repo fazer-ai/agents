@@ -42,7 +42,10 @@ const ROOT = join(import.meta.dir, "..");
 //     how a property-only sweep missed that file for a whole round;
 //   - a quoted key (`"id": 1n`), which a JSON-shaped literal carries;
 //   - a TYPED default parameter (`function job(id: bigint = 1n)`), where the annotation sits between
-//     the name and the operator, and a parenthesised value (`id: (1n)`);
+//     the name and the operator, and a parenthesised value (`id: (1n)`). The annotation is skipped as
+//     "whatever is not the operator", up to one line, so `ClaimedJob["id"]` and `bigint | undefined`
+//     pass with the bare `bigint`; a plain `id: 1n` still matches, because the engine backtracks out
+//     of an annotation that would leave no operator behind it;
 //   - every numeric base plus separators (`0x1n`, `0o7n`, `0b11n`, `1_000n`), all of which a
 //     decimal-only pattern reads as absent;
 //   - every argument `BigInt` itself accepts and turns into a reachable id: `BigInt(1)`,
@@ -61,7 +64,7 @@ const ROOT = join(import.meta.dir, "..");
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
 const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
-  String.raw`(?:\bid|["']id["'])(?:\s*:\s*[A-Za-z_$][\w$]*)?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})n?["'\`]?\s*\))`,
+  String.raw`(?:\bid|["']id["'])(?:\s*:\s*[^=;,)\n]{1,80})?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})n?["'\`]?\s*\))`,
   "g",
 );
 
@@ -83,12 +86,14 @@ const NEARBY = 14;
 // The FIELD NAME, not one punctuation of it: `claimSeq: 0`, the shorthand `claimSeq,` a local
 // variable produces, `"claimSeq": 0` in a JSON-shaped literal and `row.claimSeq` in the line
 // that fills it are all the same signal, and a marker spelled with a colon sees only the first.
-const MARKERS = /\bclaimSeq\b/;
+const MARKERS = /\bclaimSeq\b/g;
 // Asked of the code, so `note: "claimSeq"` and the SQL alias `claim_seq AS "claimSeq"` (which
 // src/modules/scheduler/service.ts writes for real) are data rather than a job. That strip also
 // blanks a quoted KEY, which is a spelling of the field and not data, so the key is asked for
-// separately, against the unblanked window and by its shape: quoted, then a colon.
-const QUOTED_MARKER = /["']claimSeq["']\s*:/;
+// separately and by its shape: quoted, then a colon. Its opening quote must itself be code, or the
+// JSON inside a string (`const raw = '{"claimSeq":0}'`) would answer for a fixture that is not
+// there.
+const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -115,19 +120,24 @@ export function fixtureIdHits(source: string): number[] {
   // What it answers is one question, about the FIRST character of the match: a match that STARTS
   // inside a string body is text that spells a fixture (`payload: "id: 1n"`), not one.
   const code = codeOnly(source);
-  const lines = src.split("\n");
-  const codeLines = code.split("\n");
+  const lineOf = (at: number) => src.slice(0, at).split("\n").length;
+  // Every line carrying the field, gathered once. `MARKERS` reads the blanked copy, so a word in
+  // string data never counts; `QUOTED_MARKER` reads the unblanked one for the key spelling that
+  // blanking would erase, and answers only where its own opening quote survived the blanking.
+  const markerLines = new Set<number>();
+  for (const m of code.matchAll(MARKERS)) markerLines.add(lineOf(m.index));
+  for (const m of src.matchAll(QUOTED_MARKER))
+    if (code[m.index] === src[m.index]) markerLines.add(lineOf(m.index));
+
   const hits: number[] = [];
   for (const m of src.matchAll(LITERAL_ID)) {
     const value = m[1] ?? m[2];
     if (!value || !reachableBySequence(value)) continue;
     if (m.index === undefined || code[m.index] !== src[m.index]) continue;
-    const line = src.slice(0, m.index).split("\n").length;
-    const from = Math.max(0, line - 1 - NEARBY);
-    const to = line + NEARBY;
-    const marked =
-      MARKERS.test(codeLines.slice(from, to).join("\n")) ||
-      QUOTED_MARKER.test(lines.slice(from, to).join("\n"));
+    const line = lineOf(m.index);
+    const marked = [...markerLines].some(
+      (l) => l >= line - NEARBY && l <= line + NEARBY,
+    );
     if (!marked) continue;
     hits.push(line);
   }
@@ -240,6 +250,18 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       true,
     ],
     ["a parenthesised value", fixture("(7n)"), true],
+    // The annotation is whatever is not the operator: an indexed access and a union both read the
+    // same way, and both are how a factory declares the id it defaults.
+    [
+      "an indexed-access annotation",
+      'function job(id: ClaimedJob["id"] = 1n) {\n  claimSeq: 0;',
+      true,
+    ],
+    [
+      "a union annotation",
+      "function job(id: bigint | undefined = 1n) {\n  claimSeq: 0;",
+      true,
+    ],
     ["a marker ten lines off", fixture("7n", 10), true],
     // The shape is the fixture, whether or not the file ever names the type. This is
     // terminal-failure-announces.test.ts, which hands a handler a job literal and imports nothing.
@@ -295,6 +317,16 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
   test("the marker inside string data is not the field", () => {
     const src = [
       '  const rows = await suDb.$queryRaw`SELECT claim_seq AS "claimSeq"`;',
+      "  const msg = { id: 7n, note: 'oi' };",
+    ].join("\n");
+    expect(fixtureIdHits(src)).toEqual([]);
+  });
+
+  // And JSON inside a string is not a key. The quoted spelling is admitted by SHAPE, so the only
+  // thing separating `"claimSeq": 0` from `'{"claimSeq":0}'` is whether the opening quote is code.
+  test("a quoted marker inside a string is not the field", () => {
+    const src = [
+      "  const raw = '{\"claimSeq\":0}';",
       "  const msg = { id: 7n, note: 'oi' };",
     ].join("\n");
     expect(fixtureIdHits(src)).toEqual([]);

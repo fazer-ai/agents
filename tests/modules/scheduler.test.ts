@@ -19,6 +19,7 @@ import {
   upsertJobRows,
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -910,6 +911,44 @@ describe.skipIf(!dbUp)("scheduler", () => {
     await suDb.schedulerJob.delete({ where: { id: gone.id } });
     expect(await jobRetired(gone, appDb)).toBe(false);
     expect(await sqlSaysRetired(gone)).toBe(false);
+  });
+
+  // The absent row above is the branch every hand-built `ClaimedJob` in this suite rides: an id
+  // nobody holds reads as NOT retired, which is what makes a fixture a fixture. What keeps it there
+  // is `burnSchedulerJobId`, and the guarantee it owes is not "an id that looks free" but one the
+  // sequence has already spent, since anything else is a number some later insert lands on.
+  // tests/modules/claimed-job-fixture-ids.test.ts carries the failure that costs.
+  test("a burned fixture id is one no insert can land on", async () => {
+    const burned = await burnSchedulerJobId(suDb);
+    expect(burned).toBeGreaterThan(0n);
+    const fixture: ClaimedJob = {
+      id: burned,
+      tenantId,
+      kind: "FOLLOWUP",
+      payload: {},
+      attempts: 0,
+      claimSeq: 0,
+    };
+    expect(await jobRetired(fixture, appDb)).toBe(false);
+
+    // The next row the sequence hands out, and the next burn after it: both strictly past the id the
+    // fixture holds, which is the whole claim. A helper that returned a constant would pass every
+    // other test in the tree, because an unreachable id and a stale one read the same until an
+    // insert takes it.
+    const id = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "FOLLOWUP",
+      dedupeKey: "dk-burned-next",
+      // Not due, and deleted below: a claimable row left behind here is one the next test's
+      // `claimDueJobs(1, ...)` returns instead of its own.
+      runAt: new Date(Date.now() + 3_600_000),
+      base: appDb,
+    });
+    expect(id).toBeGreaterThan(burned);
+    expect(await burnSchedulerJobId(suDb)).toBeGreaterThan(id);
+    expect(await jobRetired(fixture, appDb)).toBe(false);
+    await suDb.schedulerJob.delete({ where: { id } });
   });
 
   // The reason jobRetired takes a connection at all, measured rather than argued. runScopedOn opens

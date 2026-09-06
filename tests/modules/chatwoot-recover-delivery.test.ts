@@ -32,6 +32,7 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // Answering the customer whose delivery a process death stranded (issue #295).
 //
@@ -68,6 +69,9 @@ if (appUrl && suUrl) {
 }
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
+
+// Burned from `scheduler_jobs_id_seq`, never a literal: tests/utils/scheduler.ts says why.
+let phantomJobId = 0n;
 
 const CHATWOOT_INBOX_ID = 71;
 // An inbox BOUND to an agent that has no `ChatwootAgentBot` row: the persona was never provisioned,
@@ -339,6 +343,7 @@ async function ledger(rowId: bigint) {
 
 describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
     // Registration is what src/index.ts does at boot, and it is idempotent. Read back through
     // `getJobHandler` rather than calling the handler function directly: a handler that is never
     // registered is a claimed job with nowhere to go, which is the failure the registry exists to
@@ -3561,9 +3566,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
   });
 
   describe("the job that runs it", () => {
-    function jobFor(payload: Record<string, unknown>, id = 1n): ClaimedJob {
+    function jobFor(payload: Record<string, unknown>): ClaimedJob {
       return {
-        id,
+        id: phantomJobId,
         tenantId,
         kind: "DELIVERY_RECOVERY",
         payload,

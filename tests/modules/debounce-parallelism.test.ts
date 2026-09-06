@@ -11,6 +11,7 @@ import { flushDebounceJob } from "@/modules/debounce/handler";
 import { runDebounceTick } from "@/modules/debounce/worker";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // End-to-end parallelism harness (no Chatwoot, no LLM): drives N real turns through the actual tick
 // (runDebounceTick → flushDebounceJob → graph → runModelCall) with a stub Chatwoot client and a fake
@@ -39,6 +40,9 @@ if (appUrl && suUrl) {
 }
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
+
+// Burned from `scheduler_jobs_id_seq`, never a literal: tests/utils/scheduler.ts says why.
+let phantomJobId = 0n;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -170,7 +174,7 @@ async function seedConversation(convId: number) {
 
 function jobFor(convId: number): ClaimedJob {
   return {
-    id: 1n,
+    id: phantomJobId,
     tenantId,
     kind: "DEBOUNCE",
     payload: { threadId: threadOf(convId), agentBotId: 9, burstStartedAt: 1 },
@@ -181,6 +185,7 @@ function jobFor(convId: number): ClaimedJob {
 
 describe.skipIf(!dbUp)("debounce parallelism", () => {
   beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
     const t = await suDb.tenant.create({
       data: { name: "DBP", slug: `dbp-${process.pid}` },
     });

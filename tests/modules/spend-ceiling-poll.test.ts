@@ -39,6 +39,7 @@ import {
 } from "@/modules/tenant-settings/service";
 import { formatVaultRef } from "@/modules/vault/service";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
+import { burnSchedulerJobId } from "../utils/scheduler";
 
 // THE POLL THAT WRITES WHAT THE GATE READS (issue #426). One scheduler job per tenant with the
 // ceiling on, re-armed forever like the heartbeat, asking Langfuse for the month's cost per source
@@ -69,6 +70,9 @@ if (appUrl && suUrl) {
   }
 }
 const suDb = su as PrismaClient;
+
+// Burned from `scheduler_jobs_id_seq`, never a literal: tests/utils/scheduler.ts says why.
+let phantomJobId = 0n;
 const appDb = app as PrismaClient;
 
 const NOW = new Date("2026-08-15T12:00:00Z");
@@ -186,7 +190,7 @@ const snapshot = (tenantId: bigint, source: string, at = NOW) =>
 
 const job = (tenantId: bigint): ClaimedJob =>
   ({
-    id: 1n,
+    id: phantomJobId,
     tenantId,
     kind: "SPEND_CEILING_POLL",
     dedupeKey: SPEND_POLL_DEDUPE_KEY,
@@ -198,6 +202,7 @@ const job = (tenantId: bigint): ClaimedJob =>
 
 describe.skipIf(!dbUp)("the spend ceiling poll", () => {
   beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
     const a = await suDb.tenant.create({
       data: { name: "SP-A", slug: `sp-a-${process.pid}` },
     });

@@ -43,6 +43,7 @@ import {
 } from "@/tests/utils/flowlog";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { burnSchedulerJobId } from "../utils/scheduler";
 import {
   EmptyThenReplyModel,
   guardrailModel,
@@ -74,6 +75,9 @@ if (appUrl && suUrl) {
 }
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
+
+// Burned from `scheduler_jobs_id_seq`, never a literal: tests/utils/scheduler.ts says why.
+let phantomJobId = 0n;
 
 let tenantId = 0n;
 let agentDbId = 0n;
@@ -240,7 +244,7 @@ function jobFor(
   extra: { lastMessageId?: number } = {},
 ): ClaimedJob {
   return {
-    id: 1n,
+    id: phantomJobId,
     tenantId,
     kind: "DEBOUNCE",
     payload: {
@@ -307,6 +311,7 @@ async function correctionLine(convId: number) {
 
 describe.skipIf(!dbUp)("debounce", () => {
   beforeAll(async () => {
+    phantomJobId = await burnSchedulerJobId(suDb);
     const t = await suDb.tenant.create({
       data: { name: "DBC", slug: `dbc-${process.pid}` },
     });

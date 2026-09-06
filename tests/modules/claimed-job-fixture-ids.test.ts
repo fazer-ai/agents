@@ -62,7 +62,7 @@ const ROOT = join(import.meta.dir, "..");
 // `reachableBySequence` normalises what is captured, so the grammar lives here and the arithmetic
 // lives there.
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
-const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
+const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?[\d_]+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
   String.raw`(?:\bid|["']id["'])(?:\s*:\s*[^=;,)\n]{1,80})?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?\s*(${NUMBER})n?\s*["'\`]?\s*\))`,
   "g",
@@ -124,7 +124,7 @@ const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // a case that is already narrow: a fixture is only invisible to `claimSeq` when the field arrives by
 // spread from another module, and then also has to spell a reachable id.
 const TYPE_MARKER =
-  /(?::\s*[^=;{}\n]*\bClaimedJob\b[^=;{}\n]*=\s*|:\s*ClaimedJob(?:\[\])?\s*=>\s*\(\s*|(?<![\w$])<\s*ClaimedJob\s*>\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
+  /(?::\s*[^=;{}\n]*\bClaimedJob\b[^=;{}\n]*=\s*\(?\s*|:\s*ClaimedJob(?:\[\])?\s*=>\s*\(\s*|(?<![\w$])<\s*ClaimedJob\s*>\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -263,6 +263,7 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     ["a BigInt() call over a bigint", fixture("BigInt(7n)"), true],
     // Neither is a bigint literal, and both are what BigInt turns into one.
     ["a BigInt() call over an exponent", fixture("BigInt(1e3)"), true],
+    ["a separator inside the exponent", fixture("BigInt(1e1_0)"), true],
     ["a BigInt() call over a whole float", fixture("BigInt(1.0)"), true],
     // Every base and the separator, because they all reach the same 7 and a decimal-only pattern
     // reads each of them as no id at all.
@@ -343,6 +344,12 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     [
       "a union annotation over a literal",
       "  const job: ClaimedJob | undefined = { id: 1n, ...b };",
+      true,
+    ],
+    // A parenthesised initializer is still an initializer, and `= (` cannot open a body.
+    [
+      "a parenthesised initializer",
+      "  const job: ClaimedJob = ({ ...baseJob, id: 1n });",
       true,
     ],
     // The literal side stays strict, and this is what that buys: a function TAKING a job and

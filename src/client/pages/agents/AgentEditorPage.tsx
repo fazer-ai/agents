@@ -2165,17 +2165,22 @@ function AgentEditor() {
           'Business hours "{{name}}" already existed and were reused; check the schedule is right.',
           p,
         );
+      // The four counters below hand `count` in as a LITERAL property, next to the spread, and the
+      // repetition is load-bearing: `i18next-parser` reads the call site, not the runtime, so a
+      // shared helper that returned the same object would leave the parser seeing only the spread
+      // and, with `keepRemoved: false`, delete the plural forms on the next `i18n:extract`. That is
+      // how these four ended up flat while every other counter carries forms (issue #513).
       case "hoursWindowsDropped":
         return t(
           "editor.importWarning.hoursWindowsDropped",
-          'Business hours "{{name}}": {{count}} weekly window(s) were not stored as written. Open the schedule and check the days are right.',
-          p,
+          'Business hours "{{name}}": {{count}} weekly windows were not stored as written. Open the schedule and check the days are right.',
+          { ...p, count: Number(p.count ?? 0) },
         );
       case "hoursExceptionsDropped":
         return t(
           "editor.importWarning.hoursExceptionsDropped",
-          'Business hours "{{name}}": {{count}} date exception(s) were not stored as written. Open the schedule and check the holidays and closures are right.',
-          p,
+          'Business hours "{{name}}": {{count}} date exceptions were not stored as written. Open the schedule and check the holidays and closures are right.',
+          { ...p, count: Number(p.count ?? 0) },
         );
       case "httpToolBodyIgnored":
         return t(
@@ -2252,8 +2257,8 @@ function AgentEditor() {
       case "kbReusedDocsSkipped":
         return t(
           "editor.importWarning.kbReusedDocsSkipped",
-          'Knowledge base "{{name}}" already existed and was reused; its {{n}} bundled document(s) were not imported.',
-          p,
+          'Knowledge base "{{name}}" already existed and was reused; its {{count}} bundled documents were not imported.',
+          { ...p, count: Number(p.count ?? 0) },
         );
       case "kbGrantNotFound":
         return t(
@@ -2302,8 +2307,8 @@ function AgentEditor() {
       case "unknownGrantSourceSkipped":
         return t(
           "editor.importWarning.unknownGrantSourceSkipped",
-          "{{n}} tool grant(s) came from a newer version and were skipped.",
-          p,
+          "{{count}} tool grants came from a newer version and were skipped.",
+          { ...p, count: Number(p.count ?? 0) },
         );
       case "documentGrantNotFound":
         return t(

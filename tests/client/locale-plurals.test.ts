@@ -32,15 +32,42 @@ const IDENTICAL_ON_PURPOSE: Record<string, string> = {
   "editor.tools.nativeActiveCount": "en: no noun agrees with the count",
 };
 
-// Keys that interpolate `{{count}}` and are still FLAT. Each one is a call site the extractor
-// cannot read a literal `count` from, so adding plural forms by hand would be deleted by the next
-// `bun run i18n:extract` (`keepRemoved: false`). Tracked in #513; the fix is at the call site.
-const KNOWN_FLAT = new Set([
-  "editor.importWarning.hoursExceptionsDropped",
-  "editor.importWarning.hoursWindowsDropped",
-]);
+// Keys that interpolate `{{count}}` and are still FLAT. Each one would be a call site the extractor
+// cannot read a literal `count` from, so plural forms added by hand would be deleted by the next
+// `bun run i18n:extract` (`keepRemoved: false`) — the fix for one of these is always at the call
+// site, never in the catalog. Empty since #513 closed the last four; keep it that way.
+const KNOWN_FLAT = new Set<string>([]);
+
+// THE PARENTHETICAL DODGE: "1 window(s)", "1 janela(s)". Grammatical for both numbers, which is why
+// it survives review, and machine-sounding for both, which is why it is not a translation. It is the
+// same defect as a missing singular seen from the catalog side rather than the call-site side, and
+// it catches what the `{{count}}` sweep above structurally cannot: a counted string that names its
+// variable something else (`{{n}}`) never says a number is being counted, so nothing above looks at
+// it. Both of #513's `{{n}}` keys were invisible here until they were renamed to `count`.
+// The lookbehind is what keeps this from being a per-key decision: `http(s)` is a real spelling of
+// two schemes and never a plural, in any string, in either edition. Waiving it by key instead made
+// this sweep edition-DEPENDENT — `branding.siteUrlHint` exists in the master catalog and not yet in
+// the Free one, so the waiver dangled there and failed a tree that had nothing wrong with it.
+const PARENTHETICAL_PLURAL =
+  /(?<=\w)(?<!\bhttp)\((s|es|is|as|os|ns|ões|ãos)\)/i;
+
+// Strings where the parentheses are a decision rather than a dodge, with the reason. Only strings
+// the regex above cannot rule out on its own belong here.
+const DODGE_WAIVED: Record<string, string> = {
+  // Two INDEPENDENT counts in one sentence ("{{created}} nova(s), {{updated}} atualizada(s)"), and
+  // i18next pluralizes a key on exactly one `count`. So this one cannot be fixed the way the four in
+  // #513 were: it has to become two keys, and that is its own issue. English carries no defect here
+  // at all, because its adjectives do not inflect.
+  "channels.synced": "two independent counts in one key; needs splitting",
+};
 
 const PLURAL_SUFFIX = /^(.*)_(zero|one|two|few|many|other)$/;
+
+// The base of a key, plural suffix removed. A waiver names the base, so it covers every form of the
+// same string rather than needing one line per category.
+function stripPlural(key: string): string {
+  return PLURAL_SUFFIX.exec(key)?.[1] ?? key;
+}
 
 // The remainder of the `t(...)` call that starts at `from` — which is just past the key literal, so
 // we are already one paren deep. Balanced rather than a fixed window: a 400-character window
@@ -251,6 +278,33 @@ describe.each(Object.entries(LOCALES))(
         if (entries[`${base}_zero`] !== other) wrong.push(base);
       }
       expect(wrong).toEqual([]);
+    });
+
+    test("no counter fakes its plural with a parenthesis", async () => {
+      const entries = await catalog(locale);
+      const dodging = Object.entries(entries)
+        .filter(([key]) => !(stripPlural(key) in DODGE_WAIVED))
+        .filter(([, value]) => PARENTHETICAL_PLURAL.test(value))
+        .map(([key]) => key);
+      expect(dodging.sort()).toEqual([]);
+    });
+
+    // A waiver that no longer names a real string is a hole: the next dodge to land under that key
+    // would be waved through by a reason written about something else.
+    test("every declared dodge waiver still names a string that dodges", async () => {
+      const entries = await catalog(locale);
+      const dangling = Object.keys(DODGE_WAIVED).filter((key) => {
+        const hits = Object.entries(entries).filter(
+          ([k, v]) => stripPlural(k) === key && PARENTHETICAL_PLURAL.test(v),
+        );
+        return hits.length === 0;
+      });
+      // A waiver can be legitimately quiet in ONE locale (`channels.synced` dodges only in pt-BR),
+      // so this asserts per locale only that the key still exists at all.
+      const missing = dangling.filter(
+        (key) => !Object.keys(entries).some((k) => stripPlural(k) === key),
+      );
+      expect(missing).toEqual([]);
     });
 
     // The exception list is only worth anything while every entry in it still describes a real key.

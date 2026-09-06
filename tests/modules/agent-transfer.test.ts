@@ -1622,9 +1622,13 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       tampered as never,
       appDb,
     );
-    expect(warnings.some((w) => w.code === "unknownGrantSourceSkipped")).toBe(
-      true,
+    // The count travels under the name `count`, and the name is the assertion: the console reads
+    // `p.count` to pluralize the sentence, so a producer that goes back to `n` renders "0 tool
+    // grants" with nothing failing anywhere (issue #513).
+    const skipped = warnings.find(
+      (w) => w.code === "unknownGrantSourceSkipped",
     );
+    expect(skipped?.params).toEqual({ count: 1 });
     // …and everything else still arrived.
     const grants = await suDb.agentToolSelection.findMany({
       where: { agentId: BigInt(agent.id) },
@@ -3113,11 +3117,12 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
       includeDocuments: true,
     });
     const { warnings } = await importAgent(dstCtx(), exp, appDb);
-    expect(
-      warnings.some(
-        (w) => w.code === "kbReusedDocsSkipped" && w.params?.name === "DocsKB",
-      ),
-    ).toBe(true);
+    const reused = warnings.find((w) => w.code === "kbReusedDocsSkipped");
+    // Field NAMES pinned, for the same reason as `unknownGrantSourceSkipped` above: `n` here would
+    // pluralize on a count that is not there (issue #513).
+    expect(Object.keys(reused?.params ?? {}).sort()).toEqual(["count", "name"]);
+    expect(reused?.params?.name).toBe("DocsKB");
+    expect(reused?.params?.count).toBeGreaterThan(0);
     const kb = await suDb.knowledgeBase.findFirst({
       where: { tenantId: dstTenant, name: "DocsKB" },
       select: { id: true },

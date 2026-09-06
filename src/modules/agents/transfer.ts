@@ -1349,7 +1349,7 @@ export async function importAgent(
     if (unknownGrants > 0) {
       warnings.push({
         code: "unknownGrantSourceSkipped",
-        params: { n: unknownGrants },
+        params: { count: unknownGrants },
       });
     }
     const grantRows = await buildGrantRows(
@@ -2499,7 +2499,7 @@ async function createMissingComponents(
         docCount > 0
           ? {
               code: "kbReusedDocsSkipped",
-              params: { name: kb.name, n: docCount },
+              params: { name: kb.name, count: docCount },
               target: { kind: "knowledge", name: kb.name },
             }
           : {

@@ -11,6 +11,7 @@ import {
   SandboxQueue,
 } from "@/graph/tools/code-sandbox";
 import { zoneFormatter, zoneOffsetSeconds } from "@/graph/tools/zone-offset";
+import { CODE_TOOL_GLOBALS } from "@/lib/code-tool-vocabulary";
 import { replaceLoneSurrogates } from "@/lib/text";
 
 // The snippet the issue is about, as a model writes it: normalise, weigh, `%11%10`, and END with
@@ -886,9 +887,9 @@ describe("runSandboxedCode", () => {
     const globals = await runSandboxedCode(
       `Object.getOwnPropertyNames(globalThis).filter((n) => !/^[A-Z]/.test(n)).sort().join(",")`,
     );
-    // Lower-case globals are the ECMAScript functions plus the three things installed on purpose:
-    // the console and the two validators. A fourth name here is a new capability, and this line is
-    // where it has to be argued for.
+    // Lower-case globals are the ECMAScript functions plus the one thing installed on purpose: the
+    // console. A second name here is a new capability, and this line is where it has to be argued
+    // for.
     expect((globals as { value: string }).value).toBe(
       JSON.stringify(
         "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape",
@@ -1482,5 +1483,43 @@ describe("function-body mode (a code tool's call)", () => {
       kind: "value",
       value: '{"then":1,"valid":true,"name":"Maria"}',
     });
+  });
+});
+
+// The console's completion advertises these names, so they have to BE there. Asked of the sandbox
+// itself rather than of the worker's source, because what matters is what the body can reach: a
+// global the prelude stops installing has to fail here instead of completing to a ReferenceError
+// the operator only meets when the agent calls the tool.
+describe("the globals the editor offers are the globals the body gets", () => {
+  test("every advertised name exists inside", async () => {
+    const out = await runSandboxedCode(
+      "return Object.getOwnPropertyNames(globalThis).join(',');",
+      {
+        clock: { timezone: "America/Sao_Paulo" },
+        call: { input: {}, context: {} },
+      },
+    );
+    expect(out.kind).toBe("value");
+    // The outcome carries the RENDERED value, so it is JSON text: parsed, not split, or the quotes
+    // glue themselves to the first and last name and both read as missing.
+    const present = new Set(
+      String(JSON.parse(String((out as { value: unknown }).value))).split(","),
+    );
+    const missing = CODE_TOOL_GLOBALS.map((g) => g.name).filter(
+      (n) => !present.has(n),
+    );
+    expect(missing).toEqual([]);
+    // A control: the list is a real subset, and the assertion above is not passing on an empty one.
+    expect(CODE_TOOL_GLOBALS.length).toBeGreaterThan(4);
+    expect(present.size).toBeGreaterThan(CODE_TOOL_GLOBALS.length);
+  }, 20000);
+
+  // The four the sandbox installs ITSELF are the ones an operator cannot guess, so they are the
+  // ones that must never fall out of the list.
+  test("and the four this sandbox adds are among them", () => {
+    const names = CODE_TOOL_GLOBALS.filter((g) => g.description).map(
+      (g) => g.name,
+    );
+    expect(names).toEqual(["TIMEZONE", "NOW_LOCAL", "console", "Date"]);
   });
 });

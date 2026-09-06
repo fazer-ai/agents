@@ -171,11 +171,14 @@ export function ToolsPanel() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
+      {/* Every sibling panel has ONE short button here and survives `justify-between` on a phone.
+          This one has two, both long, and `shrink-0` on the pair, so the sentence beside them was
+          crushed to two words a line at 390px. Stacked below `sm`, side by side above it. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-text-muted">
           {t("tools.subtitle", "HTTP and code tools your agents can call.")}
         </p>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex flex-wrap gap-2 sm:shrink-0">
           <Button
             size="sm"
             variant="secondary"
@@ -184,7 +187,15 @@ export function ToolsPanel() {
             <Webhook className="h-4 w-4" aria-hidden="true" />
             {t("tools.addHttp", "New HTTP tool")}
           </Button>
-          <Button size="sm" onClick={() => codeEditModal.open({})}>
+          {/* Peers, so both are secondary. The kind that was NEW when the pair was introduced (#517)
+              kept the primary variant, which reads as a recommendation the page has no business
+              making: an HTTP tool and a code tool answer different questions, and the page lists
+              them in ONE list precisely because neither leads. */}
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => codeEditModal.open({})}
+          >
             <Code2 className="h-4 w-4" aria-hidden="true" />
             {t("tools.addCode", "New code tool")}
           </Button>
@@ -211,10 +222,13 @@ export function ToolsPanel() {
           {merged.map((tool) => (
             <Card
               key={`${tool.kind}:${tool.id}`}
-              className="flex items-center justify-between gap-4"
+              // The three actions are ~230px of the 390px a phone has, and the name had the rest
+              // with `truncate` on top: at that width "Buscar pedido" rendered as nothing at all,
+              // so the row identified the tool by its badge. Stacked below `sm`.
+              className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
             >
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="truncate font-medium text-sm text-text-primary">
                     {tool.label}
                   </span>
@@ -233,7 +247,7 @@ export function ToolsPanel() {
                   {tool.subtitle}
                 </p>
               </div>
-              <div className="flex shrink-0 gap-1">
+              <div className="flex flex-wrap gap-1 sm:shrink-0">
                 <Button
                   variant="secondary"
                   size="sm"

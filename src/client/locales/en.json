@@ -389,7 +389,7 @@
     "code": "Code",
     "codeChangeRefused_one": "Nothing was inserted: the body would be {{count}} character over the {{max}} limit.",
     "codeChangeRefused_other": "Nothing was inserted: the body would be {{count}} characters over the {{max}} limit.",
-    "codeHelp": "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation's values. Type `input.` or `context.` for the full list, with the type of each and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+    "codeHelp": "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` the conversation's values. Type `input.` or `context.`, or press Ctrl-Shift-Space, to list what is available with each type and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
     "codeOverLimit_one": "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",
     "codeOverLimit_other": "{{count}} characters over the limit. Shorten the body: a save above {{max}} is refused.",
     "completion": {
@@ -410,6 +410,13 @@
         "message_id": "Chatwoot id of the message that triggered this turn. Absent outside a conversation."
       },
       "contextRoot": "The conversation's values.",
+      "global": {
+        "console": "log, warn, error, info and debug. What they print reaches the agent as the Output block, after the returned value.",
+        "Date": "Runs in the agent's zone rather than UTC, so `new Date().getHours()` is the hour where the agent is.",
+        "NOW_LOCAL": "The moment the call started, in the agent's zone, as an ISO string.",
+        "TIMEZONE": "The agent's IANA time zone, as a string."
+      },
+      "globalDetail": "sandbox",
       "inputRoot": "The arguments the agent sent."
     },
     "description": "Description",
@@ -430,8 +437,7 @@
     "savedWithWarning": "Code tool saved. {{warning}}",
     "saveError": "Could not save.",
     "sharedNotice": "This is a shared code tool. Changes affect every agent that uses it.",
-    "starterInput": "input holds the typed arguments you declared; context the conversation.",
-    "starterReturn": "Answer with a return; console.log output comes back with it.",
+    "starterHint": "{{hotkey}} lists the variables available here.",
     "syntaxWarning": "Line {{line}}, column {{column}}: {{message}}",
     "testAgentName": "Agent",
     "testBadArg": "\"{{field}}\" has to be: {{type}}.",

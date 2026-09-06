@@ -109,6 +109,66 @@ export const CODE_TOOL_CONTEXT_VARS: readonly CodeToolContextVar[] = [
   },
 ];
 
+// What the SANDBOX puts in scope, beyond the two parameters. Measured against the worker rather
+// than assumed: `tests/graph/code-sandbox.test.ts` runs `Object.getOwnPropertyNames(globalThis)`
+// inside it and asserts every name here is really there, so an advertised global that the sandbox
+// stops installing fails instead of completing to a ReferenceError at call time.
+//
+// It is a CURATED subset, not the whole list: the interpreter also exposes `Float16Array`,
+// `SharedArrayBuffer`, `escape` and two dozen others that nobody writing a twenty-line body reaches
+// for, and a popup that lists them buries the four that are this sandbox's own.
+export interface CodeToolGlobal {
+  name: string;
+  // `variable` for a value, `class` for a constructor, `function` for a callable: the three
+  // `Completion.type` values CodeMirror draws a different icon for.
+  kind: "variable" | "class" | "function";
+  // Only for the four the sandbox itself installs. The standard library explains itself, and a
+  // description per constructor is prose nobody reads and four locales to keep in step.
+  description?: string;
+}
+
+export const CODE_TOOL_GLOBALS: readonly CodeToolGlobal[] = [
+  {
+    name: "TIMEZONE",
+    kind: "variable",
+    description: "The agent's IANA time zone, as a string.",
+  },
+  {
+    name: "NOW_LOCAL",
+    kind: "variable",
+    description:
+      "The moment the call started, in the agent's zone, as an ISO string.",
+  },
+  {
+    name: "console",
+    kind: "variable",
+    description:
+      "log, warn, error, info and debug. What they print reaches the agent as the Output block, after the returned value.",
+  },
+  {
+    name: "Date",
+    kind: "class",
+    description:
+      "Runs in the agent's zone rather than UTC, so `new Date().getHours()` is the hour where the agent is.",
+  },
+  { name: "JSON", kind: "variable" },
+  { name: "Math", kind: "variable" },
+  { name: "Object", kind: "class" },
+  { name: "Array", kind: "class" },
+  { name: "String", kind: "class" },
+  { name: "Number", kind: "class" },
+  { name: "Boolean", kind: "class" },
+  { name: "RegExp", kind: "class" },
+  { name: "Map", kind: "class" },
+  { name: "Set", kind: "class" },
+  { name: "Error", kind: "class" },
+  { name: "parseInt", kind: "function" },
+  { name: "parseFloat", kind: "function" },
+  { name: "isNaN", kind: "function" },
+  { name: "encodeURIComponent", kind: "function" },
+  { name: "decodeURIComponent", kind: "function" },
+];
+
 // The names alone, for a caller that only needs the list.
 export const CODE_TOOL_CONTEXT_NAMES: readonly string[] =
   CODE_TOOL_CONTEXT_VARS.map((v) => v.name);

@@ -11,7 +11,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { ToastProvider } from "@/client/components";
+import { scopeKeyLabel, ToastProvider } from "@/client/components";
 import { useModalController } from "@/client/components/Modal";
 import i18n from "@/client/lib/i18n";
 import {
@@ -648,8 +648,8 @@ test("a save in flight cannot be dismissed, and its finally belongs to its own o
   ).toBe(true);
 });
 
-// The starter body's comments are the first console text an author of a code tool reads, so they
-// follow the console's language like every label around them. The `return` line does not: that is
+// The starter body's comment is the first console text an author of a code tool reads, so it
+// follows the console's language like every label around it. The `return` line does not: that is
 // the language's own word. Shipped in English since #517, caught in a browser over a pt-BR form.
 test("the starter body speaks the console's language, and its code does not", async () => {
   const en = starterCode(i18n.t);
@@ -657,14 +657,47 @@ test("the starter body speaks the console's language, and its code does not", as
   await i18n.changeLanguage("pt-BR");
   const pt = starterCode(i18n.t);
   await i18n.changeLanguage("en");
-  // The comments moved.
+  // The comment moved.
   expect(pt).not.toBe(en);
   expect(pt.split("\n")[0]).not.toBe(en.split("\n")[0]);
   // The code did not.
   expect(pt).toContain("return { ok: true };");
-  // Both lines are comments, so an untranslated one cannot hide as code.
+  // The prose is a comment, so an untranslated line cannot hide as code.
   for (const body of [en, pt]) {
-    const lines = body.trimEnd().split("\n");
-    expect(lines.slice(0, 2).every((l) => l.startsWith("// "))).toBe(true);
+    expect(body.split("\n")[0]?.startsWith("// ")).toBe(true);
   }
+});
+
+// Two lines, and the first one earns its place: it names the key that opens the list, which is the
+// one thing the editor cannot teach by itself. What it used to say instead (what `input` and
+// `context` hold, that the answer is a `return`) is what the completion and the `?` already answer,
+// so it was a paragraph about the body the author is about to delete.
+//
+// ONE key is named, and it is the one the READER's machine delivers: `SHOW_SCOPE_KEY` in
+// CodeEditor.tsx carries the keydown log that settled it (macOS eats the whole Ctrl+Space family,
+// and Alt-i is the circumflex dead key on a US International layout, so Chrome sends `key: "Dead"`
+// with `keyCode: 229`). `Mod-i` is one binding with two names, and printing the wrong one is worse
+// than printing none: it is a key the reader can press and watch do nothing. So the assertion is
+// that the line names the current platform's name and NOT the other, in both catalogs.
+test("the starter body is two lines, and names the platform's key", () => {
+  for (const lang of ["en", "pt-BR"] as const) {
+    const body = starterCode(i18n.getFixedT(lang));
+    const lines = body.trimEnd().split("\n");
+    expect(lines.length).toBe(2);
+    expect(lines[1]).toBe("return { ok: true };");
+    expect(lines[0]).toContain(scopeKeyLabel());
+    const other = scopeKeyLabel() === "Ctrl+I" ? "\u2318I" : "Ctrl+I";
+    expect(lines[0]).not.toContain(other);
+    // And never the keys that measured as unreachable.
+    expect(/Ctrl-Space|Alt-i|Alt-`/.test(lines[0] ?? "")).toBe(false);
+  }
+});
+
+// Both names exist, each is the whole hint on its own platform, and each follows ITS platform's
+// typography rather than CodeMirror's: Apple joins modifiers symbolically (⌘I, not ⌘+I or Cmd-I),
+// Microsoft spells them and joins with a plus (Ctrl+I, not Ctrl-I). `Mod-i` names the binding and
+// is never shown.
+test("the key is named per platform, in that platform's notation", () => {
+  expect(scopeKeyLabel(true)).toBe("\u2318I");
+  expect(scopeKeyLabel(false)).toBe("Ctrl+I");
 });

@@ -115,6 +115,26 @@ async function catalog(locale: string): Promise<Record<string, string>> {
   return flatten(JSON.parse(await Bun.file(file).text()) as Catalog);
 }
 
+// A waiver is a standing exemption, so it has to keep earning its place: it must still name a string
+// that actually dodges. The check is CROSS-CATALOG on purpose, and the per-locale version of it was
+// a hole. `channels.synced` dodges only in pt-BR, so asserting per locale forces a tolerance, and the
+// tolerance that fits ("the key still exists") passes for a waiver whose string was FIXED — leaving
+// a standing exemption over a name that no longer dodges anywhere, ready to wave through the next
+// parenthetical plural to land under it. Asking the question once, over every catalog, needs no
+// tolerance: one hit anywhere is enough, and zero hits everywhere means the waiver is spent.
+test("every declared dodge waiver still names a string that dodges somewhere", async () => {
+  const all = await Promise.all(Object.keys(LOCALES).map(catalog));
+  const spent = Object.keys(DODGE_WAIVED).filter(
+    (key) =>
+      !all.some((entries) =>
+        Object.entries(entries).some(
+          ([k, v]) => stripPlural(k) === key && PARENTHETICAL_PLURAL.test(v),
+        ),
+      ),
+  );
+  expect(spent).toEqual([]);
+});
+
 describe.each(Object.entries(LOCALES))(
   "%s catalog plurals",
   (locale, forms) => {
@@ -288,24 +308,6 @@ describe.each(Object.entries(LOCALES))(
         .filter(([, value]) => PARENTHETICAL_PLURAL.test(value))
         .map(([key]) => key);
       expect(dodging.sort()).toEqual([]);
-    });
-
-    // NOTE: A waiver that no longer names a real string is a hole: the next dodge to land under that key
-    // would be waved through by a reason written about something else.
-    test("every declared dodge waiver still names a string that dodges", async () => {
-      const entries = await catalog(locale);
-      const dangling = Object.keys(DODGE_WAIVED).filter((key) => {
-        const hits = Object.entries(entries).filter(
-          ([k, v]) => stripPlural(k) === key && PARENTHETICAL_PLURAL.test(v),
-        );
-        return hits.length === 0;
-      });
-      // NOTE: A waiver can be legitimately quiet in ONE locale (`channels.synced` dodges only in pt-BR),
-      // so this asserts per locale only that the key still exists at all.
-      const missing = dangling.filter(
-        (key) => !Object.keys(entries).some((k) => stripPlural(k) === key),
-      );
-      expect(missing).toEqual([]);
     });
 
     // The exception list is only worth anything while every entry in it still describes a real key.

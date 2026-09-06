@@ -80,6 +80,12 @@ const LITERAL_ID = new RegExp(
 //     handler a job-shaped literal without ever naming the type, and a gate on the name reads that
 //     file as having no fixtures at all. It is safe today only because its id is `0n`.
 //
+// The ANNOTATION, though, is a marker of its own (`: ClaimedJob`, `satisfies ClaimedJob`,
+// `as ClaimedJob`), because a fixture can take its claim token from a spread whose source is
+// imported, and then nothing near the id spells `claimSeq` at all. It is the annotation and not the
+// bare word, so the `import type { ClaimedJob }` at the top of a file is not a marker over whatever
+// happens to sit in the fourteen lines below it. Measured: adding it flags nothing new in the tree.
+//
 // A window rather than a parser, and its reach is pinned from both sides below, because a window
 // nobody measures is one that quietly grows to "the whole file" or shrinks to "the same line".
 const NEARBY = 14;
@@ -94,6 +100,7 @@ const MARKERS = /\bclaimSeq\b/g;
 // JSON inside a string (`const raw = '{"claimSeq":0}'`) would answer for a fixture that is not
 // there.
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
+const TYPE_MARKER = /(?::\s*|satisfies\s+|as\s+)ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -126,6 +133,7 @@ export function fixtureIdHits(source: string): number[] {
   // blanking would erase, and answers only where its own opening quote survived the blanking.
   const markerLines = new Set<number>();
   for (const m of code.matchAll(MARKERS)) markerLines.add(lineOf(m.index));
+  for (const m of code.matchAll(TYPE_MARKER)) markerLines.add(lineOf(m.index));
   for (const m of src.matchAll(QUOTED_MARKER))
     if (code[m.index] === src[m.index]) markerLines.add(lineOf(m.index));
 
@@ -171,9 +179,11 @@ export function offendingFixtures(): string[] {
   return hits.sort();
 }
 
+// Untyped on purpose: the annotation is a marker of its own now, so a sample carrying it would be
+// marked no matter what the `claimSeq` rows below are trying to measure.
 const fixture = (id: string, gap = 1) =>
   [
-    "  const job: ClaimedJob = {",
+    "  const job = {",
     `    id: ${id},`,
     ...Array.from({ length: gap - 1 }, () => "    // filler"),
     "    kind: 'FOLLOWUP',",
@@ -250,6 +260,24 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       true,
     ],
     ["a parenthesised value", fixture("(7n)"), true],
+    // The annotation is a marker in its own right, because a fixture can take its claim token from
+    // a spread whose source is imported, and then no `claimSeq` is written anywhere near the id.
+    [
+      "a spread fixture named by its type",
+      "  const job: ClaimedJob = { id: 1n, ...baseJob };",
+      true,
+    ],
+    [
+      "a spread fixture named by satisfies",
+      "  const job = { id: 1n, ...baseJob } satisfies ClaimedJob;",
+      true,
+    ],
+    // The import is not an annotation, and it sits at the top of every file that has one.
+    [
+      "an import of the type",
+      'import type { ClaimedJob } from "@/modules/scheduler/service";\n  const msg = { id: 5n };',
+      false,
+    ],
     // The annotation is whatever is not the operator: an indexed access and a union both read the
     // same way, and both are how a factory declares the id it defaults.
     [
@@ -271,11 +299,7 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     ["a negative", fixture("-1n"), false],
     // An object with an `id` and no `claimSeq` is a message, a contact, a row read back from a
     // create. None of those are the fixture this is about.
-    [
-      "an id with no claimSeq",
-      "  const job: ClaimedJob = {};\n  const msg = { id: 5n, kind: 'one' };",
-      false,
-    ],
+    ["an id with no claimSeq", "  const msg = { id: 5n, kind: 'one' };", false],
     // Forty lines from the marker is not one object literal, and treating it as one would flag every
     // id in every file that happens to mention a job somewhere.
     ["a marker forty lines off", fixture("7n", 40), false],

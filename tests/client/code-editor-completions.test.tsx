@@ -19,6 +19,7 @@ import {
   completionsFor,
   hoverInfo,
   namesKeyOf,
+  SHOW_SCOPE_KEYS,
   scopeKeyLabel,
   sourceFor,
 } from "@/client/components/CodeEditor";
@@ -944,6 +945,16 @@ describe("hover answers with the completion the list would have offered", () => 
     expect(
       askNamed(single, single.indexOf("contact_id") + 1, [])?.completion.label,
     ).toBe("contact_id");
+    // Every escape `JSON.stringify` can emit, not the two a hand-written table thought of: an
+    // argument name is any non-empty string, so a control character reaches one through the API and
+    // the completion writes it as `\\r` or `\\u0007`. Decoding those as the letters `r` and `u`
+    // matched no declared name, over an accessor this editor had generated.
+    const control = "a\rb\u0007c";
+    const written = `input[${JSON.stringify(control)}]`;
+    expect(
+      askNamed(written, written.indexOf("a") + 1, [control])?.completion.label,
+    ).toBe(control);
+
     // A literal still being typed names nothing yet. The case that pins the terminator check is a
     // PREFIX that happens to be another declared name: without it the last character is simply
     // dropped, so `input["cpf` while typing would answer with the sentence for an argument called
@@ -961,6 +972,18 @@ describe("hover answers with the completion the list would have offered", () => 
     ] as const) {
       expect(ask(doc, inside(doc, label))?.completion.label).toBe(label);
     }
+  });
+
+  // Pressing the chord proves ONE of the two bindings, the one this platform resolves `Mod-` to, and
+  // the other exists for the case this suite cannot stage: CodeMirror decides `Mod-` from the real
+  // `navigator` at module load, so a Mac cannot be simulated here, and the case is precisely a Mac
+  // whose label came out `Ctrl+I`. What the second binding buys is that a wrong label still names a
+  // key that works, so the decision is pinned as data rather than left to the one chord a test can
+  // press.
+  test("both chords are bound, so a wrong label still names a working key", () => {
+    expect(SHOW_SCOPE_KEYS.map((b) => b.key)).toEqual(["Mod-i", "Ctrl-i"]);
+    // Without this the browser's own Ctrl+I (page info, in Firefox) fires alongside the list.
+    expect(SHOW_SCOPE_KEYS.every((b) => b.preventDefault)).toBe(true);
   });
 
   // The tests above ask `hoverInfo` directly, and removing the hover from the editor's extensions

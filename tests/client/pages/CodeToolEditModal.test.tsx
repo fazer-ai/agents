@@ -11,7 +11,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { scopeKeyLabel, ToastProvider } from "@/client/components";
+import { ToastProvider } from "@/client/components";
+import { isMacLike, scopeKeyLabel } from "@/client/components/CodeEditor";
 import { useModalController } from "@/client/components/Modal";
 import i18n from "@/client/lib/i18n";
 import enLocale from "@/client/locales/en.json";
@@ -732,4 +733,58 @@ test("no codeTools string spells a hotkey, they interpolate it", () => {
 test("the key is named per platform, in that platform's notation", () => {
   expect(scopeKeyLabel(true)).toBe("\u2318I");
   expect(scopeKeyLabel(false)).toBe("Ctrl+I");
+});
+
+// Which platform gets which name is CodeMirror's decision, taken from `browser.mac`, which is not
+// exported: `isMacLike` mirrors it and the cases below are the ones a `platform` test alone gets
+// wrong. An iPhone with a hardware keyboard reports `iPhone` and would have been called a PC, and
+// an iPad reports `MacIntel` and is Mac-like for a second reason. Both chords are bound, so a
+// disagreement here costs the NAME rather than the key, which is why this is a table and not a
+// runtime guard.
+test("the mirror of CodeMirror's platform rule, at the edges", () => {
+  // Not `Partial<Navigator>`: this lib types `platform` as a union of a few literals, and the whole
+  // point of the table is the strings a real device reports.
+  type NavFacts = {
+    vendor?: string;
+    userAgent?: string;
+    platform?: string;
+    maxTouchPoints?: number;
+  };
+  const nav = (over: NavFacts) =>
+    ({
+      vendor: "",
+      userAgent: "",
+      platform: "",
+      maxTouchPoints: 0,
+      ...over,
+    }) as unknown as Navigator;
+  const rows: Array<[string, NavFacts, boolean]> = [
+    ["a Mac", { platform: "MacIntel" }, true],
+    [
+      "an iPhone, which reports its own platform and no Mac",
+      {
+        vendor: "Apple Computer, Inc.",
+        userAgent: "… Mobile/15E148 Safari/604.1",
+        platform: "iPhone",
+      },
+      true,
+    ],
+    [
+      "an iPad on iPadOS, which reports MacIntel and many touch points",
+      {
+        vendor: "Apple Computer, Inc.",
+        platform: "MacIntel",
+        maxTouchPoints: 5,
+      },
+      true,
+    ],
+    ["Windows", { platform: "Win32" }, false],
+    ["Linux", { platform: "Linux x86_64" }, false],
+    // Touch alone is not Apple: a Windows laptop with a touchscreen reports plenty of points.
+    ["a touchscreen PC", { platform: "Win32", maxTouchPoints: 10 }, false],
+  ];
+  for (const [name, over, want] of rows) {
+    expect([name, isMacLike(nav(over))]).toEqual([name, want]);
+  }
+  expect(isMacLike(undefined)).toBe(false);
 });

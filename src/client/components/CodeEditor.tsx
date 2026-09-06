@@ -377,28 +377,42 @@ export function hoverInfo(
   return null;
 }
 
-// The text a quoted subscript actually names. Not `JSON.parse`, which reads the double-quoted form
-// this editor writes and refuses the single-quoted one an operator types by hand, and not a regex,
-// which cannot tell `\\\\` from an escaped quote. Unterminated returns null: a literal being typed is
-// not a name yet, and answering for a prefix would put the wrong sentence under the pointer.
+// The text a quoted subscript actually names. `JSON.parse` rather than a table of escapes written
+// out here: the double-quoted form is exactly what this editor writes (`bracketApply` uses
+// `JSON.stringify`), so the parser that produced it is the one that reads it back, including the
+// `\\b`, `\\f`, `\\r` and `\\uXXXX` a control character in an argument name turns into. A hand-rolled
+// table decoded the two escapes its author thought of and turned the rest into literal letters.
+//
+// A single-quoted literal is not JSON, and the operator types that one by hand. It is re-quoted
+// rather than parsed separately: the escape grammar is otherwise the same, so unescaping `\\'` and
+// escaping a bare `"` turns it into the JSON literal for the same string, and one parser still
+// answers for both. Unterminated returns null, because a literal being typed is not a name yet and
+// answering for its prefix would put another argument's sentence under the pointer.
 function decodeStringLiteral(literal: string): string | null {
   const quote = literal[0];
   if (quote !== '"' && quote !== "'") return null;
   if (literal.length < 2 || literal[literal.length - 1] !== quote) return null;
-  let out = "";
-  for (let i = 1; i < literal.length - 1; i++) {
-    const ch = literal[i];
-    if (ch !== "\\") {
-      out += ch;
-      continue;
+  let json = literal;
+  if (quote === "'") {
+    let inner = "";
+    for (let i = 1; i < literal.length - 1; i++) {
+      const ch = literal[i];
+      if (ch === "\\") {
+        const escaped = literal[++i];
+        if (escaped === undefined) return null;
+        inner += escaped === "'" ? "'" : `\\${escaped}`;
+        continue;
+      }
+      inner += ch === '"' ? '\\"' : ch;
     }
-    const escaped = literal[++i];
-    if (escaped === undefined) return null;
-    // The escapes `JSON.stringify` emits, plus the pass-through that makes `\"` and `\\` the
-    // characters they stand for. A name spelled with `\u0041` is not a case this has to serve.
-    out += escaped === "n" ? "\n" : escaped === "t" ? "\t" : escaped;
+    json = `"${inner}"`;
   }
-  return out;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return typeof parsed === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // The tooltip itself. `above` so it does not cover the line being read, and no `strictSide` because
@@ -454,11 +468,17 @@ function scopeHover(argumentNames: string[], t: TFunction): Extension {
 // So the binding is `Mod-i`, which CodeMirror reads as ⌘I on a Mac and Ctrl-I everywhere else: ONE
 // binding, and the key each operator is told about is the one their machine actually delivers
 // (`scopeKeyLabel`). CodeMirror's three stay installed as a silent fallback for whoever knows them.
-const SHOW_SCOPE_KEY: KeyBinding = {
-  key: "Mod-i",
-  run: startCompletion,
-  preventDefault: true,
-};
+// TWO bindings for one chord, and the second is what makes the label's platform guess cosmetic.
+// `Mod-` is resolved by CodeMirror's own idea of the platform (⌘ on a Mac, Ctrl elsewhere), which is
+// not exported and which the label below has to mirror; while the binding depended on that mirror,
+// any disagreement produced the worst possible outcome, a printed key that does nothing. `Ctrl-i` is
+// free on every platform that matters (measured arriving as `key: "i"`, `keyCode: 73` on macOS, and
+// Win+I never reaches a browser at all), so binding both means a wrong label still names a key that
+// WORKS, and the mirror only decides which of the two names is shown.
+export const SHOW_SCOPE_KEYS: readonly KeyBinding[] = [
+  { key: "Mod-i", run: startCompletion, preventDefault: true },
+  { key: "Ctrl-i", run: startCompletion, preventDefault: true },
+];
 
 // What to CALL that key in front of the operator. `Mod` is one binding and two names, and printing
 // the wrong one is worse than printing none: it is a key the reader can press and watch do nothing.
@@ -466,11 +486,25 @@ const SHOW_SCOPE_KEY: KeyBinding = {
 // Each name follows its own platform, not CodeMirror's notation: Apple writes modifiers joined and
 // symbolic (⌘I, never ⌘+I or Cmd-I), Microsoft writes them spelled out and joined by a plus
 // (Ctrl+I). `Mod-i` is the BINDING's name and belongs in the keymap, not in front of a reader.
-export function scopeKeyLabel(
-  mac: boolean = typeof navigator !== "undefined" &&
-    /Mac/i.test(navigator.platform || navigator.userAgent || ""),
-): string {
+export function scopeKeyLabel(mac: boolean = isMacLike()): string {
   return mac ? "\u2318I" : "Ctrl+I";
+}
+
+// A MIRROR of `browser.mac` in @codemirror/view (dist/index.js:16-18), which is not exported. The
+// rule is not "the platform string says Mac": iOS is Mac-like there, and it is detected through the
+// Apple vendor plus a touch or Mobile signal, because iPadOS reports `MacIntel` while an iPhone
+// reports `iPhone`. Testing `platform` alone therefore called an iPhone with a hardware keyboard a
+// PC and printed `Ctrl+I` at a reader whose ⌘I is the one bound. The stakes are only the NAME now,
+// since both chords are bound above.
+export function isMacLike(
+  nav: Navigator | undefined = globalThis.navigator,
+): boolean {
+  if (!nav) return false;
+  const safari = /Apple Computer/.test(nav.vendor || "");
+  const ios =
+    safari &&
+    (/Mobile\/\w+/.test(nav.userAgent || "") || nav.maxTouchPoints > 2);
+  return ios || /Mac/.test(nav.platform || "");
 }
 
 // The completion extension, in ONE place. It is installed twice, at build and again by the
@@ -731,7 +765,7 @@ export function CodeEditor({
       theme,
       EditorView.lineWrapping,
       keymap.of([
-        SHOW_SCOPE_KEY,
+        ...SHOW_SCOPE_KEYS,
         ...closeBracketsKeymap,
         ...defaultKeymap,
         ...historyKeymap,

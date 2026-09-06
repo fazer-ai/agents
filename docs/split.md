@@ -17,7 +17,8 @@ So `deliverReply` reports instead of throwing, and the caller in `runLoadedTurn`
 
 | what happened | what the turn does |
 | --- | --- |
-| nothing landed (`delivered: 0`, `failed`) | **throws** — a real turn failure, and nothing reached the customer. The operator is told the way every failed turn tells them (`lastError`, private note, alert: the callers write those on a throw and on nothing else). Unless an attachment already went out, which is the same exception the attachment-only branch keeps. |
+| nothing landed, and that is a FACT (`delivered: 0`, `failed`, not `unproven`) | **throws** — a real turn failure, and nothing reached the customer. The operator is told the way every failed turn tells them (`lastError`, private note, alert: the callers write those on a throw and on nothing else). Unless an attachment already went out, which is the same exception the attachment-only branch keeps. |
+| nothing landed that we could ACCOUNT FOR (`delivered: 0`, `failed`, `unproven`) | **`posted-partial`** — a send was rejected and Chatwoot could not be asked whether it landed. The throw is not a louder report here, it is a different action: it is what eventually marks the ledger row `DEAD` and hands it to the delivery recovery, which re-runs the whole turn, every side-effecting tool included, over a message that may already have been answered. The badge is what the operator reads instead. |
 | everything landed | `posted`. The watermark advances, the deferred `resolve_conversation` may run, and a previous `lastError` is cleared. |
 | something landed and the rest did not | **`posted-partial`** — a word of its own. Everything that keys off "did this turn answer" reads it like `posted` (the burst is consumed, the ledger row is settled `answered`), because the customer HAS part of it. What it must not do is close the conversation or clear the operator's badge, and the turn writes that badge itself (`notePartialDelivery`) because past the return it is only a word. |
 
@@ -37,7 +38,7 @@ The request carries a 15s deadline, so a rejection here can mean the message was
 
 So every send that is rejected — the balloon **and** the consolidated retry — asks Chatwoot instead of guessing. **It asks by name.** Each send mints an id and carries it out in `content_attributes` (`CHATWOOT_SEND_ID_KEY`), which the fork stores verbatim and returns on the read, so the read-back looks for *that message* rather than for a message that says the same thing. The id goes out **with the request**, because an id assigned by the response is no help to the attempt that timed out.
 
-The read-back answers one of **three** things, and the third is the whole of issue #499:
+The read-back answers one of **three** things, and the third is the whole of issue #499. `unproven` on the reply's own report is that third answer surviving all the way out to the caller, because what rides on it is not just this chunk but whether the TURN may be run again:
 
 | verdict | what it means | what the chunk gets |
 | --- | --- | --- |

@@ -462,7 +462,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       noSleep,
     );
     expect(calls.getMessages).toBe(0);
-    expect(out).toEqual({ delivered: 3, failed: false });
+    expect(out).toEqual({ delivered: 3, failed: false, unproven: false });
   });
 
   // A REJECTED SEND IS NOT AN UNDELIVERED ONE. The request has a 15s deadline, so a timeout — or a
@@ -489,7 +489,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     // Balloon 2 is NOT in the retry — the customer has it already. Only balloon 3 is owed.
     expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
     // And it still counts: two landed by send, one by the far side accepting it.
-    expect(out).toEqual({ delivered: 3, failed: false });
+    expect(out).toEqual({ delivered: 3, failed: false, unproven: false });
   });
 
   test("a send that failed and did NOT land is included in the retry", async () => {
@@ -504,7 +504,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     expect(calls.getMessages).toBe(1);
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
-    expect(out).toEqual({ delivered: 2, failed: false });
+    expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
@@ -525,7 +525,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // The whole reply is still owed: the old "Olá!" predates the boundary and proves nothing.
     expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 
   // The same hazard from inside one reply: two balloons with identical text. The boundary advances
@@ -541,7 +541,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Balloon 1 landed; balloon 2 is identical to it and did NOT land, so it is still owed.
     expect(rec.sent).toEqual(["Certo!", "Certo!\n\nJá te retorno."]);
-    expect(out).toEqual({ delivered: 2, failed: false });
+    expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
   // THE LAST STRETCH OF I/O, which the earlier recheck does not cover: the consolidated retry and
@@ -567,7 +567,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     expect(rec.sent).toEqual([]);
     // Nothing delivered, and standing down is NOT a failure — so the caller does not throw.
-    expect(out).toEqual({ delivered: 0, failed: false });
+    expect(out).toEqual({ delivered: 0, failed: false, unproven: false });
   });
 
   // A CONFIRMATION IS ALSO A BOUNDARY, and this is the case that proves it: `A / B / B`, where the
@@ -589,7 +589,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Two landed: "Certo!" by send, the middle "Já te retorno." by read-back. The third never did,
     // and must be reported as missing rather than matched against its own twin.
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: false });
   });
 
   // TWO messages past the boundary carrying the same text, which the boundary alone cannot rule out:
@@ -648,7 +648,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Balloon 1 sent, balloon 2 confirmed by read-back, balloon 3 genuinely lost — and the human's
     // copy must not be mistaken for it.
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: false });
   });
 
   // The consolidated retry is a send like any other: it carries the same 15s deadline, so a
@@ -694,7 +694,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     // Balloon 2 is not in the retry: it may already be there. Balloon 3 was never attempted, so it
     // is owed for certain and still goes.
     expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
   });
 
   // A READ THAT SUCCEEDS AND SAYS NOTHING is unknown, and the three shapes of "nothing" that a
@@ -730,7 +730,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       // Balloon 1 is unaccounted for and stays out. The two that were never attempted still go, as
       // one consolidated send.
       expect(rec.sent).toEqual(["Como vai?\n\nPosso ajudar?"]);
-      expect(out).toEqual({ delivered: 1, failed: true });
+      expect(out).toEqual({ delivered: 1, failed: true, unproven: true });
     },
   );
 
@@ -756,7 +756,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // Never `["Olá!\n\nComo vai?\n\nPosso ajudar?"]`, which is the whole reply a second time.
     expect(rec.sent).toEqual(["Como vai?\n\nPosso ajudar?"]);
-    expect(out).toEqual({ delivered: 1, failed: true });
+    expect(out).toEqual({ delivered: 1, failed: true, unproven: true });
   });
 
   // The failed request burned up to 15s and the read-back is more I/O, so the fence answered before
@@ -781,7 +781,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     // The remainder never went out, and standing down is not a failure.
     expect(rec.sent).toEqual(["Olá!"]);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 
   test("the remainder is retried ONCE: a second failure stops, it does not walk the rest", async () => {
@@ -834,7 +834,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: false },
       noSleep,
     );
-    expect(out).toEqual({ delivered: 0, failed: true });
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
   });
 
   // `calledOff` is the operator clearing the conversation, not a failure — the same distinction
@@ -856,7 +856,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
         return off;
       },
     );
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 });
 
@@ -967,7 +967,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     // Nothing could be proved, so the turn is told so: `runLoadedTurn` throws on this pair, which
     // is what writes `lastError` and the private note. The measured alternative was reporting
     // success while the customer read it twice.
-    expect(out).toEqual({ delivered: 0, failed: true });
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
   });
 
   // The half that used to be missing: with no boundary at all (the FIRST send is the one that
@@ -983,7 +983,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       noSleep,
     );
     expect(s.timesRead(ONE)).toBe(1);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 
   // WHY AN ID AND NOT THE TEXT, on the one balloon where the text can never decide: the first.
@@ -1001,7 +1001,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     );
     // Exactly two: the one whose response was lost, proved by its id, and the second sent normally.
     expect(s.timesRead("Certo!")).toBe(2);
-    expect(out).toEqual({ delivered: 2, failed: false });
+    expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
   // OUT OF PAGES IS UNKNOWN, NOT ABSENT. The walk has a ceiling, and reaching it means the message
@@ -1040,7 +1040,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     // ONE attempt. Read as absence, the ceiling would put the reply back on the wire — which is
     // the duplicate, reached through the exit rather than through the read.
     expect(attempted).toEqual([ONE]);
-    expect(out).toEqual({ delivered: 0, failed: true });
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
   });
 
   // THE CONSOLIDATED RETRY IS A SEND LIKE ANY OTHER, so it can also end unknown — and an unknown
@@ -1056,7 +1056,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       noSleep,
     );
     // Balloon 1 unprovable and left out; the remainder sent and also unprovable.
-    expect(out).toEqual({ delivered: 0, failed: true });
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
     expect(s.timesRead("Como vai?")).toBe(1);
   });
 
@@ -1119,7 +1119,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       );
       // One attempt. Read as the end of the history, this would put the reply back on the wire.
       expect(attempted).toEqual([ONE]);
-      expect(out).toEqual({ delivered: 0, failed: true });
+      expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
     },
   );
 
@@ -1166,7 +1166,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     );
     // Balloon 2 must NOT be in the retry: it may be the row nothing could read.
     expect(sent).toEqual(["Olá!", "Posso ajudar?"]);
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
   });
 
   // The other side of that rule, so "degraded" cannot become "every empty page": a WELL-FORMED empty
@@ -1207,7 +1207,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     // Proved absent, so the reply is owed and goes again — nothing can be duplicated by sending a
     // message that is not there.
     expect(attempted).toEqual([ONE, ONE]);
-    expect(out).toEqual({ delivered: 1, failed: false });
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
 
   // A SPENT BUDGET IS UNKNOWN TOO, and this is the exit an overloaded Chatwoot actually takes: the
@@ -1249,7 +1249,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       noSleep,
     );
     expect(attempted).toEqual([ONE]);
-    expect(out).toEqual({ delivered: 0, failed: true });
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
   }, 20_000);
 
   // THE READ-BACK'S BUDGET IS SHARED ACROSS ITS PAGES, so a conversation that needs three of them
@@ -1311,6 +1311,6 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     expect(s.timesRead("Posso ajudar?")).toBe(1);
     // Balloon 1 and the consolidated remainder. `failed` because balloon 2 is unaccounted for, and
     // that is what puts the partial badge on the conversation.
-    expect(out).toEqual({ delivered: 2, failed: true });
+    expect(out).toEqual({ delivered: 2, failed: true, unproven: true });
   });
 });

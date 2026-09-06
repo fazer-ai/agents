@@ -169,6 +169,18 @@ export interface ReplyDelivery {
   // as a failure, a /reset landing between two balloons would put `lastError` back on the
   // conversation it had just cleared.
   failed: boolean;
+  // AT LEAST ONE SEND CANNOT BE ACCOUNTED FOR: it was rejected, and Chatwoot could not be asked
+  // whether it landed. It may be in the conversation and it may not, and the caller has to know the
+  // difference from a clean `failed` (issue #499).
+  //
+  // What rides on it is whether the TURN may run again. `delivered: 0, failed: true` makes
+  // `runLoadedTurn` throw, and a throw is what eventually puts the ledger row `DEAD` and hands it to
+  // the delivery recovery, which re-runs the whole turn — model, tools and all — half an hour later
+  // (../chatwoot/recover-delivery.ts states this as a property of its design). That is right when
+  // nothing landed and we KNOW it: the customer is owed an answer. It is wrong when we do not know,
+  // because the side effects the turn already committed would fire a second time over a message
+  // that may well have arrived. The report has to carry which of the two it is.
+  unproven: boolean;
 }
 
 // Sends the reply, split + paced when enabled. Typing toggles are best-effort (admin-token, may be
@@ -223,18 +235,24 @@ export async function deliverReply(
       if (!cfg.enabled) {
         try {
           await client.sendMessage(conversationId, reply);
-          return { delivered: 1, failed: false };
+          return { delivered: 1, failed: false, unproven: false };
         } catch (e) {
           // One send and nothing landed, which is the `delivered: 0` case: reported rather than
           // thrown so this branch and the split one answer the caller the same way, and the caller
           // keeps the single decision about what a total failure means.
+          //
+          // UNPROVEN, because this branch never asks Chatwoot at all: with splitting off there is no
+          // remainder to salvage, so there was never a read-back here — and a rejection is just as
+          // ambiguous with one balloon as with three. The bit says so rather than letting the caller
+          // read a bare `failed` as "nothing landed".
           reportFailedSend(flow, conversationId, e);
-          return { delivered: 0, failed: true };
+          return { delivered: 0, failed: true, unproven: true };
         }
       }
       const { chunks, seps } = splitReplyParts(reply, cfg);
       let delivered = 0;
       let failed = false;
+      let unproven = false;
       // HOW FAR BACK A READ-BACK HAS TO LOOK, and nothing more. It is fed only by sends that
       // returned an id, so it costs no read of its own — which is the whole difference from what
       // stood here before (issue #499). A dedicated `readBoundary` used to run on the SUCCESSFUL
@@ -336,7 +354,10 @@ export async function deliverReply(
             // second pass would give the same transient failure the same N windows to land in, and
             // the pacing that makes a reply read as human is worth less than the reply arriving
             // whole.
-            if (!verdict.known) failed = true;
+            if (!verdict.known) {
+              failed = true;
+              unproven = true;
+            }
             const from = verdict.known && verdict.id === null ? i : i + 1;
             const owed = chunks
               .slice(from)
@@ -380,6 +401,9 @@ export async function deliverReply(
                 // Standing down is not a failure, here as everywhere else in this loop.
               } else if (!(await calledOff())) {
                 failed = true;
+                // Same rule as the balloon above, for the retry's own read-back: only a proven
+                // absence leaves the report clean enough for the turn to be run again.
+                if (!retryVerdict.known) unproven = true;
               }
             }
             break;
@@ -391,7 +415,7 @@ export async function deliverReply(
         // indicator is per conversation, so nothing later clears it either.
         await client.toggleTyping(conversationId, false).catch(() => undefined);
       }
-      return { delivered, failed };
+      return { delivered, failed, unproven };
     },
   );
 }

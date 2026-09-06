@@ -905,7 +905,10 @@ describe.skipIf(!dbUp)("reengage", () => {
     // leaving it to be rediscovered. A send that fails leaves the burst claimed, so the next click
     // stands down instead of risking a second copy of a reply Chatwoot may already have accepted.
     // It is the same trade the watermark's own CAS made before this change, and the operator hears
-    // about it through `lastError` and the console's error badge.
+    // about it through `lastError` and the console's error badge. The throw is still the right
+    // report here BECAUSE the read-back proves the message is not there (issue #499): a rejection
+    // nobody could check answers `posted-partial` instead, so that the recovery does not re-run the
+    // turn's tools over a reply that may have landed.
     //
     // Making a failed send retryable is a real improvement and a change to that trade for every
     // posting path — the direct turn and the flush included — so it belongs in an issue of its own,
@@ -920,7 +923,17 @@ describe.skipIf(!dbUp)("reengage", () => {
       ]);
       let failing = true;
       const client = {
-        getMessages: async () => thread,
+        // Pages the way the REST endpoint does, which the read-back after a failed send depends on:
+        // a stub that answers the same rows to every `before` never reaches the top of the history,
+        // so absence can never be proved and every failure reads as "cannot tell" (issue #499).
+        getMessages: async (_c: number, q?: { before?: number }) =>
+          q?.before === undefined
+            ? thread
+            : {
+                payload: (thread.payload as Array<{ id: number }>).filter(
+                  (m) => m.id < (q.before as number),
+                ),
+              },
         sendMessage: async (conversationId: number, content: string) => {
           if (failing) throw new Error("chatwoot: 502 bad gateway");
           sent.push([conversationId, content]);
@@ -948,6 +961,52 @@ describe.skipIf(!dbUp)("reengage", () => {
       const res = await reengageConversation(ctx(), id, deps, appDb);
       expect(res.outcome).toBe("superseded");
       expect(sent).toEqual([]);
+    });
+
+    // THE OTHER HALF OF THAT TRADE (issue #499). The test above throws because the read-back PROVED
+    // the message is not in the conversation. When the read cannot answer at all, the reply may be
+    // sitting there, and a throw is not a louder report — it is what eventually marks the ledger row
+    // DEAD and hands it to the delivery recovery, which re-runs the whole turn, tools included, over
+    // a message that may already have been answered.
+    //
+    // So the click reports `posted-partial` instead: the burst stays claimed, the conversation stays
+    // open, and the badge tells the operator a delivery could not be accounted for.
+    test("a send nobody could check does not arm a replay of the turn", async () => {
+      const id = await seedConversation(936, { lastHandledMessageId: 291 });
+      const sent: Array<[number, string]> = [];
+      const thread = page([
+        { id: 289, content: "resposta antiga", type: 1 },
+        { id: 290, content: "alguém aí?", type: 0 },
+        { id: 291, content: "?", type: 0 },
+      ]);
+      const client = {
+        getMessages: async (_c: number, q?: { before?: number }) =>
+          // The first read works (it is what selects the burst); the read-back after the failed
+          // send does not, which is the overloaded Chatwoot that caused the timeout in the first
+          // place.
+          q?.before === undefined && sent.length === 0
+            ? thread
+            : Promise.reject(new Error("chatwoot: 500")),
+        sendMessage: async () => {
+          throw new Error("chatwoot: 502 bad gateway");
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const deps = {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      };
+
+      const res = await reengageConversation(ctx(), id, deps, appDb);
+      expect(res.outcome).toBe("posted-partial");
+      expect(sent).toEqual([]);
+      // The claim is still spent, so nothing answers the burst a second time.
+      const after = await suDb.conversation.findUniqueOrThrow({
+        where: { id },
+        select: { lastRepliedMessageId: true },
+      });
+      expect(after.lastRepliedMessageId).toBe(291);
     });
 
     // The supersede gate still means what it says: a customer message that lands mid-turn defers

@@ -1077,7 +1077,11 @@ async function runTurnBody(
             threadId,
             text.length,
           );
-          return { delivered: 1, failed: false };
+          // The audio send RETURNED, so there is nothing unaccounted for. A rejected one never
+          // reaches this line: it is caught below and the reply falls back to text, which is its
+          // own delivery question and a different mechanism from this one (issue #499 covers the
+          // text path only).
+          return { delivered: 1, failed: false, unproven: false };
         }
       } catch (e) {
         logger.warn(
@@ -1992,7 +1996,14 @@ async function runTurnBody(
       delivered.failed &&
       delivered.delivered === 0
     ) {
-      if (!attachments.sent) {
+      // ...AND ONLY WHEN NOTHING LANDED IS A FACT rather than an absence of evidence (issue #499).
+      // `unproven` means a send was rejected and Chatwoot could not be asked whether it landed, so
+      // the reply may be sitting in the conversation. Throwing on that is not a louder report, it is
+      // a different action: the throw is what eventually marks the ledger row DEAD and hands it to
+      // the delivery recovery, which re-runs this turn in full — every side-effecting tool included
+      // — over a message that may already have been answered. The operator still hears about it
+      // through the badge the branch below writes.
+      if (!attachments.sent && !delivered.unproven) {
         throw new Error(
           "envio da resposta: nenhum balão foi entregue ao cliente",
         );
@@ -2007,6 +2018,19 @@ async function runTurnBody(
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
     if (delivered === "stale" || delivered.delivered === 0) {
+      // An UNPROVEN zero is not a stand-down either: standing down hands the burst back to the next
+      // flush, which would answer it again — the same duplicate the throw above was just kept from
+      // arming, arriving through the other door. It is reported instead, so the burst is consumed,
+      // the conversation stays open and the badge says a delivery could not be accounted for.
+      if (delivered !== "stale" && delivered.unproven) {
+        await notePartialDelivery({
+          tenantId,
+          instanceId,
+          conversationId,
+          base,
+        });
+        return "posted-partial";
+      }
       if (!attachments.sent) return refuse(standDown());
       // The attachment IS the answer the customer got, and this is the third shape of a partial
       // delivery rather than a fourth kind of success: a text send that failed outright leaves them

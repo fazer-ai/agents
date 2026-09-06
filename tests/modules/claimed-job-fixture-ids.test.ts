@@ -80,11 +80,13 @@ const LITERAL_ID = new RegExp(
 //     handler a job-shaped literal without ever naming the type, and a gate on the name reads that
 //     file as having no fixtures at all. It is safe today only because its id is `0n`.
 //
-// The ANNOTATION, though, is a marker of its own (`: ClaimedJob`, `satisfies ClaimedJob`,
-// `as ClaimedJob`), because a fixture can take its claim token from a spread whose source is
-// imported, and then nothing near the id spells `claimSeq` at all. It is the annotation and not the
-// bare word, so the `import type { ClaimedJob }` at the top of a file is not a marker over whatever
-// happens to sit in the fourteen lines below it. Measured: adding it flags nothing new in the tree.
+// The ANNOTATION OF A VALUE, though, is a marker of its own (`: ClaimedJob =`, `satisfies
+// ClaimedJob`, `as ClaimedJob`), because a fixture can take its claim token from a spread whose
+// source is imported, and then nothing near the id spells `claimSeq` at all. Not the bare word and
+// not every annotation: `import type { ClaimedJob }` sits at the top of every file that has one, and
+// `function run(job: ClaimedJob)` names a job the function is HANDED, so counting either would make
+// a marker out of whatever happens to sit in the fourteen lines below. The initializer is what
+// separates a job written here from a job mentioned here. Measured: it flags nothing new in the tree.
 //
 // A window rather than a parser, and its reach is pinned from both sides below, because a window
 // nobody measures is one that quietly grows to "the whole file" or shrinks to "the same line".
@@ -100,7 +102,11 @@ const MARKERS = /\bclaimSeq\b/g;
 // JSON inside a string (`const raw = '{"claimSeq":0}'`) would answer for a fixture that is not
 // there.
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
-const TYPE_MARKER = /(?::\s*|satisfies\s+|as\s+)ClaimedJob\b/g;
+// The annotation of a VALUE, which is the initializer: `job: ClaimedJob` on a parameter names a
+// job the function is handed, not one written here, and a sweep that counted it would call the
+// `{ id: 7n }` in that function's body a fixture.
+const TYPE_MARKER =
+  /:\s*ClaimedJob(?:\[\])?\s*=|(?:satisfies|as)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -271,6 +277,17 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       "a spread fixture named by satisfies",
       "  const job = { id: 1n, ...baseJob } satisfies ClaimedJob;",
       true,
+    ],
+    [
+      "an annotated array",
+      "  const jobs: ClaimedJob[] = [{ id: 1n, ...b }];",
+      true,
+    ],
+    // A job the function is HANDED is not a job written here, and the id below belongs to a tenant.
+    [
+      "a parameter annotation",
+      "  function inspect(job: ClaimedJob) {\n    const tenant = { id: 7n };",
+      false,
     ],
     // The import is not an annotation, and it sits at the top of every file that has one.
     [

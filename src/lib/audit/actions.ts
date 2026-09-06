@@ -101,14 +101,19 @@ export const AUDIT_ACTIONS = [
   "mcp_connection.update",
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
-  // THE TWO OLD SPELLINGS, KEPT FOR EXACTLY ONE RELEASE, and the reason is the deploy rather than
-  // the code: the rollout overlaps, so while the new image runs its migrations the PREVIOUS
-  // container is still serving and still writing these two names. The backfill that moved the
-  // historical rows cannot reach a row written after it ran, and dropping the names here would put
-  // that row under a value the picker never offers — the exact unreachability the rename exists to
-  // end. Nothing in this release writes them; they are here so what the outgoing container writes
-  // stays pickable. Dropping them, with the second pass over the rows the overlap left behind, is
-  // the release after this one.
+  // THE TWO OLD SPELLINGS, AND EVERY ROW RECORDED SO FAR IS UNDER THEM. Nothing in this release
+  // writes them any more — the two above replaced them — and no row has moved, which is the whole
+  // shape of this release rather than an omission.
+  //
+  // The rename and the backfill cannot ship together, and the reason is the deploy rather than the
+  // code. The rollout overlaps: the incoming container runs `prisma migrate deploy` while the
+  // outgoing one is still serving, and that one's catalog is FROZEN with only these two names. Move
+  // the rows in the same release and its picker offers two values that now match nothing, so the
+  // consent family reads as empty on the old container for the length of the upgrade — and
+  // indefinitely after a rollback, which is a thing operators do when a release misbehaves.
+  //
+  // So this release only teaches every reader both spellings, and the backfill is the next one,
+  // where the oldest live catalog already has all four. Both of these leave with it.
   "mcp_oauth_consent_denied",
   "mcp_oauth_consent_granted",
   "mcp_token.revoke",

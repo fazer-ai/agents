@@ -101,7 +101,12 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
-  const WRITTEN_BY_THE_OUTGOING_RELEASE = [
+  // The old spellings of the two consent actions. Nothing writes them any more, and every row
+  // recorded so far is still under them: this release renames the producers and teaches every
+  // reader both names, and the backfill is the NEXT one, because the rollout overlaps and the
+  // outgoing container's catalog is frozen with only these two. They and their exemptions leave
+  // together, with that backfill.
+  const THE_SPELLING_THE_ROWS_STILL_CARRY = [
     "mcp_oauth_consent_denied",
     "mcp_oauth_consent_granted",
   ];
@@ -116,15 +121,15 @@ describe("the audit action vocabulary", () => {
   // (`auditConsentDecision`, whose two names it reported as extra while they are written on every
   // consent decision). Presence cannot be fooled by the shape, because it does not look at one.
   //
-  // THE ONE EXEMPTION IS THE ROLLOUT WINDOW, and it does not weaken the rule this test states. The
-  // rule's harm is a value that can NEVER match; those two match rows the outgoing container is
-  // writing right now, and delisting them is what would strand those rows. The exemption is the
-  // same named pair the shape test carries, and it leaves with it.
+  // THE ONE EXEMPTION DOES NOT WEAKEN THE RULE THIS TEST STATES. The rule's harm is a value that
+  // can NEVER match; those two match every consent row in the table, and delisting them before the
+  // backfill is what would strand them. The exemption is the same named pair the shape test
+  // carries, and it leaves with it.
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
     const orphaned = AUDIT_ACTIONS.filter(
       (a) =>
-        !WRITTEN_BY_THE_OUTGOING_RELEASE.includes(a) &&
+        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
         !sources.some((code) => code.includes(`"${a}"`)),
     );
     expect(orphaned).toEqual([]);
@@ -142,31 +147,29 @@ describe("the audit action vocabulary", () => {
   // The two exceptions are NAMED rather than pattern-matched, so a third one is a decision somebody
   // makes on purpose and not a hole the regex quietly widened. What they are has changed: until
   // #523 they were the shape the consent decisions were WRITTEN in; now nothing writes them and
-  // they are on the list because the ROLLOUT overlaps — the outgoing container keeps writing them
-  // while the incoming one migrates, and a name off this list is a row the picker never offers.
-  // Both go, with a second pass over the rows the overlap left, one release after #523.
+  // they are on the list because every row RECORDED is still under them.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
       (a) =>
-        !WRITTEN_BY_THE_OUTGOING_RELEASE.includes(a) &&
+        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
         !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
     );
     expect(odd).toEqual([]);
   });
 
-  // The pair is a WINDOW, not a permanent carve-out, so both directions are pinned: the names the
-  // rollout still writes are on the list, and the names this release writes are the new ones. A
-  // rename that landed in the catalog and not in the controller would leave the first assertion
-  // green and this one red.
-  test("the window's names are listed, and nothing here writes them", async () => {
+  // The pair is a STAGE, not a permanent carve-out, so both directions are pinned: the names the
+  // rows carry are on the list, and the names this release writes are the new ones. A rename that
+  // landed in the catalog and not in the controller would leave the first assertion green and this
+  // one red.
+  test("the old names are listed, and nothing here writes them", async () => {
     const sources = await producerSources();
     const written = (name: string) =>
       sources.some((code) => code.includes(`"${name}"`));
     expect({
-      listed: WRITTEN_BY_THE_OUTGOING_RELEASE.filter(
+      listed: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(
         (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
       ),
-      stillWritten: WRITTEN_BY_THE_OUTGOING_RELEASE.filter(written),
+      stillWritten: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(written),
       replacements: [
         "mcp_oauth_consent.deny",
         "mcp_oauth_consent.grant",

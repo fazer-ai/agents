@@ -1349,7 +1349,12 @@ export async function importAgent(
     if (unknownGrants > 0) {
       warnings.push({
         code: "unknownGrantSourceSkipped",
-        params: { count: unknownGrants },
+        // `n` is the name this count carried before #513 and is kept ONLY for the rolling-deploy
+        // overlap (docs/deploy.md): during it an editor loaded from the previous release is still
+        // reading `{{n}}`, and it renders the placeholder literally if the field is gone. The
+        // console reads `count` and falls back to `n`, so the pair covers the skew in both
+        // directions. Drop `n` once no container from that release can serve.
+        params: { count: unknownGrants, n: unknownGrants },
       });
     }
     const grantRows = await buildGrantRows(
@@ -2499,7 +2504,8 @@ async function createMissingComponents(
         docCount > 0
           ? {
               code: "kbReusedDocsSkipped",
-              params: { name: kb.name, count: docCount },
+              // `n` kept for the rolling-deploy overlap; see `unknownGrantSourceSkipped` above.
+              params: { name: kb.name, count: docCount, n: docCount },
               target: { kind: "knowledge", name: kb.name },
             }
           : {

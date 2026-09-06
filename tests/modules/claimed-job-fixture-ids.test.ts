@@ -157,7 +157,9 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       (f) => !f.endsWith(".test.ts") && !f.endsWith(".test.tsx"),
     );
     expect(helpers.length).toBeGreaterThan(0);
-    expect(helpers.some((f) => f.endsWith("/utils/scheduler.ts"))).toBe(true);
+    // Built with `join`, not spelled with a separator: the paths come from `join` too, and a "/"
+    // written here is a test that fails on the one platform whose separator is the other one.
+    expect(helpers).toContain(join(ROOT, "utils", "scheduler.ts"));
   });
 
   // The sweep's own eyesight, pinned on synthetic sources rather than on the tree. Without this, a

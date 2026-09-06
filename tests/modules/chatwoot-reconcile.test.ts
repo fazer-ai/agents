@@ -117,6 +117,7 @@ async function applyFor(
       assigneeId: live.assigneeId ?? null,
       assigneeName: null,
       lastActivityAt: new Date((live.lastActivitySec ?? T) * 1000),
+      inboxId: null,
       updatedAt: live.updatedAt,
       latestMessageId: null,
     },

@@ -539,6 +539,42 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
   });
 
+  // THE SHAPE THIS ENDPOINT ACTUALLY ANSWERS (issue #495 review, round 3). The fork's view is
+  // `json.agent_bot do ... if @agent_bot.present?`, so the key is always there and its EMPTINESS is
+  // the answer. The first version of this parser read `res.id` and would have reported "no bot" for
+  // every attached bot there is — a stub handing back a bare number could never have caught it,
+  // which is why the three shapes are driven through the real client here.
+  describe("the inbox's attached agent bot", () => {
+    const read = async (payload: unknown) => {
+      const { fetchImpl, calls } = stub(200, payload);
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      const got = await client.inboxAgentBotId(9);
+      return { got, calls };
+    };
+    test("an attached bot answers its id, off the nested object", async () => {
+      const { got, calls } = await read({
+        agent_bot: { id: 501, name: "Ops" },
+      });
+      expect(got).toBe(501);
+      expect(calls[0]?.method).toBe("GET");
+      expect(calls[0]?.url).toContain("/inboxes/9/agent_bot");
+      expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+    });
+    test("an empty agent_bot is a definite none", async () => {
+      expect((await read({ agent_bot: {} })).got).toBeNull();
+      expect((await read({ agent_bot: null })).got).toBeNull();
+    });
+    // Not `null`: a body without the key is a Chatwoot that does not serve this route, or a shape we
+    // do not recognise, and a caller must not read that as "there is no bot".
+    test("a body without the key is unknown, not none", async () => {
+      expect((await read({})).got).toBeUndefined();
+      expect((await read({ something_else: 1 })).got).toBeUndefined();
+    });
+  });
+
   test("updateContact can clear an identifier with null", async () => {
     // The unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
     // a value like any other and a second contact cleared that way would collide with the first.

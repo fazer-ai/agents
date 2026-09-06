@@ -978,6 +978,36 @@ export class ChatwootClient {
     );
   }
 
+  // THE BOT ACTUALLY ATTACHED TO AN INBOX, as Chatwoot has it (issue #495 review, round 3). Our
+  // `ChatwootAgentBot` row says a bot was created and attached once; it does not say the attachment
+  // still stands. A bot deleted or detached in the Chatwoot UI, or a best-effort reattach that
+  // failed, leaves that row behind — and `reconcileInboxBots` only reports the drift, since it asks
+  // whether the BOT exists rather than whether it is attached. `GET inboxes/:id/agent_bot` is the
+  // one question that answers this, and the fork serves it beside `set_agent_bot`.
+  //
+  // THREE ANSWERS, not two. The view is `json.agent_bot do ... if @agent_bot.present?`, so the body
+  // is `{"agent_bot": {...the bot...}}` when one is attached and `{"agent_bot": {}}` when none is —
+  // the KEY is always there and the emptiness is what carries the answer. A body without it is a
+  // Chatwoot that does not serve this route, or a shape we do not recognise, and that is UNKNOWN:
+  // `undefined`, so a caller cannot mistake "I could not tell" for "there is none". Reading `res.id`
+  // instead would have answered "none" for every attached bot there is.
+  //
+  // A failed request throws, which is the fourth answer and the caller's to catch: here too an
+  // unreadable read must never become a refusal built on a network blip.
+  async inboxAgentBotId(inboxId: number): Promise<number | null | undefined> {
+    const res = await this.request(
+      this.config.adminToken,
+      "GET",
+      `/inboxes/${inboxId}/agent_bot`,
+    );
+    const bag = res as { agent_bot?: unknown } | null;
+    if (!bag || typeof bag !== "object" || !("agent_bot" in bag))
+      return undefined;
+    const bot = bag.agent_bot as { id?: unknown } | null;
+    const id = bot && typeof bot === "object" ? bot.id : undefined;
+    return typeof id === "number" && Number.isFinite(id) ? id : null;
+  }
+
   // Connect (numeric id) or DISCONNECT (null) the bot for an inbox. The fork's `set_agent_bot`
   // destroys the agent_bot_inbox when `agent_bot` is blank — disconnecting stops Chatwoot from
   // delivering that inbox's events to us (so an unbound inbox never leaves conversations stuck

@@ -239,6 +239,13 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: "Atendente",
           systemPrompt: "Você é prestativa.",
+          // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
+          // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+          modelConfig: {
+            provider: "openai-compatible",
+            model: "local",
+            baseURL: "https://llm.example.invalid/v1",
+          },
         },
       });
       await suDb.chatwootAgentBot.create({

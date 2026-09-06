@@ -312,6 +312,13 @@ export interface LiveConversationState {
   // that wrote newer state without it would leave the row ahead of its own marks, and the next
   // delayed conversation event would look newer than them. null on a Chatwoot too old to send it.
   updatedAt: number | null;
+  // NOTE: WHICH INBOX THE SOURCE SAYS THIS CONVERSATION IS ON (issue #495 review, round 6). A
+  // transfer in Chatwoot reaches the mirror by webhook, so between the move and that delivery the
+  // local row still names the inbox the conversation LEFT — and a rule read off the old inbox's
+  // responder authorises a hand-back into an inbox that may have none. The REST show and every
+  // conversation webhook render `inbox_id` at the top level. null when the payload omits it, which
+  // is the only shape a reader may fall back to the mirror on.
+  inboxId: number | null;
   // NOTE: The newest message id this payload names — the axis a console write that cannot be
   // versioned is ordered by (issue #469, ./console-write-order.ts). The REST show renders
   // `messages` (the `dashboard_seed_message`: the newest renderable message, seeded as the
@@ -345,6 +352,7 @@ export function parseLiveConversation(
     assigneeId,
     assigneeName: assignee ? str(assignee.name) : null,
     lastActivityAt: activitySec !== null ? new Date(activitySec * 1000) : null,
+    inboxId: num(raw.inbox_id),
     updatedAt: num(raw.updated_at),
     latestMessageId: latestMessageId(raw),
   };

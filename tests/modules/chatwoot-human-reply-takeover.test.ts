@@ -210,7 +210,15 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         tenantId,
         name: "Atendente",
         systemPrompt: "Você é prestativa.",
-        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
+        // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+        // `openai-compatible` is the one provider that authenticates by URL, so it needs no key
+        // (round 15).
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "local",
+          baseURL: "https://llm.example.invalid/v1",
+        },
         settings: { debounce: { enabled: false } },
       },
     });

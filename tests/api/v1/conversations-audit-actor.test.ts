@@ -189,7 +189,18 @@ describe.skipIf(!dbUp)(
       });
       instanceId = inst.id;
       const agent = await su.agent.create({
-        data: { tenantId, name: "Atendente", systemPrompt: "Olá." },
+        data: {
+          tenantId,
+          name: "Atendente",
+          systemPrompt: "Olá.",
+          // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
+          // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+          modelConfig: {
+            provider: "openai-compatible",
+            model: "local",
+            baseURL: "https://llm.example.invalid/v1",
+          },
+        },
       });
       await su.chatwootAgentBot.create({
         data: {

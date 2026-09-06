@@ -172,7 +172,7 @@ const TABLE: Record<string, Row> = {
     args: { conversation_id: NOPE },
     why: "conversation does not exist",
     pastOwnership:
-      "read, not measurable here: past the existence check the refusals belong to Chatwoot, behind a network call.",
+      'measured, and it DIVERGED once #495 gave the core a rule of its own: an inbox nothing answers. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   conversation_status: {
     args: { conversation_id: NOPE, status: "open" },
@@ -2302,6 +2302,63 @@ describe.skipIf(!dbUp)(
         (a) =>
           writeConversations.conversationReengage(principal(), a as never, {
             base: appDb,
+          }),
+        { conversation_id: String(conv.id) },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    // The same divergence on the hand-back, found the round after (issue #495 review, round 1). The
+    // preview read `getConversationDetail` and answered "this returns the conversation" for an inbox
+    // with no responder — unbound, switched off, only observing, or with no bot on this Chatwoot —
+    // while the approved apply refused it with a 409.
+    test("conversation_return: nothing answers the conversation's inbox", async () => {
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId,
+        accountId: 7779,
+        baseUrl: "https://cw.return.local",
+        adminToken: encryptJson("tok"),
+      });
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          chatwootInboxId: 9,
+          name: "no-responder",
+          channelType: "Channel::Api",
+        },
+      });
+      const conv = await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          inboxId: inbox.id,
+          chatwootConversationId: 12,
+          threadId: `t-ret-${process.pid}`,
+          status: "open",
+        },
+      });
+      // A CLIENT, because both halves now read the conversation from Chatwoot before answering
+      // (issue #495 review, round 7): the inbox a hand-back is judged against is the one Chatwoot
+      // names, so neither half may refuse on the mirror's row before asking. It answers inbox 9 —
+      // the row seeded above — which is the case this test is about: nothing moved, and nothing
+      // answers the inbox it is on.
+      const makeClient = async () =>
+        ({
+          getConversation: async (cid: number) => ({
+            id: cid,
+            status: "open",
+            inbox_id: 9,
+            meta: { assignee_type: null, assignee: null },
+          }),
+          inboxAgentBotId: async () => null,
+        }) as never;
+      const r = await both(
+        (a) =>
+          writeConversations.conversationReturn(principal(), a as never, {
+            base: appDb,
+            makeClient,
           }),
         { conversation_id: String(conv.id) },
       );

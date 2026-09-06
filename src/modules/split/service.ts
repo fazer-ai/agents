@@ -1,6 +1,9 @@
 import logger from "@/api/lib/logger";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { parseChatwootMessages } from "@/modules/chatwoot/messages";
+import {
+  chatwootMessageListLength,
+  parseChatwootMessages,
+} from "@/modules/chatwoot/messages";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -457,18 +460,29 @@ async function findLandedMessage(
     for (let page = 0; page < READBACK_MAX_PAGES; page += 1) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) return { known: false };
-      const rows = parseChatwootMessages(
-        await client.getMessages(
-          conversationId,
-          before === undefined ? undefined : { before },
-          remaining,
-        ),
+      const raw = await client.getMessages(
+        conversationId,
+        before === undefined ? undefined : { before },
+        remaining,
       );
-      // AN EMPTY PAGE MEANS TWO THINGS, and which one depends on whether we were paging. On the
-      // FIRST read it is unknown: a successful-but-useless response ({}, a transient blank, a body
-      // that did not parse) reduces to the same empty list, and a conversation we have just written
-      // to cannot really be empty — reading it as absence would resend a balloon the customer may
-      // already hold. On a LATER page it is the top of the history, which is real absence.
+      // HOW MANY MESSAGES CAME BACK, asked of the response rather than of the parsed rows, because
+      // the parser folds three different answers into one empty array: a page that really is empty,
+      // a body that was not a list at all, and a full page whose rows were all unreadable. Only the
+      // first is an answer; the other two are a degraded read.
+      const carried = chatwootMessageListLength(raw);
+      const rows = parseChatwootMessages(raw);
+      // A RESPONSE THAT IS NOT A LIST IS UNKNOWN, whichever page it arrives on. `{}`, `null` and a
+      // 200 carrying prose all reach here as `null`, and reading any of them as "the history ends
+      // here" is the same collapse this whole function exists to undo, one page deeper.
+      if (carried === null) return { known: false };
+      // AND SO IS A PAGE WHOSE ROWS WERE ALL UNREADABLE. The endpoint said it was handing us twenty
+      // messages and we could name none of them, so the id we are looking for may be among them.
+      if (carried > 0 && rows.length === 0) return { known: false };
+      // AN EMPTY LIST MEANS TWO THINGS, and which one depends on whether we were paging. On the
+      // FIRST read it is unknown: a conversation we have just written to cannot really be empty, so
+      // an empty newest page is a degraded read — the same verdict `recoverDelivery` reaches on its
+      // own anchored read, for the same reason. On a LATER page it is the top of the history, which
+      // is real absence: the walk started at a message that exists and ran out of older ones.
       if (rows.length === 0) {
         return before === undefined
           ? { known: false }

@@ -116,6 +116,22 @@ function attachmentTypesFrom(attachments: unknown): string[] {
 
 // Parses the raw response into normalized rows sorted by id ascending (Chatwoot ids are globally
 // increasing per account, so id order is chronological and drives the watermark comparison).
+// HOW MANY MESSAGES THE RESPONSE ACTUALLY CARRIED, before any of them were parsed — or `null` when
+// the response was not a list at all (issue #499).
+//
+// `parseChatwootMessages` folds three different answers into one empty array: a page that really is
+// empty, a body that was not a list (`{}`, `null`, a 200 with prose), and a full page whose rows
+// were all unreadable. A caller asking "did I reach the end of the history?" needs to tell the first
+// from the other two — the first is an answer and the other two are a degraded read, and treating a
+// degraded read as the end of the history is how "I could not tell" turns back into "it is not
+// there". Callers that only want the messages have no use for this and should keep using the parser
+// alone.
+export function chatwootMessageListLength(raw: unknown): number | null {
+  if (Array.isArray(raw)) return raw.length;
+  if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload.length;
+  return null;
+}
+
 export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
   const list: unknown[] = Array.isArray(raw)
     ? raw

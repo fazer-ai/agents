@@ -1060,6 +1060,98 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     expect(s.timesRead("Como vai?")).toBe(1);
   });
 
+  // A DEGRADED LATER PAGE IS UNKNOWN, NOT THE TOP OF THE HISTORY. Reaching the end of the history is
+  // what lets a read prove absence with no boundary to stop at, and the signature for it — an empty
+  // list — is also what a body that is not a list at all, and a page whose rows are all unreadable,
+  // both reduce to once parsed. Reading either as the end resends a chunk that may be sitting on
+  // that very page: the same collapse this function exists to undo, one page deeper.
+  //
+  // The first read is already unknown on any empty answer, so the walk has to get PAST it: the
+  // newest page carries strangers, and the degraded response is the one behind them.
+  test.each([
+    ["a body that is not a list", {}],
+    ["a null body", null],
+    ["a page whose rows are all unreadable", { payload: [{ nope: 1 }, {}] }],
+  ])(
+    "a later page answering %s is unknown, not the end of the history",
+    async (_label, second) => {
+      const attempted: string[] = [];
+      let page = 0;
+      const client = {
+        sendMessage: async (_c: number, content: string) => {
+          attempted.push(content);
+          throw new Error("chatwoot timeout");
+        },
+        getMessages: async (_c: number, q?: { before?: number }) => {
+          page += 1;
+          if (page > 1) return second;
+          const top = q?.before ?? 9000;
+          return {
+            payload: Array.from({ length: 20 }, (_v, k) => ({
+              id: top - 1 - k,
+              content: "conversa que andou",
+              message_type: 1,
+              private: false,
+              content_attributes: {},
+            })),
+          };
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const out = await deliverReply(
+        client,
+        1,
+        ONE,
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      // One attempt. Read as the end of the history, this would put the reply back on the wire.
+      expect(attempted).toEqual([ONE]);
+      expect(out).toEqual({ delivered: 0, failed: true });
+    },
+  );
+
+  // The other side of that rule, so "degraded" cannot become "every empty page": a WELL-FORMED empty
+  // list on a later page IS the top of the history. Without this the walk could never prove absence
+  // with no boundary, and a send that genuinely failed on the first balloon would never be resent.
+  test("a well-formed empty later page is the end of the history, and the chunk is resent", async () => {
+    const attempted: string[] = [];
+    let page = 0;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        attempted.push(content);
+        if (attempted.length === 1) throw new Error("chatwoot timeout");
+        return { id: 1 };
+      },
+      getMessages: async (_c: number, q?: { before?: number }) => {
+        page += 1;
+        if (page > 1) return { payload: [] };
+        const top = q?.before ?? 9000;
+        return {
+          payload: Array.from({ length: 20 }, (_v, k) => ({
+            id: top - 1 - k,
+            content: "conversa que andou",
+            message_type: 1,
+            private: false,
+            content_attributes: {},
+          })),
+        };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      ONE,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Proved absent, so the reply is owed and goes again — nothing can be duplicated by sending a
+    // message that is not there.
+    expect(attempted).toEqual([ONE, ONE]);
+    expect(out).toEqual({ delivered: 1, failed: false });
+  });
+
   // A SPENT BUDGET IS UNKNOWN TOO, and this is the exit an overloaded Chatwoot actually takes: the
   // read does answer, just too slowly to walk far enough. Read as absence it resends, which is the
   // duplicate of issue #499 reached through the clock instead of through an error.

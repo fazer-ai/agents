@@ -67,6 +67,7 @@ import {
   readRefusal,
   settlesRefusal,
 } from "@/client/lib/fieldRefusal";
+import { importWarningCount } from "@/client/lib/importWarningCount";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -2165,17 +2166,26 @@ function AgentEditor() {
           'Business hours "{{name}}" already existed and were reused; check the schedule is right.',
           p,
         );
+      // NOTE: `importWarningCount` is the other half of the rolling-deploy overlap (see `transfer.ts`): it
+      // reads the count under either name, because an editor from THIS release can reach a container
+      // from the previous one, which sends `n` only.
+      //
+      // NOTE: The four counters below hand `count` in as a LITERAL property, next to the spread, and the
+      // repetition is load-bearing: `i18next-parser` reads the call site, not the runtime, so a
+      // shared helper that returned the same object would leave the parser seeing only the spread
+      // and, with `keepRemoved: false`, delete the plural forms on the next `i18n:extract`. That is
+      // how these four ended up flat while every other counter carries forms (issue #513).
       case "hoursWindowsDropped":
         return t(
           "editor.importWarning.hoursWindowsDropped",
-          'Business hours "{{name}}": {{count}} weekly window(s) were not stored as written. Open the schedule and check the days are right.',
-          p,
+          'Business hours "{{name}}": {{count}} weekly windows were not stored as written. Open the schedule and check the days are right.',
+          { ...p, count: importWarningCount(p) },
         );
       case "hoursExceptionsDropped":
         return t(
           "editor.importWarning.hoursExceptionsDropped",
-          'Business hours "{{name}}": {{count}} date exception(s) were not stored as written. Open the schedule and check the holidays and closures are right.',
-          p,
+          'Business hours "{{name}}": {{count}} date exceptions were not stored as written. Open the schedule and check the holidays and closures are right.',
+          { ...p, count: importWarningCount(p) },
         );
       case "httpToolBodyIgnored":
         return t(
@@ -2252,8 +2262,8 @@ function AgentEditor() {
       case "kbReusedDocsSkipped":
         return t(
           "editor.importWarning.kbReusedDocsSkipped",
-          'Knowledge base "{{name}}" already existed and was reused; its {{n}} bundled document(s) were not imported.',
-          p,
+          'Knowledge base "{{name}}" already existed and was reused; its {{count}} bundled documents were not imported.',
+          { ...p, count: importWarningCount(p) },
         );
       case "kbGrantNotFound":
         return t(
@@ -2302,8 +2312,8 @@ function AgentEditor() {
       case "unknownGrantSourceSkipped":
         return t(
           "editor.importWarning.unknownGrantSourceSkipped",
-          "{{n}} tool grant(s) came from a newer version and were skipped.",
-          p,
+          "{{count}} tool grants came from a newer version and were skipped.",
+          { ...p, count: importWarningCount(p) },
         );
       case "documentGrantNotFound":
         return t(

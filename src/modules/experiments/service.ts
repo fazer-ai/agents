@@ -168,6 +168,30 @@ export function assertExperimentNameUsable(name: string | undefined): void {
   }
 }
 
+// The agent is what an experiment IS FOR. `resolveVariantOverride` looks it up by exact id, so a row
+// that names none overrides no turn, ever, while reading `enabled: true` in `experiment_list`, in
+// `GET /v1/experiments` and in the audit trail. The REST body documented `null` as "any agent", which
+// it never was (#547). Refused here, on the two functions both write roads converge on, for the
+// reason the name ceiling above gives.
+//
+// `undefined` on the UPDATE is a patch that does not mention the agent, which is a different
+// statement and stays legal. The create has nothing else to state, so having none is the refusal.
+// A row stored before this rule keeps its null and stays inert: naming an agent is what repairs it.
+export function requireExperimentAgent(
+  agentId: bigint | null | undefined,
+): bigint {
+  if (agentId === undefined || agentId === null) {
+    throw new AppError(
+      "an experiment applies to one agent, and this write names none",
+      400,
+      "errors.experimentAgentRequired",
+      undefined,
+      "agentId",
+    );
+  }
+  return agentId;
+}
+
 // `Experiment.agentId` is a plain BigInt with no `@relation`, so no foreign key ever caught an id
 // that names nothing — and `resolveVariantOverride` looks the agent up by exact id, so such a row is
 // an experiment that overrides no turn, ever, while reading `enabled: true` in the console and in
@@ -178,9 +202,9 @@ export function assertExperimentNameUsable(name: string | undefined): void {
 // `Experiment.agentId` inside its own transaction, deliberately, so a deleted agent leaves no
 // dangling binding. What was missing is the write side, and this is it.
 //
-// Null stays legal and means "no agent" (the resolver matches an exact id, so a null-agent
-// experiment resolves for nobody). The REST body documents null as "any agent"; it is not, and that
-// is a separate defect this does not touch.
+// Only reached with an agent named, which `requireExperimentAgent` above is what guarantees: the
+// two questions are separate on purpose, because "no agent at all" and "an agent that is not here"
+// are different refusals and the second one costs a locked read.
 async function assertAgentPresent(
   db: ScopedDb,
   agentId: bigint,
@@ -257,8 +281,7 @@ export async function createExperiment(params: {
     "variants",
   );
   return runScopedOn(base, params.ctx, async (db) => {
-    if (params.agentId !== undefined)
-      await assertAgentPresent(db, params.agentId);
+    await assertAgentPresent(db, requireExperimentAgent(params.agentId));
     const exp = await db.experiment.create({
       data: {
         tenantId: params.ctx.tenantId as bigint,
@@ -321,12 +344,13 @@ export async function updateExperiment(params: {
       ? parseInput(z.array(variantWriteSchema), params.variants, "variants")
       : undefined;
   return runScopedOn(base, params.ctx, async (db) => {
-    // NOTE: null CLEARS the binding and names no agent to look up; only a value is judged. And it
-    // goes BEFORE the experiment's own lock, not after: `deleteAgent` takes the agent and then the
-    // experiments that point at it, so taking them in the other order here is a deadlock between
-    // two writes that are each individually correct.
-    if (params.agentId !== undefined && params.agentId !== null) {
-      await assertAgentPresent(db, params.agentId);
+    // NOTE: a patch that does not mention the agent leaves the stored one alone; a patch that
+    // mentions it names one, or does not get past the line above. And this goes BEFORE the
+    // experiment's own lock, not after: `deleteAgent` takes the agent and then the experiments that
+    // point at it, so taking them in the other order here is a deadlock between two writes that are
+    // each individually correct.
+    if (params.agentId !== undefined) {
+      await assertAgentPresent(db, requireExperimentAgent(params.agentId));
     }
     // LOCKED before the snapshot the trail compares against: at READ COMMITTED two concurrent
     // updates both read state A, the first commits B, and the second files a row saying A became C.

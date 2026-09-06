@@ -248,7 +248,10 @@ const TABLE: Record<string, Row> = {
         args: { name: "e", agent_id: NOPE, variants: [] },
         why: "agent_id names no agent",
       },
-      { args: { name: " ", variants: [] }, why: "a blank experiment name" },
+      {
+        args: { name: " ", agent_id: NOPE, variants: [] },
+        why: "a blank experiment name",
+      },
     ],
     pastOwnership:
       "measured on an agent that EXISTS: the experiment applies and its variant overrides that agent's next turn. Past the agent, the core decides only the variants' own schema — a prompt over the agent's ceiling is refused by both halves — and nothing else.",

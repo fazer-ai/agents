@@ -23,6 +23,7 @@ import {
 // translate('errors.experimentNotFound', 'Experiment not found.')
 // translate('errors.invalidExperimentName', 'Name must be 1 to {{max}} characters and cannot be blank')
 // translate('errors.experimentAgentNotFound', 'That experiment names no agent of this tenant')
+// translate('errors.experimentAgentRequired', 'An experiment applies to one agent, and this write names none')
 
 // Prompt A/B experiments (per-tenant). TENANT_ADMIN. Variant assignment is deterministic per
 // thread; /results joins assignments with ConversionEvents for the win-rate breakdown.
@@ -132,14 +133,14 @@ export const experimentsController = new Elysia({
     async ({ tenantContext, body }) => {
       const b = body as {
         name: string;
-        agentId?: string | null;
+        agentId: string;
         variants: Variant[];
         enabled?: boolean;
       };
       const created = await createExperiment({
         ctx: ctxOrThrow(tenantContext),
         name: b.name,
-        agentId: optionalDbId(b.agentId, "agentId") ?? undefined,
+        agentId: requireDbId(b.agentId, "agentId"),
         variants: b.variants,
         enabled: b.enabled,
       });
@@ -158,12 +159,10 @@ export const experimentsController = new Elysia({
           maxLength: 200,
           description: "Human-readable name of the experiment.",
         }),
-        agentId: t.Optional(
-          t.Union([t.String(), t.Null()], {
-            description:
-              "Agent this experiment applies to (BigInt as a string), or null for any agent.",
-          }),
-        ),
+        agentId: t.String({
+          description:
+            "The agent this experiment applies to (BigInt as a string). Required: variants are resolved for one agent, so an experiment that names none is one that overrides no turn.",
+        }),
         variants: t.Array(variantSchemaT, {
           description:
             "The variants under test; assignment is deterministic per conversation thread.",
@@ -215,9 +214,9 @@ export const experimentsController = new Elysia({
           }),
         ),
         agentId: t.Optional(
-          t.Union([t.String(), t.Null()], {
+          t.String({
             description:
-              "New target agent (BigInt as a string), or null to apply to any agent.",
+              "Move the experiment to this agent (BigInt as a string). Omit to leave the current one; there is no value that means every agent.",
           }),
         ),
         variants: t.Optional(

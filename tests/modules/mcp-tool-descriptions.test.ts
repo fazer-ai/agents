@@ -491,6 +491,15 @@ describe("MCP tool descriptions", () => {
   // REMEASURED on the tree that ships, never summed: 29,945 and 54,984, so the ceilings go to 29,960
   // and 55,000. The margins are 15 and 16, as thin as the ones they replace and on
   // purpose: the point of a ceiling here is that the next tool has to be measured too.
+  //
+  // #547 moves both, in opposite directions, and again these are measured on this tree rather than
+  // added to the numbers above. `experiment_create` now says WHY `agent_id` is required (a variant
+  // resolves for one agent), which no caller can read off a schema that only marks it required, and
+  // that is 25 characters of description. The same change drops the `.nullable()` that made "no
+  // agent" expressible on the create and on the update, giving 45 characters of schema back, so the
+  // schema ceiling comes DOWN rather than staying where it was: a ratchet that only ever goes up
+  // stops measuring. Measured 29,970 and 54,939, so the ceilings go to 29,985 and 54,955, holding
+  // the same 15 and 16 margins.
   // The trade `code_tool_schema` exists to make, asserted on the side that keeps giving it back:
   // `code_tool_create` used to publish the whole vocabulary in its own description, so every session
   // paid for both copies and the two could disagree — and had, on which limits count as failures. A
@@ -518,8 +527,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(29_960);
-    expect(schema).toBeLessThanOrEqual(55_000);
+    expect(desc).toBeLessThanOrEqual(29_985);
+    expect(schema).toBeLessThanOrEqual(54_955);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

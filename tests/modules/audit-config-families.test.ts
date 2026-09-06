@@ -74,6 +74,8 @@ if (appUrl && suUrl) {
 
 const appDb = app as PrismaClient;
 let tenantId = 0n;
+// An experiment names the agent it applies to, so the family below needs one to exist.
+let experimentAgentId = 0n;
 
 const USER = 9399n;
 
@@ -196,6 +198,7 @@ const FAMILIES: Family[] = [
       const e = await createExperiment({
         ctx: c,
         name: `e${uniq()}`,
+        agentId: experimentAgentId,
         variants: [
           { key: "a", systemPrompt: "A", weight: 1 },
           { key: "b", systemPrompt: "B", weight: 1 },
@@ -243,6 +246,11 @@ describe.skipIf(!dbUp)(
         data: { name: "AUD399", slug: `aud399-${process.pid}` },
       });
       tenantId = t.id;
+      const a = await su.agent.create({
+        data: { tenantId, name: "AUD399 target", systemPrompt: "" },
+        select: { id: true },
+      });
+      experimentAgentId = a.id;
     });
 
     afterAll(async () => {
@@ -385,6 +393,7 @@ describe.skipIf(!dbUp)(
             principal(),
             {
               name: `me${uniq()}`,
+              agent_id: String(experimentAgentId),
               variants: [
                 { key: "a", system_prompt: "A" },
                 { key: "b", system_prompt: "B" },
@@ -712,6 +721,7 @@ describe.skipIf(!dbUp)(
       const e = await createExperiment({
         ctx: ctx(),
         name: `p${uniq()}`,
+        agentId: experimentAgentId,
         variants: [
           { key: "a", systemPrompt: "PROMPT-A-399", weight: 3 },
           { key: "b", systemPrompt: "PROMPT-B-399", weight: 1 },
@@ -942,6 +952,7 @@ describe.skipIf(!dbUp)(
       const e = await createExperiment({
         ctx: ctx(),
         name: `ep${uniq()}`,
+        agentId: experimentAgentId,
         variants: [
           { key: "a", systemPrompt: "FIRST-399", weight: 1 },
           { key: "b", systemPrompt: "B", weight: 1 },

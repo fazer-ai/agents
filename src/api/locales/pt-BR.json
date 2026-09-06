@@ -62,6 +62,7 @@
     "emptyMessage": "A mensagem está vazia.",
     "emptyVaultSecret": "Um segredo do cofre não pode ficar vazio.",
     "experimentAgentNotFound": "Esse experimento não nomeia nenhum agente deste tenant",
+    "experimentAgentRequired": "Um experimento se aplica a um agente, e esta escrita não nomeia nenhum",
     "experimentNotFound": "Experimento não encontrado.",
     "fileTooLarge": "O arquivo é muito grande",
     "forbidden": "Acesso negado",

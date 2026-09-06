@@ -1446,19 +1446,28 @@ export function ToolEditModal({
       };
     }
   }, [sample]);
-  // The formatted sample, or null when there is nothing to write: a document that does not read, or
-  // one already formatted. The BUTTON is gated on this and not on `sampleParse`, so "enabled" can
-  // only mean "there is a different text ready". Two readers of one field WILL disagree eventually —
-  // round 1 of review found the first pair, where a byte-order mark parsed (`String.trim` eats it)
-  // and the formatter refused — and the disagreement showed up as an enabled button doing nothing.
-  const sampleTidy = useMemo(() => {
+  // The formatted sample, or null with the NAME of why there is nothing to write. The BUTTON is
+  // gated on this and not on `sampleParse`, so "enabled" can only mean "there is a different text
+  // ready": two readers of one field WILL disagree eventually — round 1 of review found the first
+  // pair, where a byte-order mark parsed (`String.trim` eats it) and the formatter refused — and the
+  // disagreement showed up as an enabled button doing nothing. The reason is carried rather than
+  // collapsed because the row below says it: a disabled button beside a sentence about something
+  // else is the same silent refusal wearing a different hat (round 6 of review).
+  const sampleFormat = useMemo((): {
+    text: string | null;
+    why: "verbatim" | "unreadable" | "too-large" | "already" | null;
+  } => {
     // NOTE: a body the model reads VERBATIM is kept verbatim. `templatePreviewFor` shows a non-2xx
     // sample raw, clipped the way the runtime clips it, so reformatting it would preview a document
     // the API never sent (round 5 of review). The status question is asked of the runtime's own
     // function rather than answered again here, which is the rule this file already lives by.
-    if (sampleStatus !== null && readsBodyVerbatim(sampleStatus)) return null;
+    if (sampleStatus !== null && readsBodyVerbatim(sampleStatus)) {
+      return { text: null, why: "verbatim" };
+    }
     const tidy = reindentJson(sample);
-    return tidy === null || tidy === sample ? null : tidy;
+    if (!tidy.ok) return { text: null, why: tidy.why };
+    if (tidy.text === sample) return { text: null, why: "already" };
+    return { text: tidy.text, why: null };
   }, [sample, sampleStatus]);
   // What the template picker offers for the caret it was opened at: outside every block, the
   // absolute fields and the lists; inside one, the fields of that list's items, relative. The
@@ -1974,6 +1983,28 @@ export function ToolEditModal({
                   "One response from this API, so you can pick fields instead of typing their paths. It is not saved and never leaves this screen.",
                 )}
                 group
+                // THE FIELD'S OWN ERROR, not a line beside the buttons (round 6 of review). Through
+                // `FormField` it reaches the accessibility tree the way every other field's does:
+                // the `role="group"` wrapper carries `aria-describedby` to this message and
+                // `aria-invalid`, so entering the editor announces the line and column instead of
+                // announcing only that something is wrong.
+                error={
+                  sampleParse.state === "invalid"
+                    ? sampleParse.problem
+                      ? t(
+                          "tools.sampleInvalidAt",
+                          "Not valid JSON at line {{line}}, column {{column}}, so there is nothing to pick from. The fields below still work if you type the paths.",
+                          {
+                            line: sampleParse.problem.line,
+                            column: sampleParse.problem.column,
+                          },
+                        )
+                      : t(
+                          "tools.sampleInvalid",
+                          "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
+                        )
+                    : undefined
+                }
               >
                 <CodeMirrorField
                   value={sample}
@@ -2027,45 +2058,36 @@ export function ToolEditModal({
                   // it could do but drop what it could not understand — and the operator got that
                   // text from somewhere and cannot get it back from us. The line beside this button
                   // is the refusal, and it says where.
-                  disabled={sampleTidy === null}
+                  disabled={sampleFormat.text === null}
                   onClick={() => {
-                    if (sampleTidy === null) return;
+                    const tidy = sampleFormat.text;
+                    if (tidy === null) return;
                     // NOTE: the status is NOT cleared here, unlike on a keystroke: re-indenting
                     // changes the whitespace and never a value, so the last run's status still
                     // describes this body.
-                    setSample(sampleTidy);
+                    setSample(tidy);
                   }}
                 >
                   {t("tools.sampleFormat", "Format")}
                 </Button>
-                {/* ONE sentence, in the order of what the operator needs. A sample that cannot be
-                    read wins it: the hint explains a button, the refusal explains why nothing on
-                    the screen below works, and it names the line. Then the reason Format is off on
-                    a body that reads fine, because a disabled button with no sentence is the
-                    silent refusal this field exists to remove. The hint comes back when neither
-                    applies. */}
-                {sampleParse.state === "invalid" ? (
-                  <span className="text-error text-xs">
-                    {sampleParse.problem
-                      ? t(
-                          "tools.sampleInvalidAt",
-                          "Not valid JSON at line {{line}}, column {{column}}, so there is nothing to pick from. The fields below still work if you type the paths.",
-                          {
-                            line: sampleParse.problem.line,
-                            column: sampleParse.problem.column,
-                          },
-                        )
-                      : t(
-                          "tools.sampleInvalid",
-                          "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
-                        )}
-                  </span>
-                ) : sampleStatus !== null && readsBodyVerbatim(sampleStatus) ? (
+                {/* ONE sentence, and it belongs to whatever the operator cannot see for themselves.
+                    The two reasons Format is off on a sample that READS fine come first — a
+                    disabled button beside a sentence about something else is the silent refusal
+                    this field exists to remove. The parse error is not here: it is the field's own
+                    error, under the editor, where the group announces it. */}
+                {sampleFormat.why === "verbatim" && sampleStatus !== null ? (
                   <span className="text-text-secondary text-xs">
                     {t(
                       "tools.sampleVerbatimStatus",
                       "Kept exactly as the API sent it: with status {{status}} the agent reads this body as it arrived, so the preview below has to show the same thing.",
                       { status: sampleStatus },
+                    )}
+                  </span>
+                ) : sampleFormat.why === "too-large" ? (
+                  <span className="text-text-secondary text-xs">
+                    {t(
+                      "tools.sampleTooNestedToFormat",
+                      "Too deeply nested to format: laying this out would produce something no one could read, so it is left as it arrived. Everything else on this screen still works.",
                     )}
                   </span>
                 ) : (
@@ -2592,9 +2614,8 @@ export function ToolEditModal({
           //
           // Safe to do here for the same reason Format is safe at all: `reindentJson` copies every
           // literal out verbatim, so an id no JavaScript number can hold survives the trip.
-          setSample(
-            readsBodyVerbatim(status) ? raw : (reindentJson(raw) ?? raw),
-          );
+          const tidy = readsBodyVerbatim(status) ? null : reindentJson(raw);
+          setSample(tidy?.ok ? tidy.text : raw);
           setSampleStatus(status);
         }}
       />

@@ -97,6 +97,25 @@ describe("firstJsonProblem", () => {
     });
   });
 
+  // AND AN UNFINISHED DOCUMENT ENDS WHERE THE OPERATOR'S CURSOR IS (round 6 of review).
+  //
+  // The normalizing above trims both ends and the translation restored only the front, so a document
+  // that simply stops — the shape of one being typed — was reported at the end of its trimmed body
+  // rather than at the end of the text on screen. Blank lines under an unclosed brace are exactly
+  // where a person is when this message appears.
+  test("points at the end of the document as shown when it just stops", () => {
+    expect(firstJsonProblem('{"a":1\n\n')).toEqual({
+      offset: 8,
+      line: 3,
+      column: 1,
+    });
+    expect(firstJsonProblem('{"a":1   ')).toEqual({
+      offset: 9,
+      line: 1,
+      column: 10,
+    });
+  });
+
   // A response is not a fragment: two objects pasted back to back are a mistake worth naming, and
   // `JSON.parse` names it too. What must not happen is the tree reporting only the first value and
   // calling the rest fine.
@@ -105,10 +124,17 @@ describe("firstJsonProblem", () => {
   });
 });
 
+// The text it produced, or null for either refusal. The tests that care about WHICH refusal ask the
+// result itself; everything else is about what came out.
+function tidy(text: string): string | null {
+  const r = reindentJson(text);
+  return r.ok ? r.text : null;
+}
+
 describe("reindentJson", () => {
   test("expands a minified response and keeps what it says", () => {
     const text = '{"data":{"id":"ap_1","tags":["a","b"],"ok":true}}';
-    expect(reindentJson(text)).toBe(
+    expect(tidy(text)).toBe(
       `{
   "data": {
     "id": "ap_1",
@@ -131,16 +157,14 @@ describe("reindentJson", () => {
   // what a response really meant. So the literals are copied out of the document verbatim and only
   // the whitespace between them is ours.
   test("does not round-trip literals through a JavaScript number", () => {
-    const out = reindentJson(
-      '{"id":12345678901234567890,"price":1.0,"big":1e3}',
-    );
+    const out = tidy('{"id":12345678901234567890,"price":1.0,"big":1e3}');
     expect(out).toContain("12345678901234567890");
     expect(out).toContain("1.0");
     expect(out).toContain("1e3");
   });
 
   test("keeps both of two keys that collide", () => {
-    const out = reindentJson('{"dup":1,"dup":2}') ?? "";
+    const out = tidy('{"dup":1,"dup":2}') ?? "";
     expect(out.match(/"dup"/g)?.length).toBe(2);
     expect(out).toContain("1");
     expect(out).toContain("2");
@@ -148,7 +172,7 @@ describe("reindentJson", () => {
 
   test("keeps a string's own escapes and its inner braces", () => {
     const text = '{"note":"a \\"quoted\\" {word}, and a \\\\ slash"}';
-    const out = reindentJson(text) ?? "";
+    const out = tidy(text) ?? "";
     expect(out).toContain('"a \\"quoted\\" {word}, and a \\\\ slash"');
     // And what it produced still parses to the same thing.
     expect(JSON.parse(out)).toEqual(JSON.parse(text));
@@ -162,19 +186,19 @@ describe("reindentJson", () => {
   // refusal this feature exists to remove. The two now normalize the same way. Nothing of the
   // operator's is dropped: a BOM is an encoding marker, not something the response says.
   test("formats a document that opens with a byte-order mark", () => {
-    expect(reindentJson('\uFEFF{"a":1}')).toBe(`{
+    expect(tidy('\uFEFF{"a":1}')).toBe(`{
   "a": 1
 }`);
   });
 
   test("formats a document padded with whitespace", () => {
-    expect(reindentJson('  {"a":1}\n\n')).toBe(`{
+    expect(tidy('  {"a":1}\n\n')).toBe(`{
   "a": 1
 }`);
   });
 
   test("leaves an empty object and an empty array on one line", () => {
-    expect(reindentJson('{"a":{},"b":[]}')).toBe(
+    expect(tidy('{"a":{},"b":[]}')).toBe(
       `{
   "a": {},
   "b": []
@@ -183,16 +207,19 @@ describe("reindentJson", () => {
   });
 
   test("is idempotent: formatting what it produced changes nothing", () => {
-    const once = reindentJson('{"a":[1,{"b":2}],"c":"x"}') ?? "";
-    expect(reindentJson(once)).toBe(once);
+    const once = tidy('{"a":[1,{"b":2}],"c":"x"}') ?? "";
+    expect(tidy(once)).toBe(once);
   });
 
   // NEVER "FIXES" WHAT IT COULD NOT READ. The operator pasted that from somewhere and cannot get it
   // back from us, so a document that does not parse is returned untouched and the refusal is said
   // elsewhere, by the position above.
   test("refuses a document it cannot read, instead of repairing it", () => {
-    expect(reindentJson('{"a": 1, "b": }')).toBeNull();
-    expect(reindentJson("")).toBeNull();
+    expect(reindentJson('{"a": 1, "b": }')).toEqual({
+      ok: false,
+      why: "unreadable",
+    });
+    expect(reindentJson("")).toEqual({ ok: false, why: "unreadable" });
   });
 });
 
@@ -210,8 +237,10 @@ describe("reindentJson under a ceiling", () => {
     return doc;
   }
 
+  // NAMED, not merely refused: the field says which of the two happened, because a disabled button
+  // beside a sentence about something else says nothing (round 6 of review).
   test("refuses a document whose formatted form nobody could read", () => {
-    expect(reindentJson(nested(2000))).toBeNull();
+    expect(reindentJson(nested(2000))).toEqual({ ok: false, why: "too-large" });
   });
 
   test("still formats an ordinary response", () => {
@@ -222,7 +251,7 @@ describe("reindentJson under a ceiling", () => {
         at: "2026-09-02T14:00:00-03:00",
       })),
     });
-    const out = reindentJson(wide);
+    const out = tidy(wide);
     expect(out).not.toBeNull();
     expect(JSON.parse(out ?? "")).toEqual(JSON.parse(wide));
   });
@@ -231,6 +260,6 @@ describe("reindentJson under a ceiling", () => {
   // comes out of it, and a small input is exactly how the big output is reached.
   test("judges the formatted size, not the pasted size", () => {
     expect(nested(2000).length).toBeLessThan(10_000);
-    expect(reindentJson(nested(2000))).toBeNull();
+    expect(reindentJson(nested(2000))).toEqual({ ok: false, why: "too-large" });
   });
 });

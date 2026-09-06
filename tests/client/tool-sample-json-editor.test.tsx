@@ -377,3 +377,49 @@ test("a non-2xx response is kept exactly as the API sent it", async () => {
     /exatamente como a API|exactly as the API sent it/i,
   );
 });
+
+// EVERY WAY OF DECLINING HAS A SENTENCE (round 6 of review).
+//
+// A sample that READS fine can still be one Format will not touch, and a disabled button beside the
+// test-request hint says nothing about why. Two of those exist: a body the model reads verbatim
+// (above) and one whose formatted form would be past the ceiling.
+test("a sample too nested to format says so, instead of a dead button", async () => {
+  await openEditor();
+  let deep = "1";
+  for (let i = 0; i < 2000; i++) deep = `[${deep}]`;
+  writeSample(deep);
+  await waitFor(() => expect(formatButton().disabled).toBe(true));
+  expect(document.body.textContent).toMatch(
+    /aninhado demais|too deeply nested/i,
+  );
+  // And it is not being called unreadable, because it reads: the pickers below work.
+  expect(document.body.textContent).not.toMatch(
+    /não é json válido|not valid json/i,
+  );
+});
+
+// THE PARSE ERROR IS THE FIELD'S ERROR, so the accessibility tree carries it.
+//
+// It used to be a line beside the buttons: outside the labelled group, with no id the editor points
+// at, so a screen reader got `aria-invalid` and never the line and column. Through `FormField` it
+// reaches the tree the way every other field's error does.
+test("the parse error is announced with the field, not merely drawn near it", async () => {
+  await openEditor();
+  writeSample('{"a": }');
+  const group = await waitFor(() => {
+    const g = Array.from(document.querySelectorAll('[role="group"]')).find(
+      (el) => /resposta de exemplo|sample response/i.test(el.textContent ?? ""),
+    );
+    if (!g) throw new Error("the sample field is not a group");
+    return g;
+  });
+  await waitFor(() => {
+    const id = group.getAttribute("aria-describedby");
+    expect(id).toBeTruthy();
+    const message = id ? document.getElementById(id) : null;
+    expect(message?.textContent ?? "").toMatch(
+      /line 1, column 7|linha 1, coluna 7/i,
+    );
+  });
+  expect(group.getAttribute("aria-invalid")).toBe("true");
+});

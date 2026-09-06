@@ -91,6 +91,14 @@ function bodyOf(text: string): { body: string; lead: number } {
   return { body: text.trim(), lead: text.length - text.trimStart().length };
 }
 
+// A place in the BODY, translated to the same place in the text the operator is looking at. An
+// offset at the body's end means the document simply stopped, and the document that stopped is the
+// one on screen: reporting the trimmed end there puts the message above the blank lines under an
+// unclosed brace, which is exactly where the cursor is when it appears (round 6 of review).
+function inText(text: string, body: string, lead: number, offset: number) {
+  return offset >= body.length ? text.length : lead + offset;
+}
+
 // Where this text stops being JSON, or null when it does not stop.
 //
 // The coordinates are about the text AS GIVEN, never about the normalized copy: this number is read
@@ -103,7 +111,7 @@ export function firstJsonProblem(text: string): JsonSpot | null {
   const { body, lead } = bodyOf(text);
   const tree = parser.parse(body);
   const error = firstErrorNode(tree);
-  if (error) return spotAt(text, lead + error.from);
+  if (error) return spotAt(text, inText(text, body, lead, error.from));
   // NOTE: an error NODE is not the only way to be broken. A tree with no error node still has a
   // shape, and two values pasted back to back parse as a first value plus something the grammar has
   // no room for; `JSON.parse` refuses that too, and so does the picker that reads this field. Asking
@@ -115,7 +123,9 @@ export function firstJsonProblem(text: string): JsonSpot | null {
   // grammar spells some other way.
   let values = 0;
   for (let c = top.firstChild; c; c = c.nextSibling) values++;
-  if (values !== 1) return spotAt(text, lead + valueEndFor(top, body));
+  if (values !== 1) {
+    return spotAt(text, inText(text, body, lead, valueEndFor(top, body)));
+  }
   return null;
 }
 
@@ -128,21 +138,32 @@ function valueEndFor(top: SyntaxNode, text: string): number {
   return second ? second.from : Math.min(first.to, text.length);
 }
 
-// The same document, re-indented — or null when it does not parse, in which case NOTHING is changed.
-// A document that could not be read is not a document to repair: the operator pasted it from
-// somewhere and cannot get it back from us.
-export function reindentJson(text: string): string | null {
-  if (firstJsonProblem(text) !== null) return null;
+// The two ways formatting can decline, kept apart because the operator is told which one happened.
+// Collapsing them left a disabled button next to a sentence about something else, which is the
+// silent refusal this field exists to remove (round 6 of review).
+export type Reindent =
+  | { ok: true; text: string }
+  // It does not parse. NOTHING is changed: a document that could not be read is not a document to
+  // repair, because the operator got it from somewhere and cannot get it back from us.
+  | { ok: false; why: "unreadable" }
+  // It parses, and formatting it would produce something past the ceiling.
+  | { ok: false; why: "too-large" };
+
+// The same document, re-indented.
+export function reindentJson(text: string): Reindent {
+  if (firstJsonProblem(text) !== null) return { ok: false, why: "unreadable" };
   const { body } = bodyOf(text);
   const tree = parser.parse(body);
   const top = tree.topNode.firstChild;
-  if (!top) return null;
+  if (!top) return { ok: false, why: "unreadable" };
   // NOTE: written into a budget rather than measured afterwards. The point of the ceiling is to not
   // BUILD the thing, and a check on the finished string has already spent the memory it was meant
   // to refuse.
   const out: string[] = [];
-  if (!write(top, body, 0, out, { left: MAX_FORMATTED })) return null;
-  return out.join("");
+  if (!write(top, body, 0, out, { left: MAX_FORMATTED })) {
+    return { ok: false, why: "too-large" };
+  }
+  return { ok: true, text: out.join("") };
 }
 
 interface Budget {

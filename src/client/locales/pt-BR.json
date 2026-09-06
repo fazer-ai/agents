@@ -2573,6 +2573,7 @@
     "sampleHint": "Uma resposta desta API, para você escolher os campos em vez de digitar os caminhos. Não é salva e não sai desta tela.",
     "sampleInvalid": "Isso não é um JSON válido, então não há de onde escolher. Os campos abaixo continuam funcionando se você digitar os caminhos.",
     "sampleInvalidAt": "Não é JSON válido na linha {{line}}, coluna {{column}}, então não há o que escolher. Os campos abaixo continuam funcionando se você digitar os caminhos.",
+    "sampleTooNestedToFormat": "Aninhado demais para formatar: distribuir isto produziria algo que ninguém conseguiria ler, então fica como chegou. Todo o resto desta tela continua funcionando.",
     "sampleVerbatimStatus": "Mantido exatamente como a API enviou: com status {{status}} o agente lê este corpo como ele chegou, então a prévia abaixo precisa mostrar a mesma coisa.",
     "saved": "Ferramenta salva.",
     "saveError": "Não foi possível salvar (verifique o nome e a URL).",

@@ -461,7 +461,7 @@ export const mcpOAuthController = new Elysia({
         await auditConsentDecision(
           user,
           pending.tenantId,
-          "mcp_oauth_consent_denied",
+          "mcp_oauth_consent.deny",
           pending.clientId,
           pending.scopes,
         );
@@ -487,7 +487,7 @@ export const mcpOAuthController = new Elysia({
       await auditConsentDecision(
         user,
         pending.tenantId,
-        "mcp_oauth_consent_granted",
+        "mcp_oauth_consent.grant",
         pending.clientId,
         pending.scopes,
       );

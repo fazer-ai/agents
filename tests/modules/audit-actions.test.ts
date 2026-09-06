@@ -127,30 +127,15 @@ describe("the audit action vocabulary", () => {
   // naming #392 settled. A name in another shape reaches the operator as noise and, worse, suggests
   // the family it belongs to is somewhere else.
   //
-  // The two exceptions are NAMED rather than pattern-matched, so a third one is a decision somebody
-  // makes on purpose and not a hole the regex quietly widened. They predate #392 and are written by
-  // live code on every OAuth consent decision; renaming them orphans every row already recorded
-  // under those names, which is #523 and its backfill, not this list's problem.
-  const PREDATE_THE_CONVENTION = [
-    "mcp_oauth_consent_denied",
-    "mcp_oauth_consent_granted",
-  ];
-
+  // NO EXCEPTION LIST ANY MORE. It held the two consent actions that predated #392, named rather
+  // than pattern-matched so a third would be somebody's decision instead of a hole the regex
+  // widened. #523 renamed them and backfilled the rows already written, so the rule now applies to
+  // every member and the next odd name has nowhere to be filed.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
-      (a) =>
-        !PREDATE_THE_CONVENTION.includes(a) &&
-        !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
+      (a) => !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
     );
     expect(odd).toEqual([]);
-  });
-
-  // An exception that stops being one is an exception that stays forever.
-  test("every exception is still in the list", () => {
-    const gone = PREDATE_THE_CONVENTION.filter(
-      (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
-    );
-    expect(gone).toEqual([]);
   });
 });
 
@@ -167,7 +152,7 @@ describe("the audit action vocabulary", () => {
 // declared entry becomes `extra`, and this goes red. A new fleet action in a known shape is
 // `missing` and goes red too. Neither direction degrades to a pass.
 //
-// `api_key.*` and `mcp_oauth_consent_*` are correctly absent from the declaration: they take the
+// `api_key.*` and `mcp_oauth_consent.*` are correctly absent from the declaration: they take the
 // tenant id on the tenant path and `null` on the fleet path, so membership is asked as "writes null
 // ALWAYS" — an action seen in any tenant-scoped write is disqualified.
 describe("which actions belong to no tenant", () => {

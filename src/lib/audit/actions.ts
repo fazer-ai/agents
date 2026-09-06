@@ -99,13 +99,8 @@ export const AUDIT_ACTIONS = [
   "mcp_connection.create",
   "mcp_connection.delete",
   "mcp_connection.update",
-  // THE TWO WITHOUT A DOT, and they are not legacy: `auditConsentDecision` in
-  // `mcp-oauth.controller.ts` writes one of them on every OAuth consent decision made today. They
-  // predate the `<entity>.<verb>` convention the other 89 follow, and renaming them would orphan
-  // every row already recorded under these names, so the convention bends here instead. The rename
-  // and its backfill are #523.
-  "mcp_oauth_consent_denied",
-  "mcp_oauth_consent_granted",
+  "mcp_oauth_consent.deny",
+  "mcp_oauth_consent.grant",
   "mcp_token.revoke",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
@@ -137,7 +132,7 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 // that is recorded" are different sentences, and only one of them is true. A fleet READ is #520.
 //
 // A member here writes `null` as the tenant, always — not sometimes. `api_key.*` and
-// `mcp_oauth_consent_*` are deliberately absent: they write `null` for a fleet-scoped key or a
+// `mcp_oauth_consent.*` are deliberately absent: they write `null` for a fleet-scoped key or a
 // fleet-scoped consent and the tenant's id otherwise, so on a tenant trail they can and do match.
 export const FLEET_LEVEL_ACTIONS: readonly AuditAction[] = [
   "mcp_approval.revoke",

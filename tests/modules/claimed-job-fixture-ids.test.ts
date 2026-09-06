@@ -102,14 +102,20 @@ const MARKERS = /\bclaimSeq\b/g;
 // JSON inside a string (`const raw = '{"claimSeq":0}'`) would answer for a fixture that is not
 // there.
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
-// The annotation of a VALUE, which is what the initializer says: `job: ClaimedJob` on a parameter
-// names a job the function is handed, not one written here, and a sweep that counted it would call
-// the `{ id: 7n }` in that function's body a fixture. A FACTORY's return type is the same promise
-// about a literal, so `{` joins `=`: it reaches `function jobFor(): ClaimedJob {`, while `=` already
-// reached the arrow (`(): ClaimedJob => ({…})`, whose `=>` opens with one), and neither reaches
-// `function run(job: ClaimedJob) {`, where a `)` sits between the type and the brace.
+// An annotation over a literal WRITTEN AT THAT POINT, and the literal is the load-bearing half:
+// `= {`, `= [`, `=> ({`, or the `satisfies`/`as` that follow the literal they describe. Four rounds
+// of review were spent on the annotations that name a job WITHOUT one, and each answer bought the
+// next question, because they are all the same shape: `job: ClaimedJob` on a parameter, defaulted or
+// not, `function jobFor(): ClaimedJob {`, `Promise<ClaimedJob>` on an async factory. None of them
+// says where the literal is, so counting them is line proximity again, one indirection down, and
+// what it produces is the `{ id: 7n }` of some other object in the same fourteen lines.
+//
+// So a job produced by a function whose RETURN type is the only mention is out of the sweep's reach,
+// written down here and asserted below rather than left to be discovered. It is the narrow corner of
+// a case that is already narrow: a fixture is only invisible to `claimSeq` when the field arrives by
+// spread from another module, and then also has to spell a reachable id.
 const TYPE_MARKER =
-  /:\s*ClaimedJob(?:\[\])?\s*[={]|(?:satisfies|as)\s+ClaimedJob\b/g;
+  /:\s*ClaimedJob(?:\[\])?\s*(?:=>\s*\(\s*|=\s*)[[{]|(?:satisfies|as)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -286,18 +292,31 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       "  const jobs: ClaimedJob[] = [{ id: 1n, ...b }];",
       true,
     ],
-    // A factory's return type promises the same thing about the literal it returns, in both
-    // spellings: the arrow's `=>` opens with the `=` the value form already reads, and the
-    // declaration's body opens with a brace.
+    // The arrow with an expression body is the one return type that DOES say where the literal is:
+    // it is the next thing after the annotation.
     [
-      "an arrow factory's return type",
+      "an arrow factory returning a literal",
       "  const jobFor = (): ClaimedJob => ({ id: 1n, ...baseJob });",
       true,
     ],
+    // The other side of that: a return type says what the function produces, not where the literal
+    // is, so these are the sweep's stated blind corner rather than a case it means to catch.
     [
       "a declared factory's return type",
       "  function jobFor(): ClaimedJob {\n    return { id: 1n, ...baseJob };",
-      true,
+      false,
+    ],
+    [
+      "an async factory's wrapped return type",
+      "  async function jobFor(): Promise<ClaimedJob> {\n    return { id: 1n, ...baseJob };",
+      false,
+    ],
+    // A defaulted parameter is still a parameter: the value is somebody else's, and the id below
+    // belongs to another object.
+    [
+      "a defaulted parameter",
+      "  function inspect(job: ClaimedJob = defaultJob) {\n    const tenant = { id: 7n };",
+      false,
     ],
     // A job the function is HANDED is not a job written here, and the id below belongs to a tenant.
     [

@@ -102,11 +102,14 @@ const MARKERS = /\bclaimSeq\b/g;
 // JSON inside a string (`const raw = '{"claimSeq":0}'`) would answer for a fixture that is not
 // there.
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
-// The annotation of a VALUE, which is the initializer: `job: ClaimedJob` on a parameter names a
-// job the function is handed, not one written here, and a sweep that counted it would call the
-// `{ id: 7n }` in that function's body a fixture.
+// The annotation of a VALUE, which is what the initializer says: `job: ClaimedJob` on a parameter
+// names a job the function is handed, not one written here, and a sweep that counted it would call
+// the `{ id: 7n }` in that function's body a fixture. A FACTORY's return type is the same promise
+// about a literal, so `{` joins `=`: it reaches `function jobFor(): ClaimedJob {`, while `=` already
+// reached the arrow (`(): ClaimedJob => ({…})`, whose `=>` opens with one), and neither reaches
+// `function run(job: ClaimedJob) {`, where a `)` sits between the type and the brace.
 const TYPE_MARKER =
-  /:\s*ClaimedJob(?:\[\])?\s*=|(?:satisfies|as)\s+ClaimedJob\b/g;
+  /:\s*ClaimedJob(?:\[\])?\s*[={]|(?:satisfies|as)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -281,6 +284,19 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     [
       "an annotated array",
       "  const jobs: ClaimedJob[] = [{ id: 1n, ...b }];",
+      true,
+    ],
+    // A factory's return type promises the same thing about the literal it returns, in both
+    // spellings: the arrow's `=>` opens with the `=` the value form already reads, and the
+    // declaration's body opens with a brace.
+    [
+      "an arrow factory's return type",
+      "  const jobFor = (): ClaimedJob => ({ id: 1n, ...baseJob });",
+      true,
+    ],
+    [
+      "a declared factory's return type",
+      "  function jobFor(): ClaimedJob {\n    return { id: 1n, ...baseJob };",
       true,
     ],
     // A job the function is HANDED is not a job written here, and the id below belongs to a tenant.

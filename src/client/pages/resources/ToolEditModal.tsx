@@ -1,3 +1,4 @@
+import { json } from "@codemirror/lang-json";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { AlertTriangle, Braces, Plus, Trash2 } from "lucide-react";
@@ -28,9 +29,11 @@ import {
   useOnModalOpen,
   useToast,
 } from "@/client/components";
+import { CodeMirrorField } from "@/client/components/CodeMirrorField";
 import { Tooltip } from "@/client/components/Tooltip";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
+import { firstJsonProblem, reindentJson } from "@/client/lib/sampleJson";
 import { dialableBaseUrl } from "@/client/lib/secretTypes";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
@@ -603,6 +606,10 @@ function appointmentForm(raw: unknown) {
 // offer that is empty for THIS caret: with `emptyLabel` set, an empty offer renders the toggle and
 // that line instead of nothing (round 3 of review: inside a block over an empty list the whole
 // control unmounted while open, and nothing could re-read the caret).
+// The sample field's grammar, built once. `CodeMirrorField` reconfigures on this value's identity,
+// so a fresh array per render would reconfigure per render.
+const SAMPLE_LANGUAGE = [json()];
+
 export function PathPicker({
   leaves,
   lists = [],
@@ -1423,7 +1430,16 @@ export function ToolEditModal({
         body,
       };
     } catch {
-      return { state: "invalid" as const, ...none };
+      // NOTE: `JSON.parse` decides whether this is readable, because it is what produced the values
+      // above and a second opinion could hide the offer while the line below called the text fine.
+      // The POSITION comes from the editor's own grammar, because the engine's message does not
+      // carry one portably: V8 appends `at position N` to some errors and not others, and JSC
+      // (Safari) to none. When the two disagree the sentence simply says less (issue #562).
+      return {
+        state: "invalid" as const,
+        problem: firstJsonProblem(raw),
+        ...none,
+      };
     }
   }, [sample]);
   // What the template picker offers for the caret it was opened at: outside every block, the
@@ -1939,19 +1955,61 @@ export function ToolEditModal({
                   "tools.sampleHint",
                   "One response from this API, so you can pick fields instead of typing their paths. It is not saved and never leaves this screen.",
                 )}
+                group
               >
-                <Textarea
+                <CodeMirrorField
                   value={sample}
-                  onChange={(e) => {
-                    setSample(e.target.value);
+                  onChange={(next) => {
+                    setSample(next);
                     // Typed or pasted by hand: there is no status behind it any more, and keeping
                     // the last run's would judge this body by that one's.
                     setSampleStatus(null);
                   }}
-                  rows={3}
+                  extensions={SAMPLE_LANGUAGE}
+                  invalid={sampleParse.state === "invalid"}
+                  minHeight="6rem"
                   placeholder='{"data": {"id": "ap_1", "start": "2026-09-02T14:00:00-03:00"}}'
+                  aria-label={t("tools.sample", "Sample response (optional)")}
                 />
               </FormField>
+              <div className="-mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  // Formatting requires reading, so on a paste that does not read there is nothing
+                  // it could do but drop what it could not understand — and the operator got that
+                  // text from somewhere and cannot get it back from us. The line beside this button
+                  // is the refusal, and it says where.
+                  disabled={sampleParse.state !== "ok"}
+                  onClick={() => {
+                    const tidy = reindentJson(sample);
+                    if (tidy === null || tidy === sample) return;
+                    // NOTE: the status is NOT cleared here, unlike on a keystroke: re-indenting
+                    // changes the whitespace and never a value, so the last run's status still
+                    // describes this body.
+                    setSample(tidy);
+                  }}
+                >
+                  {t("tools.sampleFormat", "Format")}
+                </Button>
+                {sampleParse.state === "invalid" && (
+                  <span className="text-error text-xs">
+                    {sampleParse.problem
+                      ? t(
+                          "tools.sampleInvalidAt",
+                          "Not valid JSON at line {{line}}, column {{column}}, so there is nothing to pick from. The fields below still work if you type the paths.",
+                          {
+                            line: sampleParse.problem.line,
+                            column: sampleParse.problem.column,
+                          },
+                        )
+                      : t(
+                          "tools.sampleInvalid",
+                          "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
+                        )}
+                  </span>
+                )}
+              </div>
               <div className="-mt-2 flex flex-col gap-1">
                 <Button
                   variant="secondary"
@@ -1982,14 +2040,6 @@ export function ToolEditModal({
                   )}
                 </span>
               </div>
-              {sampleParse.state === "invalid" && (
-                <p className="-mt-2 text-error text-xs">
-                  {t(
-                    "tools.sampleInvalid",
-                    "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
-                  )}
-                </p>
-              )}
               <FormField
                 label={t("tools.outputTemplate", "What the agent receives")}
                 help={t(

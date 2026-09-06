@@ -1,7 +1,14 @@
 /// <reference lib="dom" />
 
 import { afterEach, expect, test } from "bun:test";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
@@ -106,13 +113,32 @@ async function openBookForm() {
     controlFor<HTMLSelectElement>(/(books or cancels|marca ou cancela)/i),
   );
   fireEvent.change(action, { target: { value: "book" } });
-  const sample = controlFor<HTMLTextAreaElement>(
-    /resposta de exemplo|sample response/i,
-  );
-  fireEvent.change(sample, { target: { value: SAMPLE } });
+  writeSample(SAMPLE);
 }
 
 // Every control that offers one of the sample's paths, whatever the widget calls itself.
+// THE SAMPLE IS A CODEMIRROR NOW (issue #562), so it is written by dispatching into its view rather
+// than by firing `change` on a textarea. Found by the accessible name on the contenteditable, which
+// is the element CodeMirror gives the `textbox` role to, so this does not depend on how many editors
+// the screen holds.
+function writeSample(text: string): void {
+  const content = Array.from(document.querySelectorAll(".cm-content")).find(
+    (el) =>
+      /resposta de exemplo|sample response/i.test(
+        el.getAttribute("aria-label") ?? "",
+      ),
+  );
+  if (!content) throw new Error("no sample editor on screen");
+  const view = EditorView.findFromDOM(
+    content.closest(".cm-editor") as HTMLElement,
+  ) as EditorView;
+  act(() => {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
+    });
+  });
+}
+
 function offeredPaths(): string[] {
   return Array.from(
     document.querySelectorAll("li button, [role='option'], [role='menuitem']"),
@@ -237,10 +263,12 @@ test("a token is inserted at the caret, not appended", async () => {
       </ToastProvider>
     </MemoryRouter>,
   );
-  const sample = await waitFor(() =>
-    controlFor<HTMLTextAreaElement>(/resposta de exemplo|sample response/i),
+  await waitFor(() =>
+    controlFor<HTMLTextAreaElement>(
+      /o que o agente recebe|what the agent receives/i,
+    ),
   );
-  fireEvent.change(sample, { target: { value: SAMPLE } });
+  writeSample(SAMPLE);
 
   const template = controlFor<HTMLTextAreaElement>(
     /o que o agente recebe|what the agent receives/i,

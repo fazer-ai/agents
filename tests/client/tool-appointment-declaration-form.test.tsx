@@ -1,7 +1,9 @@
 /// <reference lib="dom" />
 
 import { afterEach, expect, test } from "bun:test";
+import { EditorView } from "@codemirror/view";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -107,10 +109,6 @@ function controlFor<T extends Element>(pattern: RegExp, what: string): T {
 
 function inputFor(pattern: RegExp): HTMLInputElement {
   return controlFor<HTMLInputElement>(pattern, "field");
-}
-
-function textareaFor(pattern: RegExp): HTMLTextAreaElement {
-  return controlFor<HTMLTextAreaElement>(pattern, "textarea");
 }
 
 // By the SENTENCE, not by the word "appointment": the URL field's own value is on screen too, and a
@@ -266,21 +264,40 @@ test("offsets the runtime would not honour hold the save", async () => {
 // field is `data.appointment.id` is well-formed, passes every check, and reads nothing all the way
 // to production. Asserted on the VALUE the field ends up holding and on what is submitted, never on
 // the list appearing: a picker that renders and fills nothing looks identical.
+// THE SAMPLE IS A CODEMIRROR NOW (issue #562), so it is written by dispatching into its view rather
+// than by firing `change` on a textarea. Found by the accessible name on the contenteditable, which
+// is the element CodeMirror gives the `textbox` role to, so this does not depend on how many editors
+// the screen holds.
+function writeSample(text: string): void {
+  const content = Array.from(document.querySelectorAll(".cm-content")).find(
+    (el) =>
+      /resposta de exemplo|sample response/i.test(
+        el.getAttribute("aria-label") ?? "",
+      ),
+  );
+  if (!content) throw new Error("no sample editor on screen");
+  const view = EditorView.findFromDOM(
+    content.closest(".cm-editor") as HTMLElement,
+  ) as EditorView;
+  act(() => {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
+    });
+  });
+}
+
 test("a pasted sample fills the paths by clicking, and is never submitted", async () => {
   await openForm();
   fireEvent.change(actionSelect(), { target: { value: "book" } });
   await waitFor(() => expect(saveDisabled()).toBe(true));
 
-  const sample = textareaFor(/resposta de exemplo|sample response/i);
-  fireEvent.change(sample, {
-    target: {
-      value: JSON.stringify({
-        data: {
-          appointment: { id: "ap_9", starts_at: "2026-09-02T14:00:00-03:00" },
-        },
-      }),
-    },
-  });
+  writeSample(
+    JSON.stringify({
+      data: {
+        appointment: { id: "ap_9", starts_at: "2026-09-02T14:00:00-03:00" },
+      },
+    }),
+  );
 
   // One picker per field, so a click can only mean one target.
   const pickers = () =>

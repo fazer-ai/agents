@@ -134,6 +134,7 @@
     "inviteNotFound": "Invitation not found",
     "knowledgeBaseNotFound": "Knowledge base not found.",
     "lastAdmin": "Cannot delete the last admin of this scope",
+    "lastAdminRole": "Cannot demote the last admin of this scope",
     "logoNotFound": "Logo not found",
     "mcpApprovalNotFound": "MCP approval not found",
     "mcpClientNotFound": "MCP client not found",

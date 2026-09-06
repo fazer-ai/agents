@@ -51,6 +51,66 @@ async function lockUserInScope(
      FOR UPDATE`;
 }
 
+// THE INVARIANT, in one place: a scope keeps somebody who can administer it. Every write that can
+// reduce a scope's administrator count asks this, and it is one function because the question is one
+// (#496): the delete asked it and the demote did not, so the same tenant could be emptied by the
+// cheaper of the two paths.
+//
+// The count is plain because `lockAdminScope` below is what serialises it. Counting under a row lock
+// on the TARGET, which is what the delete used to do, is the other half of that issue: two removals
+// aimed at DIFFERENT administrators lock different rows, so nothing serialises them, each counts the
+// other as remaining, and the scope ends with none.
+async function assertScopeKeepsAnAdmin(
+  db: ScopedDb,
+  role: "TENANT_ADMIN" | "SUPER_ADMIN",
+  tenantId: bigint | null,
+  leavingUserId: bigint,
+): Promise<void> {
+  const remaining = await db.user.count({
+    where: { role, tenantId, id: { not: leavingUserId } },
+  });
+  if (remaining === 0) {
+    throw new LastAdminError();
+  }
+}
+
+// One lock per SCOPE, taken before any row, by every write that can change that scope's
+// administrator count. An advisory lock rather than the administrator rows themselves, and that is
+// the whole design: a set of rows has to be locked in some order, and two writers that disagree
+// about the order (a target read as an AGENT while somebody promotes it, a scan that comes back the
+// other way round) each end up holding a row the other needs. A single lock taken FIRST cannot be
+// held by anyone who is waiting for another, so this family has no lock cycle to reason about.
+//
+// The scope is the target's tenant, and the fleet (`tenantId` null) is a scope like any other. A
+// user never changes tenant — nothing in the tree writes `users.tenant_id` after creation, and only
+// `updateUserRole` writes `users.role` — so the tenant read to build this key cannot be stale in the
+// way the role can, which is what lets the key be chosen before the row is locked.
+//
+// `hashtext` maps to int4, so two scopes can share a slot: that over-serialises two tenants' admin
+// writes and never lets two holders of the same scope run at once, which is the direction that
+// matters (the same trade-off `withEntityLock` documents).
+async function lockAdminScope(
+  db: ScopedDb,
+  tenantId: bigint | null,
+): Promise<void> {
+  const key = `admin-scope:${tenantId === null ? "fleet" : tenantId}`;
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key})::bigint)`;
+}
+
+// The scope this write belongs to, read with the caller's own fence so naming an id from another
+// tenant cannot make the lock above serialise that tenant. Null when the target is not visible here
+// at all: the read under the lock is what answers 404, and this one only picks the key.
+async function scopeOfTarget(
+  db: ScopedDb,
+  callerTenantId: bigint | null,
+  userId: bigint,
+): Promise<{ tenantId: bigint | null } | null> {
+  return db.user.findFirst({
+    where: { id: userId, ...tenantScope(callerTenantId) },
+    select: { tenantId: true },
+  });
+}
+
 // What a user's row carries when their membership changes.
 //
 // The email is IN it, and that is a decision rather than an oversight. The trail exists to answer
@@ -206,6 +266,14 @@ export async function updateUserRole(
     // Two admins re-roling the same person otherwise both read the same value and both record the
     // same transition, so the trail shows one of the two changes twice and the other not at all —
     // on the family where the recorded transition is the entire point.
+    // NOTE: the scope lock comes BEFORE the row lock, and nothing here takes a second one. Which
+    // scope is a question the unlocked read below can answer, because a user never changes tenant;
+    // which ROLE they hold is not, which is why the guard is evaluated on the locked read further
+    // down rather than on this one.
+    const scope = await scopeOfTarget(db, ctx.tenantId, userId);
+    if (scope !== null) {
+      await lockAdminScope(db, scope.tenantId);
+    }
     await lockUserInScope(db, ctx.tenantId, userId);
     const before = await db.user.findFirst({
       where: { id: userId, ...tenantScope(ctx.tenantId) },
@@ -215,6 +283,14 @@ export async function updateUserRole(
     // edit — the same fence the `updateMany` this replaced carried in its `where`.
     if (!before) {
       throw new UserNotInScopeError();
+    }
+    // The guard, on the role the LOCKED read reports and not on any earlier one: a demote only
+    // threatens the invariant when it takes an administrator role away.
+    if (
+      (before.role === "TENANT_ADMIN" || before.role === "SUPER_ADMIN") &&
+      before.role !== role
+    ) {
+      await assertScopeKeepsAnAdmin(db, before.role, before.tenantId, userId);
     }
     const user = await db.user.update({
       where: { id: userId },
@@ -254,12 +330,13 @@ export async function deleteUser(
     // Locked before it is read, which serialises two acts on the SAME user: without it both read the
     // row, both record a `before` naming a live account, and the trail carries the deletion twice.
     //
-    // NOTE: it does NOT close the last-admin race, and the guard below is still open under
-    // concurrency — two deletes aimed at DIFFERENT admins lock different rows, so nothing serialises
-    // them, each counts the other as remaining, and the scope ends with none. Closing it means
-    // locking the scope's whole admin set rather than the target, and the same invariant is broken
-    // more cheaply one function up (`updateUserRole` demotes the last admin with no guard at all),
-    // so it is one question about the invariant and not two about this transaction. Issue #496.
+    // NOTE: the scope lock first and the row second, for the reason `updateUserRole` gives at the
+    // same call. Taking it here rather than counting under the target's own row lock is what stops
+    // two deletes aimed at different administrators from each reading the other as remaining.
+    const scope = await scopeOfTarget(db, callerTenantId, userId);
+    if (scope !== null) {
+      await lockAdminScope(db, scope.tenantId);
+    }
     await lockUserInScope(db, callerTenantId, userId);
     const target = await db.user.findFirst({
       where: { id: userId, ...tenantScope(callerTenantId) },
@@ -268,18 +345,9 @@ export async function deleteUser(
     if (!target) {
       throw new UserNotInScopeError();
     }
+    // For a tenant admin "the scope" is the tenant; for a super-admin (tenantId null), the fleet.
     if (target.role === "TENANT_ADMIN" || target.role === "SUPER_ADMIN") {
-      // For a tenant admin, "the scope" is the tenant; for a super-admin (tenantId null), the fleet.
-      const remaining = await db.user.count({
-        where: {
-          role: target.role,
-          id: { not: userId },
-          tenantId: target.tenantId === null ? null : target.tenantId,
-        },
-      });
-      if (remaining === 0) {
-        throw new LastAdminError();
-      }
+      await assertScopeKeepsAnAdmin(db, target.role, target.tenantId, userId);
     }
     const removed = await db.user.deleteMany({
       where: { id: userId, ...tenantScope(callerTenantId) },

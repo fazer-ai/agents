@@ -202,6 +202,17 @@ export const adminController = new Elysia({
           },
         };
       } catch (error) {
+        // The same invariant the delete answers with a 409, on the write that reduces the scope's
+        // administrator count without removing anybody (#496).
+        if (error instanceof LastAdminError) {
+          set.status = 409;
+          return {
+            error: translate(
+              "errors.lastAdminRole",
+              "Cannot demote the last admin of this scope",
+            ),
+          };
+        }
         if (error instanceof UserNotInScopeError) {
           set.status = 404;
           return {
@@ -222,9 +233,9 @@ export const adminController = new Elysia({
       }),
       detail: doc(
         "Update user role",
-        "Change a user's role within the caller's tenant scope.",
+        "Change a user's role within the caller's tenant scope. Refuses (409) to demote the last administrator of a scope.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   // Permanently delete a user (within the caller's tenant scope). Step-up (`confirmStepUp`): the

@@ -12,6 +12,12 @@
 -- two names, only one of which can be picked. The old rows are not hidden, they are unreachable
 -- through the only door the page has.
 --
+-- WHAT THIS PASS CANNOT REACH is a row written AFTER it runs, and the rollout guarantees some: the
+-- deploy overlaps, so the outgoing container keeps serving consent decisions under the old spellings
+-- while the incoming one migrates (docs/deploy.md). Both old names therefore stay in `AUDIT_ACTIONS`
+-- for this release, so those rows are still offered by the filter, and a SECOND pass over them plus
+-- the delisting is the release after this one.
+--
 -- Keyed on the WHOLE name rather than a prefix: `mcp_client.*`, `mcp_connection.*`, `mcp_approval.*`
 -- and `mcp_token.*` are neighbours in the same family and already conventional.
 --

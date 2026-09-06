@@ -101,6 +101,16 @@ export const AUDIT_ACTIONS = [
   "mcp_connection.update",
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
+  // THE TWO OLD SPELLINGS, KEPT FOR EXACTLY ONE RELEASE, and the reason is the deploy rather than
+  // the code: the rollout overlaps, so while the new image runs its migrations the PREVIOUS
+  // container is still serving and still writing these two names. The backfill that moved the
+  // historical rows cannot reach a row written after it ran, and dropping the names here would put
+  // that row under a value the picker never offers — the exact unreachability the rename exists to
+  // end. Nothing in this release writes them; they are here so what the outgoing container writes
+  // stays pickable. Dropping them, with the second pass over the rows the overlap left behind, is
+  // the release after this one.
+  "mcp_oauth_consent_denied",
+  "mcp_oauth_consent_granted",
   "mcp_token.revoke",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",

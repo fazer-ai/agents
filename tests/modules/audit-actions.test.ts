@@ -101,6 +101,11 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
+  const WRITTEN_BY_THE_OUTGOING_RELEASE = [
+    "mcp_oauth_consent_denied",
+    "mcp_oauth_consent_granted",
+  ];
+
   // EXTRA — a producer is deleted or renamed and its name stays on the list. The operator picks a
   // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
   // THIS: a union member nobody constructs is not an error anywhere.
@@ -110,10 +115,17 @@ describe("the audit action vocabulary", () => {
   // ternary (`company_logo.*`), and a helper taking the name as an argument
   // (`auditConsentDecision`, whose two names it reported as extra while they are written on every
   // consent decision). Presence cannot be fooled by the shape, because it does not look at one.
+  //
+  // THE ONE EXEMPTION IS THE ROLLOUT WINDOW, and it does not weaken the rule this test states. The
+  // rule's harm is a value that can NEVER match; those two match rows the outgoing container is
+  // writing right now, and delisting them is what would strand those rows. The exemption is the
+  // same named pair the shape test carries, and it leaves with it.
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
     const orphaned = AUDIT_ACTIONS.filter(
-      (a) => !sources.some((code) => code.includes(`"${a}"`)),
+      (a) =>
+        !WRITTEN_BY_THE_OUTGOING_RELEASE.includes(a) &&
+        !sources.some((code) => code.includes(`"${a}"`)),
     );
     expect(orphaned).toEqual([]);
   });
@@ -127,15 +139,39 @@ describe("the audit action vocabulary", () => {
   // naming #392 settled. A name in another shape reaches the operator as noise and, worse, suggests
   // the family it belongs to is somewhere else.
   //
-  // NO EXCEPTION LIST ANY MORE. It held the two consent actions that predated #392, named rather
-  // than pattern-matched so a third would be somebody's decision instead of a hole the regex
-  // widened. #523 renamed them and backfilled the rows already written, so the rule now applies to
-  // every member and the next odd name has nowhere to be filed.
+  // The two exceptions are NAMED rather than pattern-matched, so a third one is a decision somebody
+  // makes on purpose and not a hole the regex quietly widened. What they are has changed: until
+  // #523 they were the shape the consent decisions were WRITTEN in; now nothing writes them and
+  // they are on the list because the ROLLOUT overlaps — the outgoing container keeps writing them
+  // while the incoming one migrates, and a name off this list is a row the picker never offers.
+  // Both go, with a second pass over the rows the overlap left, one release after #523.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
-      (a) => !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
+      (a) =>
+        !WRITTEN_BY_THE_OUTGOING_RELEASE.includes(a) &&
+        !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
     );
     expect(odd).toEqual([]);
+  });
+
+  // The pair is a WINDOW, not a permanent carve-out, so both directions are pinned: the names the
+  // rollout still writes are on the list, and the names this release writes are the new ones. A
+  // rename that landed in the catalog and not in the controller would leave the first assertion
+  // green and this one red.
+  test("the window's names are listed, and nothing here writes them", async () => {
+    const sources = await producerSources();
+    const written = (name: string) =>
+      sources.some((code) => code.includes(`"${name}"`));
+    expect({
+      listed: WRITTEN_BY_THE_OUTGOING_RELEASE.filter(
+        (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
+      ),
+      stillWritten: WRITTEN_BY_THE_OUTGOING_RELEASE.filter(written),
+      replacements: [
+        "mcp_oauth_consent.deny",
+        "mcp_oauth_consent.grant",
+      ].filter((a) => !written(a)),
+    }).toEqual({ listed: [], stillWritten: [], replacements: [] });
   });
 });
 

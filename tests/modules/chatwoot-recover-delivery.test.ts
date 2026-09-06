@@ -76,7 +76,9 @@ const NO_PERSONA_INBOX = 72;
 // An inbox the mirror knows and NOBODY is bound to: #318's `no_agent`, whose operator-facing line
 // the delivery path writes.
 const UNBOUND_INBOX = 73;
+const OBSERVED_INBOX = 75;
 const AGENT_BOT_ID = 11;
+const OBSERVER_BOT_ID = 13;
 const REPLY = "Desculpe a demora, estou aqui!";
 // When the customer wrote, in epoch seconds. An hour ago rather than a fixed literal: it has to be
 // inside `MAX_RECOVERY_AGE_MS` for the recovery to run at all, and far enough from `now` that a
@@ -86,6 +88,8 @@ const SENT_AT = Math.floor(Date.now() / 1000) - 3600;
 let tenantId = 0n;
 let agentDbId = 0n;
 let secondAgentDbId = 0n;
+let watcherAgentDbId = 0n;
+let observedInboxDbId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 let deliverySeq = 0;
@@ -309,6 +313,11 @@ async function seedDeadDelivery(over: {
   status?: "DEAD" | "PROCESSING" | "PROCESSED";
   // How long ago THIS application inserted the row, which is not when the customer wrote.
   receivedAgoMs?: number;
+  // The route the delivery arrived on, as the live path records it. Null (the default) is a row an
+  // older build wrote, where the recovery falls back to the inbox's persona.
+  routeAgentBotId?: number | null;
+  // Whether the receiver recorded that route as an OBSERVER's.
+  routeObserved?: boolean | null;
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -324,6 +333,8 @@ async function seedDeadDelivery(over: {
       conversationId: over.conversationId,
       inboundMessageId:
         over.inboundMessageId === undefined ? 9301 : over.inboundMessageId,
+      routeAgentBotId: over.routeAgentBotId ?? null,
+      routeObserved: over.routeObserved ?? null,
     },
     select: { id: true },
   });
@@ -449,6 +460,49 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       },
     });
     secondAgentDbId = second.id;
+    // A WATCHER and the inbox it only observes: no responder, so the recovery has nothing to derive
+    // a route from and must take the one the delivery arrived on.
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Observadora",
+        systemPrompt: "Você observa.",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        mode: "monitoring",
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    watcherAgentDbId = watcher.id;
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: watcher.id,
+        chatwootAgentBotId: OBSERVER_BOT_ID,
+        accessToken: encryptJson("BOT3"),
+        webhookSecret: encryptJson("S3"),
+        webhookRouteTokenHash: `rec-route3-${process.pid}`,
+        name: "Observadora",
+      },
+    });
+    const observed = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OBSERVED_INBOX,
+        name: "Humanos",
+      },
+    });
+    observedInboxDbId = observed.id;
+    await suDb.inboxObserver.create({
+      // Older than any delivery these tests seed (an hour back), so the binding predates them.
+      data: {
+        tenantId,
+        inboxId: observed.id,
+        agentId: watcher.id,
+        createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+      },
+    });
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -724,6 +778,444 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(noAgent.map((r) => r.detail)).toEqual([
       { outcome: "no_agent", chatwootInboxId: UNBOUND_INBOX },
     ]);
+  });
+
+  // The recovery the observer's path deliberately relies on (issue #476 review, round 6): its
+  // ingestion, having spent its retries, leaves the row for the sweep. An observed inbox names no
+  // responder, so a recovery that derived the identity from the inbox would resolve NOTHING here and
+  // consume the very message it was called to save. The route the delivery arrived on is on the row.
+  test("a delivery stranded on an OBSERVER's route is re-run on that route", async () => {
+    const convId = 8974;
+    const messageId = 9474;
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: observedInboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: OBSERVER_BOT_ID,
+      routeObserved: true,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], OBSERVED_INBOX),
+    });
+
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    // Nothing is said to the customer on an observer's route, and the message is remembered: the
+    // ingestion the strand was about is armed for the watcher.
+    expect(stub.sent).toEqual([]);
+    const armed = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "INGEST_MESSAGE" },
+      select: { payload: true },
+    });
+    const forThisMessage = armed.filter((j) =>
+      JSON.stringify(j.payload).includes(String(messageId)),
+    );
+    expect(forThisMessage.length).toBeGreaterThan(0);
+    expect(
+      forThisMessage.some((j) =>
+        JSON.stringify(j.payload).includes(String(watcherAgentDbId)),
+      ),
+    ).toBe(true);
+    expect(conv.id).toBeGreaterThan(0n);
+  });
+
+  // THE FRESHNESS CHECK IS THE RESPONDER'S, and asking it of an observer loses the message for good
+  // (issue #476 review, round 54). It refuses because the newer message's own delivery carries the
+  // REPLY — a premise about answering. An observer's replay answers nobody: its turn is the
+  // ingestion its delivery died before reaching, and an ingest job carries its OWN message, so the
+  // newer delivery folded its own text into memory and never this one.
+  test("a newer customer message does not refuse an OBSERVER's replay", async () => {
+    const convId = 8988;
+    const messageId = 9488;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: observedInboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: OBSERVER_BOT_ID,
+      routeObserved: true,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], OBSERVED_INBOX),
+      // The customer wrote again while the row sat stranded. On a responder's route this is the
+      // refusal; here it is not even read.
+      recent: pageWith(
+        [
+          { id: messageId, content: "oi" },
+          { id: messageId + 4, content: "esqueça, já resolvi" },
+        ],
+        OBSERVED_INBOX,
+      ),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).not.toBe("unrecoverable");
+    // Still nothing said to the customer, and the message is in memory.
+    expect(stub.sent).toEqual([]);
+    const armed = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "INGEST_MESSAGE" },
+      select: { payload: true },
+    });
+    expect(
+      armed.filter((j) => JSON.stringify(j.payload).includes(String(messageId)))
+        .length,
+    ).toBeGreaterThan(0);
+  });
+
+  // An inbox that still NAMES a responder while its bot is gone from Chatwoot — the state the console
+  // shows as "missing". The watcher is then the only memory the inbox has, so its ingestion is what
+  // strands the delivery, and the recorded route is the only thing that names it.
+  test("an observer's stranded delivery is re-run on its route even where the inbox names a responder", async () => {
+    const convId = 8976;
+    const messageId = 9476;
+    const observerRow = await suDb.inboxObserver.create({
+      // Older than the delivery: the binding has to predate the message for the route to be its.
+      data: {
+        tenantId,
+        inboxId: inboxDbId,
+        agentId: watcherAgentDbId,
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      },
+      select: { id: true },
+    });
+    const responderBot = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, agentId: agentDbId },
+    });
+    await suDb.chatwootAgentBot.delete({ where: { id: responderBot.id } });
+    try {
+      await seedConversation(convId, {
+        assigneeType: "User",
+        assigneeId: 9,
+        status: "open",
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeAgentBotId: OBSERVER_BOT_ID,
+        routeObserved: true,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+
+      expect(stub.sent).toEqual([]);
+      const armed = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_MESSAGE" },
+        select: { payload: true },
+      });
+      expect(
+        armed.some(
+          (j) =>
+            JSON.stringify(j.payload).includes(String(messageId)) &&
+            JSON.stringify(j.payload).includes(String(watcherAgentDbId)),
+        ),
+      ).toBe(true);
+    } finally {
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: responderBot.chatwootInstanceId,
+          agentId: responderBot.agentId,
+          chatwootAgentBotId: responderBot.chatwootAgentBotId,
+          accessToken: responderBot.accessToken,
+          webhookSecret: responderBot.webhookSecret,
+          webhookRouteTokenHash: responderBot.webhookRouteTokenHash,
+          name: responderBot.name,
+        },
+      });
+    }
+  });
+
+  // The role travels with the replay: unbinding the observer and promoting its agent between the
+  // strand and the recovery must not turn a watcher's delivery into an answering one.
+  test("a stranded observer delivery stays an observer's, even after its binding is gone", async () => {
+    const convId = 8977;
+    const messageId = 9477;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: observedInboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: OBSERVER_BOT_ID,
+      routeObserved: true,
+    });
+    // The binding is gone and the agent answers now: everything the old inference read is different.
+    const rows = await suDb.inboxObserver.findMany({
+      where: { tenantId, agentId: watcherAgentDbId },
+      select: { id: true, inboxId: true, agentId: true, createdAt: true },
+    });
+    await suDb.inboxObserver.deleteMany({
+      where: { tenantId, agentId: watcherAgentDbId },
+    });
+    await suDb.agent.update({
+      where: { id: watcherAgentDbId },
+      data: { mode: "production" },
+    });
+    try {
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }], OBSERVED_INBOX),
+      });
+
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+
+      expect(stub.sent).toEqual([]);
+      const armed = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_MESSAGE" },
+        select: { payload: true },
+      });
+      expect(
+        armed.some((j) =>
+          JSON.stringify(j.payload).includes(String(messageId)),
+        ),
+      ).toBe(true);
+    } finally {
+      await suDb.agent.update({
+        where: { id: watcherAgentDbId },
+        data: { mode: "monitoring" },
+      });
+      for (const r of rows) {
+        await suDb.inboxObserver.create({
+          data: {
+            tenantId,
+            inboxId: r.inboxId,
+            agentId: r.agentId,
+            createdAt: r.createdAt,
+          },
+        });
+      }
+    }
+  });
+
+  // A Chatwoot bot id is mutable: re-provisioning after an out-of-band deletion gives the persona a
+  // new one, and the row still names the old. Replayed anyway, the route would resolve nothing and
+  // the message would be consumed by the recovery that exists to save it.
+  test("a stranded observer delivery whose bot id no longer exists is not replayed", async () => {
+    const convId = 8975;
+    const messageId = 9475;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: observedInboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: OBSERVER_BOT_ID + 90,
+      routeObserved: true,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], OBSERVED_INBOX),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+    expect((await ledger(rowId)).status).toBe("DEAD");
+  });
+
+  // NULL IS "NOBODY DECIDED", and guessing "the responder's" is the outcome the recorded role exists
+  // to prevent: on an inbox nobody of ours answers the observation is lost without a trace, and on a
+  // shared one the responder answers a message its own route already carried.
+  test("a stranded delivery that names its bot and no role is not replayed", async () => {
+    const convId = 8978;
+    const messageId = 9478;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: observedInboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: OBSERVER_BOT_ID,
+      routeObserved: null,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], OBSERVED_INBOX),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+    expect((await ledger(rowId)).status).toBe("DEAD");
+  });
+
+  // ONE BOT SERVES EVERY ROLE ITS AGENT HOLDS, so an observer unobserved and then bound as the
+  // responder carries the same Chatwoot id it had as the watcher. Bot equality then reads "the route
+  // is the responder's" off a binding that did not exist when the message arrived, and a delivery
+  // whose role was never stated would be replayed as an answering one — a late reply to a customer.
+  test("a stranded delivery with no role, against a responder binding made after it, is not replayed", async () => {
+    const convId = 8979;
+    const messageId = 9479;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      // The inbox's OWN responder bot: the equality test above passes, and only the binding's age
+      // says the role is unknowable.
+      routeAgentBotId: AGENT_BOT_ID,
+      routeObserved: null,
+      receivedAgoMs: 60 * 60 * 1000,
+    });
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { responderBoundAt: new Date(Date.now() - 30 * 60 * 1000) },
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
+  // ...and the same row against a binding OLDER than it recovers as it always did: the age is only
+  // ever a refusal, never a new reason to replay.
+  test("a stranded delivery with no role, against a responder binding older than it, is replayed", async () => {
+    const convId = 8980;
+    const messageId = 9480;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: AGENT_BOT_ID,
+      routeObserved: null,
+      receivedAgoMs: 60 * 60 * 1000,
+    });
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { responderBoundAt: new Date(Date.now() - 3 * 60 * 60 * 1000) },
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).not.toBe("unrecoverable");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { responderBoundAt: null },
+      });
+    }
   });
 
   test("a newest page that does not reach the stranded message refuses", async () => {

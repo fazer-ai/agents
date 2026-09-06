@@ -56,21 +56,30 @@ export async function resolveVisionConfig(
   instanceId: bigint,
   chatwootInboxId: number,
   base: PrismaClient = basePrisma,
+  // The agent whose settings answer, when the caller already knows it: a delivery on an OBSERVER's
+  // route (issue #476) is read by the observer's runtime, not by whoever `Inbox.agentId` names —
+  // nobody, on an inbox a human team answers — so the inbox read below would answer for the wrong
+  // agent, or for none. Absent, the inbox's responder answers, as before.
+  opts: { agentId?: bigint | null } = {},
 ): Promise<VisionConfig | null> {
   const cfg = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const inbox = await db.inbox.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootInboxId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          chatwootInboxId,
-        },
-      },
-      select: { agentId: true },
-    });
-    if (!inbox?.agentId) return null;
+    const agentId =
+      opts.agentId ??
+      (
+        await db.inbox.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootInboxId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootInboxId,
+            },
+          },
+          select: { agentId: true },
+        })
+      )?.agentId;
+    if (!agentId) return null;
     const agent = await db.agent.findUnique({
-      where: { id: inbox.agentId },
+      where: { id: agentId },
       select: { enabled: true, settings: true },
     });
     if (!agent?.enabled) return null;

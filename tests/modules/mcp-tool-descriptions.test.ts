@@ -519,6 +519,16 @@ describe("MCP tool descriptions", () => {
     }
   });
 
+  //
+  // `inbox_observe` / `inbox_unobserve` (#476) are the two tools this branch adds. Each pays its
+  // whole description, and the first says what a caller cannot learn by trying — that only a
+  // monitoring agent may observe, that the inbox keeps starting conversations open for whoever
+  // answers it, and that the attach needs the fazer.ai Chatwoot. The second is one sentence,
+  // mirroring the first. REMEASURED on this base after the rebase over #543/#547/#548, never summed
+  // from the earlier reading: 30,417 and 55,351 on this tree, so the ceilings go to 30,432 and
+  // 55,367 — the same 15 and 16 the paragraphs above keep, so the next tool has to be measured too.
+  // The deltas came out the same across both rebases (+447 and +412), which is what a description
+  // that names its own tools rather than the tree around it should do.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -527,8 +537,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(29_985);
-    expect(schema).toBeLessThanOrEqual(54_955);
+    expect(desc).toBeLessThanOrEqual(30_432);
+    expect(schema).toBeLessThanOrEqual(55_367);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

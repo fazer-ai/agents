@@ -54,6 +54,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 
 // translate('errors.agentConfirmMismatch', 'The agent name does not match')
 // translate('errors.agentModifiedElsewhere', 'This agent was changed somewhere else. Reload it and try again.')
+// translate('errors.agentObservesInboxes', 'This agent observes inboxes. Remove it as an observer first.')
 // translate('errors.agentNotRunnable', 'This agent has no runnable model configured.')
 // translate('errors.audioTooLarge', 'Audio file is too large')
 // translate('errors.baseUrlRequired', 'A base URL is required for this provider.')

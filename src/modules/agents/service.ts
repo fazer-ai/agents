@@ -46,7 +46,12 @@ import {
 } from "@/modules/integrations/toolpacks";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
-import { AGENT_MODES, type AgentMode, normalizeAgentMode } from "./mode";
+import {
+  AGENT_MODES,
+  type AgentMode,
+  isMonitoring,
+  normalizeAgentMode,
+} from "./mode";
 
 // Agent configuration CRUD — the config the whole system orbits (the same core the UI config
 // screen and the MCP `prompt_get/set` tools project over). All reads/writes are tenant-scoped;
@@ -181,7 +186,10 @@ export async function listAgentsPaged(
       db.agent.findMany({
         where,
         select: AGENT_SELECT,
-        orderBy: { [orderField]: order },
+        // The id breaks ties, so paging is DETERMINISTIC: two agents sharing a timestamp (or a name)
+        // could otherwise be ordered differently per query, and a walk over pages would return one
+        // twice and miss the other.
+        orderBy: [{ [orderField]: order }, { id: "asc" }],
         skip: offset,
         take: limit,
       }),
@@ -703,6 +711,32 @@ export function assertAgentUpdatable(patch: AgentUpdate): {
   };
 }
 
+// THE OBSERVER REFUSAL, ASKABLE ON ITS OWN (issue #476 review, round 46). `updateAgent` refuses to
+// save a non-monitoring mode on an agent that observes an inbox, and `deleteAgent` refuses to delete
+// one — both from inside their transactions, where an MCP dry run never goes. A preview that cannot
+// ask the same question approves what the apply then rejects, and the caller learns the truth from
+// the 422; the previews call this instead, so the two answers cannot drift.
+//
+// Scoped like every other read here, and it asks about the AGENT rather than about the move: a
+// production agent a race left observing is refused the same way, which is the state `updateAgent`
+// deliberately refuses against.
+export async function assertAgentNotObserving(
+  ctx: TenantContext,
+  id: bigint,
+  base?: PrismaClient,
+): Promise<void> {
+  const observing = await runScopedOn(base ?? basePrisma, ctx, (db) =>
+    db.inboxObserver.count({ where: { agentId: id } }),
+  );
+  if (observing > 0) {
+    throw new AppError(
+      "this agent observes inboxes; remove it as an observer first",
+      422,
+      "errors.agentObservesInboxes",
+    );
+  }
+}
+
 export async function updateAgent(
   ctx: TenantContext,
   id: bigint,
@@ -773,6 +807,31 @@ export async function updateAgent(
     assertSettingsDebugWindow(rest.settings, before?.settings);
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
     assertSettingsToolPreconditions(rest.settings, before?.settings);
+    // NOTE: An OBSERVER of an inbox (issue #476) is a monitoring agent by construction — the route it
+    // holds answers nothing whatever the mode says — so the mode is not this agent's to leave while
+    // it observes. Refused rather than kept silently on the observer's path: an operator promoting a
+    // watcher expects answers, and the honest answer is that the binding has to go first. Inside
+    // the lock. A promotion that lands while an attach is in flight (the row is written only once
+    // Chatwoot agreed) leaves a production observer; the receiver honours the row, and this refusal
+    // holds from then on.
+    //
+    // ASKED OF THE TARGET, not of the move (issue #476 review, round 7): the same race that leaves a
+    // production observer would then let every later write past this guard — production to test, and
+    // back — because the mode it is leaving is no longer monitoring. What the refusal is about is
+    // the state it refuses to save, so a non-monitoring mode with an observer row standing is
+    // refused whatever the row said before.
+    if (before && rest.mode !== undefined && !isMonitoring(rest.mode)) {
+      const observing = await db.inboxObserver.count({
+        where: { agentId: id },
+      });
+      if (observing > 0) {
+        throw new AppError(
+          "this agent observes inboxes; remove it as an observer first",
+          422,
+          "errors.agentObservesInboxes",
+        );
+      }
+    }
     // NOTE: Inside the lock and against the same row, for the reason above: "did this write change
     // the ref" has to be asked of the value this write replaces. It also rewrites `rest` in place,
     // so the normalization below copies the canonical bag rather than the submitted one.
@@ -1084,11 +1143,23 @@ export async function deleteAgent(
     const doomedRows = await db.$queryRaw<Array<{ name: string }>>`
       SELECT name FROM agents WHERE id = ${id} FOR UPDATE`;
     const doomed = doomedRows[0];
+    // NOTE: An OBSERVER binding (issue #476) is a bot attached on Chatwoot's side, and the cascade
+    // below would retire the row and the route token while the fork kept delivering to a bot that
+    // is gone. The detach is a Chatwoot call, which this transaction cannot make, so the deletion
+    // is refused while the agent observes anything — the same answer its mode change gets.
+    const observing = await db.inboxObserver.count({ where: { agentId: id } });
+    if (observing > 0) {
+      throw new AppError(
+        "this agent observes inboxes; remove it as an observer first",
+        422,
+        "errors.agentObservesInboxes",
+      );
+    }
     // Inbox.agentId and Experiment.agentId are plain references (no FK cascade) — null them so a
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({
       where: { agentId: id },
-      data: { agentId: null },
+      data: { agentId: null, responderBoundAt: null },
     });
     await db.experiment.updateMany({
       where: { agentId: id },

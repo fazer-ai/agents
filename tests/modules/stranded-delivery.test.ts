@@ -40,6 +40,8 @@ function verdict(row: {
   // What the delivery OWED: the human-reply shape the payload carried, or null for every delivery
   // that owed nothing and for every row a build without the column wrote.
   humanReplyShape?: string | null;
+  // Whose route it arrived on: an observer's, the responder's, or a row that never said.
+  routeObserved?: boolean | null;
 }): StrandedVerdict {
   const at = new Date(NOW.getTime() - row.ageMs);
   const claimed = row.claimed ?? true;
@@ -53,6 +55,7 @@ function verdict(row: {
         row.conversationId === undefined ? 41 : row.conversationId,
       inboundMessageId: row.inboundMessageId,
       humanReplyShape: row.humanReplyShape ?? null,
+      routeObserved: row.routeObserved ?? null,
     },
     { now: NOW, staleAfterMs: STALE_MS },
   );
@@ -69,6 +72,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     conversationId?: number | null;
     receivedAgoMs?: number;
     humanReplyShape?: string | null;
+    routeObserved?: boolean | null;
     expected: StrandedVerdict;
   }> = [
     {
@@ -257,6 +261,39 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "owed-takeover",
     },
     {
+      // ISSUE #476. The same colleague's reply, on the OBSERVER's route. A takeover steps the
+      // RESPONDER off the conversation and an observer was never on it, so arming one here spends a
+      // job that answers `not-owed` and reports nothing. What this row owed was the observer's
+      // ingestion, which nothing can replay — so it gets a verdict that can be reported.
+      name: "a colleague's reply on an observer's route owes no takeover",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      routeObserved: true,
+      expected: "observer-strand",
+    },
+    {
+      // Explicitly the responder's, which is what the receiver writes on every delivery that is not
+      // an observer's: the takeover is owed exactly as before the role existed.
+      name: "the same reply on the responder's own route still owes the takeover",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      routeObserved: false,
+      expected: "owed-takeover",
+    },
+    {
+      // A row written before the column, or one stranded before the receiver could state a role. Not
+      // read as a watcher's: the takeover is the answer that shipped, and it is the safe one — the
+      // recovery asks the inbox and answers `not-owed` where there is nothing to hand back.
+      name: "a row that never stated a role keeps the takeover it always owed",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      routeObserved: null,
+      expected: "owed-takeover",
+    },
+    {
       // The column is a String and only this build writes it, so the reader answers for what is
       // actually in the row rather than for what it expects: a shape a later build spells and this
       // one does not know is not something to act on.
@@ -326,6 +363,7 @@ describe("classifying a delivery stranded non-terminal", () => {
           conversationId: c.conversationId,
           receivedAgoMs: c.receivedAgoMs,
           humanReplyShape: c.humanReplyShape,
+          routeObserved: c.routeObserved,
         }),
       ).toBe(c.expected);
     });

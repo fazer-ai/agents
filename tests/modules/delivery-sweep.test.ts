@@ -110,6 +110,8 @@ async function seedStrandedDelivery(over: {
   event?: string;
   // What the delivery owed, when it owed the human-reply takeover (issue #439).
   humanReplyShape?: string;
+  // Whose route it arrived on (issue #476).
+  routeObserved?: boolean | null;
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -127,6 +129,7 @@ async function seedStrandedDelivery(over: {
       conversationId: over.conversationId,
       inboundMessageId: over.inboundMessageId ?? null,
       humanReplyShape: over.humanReplyShape ?? null,
+      routeObserved: over.routeObserved ?? null,
     },
     select: { id: true },
   });
@@ -863,6 +866,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: 8807,
       inboundMessageId: 9601,
       humanReplyShape: null,
+      routeObserved: false,
     };
     // Somebody else claimed it.
     await suDb.chatwootWebhookDelivery.update({
@@ -1048,6 +1052,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         claimedAt: new Date(Date.now() - 60_000),
         conversationId: convId,
         inboundMessageId: messageId,
+        // A RESPONDER's row, which on this build always says so: a row still being worked settles
+        // only once it has stated it is not an observer's.
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -1494,6 +1501,112 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(neither.settlement).toBe("consumed");
   });
 
+  test("a wide settlement never closes an OBSERVER's row", async () => {
+    // The wide scope exists because a human, a command or a gate answers the MESSAGE, whichever
+    // route carried it. That is true of every route that could have answered and false of the one
+    // that never could: the observer owes the memory instead, and pays it on its own schedule. Its
+    // ingestion can fail, and the throw that leaves the row for the sweep is the only thing between
+    // that and a message nothing remembers — worth nothing if another route already made the row
+    // terminal. The responder's own copy reaches the settlement with no observer of its own in
+    // view, so the exclusion has to live in the write.
+    const convId = 8878;
+    const messageId = 9781;
+    const conv = await seedConversation(convId);
+    const mk = async (tag: string, routeObserved: boolean | null) =>
+      suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `obs-scope-${tag}-${process.pid}`,
+          event: "message_created",
+          status: "PROCESSING",
+          receivedAt: new Date(Date.now() - 60_000),
+          claimedAt: new Date(Date.now() - 60_000),
+          conversationId: convId,
+          inboundMessageId: messageId,
+          routeObserved,
+        },
+        select: { id: true },
+      });
+    const watcher = await mk("watcher", true);
+    const responder = await mk("responder", false);
+    // A row an older build wrote, which states no role and must still settle: `not: true` would
+    // have excluded it in SQL and settled nothing at all.
+    // A row that has not STATED its role yet is not a row that said "not an observer": settled
+    // here it would close before its own route is done. Its tx2 closes it a moment later.
+    const undecided = await mk("undecided", null);
+    // ...but a TERMINAL row states nothing because nobody is left to state it, and leaving it open
+    // would keep a reported loss standing for a message a turn did handle. The correction path is
+    // deliberately not narrowed by the role.
+    const reportedLegacy = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obs-scope-dead-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        receivedAt: new Date(Date.now() - 120_000),
+        processedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "consumed",
+      messageIds: [messageId],
+      base: appDb,
+    });
+
+    expect((await statusOf(watcher.id)).status).toBe("PROCESSING");
+    expect((await statusOf(responder.id)).status).toBe("PROCESSED");
+    expect((await statusOf(undecided.id)).status).toBe("PROCESSING");
+    expect((await statusOf(reportedLegacy.id)).status).toBe("PROCESSED");
+  });
+
+  test("an OBSERVER still settles its OWN row", async () => {
+    // The exclusion belongs to the wide scope alone. A single-row settlement already names the row
+    // it may touch, and the observer's own — the one path that settles after recording
+    // `routeObserved: true` — is exactly that shape: required to say `false` there it matched
+    // nothing, so a process exiting between the ingestion and tx2 left a handled delivery on the
+    // worklist for the sweep to report and replay.
+    const convId = 8879;
+    const messageId = 9782;
+    const conv = await seedConversation(convId);
+    const own = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obs-own-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeObserved: true,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "consumed",
+      deliveryRowId: own.id,
+      base: appDb,
+    });
+
+    expect((await statusOf(own.id)).status).toBe("PROCESSED");
+  });
+
   test("a gate taken because ANOTHER BOT holds it settles only our own row", async () => {
     // Chatwoot fans one message to up to TWO bot routes — `agent_bots_for` returns the conversation's
     // assignee bot and the inbox's active bot, each with its own `delivery_id` — so a message can
@@ -1578,6 +1691,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         claimedAt: new Date(Date.now() - 60_000),
         conversationId: convId,
         inboundMessageId: messageId,
+        // A RESPONDER's row, which on this build always says so: a row still being worked settles
+        // only once it has stated it is not an observer's.
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -1859,6 +1975,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         claimedAt: new Date(Date.now() - 60_000),
         conversationId: convId,
         inboundMessageId: messageId,
+        // A RESPONDER's row, which on this build always says so: a row still being worked settles
+        // only once it has stated it is not an observer's.
+        routeObserved: false,
       },
       select: { id: true },
     });
@@ -1891,6 +2010,42 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       where: { id: { in: [sibling.id, reported.id] } },
     });
     await clearFlowLog(suDb, { tenantId });
+  });
+
+  // ISSUE #476. The same colleague's reply, on an OBSERVER's route. A takeover steps the RESPONDER
+  // off the conversation and an observer was never on it, so the job armed for it would answer
+  // `not-owed` and report nothing at all — which is how the observer's own lost ingestion became
+  // invisible. Terminal like its neighbour, counted apart, and never armed.
+  test("a strand on an observer's route owes no takeover and arms none", async () => {
+    const convId = 8907;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 3,
+      claimedAgoMs: STALE_MS * 3,
+      humanReplyShape: "composer",
+      routeObserved: true,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.observerStrands).toBe(1);
+    expect(counts.owed).toBe(0);
+    expect(counts.closed).toBe(0);
+    expect(counts.lost).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("PROCESSED");
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "TAKEOVER_RECOVERY",
+          dedupeKey: takeoverRecoveryDedupeKey(rowId),
+        },
+      }),
+    ).toBe(0);
+    // No line either: this arm returns before the loss report, the same as its neighbour, and that
+    // absence is what the owed-takeover case below proves with a rider row rather than a deadline.
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {

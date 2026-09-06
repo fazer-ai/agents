@@ -982,6 +982,29 @@ export class ChatwootClient {
   // destroys the agent_bot_inbox when `agent_bot` is blank — disconnecting stops Chatwoot from
   // delivering that inbox's events to us (so an unbound inbox never leaves conversations stuck
   // `pending` on a bot we ignore).
+  // The fork's second binding (fazer-ai/chatwoot#453): an OBSERVER receives the inbox's events on
+  // its own route and owns nothing, while `set_agent_bot` below stays the one answering bot. Admin
+  // token — the routes sit beside `set_agent_bot` and are administrator-only. POST is idempotent on
+  // the fork. DELETE answers 404 for an inbox that is gone AND for a bot that was not observing it;
+  // a Chatwoot older than that PR answers 404 to both verbs, and `observeInbox` reads the POST's
+  // 404 as exactly that.
+  addInboxObserver(inboxId: number, agentBotId: number): Promise<unknown> {
+    return this.request(
+      this.config.adminToken,
+      "POST",
+      `/inboxes/${inboxId}/agent_bot_observers`,
+      { agent_bot: agentBotId },
+    );
+  }
+
+  removeInboxObserver(inboxId: number, agentBotId: number): Promise<unknown> {
+    return this.request(
+      this.config.adminToken,
+      "DELETE",
+      `/inboxes/${inboxId}/agent_bot_observers/${agentBotId}`,
+    );
+  }
+
   setInboxAgentBot(
     inboxId: number,
     agentBotId: number | null,

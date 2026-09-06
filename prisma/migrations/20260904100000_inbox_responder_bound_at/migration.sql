@@ -1,0 +1,13 @@
+-- WHEN THE CURRENT RESPONDER BINDING WAS MADE (issue #476).
+--
+-- Chatwoot chooses a message's webhook recipients from the bindings that exist when it emits the
+-- event. An observer beside a responder stands down for that responder's own delivery of the same
+-- message; if the responder was bound AFTER the emission, no such delivery is coming and standing
+-- down drops the message from memory permanently. `updated_at` cannot answer the question — it
+-- moves for a rename or a provider sync — so the moment gets a column of its own.
+--
+-- NO BACKFILL, deliberately. An existing binding's age is not recoverable (`updated_at` is an upper
+-- bound at best), and inventing one would be a claim the row cannot support. NULL is read as "older
+-- than any delivery", which is exactly the behaviour every row had before this column, so nothing
+-- already bound changes what it does.
+ALTER TABLE "inboxes" ADD COLUMN "responder_bound_at" TIMESTAMP(3);

@@ -36,38 +36,40 @@ const TAG = /\b(NOTE|TODO|FIXME):/;
 // Only `NOTE:` is refused. See the asymmetry above.
 const ASIDE_TAG = /\bNOTE:/;
 
-// A JSX comment is a BLOCK comment whose only wrapper is the expression braces: `{/* … */}`. The walk
-// is backwards and forwards over whitespace rather than `trimEnd()` on a slice, so a 22k-character
-// file is not copied once per comment in it.
+// A JSX comment is a block comment the braces HUG: `{/*` … `*/}`, with nothing between them. The
+// adjacency is not a style preference, it is what the formatter already decides, and the formatter
+// runs in CI on every file.
 //
-// THE `/*` IS LOAD-BEARING, AND THE SECOND SPELLING IS WHY. A comment between braces can also be
-// written with `//` across lines, so that shape was measured before trusting this one: 30 sites in
-// `src/client` match `{` + line comment + `}` and NONE of them is markup — they are empty `catch { }`
-// bodies, and one of them (BehaviorTab.tsx:602, `// NOTE: best-effort — the pickers still accept
-// typed keys`) carries a tag it is right to carry. A detector without this line would have demanded
-// its removal, which is the rule inverted rather than enforced.
+// THE TWO CASES THIS SEPARATES ARE OPPOSITE HALVES OF THE RULE, and review named both. A block
+// comment can also be the whole content of a CODE body — `useEffect(() => { /* NOTE: empty */ }, [])`
+// — where the tag is REQUIRED, so a check that stopped at "braces around a comment" would report a
+// correct comment as an offence. And a container can follow plain JSX text — `label {/* … */}` —
+// where a check that asked what precedes the brace would silently skip a real site.
+//
+// Biome answers both without a heuristic: it breaks a lone block comment in a body onto its own line
+// (`{\n  /* … */\n}`) and leaves a JSX container hugging (`{/* … */}`). Measured over `src/**/*.tsx`:
+// 140 comments sit between braces and all 140 hug; zero sit between braces without hugging. The test
+// below drives the real formatter over the body shapes and requires it to keep separating them, so
+// this file fails if that behaviour ever changes rather than quietly changing what it enforces.
 function isJsxComment(src: string, start: number, end: number): boolean {
-  if (!src.startsWith("/*", start)) return false;
-  let before = start - 1;
-  while (before >= 0 && /\s/.test(src[before] as string)) before--;
-  if (src[before] !== "{") return false;
-  let after = end;
-  while (after < src.length && /\s/.test(src[after] as string)) after++;
-  if (src[after] !== "}") return false;
-  // WHAT OPENED THE BRACES, because `{ /* … */ }` is also how an empty code body is written and the
-  // two are opposite cases of the rule: in markup the tag is wrong, in a body it is REQUIRED. Review
-  // named `useEffect(() => { /* NOTE: intentionally empty */ }, [])`, where a walk that stops at the
-  // braces reports the required tag as an offence.
-  //
-  // So the test is positive and narrow: an expression container follows an element's `>` or another
-  // container's `}`, and `=>` is excluded because an arrow's body ends in the same character. What
-  // this shape does NOT recognise is skipped rather than accused, which is the cheap direction — a
-  // JSX comment this sweep never looks at, instead of a code comment it orders stripped. All 140 in
-  // the tree are recognised; no `=> {` or `catch {` body with a lone block comment exists in `src/`.
-  let opener = before - 1;
-  while (opener >= 0 && /\s/.test(src[opener] as string)) opener--;
-  if (src[opener] === "}") return true;
-  return src[opener] === ">" && src[opener - 1] !== "=";
+  return (
+    src.startsWith("/*", start) && src[start - 1] === "{" && src[end] === "}"
+  );
+}
+
+// The formatter as the suite runs it, over stdin so nothing is written to the tree.
+async function format(source: string): Promise<string> {
+  const proc = Bun.spawn(
+    ["./node_modules/.bin/biome", "format", "--stdin-file-path=probe.tsx"],
+    { stdin: new TextEncoder().encode(source), stdout: "pipe", stderr: "pipe" },
+  );
+  const [out, err] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  await proc.exited;
+  if (proc.exitCode !== 0) throw new Error(`biome format failed: ${err}`);
+  return out;
 }
 
 describe("a comment in markup documents the element below it, and carries no NOTE:", () => {
@@ -75,8 +77,10 @@ describe("a comment in markup documents the element below it, and carries no NOT
     const { Glob } = await import("bun");
     const offenders: string[] = [];
     let seen = 0;
-    for await (const rel of new Glob("**/*.tsx").scan("src/client")) {
-      const path = `src/client/${rel}`;
+    // EVERY `.tsx` IN `src`, not just the client. `src/modules/documents/render.tsx` renders JSX for
+    // the document pipeline and a glob rooted at the console would never look at it (review, round 2).
+    for await (const rel of new Glob("**/*.tsx").scan("src")) {
+      const path = `src/${rel}`;
       const src = await Bun.file(path).text();
       for (const [start, end] of commentSpans(src)) {
         if (!isJsxComment(src, start, end)) continue;
@@ -113,28 +117,31 @@ describe("the detector is not fooled by prose that spells the shape", () => {
     expect(isJsxComment(src, start, end)).toBe(false);
   });
 
-  test("a lone block comment in a code body is not markup", () => {
-    // Review's case, and its two neighbours. All three are bodies, where the tag is required, and a
-    // walk that stops at the braces would report each of them as an offence.
-    for (const src of [
-      "useEffect(() => {\n  /* NOTE: intentionally empty */\n}, []);\n",
-      "try {\n  risky();\n} catch {\n  /* NOTE: ignore */\n}\n",
-      "const pending = {\n  /* NOTE: filled in by the caller */\n};\n",
-    ]) {
-      const [span] = commentSpans(src);
+  test("the formatter is what separates a code body from a container", async () => {
+    // THE ASSUMPTION UNDER `isJsxComment`, EXERCISED AGAINST THE REAL BINARY rather than asserted.
+    // If biome ever starts leaving a lone block comment hugging the braces of a body, the adjacency
+    // test stops telling the two apart, and this is the test that says so.
+    const bodies = [
+      "useEffect(() => {/* NOTE: intentionally empty */}, []);\n",
+      "try {\n  risky();\n} catch {/* NOTE: ignore */}\n",
+      "const pending = {/* NOTE: filled in by the caller */};\n",
+    ];
+    for (const body of bodies) {
+      const out = await format(body);
+      const [span] = commentSpans(out);
       const [start, end] = span as [number, number];
-      expect(isJsxComment(src, start, end)).toBe(false);
+      expect(isJsxComment(out, start, end)).toBe(false);
     }
-  });
 
-  test("a container after an element or after another container is markup", () => {
-    const afterTag = "<div>\n  {/* NOTE: label */}\n</div>\n";
-    const afterContainer =
-      "<div>\n  {ok && <X />}\n  {/* NOTE: label */}\n</div>\n";
-    for (const src of [afterTag, afterContainer]) {
-      const span = commentSpans(src).find(([s]) => src.startsWith("/*", s));
-      const [start, end] = span as [number, number];
-      expect(isJsxComment(src, start, end)).toBe(true);
+    // …and the container survives the same pass hugging, including the one that follows JSX text,
+    // which is the shape a "what precedes the brace" test would have skipped (review, round 2).
+    const markup =
+      "const el = (\n  <div>\n    label {/* NOTE: after text */}\n    <X />\n    {ok && <Y />}{/* NOTE: after a container */}\n  </div>\n);\n";
+    const out = await format(markup);
+    const spans = commentSpans(out).filter(([s]) => out.startsWith("/*", s));
+    expect(spans.length).toBe(2);
+    for (const [start, end] of spans) {
+      expect(isJsxComment(out, start, end)).toBe(true);
     }
   });
 

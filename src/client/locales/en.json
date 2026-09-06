@@ -2502,6 +2502,8 @@
     "outputTemplatePreviewHint": "Exactly what the agent would receive for the sample above.",
     "outputTemplateStrayBrace": "There is an unmatched brace near \"{{stray}}\". A field takes two braces on each side, and a stray one would reach the agent as literal text.",
     "outputTemplateTooLong": "This is {{length}} characters and the limit is {{max}}. It is sent to the agent on every call of this tool.",
+    "pathPickerFilter": "Filter paths…",
+    "pathPickerNoMatch": "No path matches that.",
     "query": "Query string",
     "queryHint": "Key/value params added to the URL (any method). Use Insert variable for an AI field, {{context}} or {{secret}}.",
     "queryKey": "Param",

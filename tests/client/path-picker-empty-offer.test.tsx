@@ -33,7 +33,18 @@ describe("PathPicker with nothing to offer", () => {
       (b) => b.textContent,
     );
     expect(buttons).toEqual(["Close"]);
-    expect(container.textContent?.includes("Nothing to pick here")).toBe(true);
+    // Read from the DOCUMENT, not from `container`: since #462 the offer renders in a portal, so it
+    // is not a descendant of the mounted tree. The claim is unchanged — the control stays mounted
+    // and says why it is empty — and the portal is what keeps opening it from pushing the field
+    // below it down, so it is asserted here rather than merely accommodated.
+    expect(document.body.textContent?.includes("Nothing to pick here")).toBe(
+      true,
+    );
+    const reason = [...document.body.querySelectorAll("li")].find((li) =>
+      (li.textContent ?? "").includes("Nothing to pick here"),
+    );
+    expect(Boolean(reason)).toBe(true);
+    expect(container.contains(reason ?? null)).toBe(false);
   });
 
   test("renders nothing when there is nothing to move the caret towards", () => {

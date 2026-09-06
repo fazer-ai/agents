@@ -1,4 +1,5 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { AlertTriangle, Braces, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -624,63 +625,135 @@ export function PathPicker({
   listsLabel?: string;
   listLength?: (n: number) => string;
 }) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const q = query.trim().toLowerCase();
+  // Filtered by PATH, never by the sample value beside it: the value is a preview of one response
+  // and typing part of it would offer paths that hold something else on the next call.
+  const shownLeaves = q
+    ? leaves.filter((l) => l.path.toLowerCase().includes(q))
+    : leaves;
+  const shownLists = q
+    ? lists.filter((l) => l.path.toLowerCase().includes(q))
+    : lists;
   const empty = leaves.length === 0 && lists.length === 0;
   if (empty && !emptyLabel) return null;
   return (
-    <div className="-mt-2 flex flex-col gap-1">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="self-start text-text-secondary text-xs underline underline-offset-2 hover:text-text-primary"
+    <PopoverPrimitive.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (next !== open) onToggle();
+        if (!next) setQuery("");
+      }}
+    >
+      <div className="-mt-2 flex flex-col gap-1" ref={anchorRef}>
+        <PopoverPrimitive.Trigger asChild>
+          <button
+            type="button"
+            className="self-start text-text-secondary text-xs underline underline-offset-2 hover:text-text-primary"
+          >
+            {open ? closeLabel : openLabel}
+          </button>
+        </PopoverPrimitive.Trigger>
+      </div>
+      {/* INTO THE DIALOG, not into `document.body`. The modal's scroll lock (`react-remove-scroll`,
+          which Radix's Dialog installs) cancels wheel events whose target sits outside its subtree,
+          so a popover portalled to the body has a list that clicks fine and does not scroll — the
+          `overflow-y: auto` is honoured, `scrollTop` moves programmatically, and the wheel arrives
+          already `preventDefault`ed. Portalling into the dialog keeps the offer out of the FIELD's
+          flow container, which is what the portal was for, without leaving the area the lock allows.
+          Falls back to the default body portal outside a dialog, which is where the unit tests
+          render it. */}
+      <PopoverPrimitive.Portal
+        container={anchorRef.current?.closest<HTMLElement>('[role="dialog"]')}
       >
-        {open ? closeLabel : openLabel}
-      </button>
-      {open && (
-        <ul className="max-h-48 overflow-y-auto rounded-md border border-border">
-          {heading && (
-            <li className="px-2 py-1 text-text-secondary text-xs">{heading}</li>
-          )}
-          {empty && (
-            <li className="px-2 py-1 text-text-secondary text-xs">
-              {emptyLabel}
-            </li>
-          )}
-          {leaves.map((leaf) => (
-            <li key={leaf.path}>
-              <button
-                type="button"
-                onClick={() => onPick(leaf.path)}
-                className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
-              >
-                <code className="shrink-0 text-text-primary">{leaf.path}</code>
-                <span className="truncate text-text-secondary">
-                  {leaf.value}
-                </span>
-              </button>
-            </li>
-          ))}
-          {lists.length > 0 && listsLabel && (
-            <li className="border-border border-t px-2 py-1 text-text-secondary text-xs">
-              {listsLabel}
-            </li>
-          )}
-          {lists.map((list) => (
-            <li key={`each:${list.path}`}>
-              <button
-                type="button"
-                onClick={() => onPickList?.(list.path)}
-                className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
-              >
-                <code className="shrink-0 text-text-primary">{list.path}</code>
-                <span className="truncate text-text-secondary">
-                  {listLength ? listLength(list.length) : list.length}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+        <PopoverPrimitive.Content
+          side="bottom"
+          align="start"
+          sideOffset={6}
+          // THE OFFER LEAVES THE FLOW (issue #462). Rendered inline it sat in the same container as
+          // the field below, so opening it pushed that field down mid-edit; a portal makes the shift
+          // impossible rather than small.
+          // `--z-popover` (85), not a Tailwind `z-*` class: the scale in `public/index.css` is a set
+          // of tokens, and `z-50` there is `--z-drawer`, which sits BELOW `--z-modal` (80). This
+          // picker only ever opens inside a modal, so a bare `z-50` renders the offer behind the
+          // dialog — positioned correctly, sized correctly, and invisible. Found by opening it in a
+          // browser; happy-dom has no stacking context to fail in.
+          className="z-(--z-popover) w-[min(28rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-secondary shadow-lg"
+          // The caret restore wins over Radix's focus return. `insertToken` refocuses the textarea in
+          // a `requestAnimationFrame` and puts the caret after the token it wrote; Radix's default
+          // close behaviour focuses the TRIGGER, which lands after that frame and takes the caret
+          // away from the box the operator is writing in.
+          onCloseAutoFocus={(e) => e.preventDefault()}
+        >
+          <div className="border-border border-b p-2">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("tools.pathPickerFilter", "Filter paths…")}
+              aria-label={t("tools.pathPickerFilter", "Filter paths…")}
+              className="w-full rounded-md border border-border bg-bg-tertiary px-2 py-1 text-sm text-text-primary focus:border-border-focus focus:outline-none"
+            />
+          </div>
+          <ul className="max-h-48 overflow-y-auto">
+            {heading && (
+              <li className="px-2 py-1 text-text-secondary text-xs">
+                {heading}
+              </li>
+            )}
+            {empty && (
+              <li className="px-2 py-1 text-text-secondary text-xs">
+                {emptyLabel}
+              </li>
+            )}
+            {!empty && shownLeaves.length === 0 && shownLists.length === 0 && (
+              <li className="px-2 py-1 text-text-secondary text-xs">
+                {t("tools.pathPickerNoMatch", "No path matches that.")}
+              </li>
+            )}
+            {shownLeaves.map((leaf) => (
+              <li key={leaf.path}>
+                <button
+                  type="button"
+                  onClick={() => onPick(leaf.path)}
+                  className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+                >
+                  <code className="shrink-0 text-text-primary">
+                    {leaf.path}
+                  </code>
+                  <span className="truncate text-text-secondary">
+                    {leaf.value}
+                  </span>
+                </button>
+              </li>
+            ))}
+            {shownLists.length > 0 && listsLabel && (
+              <li className="border-border border-t px-2 py-1 text-text-secondary text-xs">
+                {listsLabel}
+              </li>
+            )}
+            {shownLists.map((list) => (
+              <li key={`each:${list.path}`}>
+                <button
+                  type="button"
+                  onClick={() => onPickList?.(list.path)}
+                  className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+                >
+                  <code className="shrink-0 text-text-primary">
+                    {list.path}
+                  </code>
+                  <span className="truncate text-text-secondary">
+                    {listLength ? listLength(list.length) : list.length}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
   );
 }
 

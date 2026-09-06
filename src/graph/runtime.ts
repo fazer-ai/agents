@@ -198,13 +198,21 @@ async function notePartialDelivery(params: {
   instanceId: bigint;
   conversationId: number;
   base: PrismaClient;
+  // WHETHER THE LOSS IS A FACT OR A DOUBT, because the operator acts on the difference (issue
+  // #499). "Part of it did not arrive" sends them to re-send what is missing; on the timeout this
+  // change is about, the message may be sitting in the conversation, and the same sentence would
+  // have them post a duplicate by hand. Default false, so every existing caller keeps saying what
+  // it already said.
+  unproven?: boolean;
 }): Promise<void> {
   await recordConversationError({
     tenantId: params.tenantId,
     instanceId: params.instanceId,
     chatwootConversationId: params.conversationId,
     error: new Error(
-      "a entrega ficou incompleta: parte do que o turno prometeu não chegou ao cliente, e não será reenviada",
+      params.unproven
+        ? "não foi possível confirmar a entrega: o envio foi rejeitado e o Chatwoot não respondeu à releitura, então parte da resposta pode ou não ter chegado ao cliente. Confira a conversa antes de reenviar."
+        : "a entrega ficou incompleta: parte do que o turno prometeu não chegou ao cliente, e não será reenviada",
     ),
     base: params.base,
   });
@@ -2028,6 +2036,7 @@ async function runTurnBody(
           instanceId,
           conversationId,
           base,
+          unproven: true,
         });
         return "posted-partial";
       }
@@ -2069,7 +2078,15 @@ async function runTurnBody(
       attachmentFailed: attachments.failed,
     });
     if (posted === "posted-partial") {
-      await notePartialDelivery({ tenantId, instanceId, conversationId, base });
+      await notePartialDelivery({
+        tenantId,
+        instanceId,
+        conversationId,
+        base,
+        // Some of the reply landed and one send could not be accounted for, so what is missing is
+        // a doubt rather than a fact here too.
+        unproven: delivered.unproven,
+      });
       return posted;
     }
     // Same rule as the branch above: the reply is out, the resolve is a separate write.

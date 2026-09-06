@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ChatwootClient,
+  ChatwootMissingTokenError,
+} from "@/modules/chatwoot/client";
 import {
   deliverReply,
   readSplitConfig,
@@ -825,7 +828,12 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.typing.at(-1)).toBe(false);
   });
 
-  test("split disabled: the single send failing is a failed delivery, not a throw", async () => {
+  // SPLITTING OFF ASKS THE SAME QUESTION (issue #499). There is no remainder to salvage here, so
+  // nothing is ever resent — but whether the TURN may run again does not depend on how many balloons
+  // the reply had, and this path used to skip the read-back entirely and report every rejection as
+  // unaccounted for. That settles the burst and retires the delivery on a reply that may never have
+  // been written.
+  test("split disabled: a rejected send is checked, and a proven absence is not unproven", async () => {
     const rec = { sent: [] as string[], typing: [] as boolean[] };
     const out = await deliverReply(
       failingStub(rec, () => true),
@@ -834,8 +842,69 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: false },
       noSleep,
     );
+    // The conversation was read and does not hold it, so the turn may run again.
+    expect(out).toEqual({ delivered: 0, failed: true, unproven: false });
+  });
+
+  test("split disabled: a send the far side accepted is not reported as lost", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, () => true, { storeOnFailure: () => true }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+    );
+    // Rejected to us, written on the far side, and the read-back finds it by name.
+    expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
+  });
+
+  test("split disabled: a rejection nobody could check is unproven", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, () => true, { readFails: true }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+    );
     expect(out).toEqual({ delivered: 0, failed: true, unproven: true });
   });
+
+  // AN ERROR THAT NEVER LEFT THE PROCESS IS A PROVEN ABSENCE. `ChatwootMissingTokenError` is raised
+  // before any request is built, so there is no far side to ask and nothing to be uncertain about.
+  // Read as unknown it would cost the customer their answer: the turn reports `posted-partial`, the
+  // burst is settled and the delivery retired, with nothing sent and nothing ever retrying.
+  test.each([
+    ["split enabled", true],
+    ["split disabled", false],
+  ])(
+    "%s: a send that never reached the wire is a proven absence, not an unknown",
+    async (_label, enabled) => {
+      let reads = 0;
+      const client = {
+        sendMessage: async () => {
+          throw new ChatwootMissingTokenError("POST /messages");
+        },
+        getMessages: async () => {
+          reads += 1;
+          return { payload: [] };
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const out = await deliverReply(
+        client,
+        1,
+        three,
+        { ...SPLIT_DEFAULTS, enabled },
+        noSleep,
+      );
+      expect(out.unproven).toBe(false);
+      expect(out.delivered).toBe(0);
+      // And it does not even ask: there is nothing on the far side to ask about.
+      expect(reads).toBe(0);
+    },
+  );
 
   // `calledOff` is the operator clearing the conversation, not a failure — the same distinction
   // `deliverPendingAttachments` draws between a revocation and a failed send. Reported as a failure,

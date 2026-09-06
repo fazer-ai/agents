@@ -979,15 +979,15 @@ describe.skipIf(!dbUp)("reengage", () => {
         { id: 290, content: "alguém aí?", type: 0 },
         { id: 291, content: "?", type: 0 },
       ]);
+      let attempted = 0;
       const client = {
-        getMessages: async (_c: number, q?: { before?: number }) =>
-          // The first read works (it is what selects the burst); the read-back after the failed
-          // send does not, which is the overloaded Chatwoot that caused the timeout in the first
-          // place.
-          q?.before === undefined && sent.length === 0
-            ? thread
-            : Promise.reject(new Error("chatwoot: 500")),
+        // The reads BEFORE any send work — they are what selects the burst. The read-back after the
+        // failed send does not, which is the overloaded Chatwoot that caused the timeout in the
+        // first place.
+        getMessages: async () =>
+          attempted === 0 ? thread : Promise.reject(new Error("chatwoot: 500")),
         sendMessage: async () => {
+          attempted += 1;
           throw new Error("chatwoot: 502 bad gateway");
         },
         toggleTyping: async () => ({}),

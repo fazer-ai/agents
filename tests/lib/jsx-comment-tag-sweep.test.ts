@@ -50,9 +50,24 @@ function isJsxComment(src: string, start: number, end: number): boolean {
   if (!src.startsWith("/*", start)) return false;
   let before = start - 1;
   while (before >= 0 && /\s/.test(src[before] as string)) before--;
+  if (src[before] !== "{") return false;
   let after = end;
   while (after < src.length && /\s/.test(src[after] as string)) after++;
-  return src[before] === "{" && src[after] === "}";
+  if (src[after] !== "}") return false;
+  // WHAT OPENED THE BRACES, because `{ /* … */ }` is also how an empty code body is written and the
+  // two are opposite cases of the rule: in markup the tag is wrong, in a body it is REQUIRED. Review
+  // named `useEffect(() => { /* NOTE: intentionally empty */ }, [])`, where a walk that stops at the
+  // braces reports the required tag as an offence.
+  //
+  // So the test is positive and narrow: an expression container follows an element's `>` or another
+  // container's `}`, and `=>` is excluded because an arrow's body ends in the same character. What
+  // this shape does NOT recognise is skipped rather than accused, which is the cheap direction — a
+  // JSX comment this sweep never looks at, instead of a code comment it orders stripped. All 140 in
+  // the tree are recognised; no `=> {` or `catch {` body with a lone block comment exists in `src/`.
+  let opener = before - 1;
+  while (opener >= 0 && /\s/.test(src[opener] as string)) opener--;
+  if (src[opener] === "}") return true;
+  return src[opener] === ">" && src[opener - 1] !== "=";
 }
 
 describe("a comment in markup documents the element below it, and carries no NOTE:", () => {
@@ -96,6 +111,31 @@ describe("the detector is not fooled by prose that spells the shape", () => {
     const [start, end] = span as [number, number];
     expect(TAG.test(src.slice(start, end))).toBe(true);
     expect(isJsxComment(src, start, end)).toBe(false);
+  });
+
+  test("a lone block comment in a code body is not markup", () => {
+    // Review's case, and its two neighbours. All three are bodies, where the tag is required, and a
+    // walk that stops at the braces would report each of them as an offence.
+    for (const src of [
+      "useEffect(() => {\n  /* NOTE: intentionally empty */\n}, []);\n",
+      "try {\n  risky();\n} catch {\n  /* NOTE: ignore */\n}\n",
+      "const pending = {\n  /* NOTE: filled in by the caller */\n};\n",
+    ]) {
+      const [span] = commentSpans(src);
+      const [start, end] = span as [number, number];
+      expect(isJsxComment(src, start, end)).toBe(false);
+    }
+  });
+
+  test("a container after an element or after another container is markup", () => {
+    const afterTag = "<div>\n  {/* NOTE: label */}\n</div>\n";
+    const afterContainer =
+      "<div>\n  {ok && <X />}\n  {/* NOTE: label */}\n</div>\n";
+    for (const src of [afterTag, afterContainer]) {
+      const span = commentSpans(src).find(([s]) => src.startsWith("/*", s));
+      const [start, end] = span as [number, number];
+      expect(isJsxComment(src, start, end)).toBe(true);
+    }
   });
 
   test("an empty catch body between braces is not markup", () => {

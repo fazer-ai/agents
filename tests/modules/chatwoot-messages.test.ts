@@ -21,6 +21,7 @@ describe("parseChatwootMessages", () => {
       content: "a",
       messageType: "incoming",
       private: false,
+      sendId: null,
       attachmentTypes: [],
       transcribedText: null,
       imageDescription: null,
@@ -123,6 +124,37 @@ describe("parseChatwootMessages", () => {
     expect(out).toBe(
       '<localização latitude="-23.5505" longitude="-46.6333" titulo="Padaria do Zé">',
     );
+  });
+
+  // THE NAME A SEND GAVE ITSELF, read back so a delivery can be proved by identity rather than by
+  // matching text (issue #499). The bag is shared with Chatwoot's own keys and with whatever an
+  // operator's automation writes there, so anything that is not a string is somebody else's key
+  // colliding with ours, not a name this build wrote.
+  test("reads the send id, and only when it is a string", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 1,
+          content: "nossa",
+          message_type: 1,
+          content_attributes: { fazer_ai_send_id: "abc-123" },
+        },
+        {
+          id: 2,
+          content: "de outra pessoa",
+          message_type: 1,
+          content_attributes: { in_reply_to: 1 },
+        },
+        {
+          id: 3,
+          content: "colisão",
+          message_type: 1,
+          content_attributes: { fazer_ai_send_id: 7 },
+        },
+        { id: 4, content: "sem bag", message_type: 1 },
+      ],
+    });
+    expect(rows.map((r) => r.sendId)).toEqual(["abc-123", null, null, null]);
   });
 });
 

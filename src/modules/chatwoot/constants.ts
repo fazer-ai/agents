@@ -14,3 +14,21 @@
 // end-to-end against a live Chatwoot Pro: hyphen returns 200 both through Caddy and direct to puma;
 // underscore 401s through Caddy and 200s direct (proving the proxy, not Chatwoot, is what drops it).
 export const CHATWOOT_AUTH_HEADER = "api-access-token";
+
+// THE NAME A SEND GIVES ITSELF, so a delivery can be proved without comparing text (issue #499).
+//
+// A `POST /messages` that hits its deadline may or may not have been written on the far side, and
+// the only party that knows is Chatwoot. Asking it used to mean looking for the CONTENT, which is
+// not an identity: a conversation legitimately holds the same words twice, so the search needed a
+// boundary, the boundary needed a read of its own, and that read is the first thing an overloaded
+// Chatwoot drops — the same overload that caused the timeout. Two production duplicates came
+// through that gap (issue #499).
+//
+// A key inside `content_attributes` closes it: the send names itself before it leaves, and the
+// read-back asks for that name. MEASURED against the fork (chatwoot-pro, `Messages::MessageBuilder`,
+// `message_params`): `content_attributes` handed to the create is persisted verbatim and comes back
+// on `GET /conversations/:id/messages`, with no migration and no allowlist to add to.
+//
+// Namespaced because the bag is shared with Chatwoot's own keys (`in_reply_to`, `is_reaction`) and
+// with anything the operator's own automations write there.
+export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";

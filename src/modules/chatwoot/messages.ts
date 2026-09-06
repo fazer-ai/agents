@@ -1,3 +1,4 @@
+import { CHATWOOT_SEND_ID_KEY } from "./constants";
 import { firstLocationAttachment, messageTypeOf } from "./normalize";
 import {
   cleanTranscription,
@@ -36,6 +37,11 @@ export interface ChatwootMessageRow {
   inReplyTo: number | null;
   // content_attributes.is_reaction — true when this message is an emoji reaction (content = emoji).
   isReaction: boolean;
+  // The name the send gave itself on the way out (issue #499), when this message is one of ours and
+  // the sender asked for one. Null on every message nobody named: everything inbound, everything a
+  // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
+  // be proved by identity instead of by matching text.
+  sendId: string | null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -137,6 +143,13 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,
+      // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
+      // whatever an operator's automation writes there, so a value of another shape is somebody
+      // else's key that happens to collide, not a name this build wrote.
+      sendId:
+        typeof ca?.[CHATWOOT_SEND_ID_KEY] === "string"
+          ? (ca[CHATWOOT_SEND_ID_KEY] as string)
+          : null,
     });
   }
   out.sort((a, b) => a.id - b.id);

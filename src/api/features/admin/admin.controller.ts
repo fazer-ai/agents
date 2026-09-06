@@ -21,11 +21,16 @@ import { UnauthorizedError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   CannotDeleteSelfError,
+  ConcurrentMoveError,
   deleteUser,
+  EmailTakenInTenantError,
   getAdminStats,
   getUsers,
   LastAdminError,
   listTenantsWithUserCounts,
+  TenantNotChangeableError,
+  TenantNotFoundError,
+  TenantRequiredError,
   UserNotInScopeError,
   updateUserRole,
 } from "./admin.service";
@@ -180,7 +185,11 @@ export const adminController = new Elysia({
       // addresses row 7 while failing string equality against `"7"`, and comparing the raw segment
       // let a caller past the guard that exists to stop them locking themselves out. Issue #371.
       const targetId = requireDbId(params.id);
-      if (user.id === targetId && body.role === "AGENT") {
+      // ANY self role change, not just the demote to AGENT. The narrower guard was only ever complete
+      // because the other transitions could not be stored: a fleet administrator naming a tenant can
+      // now make themselves that tenant's admin, and the next authentication lookup takes their fleet
+      // access away for good (#534). Nobody re-roles themselves here.
+      if (user.id === targetId) {
         set.status = 403;
         return {
           error: translate("errors.cannotDemoteSelf", "Cannot demote yourself"),
@@ -189,11 +198,10 @@ export const adminController = new Elysia({
       try {
         // A SUPER_ADMIN may re-role across tenants (own tenant is null → unscoped updateMany);
         // a TENANT_ADMIN is fenced to its own tenant.
-        const updated = await updateUserRole(
-          actorOf(user),
-          targetId,
-          body.role,
-        );
+        const updated = await updateUserRole(actorOf(user), targetId, {
+          role: body.role,
+          tenantId: optionalDbId(body.tenantId),
+        });
         return {
           user: {
             ...updated,
@@ -202,6 +210,52 @@ export const adminController = new Elysia({
           },
         };
       } catch (error) {
+        // The transition a fleet administrator's demotion describes is only storable with a tenant
+        // named, so an unnamed one is the request being wrong (422) and never the server failing
+        // (#534). The three below are the same idea: the row the write would produce cannot exist,
+        // and each says which half of it is the problem.
+        if (error instanceof ConcurrentMoveError) {
+          set.status = 409;
+          return {
+            error: translate(
+              "errors.userMovedConcurrently",
+              "This account was being changed by somebody else; try again",
+            ),
+          };
+        }
+        if (error instanceof TenantRequiredError) {
+          set.status = 422;
+          return {
+            error: translate(
+              "errors.demoteNeedsTenant",
+              "Choose the tenant this administrator will belong to",
+            ),
+          };
+        }
+        if (error instanceof TenantNotChangeableError) {
+          set.status = 422;
+          return {
+            error: translate(
+              "errors.roleChangeCannotMoveTenant",
+              "Only a fleet administrator's demotion can name a tenant",
+            ),
+          };
+        }
+        if (error instanceof TenantNotFoundError) {
+          set.status = 404;
+          return {
+            error: translate("errors.tenantNotFound", "Tenant not found"),
+          };
+        }
+        if (error instanceof EmailTakenInTenantError) {
+          set.status = 409;
+          return {
+            error: translate(
+              "errors.emailTakenInTenant",
+              "That tenant already has a user with this email",
+            ),
+          };
+        }
         // The same invariant the delete answers with a 409, on the write that reduces the scope's
         // administrator count without removing anybody (#496).
         if (error instanceof LastAdminError) {
@@ -230,10 +284,16 @@ export const adminController = new Elysia({
         role: t.Union([t.Literal("AGENT"), t.Literal("TENANT_ADMIN")], {
           description: "New role to assign to the user.",
         }),
+        tenantId: t.Optional(
+          t.String({
+            description:
+              "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+          }),
+        ),
       }),
       detail: doc(
         "Update user role",
-        "Change a user's role within the caller's tenant scope. Refuses (409) to demote the last administrator of a scope.",
+        "Change a user's role within the caller's tenant scope. Demoting a fleet administrator must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },

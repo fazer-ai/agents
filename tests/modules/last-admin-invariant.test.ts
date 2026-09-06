@@ -7,6 +7,7 @@ import {
   updateUserRole,
 } from "@/api/features/admin/admin.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // The invariant is "a scope keeps somebody who can administer it", and #496 is about WHERE it is
 // enforced: `deleteUser` refuses to remove the last admin, `updateUserRole` demotes them with no
@@ -134,34 +135,6 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     return { pid: await got, release, done };
   }
 
-  // How many backends are parked behind this one, DIRECTLY or through another waiter. The chain is
-  // the point and counting only direct blockers is what made the first version of this helper lie:
-  // with the fix in, the two writers queue on the same row, so Postgres reports the second as blocked
-  // by the FIRST WRITER and not by the holder, and a direct count sees one waiter forever.
-  async function blockedBy(pid: number): Promise<number> {
-    const [row] = await suDb.$queryRaw<Array<{ n: bigint }>>`
-      WITH RECURSIVE waiting AS (
-        SELECT a.pid, unnest(pg_blocking_pids(a.pid)) AS blocker
-          FROM pg_stat_activity a
-         WHERE cardinality(pg_blocking_pids(a.pid)) > 0
-      ),
-      chain AS (
-        SELECT pid FROM waiting WHERE blocker = ${pid}
-        UNION
-        SELECT w.pid FROM waiting w JOIN chain c ON w.blocker = c.pid
-      )
-      SELECT count(*)::bigint AS n FROM chain`;
-    return Number(row?.n ?? 0n);
-  }
-
-  async function waitUntilBlocked(pid: number, n: number): Promise<number> {
-    for (let i = 0; i < 300; i += 1) {
-      if ((await blockedBy(pid)) >= n) return i;
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    return -1;
-  }
-
   afterAll(async () => {
     if (fleetIds.length > 0) {
       await suDb.$executeRawUnsafe(
@@ -190,7 +163,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
       updateUserRole(
         actor(null, 999_999n),
         adminIds[0] as bigint,
-        "AGENT",
+        { role: "AGENT" },
         appDb,
       ),
     ).rejects.toBeInstanceOf(LastAdminError);
@@ -203,7 +176,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const after = await updateUserRole(
       actor(null, 999_999n),
       adminIds[0] as bigint,
-      "AGENT",
+      { role: "AGENT" },
       appDb,
     );
     expect(after.role).toBe("AGENT");
@@ -217,7 +190,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const after = await updateUserRole(
       actor(null, 999_999n),
       agentIds[0] as bigint,
-      "TENANT_ADMIN",
+      { role: "TENANT_ADMIN" },
       appDb,
     );
     expect(after.role).toBe("TENANT_ADMIN");
@@ -273,7 +246,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const holder = await holdRows(rows);
     const running = writers.map((w) => w());
     const settled = Promise.allSettled(running);
-    const iterations = await waitUntilBlocked(holder.pid, writers.length);
+    const iterations = await waitUntilBlocked(suDb, holder.pid, writers.length);
     expect(iterations).toBeGreaterThanOrEqual(0);
     holder.release();
     await holder.done;
@@ -306,7 +279,8 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const [a, b] = adminIds as [bigint, bigint];
     const outcomes = await bothAtOnce(adminIds as bigint[], [
       () => deleteUser(actor(tenantId, 999_999n), a, appDb),
-      () => updateUserRole(actor(tenantId, 999_999n), b, "AGENT", appDb),
+      () =>
+        updateUserRole(actor(tenantId, 999_999n), b, { role: "AGENT" }, appDb),
     ]);
     const refused = outcomes.filter((o) => o.status === "rejected");
     expect(refused).toHaveLength(1);

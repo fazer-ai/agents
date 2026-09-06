@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import prisma from "@/api/lib/prisma";
 import { badQueryParam } from "@/lib/query-param";
 import {
@@ -251,6 +251,159 @@ export class LastAdminError extends Error {
   }
 }
 
+// The scope this write locked stopped being the scope the write is about, because somebody moved the
+// target between the unlocked peek and the row lock. Not reported as itself: the caller retries, and
+// the retry's peek reads the committed state, so it converges in one.
+class ScopeMovedError extends Error {
+  constructor() {
+    super("The target moved scope while this write was starting");
+    this.name = "ScopeMovedError";
+  }
+}
+
+// What is left when the retries run out, which needs a name of its own because the operator has to be
+// told to try again rather than shown a 500.
+export class ConcurrentMoveError extends Error {
+  constructor() {
+    super("This account is being changed by somebody else; try again");
+    this.name = "ConcurrentMoveError";
+  }
+}
+
+const SCOPE_ATTEMPTS = 3;
+
+// A fleet administrator belongs to NO tenant and everybody else belongs to one: the database says so
+// (`users_role_tenant_check`), so the role and the tenant are one fact and not two. Taking the fleet
+// role away therefore has to say where the person lands, and a request that does not name a tenant
+// describes a row Postgres cannot store (#534).
+export class TenantRequiredError extends Error {
+  constructor() {
+    super("Demoting a fleet administrator must name the tenant they join");
+    this.name = "TenantRequiredError";
+  }
+}
+
+// The same fact from the other side: for anybody who already belongs to a tenant, a role change says
+// nothing about which one, and moving people between tenants is not what this endpoint does.
+export class TenantNotChangeableError extends Error {
+  constructor() {
+    super("Only a fleet administrator's demotion names a tenant");
+    this.name = "TenantNotChangeableError";
+  }
+}
+
+// The named tenant has to exist, and the email has to be free in it: `users_tenant_email_key` is
+// per-tenant and case-insensitive, so a fleet administrator can share an address with somebody in the
+// tenant they are being moved into. Both would otherwise reach the operator as a 500.
+export class TenantNotFoundError extends Error {
+  constructor() {
+    super("Tenant not found");
+    this.name = "TenantNotFoundError";
+  }
+}
+
+export class EmailTakenInTenantError extends Error {
+  constructor() {
+    super("That tenant already has a user with this email");
+    this.name = "EmailTakenInTenantError";
+  }
+}
+
+// The destination of a fleet administrator's demotion, refused here rather than by the database. The
+// checks are the two constraints the write would hit, asked in the operator's terms: the tenant has
+// to exist (`users.tenant_id` references it) and the address has to be free in it
+// (`users_tenant_email_key`, on `lower(email)`).
+async function tenantToJoin(
+  db: ScopedDb,
+  // NOTE: named for what it is, the row being moved, and NOT `before`: that word is how the audit
+  // fence in `audit-actor-family` recognises a mutation that records a snapshot, and a helper
+  // borrowing it makes the fence demand a lock from a function that writes nothing.
+  moving: { email: string },
+  params: { tenantId?: bigint | null },
+): Promise<bigint> {
+  const tenantId = params.tenantId;
+  if (tenantId == null) {
+    throw new TenantRequiredError();
+  }
+  const tenant = await db.tenant.findUnique({
+    where: { id: tenantId },
+    select: { id: true },
+  });
+  if (!tenant) {
+    throw new TenantNotFoundError();
+  }
+  // `lower(email)`, in SQL, because that is the index's own expression — and because Prisma's
+  // `mode: "insensitive"` is not case folding but ILIKE: measured, `a_b@x.test` matches a stored
+  // `axb@x.test`, so an address holding an underscore (or a `%`) would have refused a move nothing
+  // was wrong with.
+  const clash = await db.$queryRaw<Array<{ id: bigint }>>`
+    SELECT id FROM users
+     WHERE tenant_id = ${tenantId}::bigint
+       AND lower(email) = lower(${moving.email})
+     LIMIT 1`;
+  if (clash.length > 0) {
+    throw new EmailTakenInTenantError();
+  }
+  return tenantId;
+}
+
+// Retrying is what replaces a second lock. The scope key is read before the row is locked, so a move
+// that commits in that window leaves this transaction holding the wrong scope's lock — and taking the
+// right one THEN would mean holding two, in an order two callers can disagree about, which is the
+// cycle #496 removed. Aborting and starting over holds nothing while it waits, and the new peek reads
+// the state the mover committed.
+async function withScopeRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!(error instanceof ScopeMovedError)) throw error;
+      // A move is a person doing something in a console, so a target that moves three times while one
+      // write starts is not contention to wait out: it is something the operator has to see.
+      if (attempt >= SCOPE_ATTEMPTS) throw new ConcurrentMoveError();
+    }
+  }
+}
+
+// The scope the write locked has to be the scope the guard counts. Asked AFTER the row lock, where
+// the answer is finally stable.
+function assertScopeHeld(
+  locked: { tenantId: bigint | null },
+  peeked: { tenantId: bigint | null } | null,
+): void {
+  if ((peeked?.tenantId ?? null) !== locked.tenantId) {
+    throw new ScopeMovedError();
+  }
+}
+
+// The write, with the two constraint violations it can still hit translated. The checks above are
+// unlocked reads of OTHER rows — an invitation accepted, or the tenant deleted, between them and this
+// statement is a window no lock of ours closes — so the same refusal has to be available from the
+// error Postgres raises. Without this, the race arrives as the very 500 this issue is about.
+async function writeRole(
+  db: ScopedDb,
+  userId: bigint,
+  role: ManageableRole,
+  joining: bigint | null,
+) {
+  try {
+    return await db.user.update({
+      where: { id: userId },
+      data: joining === null ? { role } : { role, tenantId: joining },
+      select: USER_SELECT,
+    });
+  } catch (error) {
+    if (
+      joining !== null &&
+      error instanceof Prisma.PrismaClientKnownRequestError
+    ) {
+      if (error.code === "P2002") throw new EmailTakenInTenantError();
+      if (error.code === "P2003") throw new TenantNotFoundError();
+    }
+    throw error;
+  }
+}
+
 // `ctx.tenantId` is the caller's HOME tenant and never a console selection: a SUPER_ADMIN has none
 // (null → unscoped, so they re-role across tenants), and everyone else is fenced to their own. The
 // controller builds it that way on purpose — handing this the tenancy plugin's selector would
@@ -258,59 +411,72 @@ export class LastAdminError extends Error {
 export async function updateUserRole(
   ctx: TenantContext,
   userId: bigint,
-  role: ManageableRole,
+  params: { role: ManageableRole; tenantId?: bigint | null },
   base: PrismaClient = prisma,
 ) {
-  return asPrincipalOn(base, ctx, async (db) => {
-    // The row is locked before it is read, and the read is what the recorded `before` comes from.
-    // Two admins re-roling the same person otherwise both read the same value and both record the
-    // same transition, so the trail shows one of the two changes twice and the other not at all —
-    // on the family where the recorded transition is the entire point.
-    // NOTE: the scope lock comes BEFORE the row lock, and nothing here takes a second one. Which
-    // scope is a question the unlocked read below can answer, because a user never changes tenant;
-    // which ROLE they hold is not, which is why the guard is evaluated on the locked read further
-    // down rather than on this one.
-    const scope = await scopeOfTarget(db, ctx.tenantId, userId);
-    if (scope !== null) {
-      await lockAdminScope(db, scope.tenantId);
-    }
-    await lockUserInScope(db, ctx.tenantId, userId);
-    const before = await db.user.findFirst({
-      where: { id: userId, ...tenantScope(ctx.tenantId) },
-      select: USER_SELECT,
-    });
-    // NOTE: the scope guard is the READ, so an out-of-scope target is a 404 and never a cross-tenant
-    // edit — the same fence the `updateMany` this replaced carried in its `where`.
-    if (!before) {
-      throw new UserNotInScopeError();
-    }
-    // The guard, on the role the LOCKED read reports and not on any earlier one: a demote only
-    // threatens the invariant when it takes an administrator role away.
-    if (
-      (before.role === "TENANT_ADMIN" || before.role === "SUPER_ADMIN") &&
-      before.role !== role
-    ) {
-      await assertScopeKeepsAnAdmin(db, before.role, before.tenantId, userId);
-    }
-    const user = await db.user.update({
-      where: { id: userId },
-      data: { role },
-      select: USER_SELECT,
-    });
-    if (before.role !== user.role) {
-      // Filed under the TARGET's tenant, which is not the caller's: a SUPER_ADMIN re-roling somebody
-      // in tenant 7 is that tenant's business, and keyed on the actor the row would join a trail
-      // (or the fleet's) where the tenant it happened to can never read it. A SUPER_ADMIN target
-      // belongs to no tenant, and their row is fleet-level for the same reason.
-      await auditMutationOn(db, ctx, before.tenantId, {
-        action: "user.role_set",
-        target: `user:${userId}`,
-        before: userAuditProjection(before),
-        after: userAuditProjection(user),
+  const { role } = params;
+  return withScopeRetry(() =>
+    asPrincipalOn(base, ctx, async (db) => {
+      // The row is locked before it is read, and the read is what the recorded `before` comes from.
+      // Two admins re-roling the same person otherwise both read the same value and both record the
+      // same transition, so the trail shows one of the two changes twice and the other not at all —
+      // on the family where the recorded transition is the entire point.
+      // NOTE: the scope lock comes BEFORE the row lock, and nothing here takes a second one. Which
+      // scope is a question the unlocked read below can answer, because a user never changes tenant;
+      // which ROLE they hold is not, which is why the guard is evaluated on the locked read further
+      // down rather than on this one.
+      const scope = await scopeOfTarget(db, ctx.tenantId, userId);
+      if (scope !== null) {
+        await lockAdminScope(db, scope.tenantId);
+      }
+      await lockUserInScope(db, ctx.tenantId, userId);
+      const before = await db.user.findFirst({
+        where: { id: userId, ...tenantScope(ctx.tenantId) },
+        select: USER_SELECT,
       });
-    }
-    return user;
-  });
+      // NOTE: the scope guard is the READ, so an out-of-scope target is a 404 and never a cross-tenant
+      // edit — the same fence the `updateMany` this replaced carried in its `where`.
+      if (!before) {
+        throw new UserNotInScopeError();
+      }
+      assertScopeHeld(before, scope);
+      // The guard, on the role the LOCKED read reports and not on any earlier one: a demote only
+      // threatens the invariant when it takes an administrator role away.
+      if (
+        (before.role === "TENANT_ADMIN" || before.role === "SUPER_ADMIN") &&
+        before.role !== role
+      ) {
+        await assertScopeKeepsAnAdmin(db, before.role, before.tenantId, userId);
+      }
+      // Where this person lands, decided from the LOCKED row and written in the same statement as the
+      // role, because the check constraint reads both columns of the new row at once.
+      const joining =
+        before.role === "SUPER_ADMIN"
+          ? await tenantToJoin(db, before, params)
+          : null;
+      if (before.role !== "SUPER_ADMIN" && params.tenantId != null) {
+        throw new TenantNotChangeableError();
+      }
+      const user = await writeRole(db, userId, role, joining);
+      if (before.role !== user.role) {
+        // Filed under the TARGET's tenant, which is not the caller's: a SUPER_ADMIN re-roling somebody
+        // in tenant 7 is that tenant's business, and keyed on the actor the row would join a trail
+        // (or the fleet's) where the tenant it happened to can never read it. A SUPER_ADMIN target
+        // belongs to no tenant, and their row is fleet-level for the same reason.
+        // Filed under the tenant the person is IN once the write lands, which for a demotion out of the
+        // fleet is the tenant they just joined. `docs/api-and-fleet.md`: a row about a person joins the
+        // trail of the person, and a row filed under the fleet is one the tenant that gained them
+        // cannot read. For every other role change the two are the same tenant.
+        await auditMutationOn(db, ctx, user.tenantId, {
+          action: "user.role_set",
+          target: `user:${userId}`,
+          before: userAuditProjection(before),
+          after: userAuditProjection(user),
+        });
+      }
+      return user;
+    }),
+  );
 }
 
 // Delete a user. Scoped exactly like updateUserRole (a TENANT_ADMIN is fenced to its own tenant; a
@@ -326,41 +492,44 @@ export async function deleteUser(
     throw new CannotDeleteSelfError();
   }
   const callerTenantId = ctx.tenantId;
-  await asPrincipalOn(base, ctx, async (db) => {
-    // Locked before it is read, which serialises two acts on the SAME user: without it both read the
-    // row, both record a `before` naming a live account, and the trail carries the deletion twice.
-    //
-    // NOTE: the scope lock first and the row second, for the reason `updateUserRole` gives at the
-    // same call. Taking it here rather than counting under the target's own row lock is what stops
-    // two deletes aimed at different administrators from each reading the other as remaining.
-    const scope = await scopeOfTarget(db, callerTenantId, userId);
-    if (scope !== null) {
-      await lockAdminScope(db, scope.tenantId);
-    }
-    await lockUserInScope(db, callerTenantId, userId);
-    const target = await db.user.findFirst({
-      where: { id: userId, ...tenantScope(callerTenantId) },
-      select: USER_SELECT,
-    });
-    if (!target) {
-      throw new UserNotInScopeError();
-    }
-    // For a tenant admin "the scope" is the tenant; for a super-admin (tenantId null), the fleet.
-    if (target.role === "TENANT_ADMIN" || target.role === "SUPER_ADMIN") {
-      await assertScopeKeepsAnAdmin(db, target.role, target.tenantId, userId);
-    }
-    const removed = await db.user.deleteMany({
-      where: { id: userId, ...tenantScope(callerTenantId) },
-    });
-    if (removed.count === 0) return;
-    // The row OUTLIVES the account, which is the only reason it can answer for it: `audit_logs` has
-    // no foreign key to `users` (the delete's own comment says why), so this is where a deleted
-    // person's identity survives. Filed under the tenant they belonged to, fleet-level for a
-    // SUPER_ADMIN, who belonged to none.
-    await auditMutationOn(db, ctx, target.tenantId, {
-      action: "user.delete",
-      target: `user:${userId}`,
-      before: userAuditProjection(target),
-    });
-  });
+  await withScopeRetry(() =>
+    asPrincipalOn(base, ctx, async (db) => {
+      // Locked before it is read, which serialises two acts on the SAME user: without it both read the
+      // row, both record a `before` naming a live account, and the trail carries the deletion twice.
+      //
+      // NOTE: the scope lock first and the row second, for the reason `updateUserRole` gives at the
+      // same call. Taking it here rather than counting under the target's own row lock is what stops
+      // two deletes aimed at different administrators from each reading the other as remaining.
+      const scope = await scopeOfTarget(db, callerTenantId, userId);
+      if (scope !== null) {
+        await lockAdminScope(db, scope.tenantId);
+      }
+      await lockUserInScope(db, callerTenantId, userId);
+      const target = await db.user.findFirst({
+        where: { id: userId, ...tenantScope(callerTenantId) },
+        select: USER_SELECT,
+      });
+      if (!target) {
+        throw new UserNotInScopeError();
+      }
+      assertScopeHeld(target, scope);
+      // For a tenant admin "the scope" is the tenant; for a super-admin (tenantId null), the fleet.
+      if (target.role === "TENANT_ADMIN" || target.role === "SUPER_ADMIN") {
+        await assertScopeKeepsAnAdmin(db, target.role, target.tenantId, userId);
+      }
+      const removed = await db.user.deleteMany({
+        where: { id: userId, ...tenantScope(callerTenantId) },
+      });
+      if (removed.count === 0) return;
+      // The row OUTLIVES the account, which is the only reason it can answer for it: `audit_logs` has
+      // no foreign key to `users` (the delete's own comment says why), so this is where a deleted
+      // person's identity survives. Filed under the tenant they belonged to, fleet-level for a
+      // SUPER_ADMIN, who belonged to none.
+      await auditMutationOn(db, ctx, target.tenantId, {
+        action: "user.delete",
+        target: `user:${userId}`,
+        before: userAuditProjection(target),
+      });
+    }),
+  );
 }

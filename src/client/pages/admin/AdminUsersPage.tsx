@@ -12,6 +12,10 @@ import {
   useModalController,
   useToast,
 } from "@/client/components";
+import {
+  DemoteFleetAdminModal,
+  type DemoteTarget,
+} from "@/client/components/admin/DemoteFleetAdminModal";
 import { InviteUserModal } from "@/client/components/admin/InviteUserModal";
 import { PendingInvitesCard } from "@/client/components/admin/PendingInvitesCard";
 import { Tooltip } from "@/client/components/Tooltip";
@@ -85,6 +89,7 @@ export function AdminUsersPage() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inviteModal = useModalController();
   const deleteUserModal = useModalController<StrongConfirmPayload>();
+  const demoteFleetModal = useModalController<DemoteTarget>();
 
   const tenantsById = useMemo(
     () => new Map(tenants.map((tn) => [tn.id, tn.name])),
@@ -168,6 +173,13 @@ export function AdminUsersPage() {
   };
 
   const handleToggleRole = async (user: AdminUser) => {
+    // A fleet administrator belongs to no tenant, and the row that would replace theirs cannot exist
+    // without one, so this demote is a question before it is a write (#534). Everyone else keeps the
+    // tenant they already have, and stays one click.
+    if (user.role === "SUPER_ADMIN") {
+      demoteFleetModal.open({ id: user.id, email: user.email });
+      return;
+    }
     const newRole = isAdminRole(user.role) ? "AGENT" : "TENANT_ADMIN";
     const { data, error } = await api.api.admin
       .users({ id: user.id })
@@ -276,6 +288,14 @@ export function AdminUsersPage() {
       />
 
       <StrongConfirmModal modal={deleteUserModal} />
+      <DemoteFleetAdminModal
+        modal={demoteFleetModal}
+        tenants={tenants}
+        onDemoted={() => {
+          void fetchUsers(page, search);
+          fetchStats();
+        }}
+      />
 
       {stats && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

@@ -101,6 +101,16 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
+  // The old spellings of the two consent actions. Nothing writes them any more, and every row
+  // recorded so far is still under them: this release renames the producers and teaches every
+  // reader both names, and the backfill is the NEXT one, because the rollout overlaps and the
+  // outgoing container's catalog is frozen with only these two. They and their exemptions leave
+  // together, with that backfill.
+  const THE_SPELLING_THE_ROWS_STILL_CARRY = [
+    "mcp_oauth_consent_denied",
+    "mcp_oauth_consent_granted",
+  ];
+
   // EXTRA — a producer is deleted or renamed and its name stays on the list. The operator picks a
   // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
   // THIS: a union member nobody constructs is not an error anywhere.
@@ -110,10 +120,17 @@ describe("the audit action vocabulary", () => {
   // ternary (`company_logo.*`), and a helper taking the name as an argument
   // (`auditConsentDecision`, whose two names it reported as extra while they are written on every
   // consent decision). Presence cannot be fooled by the shape, because it does not look at one.
+  //
+  // THE ONE EXEMPTION DOES NOT WEAKEN THE RULE THIS TEST STATES. The rule's harm is a value that
+  // can NEVER match; those two match every consent row in the table, and delisting them before the
+  // backfill is what would strand them. The exemption is the same named pair the shape test
+  // carries, and it leaves with it.
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
     const orphaned = AUDIT_ACTIONS.filter(
-      (a) => !sources.some((code) => code.includes(`"${a}"`)),
+      (a) =>
+        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
+        !sources.some((code) => code.includes(`"${a}"`)),
     );
     expect(orphaned).toEqual([]);
   });
@@ -128,29 +145,36 @@ describe("the audit action vocabulary", () => {
   // the family it belongs to is somewhere else.
   //
   // The two exceptions are NAMED rather than pattern-matched, so a third one is a decision somebody
-  // makes on purpose and not a hole the regex quietly widened. They predate #392 and are written by
-  // live code on every OAuth consent decision; renaming them orphans every row already recorded
-  // under those names, which is #523 and its backfill, not this list's problem.
-  const PREDATE_THE_CONVENTION = [
-    "mcp_oauth_consent_denied",
-    "mcp_oauth_consent_granted",
-  ];
-
+  // makes on purpose and not a hole the regex quietly widened. What they are has changed: until
+  // #523 they were the shape the consent decisions were WRITTEN in; now nothing writes them and
+  // they are on the list because every row RECORDED is still under them.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
       (a) =>
-        !PREDATE_THE_CONVENTION.includes(a) &&
+        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
         !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
     );
     expect(odd).toEqual([]);
   });
 
-  // An exception that stops being one is an exception that stays forever.
-  test("every exception is still in the list", () => {
-    const gone = PREDATE_THE_CONVENTION.filter(
-      (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
-    );
-    expect(gone).toEqual([]);
+  // The pair is a STAGE, not a permanent carve-out, so both directions are pinned: the names the
+  // rows carry are on the list, and the names this release writes are the new ones. A rename that
+  // landed in the catalog and not in the controller would leave the first assertion green and this
+  // one red.
+  test("the old names are listed, and nothing here writes them", async () => {
+    const sources = await producerSources();
+    const written = (name: string) =>
+      sources.some((code) => code.includes(`"${name}"`));
+    expect({
+      listed: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(
+        (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
+      ),
+      stillWritten: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(written),
+      replacements: [
+        "mcp_oauth_consent.deny",
+        "mcp_oauth_consent.grant",
+      ].filter((a) => !written(a)),
+    }).toEqual({ listed: [], stillWritten: [], replacements: [] });
   });
 });
 
@@ -167,7 +191,7 @@ describe("the audit action vocabulary", () => {
 // declared entry becomes `extra`, and this goes red. A new fleet action in a known shape is
 // `missing` and goes red too. Neither direction degrades to a pass.
 //
-// `api_key.*` and `mcp_oauth_consent_*` are correctly absent from the declaration: they take the
+// `api_key.*` and `mcp_oauth_consent.*` are correctly absent from the declaration: they take the
 // tenant id on the tenant path and `null` on the fleet path, so membership is asked as "writes null
 // ALWAYS" — an action seen in any tenant-scoped write is disqualified.
 describe("which actions belong to no tenant", () => {

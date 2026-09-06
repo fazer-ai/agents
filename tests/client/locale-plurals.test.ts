@@ -56,8 +56,9 @@ const PARENTHETICAL_PLURAL =
 const DODGE_WAIVED: Record<string, string> = {
   // Two INDEPENDENT counts in one sentence ("{{created}} nova(s), {{updated}} atualizada(s)"), and
   // i18next pluralizes a key on exactly one `count`. So this one cannot be fixed the way the four in
-  // #513 were: it has to become two keys, and that is its own issue. English carries no defect here
-  // at all, because its adjectives do not inflect.
+  // #513 were: it has to become two keys, which is a change to the sentence rather than to the
+  // catalog. English carries no defect here at all, because its adjectives do not inflect. Written
+  // up in `docs/roadmap.md`; deliberately not in the queue yet.
   "channels.synced": "two independent counts in one key; needs splitting",
 };
 

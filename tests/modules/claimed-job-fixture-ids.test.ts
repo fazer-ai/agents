@@ -64,7 +64,7 @@ const ROOT = join(import.meta.dir, "..");
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
 const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
-  String.raw`(?:\bid|["']id["'])(?:\s*:\s*[^=;,)\n]{1,80})?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})n?["'\`]?\s*\))`,
+  String.raw`(?:\bid|["']id["'])(?:\s*:\s*[^=;,)\n]{1,80})?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?\s*(${NUMBER})n?\s*["'\`]?\s*\))`,
   "g",
 );
 
@@ -104,7 +104,11 @@ const MARKERS = /\bclaimSeq\b/g;
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // An annotation over a literal WRITTEN AT THAT POINT, and the literal is the load-bearing half:
 // `= {`, `= [`, `=> ({`, `<ClaimedJob>{`, or a `satisfies`/`as` that follows a literal's own
-// closing bracket, which
+// closing bracket. The TYPE side of that is read the way the id's own annotation is, as whatever is
+// not the operator: `ClaimedJob`, `ClaimedJob[]`, `Array<ClaimedJob>`, `ClaimedJob | undefined` and
+// whatever else a type expression can be are one rule rather than the list they were becoming. The
+// LITERAL side stays strict, and that asymmetry is the whole design: a type expression is a language
+// and a literal is a brace, so the growth belongs on the side that can absorb it. Which
 // is what tells `({…}) as unknown as ClaimedJob` (spend-ceiling-poll.test.ts, a fixture) from
 // `claimed.find(…) as ClaimedJob` (scheduler-claim-token.test.ts, a row that was found). Whatever
 // type-level words sit in between are a repeat of one pair, `as unknown as` and `as const satisfies`
@@ -120,7 +124,7 @@ const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
 // a case that is already narrow: a fixture is only invisible to `claimSeq` when the field arrives by
 // spread from another module, and then also has to spell a reachable id.
 const TYPE_MARKER =
-  /(?::\s*ClaimedJob(?:\[\])?\s*(?:=>\s*\(\s*|=\s*)|(?<![\w$])<\s*ClaimedJob\s*>\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
+  /(?::\s*[^=;{}\n]*\bClaimedJob\b[^=;{}\n]*=\s*|:\s*ClaimedJob(?:\[\])?\s*=>\s*\(\s*|(?<![\w$])<\s*ClaimedJob\s*>\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -248,6 +252,8 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     ["a BigInt() call", fixture("BigInt(7)"), true],
     ["a BigInt() call over a string", fixture('BigInt("7")'), true],
     ["a BigInt() call over a template", fixture("BigInt(`7`)"), true],
+    // `BigInt(" 1 ")` is `1n`: the quotes are trimmed before the number is read.
+    ["a BigInt() call over a padded string", fixture('BigInt(" 7 ")'), true],
     ["a BigInt() call over a signed number", fixture("BigInt(+7)"), true],
     ["a BigInt() call over a signed string", fixture('BigInt("+7")'), true],
     // `Number("+0x1")` is NaN while `BigInt(+0x1)` is `1n`, so the sign has to come off before the
@@ -328,6 +334,24 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       "  const jobs: ClaimedJob[] = [{ id: 1n, ...b }];",
       true,
     ],
+    // The type side is a language, so it is read as a rule rather than as a list of its spellings.
+    [
+      "a generic-array annotation",
+      "  const jobs: Array<ClaimedJob> = [{ id: 1n, ...b }];",
+      true,
+    ],
+    [
+      "a union annotation over a literal",
+      "  const job: ClaimedJob | undefined = { id: 1n, ...b };",
+      true,
+    ],
+    // The literal side stays strict, and this is what that buys: a function TAKING a job and
+    // returning some other object is not a fixture, however its parameter is typed.
+    [
+      "an arrow that takes a job and returns something else",
+      "  const f = (j: ClaimedJob) => ({ id: 7n });",
+      false,
+    ],
     // The arrow with an expression body is the one return type that DOES say where the literal is:
     // it is the next thing after the annotation.
     [
@@ -340,6 +364,11 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     [
       "a declared factory's return type",
       "  function jobFor(): ClaimedJob {\n    return { id: 1n, ...baseJob };",
+      false,
+    ],
+    [
+      "an arrow factory with a block body",
+      "  const jobFor = (): ClaimedJob => {\n    return { id: 1n, ...baseJob };",
       false,
     ],
     [

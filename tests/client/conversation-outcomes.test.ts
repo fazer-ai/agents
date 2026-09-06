@@ -138,4 +138,93 @@ describe("conversation actions report their outcome", () => {
       expect(gate).not.toContain("isHuman");
     }
   });
+
+  // And all three that hand the conversation TO the agent ask whether anything answers the inbox
+  // (issue #495): a responder bound, switched on, not in monitoring mode. On an inbox an observer
+  // only watches, "Return to AI" set the conversation pending and unassigned the person who had it,
+  // and nothing ever picked it up. The server refuses now; the console does not offer it first.
+  // "Handoff to human" is the one action that needs no agent, so it is left out on purpose.
+  test("handing the conversation to the agent is offered only when a responder answers the inbox", () => {
+    const gateDef = SRC.indexOf("const responderAnswers =");
+    expect(gateDef).toBeGreaterThan(-1);
+    expect(SRC.slice(gateDef, gateDef + 200)).toContain(
+      "agentEnabled === true",
+    );
+    expect(SRC.slice(gateDef, gateDef + 200)).toContain(
+      'agentMode !== "monitoring"',
+    );
+    // ...and the bot row behind the binding (issue #495 review, round 2): without it the server
+    // refuses the return with a 409 and the re-engage cannot load the agent.
+    expect(SRC.slice(gateDef, gateDef + 200)).toContain("agentHasBot === true");
+    // ...and a `test` agent only where `/teste` activated it (issue #495 review, round 11). The
+    // server answers `errors.returnAgentTestSilent` there, so the button would be a 409 with a
+    // click on it. Read off the EPISODE's activation, which is what `testActivatedAt` on the detail
+    // already carries (issue #261) and the same question the server asks.
+    expect(SRC.slice(gateDef, gateDef + 900)).toContain(
+      'conv.agentMode !== "test" || conv.testActivatedAt != null',
+    );
+    // ...and when it hides them it SAYS SO (issue #495 review, round 13). Hiding on its own leaves
+    // the operator looking for a button that is not there, unable to tell a rule from a bug — and
+    // this predicate reads the mirror, so on the one conversation where it is wrong they had nothing
+    // to go on at all.
+    expect(SRC).toContain("const noResponderReason: string | null =");
+    for (const key of [
+      "conversation.responderOff",
+      "conversation.responderObserves",
+      "conversation.responderNoBot",
+      "conversation.responderTestSilent",
+      // ...and the inbox with NO responder at all, which round 13 excluded on the theory that the
+      // panel above already says it (issue #495 review, round 16). It does not: with nobody
+      // assigned that line prints the generic "AI" label, which names an answerer this inbox does
+      // not have, and with a person on it it prints their name — either way the three actions
+      // vanish with nothing on screen saying why.
+      "conversation.responderNone",
+    ]) {
+      expect(SRC).toContain(key);
+    }
+    // The exclusion itself, and not merely the key: the guard that short-circuits this chain must
+    // no longer name `agentId == null`, or the string above is dead code.
+    const reasonDef = SRC.indexOf("const noResponderReason: string | null =");
+    expect(
+      SRC.slice(reasonDef, SRC.indexOf("? null", reasonDef)),
+    ).not.toContain("conv.agentId == null");
+
+    const returnCall = SRC.indexOf('"conversation.returned"');
+    const returnGate = SRC.lastIndexOf(
+      '{conv.status !== "resolved" &&',
+      returnCall,
+    );
+    expect(SRC.slice(returnGate, returnCall)).toContain("responderAnswers");
+
+    const reopenCall = SRC.indexOf('"conversation.reopened"');
+    expect(reopenCall).toBeGreaterThan(-1);
+    const reopenGate = SRC.lastIndexOf(
+      '{conv.status === "resolved" &&',
+      reopenCall,
+    );
+    expect(reopenGate).toBeGreaterThan(-1);
+    expect(SRC.slice(reopenGate, reopenCall)).toContain("responderAnswers");
+
+    const reengageGate = SRC.indexOf("{offerReengage &&");
+    expect(SRC.slice(reengageGate, reengageGate + 160)).toContain(
+      "responderAnswers",
+    );
+
+    const handoff = SRC.indexOf(".handoff.post(");
+    const handoffGate = SRC.lastIndexOf("{conv.status ===", handoff);
+    expect(SRC.slice(handoffGate, handoff)).not.toContain("responderAnswers");
+
+    // ...INCLUDING THE FAILURE CARD'S OWN BUTTON (issue #495 review, round 1). It calls the same
+    // endpoint, which answers `no-agent` on an inbox nothing answers, and a conversation keeps its
+    // `lastError` long after its responder was unbound — so it outlives the header offer it was
+    // gated beside.
+    const failureCard = SRC.indexOf("conversation.reengage.failedTitle");
+    expect(failureCard).toBeGreaterThan(-1);
+    const failureAction = SRC.indexOf(
+      '"conversation.reengage.action"',
+      failureCard,
+    );
+    expect(failureAction).toBeGreaterThan(-1);
+    expect(SRC.slice(failureCard, failureAction)).toContain("responderAnswers");
+  });
 });

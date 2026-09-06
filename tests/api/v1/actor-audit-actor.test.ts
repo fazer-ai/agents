@@ -259,6 +259,46 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     expect(row?.after).toMatchObject({ role: "TENANT_ADMIN" });
   });
 
+  // The door's other half of #496: the service now refuses to demote a scope's last administrator,
+  // and that refusal has to arrive as the 409 the console renders rather than as the 500 an unmapped
+  // error produces. Its own tenant, seeded and removed here, because the guard counts the scope.
+  test("demoting a tenant's last administrator answers 409, not 500", async () => {
+    cookie = await signIn({
+      id: FLEET_ADMIN_ID,
+      tenantId: null,
+      role: "SUPER_ADMIN",
+    });
+    const lonely = await (su as PrismaClient).tenant.create({
+      data: { name: "LA409", slug: `la409-${process.pid}` },
+      select: { id: true },
+    });
+    try {
+      const onlyAdmin = await seedUser(lonely.id, "TENANT_ADMIN");
+      const res = await server.handle(
+        req(`/admin/users/${onlyAdmin.id}/role`, {
+          method: "PATCH",
+          body: JSON.stringify({ role: "AGENT" }),
+        }),
+      );
+      expect(res.status).toBe(409);
+      // A sentence, not the sentence: which one depends on the reader's locale, and what this test
+      // is about is that the refusal was MAPPED at all — unmapped, it leaves as a 500 with none.
+      expect(typeof (await res.json()).error).toBe("string");
+      const after = await (su as PrismaClient).user.findUnique({
+        where: { id: onlyAdmin.id },
+        select: { role: true },
+      });
+      expect(after?.role).toBe("TENANT_ADMIN");
+    } finally {
+      await (su as PrismaClient).$executeRawUnsafe(
+        `DELETE FROM users WHERE tenant_id = ${lonely.id}`,
+      );
+      await (su as PrismaClient).$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${lonely.id}`,
+      );
+    }
+  });
+
   test("deleting a user from the console records what the account was", async () => {
     cookie = await signIn({
       id: TENANT_ADMIN_ID,

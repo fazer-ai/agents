@@ -134,6 +134,7 @@
     "inviteNotFound": "Convite não encontrado",
     "knowledgeBaseNotFound": "Base de conhecimento não encontrada.",
     "lastAdmin": "Não é possível excluir o último admin deste escopo",
+    "lastAdminRole": "Não é possível rebaixar o último admin deste escopo",
     "logoNotFound": "Logo não encontrado",
     "mcpApprovalNotFound": "Aprovação MCP não encontrada",
     "mcpClientNotFound": "Cliente MCP não encontrado",

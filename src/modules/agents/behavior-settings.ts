@@ -20,6 +20,7 @@ import {
 import { readSendImageConfig } from "@/modules/images/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
 import { readSplitConfig } from "@/modules/split/service";
 import { readSttConfig } from "@/modules/stt/settings";
@@ -83,6 +84,7 @@ export interface BehaviorSettings {
   kanban: ReturnType<typeof readKanbanConfig>;
   toolGuidance: ReturnType<typeof readToolGuidance>;
   toolPreconditions: ReturnType<typeof readToolPreconditions>;
+  monitoring: ReturnType<typeof readMonitoringConfig>;
 }
 
 // The keys this surface owns inside the settings bag. Any other key (future/unknown) is preserved
@@ -111,6 +113,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "kanban",
   "toolGuidance",
   "toolPreconditions",
+  "monitoring",
 ] as const;
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
@@ -149,6 +152,7 @@ export function readBehaviorSettings(
     kanban: readKanbanConfig(settings),
     toolGuidance: readToolGuidance(settings),
     toolPreconditions: readToolPreconditions(settings),
+    monitoring: readMonitoringConfig(settings),
   };
 }
 
@@ -178,6 +182,7 @@ export interface BehaviorSettingsPatch {
   kanban?: Record<string, unknown>;
   toolGuidance?: Record<string, unknown>;
   toolPreconditions?: Record<string, unknown>;
+  monitoring?: Record<string, unknown>;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

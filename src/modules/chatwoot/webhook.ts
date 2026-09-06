@@ -100,8 +100,11 @@ import { readTakeoverConfig } from "@/modules/handoff/settings";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { armObserve, observeKeyPrefix } from "@/modules/observe/job";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import {
   cancelPendingJob,
+  cancelPendingJobsByPrefixUpToMessage,
   retireJobsByDedupeKey,
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
@@ -133,6 +136,7 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "./instance";
+import { withConversationLabels } from "./labels";
 import { mirrorChatwootEvent } from "./mirror";
 import {
   type ControlCommand,
@@ -502,6 +506,86 @@ async function responderCoversMessage(
 //
 // Two reads, on the same path as `inboxAgentRuntime` for every message. Null when the route is the
 // responder's own, or drifted as above.
+// THE ROUTE'S AGENT AS A CLASSIFIER, which is a different question from the one above (issue #477
+// review, round 4). `observerRuntimeForRoute` answers "whose REPLY PATH is this route": when the
+// route's own bot still HOLDS the conversation and the inbox has a responder, it deliberately
+// answers null, because the reply is the responder's and reading it as an observer's would leave
+// the customer unanswered. Observation is not a reply path. An agent bound to the inbox as an
+// observer watches every conversation on it, including the ones its bot happens to hold from a
+// life before the rebind — and hung off the reply-route answer it watched none of them, on the
+// burst and on the final verdict alike.
+//
+// So this asks the BINDING and nothing else: a row in `InboxObserver` for this route's agent on
+// this inbox. No assignee, no mode inference, no attach window — a row is the one signal that is
+// true regardless of who holds the conversation, and it is the only one that is (see below).
+async function boundObserverRuntime(
+  tenantId: bigint,
+  instanceId: bigint,
+  routeAgentBotId: number | null,
+  at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
+  base: PrismaClient,
+): Promise<InboxRuntime | null> {
+  if (routeAgentBotId === null) return null;
+  const inbox =
+    at.chatwootInboxId != null
+      ? { chatwootInstanceId: instanceId, chatwootInboxId: at.chatwootInboxId }
+      : at.chatwootConversationId != null
+        ? {
+            conversations: {
+              some: {
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: at.chatwootConversationId,
+              },
+            },
+          }
+        : null;
+  if (inbox === null) return null;
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const bot = await db.chatwootAgentBot.findFirst({
+      where: {
+        chatwootInstanceId: instanceId,
+        chatwootAgentBotId: routeAgentBotId,
+      },
+      select: {
+        agentId: true,
+        agent: { select: { enabled: true, mode: true, settings: true } },
+      },
+    });
+    if (!bot) return null;
+    const row = await db.inbox.findFirst({
+      where: inbox,
+      select: {
+        id: true,
+        chatwootInboxId: true,
+        provider: true,
+        agentId: true,
+        responderBoundAt: true,
+        observers: { where: { agentId: bot.agentId }, select: { id: true } },
+      },
+    });
+    // THE ROW, AND ONLY THE ROW — the attach window is NOT inferable here (issue #477 review, round
+    // 15, correcting round 11). Round 11 read "a delivery on this route with no row" as proof that
+    // Chatwoot had just taken the attachment, on the grounds that `unobserveInbox` removes the
+    // binding before deleting the row. That misses how Chatwoot fans events: a bot that still OWNS
+    // an older conversation keeps receiving its events after being detached from the inbox, so
+    // "delivery, no row" is also the ordinary post-detach state — and reading it as an attachment
+    // armed a verdict for an agent nobody observes with, which then retried to DEAD on every
+    // message. The reply-route answer beside this one covers the attach window wherever the
+    // delivery is not explained by ownership, which is where it can be told apart.
+    if (!row || row.observers.length === 0) return null;
+    return {
+      agentId: bot.agentId,
+      inboxId: row.id,
+      chatwootInboxId: row.chatwootInboxId,
+      enabled: bot.agent.enabled,
+      mode: bot.agent.mode,
+      settings: bot.agent.settings,
+      whatsappProvider: row.provider,
+      responderBoundAt: row.responderBoundAt,
+    };
+  });
+}
+
 async function observerRuntimeForRoute(
   tenantId: bigint,
   instanceId: bigint,
@@ -521,7 +605,9 @@ async function observerRuntimeForRoute(
   // message arrived, and the questions below are all about now. Undefined on every live delivery.
   recordedAsObserver: boolean,
   base: PrismaClient,
-): Promise<InboxRuntime | null> {
+  // `attaching` says the answer came from the attach window rather than from a row, so a verdict
+  // armed off it can tell "the row has not landed" from "the agent was detached".
+): Promise<(InboxRuntime & { attaching: boolean }) | null> {
   if (routeAgentBotId === null) return null;
   const inbox =
     at.chatwootInboxId != null
@@ -564,6 +650,9 @@ async function observerRuntimeForRoute(
     if (!row) return null;
     if (recordedAsObserver)
       return {
+        // A REPLAY names a role it already had, so the row is the whole answer: an attach window is
+        // about a binding being written now, and this delivery's was written long ago.
+        attaching: false,
         agentId: bot.agentId,
         inboxId: row.id,
         chatwootInboxId: row.chatwootInboxId,
@@ -613,10 +702,16 @@ async function observerRuntimeForRoute(
     )
       return null;
     // The row, or — inside the attach window, before it is written — a monitoring agent on a route
-    // that is not the responder's.
+    // that is not the responder's. THIS is where the attach window can be told from a detach: the
+    // branch above already sent away the delivery a detached bot receives because it still OWNS the
+    // conversation, so what reaches here with no row arrived for the INBOX, which only an
+    // attachment explains (issue #477 review, round 15). Reported, so a verdict armed off it can
+    // tell "the row has not landed yet" from "the agent was detached" — those read identically to
+    // the tick's own binding fence, and completing on the second reading is permanent for a resolve.
     if (row.observers.length === 0 && !isMonitoring(bot.agent.mode))
       return null;
     return {
+      attaching: row.observers.length === 0,
       agentId: bot.agentId,
       inboxId: row.id,
       chatwootInboxId: row.chatwootInboxId,
@@ -2668,8 +2763,37 @@ async function maybeConsumeCommandOrGate(params: {
       personaClient,
     );
     if (client) {
+      // ...AND THE VERDICTS THAT WOULD PUT THEM BACK (issue #477 review, round 5). A watcher's tick
+      // is armed on a window that outlives this command, and it reads the conversation from Chatwoot
+      // rather than from memory — so a burst armed before the reset wakes up minutes later, reads
+      // the transcript this command did not touch (it clears OUR state, not the customer's
+      // messages), and writes the very labels that were just cleared. Retired by prefix because the
+      // key carries the classifier and a conversation can have two.
+      //
+      // UP TO THE EPISODE BOUNDARY, not everything under the prefix (issue #477 review, round 21).
+      // This step runs late — after the memory clear and a dozen Chatwoot calls — and a customer
+      // message landing in that stretch arrives after the reset and arms a burst that is wanted;
+      // unqualified, this marked it DONE and the new episode's first messages were never classified.
+      // A command that named no message writes no boundary either, and then there is nothing to
+      // order the rows against: the tick's own fence is what stands them down.
+      if (commandMessageId !== null)
+        await step("cancel pending verdicts", "etiquetas", () =>
+          cancelPendingJobsByPrefixUpToMessage(
+            tenantId,
+            "OBSERVE",
+            observeKeyPrefix(
+              chatwootThreadId(tenantId, instanceId, conversationId),
+            ),
+            commandMessageId,
+            base,
+          ),
+        );
       await step("clear labels", "etiquetas", () =>
-        client.setConversationLabels(conversationId, []),
+        // In the conversation's label queue like every other writer, so a clear cannot land in the
+        // middle of somebody's read-modify-write (issue #477 review, round 3).
+        withConversationLabels(params.tenantId, conversationId, () =>
+          client.setConversationLabels(conversationId, []),
+        ),
       );
       await step("clear custom attributes", "atributos", () =>
         client.clearConversationCustomAttributes(conversationId),
@@ -3585,6 +3709,10 @@ export async function processChatwootDelivery(
   const responderRt = resolved?.responder ?? null;
   const observer = resolved?.watcher ?? null;
   const rt = observer ?? responderRt;
+  // Whether the WATCHER answer came from the attach window rather than from a row (round 15). Only
+  // that answer can: the binding read IS the row, and a detached bot still owning an older
+  // conversation keeps receiving its events, so "no row" there is the post-detach state too.
+  const observerAttaching = observer?.attaching === true;
 
   // tx1: CAS <claimFrom>→PROCESSING. A re-entry (duplicate POST that found a stranded PENDING) sees
   // 0 rows and skips.
@@ -4053,6 +4181,134 @@ export async function processChatwootDelivery(
   //    ANY event carrying a status, not just message_created. `inboxAgentRuntime` is reused (a resolve is
   //    never a message, so not gated on isNewIncoming). Best-effort: a failure must not strand the
   //    delivery. ──
+  // THE WATCHER'S FINAL VERDICT (issue #477), armed off the resolve EVENT on the route it arrives
+  // on, and not off the mirror's transition below. With an observer beside a responder the same
+  // resolve reaches each bot on its own route, and the transition is applied by whichever route
+  // mirrors it first — the other reads a conversation already resolved and would arm nothing. The
+  // row is one per conversation, so the second arm folds into the first; Chatwoot's two resolve
+  // events fold the same way. For the responder when it is the one monitoring, and for the route's
+  // own observer when there is one. Best-effort, like the compaction below.
+  //
+  // ...but only while the conversation IS resolved, which is the mirror's answer and not the
+  // payload's (issue #477 review, round 2). Arming off the event is what lets the second route arm
+  // at all, and it also trusts a payload the mirror REJECTED as out of order: a delayed `resolved`
+  // landing after a newer event reopened the conversation would pull the verdict forward and let an
+  // `on_resolve` agent relabel a live conversation. The mirror's status is the effective one in both
+  // cases — applied by this delivery, or already applied by the other route — so it separates the
+  // second route from a stale event, which `mirror.applied` alone cannot. `effectiveStatus` falls back
+  // to the payload where the mirror read nothing, so a status nothing could store still arms.
+  if (
+    n.conversationId !== null &&
+    n.status === "resolved" &&
+    effectiveStatus === "resolved" &&
+    (n.event === "conversation_status_changed" ||
+      n.event === "conversation_resolved")
+  ) {
+    const conversationId = n.conversationId;
+    // BEST-EFFORT AS A WHOLE (issue #477 review, round 2). The two runtime reads below are database
+    // calls on a delivery that is already CLAIMED, and a status-only event carries no
+    // `inboundMessageId` — so nothing recovers it: the sweep needs a customer message id to anchor
+    // on. A transient pool error thrown from here escaped past the compaction and the redirect
+    // closing that follow, on conversations that have no observer at all. A label that is late is
+    // not a message that is lost; a closing message that never goes out is.
+    try {
+      let closingInboxId = n.inboxId;
+      if (closingInboxId === null) {
+        try {
+          const stored = await runScopedOn(
+            base,
+            sysCtx(params.tenantId),
+            (db) =>
+              db.conversation.findUnique({
+                where: {
+                  tenantId_chatwootInstanceId_chatwootConversationId: {
+                    tenantId: params.tenantId,
+                    chatwootInstanceId: params.instanceId,
+                    chatwootConversationId: conversationId,
+                  },
+                },
+                select: { inbox: { select: { chatwootInboxId: true } } },
+              }),
+          );
+          closingInboxId = stored?.inbox?.chatwootInboxId ?? null;
+        } catch (err) {
+          logger.warn(
+            "chatwoot: resolving the inbox for the observer's final verdict failed (conv=%s): %s",
+            String(conversationId),
+            errMsg(err),
+          );
+        }
+      }
+      const responderRt = await inboxAgentRuntime(
+        params.tenantId,
+        params.instanceId,
+        closingInboxId,
+        base,
+      );
+      const observerRt = await observerRuntimeForRoute(
+        params.tenantId,
+        params.instanceId,
+        params.agentBotId,
+        {
+          chatwootInboxId: closingInboxId,
+          chatwootConversationId: conversationId,
+        },
+        // Same reading of the payload the message path makes: `undefined` on both is a degraded event
+        // that says nothing and is answered by the mirror; `null` is an explicit unassignment.
+        n.assigneeType === undefined && n.assigneeId === undefined
+          ? null
+          : { type: n.assigneeType, id: n.assigneeId },
+        params.routeObserved === true,
+        base,
+      );
+      // ...and the BOUND observer, asked of the binding rather than of the reply route, for the
+      // reason the burst arm names: a watcher whose bot still holds the conversation resolves to no
+      // reply route and would otherwise miss its own final verdict (issue #477 review, round 4).
+      const boundRt = await boundObserverRuntime(
+        params.tenantId,
+        params.instanceId,
+        params.agentBotId,
+        {
+          chatwootInboxId: closingInboxId,
+          chatwootConversationId: conversationId,
+        },
+        base,
+      );
+      const seen = new Set<bigint>();
+      for (const watcher of [responderRt, observerRt, boundRt]) {
+        if (
+          watcher?.enabled &&
+          isMonitoring(watcher.mode) &&
+          !seen.has(watcher.agentId) &&
+          (watcher === responderRt || responderRt?.agentId !== watcher.agentId)
+        ) {
+          seen.add(watcher.agentId);
+          await armObserve({
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId,
+            agentId: watcher.agentId,
+            reason: "resolved",
+            cfg: readMonitoringConfig(watcher.settings),
+            // The conversation's own version (`updated_at.to_f`) names this RESOLUTION, so the four deliveries one
+            // resolve produces (two event types × two routes) buy one verdict between them.
+            mark: n.conversationUpdatedAt,
+            // Only the REPLY-ROUTE answer can be an attach-window one (round 15), and here it
+            // matters most: the mark above suppresses every later delivery of this resolution, so a
+            // tick that completed on a row that had not landed yet lost the final verdict for good.
+            attaching: watcher === observerRt && observerRt.attaching === true,
+            base,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        "chatwoot: arming the observer's final verdict failed (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+    }
+  }
   if (
     mirror.applied &&
     mirror.prevStatus !== null &&
@@ -5257,6 +5513,116 @@ export async function processChatwootDelivery(
       );
     } else {
       await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
+    }
+  }
+  // THE WATCHER'S VERDICT (issue #477): a customer message on a conversation the agent observes arms
+  // the OBSERVE row, which reads the conversation from Chatwoot when its window closes. After the
+  // marks and best-effort, like compaction: the memory append above is what this delivery owes, and
+  // a label that is late is not a message that is lost — the next burst arms the same row again.
+  //
+  // ...and only while the watcher is SWITCHED ON (issue #477 review, round 2). `observing` is a
+  // statement about the route, not about the agent: a disabled observer still owns the route, its
+  // ingestion refuses (`ingested` stays `"nothing"`, deliberately, so the message stays above the
+  // watermark for the flush after a flip), and arming here would leave a verdict pending on a
+  // message the agent was explicitly off for. Re-enabled before the window closes, the tick would
+  // then classify and relabel it.
+  //
+  // WHO CLASSIFIES IS ASKED SEPARATELY FROM WHO ANSWERS (issue #477 review, round 4). `rt` is the
+  // reply route's runtime, and that answer is null for a bound observer whose bot still HOLDS the
+  // conversation on an inbox that has a responder — correctly, since the reply is the responder's.
+  // Observation is not a reply, and an observer watches every conversation on its inbox including
+  // the ones its bot happens to hold. So the binding is asked directly, and the two answers are
+  // deduplicated by agent: on the ordinary observer route they are the same runtime.
+  //
+  // ...and NOT for a control command (issue #477 review, round 5). `/teste` and `/reset` are an
+  // operator talking to the runtime, not a customer talking to the business: the responder consumes
+  // them, and a verdict armed on one would classify the conversation off an operator's instruction —
+  // and, in `/reset`'s case, wake up after the command cleared the labels and put them back.
+  if (
+    isNewIncoming &&
+    !commandActive &&
+    n.conversationId !== null &&
+    ingested !== "failed"
+  ) {
+    const conversationId = n.conversationId;
+    const bound = await boundObserverRuntime(
+      params.tenantId,
+      params.instanceId,
+      params.agentBotId,
+      {
+        chatwootInboxId: n.inboxId,
+        chatwootConversationId: conversationId,
+      },
+      base,
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: reading the inbox's observer binding for the verdict failed (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+      return null;
+    });
+    // THE HAND-OVER ANSWER, NOT THE SNAPSHOT'S `enabled` (issue #477 review, round 20). `observing`
+    // was derived from `rt` and agrees with it; `handedToObserver` comes from a FRESH read that
+    // already established enabled AND monitoring, so gating it on the loaded `rt.enabled` rejects
+    // exactly the agent that was switched on inside this delivery — while ingestion and the
+    // watermark have already treated the message as observed, and `bound` is null because a
+    // responder holds no observer row. The message would then wait for another trigger.
+    const watchers =
+      rt !== null && (handedToObserver || (rt.enabled && observing))
+        ? [rt]
+        : [];
+    if (bound?.enabled && !watchers.some((w) => w.agentId === bound.agentId))
+      watchers.push(bound);
+    // Only the REPLY-ROUTE answer can be an attach-window one (round 15): `bound` IS the row, and a
+    // detached bot that still owns an older conversation keeps receiving its events, so "no row"
+    // there is the post-detach state as often as the pre-commit one.
+    const attachingAgentId =
+      observerHolds && rt !== null && observerAttaching ? rt.agentId : null;
+    // A HAND-OVER MEANS THE SNAPSHOT IS OLD (issue #477 review, round 12). `observing` was read off
+    // `rt` and agrees with it; `handedToObserver` is the opposite case — the runtime was loaded as a
+    // responder and a FRESH read found it monitoring, so the flip landed inside this delivery and
+    // `rt.settings` predates it. The edit that flips the mode is usually the edit that adds the label
+    // groups, so arming off the old bag answers `off` and the message is remembered and never
+    // classified. `boundObserverRuntime` cannot cover it either: that agent is the inbox's responder,
+    // so it holds no observer row. One read, on a path that only runs when a mode flip raced a
+    // delivery; an unreadable answer keeps the snapshot, since a stale taxonomy is better than none.
+    const freshSettings =
+      handedToObserver && !observing && rt !== null
+        ? await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+            db.agent.findUnique({
+              where: { id: rt.agentId },
+              select: { settings: true },
+            }),
+          )
+            .then((a) => a?.settings ?? null)
+            .catch((err) => {
+              logger.warn(
+                "chatwoot: re-reading the handed-over watcher's settings failed (conv=%s): %s",
+                String(conversationId),
+                errMsg(err),
+              );
+              return null;
+            })
+        : null;
+    for (const watcher of watchers) {
+      await armObserve({
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId,
+        agentId: watcher.agentId,
+        reason: "burst",
+        cfg: readMonitoringConfig(
+          freshSettings !== null && watcher.agentId === rt?.agentId
+            ? freshSettings
+            : watcher.settings,
+        ),
+        // The message this burst is about, in Chatwoot's own sequence: the reset fence the tick is
+        // held to is asked in that order and in no other.
+        atMessageId: n.message?.id ?? null,
+        attaching: watcher.agentId === attachingAgentId,
+        base,
+      });
     }
   }
 

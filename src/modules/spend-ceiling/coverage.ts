@@ -54,4 +54,8 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     // Vision runs on the incoming attachment BEFORE any turn gate decides anything (#316 measured
     // the same asymmetry for attribution), so it is the one sub-call that has to ask for itself.
     vision: "gated",
+    // The OBSERVE job (issue #477). Its own scheduler job, outside any turn, so nothing answers for
+    // it: it asks the ceiling itself, immediately before its one model call, and a refusal costs
+    // the tenant a label that stays as it was — nothing a customer waits on.
+    observer: "gated",
   });

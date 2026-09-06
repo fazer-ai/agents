@@ -9,11 +9,14 @@ import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
 import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
+  ClassifierOverlapError,
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { withEntityLock } from "@/lib/locks";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import {
   agentUpdateAudit,
   auditSafe,
@@ -44,6 +47,13 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import {
+  firstLabelGroupConflict,
+  LABEL_GROUP_NAME_MAX,
+  LABEL_VALUE_MAX,
+  labelValuesOf,
+  RESERVED_GROUP_NAMES,
+} from "@/modules/observe/settings";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
 import {
@@ -523,6 +533,181 @@ const namedOrNull = (v: unknown): string | null =>
 // then store a bag that has none — the exact half-named row this rule exists to refuse.
 export type SettingsWriteMode = "replace" | "merge";
 
+// THE SAME QUESTION FOR THE TAXONOMY, and in the shared service for the same reason (issue #477
+// review, round 12). The zod refinements on `BEHAVIOR_PATCH_SHAPE` only run on the MCP patch; REST
+// takes `settings` as an arbitrary record, so a reserved group name, a duplicate name or a value
+// two groups claim came back 200 and was then silently normalized away by `readLabelGroups` —
+// possibly leaving no group at all, which is how observation is switched off. One core, three
+// transports: the rule belongs where every write passes.
+//
+// Compared TRIMMED and case-folded on the name, the way the reader compares. A bag that is not a
+// list, or an entry that is not an object, is not this rule's business: `readLabelGroups` skips
+// those, and refusing here would turn a shape the reader already tolerates into a 400.
+// ...AND ACROSS THE CLASSIFIERS THAT SHARE A CONVERSATION (issue #477 review, round 16). The rule
+// above is the same one, asked inside one agent; an inbox can carry a monitoring RESPONDER and a
+// different OBSERVER, both classify every conversation on it, and Chatwoot's labels are ONE FLAT SET
+// per conversation. So two agents claiming `urgente` is the same contradiction as two groups
+// claiming it: A's exclusive `urgente → normal` removes the label B just wrote, B writes it back on
+// its next burst, and the pair flaps — with whatever automation the label triggers firing on every
+// flip. Neither taxonomy is wrong on its own, which is why this cannot be asked of one bag.
+//
+// Asked wherever the pairing can be created: this settings write, and the two bindings
+// (`bindInbox`, `observeInbox`). The cap is one responder plus one observer, so this compares at
+// most two taxonomies.
+// The lock every writer of a classifier taxonomy takes before checking and writing (issue #477
+// review, round 17). Two agents on one inbox each lock their OWN row, so both can read the other's
+// committed settings, both pass, and both commit the same value — the flap this invariant exists to
+// prevent, arrived at by two writers who each did everything right. One key per tenant rather than
+// per inbox, because an agent can share several inboxes and N locks is an ordering problem; the
+// contention it buys is nil, since editing a taxonomy is a console action measured in minutes.
+export const classifierTaxonomyLock = (tenantId: bigint): string =>
+  `observe-taxonomy:${String(tenantId)}`;
+
+export async function assertNoClassifierOverlap(
+  db: ScopedDb,
+  agentId: bigint,
+  // The state this write LEAVES the agent in, not the one it had. Symmetric with the peer filter
+  // below (issue #477 review, round 19): the flap needs two live writers, so a target that will not
+  // classify — disabled, or not monitoring — collides with nobody, and refusing there blocked an
+  // operator configuring a production responder's future taxonomy. The transitions that make it
+  // live (a flip to monitoring, a re-enable) are therefore writes this must be ASKED on, which is
+  // what `updateAgent` does with the three fields folded together.
+  target: { settings: unknown; enabled: boolean; mode: string },
+  // The inbox the pairing is being CREATED on, when a binding is asking. Omitted by the settings
+  // write, which asks about every inbox this agent already classifies.
+  onInboxId?: bigint,
+  // THE OPERATION IS REPLACING THE RESPONDER (issue #477 review, round 21). `bindInbox` overwrites
+  // `Inbox.agentId`, so the responder standing there right now is one this same call is about to
+  // remove: collected as a peer it made a monitoring agent unable to hand its inbox to another one
+  // sharing the taxonomy — the two never classify together, and the refusal was about a pairing
+  // that ends the moment the write lands. The observer beside it is untouched by the swap and is
+  // still checked. `observeInbox` passes nothing: there the responder stays.
+  replacesResponder = false,
+): Promise<void> {
+  if (!target.enabled || !isMonitoring(target.mode)) return;
+  const mine = labelValuesOf(target.settings);
+  if (mine.size === 0) return;
+  const inboxes = await db.inbox.findMany({
+    where:
+      onInboxId === undefined
+        ? { OR: [{ agentId }, { observers: { some: { agentId } } }] }
+        : { id: onInboxId },
+    // `Inbox.agentId` is a bare column and not a relation field, so the responder is collected here
+    // and read below together with the observers.
+    select: { agentId: true, observers: { select: { agentId: true } } },
+  });
+  const others = new Set<bigint>();
+  const outgoingResponder = replacesResponder && onInboxId !== undefined;
+  for (const inbox of inboxes) {
+    if (
+      !outgoingResponder &&
+      inbox.agentId !== null &&
+      inbox.agentId !== agentId
+    )
+      others.add(inbox.agentId);
+    for (const o of inbox.observers)
+      if (o.agentId !== agentId) others.add(o.agentId);
+  }
+  if (others.size === 0) return;
+  // ONLY THE AGENTS THAT ACTUALLY CLASSIFY (issue #477 review, round 18). The flap this refuses
+  // needs two live writers; a disabled peer, or one in `production` with a taxonomy stored for a
+  // mode it has not flipped to yet, writes nothing. Read without this, the rule refused a real
+  // observer over a dormant bag. The FLIP is where the pairing then becomes live, so `updateAgent`
+  // asks this on a patch that turns monitoring on even when it names no settings.
+  const agents = (
+    await db.agent.findMany({
+      where: { id: { in: [...others] } },
+      select: { name: true, settings: true, enabled: true, mode: true },
+    })
+  ).filter((a) => a.enabled && isMonitoring(a.mode));
+  for (const other of agents)
+    for (const value of labelValuesOf(other.settings))
+      if (mine.has(value))
+        throw new ClassifierOverlapError(
+          `settings.monitoring: "${value}" is already classified by "${other.name}" on an inbox this agent shares`,
+          400,
+          "errors.monitoringLabelValueTaken",
+          { value, agent: other.name },
+          "settings.monitoring.labelGroups",
+        );
+}
+
+export function assertMonitoringLabelGroups(settings: unknown): void {
+  const mon =
+    settings && typeof settings === "object"
+      ? (settings as Record<string, unknown>).monitoring
+      : undefined;
+  const raw =
+    mon && typeof mon === "object"
+      ? (mon as Record<string, unknown>).labelGroups
+      : undefined;
+  if (!Array.isArray(raw)) return;
+  const groups: { name: string; values: string[] }[] = [];
+  for (const g of raw) {
+    if (!g || typeof g !== "object") continue;
+    const bag = g as Record<string, unknown>;
+    const name = typeof bag.name === "string" ? bag.name.trim() : "";
+    if (name === "") continue;
+    // A RESERVED NAME IS REFUSED WHEREVER IT APPEARS, unlike the two conflicts below: it is a
+    // statement about the group alone, so the schema asks it as a field-level rule on every group
+    // rather than over the retained slice, and this assertion says the same thing.
+    if (RESERVED_GROUP_NAMES.has(name.toLowerCase()))
+      throw new AppError(
+        `settings.monitoring: "${name}" is a reserved group name`,
+        400,
+        "errors.monitoringReservedGroupName",
+        { name },
+        "settings.monitoring.labelGroups",
+      );
+    // A LENGTH IS A RULE ABOUT THE ENTRY ALONE (issue #477 review, round 23), asked per field like
+    // the reserved name above and not over the retained slice. Both strings reach the model
+    // verbatim — the prompt's `<labels>` block and the verdict schema's enum — so unbounded they
+    // make every tick fail on the provider's request limit, on a configuration that reads as valid.
+    if (name.length > LABEL_GROUP_NAME_MAX)
+      throw new AppError(
+        `settings.monitoring: the group name "${clipText(name, 40)}…" is longer than ${LABEL_GROUP_NAME_MAX} characters`,
+        400,
+        "errors.monitoringGroupNameTooLong",
+        { max: LABEL_GROUP_NAME_MAX },
+        "settings.monitoring.labelGroups",
+      );
+    const values = (Array.isArray(bag.values) ? bag.values : [])
+      .map((v) => (typeof v === "string" ? v.trim() : ""))
+      .filter((v) => v !== "");
+    for (const value of values)
+      if (value.length > LABEL_VALUE_MAX)
+        throw new AppError(
+          `settings.monitoring: the label "${clipText(value, 40)}…" is longer than ${LABEL_VALUE_MAX} characters`,
+          400,
+          "errors.monitoringLabelValueTooLong",
+          { max: LABEL_VALUE_MAX },
+          "settings.monitoring.labelGroups",
+        );
+    groups.push({ name, values });
+  }
+  // ONLY OVER WHAT THE READER RETAINS (issue #477 review, round 21). Asked of the same walk the
+  // schema asks, so the REST assertion and the zod shape cannot drift: past five groups or forty
+  // values the reader stores nothing, so a collision there is with an entry that will not exist, and
+  // the 400 was about a truncation this bag documents.
+  const conflict = firstLabelGroupConflict(groups);
+  if (conflict?.kind === "duplicate-name")
+    throw new AppError(
+      `settings.monitoring: two groups may not share the name "${conflict.name}"`,
+      400,
+      "errors.monitoringDuplicateGroupName",
+      { name: conflict.name },
+      "settings.monitoring.labelGroups",
+    );
+  if (conflict?.kind === "shared-value")
+    throw new AppError(
+      `settings.monitoring: "${conflict.value}" is listed by more than one group`,
+      400,
+      "errors.monitoringDuplicateLabelValue",
+      { value: conflict.value },
+      "settings.monitoring.labelGroups",
+    );
+}
+
 export function assertSettingsModelFallback(
   settings: unknown,
   stored: unknown,
@@ -806,6 +991,37 @@ export async function updateAgent(
     assertSettingsTextSizes(rest.settings, before?.settings);
     assertSettingsDebugWindow(rest.settings, before?.settings);
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
+    assertMonitoringLabelGroups(rest.settings);
+    // ...asked on a patch that TURNS MONITORING ON as well, even when it names no settings (issue
+    // #477 review, round 18): the peer filter only counts agents that classify, so the flip itself
+    // is the moment a dormant taxonomy becomes a live second writer. The bag checked is then the
+    // stored one.
+    // ...asked on any write that could make this agent a LIVE classifier, which is the three fields
+    // folded together (issue #477 review, round 19): a flip to monitoring, a re-enable, or a new
+    // taxonomy. Each alone is invisible to the others — a `{enabled: true}` patch names neither of
+    // the first two — and the assertion itself decides whether the resulting state classifies.
+    if (
+      ctx.tenantId !== null &&
+      (rest.settings !== undefined ||
+        rest.mode !== undefined ||
+        rest.enabled !== undefined)
+    ) {
+      const lockTenant = ctx.tenantId;
+      const effective = {
+        settings: rest.settings ?? before?.settings,
+        enabled:
+          typeof rest.enabled === "boolean"
+            ? rest.enabled
+            : (before?.enabled ?? false),
+        mode:
+          typeof rest.mode === "string"
+            ? rest.mode
+            : String(before?.mode ?? ""),
+      };
+      await withEntityLock(db, classifierTaxonomyLock(lockTenant), () =>
+        assertNoClassifierOverlap(db, id, effective),
+      );
+    }
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     // NOTE: An OBSERVER of an inbox (issue #476) is a monitoring agent by construction — the route it
     // holds answers nothing whatever the mode says — so the mode is not this agent's to leave while
@@ -1024,6 +1240,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsTextSizes(input.settings, undefined);
   assertSettingsDebugWindow(input.settings, undefined);
   assertSettingsModelFallback(input.settings, undefined, "replace");
+  assertMonitoringLabelGroups(input.settings);
   assertSettingsToolPreconditions(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);

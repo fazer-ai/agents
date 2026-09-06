@@ -12,6 +12,7 @@ import { isTestSilenced } from "@/modules/agents/test-mode";
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   parseLiveConversation,
   shouldBotHandle,
@@ -829,14 +830,24 @@ export async function runAgentNudge(
     const labels = actions.assignLabels?.filter((l) => l.trim());
     if (labels && labels.length > 0) {
       try {
-        const current = await client.getConversationLabels(conversationId);
-        // The GET is a Chatwoot round trip, so the answer above is about a moment before it. Same
-        // rule as the resolve below, and the labels need it for the same reason: /reset peels the
-        // episode's labels off on purpose, and a SET carrying the merged list puts them back on a
-        // conversation the operator was told had been cleared.
-        if (!(await stillWanted())) return "stale";
-        const merged = [...new Set([...current, ...labels])];
-        await client.setConversationLabels(conversationId, merged);
+        // Inside the conversation's label queue, with `assign_label` and the observer's verdict:
+        // the endpoint replaces the whole set (issue #477 review, round 3).
+        const stale = await withConversationLabels(
+          tenantId,
+          conversationId,
+          async () => {
+            const current = await client.getConversationLabels(conversationId);
+            // The GET is a Chatwoot round trip, so the answer above is about a moment before it.
+            // Same rule as the resolve below, and the labels need it for the same reason: /reset
+            // peels the episode's labels off on purpose, and a SET carrying the merged list puts
+            // them back on a conversation the operator was told had been cleared.
+            if (!(await stillWanted())) return true;
+            const merged = [...new Set([...current, ...labels])];
+            await client.setConversationLabels(conversationId, merged);
+            return false;
+          },
+        );
+        if (stale) return "stale";
       } catch (err) {
         logger.warn(
           { err, conversationId: String(conversationId) },

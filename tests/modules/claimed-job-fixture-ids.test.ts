@@ -68,7 +68,10 @@ const LITERAL_ID = new RegExp(
 // A window rather than a parser, and its reach is pinned from both sides below, because a window
 // nobody measures is one that quietly grows to "the whole file" or shrinks to "the same line".
 const NEARBY = 14;
-const MARKERS = /\bclaimSeq:/;
+// The FIELD NAME, not one punctuation of it: `claimSeq: 0`, the shorthand `claimSeq,` a local
+// variable produces, `"claimSeq": 0` in a JSON-shaped literal and `row.claimSeq` in the line
+// that fills it are all the same signal, and a marker spelled with a colon sees only the first.
+const MARKERS = /\bclaimSeq\b/;
 
 // A sequence starts at 1 and only ever climbs, so 0 and negatives are unreachable by construction,
 // which is what a fixture needs and the reason this is a sign test rather than a ban on literals.
@@ -208,6 +211,30 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       "    { id: 1n, name: 'Foo' },",
       "  ];",
       "  expect(resolveByModelName(rows, 'Foo')).toEqual({ kind: 'one', id: 1n });",
+    ].join("\n");
+    expect(fixtureIdHits(src)).toEqual([]);
+  });
+
+  // The marker's own spellings. A fixture whose `claimSeq` comes from a local variable is written as
+  // shorthand, and a JSON-shaped one quotes its keys: both are the same field, and a marker that
+  // demanded a colon read them as no job at all.
+  test.each([
+    ["a property", "    claimSeq: 0,"],
+    ["shorthand", "    claimSeq,"],
+    ["a quoted key", '    "claimSeq": 0,'],
+    ["a value read off a row", "    claimSeq: row.claimSeq,"],
+  ])("recognises claimSeq written as %s", (_name, line) => {
+    const src = ["  const job = {", "    id: 7n,", line, "  };"].join("\n");
+    expect(fixtureIdHits(src)).toEqual([2]);
+  });
+
+  // The whole word, not a prefix of it: `claimDueJobs`, `claimed` and `claimOf` sit beside every real
+  // row in the scheduler tests, and a marker matching "claim" would call each of those rows a
+  // fixture.
+  test("a claim in the neighbourhood is not the field", () => {
+    const src = [
+      "  const [claimed] = await claimDueJobs(1, appDb, new Date(), tenantId);",
+      "  const msg = { id: 7n, content: 'oi' };",
     ].join("\n");
     expect(fixtureIdHits(src)).toEqual([]);
   });

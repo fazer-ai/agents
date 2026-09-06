@@ -77,11 +77,14 @@ describe.skipIf(!dbUp)("mcp oauth consent (pending + approvals)", () => {
   });
 
   afterAll(async () => {
+    // BY PREFIX, not by the exact id: the tests below derive clients from `CLIENT` (`-race`,
+    // `-dup`), and an approval row has no foreign key to the user or the tenant deleted just after,
+    // so an exact match leaves them behind for good — one more orphan per local run.
     await suDb.$executeRawUnsafe(
-      `DELETE FROM mcp_oauth_pending_authorizations WHERE client_id = '${CLIENT}'`,
+      `DELETE FROM mcp_oauth_pending_authorizations WHERE client_id LIKE '${CLIENT}%'`,
     );
     await suDb.$executeRawUnsafe(
-      `DELETE FROM mcp_oauth_client_approvals WHERE client_id = '${CLIENT}'`,
+      `DELETE FROM mcp_oauth_client_approvals WHERE client_id LIKE '${CLIENT}%'`,
     );
     if (userId)
       await suDb.$executeRawUnsafe(`DELETE FROM users WHERE id = ${userId}`);

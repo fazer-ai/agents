@@ -501,7 +501,7 @@ export const mcpOAuthController = new Elysia({
         "Approves or denies a pending authorization. Verifies the CSRF token and single-use-consumes the request; on approve, mints the authorization code from the stored record and remembers the approval (revocable). Returns { redirect } for the SPA to navigate to.",
       ),
       requireAuth: true,
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 409, 422),
       params: t.Object({
         req: t.String({
           minLength: 1,

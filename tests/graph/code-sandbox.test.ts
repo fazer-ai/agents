@@ -178,42 +178,197 @@ describe("runSandboxedCode", () => {
   // value the body finished building with the deadline nearly spent would otherwise have its render
   // interrupted and come back as "[object Object]".
   //
-  // The budget is MEASURED here, not written down. The first version spent 250 ms of a fixed 300 ms
-  // and then built 60k objects, which is an assertion about how fast the machine is: it passed on a
-  // developer laptop and failed on every CI runner for four consecutive commits (#518). What the
-  // renewal is for does not depend on the machine — so the build is timed on THIS machine first,
-  // and the deadline is then set just past it. The body finishes with a sliver left, far less than
-  // its own render needs (rendering the array costs several times building it), so without the
-  // renewal the render is interrupted and with it the value comes back whole.
+  // WHAT THE BODY SPENDS IS PINNED TO THE CLOCK, NOT TO THE WORK. Two earlier versions of this test
+  // asserted how fast this machine is, and both kept the shard red (#518). The first spent 250 ms of
+  // a fixed 300 ms budget and then built 60k objects: it passed on a laptop and failed on every CI
+  // runner, deterministically. The second measured the build and set the deadline just past it --
+  // better, because it no longer wrote the machine down, but it still asked the SECOND run to finish
+  // the same build within 1.5x of what the FIRST one took, and one scheduler preemption on a shared
+  // runner is wider than that margin (measured here: the build varies 1.2x over 25 runs, and the
+  // whole margin is ~12 ms).
+  //
+  // So the body no longer races its own budget. It builds the value with the budget wide open, then
+  // SPINS on `Date.now()` until a chosen instant, which puts the end of the body at a wall-clock
+  // point that does not move with how fast the build was. A stall during the build is absorbed
+  // whole, because the spin targets an absolute instant and not a duration.
+  //
+  // WHAT IS LEFT WHEN THE BODY RETURNS IS MEASURED, ON THIS MACHINE, FROM THE REPLY. One quantity
+  // decides the whole test: the span between the deadline starting in `open()` and the snippet's
+  // first statement -- call it the setup. Ask for a leftover below it and the BODY is interrupted;
+  // ask for one above `setup + render` and the render fits anyway and the renewal guards nothing.
+  // Four review rounds each found a different contaminant in a host-side ESTIMATE of that span
+  // (worker startup, dispatch, result transfer, per-call jitter, disposal after the render), because
+  // `wall - ms` is not the setup and no correction term turns it into one.
+  //
+  // It does not have to be estimated. On a run that came back at all, `ms` covers the setup plus the
+  // body, and the body ends at an instant this test chose, so the setup falls straight out of the
+  // reply:
+  //
+  //     setupMs = leftMs - (budgetMs - ms)
+  //
+  // A calibration run with a leftover nothing could exhaust reads it off; the run that is asserted
+  // on then asks for that plus a sliver. A machine three times slower measures three times more and
+  // asks for three times more, and no constant written here has to cover it. `ms` starts marginally
+  // before the deadline does, which the assertion at the end handles by bounding the leftover from
+  // the other side.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    const BUILD = "Array.from({ length: 20000 }, (_, i) => ({ i }))";
-    const t0 = performance.now();
-    const baseline = await runSandboxedCode(BUILD, {
+    // N IS SQUEEZED FROM BOTH SIDES, AND NEITHER SIDE IS FREE. Above, the renewal installs a FIXED
+    // `RENDER_BUDGET_MS`, so a value too big to render inside it fails even on a call with a
+    // 30-second timeout -- the machine's speed back in by the other door. Below, the leftover this
+    // test grants the render is about one setup, which does NOT shrink with N, so a smaller fixture
+    // narrows the very gap the test lives in. Both ends measured here, on the nominal leftover the
+    // loop below controls:
+    //
+    //            renders inside the fixed ceiling   defect hides from a leftover of
+    //     20k    yes                                30 ms   (test lands at 11-14)
+    //     40k    yes                                50 ms
+    //    200k    yes                                --
+    //    240k    NO                                 --
+    //
+    // So 40k sits about 5x under the ceiling and about 3.6x under the leftover that would let an
+    // unrenewed render through; halving it would buy ceiling headroom that the precondition below
+    // already guards, and spend margin that nothing guards.
+    const N = 40_000;
+    const CHARS = 20_000_000;
+    // NOTE: THE RENDER IS MEASURED FROM INSIDE, by the only clock that is not contaminated: its own.
+    // A getter runs when the renderer reaches it (the test below this one is the fence for that), so
+    // a getter on the first element and one on the last bracket the walk, and their `console.log`
+    // comes back in the reply. Nothing host-side is in the span -- not the worker spawn, not the
+    // dispatch, not the transfer, not the disposal -- which is what four earlier rounds each failed
+    // to subtract out of `wall - ms`. Measured: 43-45 ms here, stable over 4 runs.
+    const BUILD = `(() => {
+      const v = Array.from({ length: ${N} }, (_, i) => ({ i }));
+      v[0] = { get i() { console.log("A" + Date.now()); return 0 } };
+      v[${N - 1}] = { get i() { console.log("B" + Date.now()); return ${N - 1} } };
+      return v;
+    })()`;
+    const renderMsOf = (out: SandboxOutcome) => {
+      const logs = "logs" in out ? (out.logs as string[]) : [];
+      const a = logs.find((l) => l.startsWith("A"));
+      const b = logs.find((l) => l.startsWith("B"));
+      return a && b ? Number(b.slice(1)) - Number(a.slice(1)) : null;
+    };
+
+    // NOTE: The ceiling is a production constant and the render is machine work, so a slow enough
+    // machine cannot render this fixture at all -- and it would fail as `InternalError`, which is
+    // exactly what the defect looks like. Ask first, with the budget wide open so only the ceiling
+    // can bite, and let a machine that cannot host the fixture say so in those words.
+    const roomy = await runSandboxedCode(BUILD, {
       timeoutMs: 30_000,
-      maxChars: 2_000_000,
+      maxChars: CHARS,
     });
-    const wall = performance.now() - t0;
-    expect(baseline.kind).toBe("value");
-    // `ms` is measured through the evaluation and BEFORE the render, so it is the span the deadline
-    // covers: opening the context, the prelude and the build. What is left of `wall` is the render
-    // (plus the reply hop), the part that runs on the renewed deadline.
-    const evalMs = (baseline as { ms: number }).ms;
-    const renderMs = wall - evalMs;
-    // Half the measured span again, so a second run slower than the baseline still FINISHES its
-    // build — the interruption this test is about is the render's, not the body's.
-    const slack = Math.ceil(evalMs * 0.5) + 5;
-    // The premise, asserted instead of assumed: rendering has to cost more than the slack, or this
-    // test would pass with the renewal gone and guard nothing. It held by ~3x when written.
-    expect(renderMs).toBeGreaterThan(slack);
-    const out = await runSandboxedCode(BUILD, {
-      timeoutMs: evalMs + slack,
-      maxChars: 2_000_000,
-    });
+    expect(
+      roomy.kind,
+      `${N} objects must render inside the fixed RENDER_BUDGET_MS on this machine`,
+    ).toBe("value");
+
+    const attempt = async (leftMs: number) => {
+      const budgetMs = leftMs + 500;
+      const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
+      const out = await runSandboxedCode(spun, {
+        timeoutMs: budgetMs,
+        maxChars: CHARS,
+      });
+      // What the run itself says was left of the budget when the body returned -- measured on the run
+      // that matters, never carried over from another one. A `limit` reply carries no `ms` at all
+      // (the host drops it), so nothing here can read a number off an interrupted run by accident.
+      const leftoverMs =
+        "ms" in out ? budgetMs - (out as { ms: number }).ms : null;
+      return { out, leftoverMs };
+    };
+
+    // 64 ms is six times the setup measured here (10-12 ms), and its job is only to be survivable,
+    // not to be right: whatever the leftover turns out to be, the subtraction gives the setup. A
+    // machine slow enough to spend more than that measures itself at 128, then 256; the ceiling is a
+    // runaway guard, not a budget, and hitting it fails on the null rather than inventing a number.
+    let calMs = 64;
+    const calibrate = async () => {
+      let probe = await attempt(calMs);
+      while (probe.out.kind === "limit" && calMs < 1024) {
+        calMs *= 2;
+        probe = await attempt(calMs);
+      }
+      expect(probe.leftoverMs).not.toBeNull();
+      return calMs - (probe.leftoverMs as number);
+    };
+    // TWICE, KEEPING THE SMALLER, because the two directions of error are not symmetric. A setup
+    // read too small makes the asserted run ask for less than it needs, which comes back `limit` and
+    // the loop below corrects. One read too large hands the render a leftover it should never have
+    // had, and a render that fits is exactly what this test cannot tell from a render that was
+    // renewed -- it would report green over the defect. So the estimate is biased to the recoverable
+    // side. The first call is also what warms the interpreter, which running this test alone would
+    // otherwise pay inside the only measurement it has. Measured: a single read lands at 10-12 ms
+    // here, the smaller of two at 8-9.
+    const firstSetupMs = await calibrate();
+    const setupMs = Math.min(firstSetupMs, await calibrate());
+
+    // Now the setup plus a sliver, and then a CONTROLLER rather than a ladder, because the two ways
+    // of being wrong carry different amounts of information. Overshooting is measured exactly -- the
+    // run reports its own leftover -- so it is corrected by exactly that much. Undershooting is only
+    // a direction, because an interrupted run reports nothing at all, so it takes a step. Every
+    // worker is spawned fresh and sets itself up at its own pace, so the calibration above cannot
+    // promise anything about this one; what makes that harmless is that the assertion reads the
+    // asserted run's own clock, which lets the steps be generous without ever buying a green.
+    //
+    // The two ways this can end are distinguishable, which is what makes retrying on one of them
+    // safe (measured, both shapes):
+    //
+    //   body interrupted   -> kind "limit", limit "time", and NO `ms`
+    //   render interrupted -> kind "error", name "InternalError", WITH `ms`
+    //
+    // So `limit` means the sliver lost to jitter and is retried; `error` is the defect this test
+    // exists to catch and is never retried past. A retry loop blind to the difference would grow the
+    // leftover until the render fits and report green.
+    const TOL_MS = 5;
+    let leftMs = setupMs + 2;
+    let r = await attempt(leftMs);
+    for (let i = 0; i < 8; i++) {
+      if (r.out.kind === "limit") {
+        leftMs += 4;
+      } else if (r.out.kind === "value" && (r.leftoverMs as number) > TOL_MS) {
+        leftMs = Math.max(1, leftMs - ((r.leftoverMs as number) - TOL_MS));
+      } else {
+        break;
+      }
+      r = await attempt(leftMs);
+    }
+    const { out, leftoverMs } = r;
+
     expect(out.kind).toBe("value");
+    // NOTE: EVERY TERM OF THIS BOUND COMES OFF THE RUN BEING ASSERTED. `leftoverMs` is
+    // `leftMs - (ms - 500)`, and `ms - 500` is that worker's OWN setup, so the calibration above is
+    // only a starting point for the search: a worker slower or faster than the ones that calibrated
+    // cannot move this number, because it never enters it. What it bounds is:
+    //
+    //     real leftover = prefix + leftoverMs <= setup(this run) + TOL,  since prefix <= setup
+    //
+    // The prefix is the sliver between `ms` starting at the top of `run()` and the deadline starting
+    // partway into `open()`, once the runtime is built -- measured at 0.4 ms of an 8-9 ms setup, and
+    // bounded rather than measured because it is a prefix of exactly what `ms` covers. So the real
+    // leftover is about one setup of this very worker, and what it has to stay under scales with the
+    // machine the same way: rendering 40k objects is the same interpreter doing the same kind of
+    // work as setting one up. Measured, the two ends stay a factor of 3.6 apart.
+    expect(leftoverMs as number).toBeLessThanOrEqual(TOL_MS);
+    // NOTE: AND THIS IS THE PROOF, both halves off the same run. `leftMs` is the exact upper bound of
+    // what the render could have had on the ORIGINAL deadline -- exact because the prefix cancels:
+    //
+    //     real leftover = prefix + leftoverMs <= setup + leftoverMs = leftMs,  since prefix <= setup
+    //
+    // and `renderMs` is what the render actually took, on the interpreter's own clock. One being
+    // larger than the other says the render could not have finished on the deadline it inherited, so
+    // the whole value coming back is the renewal and nothing else. No proportionality argument, no
+    // timing carried between workers, no host clock. Measured: 11 against 44, a factor of 4.
+    const renderMs = renderMsOf(out);
+    expect(renderMs).not.toBeNull();
+    expect(renderMs as number).toBeGreaterThan(leftMs);
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
-    expect(v.endsWith('{"i":19999}]')).toBe(true);
-  });
+    expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
+    // NOTE: The 20 s below is comfortably above the twelve round trips this can take (one
+    // precondition, two calibrations, up to nine controlled attempts, ~0.6 s each), so nothing here
+    // is bounded by a default nobody chose. Measured end to end, the controller settles on its first
+    // attempt and the whole test takes about 2 s.
+  }, 20_000);
 
   // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The
   // renderer used to swallow that and answer "[object Object]" as a successful value, so the agent

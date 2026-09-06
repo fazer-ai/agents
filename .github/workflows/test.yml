@@ -3,12 +3,41 @@ name: Run Tests on PR
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.claude/**'
+      - 'licensing/**'
+      - '.github/ISSUE_TEMPLATE/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.claude/**'
+      - 'licensing/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  # Nightly full run; only agents-pro acts on it (see the job's `if`).
+  schedule:
+    - cron: '0 6 * * *'
   workflow_dispatch:
+
+# A newer push on the same ref supersedes the run in progress: with 10-20 pushes a day per PR, the
+# superseded runs were 4-9% of the bill for a verdict nobody reads.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    # agents-pro only ever receives mirror pushes of a tree this master already tested, and the
+    # stripped Pro tree is lint + build-checked by `check:editions` before it is mirrored. Its own
+    # copy of this workflow therefore runs on a nightly schedule and on dispatch, not on push:
+    # 267 mirror pushes in August cost 1,469 paid minutes for a second verdict on the same code.
+    # agents (public, free) keeps running on push as the visible proof of green.
+    if: >-
+      (github.event_name == 'schedule' && github.repository == 'fazer-ai/agents-pro')
+      || (github.event_name != 'schedule' && !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push'))
     runs-on: ubuntu-latest
 
     strategy:

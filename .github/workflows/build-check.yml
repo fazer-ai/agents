@@ -3,12 +3,34 @@ name: Build Check on PR
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.claude/**'
+      - 'licensing/**'
+      - '.github/ISSUE_TEMPLATE/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.claude/**'
+      - 'licensing/**'
+      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
+
+# A newer push on the same ref supersedes the run in progress: with 10-20 pushes a day per PR, the
+# superseded runs were 4-9% of the bill for a verdict nobody reads.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   type-check:
+    # agents-pro only ever receives mirror pushes of a tree this master already tested, and the
+    # stripped Pro tree is lint + build-checked by `check:editions` before it is mirrored, so this
+    # job is skipped there on push (see test.yml). agents (public, free) keeps running on push.
+    if: ${{ !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push') }}
     runs-on: ubuntu-latest
 
     steps:

@@ -10,9 +10,17 @@ import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { contentToText } from "@/graph/message-text";
 import { type ModelConfig, verdictAskMode } from "@/graph/model-config";
+import {
+  PRIMARY_MAX_RETRIES,
+  PRIMARY_TIMEOUT_MS,
+} from "@/graph/model-fallback";
 import { runModelCall } from "@/graph/model-limit";
 import { createChatModel, type ResolvedModelConfig } from "@/graph/models";
-import { buildCallbacks, loadAgentConfig } from "@/graph/prepare";
+import {
+  buildCallbacks,
+  buildFallbackModel,
+  loadAgentConfig,
+} from "@/graph/prepare";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
@@ -879,10 +887,35 @@ export async function runObserve(
     new SystemMessage(system),
     new HumanMessage(user),
   ];
+  // NOTE: BUILT BEFORE THE PRIMARY, because the primary's own bounds depend on whether it exists
+  // (issue #567 review, round 1). LangChain's defaults are six retries and an unbounded wait; with a
+  // second provider waiting, those turn a transient fault into the observer's whole 60-second abort
+  // and the fallback never gets a turn. `buildModelAndGraph` bounds the answer path the same way,
+  // and for the same reason: bounded ONLY when something was actually built behind it, so an
+  // install with no fallback keeps LangChain's behaviour byte for byte.
+  const fb = buildFallbackModel(cfg, deps.makeModel ?? createChatModel, {
+    // NOTE: ...AND A FALLBACK THAT CANNOT BE BUILT SAYS SO ON THE TRAIL (round 1). A deleted
+    // credential or an endpoint the provider pair does not accept leaves the tick with nothing
+    // behind it, which is indistinguishable from having configured none — and a server log is not
+    // where the operator who configured it is looking. Reported at BUILD time rather than at
+    // failure time, because by then it is too late to be the warning it needs to be.
+    onModelFallbackUnavailable: ({ provider, model: fbModel, reason }) =>
+      emitFlowEvent(flow, {
+        stage: "observe",
+        level: "warn",
+        status: "ok",
+        provider,
+        model: fbModel,
+        detail: { fallbackUnavailable: reason },
+      }),
+  });
   const resolved: ResolvedModelConfig = {
     ...cfg.mc,
     apiKey: cfg.apiKey,
     baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+    ...(fb
+      ? { maxRetries: PRIMARY_MAX_RETRIES, timeoutMs: PRIMARY_TIMEOUT_MS }
+      : {}),
   };
   let model: BaseChatModel;
   try {
@@ -925,11 +958,92 @@ export async function runObserve(
     return { outcome: "done" };
   }
 
+  // NOTE: THE SECOND PROVIDER RUNS FOR A VERDICT TOO (issue #567). `runModelCall` carries the one recovery
+  // LangChain does not make — an intermittent empty completion, measured at 1 in 184 on one install
+  // — and until now the observer called it bare, so an agent with a fallback configured had nothing
+  // behind its provider on this path. What that costs is not a turn but a LABEL: the tick ends, the
+  // conversation keeps yesterday's classification, and nothing on screen says why.
+  //
+  // The AGENT's own `modelFallback`, not a second setting: it is the same persona and the operator
+  // configured it once. A watcher-specific fallback is a real question — the model that answers a
+  // customer well and the one that classifies well are not necessarily the same, and this call runs
+  // with structured output — but it is a new setting to design, and running the configured one is
+  // strictly better than running nothing.
+  //
+  // Built through the same helper the answer path uses, so a fallback that cannot run is refused
+  // the same way here (a provider switch that would carry the agent's credentialRef, a constructor
+  // the SDK rejects) and reported through the same `onModelFallbackUnavailable`.
+  //
+  // ITS OWN CALLBACKS, and this is the part that is easy to get wrong: the usage row is stamped with
+  // the model named in `buildCallbacks`, so reusing the primary's would bill the fallback's tokens
+  // under the primary's name — the same defect `ModelRetryInfo` exists to prevent one lane up.
+  //
+  // Inside the spend ceiling above, deliberately: the gate is immediately before the billed call and
+  // the fallback is that call by another provider, under the same `observer` node.
+  const fbCallbacks = fb
+    ? buildCallbacks(cfg, {
+        tenantId,
+        threadId,
+        node: "observer",
+        model: fb.modelId,
+        conversationId: conv?.id ?? null,
+        source: "inbox",
+        turnId,
+        base,
+      })
+    : null;
   const startedAt = Date.now();
   let verdict: Record<string, unknown> | null;
   try {
-    verdict = await runModelCall(() =>
-      askVerdict(model, cfg.mc.provider, schema, messages, callbacks),
+    verdict = await runModelCall(
+      () => askVerdict(model, cfg.mc.provider, schema, messages, callbacks),
+      {
+        primary: { provider: cfg.mc.provider, model: cfg.mc.model },
+        ...(fb && fbCallbacks
+          ? {
+              fallback: {
+                run: () =>
+                  askVerdict(
+                    fb.model,
+                    fb.provider as ModelConfig["provider"],
+                    schema,
+                    messages,
+                    fbCallbacks,
+                  ),
+                labels: { provider: fb.provider, model: fb.modelId },
+                onFallback: ({ reason }) =>
+                  emitFlowEvent(flow, {
+                    stage: "observe",
+                    level: "warn",
+                    status: "ok",
+                    provider: fb.provider,
+                    model: fb.modelId,
+                    detail: {
+                      fallbackFrom: cfg.mc.provider,
+                      fallbackReason: reason,
+                    },
+                  }),
+                // NOTE: ATTRIBUTION, NOT A SECOND ALARM (issue #567 review, round 1), which is
+                // why this line is `info` while the failure it describes is an error. The `observe` stage
+                // around this call emits its OWN error when both providers fail, and alert
+                // coalescing keys on (channel, stage, level): two `observe`/`error` events for one
+                // failed tick bump one delivery to "×2", or send two if they lose the coalesce
+                // window. The stage owns the alarm; this line exists only to say WHICH model died,
+                // since the stage is labelled with the primary by construction. `status` stays
+                // "error": the call did fail. Same shape the nudge and the runtime use.
+                onFallbackFailed: ({ reason }) =>
+                  emitFlowEvent(flow, {
+                    stage: "observe",
+                    level: "info",
+                    status: "error",
+                    provider: fb.provider,
+                    model: fb.modelId,
+                    detail: { fallbackFailed: reason },
+                  }),
+              },
+            }
+          : {}),
+      },
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

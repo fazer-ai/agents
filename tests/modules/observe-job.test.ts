@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
+import type { ResolvedModelConfig } from "@/graph/models";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -17,7 +18,7 @@ import {
 } from "@/modules/observe/job";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { flowLogRows } from "../utils/flowlog";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 // The OBSERVE job end to end (issue #477): a burst arms one row per conversation, the tick reads
@@ -2722,6 +2723,247 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       await suDb.agent.update({
         where: { id: agentId },
         data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
+  // THE SECOND PROVIDER RUNS FOR A VERDICT (issue #567). `runModelCall` carries the recovery
+  // LangChain does not make, and the observer used to call it bare: an agent with a fallback
+  // configured had nothing behind its provider here, and an intermittent 503 cost the LABEL — the
+  // tick ends, the conversation keeps its old classification, and nothing says why.
+  //
+  // Both models come out of the SAME `makeModel`, told apart by the model id, which is also how the
+  // job builds them: the fallback is `buildFallbackModel` over the agent's own `modelFallback`.
+  test("a transient provider failure is answered by the configured fallback", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    const built: ResolvedModelConfig[] = [];
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          // Same vendor, another model: the resolution then takes the agent's own credential, so
+          // this needs no second vault entry to be runnable.
+          modelFallback: { provider: "openai", model: "gpt-5.4" },
+        },
+      },
+    });
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient(
+              [
+                message(1, "oi, comprei ingresso para sábado"),
+                message(2, "quero cancelar, não vou conseguir ir"),
+              ],
+              ["agente-off"],
+              log,
+            ),
+          makeModel: (mc) => {
+            built.push(mc);
+            if (mc.model === "gpt-5.4")
+              return verdictModel(
+                {
+                  assunto: "cancelamento",
+                  confidence: 0.9,
+                  reason: "O cliente pediu cancelamento.",
+                },
+                calls,
+              );
+            // The primary answers with a status the fallback exists for (503), not with a refusal:
+            // a 400 would be the same answer from anybody and must NOT be failed over.
+            const m = verdictModel({ assunto: "outros" }, calls);
+            (m as { invoke: unknown }).invoke = async () => {
+              const err = new Error("service unavailable") as Error & {
+                status?: number;
+              };
+              err.status = 503;
+              throw err;
+            };
+            return m;
+          },
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      // Both models were built, and the verdict written is the FALLBACK's. The FALLBACK COMES FIRST
+      // in this list, and that order is itself the round-1 fix: the primary's bounds depend on
+      // whether a fallback exists, so it cannot be built before the answer to that question.
+      expect(built.map((m) => m.model)).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
+      // ...and the primary WAS bounded, because one exists (issue #567 review, round 1). Unbounded,
+      // LangChain's six retries and its unbounded wait spend the observer's whole abort on the
+      // provider that already failed, and the second one never gets a turn.
+      const primaryBuilt = built.find((m) => m.model === "gpt-5.4-mini");
+      expect(primaryBuilt?.maxRetries).toBe(0);
+      expect(primaryBuilt?.timeoutMs).toBeGreaterThan(0);
+      expect(log.labelsWritten.at(-1)).toContain("cancelamento");
+      // The usage row is filed under the model that actually answered, not under the primary's
+      // name: the fallback gets its own callbacks for exactly this.
+      const usage = await suDb.llmUsage.findMany({
+        where: { tenantId, node: "observer" },
+        select: { model: true },
+        orderBy: { id: "desc" },
+        take: 1,
+      });
+      expect(usage.at(0)?.model).toBe("gpt-5.4");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
+  // BOTH PROVIDERS DOWN LEAVES ONE ALARM, NOT TWO (issue #567 review, round 1). The `observe` stage
+  // emits its own error when the tick fails, and alert coalescing keys on (channel, stage, level):
+  // a second `observe`/`error` line for the same failure bumps one delivery to "×2", or sends two if
+  // it loses the coalesce window. The attribution line is `info` with `status: "error"` — it exists
+  // only to say WHICH model died, because the stage is labelled with the primary by construction.
+  test("when the fallback fails too, the attribution line does not raise a second alarm", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          modelFallback: { provider: "openai", model: "gpt-5.4" },
+        },
+      },
+    });
+    // Only THIS tick's lines: the rows accumulate on the conversation across the file.
+    const before = (await observeLines()).length;
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient(
+              [message(1, "quero cancelar, não vou conseguir ir")],
+              ["agente-off"],
+              log,
+            ),
+          makeModel: () => {
+            const m = verdictModel({ assunto: "outros" }, calls);
+            (m as { invoke: unknown }).invoke = async () => {
+              const err = new Error("service unavailable") as Error & {
+                status?: number;
+              };
+              err.status = 503;
+              throw err;
+            };
+            return m;
+          },
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      const lines = (await observeLines()).slice(before);
+      const errors = lines.filter((l) => l.level === "error");
+      // ONE alerting line for one failed tick. The attribution rides at `info`.
+      expect(errors.length).toBe(1);
+      const attribution = lines.find(
+        (l) =>
+          l.level === "info" &&
+          (l.detail as Record<string, unknown> | null)?.fallbackFailed !==
+            undefined,
+      );
+      expect(attribution?.status).toBe("error");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+      await clearFlowLog(suDb, {
+        tenantId,
+        conversationId: convRowId,
+        stage: "observe",
+      });
+    }
+  });
+
+  // A FALLBACK THAT CANNOT BE BUILT SAYS SO, AT BUILD TIME (issue #567 review, round 1). A deleted
+  // credential leaves the tick with nothing behind its provider, which is indistinguishable from
+  // having configured none — and a server log is not where the operator who configured it looks.
+  test("a fallback that cannot be built leaves a warning on the trail", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          // Another vendor, so the resolution demands its OWN credential, and the ref resolves to
+          // nothing: `buildFallbackModel` reports `credential_not_found`.
+          modelFallback: {
+            provider: "anthropic",
+            model: "claude-4-5-haiku",
+            credentialRef: "vault:999999",
+          },
+        },
+      },
+    });
+    const before2 = (await observeLines()).length;
+    try {
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient(
+              [message(1, "quero cancelar, não vou conseguir ir")],
+              ["agente-off"],
+              log,
+            ),
+          makeModel: () =>
+            verdictModel(
+              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
+              calls,
+            ),
+        },
+      );
+      const lines = (await observeLines()).slice(before2);
+      const unavailable = lines.find(
+        (l) =>
+          (l.detail as Record<string, unknown> | null)?.fallbackUnavailable !==
+          undefined,
+      );
+      expect(unavailable?.level).toBe("warn");
+      // The tick still ran on the primary: a fallback that cannot be built is a warning, not a stop.
+      expect(log.labelsWritten.at(-1)).toContain("cancelamento");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+      await clearFlowLog(suDb, {
+        tenantId,
+        conversationId: convRowId,
+        stage: "observe",
       });
     }
   });

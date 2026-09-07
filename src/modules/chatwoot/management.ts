@@ -1616,10 +1616,21 @@ async function ensureAgentBotAndReattach(
   ];
   for (const other of reattach) {
     try {
+      // CONFIRMED HERE TOO, and in the recheck below (issue #540, PR review round 3). The snapshot
+      // above is a snapshot: an observer confirmed when it was taken can be unobserved and a NEW
+      // observe insert its unstamped row before this loop reaches that inbox. Read without the
+      // stamp, this loop attaches a bot for an observe it does not own and reports the attachment
+      // healthy — and if that observe then aborts before it learns the bot id, its own compensation
+      // cannot detach what this loop put there.
       const stands = await runScopedOn(base, ctx, async (db) =>
         other.as === "observer"
           ? (await db.inboxObserver.count({
-              where: { tenantId, agentId, inboxId: other.inboxId },
+              where: {
+                tenantId,
+                agentId,
+                inboxId: other.inboxId,
+                attachedAt: { not: null },
+              },
             })) > 0
           : (await db.inbox.count({
               where: { id: other.inboxId, agentId },
@@ -1653,7 +1664,12 @@ async function ensureAgentBotAndReattach(
       const stillStands = await runScopedOn(base, ctx, async (db) =>
         other.as === "observer"
           ? (await db.inboxObserver.count({
-              where: { tenantId, agentId, inboxId: other.inboxId },
+              where: {
+                tenantId,
+                agentId,
+                inboxId: other.inboxId,
+                attachedAt: { not: null },
+              },
             })) > 0
           : (await db.inbox.count({
               where: { id: other.inboxId, agentId },

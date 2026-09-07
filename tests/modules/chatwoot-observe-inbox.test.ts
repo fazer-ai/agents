@@ -2072,4 +2072,92 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await unobserveInbox(ctx(tenantId), settled.id, vigia.id, healed, appDb);
     await unobserveInbox(ctx(tenantId), stuck.id, vigia.id, healed, appDb);
   });
+  // ...AND THE SNAPSHOT IS A SNAPSHOT (issue #540, PR review round 3). A binding confirmed when the
+  // list was read can be unobserved, and a NEW observe insert its unstamped row, before this loop
+  // reaches that inbox. Read without the stamp, the loop attaches a bot for an observe it does not
+  // own and reports the attachment healthy — and if that observe then aborts before it learns the
+  // bot id, its own compensation cannot detach what this loop put there.
+  test("the reattach re-asks for the stamp, not just for a row, on each inbox it reaches", async () => {
+    const vigia = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Vigia da corrida",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    const first = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 76,
+        name: "Primeira",
+      },
+      select: { id: true, chatwootInboxId: true },
+    });
+    const raced = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 77,
+        name: "Disputada",
+      },
+      select: { id: true, chatwootInboxId: true },
+    });
+    const anchor = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 78,
+        name: "Âncora",
+      },
+      select: { id: true, chatwootInboxId: true },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({ observerRoute: true, observing });
+    for (const i of [first, raced, anchor]) {
+      await observeInbox(ctx(tenantId), i.id, vigia.id, cw, appDb);
+    }
+
+    observing.clear();
+    const botRow = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, agentId: vigia.id },
+      select: { chatwootAgentBotId: true },
+    });
+    const healed = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      deletedBots: new Set([botRow.chatwootAgentBotId]),
+      firstBot: 95,
+      onAttach: async () => {
+        // The unobserve and the new observe, landing while the loop is between two of its inboxes:
+        // the row is there, and it is not the same binding any more. Done on the FIRST attach the
+        // loop makes, so it lands before the second inbox is re-asked — the window this recheck is
+        // about. `raced` is reached first (rows come back in id order) and `anchor` second.
+        await suDb.inboxObserver.updateMany({
+          where: { tenantId, inboxId: anchor.id, agentId: vigia.id },
+          data: { attachedAt: null },
+        });
+      },
+    });
+    // Re-observing `first` is the Reconnect; the loop then walks the other two.
+    await observeInbox(ctx(tenantId), first.id, vigia.id, healed, appDb);
+    const newBot = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, agentId: vigia.id },
+      select: { chatwootAgentBotId: true },
+    });
+    // The one the loop reached before the change is put back; the one it reached after is left
+    // alone, because by then no CONFIRMED row named it.
+    expect(
+      observing.has(`${raced.chatwootInboxId}:${newBot.chatwootAgentBotId}`),
+    ).toBe(true);
+    expect(
+      observing.has(`${anchor.chatwootInboxId}:${newBot.chatwootAgentBotId}`),
+    ).toBe(false);
+
+    for (const i of [first, raced, anchor]) {
+      await unobserveInbox(ctx(tenantId), i.id, vigia.id, healed, appDb);
+    }
+  });
 });

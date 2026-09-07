@@ -28,7 +28,11 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER inboxes_bump_binding_generation
+-- REPLACE rather than CREATE, because a migration file is not a transaction here (.claude/rules/prisma.md):
+-- a deploy interrupted between these two statements would meet `duplicate_object` on the retry and
+-- stop the rollout dead until somebody edited database state by hand. `CREATE OR REPLACE TRIGGER` is
+-- atomic where a DROP-then-CREATE would leave a window in which a write is not counted at all.
+CREATE OR REPLACE TRIGGER inboxes_bump_binding_generation
   BEFORE UPDATE ON "inboxes"
   FOR EACH ROW
   WHEN (OLD.agent_id IS DISTINCT FROM NEW.agent_id)
@@ -68,7 +72,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER inbox_observers_bump_binding_generation
+CREATE OR REPLACE TRIGGER inbox_observers_bump_binding_generation
   AFTER INSERT OR DELETE ON "inbox_observers"
   FOR EACH ROW
   EXECUTE FUNCTION bump_binding_generation_on_observer();

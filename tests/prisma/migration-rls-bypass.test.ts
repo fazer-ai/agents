@@ -61,20 +61,25 @@ const GRANDFATHERED = new Set([
 // the shape this rule most needs to keep catching. The tag is matched as Postgres spells it
 // (`$$` or `$name$`) and the body ends at the first repeat of the SAME tag.
 export function stripFunctionBodies(sql: string): string {
-  const re = /\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b/gi;
-  let out = sql;
+  const re = /\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b/i;
+  let done = "";
+  let rest = sql;
   for (;;) {
-    re.lastIndex = 0;
-    const head = re.exec(out);
-    if (head === null) return out;
-    const tag = /\$([A-Za-z_]\w*)?\$/.exec(out.slice(head.index));
-    if (!tag) return out;
+    const head = re.exec(rest);
+    if (head === null) return done + rest;
+    const tag = /\$([A-Za-z_]\w*)?\$/.exec(rest.slice(head.index));
+    if (!tag) return done + rest;
     const openAt = head.index + (tag.index ?? 0);
-    const closeAt = out.indexOf(tag[0], openAt + tag[0].length);
-    if (closeAt === -1) return out;
-    // Replaced by a marker rather than deleted, so a second function in the same file is still found
-    // by the next pass and the offsets before it are untouched.
-    out = `${out.slice(0, openAt)}FUNCTION_BODY${out.slice(closeAt + tag[0].length)}`;
+    const closeAt = rest.indexOf(tag[0], openAt + tag[0].length);
+    if (closeAt === -1) return done + rest;
+    // THE HEADER GOES WITH THE BODY, and the scan resumes AFTER it. Leaving the header behind and
+    // rescanning from the start matches the same `CREATE FUNCTION` again and swallows the next
+    // dollar-quoted block as if it were that function's body — which is a `DO $$ … $$` in
+    // `20260827000000_rls_split_tenant_and_fleet_policies` and in
+    // `20260903120000_rename_http_tools_named_after_natives`, so the rule would quietly stop reading
+    // the DML it exists for.
+    done += `${rest.slice(0, head.index)}CREATE_FUNCTION`;
+    rest = rest.slice(closeAt + tag[0].length);
   }
 }
 
@@ -368,5 +373,19 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     const both = `${trigger}
       UPDATE "agents" SET name = 'x';`;
     expect(tablesWrittenBy(both)).toEqual(["agents"]);
+
+    // THE SHAPE THE EXISTING MIGRATIONS ACTUALLY HAVE: a function, and then a DO block that runs
+    // during the migration. The second must survive the stripping of the first, or the rule stops
+    // reading the very DML it is for.
+    const functionThenDo = `${trigger}
+      DO $$ BEGIN UPDATE "agents" SET follow_up_armed_at = now(); END $$;`;
+    expect(tablesWrittenBy(functionThenDo)).toEqual(["agents"]);
+
+    // Two functions in one file, with a statement after each: neither header may eat what follows.
+    const twoFunctions = `${trigger}
+      UPDATE "agents" SET name = 'a';
+      ${trigger}
+      UPDATE "inboxes" SET name = 'b';`;
+    expect(tablesWrittenBy(twoFunctions)).toEqual(["agents", "inboxes"]);
   });
 });

@@ -2,9 +2,11 @@
 
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
+  forgetToolSample,
   forgetToolSamples,
   recallToolSample,
   rememberToolSample,
+  sampleEpoch,
 } from "@/client/lib/toolSample";
 import {
   formFromTool,
@@ -58,14 +60,14 @@ describe("what the editor opens with", () => {
   });
 
   it("takes the response this tab kept, with the status it came back under", () => {
-    rememberToolSample("42", { text: RESPONSE, status: 404 });
+    rememberToolSample("42", { text: RESPONSE, status: 404 }, sampleEpoch());
     const form = formFromTool(toolRow());
     expect(form.sample).toBe(RESPONSE);
     expect(form.sampleStatus).toBe(404);
   });
 
   it("is per tool, so one tool's response is never offered for another", () => {
-    rememberToolSample("42", { text: RESPONSE, status: null });
+    rememberToolSample("42", { text: RESPONSE, status: null }, sampleEpoch());
     expect(formFromTool(toolRow({ id: "43" })).sample).toBe("");
   });
 });
@@ -106,9 +108,9 @@ describe("nothing about the sample is sent or stored", () => {
         }).sort(),
       );
     const before = [dump(localStorage), dump(sessionStorage)];
-    rememberToolSample("42", { text: RESPONSE, status: 200 });
+    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleEpoch());
     forgetToolSamples();
-    rememberToolSample("42", { text: RESPONSE, status: 200 });
+    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleEpoch());
     const after = [dump(localStorage), dump(sessionStorage)];
     expect(after).toEqual(before);
     // And in case a future entry arrives carrying it, said plainly: no store holds the response.
@@ -132,24 +134,28 @@ describe("nothing about the sample is sent or stored", () => {
 
 describe("what the tab remembers", () => {
   it("round-trips a response and its status", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 });
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
     expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
   });
 
   it("drops rather than keeping a previous response when the new one is too large", () => {
-    rememberToolSample("7", { text: RESPONSE, status: null });
-    rememberToolSample("7", { text: "x".repeat(600_000), status: null });
+    rememberToolSample("7", { text: RESPONSE, status: null }, sampleEpoch());
+    rememberToolSample(
+      "7",
+      { text: "x".repeat(600_000), status: null },
+      sampleEpoch(),
+    );
     expect(recallToolSample("7")).toBeNull();
   });
 
   it("drops on an empty sample, and on one that is only whitespace", () => {
-    rememberToolSample("7", { text: RESPONSE, status: null });
-    rememberToolSample("7", null);
+    rememberToolSample("7", { text: RESPONSE, status: null }, sampleEpoch());
+    rememberToolSample("7", null, sampleEpoch());
     expect(recallToolSample("7")).toBeNull();
     // Whitespace is the same thing to the operator and a different thing to `null`, and the module
     // owns that judgement rather than trusting its one caller to keep making it.
-    rememberToolSample("7", { text: RESPONSE, status: null });
-    rememberToolSample("7", { text: "  \n ", status: 200 });
+    rememberToolSample("7", { text: RESPONSE, status: null }, sampleEpoch());
+    rememberToolSample("7", { text: "  \n ", status: 200 }, sampleEpoch());
     expect(recallToolSample("7")).toBeNull();
   });
 
@@ -158,10 +164,14 @@ describe("what the tab remembers", () => {
   // the tool being worked on is the one evicted while seven abandoned ones stay.
   it("keeps the working set and evicts the least recently saved", () => {
     for (let i = 1; i <= 8; i++)
-      rememberToolSample(String(i), { text: `{"i":${i}}`, status: null });
+      rememberToolSample(
+        String(i),
+        { text: `{"i":${i}}`, status: null },
+        sampleEpoch(),
+      );
     // Tool 1 is the oldest; saving it again makes tool 2 the oldest instead.
-    rememberToolSample("1", { text: '{"i":1}', status: null });
-    rememberToolSample("9", { text: '{"i":9}', status: null });
+    rememberToolSample("1", { text: '{"i":1}', status: null }, sampleEpoch());
+    rememberToolSample("9", { text: '{"i":9}', status: null }, sampleEpoch());
     expect(recallToolSample("2")).toBeNull();
     expect(recallToolSample("1")).toEqual({ text: '{"i":1}', status: null });
     expect(recallToolSample("9")).toEqual({ text: '{"i":9}', status: null });
@@ -172,7 +182,7 @@ describe("what the tab remembers", () => {
   // as tool 7 of the one just entered.
   it("does not offer one tenant's response under another tenant's tool", () => {
     localStorage.setItem("@app:active-tenant", "3");
-    rememberToolSample("7", { text: RESPONSE, status: 200 });
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
     localStorage.setItem("@app:active-tenant", "4");
     expect(recallToolSample("7")).toBeNull();
     localStorage.setItem("@app:active-tenant", "3");
@@ -189,7 +199,11 @@ describe("what the tab remembers", () => {
     });
     try {
       expect(() =>
-        rememberToolSample("7", { text: RESPONSE, status: null }),
+        rememberToolSample(
+          "7",
+          { text: RESPONSE, status: null },
+          sampleEpoch(),
+        ),
       ).not.toThrow();
       expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: null });
     } finally {
@@ -197,17 +211,53 @@ describe("what the tab remembers", () => {
     }
   });
 
-  it("is emptied on logout, so a signed-out tab holds no customer data", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 });
+  it("is emptied when the session ends, so a signed-out tab holds no customer data", () => {
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
     forgetToolSamples();
     expect(recallToolSample("7")).toBeNull();
+  });
+
+  it("drops one tool's entry when that tool is gone", () => {
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
+    rememberToolSample("8", { text: RESPONSE, status: 200 }, sampleEpoch());
+    forgetToolSample("7");
+    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("8")).not.toBeNull();
+  });
+});
+
+// A SAVE IS IN FLIGHT FOR AS LONG AS THE OPERATOR'S API TAKES, and both things that end a sample's
+// life can happen inside that window. The response then arrives and writes it back in, which is a
+// deletion and a logout being undone by a request that was already on the wire.
+describe("a save that lands after the sample's life ended", () => {
+  it("does not put it back after the tool was deleted", () => {
+    const epoch = sampleEpoch();
+    forgetToolSample("7");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, epoch);
+    expect(recallToolSample("7")).toBeNull();
+  });
+
+  it("does not put it back after the session ended", () => {
+    const epoch = sampleEpoch();
+    forgetToolSamples();
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, epoch);
+    expect(recallToolSample("7")).toBeNull();
+  });
+
+  it("still writes when nothing cleared while it was out", () => {
+    const epoch = sampleEpoch();
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, epoch);
+    expect(recallToolSample("7")?.text).toBe(RESPONSE);
   });
 });
 
 // TWO SOURCE FENCES, and they say so: what they can answer for is a grammar, not intent.
 describe("the two seams that have to clear it", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
-  const LOGOUT = /auth\.logout\.post\(/;
+  // The transition to unauthenticated, not the logout REQUEST: a 401 on any call and the socket's
+  // auth-loss close both end the session without one, and they are the common paths. `setUser(null)`
+  // is what all of them come down to, so that is what is counted.
+  const SIGNS_OUT = /setUser\(\s*null\s*\)/;
 
   // `codeOnly` rather than a stripper written here: comments AND string contents out, which is the
   // spelling this repo's own fence over sweeps requires (`tests/lib/source-text.test.ts`), and it
@@ -219,7 +269,7 @@ describe("the two seams that have to clear it", () => {
   // "is it mentioned?" answers yes for the import that survives the deletion it exists to catch.
   const strip = (src: string) =>
     codeOnly(src).replace(/^\s*import\s[\s\S]*?from\s+"[^"]*";$/gm, "");
-  const CLEARS = /rememberToolSample\s*\(/;
+  const CLEARS = /forgetToolSample\s*\(/;
   const FORGETS = /forgetToolSamples\s*\(/;
 
   async function clientFiles(): Promise<string[]> {
@@ -248,20 +298,60 @@ describe("the two seams that have to clear it", () => {
     expect(offenders).toEqual([]);
   });
 
-  // And logging out empties it, because a tab left open on the login screen would otherwise still
-  // hold the responses of the operator who just signed out of it.
-  it("every place that logs out empties what the tab remembers", async () => {
+  // And losing the session empties the whole map, because a tab left on the login screen would
+  // otherwise still hold the responses of the operator who just signed out of it, and the next
+  // sign-in on that tab would be offered them.
+  it("every transition to unauthenticated empties what the tab remembers", async () => {
     const files = await clientFiles();
     const offenders: string[] = [];
     let sites = 0;
     for (const f of files) {
       const src = strip(await Bun.file(f).text());
-      if (!LOGOUT.test(src)) continue;
+      if (!SIGNS_OUT.test(src)) continue;
       sites++;
       if (!FORGETS.test(src)) offenders.push(f);
     }
+    // ONE site, and that is the assertion, not a count that happens to be right: an explicit logout
+    // that clears the user by itself, beside a `clearUser` that also does, is exactly how one of the
+    // two paths ends up not clearing this. A 401 and the socket's auth-loss close both go through
+    // the second one.
     expect(sites).toBe(1);
     expect(offenders).toEqual([]);
+  });
+
+  // THE EPOCH IS ONLY WORTH ANYTHING IF IT IS READ EARLY. Required by the signature, so `tsc`
+  // catches a call that omits it; what `tsc` cannot see is a call that reads it AT THE WRITE, which
+  // type-checks and always compares equal to itself. That is a question about ORDER, so it is asked
+  // of the source, and asked of the SAVE rather than of the file: `.v1.tools` appears in this module
+  // long before `save()` (the load, and the test-request dialog), so a whole-file index compares two
+  // unrelated positions and answers about neither.
+  it("reads the epoch before the request rather than at the write", async () => {
+    const src = codeOnly(
+      await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
+    );
+    const from = src.indexOf("async function save()");
+    expect(from).toBeGreaterThan(-1);
+    // To the end of that function: the next declaration at the same indent.
+    const rest = src.slice(from + 1);
+    const to = rest.search(/\n {2}(?:async )?function /);
+    const save = to === -1 ? rest : rest.slice(0, to);
+
+    const read = save.indexOf("sampleEpoch()");
+    const request = save.indexOf(".v1.tools");
+    const write = save.indexOf("rememberToolSample(");
+    // All three are inside `save`, so a rename or a move fails here instead of passing on -1s.
+    expect(read).toBeGreaterThan(-1);
+    expect(request).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(request);
+    // And the write is handed a NAME: `sampleEpoch()` inline would read it after everything the
+    // request took, which is the same as not having it at all.
+    const call = save.slice(
+      write,
+      save.indexOf(")", save.indexOf("epoch", write)),
+    );
+    expect(call).not.toInclude("sampleEpoch");
+    expect(call).toInclude("epoch");
   });
 
   it("catches a delete that forgets, over the three ways it could look like it did not", () => {
@@ -270,14 +360,14 @@ describe("the two seams that have to clear it", () => {
     expect(CLEARS.test(strip(forgets))).toBe(false);
     // A comment that remembers is not a call.
     expect(
-      CLEARS.test(strip(`${forgets}\n// rememberToolSample(t.id, null) here`)),
+      CLEARS.test(strip(`${forgets}\n// forgetToolSample(t.id) here`)),
     ).toBe(false);
     // Neither is the import that survives deleting the call, the case the battery caught.
-    const importOnly = `import { rememberToolSample } from "@/client/lib/toolSample";\n${forgets}`;
+    const importOnly = `import { forgetToolSample } from "@/client/lib/toolSample";\n${forgets}`;
     expect(CLEARS.test(strip(importOnly))).toBe(false);
     // And a real call counts.
-    expect(
-      CLEARS.test(strip(`${forgets}\nrememberToolSample(t.id, null);`)),
-    ).toBe(true);
+    expect(CLEARS.test(strip(`${forgets}\nforgetToolSample(t.id);`))).toBe(
+      true,
+    );
   });
 });

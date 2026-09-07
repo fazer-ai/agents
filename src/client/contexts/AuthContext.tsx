@@ -65,7 +65,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [mcpStdioEnabled, setMcpStdioEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const clearUser = useCallback(() => setUser(null), []);
+  // THE ONE TRANSITION TO UNAUTHENTICATED, and everything that ends a session goes through it: the
+  // explicit logout below, a 401 on any request, and the socket's auth-loss close, the last two via
+  // the `auth:unauthorized` event. The tool editor keeps the last saved sample response in memory
+  // (`client/lib/toolSample`), which is the customer's data; left behind, the next sign-in on this
+  // same tab would be offered the previous operator's responses (round 4 of review).
+  const clearUser = useCallback(() => {
+    setUser(null);
+    forgetToolSamples();
+  }, []);
 
   // NOTE: Shared /me fetch used at boot and for explicit refreshes (e.g. after
   // a /setup 409, where the server flipped to "setup complete" but this client
@@ -195,16 +203,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     try {
       await api.api.auth.logout.post();
-      setUser(null);
     } catch {
       console.error("Logout failed");
     } finally {
-      // Whatever the request answered, this operator is done with this tab. The tool editor keeps
-      // the last saved sample response in memory (`client/lib/toolSample`), which is the customer's
-      // data and has no reason to outlive the session that captured it. In the `finally` because a
-      // logout whose request failed is still a logout as far as the person in front of the screen is
-      // concerned.
-      forgetToolSamples();
+      // In the `finally`, and through `clearUser`: a logout whose request failed is still a logout
+      // as far as the person in front of the screen is concerned, and the clearing this owes is the
+      // same one every other way of losing the session owes.
+      clearUser();
     }
   };
 

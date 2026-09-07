@@ -52,6 +52,17 @@ const MAX_CHARS = 512_000;
 
 const samples = new Map<string, ToolSample>();
 
+// EVERY CLEARING BUMPS THIS, and a save carries the value it read before its request went out. A
+// save is in flight for as long as the operator's API takes, and the two things that end a sample's
+// life can both happen inside that window: the tool is deleted, or the session ends. Without the
+// epoch the response arrives afterwards and writes the sample back in, so a deletion and a logout
+// would both be undone by a request that was already on the wire (round 4 of review).
+let epoch = 0;
+
+export function sampleEpoch(): number {
+  return epoch;
+}
+
 // Keyed by the tenant selector as well, so a SUPER_ADMIN switching tenants in the same tab is never
 // offered the sample captured under the other one. Read at call time rather than captured, for the
 // same reason `activeTenant.ts` reads it at call time: the selection can change under a live tab.
@@ -74,7 +85,14 @@ export function recallToolSample(toolId: string): ToolSample | null {
 export function rememberToolSample(
   toolId: string,
   sample: ToolSample | null,
+  // REQUIRED, and that is the point: the value the caller read BEFORE its request went out, so a
+  // clearing that happened in the meantime wins. Optional, it is a parameter a caller forgets and
+  // nothing says so; required, `tsc` is the one that notices, which is what a source fence over the
+  // same question could only approximate (measured: with it optional, dropping the argument at the
+  // one call site survived the whole battery).
+  since: number,
 ): void {
+  if (since !== epoch) return;
   const key = keyFor(toolId);
   // DELETED FIRST AND UNCONDITIONALLY, which is also what re-dates the entry: `Map` keeps insertion
   // order, so deleting before setting is what makes the eviction below drop the least recently
@@ -90,8 +108,21 @@ export function rememberToolSample(
   }
 }
 
-// Logout, and any other point where the console stops answering for this operator. Nothing here
-// survives a reload, so this is about the tab that stays open after someone signs out on it.
+// THE TOOL IS GONE. A response left behind describes a row that no longer exists, and it is the
+// customer's data sitting in a tab that has no use for it. Separate from `rememberToolSample(id,
+// null)`, which is a save saying there is no sample: this is a lifecycle event, so it invalidates
+// the saves that are in flight.
+export function forgetToolSample(toolId: string): void {
+  epoch++;
+  samples.delete(keyFor(toolId));
+}
+
+// THE OPERATOR IS GONE, by an explicit logout or by any other transition to unauthenticated: a 401
+// on any request, an auth-loss close on the socket, an expired session found at boot. All of them
+// leave the tab on the login screen with this map still full, and the next sign-in on that tab
+// would be offered the previous operator's responses. Nothing here survives a reload, so this is
+// about the tab that stays open.
 export function forgetToolSamples(): void {
+  epoch++;
   samples.clear();
 }

@@ -851,13 +851,6 @@ export async function exportAgent(
             string,
             unknown
           > | null,
-          // NOT carried, and the omission is the decision rather than an oversight — the reflex the
-          // line above teaches is "carry the new field too". The tool editor's `sampleShape`
-          // (issue #566) describes the CUSTOMER'S API as it answered on one operator's screen, not
-          // the tool's contract, and a bundle is how a tool travels to another deployment, where
-          // that response's field names belong to nobody. Dropping it costs the destination one
-          // paste; carrying it would ship one tenant's integration shape to another. Fenced in
-          // `tests/modules/tool-sample-shape-not-exported.test.ts`.
         })),
         codeTools: codeRows.map((r) => ({
           name: r.name,

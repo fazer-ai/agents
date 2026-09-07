@@ -69,12 +69,6 @@ import {
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
 import {
-  fingerprintShape,
-  readStorableShape,
-  type StoredSampleShape,
-  storableShape,
-} from "@/modules/tool-definitions/sample-shape";
-import {
   type AiFieldRow,
   AiFieldsPanel,
   aiFieldsFromSchema,
@@ -342,15 +336,12 @@ function emptyForm() {
     apptOffsets: "",
     apptAskConfirm: false,
     // THE SAMPLE IS PART OF THE FORM SINCE #566, where it used to be local state deliberately kept
-    // out of it. What changed is that it now produces something SAVED: the shape below. So pasting
-    // one is an unsaved change like any other, and the discard dialog on close is correct — the
-    // alternative is telling the operator the sample persists and then silently not persisting it.
+    // out of it. Nothing about it is submitted: it is kept in this browser (`client/lib/toolSample`)
+    // but it is now kept BY THE SAVE, so pasting one is an unsaved change like any other and the
+    // discard dialog on close is correct. The alternative is telling the operator the sample
+    // survives a reopen and then quietly dropping it when they close the dialog.
     sample: "",
     sampleStatus: null as number | null,
-    // The shape the row already holds, carried so that saving a tool whose sample text is not on
-    // this machine does not ERASE it. `payloadOf` sends this one whenever there is no text to
-    // derive a fresher one from.
-    sampleShape: null as StoredSampleShape | null,
   };
 }
 
@@ -427,33 +418,7 @@ export function payloadOf(form: ToolForm) {
     // Here rather than at the call site: this function is the one place the body is built, and the
     // refusal reader below keys off exactly these fields.
     appointment: appointmentPayload(form),
-    // The SHAPE of the sample on screen, never the sample (issue #566). Derived here, from the text
-    // the operator has now, and falling back to what the row already held: a text that is not on
-    // this machine must not read as "the operator removed the sample".
-    // NOTE: cast because the route declares this as `t.Record(t.String(), t.Unknown())`, which is
-    // what an open JSON object is on the wire; the named shape it actually carries lives in
-    // `sample-shape.ts`, on both sides of that wire.
-    sampleShape: sampleShapeOf(form) as Record<string, unknown> | null,
   };
-}
-
-// The shape to save: from the text when there is readable text, otherwise the one the row already
-// carried. Unreadable text is NOT a reason to drop the stored shape — the operator is mid-paste,
-// and the sample field already tells them where it stops being JSON.
-// An empty box does NOT clear it. The box is empty in two situations that look identical from
-// here — the operator emptied it, and the text simply is not on this machine — and the second is
-// the ordinary one: the shape is a cache of the response's structure, refreshed whenever a newer
-// sample is pasted, and saving a tool from a second machine must not wipe the offer for the first.
-// There is no "forget this sample" affordance because the shape holds nobody's data and describes
-// the operator's own API; deleting the tool takes it.
-function sampleShapeOf(form: ToolForm): StoredSampleShape | null {
-  const raw = form.sample.trim();
-  if (raw === "") return form.sampleShape;
-  try {
-    return storableShape(JSON.parse(raw), form.sampleStatus);
-  } catch {
-    return form.sampleShape;
-  }
 }
 
 // The server's own names for what this modal renders, which are the keys of the body above. `name`
@@ -578,21 +543,12 @@ export function formFromTool(tool: Tool) {
   };
 }
 
-// The two halves of a stored sample come back from two places (issue #566): the SHAPE from the row,
-// which every machine gets, and the response itself from this browser's storage, which only the
-// machine that captured it has. Read through `readStorableShape` for the reason the DTO gives — a
-// row written before this column existed, or by a caller that sent something else, reads as no
-// sample rather than as a shape the pickers would try to walk.
+// The sample comes back from this browser alone (issue #566): nothing about it is stored with the
+// tool, so an operator on a second machine gets no offer, the same as before the feature, and
+// "Send a test request" is still the way back.
 function sampleForm(tool: Tool) {
-  const shape = readStorableShape(tool.sampleShape);
-  // The browser's copy is only the right one while the ROW still holds the shape it produced; the
-  // fingerprint is what says so, and a mismatch falls back to the shape (round 1 of review).
-  const local = readLocalSample(tool.id, fingerprintShape(shape));
-  return {
-    sample: local?.text ?? "",
-    sampleStatus: local?.status ?? null,
-    sampleShape: shape,
-  };
+  const local = readLocalSample(tool.id);
+  return { sample: local?.text ?? "", sampleStatus: local?.status ?? null };
 }
 
 // The stored `outputSchema`, split into the part this form edits and the part it must not lose. The
@@ -1287,7 +1243,7 @@ export function ToolEditModal({
   // Part of `form` since #566, where it was local state. The status exists because the runtime
   // projects on 2xx alone: a sample captured from a 404 the tool declares a result would be handed
   // to the model RAW, and a preview that rendered the template over it would promise something the
-  // runtime never does — under a label that says "exactly what the agent would receive". Null reads
+  // runtime never does, under a label that says "exactly what the agent would receive". Null reads
   // as 2xx, which is the right assumption for a hand-pasted body: nobody pastes an error response
   // to design a success template against.
   const sample = form.sample;
@@ -1473,18 +1429,10 @@ export function ToolEditModal({
       // Written here rather than on every keystroke, so the two halves always describe the same
       // sample: a text kept locally while the shape beside it was never saved would offer the
       // operator values for a response the tool does not have. Nothing to await and nothing that
-      // can fail in a way the operator could act on — see `toolSample.ts`.
+      // can fail in a way the operator could act on. See `toolSample.ts`.
       writeLocalSample(
         data.tool.id,
-        sample.trim()
-          ? {
-              text: sample,
-              status: sampleStatus,
-              // The shape the SAVE just wrote, so a later open can tell this response from one
-              // another machine stored over it.
-              shape: fingerprintShape(sampleShapeOf(formRef.current)),
-            }
-          : null,
+        sample.trim() ? { text: sample, status: sampleStatus } : null,
       );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
       // that has to hear about it, not the dialog now on screen.
@@ -1538,23 +1486,7 @@ export function ToolEditModal({
       lists: [] as SampleList[],
       body: undefined as unknown,
     };
-    if (raw === "") {
-      // NOTE: the SHAPE, when the row carries one and this browser does not have the response
-      // (issue #566). Everything downstream reads a parsed body, so a redacted body is a body: the
-      // pickers, the completion and the preview all work, and only the VALUES are stand-ins. The
-      // state is distinct from "ok" because the preview's caption has to say so — a preview
-      // labelled "exactly what the agent would receive" showing `xxx` where the API said Ana is
-      // the promise this section exists to keep, broken.
-      const shape = form.sampleShape;
-      if (shape === null) return { state: "empty" as const, ...none };
-      return {
-        state: "shape" as const,
-        leaves: sampleLeaves(shape.body),
-        templates: templateLeaves(shape.body),
-        lists: templateLists(shape.body),
-        body: shape.body,
-      };
-    }
+    if (raw === "") return { state: "empty" as const, ...none };
     try {
       const body: unknown = JSON.parse(raw);
       // TWO offers from one sample, because the two readers accept different things: an appointment
@@ -1584,7 +1516,7 @@ export function ToolEditModal({
         ...none,
       };
     }
-  }, [sample, form.sampleShape]);
+  }, [sample]);
   // The formatted sample, or null with the NAME of why there is nothing to write. The BUTTON is
   // gated on this and not on `sampleParse`, so "enabled" can only mean "there is a different text
   // ready": two readers of one field WILL disagree eventually — round 1 of review found the first
@@ -1650,27 +1582,15 @@ export function ToolEditModal({
   // What the model would be handed, rendered against the pasted sample. The point of the whole
   // section: a template is a promise about the model's input, and this is the only place the
   // operator can read that input before a customer does.
-  const templatePreview = useMemo(() => {
-    // Over the SHAPE when this browser does not have the response, serialized back to text because
-    // that is what the runtime's own projection takes — so the preview keeps running the runtime's
-    // path rather than a second one that agrees with it today (issue #566). The status comes from
-    // the shape too: the stored 404 of a tool that declares it a result must not read as a 200
-    // just because the body was restored from a different place.
-    const over =
-      sampleParse.state === "shape" && form.sampleShape !== null
-        ? {
-            sample: JSON.stringify(form.sampleShape.body),
-            status: form.sampleShape.status,
-          }
-        : { sample, status: sampleStatus };
-    return templatePreviewFor({ template: form.outputTemplate, ...over });
-  }, [
-    form.outputTemplate,
-    form.sampleShape,
-    sample,
-    sampleStatus,
-    sampleParse.state,
-  ]);
+  const templatePreview = useMemo(
+    () =>
+      templatePreviewFor({
+        template: form.outputTemplate,
+        sample,
+        status: sampleStatus,
+      }),
+    [form.outputTemplate, sample, sampleStatus],
+  );
   const badTemplateTokens = unusableTemplateTokens(form.outputTemplate);
   // A `{{` or `}}` that is not part of a token: `{{a}` is not an unusable token, it is not a token,
   // so the scan above sees nothing and the runtime would put the typo in front of the model
@@ -2148,17 +2068,10 @@ export function ToolEditModal({
               </p>
               <FormField
                 label={t("tools.sample", "Sample response (optional)")}
-                description={
-                  sampleParse.state === "shape"
-                    ? t(
-                        "tools.sampleHintShape",
-                        "The field names of the last response are saved with the tool, so the pickers work; the response itself stays in the browser it was captured in. Paste one here to see the real values in the preview.",
-                      )
-                    : t(
-                        "tools.sampleHint",
-                        "One response from this API, so you can pick fields instead of typing their paths. Only its field names are saved with the tool; the response itself stays in this browser.",
-                      )
-                }
+                description={t(
+                  "tools.sampleHint",
+                  "One response from this API, so you can pick fields instead of typing their paths. It is never saved with the tool: it stays in this browser, and comes back here the next time you open this tool.",
+                )}
                 group
                 // THE FIELD'S OWN ERROR, not a line beside the buttons (round 6 of review). Through
                 // `FormField` it reaches the accessibility tree the way every other field's does:
@@ -2415,17 +2328,10 @@ export function ToolEditModal({
                 <FormField
                   group
                   label={t("tools.outputTemplatePreview", "Preview")}
-                  description={
-                    sampleParse.state === "shape"
-                      ? t(
-                          "tools.outputTemplatePreviewHintShape",
-                          "The shape of the last response, with stand-in values: the layout and the lengths are real, the values are not. Paste a response above to preview the real thing.",
-                        )
-                      : t(
-                          "tools.outputTemplatePreviewHint",
-                          "Exactly what the agent would receive for the sample above.",
-                        )
-                  }
+                  description={t(
+                    "tools.outputTemplatePreviewHint",
+                    "Exactly what the agent would receive for the sample above.",
+                  )}
                 >
                   <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-bg-tertiary p-2 text-text-primary text-xs">
                     {templatePreview.text}

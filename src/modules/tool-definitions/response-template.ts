@@ -45,7 +45,7 @@ export const MAX_TEMPLATE_CHARS = 4000;
 // it one long field pushes the fields after it past the overall clip and they vanish from the tail —
 // silently, which is the exact defect being fixed. Cutting HERE leaves the label and an explicit
 // marker at the place the cut happened.
-export const MAX_VALUE_CHARS = 2000;
+const MAX_VALUE_CHARS = 2000;
 
 // What the model sees where a value did not come back. Never an empty string: a blank after a label
 // is the gap that gets filled from training data, and this whole module exists because of that.

@@ -1,19 +1,32 @@
-// THE HALF OF A SAMPLE RESPONSE THAT NEVER LEAVES THE BROWSER (issue #566).
+// THE SAMPLE RESPONSE, KEPT WHERE IT ALREADY WAS (issue #566).
 //
-// The tool editor stores the SHAPE of a pasted sample server-side, which is what the path pickers
-// and the caret completion need. The preview needs the VALUES, and those are the customer's data —
-// so they stay here, in the browser that already had them on screen, keyed by tool id.
+// The Sample response field in the HTTP tool editor used to be cleared on every open, so an operator
+// coming back to adjust a response template, the most common reason to reopen an HTTP tool, found
+// pickers that offered nothing, no preview at all, and no "Insert a field" button. The two ways out
+// were pasting a response again by hand or spending a real call against the customer's API to
+// recover what had been on screen once.
 //
-// WHAT THIS BUYS OVER STORING THEM. "We never store the response" is a stronger invariant than "we
-// store it when a toggle is on": no backup question, no bundle question, no export rule to keep in
-// step. The price is that the preview reads over the shape on a different machine, or after this
-// storage is cleared, and the field says so when that happens rather than quietly showing stand-ins
-// as if they were the API's answer.
+// So it is kept, in the browser that received it, keyed by tool id.
+//
+// WHY NOTHING IS STORED SERVER-SIDE, WHICH IS THE WHOLE DESIGN. The first draft of this feature put
+// a redacted SHAPE of the response in a column (the keys, with every value replaced by a stand-in)
+// so the pickers would work on any machine. Two rounds of review took that apart on the same
+// question, and the second one settled it: no lexical rule establishes that a key is a field name
+// rather than customer data. `{"users": {"ana@example.com": …}}` is a map keyed by an e-mail;
+// `{"users": {"Ana": …}}` is a map keyed by a first name that any identifier pattern accepts. Since
+// the keys cannot be separated from the data, and a path THROUGH a map is worthless to an operator
+// anyway (it resolves for exactly one customer), there was nothing left worth storing.
+//
+// What that costs is written down rather than papered over: an operator on a second machine, or one
+// whose site data was cleared, gets what they get today: no offer, and "Send a test request" as the
+// way back. What it buys is that "we never store the customer's response" needs no qualification: no
+// per-tool opt-in, no backup question, no export rule, and no column whose redaction a future reader
+// has to re-derive before trusting it.
 //
 // EVERY ACCESS IS GUARDED. `localStorage` throws outright in some contexts (a private window with
-// site data blocked, a browser configured to refuse storage), and it can be full. A sample that
-// cannot be kept is not an error the operator can act on — it costs them the values on the next
-// open, which is exactly today's behaviour — so nothing here reports a failure.
+// site data blocked, a browser configured to refuse storage) and it can be full. A sample that
+// cannot be kept is not an error the operator can act on. It costs them the values on the next
+// open, which is exactly the behaviour this replaces, so nothing here reports a failure.
 
 const PREFIX = "@app:toolSample:";
 
@@ -23,12 +36,6 @@ const MAX_STORED_CHARS = 512_000;
 
 export interface LocalSample {
   text: string;
-  // The fingerprint of the SHAPE this text produced, compared against the row's on the way back
-  // (round 1 of review). Without it, an entry kept here wins on tool id alone: another machine — or
-  // the API — saving a newer sample leaves this browser restoring the old response, previewing
-  // values the tool no longer describes, and its next save deriving a shape from them and
-  // overwriting the newer one. A mismatch means the row moved on, and the row is the shared truth.
-  shape: string;
   // The status it came back under, or null when it was pasted by hand. Kept with the text because
   // the preview branches on it: a body captured from a 404 the tool declares a "no result" status
   // is projected differently, and restoring the text without it would read that 404 as a 200.
@@ -39,13 +46,7 @@ function keyFor(toolId: string): string {
   return `${PREFIX}${toolId}`;
 }
 
-// `rowShape` is the fingerprint of the shape the ROW carries now. An entry that does not match it
-// describes a sample this tool no longer has, and is dropped rather than shown: the shape then
-// answers, which is stale in appearance (stand-ins) and never in content.
-export function readLocalSample(
-  toolId: string,
-  rowShape: string,
-): LocalSample | null {
+export function readLocalSample(toolId: string): LocalSample | null {
   try {
     const raw = localStorage.getItem(keyFor(toolId));
     if (raw === null) return null;
@@ -53,37 +54,36 @@ export function readLocalSample(
     if (parsed === null || typeof parsed !== "object") return null;
     const o = parsed as Record<string, unknown>;
     if (typeof o.text !== "string") return null;
-    if (o.shape !== rowShape) return null;
     return {
       text: o.text,
       status: typeof o.status === "number" ? o.status : null,
-      shape: o.shape,
     };
   } catch {
     return null;
   }
 }
 
-// Called when the tool is SAVED, not on every keystroke, so the two halves always describe the same
-// sample: a text kept here while the shape beside it was never written would offer the operator
-// values for a response the tool does not have.
+// Called when the tool is SAVED rather than on every keystroke: what is kept is the sample the tool
+// was last saved with, not a draft the operator abandoned.
 export function writeLocalSample(
   toolId: string,
   sample: LocalSample | null,
 ): void {
+  // REMOVED FIRST, unconditionally, and the ordering is the point: `setItem` can throw on a full
+  // origin quota, and leaving the previous entry there means the next open restores ANOTHER
+  // response's values as though this save had persisted (round 2 of review). Degrading to no sample
+  // is the honest failure; degrading to a stale one is not.
   try {
-    if (sample === null || sample.text.trim() === "") {
-      localStorage.removeItem(keyFor(toolId));
-      return;
-    }
-    if (sample.text.length > MAX_STORED_CHARS) {
-      // NOTE: cleared rather than left holding the PREVIOUS sample, which would restore values from
-      // a response the tool no longer describes.
-      localStorage.removeItem(keyFor(toolId));
-      return;
-    }
-    localStorage.setItem(keyFor(toolId), JSON.stringify(sample));
+    localStorage.removeItem(keyFor(toolId));
   } catch {
     // See the module header: nothing to report and nothing to do.
+    return;
+  }
+  if (sample === null || sample.text.trim() === "") return;
+  if (sample.text.length > MAX_STORED_CHARS) return;
+  try {
+    localStorage.setItem(keyFor(toolId), JSON.stringify(sample));
+  } catch {
+    // Same, and the entry is already gone: the next open offers nothing rather than the wrong thing.
   }
 }

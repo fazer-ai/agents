@@ -6,14 +6,12 @@ import {
   formFromTool,
   payloadOf,
 } from "@/client/pages/resources/ToolEditModal";
-import { fingerprintShape } from "@/modules/tool-definitions/sample-shape";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// THE SAMPLE SURVIVES A REOPEN IN TWO HALVES (issue #566): the SHAPE from the row, which every
-// machine gets, and the response itself from this browser's storage, which only the machine that
-// captured it has. What is asserted here is the seam between them — which half answers when, and
-// the one way this could quietly destroy something: a save from a machine that does not have the
-// response must not read as "the operator removed the sample".
+// THE SAMPLE COMES BACK FROM THIS BROWSER, AND FROM NOWHERE ELSE (issue #566). What is asserted here
+// is the seam: that the editor opens with what this machine kept, that the save keeps it, and, the
+// one that matters most, that none of it reaches the server, which is the invariant the whole
+// design exists to hold without qualification.
 
 type AnyTool = Parameters<typeof formFromTool>[0];
 
@@ -37,150 +35,152 @@ function toolRow(over: Partial<Record<string, unknown>> = {}): AnyTool {
     ackEnabled: false,
     ackMessage: null,
     appointment: null,
-    sampleShape: null,
     ...over,
   } as unknown as AnyTool;
 }
 
-// Already redacted, and a FIXED POINT of the redaction: the service runs it again on the way
-// in, so a fixture that still moves would be testing the fixture.
-const SHAPE = { status: 200, body: { cliente: { nome: "xxx" }, n: 9 } };
+const RESPONSE = '{"cliente":{"nome":"Ana","cpf":"12345678901"}}';
 
 beforeEach(() => {
   localStorage.clear();
 });
 
 describe("what the editor opens with", () => {
-  it("takes the shape from the row when this browser has no response", () => {
-    const form = formFromTool(toolRow({ sampleShape: SHAPE }));
+  it("offers nothing when this browser kept nothing, which is what a second machine gets", () => {
+    const form = formFromTool(toolRow());
     expect(form.sample).toBe("");
     expect(form.sampleStatus).toBeNull();
-    expect(form.sampleShape).toEqual(SHAPE);
   });
 
-  it("takes the response itself when this browser kept one, with its status", () => {
-    writeLocalSample("42", {
-      text: '{"cliente":{"nome":"Ana"}}',
-      status: 404,
-      shape: fingerprintShape(SHAPE),
-    });
-    const form = formFromTool(toolRow({ sampleShape: SHAPE }));
-    expect(form.sample).toBe('{"cliente":{"nome":"Ana"}}');
+  it("takes the response this browser kept, with the status it came back under", () => {
+    writeLocalSample("42", { text: RESPONSE, status: 404 });
+    const form = formFromTool(toolRow());
+    expect(form.sample).toBe(RESPONSE);
     expect(form.sampleStatus).toBe(404);
   });
 
-  // ROUND 1 OF REVIEW: the local entry used to win on tool id alone, so a sample saved from another
-  // machine left this one previewing values the tool no longer describes — and its next save would
-  // derive a shape from them and overwrite the newer one.
-  it("ignores its own copy once the row carries a different shape", () => {
-    writeLocalSample("42", {
-      text: '{"cliente":{"nome":"Ana"}}',
-      status: 200,
-      shape: fingerprintShape(SHAPE),
-    });
-    const newer = { status: 200, body: { cliente: { nome: "xxx" }, novo: 9 } };
-    const form = formFromTool(toolRow({ sampleShape: newer }));
-    expect(form.sample).toBe("");
-    expect(form.sampleShape).toEqual(newer);
-  });
-
-  // The jsonb column reorders an object's keys (by length, then bytes), measured on the row this
-  // feature writes. Comparing the two sides with a plain JSON.stringify would call every restored
-  // sample stale, which is the same defect wearing the opposite sign.
-  it("matches a row whose keys came back from jsonb in another order", () => {
-    const asWritten = {
-      status: 200,
-      body: { nome: "xxx", cpf: "xxxxxxxxxxx" },
-    };
-    const asStored = { status: 200, body: { cpf: "xxxxxxxxxxx", nome: "xxx" } };
-    writeLocalSample("42", {
-      text: '{"nome":"Ana","cpf":"12345678901"}',
-      status: 200,
-      shape: fingerprintShape(asWritten),
-    });
-    expect(formFromTool(toolRow({ sampleShape: asStored })).sample).toBe(
-      '{"nome":"Ana","cpf":"12345678901"}',
-    );
-  });
-
-  it("reads a row that carries no shape, and one that carries something else, as no sample", () => {
-    expect(formFromTool(toolRow()).sampleShape).toBeNull();
-    expect(
-      formFromTool(toolRow({ sampleShape: { nope: 1 } })).sampleShape,
-    ).toBeNull();
+  it("is per tool, so one tool's response is never offered for another", () => {
+    writeLocalSample("42", { text: RESPONSE, status: null });
+    expect(formFromTool(toolRow({ id: "43" })).sample).toBe("");
   });
 });
 
-describe("what the editor saves", () => {
-  it("derives the shape from the response on screen, storing none of it", () => {
+// THE INVARIANT. Not "the values are redacted": nothing about the sample is sent at all, which is
+// what lets the module header say "we never store the customer's response" with no qualification.
+describe("nothing about the sample reaches the server", () => {
+  it("is absent from the body a save sends, response and all", () => {
     const form = {
       ...formFromTool(toolRow()),
-      sample: '{"cliente":{"nome":"Ana"},"preco":150}',
+      sample: RESPONSE,
       sampleStatus: 200,
     };
-    expect(payloadOf(form)?.sampleShape).toEqual({
-      status: 200,
-      body: { cliente: { nome: "xxx" }, preco: 999 },
-    });
+    const payload = payloadOf(form);
+    const sent = JSON.stringify(payload);
+    expect(sent).not.toInclude("Ana");
+    expect(sent).not.toInclude("12345678901");
+    expect(sent).not.toInclude("sample");
+    // …and the fields the save DOES carry are still there, so this is not passing on an empty body.
+    expect(payload?.label).toBe("Consulta");
   });
 
-  it("does NOT erase the stored shape when the response is not on this machine", () => {
-    const form = formFromTool(toolRow({ sampleShape: SHAPE }));
-    expect(form.sample).toBe("");
-    expect(payloadOf(form)?.sampleShape).toEqual(SHAPE);
-  });
-
-  it("keeps the stored shape while the operator is mid-paste and the text does not parse", () => {
-    const form = {
-      ...formFromTool(toolRow({ sampleShape: SHAPE })),
-      sample: '{"cliente":{"nome":',
-    };
-    expect(payloadOf(form)?.sampleShape).toEqual(SHAPE);
-  });
-
-  it("is a change the discard dialog can see, because it is part of the form", () => {
-    const opened = formFromTool(toolRow({ sampleShape: SHAPE }));
-    const pasted = { ...opened, sample: '{"a":"b"}' };
+  it("is part of the form, and still changes nothing about what would be written", () => {
+    const opened = formFromTool(toolRow());
+    const pasted = { ...opened, sample: RESPONSE };
+    // Pasting is an unsaved change the discard dialog can see…
     expect(JSON.stringify(pasted)).not.toBe(JSON.stringify(opened));
+    // …and the body is identical either way.
+    expect(JSON.stringify(payloadOf(pasted))).toBe(
+      JSON.stringify(payloadOf(opened)),
+    );
   });
 });
 
-describe("the browser's half", () => {
+describe("the browser's copy", () => {
   it("round-trips a response and its status", () => {
-    writeLocalSample("7", { text: '{"a":1}', status: 200, shape: "f1" });
-    expect(readLocalSample("7", "f1")).toEqual({
-      text: '{"a":1}',
-      status: 200,
-      shape: "f1",
-    });
-  });
-
-  it("is per tool, so one tool's response is never offered for another", () => {
-    writeLocalSample("7", { text: '{"a":1}', status: null, shape: "f1" });
-    expect(readLocalSample("8", "f1")).toBeNull();
+    writeLocalSample("7", { text: RESPONSE, status: 200 });
+    expect(readLocalSample("7")).toEqual({ text: RESPONSE, status: 200 });
   });
 
   it("clears rather than keeping a previous response when the new one is too large", () => {
-    writeLocalSample("7", { text: '{"a":1}', status: null, shape: "f1" });
-    writeLocalSample("7", {
-      text: "x".repeat(600_000),
-      status: null,
-      shape: "f1",
-    });
-    expect(readLocalSample("7", "f1")).toBeNull();
+    writeLocalSample("7", { text: RESPONSE, status: null });
+    writeLocalSample("7", { text: "x".repeat(600_000), status: null });
+    expect(readLocalSample("7")).toBeNull();
   });
 
-  it("clears on an empty sample", () => {
-    writeLocalSample("7", { text: '{"a":1}', status: null, shape: "f1" });
+  it("clears on an empty sample, and on one that is only whitespace", () => {
+    writeLocalSample("7", { text: RESPONSE, status: null });
     writeLocalSample("7", null);
-    expect(readLocalSample("7", "f1")).toBeNull();
+    expect(readLocalSample("7")).toBeNull();
+    // Whitespace is the same thing to the operator and a different thing to `null`, and the module
+    // owns that judgement rather than trusting its one caller to keep making it.
+    writeLocalSample("7", { text: RESPONSE, status: null });
+    writeLocalSample("7", { text: "  \n ", status: 200 });
+    expect(readLocalSample("7")).toBeNull();
   });
 
+  // WHAT COMES BACK IS A `LocalSample`, WHATEVER IS IN THE STORE. The entry is a string another
+  // version of this app, an extension, or the operator's own console can have written, and the two
+  // fields are both read as their type downstream: `sample` goes into a text control and `status`
+  // is compared numerically to decide whether the body is read verbatim. A string `"200"` there
+  // would answer that comparison wrong rather than throw.
   it("reads nothing out of a value that is not a stored sample", () => {
     localStorage.setItem("@app:toolSample:7", "not json");
-    expect(readLocalSample("7", "f1")).toBeNull();
+    expect(readLocalSample("7")).toBeNull();
     localStorage.setItem("@app:toolSample:7", JSON.stringify({ status: 200 }));
-    expect(readLocalSample("7", "f1")).toBeNull();
+    expect(readLocalSample("7")).toBeNull();
+    // A `text` that is not a string is not a sample either, and is refused rather than handed on.
+    localStorage.setItem("@app:toolSample:7", JSON.stringify({ text: 42 }));
+    expect(readLocalSample("7")).toBeNull();
+    localStorage.setItem("@app:toolSample:7", JSON.stringify(["x"]));
+    expect(readLocalSample("7")).toBeNull();
+  });
+
+  it("drops a status that is not a number rather than passing the string on", () => {
+    localStorage.setItem(
+      "@app:toolSample:7",
+      JSON.stringify({ text: RESPONSE, status: "200" }),
+    );
+    expect(readLocalSample("7")).toEqual({ text: RESPONSE, status: null });
+  });
+
+  // ROUND 2 OF REVIEW: `setItem` can throw on a full origin quota, and the previous entry used to
+  // survive that, so the next open restored ANOTHER response's values as though this save had
+  // persisted. Degrading to no sample is honest; degrading to a stale one is not.
+  //
+  // The whole object is swapped rather than `localStorage.setItem = …`: happy-dom backs `Storage`
+  // with a Proxy, so assigning the property STORES AN ITEM CALLED `setItem` and the real method
+  // keeps running. Measured here: the stubbed version of this test passed with the write intact.
+  it("leaves nothing behind when the write itself fails", () => {
+    writeLocalSample("7", { text: RESPONSE, status: 200 });
+    const kept = new Map<string, string>();
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k !== null) kept.set(k, localStorage.getItem(k) ?? "");
+    }
+    // Seeded from the real entry, so this reads back exactly what a quota failure would leave.
+    expect(kept.size).toBe(1);
+    const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const full = {
+      getItem: (k: string) => kept.get(k) ?? null,
+      removeItem: (k: string) => void kept.delete(k),
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    };
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get: () => full,
+    });
+    try {
+      expect(() =>
+        writeLocalSample("7", { text: '{"outro":"cliente"}', status: 200 }),
+      ).not.toThrow();
+      expect(readLocalSample("7")).toBeNull();
+      // And it is gone from the store itself, not merely unreadable.
+      expect(kept.size).toBe(0);
+    } finally {
+      if (real) Object.defineProperty(globalThis, "localStorage", real);
+    }
   });
 
   it("survives a browser that refuses storage entirely", () => {
@@ -193,9 +193,9 @@ describe("the browser's half", () => {
     });
     try {
       expect(() =>
-        writeLocalSample("7", { text: "x", status: null, shape: "f1" }),
+        writeLocalSample("7", { text: "x", status: null }),
       ).not.toThrow();
-      expect(readLocalSample("7", "f1")).toBeNull();
+      expect(readLocalSample("7")).toBeNull();
     } finally {
       if (real) Object.defineProperty(globalThis, "localStorage", real);
     }
@@ -203,10 +203,10 @@ describe("the browser's half", () => {
 });
 
 // A SOURCE FENCE, and it says so: what it can answer for is a grammar, not intent. The invariant is
-// that deleting an HTTP tool takes this browser's copy of its response with it — left behind, a
+// that deleting an HTTP tool takes this browser's copy of its response with it. Left behind, a
 // customer's response outlives the row it described, and tool ids come from a sequence, so a later
-// tool could be handed the deleted one's values (round 1 of review). There is one delete site today;
-// the fence is for the next one.
+// tool could be handed the deleted one's values. There is one delete site today; the fence is for
+// the next one.
 describe("every place that deletes an HTTP tool clears the browser's copy", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
 
@@ -254,7 +254,7 @@ describe("every place that deletes an HTTP tool clears the browser's copy", () =
     expect(
       CLEARS.test(strip(`${forgets}\n// writeLocalSample(t.id, null) here`)),
     ).toBe(false);
-    // Neither is the import that survives deleting the call — the case the battery caught.
+    // Neither is the import that survives deleting the call, the case the battery caught.
     const importOnly = `import { writeLocalSample } from "@/client/lib/toolSample";\n${forgets}`;
     expect(CLEARS.test(strip(importOnly))).toBe(false);
     // And a real call counts.

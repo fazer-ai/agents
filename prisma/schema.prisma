@@ -1232,13 +1232,6 @@ model ToolDefinition {
   // because the operator writes the tool. This column is where it says the same thing instead
   // (issue #352). See src/modules/tool-definitions/appointment.ts for the reader.
   appointment      Json?
-  // The SHAPE of a sample response the operator pasted while editing, so the path pickers and the
-  // caret completion survive a reopen: { status, body }, where every value in `body` is a stand-in
-  // of the same type (a string keeps only its length). NEVER the response itself — see
-  // src/modules/tool-definitions/sample-shape.ts for why, and for the redaction the service applies
-  // again on write. Null means no sample has been pasted for this tool, or the last one was too
-  // large to store (issue #566).
-  sampleShape      Json?    @map("sample_shape")
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 

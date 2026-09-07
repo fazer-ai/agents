@@ -60,6 +60,8 @@ function serviceFor(catalogType: string): string {
       return "google_calendar";
     case "GOOGLE_DRIVE":
       return "google_drive";
+    case "RESEND":
+      return "resend";
     default:
       return catalogType.startsWith("GOOGLE_") ? "google" : "";
   }
@@ -124,6 +126,8 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
       };
     case "GOOGLE_DRIVE":
       return { folderId: "", folderName: "" };
+    case "RESEND":
+      return { from: "", replyTo: "" };
     default:
       return {};
   }
@@ -529,6 +533,8 @@ export function IntegrationEditModal({
         );
       case "GOOGLE_DRIVE":
         return t("integrations.catalog.GOOGLE_DRIVE.label", "Google Drive");
+      case "RESEND":
+        return t("integrations.catalog.RESEND.label", "Resend");
       default:
         return c?.label ?? "";
     }
@@ -549,6 +555,11 @@ export function IntegrationEditModal({
         return t(
           "integrations.catalog.GOOGLE_DRIVE.description",
           "Find a file, get its link, or send it to the customer over a connected Google account.",
+        );
+      case "RESEND":
+        return t(
+          "integrations.catalog.RESEND.description",
+          "Transactional email over a Resend API key. The agent sends confirmations, reminders and follow-ups; the sender address is fixed in the settings below.",
         );
       default:
         return c?.description ?? "";
@@ -1160,6 +1171,41 @@ export function IntegrationEditModal({
                   </option>
                 </Select>
               </FormField>
+            )}
+
+            {form.catalogType === "RESEND" && (
+              <>
+                <FormField
+                  label={t("integrations.config.emailFrom", "Sender (from)")}
+                >
+                  <Input
+                    value={(cfg.from as string) ?? ""}
+                    onChange={(e) => setCfg({ from: e.target.value })}
+                    placeholder={t(
+                      "integrations.config.emailFromPlaceholder",
+                      "Name <email@yourdomain.com>",
+                    )}
+                  />
+                  <p className="mt-1 text-text-muted text-xs">
+                    {t(
+                      "integrations.config.emailFromHint",
+                      "The domain must be verified on the Resend account. The agent can never change the sender.",
+                    )}
+                  </p>
+                </FormField>
+                <FormField
+                  label={t(
+                    "integrations.config.emailReplyTo",
+                    "Reply-to (optional)",
+                  )}
+                >
+                  <Input
+                    value={(cfg.replyTo as string) ?? ""}
+                    onChange={(e) => setCfg({ replyTo: e.target.value })}
+                    placeholder="contato@yourdomain.com"
+                  />
+                </FormField>
+              </>
             )}
 
             {form.catalogType === "GOOGLE_CALENDAR" && (

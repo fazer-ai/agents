@@ -4,6 +4,7 @@
 import "./asaas";
 import "./google-calendar";
 import "./google-drive";
+import "./resend";
 
 export {
   argsFromZod,

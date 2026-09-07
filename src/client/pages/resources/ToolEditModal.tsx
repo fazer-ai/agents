@@ -40,7 +40,9 @@ import { templateExtensions } from "@/client/lib/templateEditor";
 import {
   recallToolSample,
   rememberToolSample,
+  sampleIsNothing,
   sampleTicket,
+  type ToolSample,
 } from "@/client/lib/toolSample";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
@@ -401,6 +403,79 @@ export function requestShapeOf(payload: unknown): string {
     if (!NOT_RESPONSE_AFFECTING.has(key))
       kept[key] = (payload as Record<string, unknown>)[key];
   return JSON.stringify(kept);
+}
+
+// WHICH DEFINITION THE SAMPLE ON SCREEN WAS CAPTURED AGAINST, decided in one place and returned,
+// because it is maintained at four sites and review round 13 found two of them wrong: a sample
+// restored from this tab's memory recorded NO definition (so a later edit to the URL was invisible
+// to the save's refusal, which is the very defect round 12 fixed, surviving a reopen), and Format
+// re-recorded the definition on screen NOW (so pretty-printing a sample after editing the URL erased
+// the mismatch).
+//
+// The rule is one sentence: the shape changes only when a NEW sample arrives. `against` is the form
+// the sample is going into, or null for an arrival that carries no capture with it.
+export function shapeOfArrival(args: {
+  text: string;
+  status: number | null;
+  against: ToolForm | null;
+  previous: string | null;
+}): string | null {
+  // The module's own rule, asked here rather than spelled out again: an empty body with a status is
+  // a sample, and it is one that describes a definition like any other.
+  if (sampleIsNothing(args.text, args.status)) return null;
+  if (args.against === null) return args.previous;
+  return requestShapeOf(payloadOf(args.against));
+}
+
+// THE ARRIVAL AN OPEN IS: the form as the server just answered it, carrying whatever this tab kept
+// for that tool. A function rather than the call spelled out at the two open sites, so what an open
+// records is a value a test can ask about instead of a shape a fence has to read off the source.
+export function shapeOfOpening(form: ToolForm): string | null {
+  return shapeOfArrival({
+    text: form.sample,
+    status: form.sampleStatus,
+    against: form,
+    previous: null,
+  });
+}
+
+// WHETHER THE SAMPLE ON SCREEN STILL DESCRIBES THE REQUEST BEING SAVED, which is the question the
+// revision cannot answer: the save is what sets the revision, so a response captured against one URL
+// and saved after the URL changed passes that check by construction (round 12 of review).
+export function sampleDescribes(
+  shape: string | null,
+  payload: unknown,
+): boolean {
+  // NO SAMPLE WAS CAPTURED, so there is nothing that could have stopped describing anything, and
+  // whether this save keeps one is the module's emptiness rule rather than this question. Null used
+  // to mean "no objection" as well, and carried three of them: a restored sample, an empty body with
+  // a status, and a reformat all recorded null and then survived any edit at all (round 13).
+  if (shape === null) return true;
+  return shape === requestShapeOf(payload);
+}
+
+// WHAT A SAVE HANDS THE MODULE, as a value rather than as an object literal assembled at the call
+// site. The module cannot see a call site, so every field spelled there is a field a mutation can
+// change with nothing to notice: `credentialRef` taken from the form instead of the payload, or
+// dropped for null, survived the battery when this was written inline.
+export function sampleToRemember(args: {
+  revision: string | null;
+  text: string;
+  status: number | null;
+  payload: { credentialRef: string | null };
+}): ToolSample | null {
+  // `revisionForSave` saying there is nothing to keep: the sample describes another definition, or
+  // neither revision is known.
+  if (args.revision === null) return null;
+  return {
+    revision: args.revision,
+    text: args.text,
+    status: args.status,
+    // From the payload and not from the form, so it is the reference the request that was just
+    // saved carries. A change of SELECTION is caught by the shape; this is for the credential
+    // being edited under the same name (round 13 of review).
+    credentialRef: args.payload.credentialRef,
+  };
 }
 
 // WHETHER THIS SAVE HAS ANYTHING FOR THE SERVER. The sample is part of the form since #566, so
@@ -1341,9 +1416,26 @@ export function ToolEditModal({
       const next = { ...f, sample: text, sampleStatus: status };
       // Recorded from the form this sample is being put INTO, inside the updater so it is the state
       // React is about to commit and not a render behind it.
-      sampleShapeRef.current = text.trim()
-        ? requestShapeOf(payloadOf(next))
-        : null;
+      sampleShapeRef.current = shapeOfArrival({
+        text,
+        status,
+        against: next,
+        previous: sampleShapeRef.current,
+      });
+      return next;
+    });
+
+  // THE SAME SAMPLE, RE-INDENTED, which is why it does not re-capture: Format changes whitespace and
+  // never a value, so the definition this response came back from is the one it already had.
+  const reformatSample = (text: string) =>
+    setForm((f) => {
+      const next = { ...f, sample: text };
+      sampleShapeRef.current = shapeOfArrival({
+        text,
+        status: f.sampleStatus,
+        against: null,
+        previous: sampleShapeRef.current,
+      });
       return next;
     });
 
@@ -1441,7 +1533,11 @@ export function ToolEditModal({
           }
           const initial = formFromTool(data.tool);
           setForm(initial);
-          sampleShapeRef.current = null;
+          // A sample this tab kept was captured against the definition it is being restored beside,
+          // so THAT is the shape it describes: `recallToolSample` only answers when the revision it
+          // was stored under is the one that just loaded. Left null, an edit to the URL after a
+          // reopen would save the old response against the new definition (round 13 of review).
+          sampleShapeRef.current = shapeOfOpening(initial);
           baselineRef.current = JSON.stringify(initial);
           openedRevisionRef.current = String(data.tool.updatedAt);
         } catch {
@@ -1457,7 +1553,9 @@ export function ToolEditModal({
       setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
-      sampleShapeRef.current = null;
+      // Through the same rule as the other open, and it answers null: a create form has no sample.
+      // Written as the call rather than as the answer, so there is one place that decides.
+      sampleShapeRef.current = shapeOfOpening(initial);
       baselineRef.current = JSON.stringify(initial);
       // A create has no revision yet, and no persisted half to compare against either.
       openedRevisionRef.current = null;
@@ -1551,8 +1649,7 @@ export function ToolEditModal({
       const revision = revisionForSave(
         row,
         openedRevisionRef.current,
-        sampleShapeRef.current === null ||
-          sampleShapeRef.current === requestShapeOf(payload),
+        sampleDescribes(sampleShapeRef.current, payload),
       );
       const id = row?.id ?? (editId as string);
       // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).
@@ -1564,12 +1661,13 @@ export function ToolEditModal({
       // the copy that lives here (round 8 of review).
       // Null is `revisionForSave` saying there is nothing to keep: the sample describes another
       // definition, or neither revision is known.
-      if (revision !== null)
-        rememberToolSample(
-          id,
-          { revision, text: sample, status: sampleStatus },
-          ticket,
-        );
+      const keep = sampleToRemember({
+        revision,
+        text: sample,
+        status: sampleStatus,
+        payload,
+      });
+      if (keep !== null) rememberToolSample(id, keep, ticket);
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
       // that has to hear about it, not the dialog now on screen. Nothing was written when nothing
       // was sent, so there is nothing for the list to hear either.
@@ -2287,10 +2385,11 @@ export function ToolEditModal({
                   onClick={() => {
                     const tidy = sampleFormat.text;
                     if (tidy === null) return;
-                    // NOTE: the status is NOT cleared here, unlike on a keystroke: re-indenting
-                    // changes the whitespace and never a value, so the last run's status still
-                    // describes this body.
-                    setSample(tidy, sampleStatus);
+                    // NOTE: neither the status nor the captured definition is touched here,
+                    // unlike on a keystroke: re-indenting changes the whitespace and never a value,
+                    // so the last run's status still describes this body and so does the definition
+                    // it came back from.
+                    reformatSample(tidy);
                   }}
                 >
                   {t("tools.sampleFormat", "Format")}

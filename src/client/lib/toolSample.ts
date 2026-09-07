@@ -34,6 +34,8 @@
 // WHAT THAT COSTS, stated rather than papered over: a reload, a second tab or a second machine gets
 // what it gets today, which is no offer and "Send a test request" as the way back.
 
+import { VAULT_CHANGED_EVENT } from "@/client/lib/vaultCache";
+
 export interface ToolSample {
   // The revision of the definition this response came back from, as the row's `updatedAt`. A sample
   // describes ONE version of a tool: change the URL or the response contract, from another tab or
@@ -46,6 +48,21 @@ export interface ToolSample {
   // the preview branches on it: a body captured from a 404 the tool declares a "no result" status
   // is projected differently, and restoring the text without it would read that 404 as a 200.
   status: number | null;
+  // The credential the request carried, by name, or null for a tool that uses none. It is here for
+  // one question only, and it is the question the revision cannot answer: a credential is a ROW OF
+  // ITS OWN, so editing its base URL or its secret in place changes the host the tool reaches and
+  // the authorization it sends while the reference stays the same word and the tool's `updatedAt`
+  // never moves (round 13 of review). A relative `urlTemplate` is resolved against that base URL by
+  // `credential-wiring.ts`, so the sample can end up describing another server entirely.
+  credentialRef: string | null;
+}
+
+// WHAT COUNTS AS NO SAMPLE AT ALL, exported because the editor asks the same question when it
+// records which definition the sample on screen describes, and a second spelling of it is what a
+// change to this rule forgets. An empty body with a status IS a sample, and it is the one the
+// preview most needs (see `rememberToolSample`).
+export function sampleIsNothing(text: string, status: number | null): boolean {
+  return text.trim() === "" && status === null;
 }
 
 // Bounded on both axes, because this holds response bodies for the life of the tab. An operator
@@ -87,6 +104,12 @@ const forgottenAt = new Map<string, number>();
 // last and would put the older opening's sample back, and the revision cannot tell them apart when
 // the second opening loaded the revision the first save committed (round 12 of review).
 const writtenAt = new Map<string, number>();
+// When the vault last changed, anywhere in this tab. A sample that carried a credential describes a
+// request the vault decided part of, and the client cannot tell whether the edit touched the one it
+// used: the secret never reaches the browser, so there is nothing here to compare. What it CAN tell
+// is that a sample with no credential is untouched by any vault edit, which is what keeps this from
+// being the global clear round 6 refused.
+let vaultChangedAt = 0;
 
 // The identity the entries belong to. `undefined` is "nobody has said yet", which is not the same
 // as a signed-out `null`: the first thing the console says on boot is a real answer either way, and
@@ -177,12 +200,21 @@ export function rememberToolSample(
   // "exactly what the agent would receive" (round 8 of review). So what is nothing here is neither
   // text nor status.
   if (sample === null) return;
-  if (sample.text.trim() === "" && sample.status === null) return;
+  // The vault moved while this save was out, and this sample carried a credential: it was captured
+  // against a resolution that may no longer exist. The stored entries are dropped by
+  // `noteVaultChanged` at the moment of the change; this is the same rule for the one that was still
+  // on the wire and has no entry to drop.
+  // Truthiness rather than a null check, and stored the same way below: the form spells "no
+  // credential" as an empty string and the payload spells it as null, so a rule that only knew one
+  // of them would turn a caller reading the other into round 6's global invalidation.
+  if (sample.credentialRef && vaultChangedAt > since.at) return;
+  if (sampleIsNothing(sample.text, sample.status)) return;
   if (sample.text.length > MAX_CHARS) return;
   samples.set(key, {
     revision: sample.revision,
     text: sample.text,
     status: sample.status,
+    credentialRef: sample.credentialRef || null,
   });
   while (samples.size > MAX_ENTRIES) {
     const oldest = samples.keys().next();
@@ -220,6 +252,32 @@ export function noteOperator(id: string | null): void {
   operator = id;
   forgetToolSamples();
 }
+
+// A CREDENTIAL CHANGED, so every sample that used one stops describing a request we can vouch for.
+// Scoped to the entries that carry a reference rather than emptying the map, because a tool with no
+// credential cannot be affected by a vault edit and round 6 already paid for a global invalidation:
+// the operator sees a tool they never touched come back with an older response or none.
+//
+// It is not scoped any further than that, and the reason is not laziness: the event announces THAT
+// the vault changed and never which entry, the panel can rename and delete as well as edit, and the
+// secret itself is server-side. Between keeping a sample that may describe another host and asking
+// for one more test request, this asks for the test request.
+export function noteVaultChanged(): void {
+  clock++;
+  vaultChangedAt = clock;
+  for (const [key, kept] of samples)
+    if (kept.credentialRef) {
+      forgottenAt.set(key, clock);
+      samples.delete(key);
+    }
+}
+
+// Registered here rather than in a component, because a credential is edited from three places (the
+// Vault panel, the agent editor, and the picker inlined in this very modal) and the tool editor is
+// mounted for at most one of them. A listener that lives in a component is a listener that is absent
+// exactly when the edit happens somewhere else.
+if (typeof window !== "undefined")
+  window.addEventListener(VAULT_CHANGED_EVENT, noteVaultChanged);
 
 // Nothing here survives a reload, so all of this is about the tab that stays open.
 function forgetToolSamples(): void {

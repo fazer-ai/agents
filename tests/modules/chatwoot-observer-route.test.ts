@@ -1946,7 +1946,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   test("a delivery that resolves nothing under an unmoved binding is settled, not refused", async () => {
     const inbox = await suDb.inbox.findFirstOrThrow({
       where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
-      select: { id: true, bindingGeneration: true },
+      select: { id: true },
     });
     const observerRow = await suDb.inboxObserver.findFirstOrThrow({
       where: { tenantId, inboxId: inbox.id, agentId: observerId },
@@ -1967,22 +1967,31 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       }),
     });
     if (!n) throw new Error("payload did not normalize");
-    const delivery = await suDb.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `obr-${process.pid}-steady-${deliverySeq}`,
-        event: "message_created",
-        status: "PENDING",
-        bindingGeneration: inbox.bindingGeneration,
-      },
-      select: { id: true },
-    });
     try {
+      // The world this delivery arrives in is the one AFTER the detach: the point of this case is an
+      // empty reading whose binding has not moved SINCE the message, which is the ordinary shape of
+      // an inbox nothing of ours answers. The generation is therefore read once the row and the mode
+      // are where they will be — and read at all rather than assumed, since the detach itself steps
+      // the counter through the trigger.
       await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
       await suDb.agent.update({
         where: { id: observerId },
         data: { mode: "production" },
+      });
+      const settled = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inbox.id },
+        select: { bindingGeneration: true },
+      });
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `obr-${process.pid}-steady-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+          bindingGeneration: settled.bindingGeneration,
+        },
+        select: { id: true },
       });
       expect(
         await processChatwootDelivery({
@@ -1992,7 +2001,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
           agentBotId: OBSERVER_BOT,
           normalized: n,
           base: appDb,
-          receiptBindingGeneration: inbox.bindingGeneration,
+          receiptBindingGeneration: settled.bindingGeneration,
         }),
       ).toBe("processed");
     } finally {
@@ -2082,6 +2091,41 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         data: { mode: "production" },
       });
     }
+  });
+
+  // ...AND THE SIBLING IS THE RESPONDER'S DELIVERY OF THE SAME EVENT (PR review, round 1). One
+  // customer message reaches the ledger twice — the creation, and the `message_updated` that finally
+  // carried a voice note's transcription — and both name it through `inboundMessageId` (issue #478).
+  // Matched without the event, this delivery would read the OTHER one's decision, and where the mode
+  // moved between them it is exactly the wrong one.
+  test("a sibling delivery of a different event does not answer for this one", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    // The responder's TRANSCRIPTION delivery of the same message, claimed while its agent remembered
+    // nothing. The creation this test delivers has no sibling of its own, so the mode reading — the
+    // responder is production and enabled — is what must answer, and it says the responder has it.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-other-event`,
+        event: "message_updated",
+        status: "PROCESSING",
+        conversationId: 81,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: false,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 81, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
   });
 
   // ...and a sibling that has not claimed yet says nothing, so the mode reading stands — which is

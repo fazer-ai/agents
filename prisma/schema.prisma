@@ -469,10 +469,16 @@ model Inbox {
   // the inbox is unbound, and on every row bound before this column existed, where the reader falls
   // back to treating the binding as older than any delivery (the behaviour that predates it).
   responderBoundAt   DateTime? @map("responder_bound_at")
-  // HOW MANY TIMES WHO ROUTES THIS INBOX HAS CHANGED (issue #540). Incremented by every write that
-  // moves a binding — the responder bound, rebound or unbound, an observer attached or detached —
-  // in the same transaction as the binding itself, so the counter and the world it describes commit
-  // together.
+  // HOW MANY TIMES WHO ROUTES THIS INBOX HAS CHANGED (issue #540). Stepped by a DATABASE TRIGGER on
+  // every write that moves a binding — the responder bound, rebound or unbound, an observer attached
+  // or detached — so the counter and the world it describes commit together and no writer can miss
+  // it. Never written from application code; a value sent for this column is overwritten.
+  //
+  // A TRIGGER RATHER THAN THE FIVE CALL SITES, and the reason is the rolling deploy (docs/deploy.md)
+  // as much as it is tidiness: the previous release moves bindings for the whole length of the
+  // overlap and names no such column, so an application-side counter stands still exactly while a
+  // reader on the new release is trusting it. The same hole swallowed `softDisconnectChatwootInstance`,
+  // which unbinds every inbox of an account with a raw UPDATE of its own.
   //
   // A COUNTER AND NOT A TIMESTAMP, deliberately. `responderBoundAt` is a moment on OUR clock, and
   // every reader of it has to compare against a moment on Chatwoot's; a delivery that straddles a

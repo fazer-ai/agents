@@ -2313,10 +2313,6 @@ export async function bindInbox(
   }> {
     return runScopedOn(base, ctx, async (db) => {
       let retiredObserverBotId: number | null = null;
-      // Whether the observer row this call retired was actually there. `retiredObserverBotId` cannot
-      // answer it: a retired row whose persona carries no bot leaves it null, and that row still
-      // moved who routes this inbox.
-      let retiredObserverRow = false;
       // NOTE: The ACCOUNT row first, and the same question the read at the top already asked, because
       // that read predates the Chatwoot calls and a disconnect fits in the window. Without this lock
       // nothing serialises the two: the disconnect stamps the account and unbinds every inbox that was
@@ -2419,7 +2415,6 @@ export async function bindInbox(
             select: { chatwootAgentBotId: true },
           });
           retiredObserverBotId = bot?.chatwootAgentBotId ?? null;
-          retiredObserverRow = true;
         }
       }
       // STAMPED ONLY WHEN THE BINDING MOVES (issue #476 review, round 31). An observer beside a
@@ -2449,16 +2444,14 @@ export async function bindInbox(
         });
       }
       const boundTo = beforeWrite?.agent_id ?? null;
-      // WHO ROUTES THIS INBOX MOVED (issue #540), counted in the same statement that moves it, so a
-      // delivery can never read the counter and the binding from two different moments. Both writes
-      // this transaction makes are movements: the responder changing hands, and the observer row
-      // retired above when the same agent won the responder race.
-      //
-      // ONLY WHEN SOMETHING MOVED, on the same reasoning as `responderBoundAt` above. Re-submitting
-      // the editor with the agent already bound writes nothing and changes nothing, and a counter
-      // stepped there would tell every delivery in flight that the world moved — which costs a
-      // refusal, in a place where refusing means a row an operator has to read.
-      const bindingMoved = boundTo !== agentId || retiredObserverRow;
+      // WHO ROUTES THIS INBOX MOVED (issue #540), and the counter that says so is NOT stepped here.
+      // It is a database trigger, on the reasoning the review of this change made plain: a counter
+      // kept by the application is only as good as the list of writers somebody remembered, and that
+      // list is missing the previous release for the whole length of a rolling deploy. Both
+      // movements this transaction makes are counted by the trigger — `agent_id` changing hands
+      // here, and the observer row retired above — and re-submitting the editor with the agent
+      // already bound moves neither, so nothing is counted, which is the same rule
+      // `responderBoundAt` follows one line below.
       await db.inbox.update({
         where: { id: inboxId },
         data: {
@@ -2468,7 +2461,6 @@ export async function bindInbox(
             : boundTo === agentId
               ? {}
               : { responderBoundAt: new Date() }),
-          ...(bindingMoved ? { bindingGeneration: { increment: 1 } } : {}),
         },
       });
       const row = await db.inbox.findUniqueOrThrow({
@@ -2570,7 +2562,10 @@ export async function readObserveTarget(
     // Refused here, and the unique index says the same thing under the race.
     const other = await db.inboxObserver.findFirst({
       where: { tenantId, inboxId },
-      select: { agentId: true },
+      // The STAMP as well, because "a row exists" and "a call completed" stopped being the same
+      // question when the row started being written ahead of the fork (issue #540) — see
+      // `alreadyObserving` below.
+      select: { agentId: true, attachedAt: true },
     });
     // The MODE is asked of a NEW observer only (issue #476 review, round 16). A promotion that
     // landed inside an attach window leaves a production agent with an observer row, and that row
@@ -2607,7 +2602,16 @@ export async function readObserveTarget(
       // Whether this agent ALREADY observed the inbox when the call started. A re-submitted observe
       // asks the fork again (the POST is idempotent), and a rollback below must not take back an
       // attachment this call did not create.
-      alreadyObserving: other !== null,
+      //
+      // A CONFIRMED ROW, never a pending one (issue #540, PR review round 1). Two overlapping
+      // observes of the same pair share one row, and the second one reading the first's PENDING row
+      // as "already observing" is the worst of both answers: it writes no row of its own AND its
+      // compensation skips the detach, so if the first call then fails and takes the row away, the
+      // second leaves an attachment upstream that nothing here names. Read as not-yet-observing, the
+      // second call's insert loses to the unique index — which changes nothing, since the row it
+      // wanted is already there — and its compensation asks the same question every other one asks:
+      // does a COMPLETED call still depend on this attachment.
+      alreadyObserving: other !== null && other.attachedAt !== null,
     };
   });
 }
@@ -2977,15 +2981,6 @@ export async function observeInbox(
         create: { tenantId, inboxId, agentId, attachedAt: new Date() },
         update: { attachedAt: new Date() },
       });
-      // The generation moves with the row and not with the Chatwoot call (issue #540): an observe
-      // that found the row already there is a second click on the same switch, and the retry above
-      // with nothing left to repair — the same condition the audit line uses, for the same reason.
-      if (!already) {
-        await db.inbox.update({
-          where: { id: inboxId },
-          data: { bindingGeneration: { increment: 1 } },
-        });
-      }
       const row = await db.inbox.findUniqueOrThrow({
         where: { id: inboxId },
         select: INBOX_SELECT,
@@ -3122,14 +3117,6 @@ export async function unobserveInbox(
     const { count } = await db.inboxObserver.deleteMany({
       where: { inboxId, agentId },
     });
-    // Same rule as the observe (issue #540): `count` is what says a binding actually went, and a
-    // concurrent unobserve that landed first moved nothing here.
-    if (count > 0) {
-      await db.inbox.update({
-        where: { id: inboxId },
-        data: { bindingGeneration: { increment: 1 } },
-      });
-    }
     const row = await db.inbox.findUniqueOrThrow({
       where: { id: inboxId },
       select: INBOX_SELECT,

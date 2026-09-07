@@ -1691,6 +1691,8 @@ describe.skipIf(!dbUp)("the observer binding", () => {
   // that changes who routes an inbox and on no other — a movement it misses lets a stale derivation
   // pass as evidence, and one it invents costs a delivery a refusal, which is a row an operator has
   // to read.
+  //
+  // Asked here of the public calls, and in the test below of the writers that never go through them.
   test("the generation steps once per binding that actually moves, and stands still for a write that moves none", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1855,6 +1857,126 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       expect(observing.size).toBe(0);
     } finally {
       await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
+    }
+  });
+  // ...AND OF EVERY OTHER WRITER, which is why the counter is a trigger and not five call sites (PR
+  // review, round 1). Two of them were already missing from the list on the first pass: an account
+  // disconnect, which unbinds every inbox with a raw UPDATE of its own, and the PREVIOUS RELEASE,
+  // which moves bindings for the whole length of a rolling deploy (docs/deploy.md) and names no such
+  // column at all. A counter standing still there is worse than no counter: a reader takes a stale
+  // route derivation for a current one, which is the single reading the column exists to refuse.
+  test("the counter follows writers that never call bindInbox: a raw unbind, and an account disconnect", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 72,
+        name: "Escritor de fora",
+        agentId: productionAgent,
+      },
+      select: { id: true, bindingGeneration: true },
+    });
+    // The shape the previous release writes: it names `agent_id` and nothing else.
+    await suDb.$executeRawUnsafe(
+      `UPDATE inboxes SET agent_id = NULL, updated_at = now() WHERE id = ${inbox.id}`,
+    );
+    const afterRaw = await suDb.inbox.findUniqueOrThrow({
+      where: { id: inbox.id },
+      select: { bindingGeneration: true },
+    });
+    expect(afterRaw.bindingGeneration).toBe(inbox.bindingGeneration + 1);
+
+    // ...and an UPDATE that moves no binding moves no counter, or every mirror sync would tell every
+    // delivery in flight that the world had changed.
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { name: "Escritor de fora, renomeado" },
+    });
+    expect(
+      (
+        await suDb.inbox.findUniqueOrThrow({
+          where: { id: inbox.id },
+          select: { bindingGeneration: true },
+        })
+      ).bindingGeneration,
+    ).toBe(afterRaw.bindingGeneration);
+
+    // The disconnect: it clears `agent_id` across the account in one raw statement.
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { agentId: productionAgent },
+    });
+    const bound = await suDb.inbox.findUniqueOrThrow({
+      where: { id: inbox.id },
+      select: { bindingGeneration: true },
+    });
+    const cw = fakeChatwoot({ observerRoute: true, observing: new Set() });
+    try {
+      await softDisconnectChatwootInstance(
+        ctx(tenantId),
+        instanceId,
+        appDb,
+        cw,
+      );
+      expect(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: inbox.id },
+            select: { agentId: true, bindingGeneration: true },
+          })
+        ).bindingGeneration,
+      ).toBe(bound.bindingGeneration + 1);
+    } finally {
+      await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
+    }
+  });
+  // A PENDING ROW IS SOMEBODY ELSE'S CALL IN FLIGHT, NOT A BINDING TO DEFER TO (PR review, round 1).
+  // Two overlapping observes of the same pair share ONE row, and reading the other call's pending row
+  // as "already observing" is the worst of both answers: this call writes no row AND its
+  // compensation skips the detach, so if the other call then fails and takes the row away, the
+  // attachment upstream is left with nothing here naming it.
+  test("an observe that meets another call's pending row still takes its own attachment back", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 73,
+        name: "Observe concorrido",
+      },
+      select: { id: true },
+    });
+    // The other call's row, as it stands while its own POST is in flight.
+    const pending = await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: inbox.id,
+        agentId: monitoringAgent,
+        attachedAt: null,
+      },
+      select: { id: true },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      onAttach: async () => {
+        // ...and this call then fails to persist.
+        await softDisconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
+      },
+    });
+    try {
+      await expect(
+        observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      // The attachment goes back, because nothing COMPLETED depends on it.
+      expect(observing.size).toBe(0);
+      // ...and the other call's row is left exactly where it was: this call did not write it.
+      expect(
+        await suDb.inboxObserver.count({ where: { id: pending.id } }),
+      ).toBe(1);
+    } finally {
+      await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
+      await suDb.inboxObserver.deleteMany({ where: { inboxId: inbox.id } });
     }
   });
 });

@@ -21,7 +21,12 @@ import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { ingestsContinuously, isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
 import { shouldRunReset } from "@/modules/agents/test-mode";
@@ -303,11 +308,12 @@ type InboxRuntime = NonNullable<Awaited<ReturnType<typeof inboxAgentRuntime>>>;
 // insert path runs after the 200, and the resolution's own retries are about the runtimes. A read
 // that did not answer is null, which every reader treats as "this row cannot say" — the same word as
 // an inbox we do not mirror and a row an older build wrote.
-async function inboxBindingGenerationAt(
-  tenantId: bigint,
+// The reading itself, on a client the caller already has open, so it can be taken inside the
+// transaction that writes the ledger row.
+async function inboxBindingGenerationIn(
+  db: ScopedDb,
   instanceId: bigint,
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
-  base: PrismaClient,
 ): Promise<number | null> {
   // The payload's inbox when it names one, otherwise the conversation's mirrored inbox — the same
   // fallback every resolver above makes, so the generation and the runtime cannot be read off two
@@ -326,14 +332,23 @@ async function inboxBindingGenerationAt(
           }
         : null;
   if (where === null) return null;
+  const row = await db.inbox.findFirst({
+    where,
+    select: { bindingGeneration: true },
+  });
+  return row?.bindingGeneration ?? null;
+}
+
+async function inboxBindingGenerationAt(
+  tenantId: bigint,
+  instanceId: bigint,
+  at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
+  base: PrismaClient,
+): Promise<number | null> {
   try {
-    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.inbox.findFirst({
-        where: { tenantId, ...where },
-        select: { bindingGeneration: true },
-      }),
+    return await runScopedOn(base, sysCtx(tenantId), (db) =>
+      inboxBindingGenerationIn(db, instanceId, at),
     );
-    return row?.bindingGeneration ?? null;
   } catch (err) {
     logger.warn(
       "chatwoot: could not read the inbox binding generation (inbox=%s, conv=%s): %s",
@@ -571,6 +586,14 @@ async function responderSiblingRemembers(
   responderBotId: number,
   conversationId: number | null,
   message: { id: number; column: "inbound" | "humanReply" } | null,
+  // THE EVENT THIS DELIVERY CARRIES, and the sibling has to be the responder's delivery of the SAME
+  // one (PR review, round 1). One customer message reaches the ledger twice — the `message_created`
+  // and, for a voice note, the `message_updated` that finally carried its transcription — and both
+  // name it through `inboundMessageId` (issue #478). Asked without the event, this query could
+  // answer about the responder's OTHER delivery, and where the mode moved between the two it would
+  // hand back the wrong decision: the observer then repeats a message the responder folded in, or
+  // stays quiet about one it did not.
+  event: string,
   base: PrismaClient,
 ): Promise<boolean | null> {
   if (conversationId === null || message === null) return null;
@@ -583,6 +606,7 @@ async function responderSiblingRemembers(
           ? { inboundMessageId: message.id }
           : { humanReplyMessageId: message.id }),
         routeAgentBotId: responderBotId,
+        event,
         // A sibling is another row by definition — the same reason the coverage count says so: one
         // bot serves every role its agent holds, so this delivery's own row can match the responder
         // bot after a promotion.
@@ -1149,24 +1173,17 @@ export async function recordAndProcessChatwootDelivery(
   params: RecordAndProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
-  // READ BEFORE THE ROW IS WRITTEN and carried into it (issue #540): what the delivery records has
-  // to be the world it ARRIVED in, and every reading taken later is about a world an administrative
-  // write may already have moved. One indexed read, on the detached half — the 200 is long since
-  // out, so it costs the ack nothing.
-  const bindingGeneration = await inboxBindingGenerationAt(
-    params.tenantId,
-    params.instanceId,
-    {
-      chatwootInboxId: params.normalized.inboxId ?? null,
-      chatwootConversationId: params.normalized.conversationId,
-    },
-    base,
-  );
   const { rowId, bindingGeneration: rowGeneration } = await claimDelivery(
     base,
     { tenantId: params.tenantId, instanceId: params.instanceId },
     params.deliveryId,
-    ledgerFactsOf(params.normalized, params.agentBotId, bindingGeneration),
+    ledgerFactsOf(params.normalized, params.agentBotId),
+    // Where to read the world this delivery arrived in — read INSIDE the transaction that writes the
+    // row, so the two commit together (issue #540, PR review round 1).
+    {
+      chatwootInboxId: params.normalized.inboxId ?? null,
+      chatwootConversationId: params.normalized.conversationId,
+    },
   );
   return processChatwootDelivery({
     tenantId: params.tenantId,
@@ -1217,7 +1234,9 @@ const INGEST_ARM_BACKOFF_MS = 300;
 // carries unchanged however late it arrives. This one answers about the WORLD, read when the row was
 // first written; a redelivery reads a later world, and filling a legacy null with it would put a
 // present-day binding on a row that arrived under an older one — the single lie the column exists to
-// prevent. A row without it keeps saying it cannot answer, which is correct.
+// prevent. A row without it keeps saying it cannot answer, which is correct. It is also the only
+// field of `LedgerFacts` that `ledgerFactsOf` does not produce, for the same reason: it is read from
+// the database, inside the transaction that writes the row, rather than derived from the payload.
 const LEDGER_FILLABLE = [
   "conversationId",
   "inboundMessageId",
@@ -1298,12 +1317,7 @@ export async function fillLedgerTranscribedMessage(
 function ledgerFactsOf(
   n: NormalizedChatwootEvent,
   routeAgentBotId: number | null,
-  // The world this delivery arrived in (issue #540), read by the caller — the only fact here that
-  // does not come from the payload, and the reason it is a parameter rather than a read: this
-  // function is the single place the insert and the legacy fill agree on, and it stays synchronous
-  // and pure so neither can answer differently.
-  bindingGeneration: number | null,
-): LedgerFacts {
+): Omit<LedgerFacts, "bindingGeneration"> {
   // Asked ONCE and read twice below, because the two fields it decides are a pair: a row saying a
   // takeover was owed while naming no message for it would leave the recovery's fence blank on the
   // exact rows the fence exists for, and two calls are two chances to diverge.
@@ -1350,9 +1364,6 @@ function ledgerFactsOf(
     // Written under the same condition as the shape above, from the same answer.
     humanReplyMessageId:
       humanReplyShape !== null ? (n.message?.id ?? null) : null,
-    // WHICH WORLD THIS DELIVERY ARRIVED IN (issue #540). See the schema and `LEDGER_FILLABLE` for
-    // why it is written here, at receipt, and never filled in later.
-    bindingGeneration,
   };
 }
 
@@ -1360,7 +1371,8 @@ async function claimDelivery(
   base: PrismaClient,
   scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
-  facts: LedgerFacts,
+  facts: Omit<LedgerFacts, "bindingGeneration">,
+  at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
 ): Promise<{
   rowId: bigint;
   duplicate: boolean;
@@ -1369,7 +1381,7 @@ async function claimDelivery(
   let lastErr: unknown;
   for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
     try {
-      return await recordDelivery(base, scope, deliveryId, facts);
+      return await recordDelivery(base, scope, deliveryId, facts, at);
     } catch (err) {
       lastErr = err;
       logger.warn(
@@ -1395,7 +1407,8 @@ async function recordDelivery(
   base: PrismaClient,
   scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
-  facts: LedgerFacts,
+  facts: Omit<LedgerFacts, "bindingGeneration">,
+  at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
 ): Promise<{
   rowId: bigint;
   duplicate: boolean;
@@ -1406,8 +1419,24 @@ async function recordDelivery(
   bindingGeneration: number | null;
 }> {
   try {
-    const row = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
-      db.chatwootWebhookDelivery.create({
+    const row = await runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
+      // THE WORLD THIS ROW ARRIVES IN, READ IN THE SAME TRANSACTION THAT WRITES IT (issue #540, PR
+      // review round 1). It used to be one read followed by one insert, and a binding committing
+      // between them put a world on the row that the message never arrived in — the single lie this
+      // column exists to prevent, in the one place it is written.
+      //
+      // AS EARLY AS THIS PATH RUNS, and no earlier. The review asked for the receive path instead;
+      // that path is deliberately read-free (issue #228, measured): the ack waits on the pool it
+      // shares with every turn and compaction in the process, and Chatwoot takes the bot off a
+      // conversation when the ack is slow. What is left uncovered is the hop between the ack and
+      // this task, which is strictly shorter than the hop between Chatwoot emitting the event and
+      // our receiving it — a window no column written on this side can ever cover.
+      const bindingGeneration = await inboxBindingGenerationIn(
+        db,
+        scope.instanceId,
+        at,
+      );
+      return db.chatwootWebhookDelivery.create({
         data: {
           tenantId: scope.tenantId,
           chatwootInstanceId: scope.instanceId,
@@ -1419,10 +1448,11 @@ async function recordDelivery(
           // nothing else about the event — the flush re-reads the messages from Chatwoot, so no
           // column here can hold what the customer wrote.
           ...facts,
+          bindingGeneration,
         },
         select: { id: true, bindingGeneration: true },
-      }),
-    );
+      });
+    });
     return {
       rowId: row.id,
       duplicate: false,
@@ -4393,6 +4423,7 @@ export async function processChatwootDelivery(
           responderBotId,
           n.conversationId,
           coveredMessage,
+          n.event,
           base,
         )
       : null;

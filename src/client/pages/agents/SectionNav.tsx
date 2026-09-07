@@ -25,6 +25,10 @@ export interface SectionProps {
   help?: ReactNode;
   children: ReactNode;
   className?: string;
+  // Drawn but not shown: the form inside keeps its state. A Behavior section that does not apply
+  // to the agent's mode (issue #494) is hidden this way rather than unmounted, so flipping the
+  // mode back shows it again exactly as it was, unsaved edits included.
+  hidden?: boolean;
 }
 
 // A titled config block: a Card carrying the anchor `id` (so SectionNav can scroll to it and the
@@ -38,9 +42,17 @@ export function Section({
   help,
   children,
   className,
+  hidden,
 }: SectionProps) {
   return (
-    <Card id={id} className={cn("flex scroll-mt-4 flex-col gap-4", className)}>
+    <Card
+      id={id}
+      className={cn(
+        "flex scroll-mt-4 flex-col gap-4",
+        hidden && "hidden",
+        className,
+      )}
+    >
       {/* The icon is 28px and one line of the title is 20px, so how they align depends on whether
           there is a second line. With a description the text column is the taller of the two and
           the icon rides its FIRST line (`items-start` + the nudge). Without one, the shape most

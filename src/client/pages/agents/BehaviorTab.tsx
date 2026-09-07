@@ -3,6 +3,7 @@ import {
   ArrowRightLeft,
   Brain,
   CalendarClock,
+  Eye,
   Gauge,
   Image,
   ImagePlus,
@@ -50,6 +51,7 @@ import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import type { AgentMode } from "@/modules/agents/mode";
 import {
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
@@ -78,6 +80,8 @@ import {
   overridePickerSource,
   overrideProviderChanged,
 } from "./modelOverrideForm";
+import { ObservationSection } from "./ObservationSection";
+import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import {
@@ -294,6 +298,11 @@ interface BehaviorTabProps {
   limits: LimitsState;
   memory: MemoryState;
   setMemory: React.Dispatch<React.SetStateAction<MemoryState>>;
+  // The agent's mode decides which sections are drawn (issue #494): a watcher never answers, so
+  // the sections that configure how it answers are hidden, and the Observation block appears.
+  mode: AgentMode;
+  observation: ObservationState;
+  setObservation: React.Dispatch<React.SetStateAction<ObservationState>>;
   modelFallback: ModelFallbackState;
   setModelFallback: React.Dispatch<React.SetStateAction<ModelFallbackState>>;
   modelFallbackCredBaseUrl: string | null;
@@ -334,7 +343,9 @@ interface BehaviorTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
-  onOpenPlayground: () => void;
+  // Absent for a watcher (issue #494): the bar then shows no playground entry, the way the tab
+  // itself is not drawn for one.
+  onOpenPlayground?: () => void;
 }
 
 function toScheduleOption(h: Hours): ScheduleOption {
@@ -993,6 +1004,34 @@ function FollowUpStepsEditor({
   );
 }
 
+// What a WATCHER's Behavior tab shows (issue #494): the block that runs for an agent in
+// monitoring mode, and the three that apply to any agent whatever it does with a message. The
+// rest — availability, grouping, audio, split, data in context, images, authorization, takeover,
+// execution limits, the proactive ladder — decide how the agent ANSWERS, and a monitoring agent
+// never does; drawn for one, they read as if it could. Hidden, not unmounted (`Section.hidden`):
+// the form keeps its state, and flipping the mode back shows it again untouched.
+export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
+  "observation",
+  "memory",
+  "observability",
+  // NOTE: THE FALLBACK IS NOT HERE, and that is a statement about the runtime rather than about the
+  // screen (issue #494 review, round 5): `runObserve` calls `runModelCall` with no `fallback`, so
+  // only the response path ever builds one. Drawn for a watcher, the section invited an operator to
+  // configure a second model that could not protect a single verdict — and its health warnings
+  // followed it, which is the same promise made twice. Wiring the fallback into the observer's call
+  // is the better answer and belongs to the observe job, not to a console change.
+  //
+  // NOTE: STT AND VISION RUN FOR A WATCHER (issue #494 review, round 2), so their controls have to
+  // reachable. The receiver's `watcherReads` path runs `runEagerMedia` under the OBSERVER's own
+  // settings whenever that route is the one that will remember the message — an observer on an inbox
+  // with no responder is exactly that — and a watcher that remembers an audio as an attachment
+  // marker instead of its transcription remembers nothing of it. Hidden here, together with their
+  // configuration warnings, the operator could neither switch them on nor repair a broken
+  // credential, and audio, images and documents reached observation with nothing extracted.
+  "stt",
+  "vision",
+]);
+
 export function BehaviorTab({
   agentId,
   refusals,
@@ -1027,6 +1066,9 @@ export function BehaviorTab({
   limits,
   memory,
   setMemory,
+  mode,
+  observation,
+  setObservation,
   modelFallback,
   setModelFallback,
   modelFallbackCredBaseUrl,
@@ -1364,13 +1406,32 @@ export function BehaviorTab({
     },
   ];
 
+  const watcher = mode === "monitoring";
+  const visibleSections = watcher
+    ? [
+        {
+          id: "observation",
+          icon: Eye,
+          label: t("editor.observation", "Observation"),
+        },
+        ...sections.filter((s) => MONITORING_SECTIONS.has(s.id)),
+      ]
+    : sections;
+
   return (
     <div className="flex grow flex-col gap-4">
       <div className="flex gap-6">
-        <SectionNav sections={sections} />
+        <SectionNav sections={visibleSections} />
         <div className="flex min-w-0 grow flex-col gap-4">
+          {watcher && (
+            <ObservationSection
+              observation={observation}
+              setObservation={setObservation}
+            />
+          )}
           <Section
             id="availability"
+            hidden={watcher}
             icon={CalendarClock}
             title={t("editor.availability", "Availability")}
             description={t(
@@ -1426,6 +1487,7 @@ export function BehaviorTab({
 
           <Section
             id="debounce"
+            hidden={watcher}
             icon={Layers}
             title={t("editor.debounce", "Message grouping (debounce)")}
             description={t(
@@ -1810,6 +1872,7 @@ export function BehaviorTab({
 
           <Section
             id="tts"
+            hidden={watcher}
             icon={Volume2}
             title={t("editor.tts", "Audio replies (text-to-speech)")}
             description={t(
@@ -2229,6 +2292,7 @@ export function BehaviorTab({
 
           <Section
             id="split"
+            hidden={watcher}
             icon={Scissors}
             title={t("editor.split", "Reply in multiple messages")}
             description={t(
@@ -2304,6 +2368,7 @@ export function BehaviorTab({
 
           <Section
             id="attributeContext"
+            hidden={watcher}
             icon={ListChecks}
             title={t("editor.attributeContext", "Data in context")}
             help={t(
@@ -2320,6 +2385,7 @@ export function BehaviorTab({
 
           <Section
             id="sendImage"
+            hidden={watcher}
             icon={ImagePlus}
             title={t("editor.sendImage", "Sending images")}
             help={t(
@@ -2345,6 +2411,7 @@ export function BehaviorTab({
 
           <Section
             id="contactAuth"
+            hidden={watcher}
             icon={ShieldCheck}
             title={t("editor.contactAuth", "Contact authorization")}
             help={t(
@@ -2585,6 +2652,7 @@ export function BehaviorTab({
 
           <Section
             id="takeover"
+            hidden={watcher}
             icon={UserRoundCheck}
             title={t("editor.takeover", "When a person answers")}
             help={t(
@@ -2604,6 +2672,7 @@ export function BehaviorTab({
 
           <Section
             id="limits"
+            hidden={watcher}
             icon={Gauge}
             title={t("editor.limits", "Execution limits")}
             description={t(
@@ -2831,6 +2900,7 @@ export function BehaviorTab({
 
           <Section
             id="modelFallback"
+            hidden={watcher}
             icon={LifeBuoy}
             title={t("editor.modelFallback", "Fallback provider")}
             help={t(
@@ -3096,6 +3166,7 @@ export function BehaviorTab({
 
           <Section
             id="proactive"
+            hidden={watcher}
             icon={Megaphone}
             title={t("editor.proactiveSection", "Proactive messages")}
             description={t(
@@ -3314,16 +3385,23 @@ export function BehaviorTab({
         onSave={onSave}
         onDiscard={onDiscard}
         saveDisabled={
-          contactAuthUrlInvalid ||
+          // NOTE: Only what a DRAWN section can explain and fix (issue #494 review, round 3). These
+          // read the STORED bag as well as the form, so a watcher carrying a legacy bad TTS
+          // normalizer or authorization URL — an import, an API write, a mode flipped on a
+          // configured agent — had Save dead on a tab whose only editable block is Observation, with
+          // no field on screen saying why. The sections a watcher draws keep their validators; the
+          // answer-only ones are asked only where their fields are.
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
-          normalizeBaseUrlInvalid ||
-          normalizeBaseUrlUnsupported ||
           memoryBaseUrlInvalid ||
           memoryBaseUrlUnsupported ||
-          fallbackBaseUrlInvalid ||
-          fallbackBaseUrlUnsupported ||
-          fallbackModelMissing
+          (!watcher &&
+            (contactAuthUrlInvalid ||
+              normalizeBaseUrlInvalid ||
+              normalizeBaseUrlUnsupported ||
+              fallbackBaseUrlInvalid ||
+              fallbackBaseUrlUnsupported ||
+              fallbackModelMissing))
         }
         onOpenPlayground={onOpenPlayground}
       />

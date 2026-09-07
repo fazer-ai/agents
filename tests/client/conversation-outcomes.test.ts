@@ -167,7 +167,9 @@ describe("conversation actions report their outcome", () => {
     // the operator looking for a button that is not there, unable to tell a rule from a bug — and
     // this predicate reads the mirror, so on the one conversation where it is wrong they had nothing
     // to go on at all.
-    expect(SRC).toContain("const noResponderReason: string | null =");
+    expect(SRC).toContain(
+      "const noResponder: { label: string; detail: string } | null =",
+    );
     for (const key of [
       "conversation.responderOff",
       "conversation.responderObserves",
@@ -182,9 +184,27 @@ describe("conversation actions report their outcome", () => {
     ]) {
       expect(SRC).toContain(key);
     }
+    // ...each with a SHORT label beside it, which is what sits in the action row; the sentence is
+    // behind the row's `?` (issue #494 manual test). A sentence dropped into a flex line of buttons
+    // wraps and moves the navigation, and the condition is three words even when the remediation is
+    // not.
+    for (const key of [
+      "conversation.responderNoneShort",
+      "conversation.responderOffShort",
+      "conversation.responderObservesShort",
+      "conversation.responderNoBotShort",
+      "conversation.responderTestSilentShort",
+    ]) {
+      expect(SRC).toContain(key);
+    }
+    expect(SRC.replace(/\s+/g, " ")).toContain(
+      "<HelpPopover content={noResponder.detail} label={noResponder.label} />",
+    );
     // The exclusion itself, and not merely the key: the guard that short-circuits this chain must
     // no longer name `agentId == null`, or the string above is dead code.
-    const reasonDef = SRC.indexOf("const noResponderReason: string | null =");
+    const reasonDef = SRC.indexOf(
+      "const noResponder: { label: string; detail: string } | null =",
+    );
     expect(
       SRC.slice(reasonDef, SRC.indexOf("? null", reasonDef)),
     ).not.toContain("conv.agentId == null");

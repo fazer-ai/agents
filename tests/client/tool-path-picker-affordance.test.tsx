@@ -139,6 +139,23 @@ function writeSample(text: string): void {
   });
 }
 
+// THE TEMPLATE FIELD IS A CODEMIRROR NOW (issue #563), so its caret is a position in the editor's
+// document and its text comes from the view, not from a `.value`. Found by the accessible name on
+// the contenteditable, the same way `writeSample` finds the sample's, so this does not depend on
+// how many editors the screen holds.
+function templateView(): EditorView {
+  const content = Array.from(document.querySelectorAll(".cm-content")).find(
+    (el) =>
+      /o que o agente recebe|what the agent receives/i.test(
+        el.getAttribute("aria-label") ?? "",
+      ),
+  );
+  if (!content) throw new Error("no template editor on screen");
+  return EditorView.findFromDOM(
+    content.closest(".cm-editor") as HTMLElement,
+  ) as EditorView;
+}
+
 function offeredPaths(): string[] {
   return Array.from(
     document.querySelectorAll("li button, [role='option'], [role='menuitem']"),
@@ -263,22 +280,20 @@ test("a token is inserted at the caret, not appended", async () => {
       </ToastProvider>
     </MemoryRouter>,
   );
-  await waitFor(() =>
-    controlFor<HTMLTextAreaElement>(
-      /o que o agente recebe|what the agent receives/i,
-    ),
-  );
+  await waitFor(() => templateView());
   writeSample(SAMPLE);
 
-  const template = controlFor<HTMLTextAreaElement>(
-    /o que o agente recebe|what the agent receives/i,
-  );
-  fireEvent.change(template, { target: { value: "antes  depois" } });
-  // Between the two words, which is neither end: appending would land at 13, replacing at 0.
-  template.setSelectionRange(6, 6);
-  template.focus();
+  const view = templateView();
+  act(() => {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: "antes  depois" },
+      // Between the two words, which is neither end: appending would land at 13, replacing at 0.
+      selection: { anchor: 6 },
+    });
+    view.focus();
+  });
 
-  const opener = openerFor(template);
+  const opener = openerFor(view.contentDOM);
   fireEvent.click(opener);
   const leaf = await waitFor(() => {
     const el = Array.from(document.querySelectorAll("li button")).find((x) =>
@@ -290,14 +305,17 @@ test("a token is inserted at the caret, not appended", async () => {
   fireEvent.click(leaf);
 
   await waitFor(() =>
-    expect(template.value).toBe("antes {{data.appointment.id}} depois"),
+    expect(templateView().state.doc.toString()).toBe(
+      "antes {{data.appointment.id}} depois",
+    ),
   );
   // And the operator is left writing where the token landed, not on the button that opened the
-  // offer. This is the half `onCloseAutoFocus` buys: the value above is right either way, because
-  // `insertToken` reads the selection before focus moves anywhere.
+  // offer. This is the half `onCloseAutoFocus` buys: the text above is right either way, because
+  // the insert reads the view's selection before focus moves anywhere.
   await waitFor(() => {
-    expect(document.activeElement === template).toBe(true);
-    expect(template.selectionStart).toBe(
+    const v = templateView();
+    expect(v.hasFocus).toBe(true);
+    expect(v.state.selection.main.head).toBe(
       "antes {{data.appointment.id}}".length,
     );
   });

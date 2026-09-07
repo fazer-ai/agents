@@ -401,7 +401,10 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
-  "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
+  // Two since #563: the token insert splices at a SELECTION, which the browser never puts inside a
+  // surrogate pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of
+  // it. Neither is a cap.
+  "src/client/pages/resources/ToolEditModal.tsx": [2, "index"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],
@@ -485,7 +488,12 @@ const BARE_SLICES: Record<
   // How many items the picker samples for a block's fields: entries, never characters. The block
   // itself renders by index under a text budget, and the per-value cut inside an item goes
   // through clipText like every other.
-  "src/modules/tool-definitions/response-template.ts": [1, "array"],
+  //
+  // The second, since #563, is `templateWriteAt` cutting the document at the CARET to read what the
+  // operator has typed since `{{`. A caret is a position CodeMirror maintains, and it never sits
+  // inside a surrogate pair; the result is parsed, never shown, so a cut there could not truncate
+  // anything in front of a reader either.
+  "src/modules/tool-definitions/response-template.ts": [2, "array"],
   "src/modules/updates/semver.ts": [1, "array"],
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
   // never stored, never shown, never sent anywhere.

@@ -240,6 +240,71 @@ export function unusableTemplateTokens(template: string): string[] {
   return templateTokens(template).filter((t) => !isTemplatePath(t));
 }
 
+// WHERE EACH PIECE OF THE VOCABULARY SITS, for an editor that has to draw them apart (issue #563).
+//
+// The same two patterns as everything above, with a range attached. In this module and not in the
+// client, because the client would need `TOKEN` and `BLOCK` to do it, and a second copy of those is
+// a second grammar: it would drift from the one that RENDERS, and the drift would show up as an
+// editor calling something valid that the runtime then refuses, or the reverse.
+export type TemplateSpanKind = "token" | "block-open" | "block-close" | "stray";
+
+export interface TemplateSpan {
+  kind: TemplateSpanKind;
+  from: number;
+  to: number;
+  // What it names: a token's path, a block's list. Null for a close marker and for a stray, which
+  // name nothing.
+  path: string | null;
+  // Whether the grammar can use it as written. A token whose text is not a path renders as literal
+  // text in front of the model, and a block over a non-path is refused on save; both are things the
+  // editor exists to show BEFORE either happens. A stray is never usable.
+  usable: boolean;
+}
+
+export function scanTemplate(template: string): TemplateSpan[] {
+  const spans: TemplateSpan[] = [];
+  // NOTE: blocks FIRST, and then tokens are dropped where they overlap one, which is the positional
+  // form of the `template.replace(BLOCK, "")` that `templateTokens` does. To the token pattern both
+  // markers are well-formed tokens, so without this `{{/each}}` reads as a malformed path and
+  // `{{#each a}}` as a token that would reach the model as text.
+  for (const m of template.matchAll(BLOCK)) {
+    const close = m[2] !== undefined;
+    const path = close ? null : (m[1] ?? "").trim();
+    spans.push({
+      kind: close ? "block-close" : "block-open",
+      from: m.index,
+      to: m.index + m[0].length,
+      path,
+      usable: close || isTemplatePath(path),
+    });
+  }
+  const covered = (from: number, to: number): boolean =>
+    spans.some((s) => from < s.to && to > s.from);
+  for (const m of template.matchAll(TOKEN)) {
+    const to = m.index + m[0].length;
+    if (covered(m.index, to)) continue;
+    const path = (m[1] ?? "").trim();
+    spans.push({
+      kind: "token",
+      from: m.index,
+      to,
+      path,
+      usable: isTemplatePath(path),
+    });
+  }
+  // NOTE: what is left once every real span is accounted for, which is the same rule
+  // `unmatchedTemplateDelimiter` answers with a fragment: `{{a}` matches no token, so it is not an
+  // unusable token, it is not a token at all, and nothing would be drawn on the typo.
+  for (const m of template.matchAll(/\{\{|\}\}/g)) {
+    const to = m.index + 2;
+    if (covered(m.index, to)) continue;
+    spans.push({ kind: "stray", from: m.index, to, path: null, usable: false });
+  }
+  // DOCUMENT ORDER, because the caller builds a decoration set out of this and CodeMirror throws on
+  // ranges that do not ascend.
+  return spans.sort((a, b) => a.from - b.from);
+}
+
 // Whether rendering needs the response body at all. A template with neither a token nor a block
 // says the same thing whatever came back, and the endpoint that most wants that is the one
 // answering 204 with nothing in it. A block with no token inside still needs the body: how many
@@ -346,6 +411,103 @@ export function templateItemLeaves(
 export function templateListAt(body: unknown, path: string): unknown[] | null {
   const node = resolveTemplatePath(body, path);
   return Array.isArray(node) ? node : null;
+}
+
+// WHAT A TOKEN AT THIS CARET MAY NAME, for the two things in the console that offer it: the picker
+// and, since #563, the completion the editor opens on `{{`. One function because they are one
+// question — an offer that named a field the other would not is two opinions about this grammar —
+// and here rather than in the console because the reader that has to ACCEPT what was picked is in
+// this file.
+export interface TemplateOffer {
+  // The list whose items the caret's scope is, or null at the top level.
+  block: string | null;
+  leaves: SampleLeaf[];
+  // Only ever offered at the top level: blocks do not nest.
+  lists: SampleList[];
+}
+
+// The sample as the console already holds it: the parsed body plus the top-level offer computed
+// once per paste. Taken rather than derived because this runs on every keystroke inside a token,
+// and walking the body again per character would re-answer a question whose answer only changes
+// when the SAMPLE changes.
+export interface TemplateSampleOffer {
+  body: unknown;
+  leaves: SampleLeaf[];
+  lists: SampleList[];
+}
+
+export function templateOfferAt(
+  template: string,
+  cursor: number,
+  sample: TemplateSampleOffer,
+): TemplateOffer {
+  const block = enclosingBlock(template, cursor);
+  if (block === null) {
+    return { block: null, leaves: sample.leaves, lists: sample.lists };
+  }
+  // NOTE: the item leaves ARE derived here, because they depend on which block the caret is in and
+  // the caret moves between keystrokes. Bounded by the same caps the picker uses.
+  const items = templateListAt(sample.body, block);
+  return {
+    block,
+    leaves: items === null ? [] : templateItemLeaves(items),
+    lists: [],
+  };
+}
+
+// WHAT THE OPERATOR IS IN THE MIDDLE OF TYPING, or null when they are not in a token at all.
+//
+// `kind` is what the position asks for and they are not the same question: after `{{#each ` only a
+// LIST renders, and offering a scalar field there writes a block that the save refuses and that
+// would have rendered the absent marker over a value sitting right there.
+//
+// `closed` is whether a `}}` already follows, which decides whether accepting an answer types one.
+// Getting that wrong is visible either way: `{{path` reaches the model with a stray brace, and
+// `{{path}}}}` is a token plus two characters of noise.
+export interface TemplateWrite {
+  kind: "path" | "list";
+  // The range the accepted answer replaces: what the operator has typed since the opening.
+  from: number;
+  to: number;
+  // Just past the `}}` that already closes this token, or null when nothing does. A boolean was
+  // not enough, measured in the browser: `closeBrackets` turns a typed `{{` into `{{}}`, so the
+  // ordinary case IS the closed one, and leaving the caret at the end of the inserted path leaves
+  // it INSIDE the token. Everything typed next went in there — `{{cliente.nome{{#each x}}}}` on one
+  // line, from typing a token and then a block the way anyone would.
+  closeAt: number | null;
+}
+
+export function templateWriteAt(
+  template: string,
+  cursor: number,
+): TemplateWrite | null {
+  const before = template.slice(0, cursor);
+  const open = before.lastIndexOf("{{");
+  if (open === -1) return null;
+  const typed = before.slice(open + 2);
+  // NOTE: a token does not span lines, so an unclosed `{{` further up is a typo rather than an
+  // invitation to complete on every line under it. `}}` ends the attempt for the obvious reason:
+  // the token before the caret is finished.
+  if (/[\r\n]/.test(typed) || typed.includes("}}")) return null;
+  // NOTE: `{{/each}}` names nothing, so there is nothing to offer inside it.
+  if (typed.startsWith("/")) return null;
+  const each = /^#each[ \t]*/.exec(typed);
+  const kind = each ? "list" : "path";
+  const from = open + 2 + (each ? each[0].length : 0);
+  // NOTE: the token may be closed by braces the operator typed OR by the ones already sitting there
+  // from an earlier edit; either way the answer is the same, and what decides it is the next `}}`
+  // on this line, before any other `{{`.
+  const after = template.slice(cursor);
+  const line = after.split(/[\r\n]/, 1)[0] ?? "";
+  const close = line.indexOf("}}");
+  const nextOpen = line.indexOf("{{");
+  const closed = close !== -1 && (nextOpen === -1 || close < nextOpen);
+  return {
+    kind,
+    from,
+    to: cursor,
+    closeAt: closed ? cursor + close + 2 : null,
+  };
 }
 
 export type ResponseTemplateRead =

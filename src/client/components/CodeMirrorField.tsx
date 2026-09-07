@@ -195,6 +195,11 @@ export interface CodeMirrorFieldProps {
   // an editor that is the whole point of its screen (the code tool's body) wants to grow.
   maxHeight?: string;
   invalid?: boolean;
+  // The view, for a caller that has to WRITE where the cursor is rather than replace the document:
+  // the template field's picker inserts a token at the caret, which is a dispatch and not a string
+  // splice (issue #563). Called with the view once it exists and with `null` when it is destroyed,
+  // because a caller holding a destroyed view dispatches into nothing and CodeMirror throws.
+  onView?: (view: EditorView | null) => void;
   "aria-label"?: string;
   className?: string;
 }
@@ -208,6 +213,7 @@ export function CodeMirrorField({
   minHeight = "18rem",
   maxHeight,
   invalid,
+  onView,
   className,
   ...rest
 }: CodeMirrorFieldProps) {
@@ -215,6 +221,11 @@ export function CodeMirrorField({
   const view = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // NOTE: through a ref for the same reason `onChange` is: the caller writes this inline, so it is a
+  // fresh function every render, and listing it as a build dependency would tear the editor down
+  // per keystroke of the form around it.
+  const onViewRef = useRef(onView);
+  onViewRef.current = onView;
   const field = useFormField();
   // NOTE: a compartment so the caller can change what the editor IS — a renamed argument
   // reconfiguring a completion source, a language switching under the same document — without the
@@ -341,6 +352,7 @@ export function CodeMirrorField({
       parent,
     });
     view.current = v;
+    onViewRef.current?.(v);
     // NOTE: Escape belongs to the completion popup while it is open. The dialog around this editor
     // closes on Escape, and Radix hears it first (capture phase on `document`), so the editor
     // cannot stop the event: it declares the claim and `<Modal>` cancels the dismissal. The popup
@@ -361,6 +373,7 @@ export function CodeMirrorField({
       release();
       v.destroy();
       view.current = null;
+      onViewRef.current?.(null);
     };
   }, [extSlot, attrsSlot, holderSlot, capMax]);
 

@@ -5,6 +5,7 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { TURN_BEARING_EVENT } from "./normalize";
 import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
 import { armTakeoverRecovery } from "./recover-takeover";
 import {
@@ -174,6 +175,19 @@ export async function retireCoveredDeliveries(
           // `NOT (col = true)` is NULL for a NULL row, which would exclude rows this filter has to
           // keep and settle nothing at all.
           OR: [{ routeObserved: null }, { routeObserved: false }],
+          // AND NEITHER IS A ROW THAT OWES WORDS RATHER THAN AN ANSWER (issue #478 review, round 4),
+          // which is the observer's rule above applied to the other row that answers nobody. The
+          // transcribed `message_updated` names its message now, so without this it matches the wide
+          // scope and the CREATION's own settlement closes it — the two are deliveries of the same
+          // message, racing — and the update is terminal before its ingestion is armed. An enqueue
+          // failure or a death after that is then invisible to the sweep, which is the silence the
+          // throw at the tail of ./webhook.ts exists to prevent. Like the observer, it settles its
+          // own row, `this-delivery` scoped, through the branch above.
+          //
+          // A NO-OP ON EVERY ROW WRITTEN BEFORE THIS BUILD: until it, `inboundMessageId` was written
+          // for `isNewIncomingMessage` alone, which requires a creation, so nothing this filter used
+          // to reach is excluded by naming the event.
+          event: TURN_BEARING_EVENT,
           inboundMessageId:
             params.messageIds !== undefined
               ? { in: params.messageIds }

@@ -3753,9 +3753,14 @@ export async function processChatwootDelivery(
   // AND IT CANNOT DOUBLE-APPEND: `armIngest` keys the job by (thread, message) with `rearm:
   // "same-work"`, so the write-back's arm and the transcribing delivery's arm are the same row, and
   // once the job has run the id is in the dedup window and the second verdict is `duplicate`.
-  const lateTranscriptionUpdate = inboundTranscriptionOnUpdate(n) !== null;
+  // THE WIRE'S ANSWER, which is the right one for the two decisions made here: whether the event
+  // reaches the runtime at all, and which message the responder-coverage check is about. Both run
+  // before anything has looked at the audio. The eager pass can produce a transcription later, and
+  // the readers that care about THAT ask again below (`carriesTranscription`) — asked once, at the
+  // top, they would stand down on exactly the delivery that paid for the words.
+  const transcriptionOnTheWire = inboundTranscriptionOnUpdate(n) !== null;
   const wantsRuntime =
-    isNewIncoming || hasLateMedia || mayBeHumanReply || lateTranscriptionUpdate;
+    isNewIncoming || hasLateMedia || mayBeHumanReply || transcriptionOnTheWire;
   // RETRIED, because this pair now stands BEFORE the claim (issue #476 review, round 44). Moving the
   // role onto the claim closed the hole where a second write could fail; what it opened is this one:
   // a transient pool or database error here rejects with the row still PENDING and its role unsaid,
@@ -4041,7 +4046,7 @@ export async function processChatwootDelivery(
       // two write-backs race over the same annotation. Same message, same column, same question.
       n.message?.id == null
         ? null
-        : isNewIncoming || lateTranscriptionUpdate || hasLateMedia
+        : isNewIncoming || transcriptionOnTheWire || hasLateMedia
           ? { id: n.message.id, column: "inbound" as const }
           : mayBeHumanReply
             ? { id: n.message.id, column: "humanReply" as const }
@@ -5529,6 +5534,14 @@ export async function processChatwootDelivery(
     // ...and only for a command that responder's route actually RECEIVED (round 33): bound after
     // the emission, it never got the `/reset`, and dropping it here loses it from every memory.
     responderCovers;
+  // ASKED AGAIN, AFTER THE ANALYSIS (issue #478 review, round 4). The value read at the top of this
+  // function is the WIRE's answer, and it is the right one there: it decides whether the event
+  // reaches the runtime at all, before anything has looked at the audio. By here the eager pass may
+  // have produced the words itself — a `message_updated` that arrived carrying raw audio — and from
+  // that moment this delivery owes the append and everything that protects it. Read from the top's
+  // value, the retry and the failure guard below would both stand down on exactly the delivery that
+  // paid a provider for the transcription.
+  const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;
   let ingested: IngestOutcome = "nothing";
   if (
     rt !== null &&
@@ -5565,7 +5578,7 @@ export async function processChatwootDelivery(
       // observer's is retried: the append is the last chance. The words come around once, on the
       // write-back, and no later event carries them — production's continuous ingestion is
       // best-effort because a turn covers what it misses, and here no turn ever will.
-      retryArm: observing || handedToObserver || lateTranscriptionUpdate,
+      retryArm: observing || handedToObserver || carriesTranscription,
       sleep: params.deps?.sleep,
       base,
     });
@@ -5633,7 +5646,7 @@ export async function processChatwootDelivery(
   // The throw and the one below are the two exits of this function that leave the row on PROCESSING
   // deliberately: the route logs it, the sweep declares it `owed-transcription`, and the replay
   // re-runs this path.
-  if (lateTranscriptionUpdate && ingested === "failed") {
+  if (carriesTranscription && ingested === "failed") {
     throw new Error(
       `chatwoot: the late transcription could not be armed for ingestion (conv=${convLabel}); leaving the delivery for the sweep`,
     );
@@ -5641,7 +5654,7 @@ export async function processChatwootDelivery(
   // "no-thread" IS NOT THAT, and it is left to settle: a conversation neither the payload nor the
   // mirror can name a contact-inbox for has nowhere to hold the words, and the replay would find the
   // same nothing. Said at `warn`, which is where the observer's inbound branch says it too.
-  if (lateTranscriptionUpdate && ingested === "no-thread") {
+  if (carriesTranscription && ingested === "no-thread") {
     logger.warn(
       "chatwoot: a late transcription arrived (conv=%s) but the conversation names no contact-inbox thread to hold it",
       convLabel,

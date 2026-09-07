@@ -1544,6 +1544,54 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(neither.settlement).toBe("consumed");
   });
 
+  test("a wide settlement never closes a TRANSCRIPTION's row", async () => {
+    // The observer's rule below, applied to the other row that answers nobody (issue #478 review,
+    // round 4). The transcribed `message_updated` names its message now, so without the event in the
+    // filter it matches the wide scope — and the two are deliveries of the SAME message, racing, so
+    // the creation's own settlement closes the update before its ingestion is armed. An enqueue
+    // failure or a death after that is then invisible to the sweep, which is what the throw at the
+    // tail of the receiver exists to prevent.
+    const convId = 8871;
+    const messageId = 9782;
+    const conv = await seedConversation(convId);
+    const mk = async (tag: string, event: string) =>
+      suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `evt-scope-${tag}-${process.pid}`,
+          event,
+          status: "PROCESSING",
+          receivedAt: new Date(Date.now() - 60_000),
+          claimedAt: new Date(Date.now() - 60_000),
+          conversationId: convId,
+          inboundMessageId: messageId,
+          routeObserved: false,
+        },
+        select: { id: true },
+      });
+    const creation = await mk("creation", "message_created");
+    const update = await mk("update", "message_updated");
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "answered",
+      messageIds: [messageId],
+      base: appDb,
+    });
+
+    expect((await statusOf(creation.id)).status).toBe("PROCESSED");
+    expect((await statusOf(update.id)).status).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [creation.id, update.id] } },
+    });
+    await clearFlowLog(suDb, { tenantId });
+  });
+
   test("a wide settlement never closes an OBSERVER's row", async () => {
     // The wide scope exists because a human, a command or a gate answers the MESSAGE, whichever
     // route carried it. That is true of every route that could have answered and false of the one

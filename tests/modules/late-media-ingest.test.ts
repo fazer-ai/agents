@@ -677,6 +677,48 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(between).toBe("n.message.transcribedText = text; await");
   });
 
+  // ASKED AFTER THE ANALYSIS, not before it (issue #478 review, round 4). The value at the top of
+  // the receiver is the WIRE's answer, and it is right there — it decides whether the event reaches
+  // the runtime at all. But an update can arrive carrying RAW audio, and then it is the eager pass
+  // that produces the words: read from the top's value, the retry and the failure guard would both
+  // stand down on exactly the delivery that paid a provider for the transcription, and a scheduler
+  // blip would discard it with the row already terminal.
+  //
+  // Read off the source for the same reason the fill's position is: the STT registry is a frozen
+  // map, so no stub provider can be registered and a real transcription needs a vault credential and
+  // an HTTP fake. What is asserted is the ORDER — the value the guards read is computed after every
+  // eager pass in the function, not before them.
+  test("the ingestion guards read a transcription the eager pass produced", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url)
+        .pathname,
+    ).text();
+    const receiver = src.indexOf(
+      "export async function processChatwootDelivery(",
+    );
+    expect(receiver).toBeGreaterThan(-1);
+    const decl = src.indexOf(
+      "const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;",
+      receiver,
+    );
+    expect(decl).toBeGreaterThan(receiver);
+    // Every eager pass the receiver runs is behind it...
+    const before = src.slice(receiver, decl);
+    const after = src.slice(decl);
+    expect(before).toContain("await runEagerMedia(");
+    expect(after.slice(0, after.indexOf("\nexport "))).not.toContain(
+      "await runEagerMedia(",
+    );
+    // ...and the guards are the only readers, so none of them can see the wire's answer instead.
+    for (const guard of [
+      "retryArm: observing || handedToObserver || carriesTranscription,",
+      'if (carriesTranscription && ingested === "failed") {',
+      'if (carriesTranscription && ingested === "no-thread") {',
+    ]) {
+      expect(after).toContain(guard);
+    }
+  });
+
   // The gate is what the analysis PRODUCED, not the event's shape: an update carrying an audio
   // nobody could transcribe has nothing this side did not already have, and folding it in would
   // write "not audible" over a thread that may already hold the words.

@@ -16,6 +16,7 @@ import {
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { writeLocalSample } from "@/client/lib/toolSample";
 import { NATIVE_TOOL_CATEGORY, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { CodeToolEditModal, type CodeToolListed } from "./CodeToolEditModal";
 import { type Tool, ToolEditModal } from "./ToolEditModal";
@@ -123,6 +124,10 @@ export function ToolsPanel() {
         );
         return;
       }
+      // The response this browser kept for that tool goes with it (issue #566, round 1 of review).
+      // Left behind it is a customer's response outliving the row it described, and tool ids come
+      // from a sequence: a later tool could be handed the deleted one's values.
+      if (target.kind === "http") writeLocalSample(target.id, null);
       showToast(t("tools.deleted", "Tool deleted."), "success");
       deleteModal.close();
       load();

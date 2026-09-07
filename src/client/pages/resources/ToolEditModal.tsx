@@ -69,6 +69,7 @@ import {
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
 import {
+  fingerprintShape,
   readStorableShape,
   type StoredSampleShape,
   storableShape,
@@ -583,11 +584,14 @@ export function formFromTool(tool: Tool) {
 // row written before this column existed, or by a caller that sent something else, reads as no
 // sample rather than as a shape the pickers would try to walk.
 function sampleForm(tool: Tool) {
-  const local = readLocalSample(tool.id);
+  const shape = readStorableShape(tool.sampleShape);
+  // The browser's copy is only the right one while the ROW still holds the shape it produced; the
+  // fingerprint is what says so, and a mismatch falls back to the shape (round 1 of review).
+  const local = readLocalSample(tool.id, fingerprintShape(shape));
   return {
     sample: local?.text ?? "",
     sampleStatus: local?.status ?? null,
-    sampleShape: readStorableShape(tool.sampleShape),
+    sampleShape: shape,
   };
 }
 
@@ -1472,7 +1476,15 @@ export function ToolEditModal({
       // can fail in a way the operator could act on — see `toolSample.ts`.
       writeLocalSample(
         data.tool.id,
-        sample.trim() ? { text: sample, status: sampleStatus } : null,
+        sample.trim()
+          ? {
+              text: sample,
+              status: sampleStatus,
+              // The shape the SAVE just wrote, so a later open can tell this response from one
+              // another machine stored over it.
+              shape: fingerprintShape(sampleShapeOf(formRef.current)),
+            }
+          : null,
       );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
       // that has to hear about it, not the dialog now on screen.

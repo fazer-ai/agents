@@ -23,6 +23,12 @@ const MAX_STORED_CHARS = 512_000;
 
 export interface LocalSample {
   text: string;
+  // The fingerprint of the SHAPE this text produced, compared against the row's on the way back
+  // (round 1 of review). Without it, an entry kept here wins on tool id alone: another machine — or
+  // the API — saving a newer sample leaves this browser restoring the old response, previewing
+  // values the tool no longer describes, and its next save deriving a shape from them and
+  // overwriting the newer one. A mismatch means the row moved on, and the row is the shared truth.
+  shape: string;
   // The status it came back under, or null when it was pasted by hand. Kept with the text because
   // the preview branches on it: a body captured from a 404 the tool declares a "no result" status
   // is projected differently, and restoring the text without it would read that 404 as a 200.
@@ -33,7 +39,13 @@ function keyFor(toolId: string): string {
   return `${PREFIX}${toolId}`;
 }
 
-export function readLocalSample(toolId: string): LocalSample | null {
+// `rowShape` is the fingerprint of the shape the ROW carries now. An entry that does not match it
+// describes a sample this tool no longer has, and is dropped rather than shown: the shape then
+// answers, which is stale in appearance (stand-ins) and never in content.
+export function readLocalSample(
+  toolId: string,
+  rowShape: string,
+): LocalSample | null {
   try {
     const raw = localStorage.getItem(keyFor(toolId));
     if (raw === null) return null;
@@ -41,9 +53,11 @@ export function readLocalSample(toolId: string): LocalSample | null {
     if (parsed === null || typeof parsed !== "object") return null;
     const o = parsed as Record<string, unknown>;
     if (typeof o.text !== "string") return null;
+    if (o.shape !== rowShape) return null;
     return {
       text: o.text,
       status: typeof o.status === "number" ? o.status : null,
+      shape: o.shape,
     };
   } catch {
     return null;

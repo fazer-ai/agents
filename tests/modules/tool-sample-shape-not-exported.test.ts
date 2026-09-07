@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { withoutComments } from "@/tests/utils/source-text";
 
 // THE OMISSION IS THE DECISION, so it is fenced rather than left to a comment (issue #566). The
 // export beside it carries `appointment` with a comment explaining that a bundle dropping a field
@@ -14,11 +15,10 @@ import { describe, expect, it } from "bun:test";
 const TRANSFER = "src/modules/agents/transfer.ts";
 const FIELD = "sampleShape";
 
-// Line and block comments out; string literals stay, because naming the field inside a string is
-// something that deserves to be looked at.
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-}
+// The repo's own scanner, not a stripper written here: `withoutComments` keeps string contents,
+// because naming the field inside a string is something that deserves to be looked at, and it knows
+// that a `//` inside a literal is not a comment.
+const stripComments = withoutComments;
 
 async function transferSource(): Promise<string> {
   return await Bun.file(TRANSFER).text();

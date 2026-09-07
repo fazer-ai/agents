@@ -147,6 +147,7 @@ import {
   firstVisualAttachment,
   type HumanReplyRoute,
   heldByAnotherParty,
+  inboundTranscriptionOnUpdate,
   incomingRenderable,
   isIncomingMessage,
   isNewHumanReplyToCustomer,
@@ -1083,12 +1084,25 @@ function ledgerFactsOf(
   return {
     event: n.event,
     conversationId: n.conversationId,
-    // Only a NEW INBOUND message, which is the exact set that drives a turn: the sweep uses this to
-    // tell a delivery that lost a customer's message from one that lost nothing (issue #228). The
-    // bot's own reply comes back as a `message_created` too, and an incoming `message_updated` is
-    // usually our own media write-back coming around — neither is a customer waiting for an answer,
-    // so neither may put a row in the loss list.
-    inboundMessageId: isNewIncomingMessage(n) ? (n.message?.id ?? null) : null,
+    // Which CUSTOMER MESSAGE this delivery was working, so the sweep can tell a delivery that lost
+    // one from a delivery that lost nothing (issue #228). The bot's own reply comes back as a
+    // `message_created` too, and it is not a customer's, so it stays null.
+    //
+    // AND THE TRANSCRIBED UPDATE, which is the same customer message arriving a second time
+    // (issue #478 review, round 1). Most `message_updated` deliveries are our own media write-back
+    // coming around and still write null here. This one is the write-back that CARRIES THE WORDS,
+    // and on a route where nothing ran the turn at creation it is the message's only readable form —
+    // so a process dying between the claim and the arm loses the transcription with nothing naming
+    // it. Written here, ./stranded-delivery.ts can see that the row owed something.
+    //
+    // The two together are also the DISCRIMINATOR that column has to carry: an id on a
+    // `message_updated` cannot come from an older build, because until this one the condition was
+    // `isNewIncomingMessage` alone and that requires a creation. Every legacy write-back keeps its
+    // null and is closed benign exactly as before.
+    inboundMessageId:
+      isNewIncomingMessage(n) || inboundTranscriptionOnUpdate(n) !== null
+        ? (n.message?.id ?? null)
+        : null,
     // THE OTHER HALF OF THE SAME QUESTION (issue #439): what this delivery OWED. The payload half of
     // the human-reply route, written before anything has read an inbox, so a process that dies in
     // the detached window still leaves behind the fact that a takeover was due. The provider half is
@@ -1259,26 +1273,6 @@ function errMsg(err: unknown): string {
 // serialized into webhook payloads (the fork's Attachment#push_event_data exposes no
 // image_description/extracted_text on any file type), so a visual leg here could not tell "never
 // analyzed" from "our own write-back" and would re-run vision on its own write-back event forever.
-// THE WRITE-BACK UPDATE, and what it is worth. When our transcription lands on the attachment the
-// fork re-fires `message_updated`, and the predicate above calls that a no-op — correctly, because
-// there is nothing left to ANALYSE. It is not a no-op for MEMORY: it is the one event that carries
-// the words for a message no turn is going to answer, and reading them costs nothing, since somebody
-// already paid the provider for them (issue #478).
-//
-// Both places the words can be: on the message, where the eager pass stashes them within the
-// delivery that transcribed, and on the attachment, where the fork serializes them on every later
-// delivery of that message. Either one is the whole transcription.
-export function inboundTranscriptionOnUpdate(
-  n: NormalizedChatwootEvent,
-): string | null {
-  if (n.event !== "message_updated" || !isIncomingMessage(n)) return null;
-  return (
-    n.message?.transcribedText ??
-    firstAudioAttachment(n)?.transcribedText ??
-    null
-  );
-}
-
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
@@ -3705,11 +3699,9 @@ export async function processChatwootDelivery(
   // AND IT CANNOT DOUBLE-APPEND: `armIngest` keys the job by (thread, message) with `rearm:
   // "same-work"`, so the write-back's arm and the transcribing delivery's arm are the same row, and
   // once the job has run the id is in the dedup window and the second verdict is `duplicate`.
+  const lateTranscriptionUpdate = inboundTranscriptionOnUpdate(n) !== null;
   const wantsRuntime =
-    isNewIncoming ||
-    hasLateMedia ||
-    mayBeHumanReply ||
-    inboundTranscriptionOnUpdate(n) !== null;
+    isNewIncoming || hasLateMedia || mayBeHumanReply || lateTranscriptionUpdate;
   // RETRIED, because this pair now stands BEFORE the claim (issue #476 review, round 44). Moving the
   // role onto the claim closed the hole where a second write could fail; what it opened is this one:
   // a transient pool or database error here rejects with the row still PENDING and its role unsaid,
@@ -3985,9 +3977,14 @@ export async function processChatwootDelivery(
       n.conversationId,
       // A customer message is named by the inbound column; a colleague's reply, which is outgoing,
       // by the one the takeover recovery reads.
+      // A TRANSCRIBED UPDATE NAMES THE SAME INBOUND MESSAGE (issue #478 review, round 1). It is not
+      // a creation, so without this clause the sibling could not be named and the check answered
+      // "not covered" without looking — and the observer then ingested a message the responder's own
+      // `message_created` delivery had already handled, which the dedup window cannot catch because
+      // a turn-handled id never enters it. Same message, same column, same question.
       n.message?.id == null
         ? null
-        : isNewIncoming
+        : isNewIncoming || lateTranscriptionUpdate
           ? { id: n.message.id, column: "inbound" as const }
           : mayBeHumanReply
             ? { id: n.message.id, column: "humanReply" as const }

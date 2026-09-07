@@ -121,6 +121,12 @@ export interface RecoveryMessage {
 }
 
 export function buildRecoveryPayload(params: {
+  // The event name the ledger recorded, replayed verbatim (issue #478 review, round 1). Two reach a
+  // recovery: the creation of a customer message, and the `message_updated` that finally carried its
+  // transcription. Taken from the row rather than asserted, because the difference decides what the
+  // replay DOES — a creation drives a turn, an update never does — and a transcription rebuilt as a
+  // creation would answer a customer a turn had already answered.
+  event: string;
   conversation: RecoveryConversation;
   // The CHATWOOT inbox id, not the mirror's foreign key. The mirror stores the FK, so the caller
   // resolves it; the body must carry what a real one carries. Null omits both spellings, which is
@@ -145,9 +151,9 @@ export function buildRecoveryPayload(params: {
 }): Record<string, unknown> {
   const { conversation: c, message: m } = params;
   return {
-    // Always the turn-bearing name. A recovery exists only for a message that owed an answer, and
-    // `classifyStrandedDelivery` has already refused every other event before a row reaches here.
-    event: "message_created",
+    // The row's own. `classifyStrandedDelivery` has already refused every event but the two that can
+    // owe something, and which of the two this is decides what the replay may do.
+    event: params.event,
     id: m.id,
     content: m.content,
     message_type: m.messageType,

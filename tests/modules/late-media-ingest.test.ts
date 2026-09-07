@@ -4,7 +4,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  processChatwootDelivery,
+  recordAndProcessChatwootDelivery,
+} from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Some transports emit `message_created` with no attachment and hang the voice note on a
@@ -48,12 +51,19 @@ const TRANSCRIPTION = "quero remarcar meu ingresso para sábado";
 const WATCHED_INBOX_ID = 4712;
 const WATCHED_CONV_ID = 9742;
 const OBSERVER_BOT_ID = 79;
+// An inbox with BOTH: a responder of ours and the same watcher beside it. The shape where the
+// observer must NOT remember on its own, because the responder's own delivery of the same message
+// already did (issue #478 review, round 1).
+const BOTH_INBOX_ID = 4713;
+const BOTH_CONV_ID = 9743;
+const RESPONDER_BOT_ID = 80;
 
 let tenantId: bigint;
 let instanceId: bigint;
 let agentId: bigint;
 let inboxDbId: bigint;
 let watchedInboxDbId: bigint;
+let bothInboxDbId: bigint;
 
 // A conversation a HUMAN owns: the bot does not handle it (`!act`), which is the branch continuous
 // ingestion exists for — nothing else will ever fold this message in.
@@ -224,6 +234,60 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
       },
       select: { id: true },
     });
+    // The inbox with a responder AND a watcher. The binding is stamped NOW, which is what forces
+    // `responderCoversMessage` past its clock shortcuts and onto the ledger: a binding older than the
+    // event answers "covered" without looking, and then the test would prove nothing about the
+    // sibling lookup this round is here to fix.
+    const responder = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Respondedora",
+        systemPrompt: "x",
+        enabled: true,
+        mode: "production",
+        settings: {},
+      },
+      select: { id: true },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: responder.id,
+        chatwootAgentBotId: RESPONDER_BOT_ID,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `late-media-resp-${process.pid}`,
+        name: "Respondedora",
+      },
+    });
+    const both = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: BOTH_INBOX_ID,
+        name: "WhatsApp vigiado",
+        agentId: responder.id,
+        responderBoundAt: new Date(),
+      },
+      select: { id: true },
+    });
+    bothInboxDbId = both.id;
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: bothInboxDbId, agentId: watcher.id },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: bothInboxDbId,
+        chatwootConversationId: BOTH_CONV_ID,
+        status: "open",
+        threadId: `${tenantId}:${instanceId}:${BOTH_CONV_ID}`,
+        lastEventAt: new Date(Date.now() - 60_000),
+      },
+      select: { id: true },
+    });
     await suDb.conversation.create({
       data: {
         tenantId,
@@ -338,6 +402,141 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(mine).toHaveLength(1);
     const payload = mine[0]?.payload as Record<string, unknown> | undefined;
     expect(payload?.role).toBe("customer");
+  });
+
+  // THE OTHER HALF OF WIDENING THE GATE (issue #478 review, round 1). On an inbox with a responder
+  // of ours, Chatwoot fans the same message to both routes, and the responder's own delivery of it
+  // is what folds it into the shared memory. The observer's copy must stand down — and standing
+  // down means finding the responder's sibling row, which it can only do if this update NAMES the
+  // message. Called with `message: null`, the check answered "not covered" without looking and the
+  // thread gained a duplicate the ingest dedup window cannot see: it is written by the ingest job
+  // alone, so a message a TURN handled was never in it.
+  test("beside a responder that already has the message, the watcher stands down", async () => {
+    const n = lateAudio(6006, {
+      transcribed: true,
+      conversationId: BOTH_CONV_ID,
+      chatwootInboxId: BOTH_INBOX_ID,
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    // The responder's own delivery of the same message, as the receiver records it. Unclaimed, which
+    // is a row whose work is still ahead of it — the sibling shape `responderCoversMessage` counts.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `late-media-sibling-${process.pid}-${crypto.randomUUID()}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: BOTH_CONV_ID,
+        inboundMessageId: 6006,
+        routeAgentBotId: RESPONDER_BOT_ID,
+      },
+    });
+
+    await deliver(n, OBSERVER_BOT_ID);
+
+    const mine = (await ingestJobs()).filter(
+      (j) => (j.payload as Record<string, unknown>).messageId === 6006,
+    );
+    expect(mine).toHaveLength(0);
+  });
+
+  // The control for the case above, and it is what proves the stand-down was a LOOKUP rather than
+  // the whole path being off on this inbox: same inbox, same route, no sibling row — so no
+  // responder delivery ever carried this message, and the watcher is the only memory it has.
+  test("with no sibling delivery, the watcher beside a responder still remembers", async () => {
+    const n = lateAudio(6007, {
+      transcribed: true,
+      conversationId: BOTH_CONV_ID,
+      chatwootInboxId: BOTH_INBOX_ID,
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n, OBSERVER_BOT_ID);
+
+    const mine = (await ingestJobs()).filter(
+      (j) => (j.payload as Record<string, unknown>).messageId === 6007,
+    );
+    expect(mine).toHaveLength(1);
+  });
+
+  // WHAT THE LEDGER KEEPS ABOUT IT, which is the difference between a process death here being
+  // recoverable and being silent. A delivery that dies between the claim and the arm leaves a row
+  // nothing reads unless the row NAMES the message: `classifyStrandedDelivery` closes every
+  // `message_updated` as carrying nothing, so the sweep would file no line and arm no replay, and
+  // the transcription — the only readable form this message ever takes on a route where no turn
+  // runs — would be gone with nobody told.
+  test("the ledger row for a transcribed update names the message", async () => {
+    const n = lateAudio(6008, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const deliveryId = `late-media-ledger-${process.pid}-${crypto.randomUUID()}`;
+
+    await recordAndProcessChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryId,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeClient: (async () =>
+          ({
+            downloadAttachment: async () => {
+              throw new Error("the audio must not be downloaded");
+            },
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => {
+          throw new Error("a late-media update must not run a turn");
+        },
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findFirst({
+      where: { tenantId, deliveryId },
+      select: { event: true, inboundMessageId: true, conversationId: true },
+    });
+    expect(row?.event).toBe("message_updated");
+    expect(row?.inboundMessageId).toBe(6008);
+    expect(row?.conversationId).toBe(CONV_ID);
+  });
+
+  // And the row an ordinary write-back leaves is unchanged, which is what keeps the pair a
+  // discriminator: an inbound id on a `message_updated` can only have come from this build, so the
+  // sweep can read it as "a transcription was owed" without mistaking a legacy row for one.
+  test("an update with nothing analysed leaves the ledger's message column null", async () => {
+    const n = lateAudio(6009, { transcribed: false });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const deliveryId = `late-media-ledger-${process.pid}-${crypto.randomUUID()}`;
+
+    await recordAndProcessChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryId,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeClient: (async () =>
+          ({
+            downloadAttachment: async () => {
+              throw new Error("the audio must not be downloaded");
+            },
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => {
+          throw new Error("a late-media update must not run a turn");
+        },
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findFirst({
+      where: { tenantId, deliveryId },
+      select: { inboundMessageId: true },
+    });
+    expect(row?.inboundMessageId).toBeNull();
   });
 
   // The gate is what the analysis PRODUCED, not the event's shape: an update carrying an audio

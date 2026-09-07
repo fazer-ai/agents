@@ -136,6 +136,19 @@ const MESSAGE_BODY_EVENTS = new Set(["message_created", "message_updated"]);
 // which is why the two questions have one answer.
 export const TURN_BEARING_EVENT = "message_created";
 
+// THE OTHER EVENT THAT CAN OWE ONE, and only in one shape (issue #478). Our own STT write-back
+// PATCHes the attachment and the fork re-dispatches the message as `message_updated`, so the vast
+// majority of these owe nothing — which is the sentence above, and it stays true. What changed is
+// that on a route where nothing ran the turn at creation (the audio was not audible yet, an observer
+// with no responder beside it), the transcription arriving on the UPDATE is the only readable form
+// the customer's message ever takes: there is no later `message_created` to carry it.
+//
+// Named rather than inlined because a ledger row cannot re-derive it: the payload is not stored
+// (issue #228), so `message_updated` alone cannot say which of the two stories a row is. The
+// receiver states it by writing `inboundMessageId`, which no build has ever written for this event
+// otherwise — that pair is the discriminator, and ./stranded-delivery.ts reads it as one.
+export const LATE_TRANSCRIPTION_EVENT = "message_updated";
+
 export function normalizeChatwootEvent(
   payload: unknown,
 ): NormalizedChatwootEvent | null {
@@ -487,6 +500,27 @@ export function isIncomingMessage(e: NormalizedChatwootEvent): boolean {
 // it before the single `save!`), so gating on message_created loses nothing.
 export function isNewIncomingMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === TURN_BEARING_EVENT && isIncomingMessage(e);
+}
+
+// THE WRITE-BACK UPDATE, and what it is worth. When our transcription lands on the attachment the
+// fork re-fires `message_updated`, and ../chatwoot/webhook.ts's `hasPendingInboundMediaUpdate` calls
+// that a no-op — correctly, because there is nothing left to ANALYSE. It is not a no-op for MEMORY: it is the one event that carries
+// the words for a message no turn is going to answer, and reading them costs nothing, since somebody
+// already paid the provider for them (issue #478).
+//
+// Both places the words can be: on the message, where the eager pass stashes them within the
+// delivery that transcribed, and on the attachment, where the fork serializes them on every later
+// delivery of that message. Either one is the whole transcription.
+export function inboundTranscriptionOnUpdate(
+  n: NormalizedChatwootEvent,
+): string | null {
+  if (n.event !== LATE_TRANSCRIPTION_EVENT || !isIncomingMessage(n))
+    return null;
+  return (
+    n.message?.transcribedText ??
+    firstAudioAttachment(n)?.transcribedText ??
+    null
+  );
 }
 
 // A message the BUSINESS sent to the customer, typed by a HUMAN agent rather than produced by a bot.

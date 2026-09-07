@@ -85,9 +85,11 @@ function rebuilt(
     attachments?: unknown[];
     redirectOriginDisplayId?: number | null;
     redirectOriginAt?: number | null;
+    event?: string;
   } = {},
 ) {
   return buildRecoveryPayload({
+    event: over.event ?? "message_created",
     conversation: {
       chatwootConversationId: CONV_DISPLAY,
       contactInboxId:

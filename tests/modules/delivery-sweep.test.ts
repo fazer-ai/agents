@@ -188,6 +188,28 @@ async function correctionOutcome(convId: number) {
   return (line.detail as Record<string, unknown>).outcome;
 }
 
+// How many delivery lines a conversation has. Used in pairs: a rider conversation is polled up to
+// its expected count, and only then is the conversation under test read — an absence proved by a
+// deadline is a timeout, an absence read after a later line landed is a measurement.
+async function deliveryLinesFor(convId: number, awaitCount = 0) {
+  const conv = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { id: true },
+  });
+  const deadline = Date.now() + POLL_DEADLINE_MS;
+  let n = 0;
+  while (true) {
+    n = (
+      await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+        select: { detail: true },
+      })
+    ).length;
+    if (n >= awaitCount || Date.now() > deadline) return n;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 // The line a strand leaves when the mirror does not know the conversation: no conversation id to
 // scope by, so it is found by its absence. Polled for the same reason as the scoped read.
 async function unscopedDeliveryLines(waitMs = POLL_DEADLINE_MS) {
@@ -2067,6 +2089,62 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // absence is what the owed-takeover case below proves with a rider row rather than a deadline.
 
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  // ISSUE #478. The `message_updated` that finally carried a voice note's transcription, stranded
+  // between the claim and the arm. It is the only readable form that message ever takes wherever no
+  // turn runs at creation, so the shipped `no-message` loses the whole of what the customer said and
+  // loses it silently — and `lost` is wrong the other way, since the routes this reaches were never
+  // going to reply. The row is DEAD because that is the state the delivery replay claims from, and
+  // it leaves DEAD on the next tick; what must not happen is the loss ALERT, which would page an
+  // operator about a customer nobody is keeping waiting.
+  //
+  // A GENUINE LOSS RIDES ALONG, seeded older so the batch's `received_at` order decides it second:
+  // once its line has landed, a line for the transcription row would have landed too, so reading
+  // one line rather than two is a measurement and not a timeout — the same rider the owed-takeover
+  // case below uses, for the same reason.
+  test("a stranded transcription is armed for replay without paging anyone", async () => {
+    const transcriptionConv = 8908;
+    const lossConv = 8909;
+    await seedConversation(transcriptionConv);
+    await seedConversation(lossConv);
+    const rowId = await seedStrandedDelivery({
+      conversationId: transcriptionConv,
+      ageMs: STALE_MS * 3,
+      claimedAgoMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: 9941,
+    });
+    const lossRowId = await seedStrandedDelivery({
+      conversationId: lossConv,
+      ageMs: STALE_MS * 2,
+      claimedAgoMs: STALE_MS * 2,
+      inboundMessageId: 9942,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.owedTranscription).toBe(1);
+    expect(counts.lost).toBe(1);
+    expect(counts.closed).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    expect((await statusOf(lossRowId)).status).toBe("DEAD");
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+        },
+      }),
+    ).toBe(1);
+    // The rider's line landed; the transcription row's did not, which is the whole assertion.
+    expect(await deliveryLinesFor(lossConv, 1)).toBe(1);
+    expect(await deliveryLinesFor(transcriptionConv)).toBe(0);
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [rowId, lossRowId] } },
+    });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {

@@ -18,9 +18,11 @@ import { agentBotChatwootId, loadChatwootClient } from "./instance";
 import { maxIncomingId, parseChatwootMessages } from "./messages";
 import {
   controlCommand,
+  inboundTranscriptionOnUpdate,
   isNewIncomingMessage,
   normalizeChatwootEvent,
   parseLiveConversation,
+  TURN_BEARING_EVENT,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import { buildRecoveryPayload } from "./recover-payload";
@@ -223,6 +225,12 @@ export async function recoverStrandedDelivery(
         status: true,
         attempts: true,
         receivedAt: true,
+        // WHICH EVENT the delivery carried, so the rebuild reproduces it instead of asserting one
+        // (issue #478 review, round 1). Two events reach a recovery now: the creation of a customer
+        // message, and the `message_updated` that finally carried its transcription. Rebuilding the
+        // second as the first is what would make the replay unsafe — a creation drives a turn, so a
+        // message a turn already answered would be answered again.
+        event: true,
         conversationId: true,
         inboundMessageId: true,
         // WHICH ROUTE this delivery arrived on, so the recovery re-runs the same one. It matters for
@@ -300,6 +308,8 @@ interface LoadedRow {
   id: bigint;
   deliveryId: string;
   attempts: number;
+  // The Chatwoot event name this delivery carried, replayed verbatim (issue #478).
+  event: string;
   // When the delivery was RECEIVED, which is what a binding is compared against: a row created after
   // it says nothing about the route the message arrived on.
   receivedAt: Date;
@@ -561,7 +571,17 @@ async function runRecovery(params: {
   // nothing else, so the newer delivery did not fold this text into memory and no later pass will.
   // Refused here, the message is absent from the only memory the inbox has, permanently, which is
   // the loss this recovery exists for. So the whole block is the responder's, page read included.
-  if (row.routeObserved !== true) {
+  //
+  // AND A TRANSCRIPTION REPLAY IS THE SAME SHAPE ON THE RESPONDER'S OWN ROUTE (issue #478 review,
+  // round 1). What it replays is a `message_updated`, which drives no turn anywhere, so nothing here
+  // was ever going to be posted and the newer message's delivery carries no reply for it either.
+  // What it owes is the words reaching memory, and an ingest job carries its own message and nothing
+  // else — so a customer who wrote again does not cover this one, exactly as above. Read off the
+  // ledger's event rather than the rebuild, because the rebuild is two REST reads further down and
+  // this refusal is meant to spend neither.
+  const replayAnswers =
+    row.routeObserved !== true && row.event === TURN_BEARING_EVENT;
+  if (replayAnswers) {
     const oldestSeen = recent.reduce<number | null>(
       (a, m) => (a === null || m.id < a ? m.id : a),
       null,
@@ -897,6 +917,7 @@ async function runRecovery(params: {
 
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({
+      event: row.event,
       conversation: {
         chatwootConversationId: conversationId,
         // From the mirror, and only this one: the REST conversation renders no `contact_inbox`
@@ -1002,11 +1023,19 @@ async function runRecovery(params: {
   // and the customer is still waiting. `unreachable` rather than `unrecoverable` for the same reason
   // an untrusted conversation snapshot is: the account answered with something unusable, which the
   // next attempt may not.
-  if (!isNewIncomingMessage(normalized)) {
+  // EITHER SHAPE THE LEDGER CAN NAME, asked as the classifier asks it. A creation must rebuild as a
+  // new incoming message; a transcription strand must rebuild still carrying words, because words
+  // are the whole of what it owes — an update that comes back without them is a read that lost the
+  // transcription, and replaying it would settle the row having remembered nothing (issue #478).
+  const rebuiltInbound = isNewIncomingMessage(normalized)
+    ? true
+    : inboundTranscriptionOnUpdate(normalized) !== null;
+  if (!rebuiltInbound) {
     logger.warn(
-      "chatwoot recovery: %s rebuilt as a %s message, not a new incoming one; the REST read is degraded",
+      "chatwoot recovery: %s rebuilt as a %s message with nothing to replay, not the %s it was; the REST read is degraded",
       row.deliveryId,
       normalized.message?.messageType ?? "unknown",
+      row.event,
     );
     return "unreachable";
   }
@@ -1400,7 +1429,7 @@ async function runRecovery(params: {
       status: "ok",
       detail: {
         outcome: "recovered",
-        deliveryEvent: "message_created",
+        deliveryEvent: row.event,
         // The three the sweep's own loss line carries, so the two can be read as one story, plus
         // the delivery id its log line named.
         deliveryId: row.deliveryId,

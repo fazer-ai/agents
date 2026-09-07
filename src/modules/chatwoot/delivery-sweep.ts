@@ -371,6 +371,12 @@ export interface SweepCounts {
   // nothing) nor `owed` (a row whose side effect was armed for recovery): nothing can replay it, so
   // the count and the line beside it are the whole record.
   observerStrands: number;
+  // Terminal, no customer waiting on a reply, and the TRANSCRIPTION of a customer message owed to
+  // memory (issue #478). Counted apart from `lost` because the worklist is not the same list: `DEAD`
+  // is customers who wrote and were never answered, and these rows are on routes where no reply was
+  // ever coming. Counted apart from `owed` because the recovery is the ordinary delivery replay
+  // rather than a side effect of its own.
+  owedTranscription: number;
   // The row moved under the sweep (a redelivery claimed it) between the scan and the write.
   raced: number;
 }
@@ -489,6 +495,7 @@ export async function sweepStrandedDeliveries(
     lost: 0,
     owed: 0,
     observerStrands: 0,
+    owedTranscription: 0,
     raced: 0,
   };
 
@@ -585,6 +592,44 @@ async function record(
   base: PrismaClient,
 ): Promise<void> {
   const label = `${row.deliveryId} (${row.event})`;
+  // THE TRANSCRIPTION STRAND, and it borrows one half from each of its neighbours (issue #478).
+  //
+  // From the LOSS: the row goes DEAD and the ordinary delivery recovery is armed on it. That is not
+  // a choice of wording, it is what makes the replay possible at all — `recoverStrandedDelivery`
+  // claims from DEAD, and the row leaves it again the moment the replay settles, which is the next
+  // scheduler tick. The replay is safe on every row that reaches here, including the ordinary
+  // write-back a ledger row cannot be told apart from this one: it re-runs the SAME event, and a
+  // `message_updated` drives no turn and is refused by the ingest gate wherever a turn already
+  // answered.
+  //
+  // From the TAKEOVER: the line is `warn` and says what was owed, instead of the loss line's `error`
+  // and its "the customer's message was never answered". Nobody here is waiting on a reply — on the
+  // routes this verdict is about, none was ever coming — so paging an operator would be paging them
+  // about a memory gap the replay is already closing. The DEAD row is still the record if it never
+  // does.
+  if (verdict === "owed-transcription") {
+    if (!(await finish(row, tenantId, "DEAD", base))) {
+      counts.raced += 1;
+      return;
+    }
+    counts.owedTranscription += 1;
+    try {
+      await armDeliveryRecovery(tenantId, row.id, base);
+    } catch (error) {
+      logger.error(
+        { error },
+        `chatwoot delivery sweep: ${label} was stranded owing a transcription and its replay could not be armed; the words stay out of the conversation's memory and the row stays DEAD`,
+      );
+    }
+    logger.warn(
+      "chatwoot delivery sweep: %s stranded on %s carrying the transcription of message %s on conversation %s; nobody is owed a reply, but the words never reached the memory — replay armed",
+      label,
+      row.status,
+      String(row.inboundMessageId),
+      String(row.conversationId),
+    );
+    return;
+  }
   if (verdict !== "lost") {
     if (!(await finish(row, tenantId, "PROCESSED", base))) {
       counts.raced += 1;

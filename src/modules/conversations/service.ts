@@ -355,6 +355,8 @@ export interface ConversationDetail {
   agentHasBot: boolean;
   // The monitoring agents observing this inbox (issue #476), by name.
   observerNames: string[];
+  // The same observers with their ids, so the console can link to each one (issue #494).
+  observers: { id: string; name: string }[];
   // The bound persona's operating mode (item 1), so the console can flag a test agent. null = no agent.
   agentMode: AgentMode | null;
   // The model the bound persona runs (e.g. "gpt-5.4-mini"), shown in the conversation header. null = no
@@ -944,18 +946,21 @@ export async function getConversationDetail(
   // answerable at all: without it every AgentBot assignee looks like ours. Same resolution the webhook
   // gate does (Inbox.agentId -> ChatwootAgentBot).
   const observerIds = conv.inbox?.observers.map((o) => o.agentId) ?? [];
-  const observerNames =
+  const observerRows =
     observerIds.length > 0
-      ? (
-          await runScopedOn(base, ctx, (db) =>
-            db.agent.findMany({
-              where: { id: { in: observerIds } },
-              select: { name: true },
-              orderBy: { id: "asc" },
-            }),
-          )
-        ).map((a) => a.name)
+      ? await runScopedOn(base, ctx, (db) =>
+          db.agent.findMany({
+            where: { id: { in: observerIds } },
+            select: { id: true, name: true },
+            orderBy: { id: "asc" },
+          }),
+        )
       : [];
+  const observerNames = observerRows.map((a) => a.name);
+  const observers = observerRows.map((a) => ({
+    id: String(a.id),
+    name: a.name,
+  }));
   const ourAgentBotId =
     agentId != null
       ? ((
@@ -1402,6 +1407,7 @@ export async function getConversationDetail(
     agentEnabled: agent?.enabled ?? false,
     agentHasBot: ourAgentBotId !== null,
     observerNames,
+    observers,
     agentMode: agent ? normalizeAgentMode(agent.mode) : null,
     agentModel: (() => {
       const parsed = modelConfigSchema.safeParse(agent?.modelConfig);

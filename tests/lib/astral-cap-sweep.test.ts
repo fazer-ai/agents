@@ -396,6 +396,9 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
+  // The taxonomy cut to the counts the reader keeps (issue #494 review, round 2): the groups array
+  // and each group's values array. Both are arrays of whole strings — no cut lands inside one.
+  "src/client/pages/agents/observationFormState.ts": [2, "array"],
   "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],

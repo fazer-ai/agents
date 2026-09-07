@@ -41,6 +41,7 @@ import {
   Button,
   Card,
   DataBoundary,
+  HelpPopover,
   Markdown,
   MediaAudio,
   MediaImage,
@@ -1592,39 +1593,71 @@ export function ConversationDetailPage() {
   // conversation where it is wrong the operator had nothing at all to go on. Derived from fields the
   // detail already carries, so it costs no call; a null here is either "everything is fine" or "no
   // agent is bound", which the panel above already says on its own.
-  const noResponderReason: string | null =
+  // TWO STRINGS, NOT ONE (issue #494 manual test): a `label` short enough to sit in the action row
+  // beside the buttons it replaces, and the sentence that says what to DO about it, behind the row's
+  // `?`. One sentence inline was the first shape and it broke the layout — the row is a flex line of
+  // buttons, and a hundred-and-twenty-character sentence dropped into it wraps and pushes the
+  // navigation around. docs/ui.md is right that a detected misconfiguration belongs on screen rather
+  // than behind an affordance; what belongs there is the CONDITION, which is three words, and not
+  // the remediation, which is a sentence.
+  //
+  // NO RESPONDER AT ALL is the FIRST case, not the excluded one (issue #495 review, round 16).
+  // Round 13 left it out saying the panel above already says it, and the panel does not: with no
+  // assignee it prints the generic "AI" label, which claims an answerer this inbox does not have,
+  // and with a person on it it prints their name and the inbox. Either way the three actions vanish
+  // with nothing on screen naming the cause, which is the very state the server refuses by name
+  // (`errors.returnNoResponder`).
+  const noResponder: { label: string; detail: string } | null =
     conv == null || responderAnswers
       ? null
-      : // NO RESPONDER AT ALL is the FIRST case, not the excluded one (issue #495 review, round 16).
-        // Round 13 left it out saying the panel above already says it, and the panel does not: with
-        // no assignee it prints the generic "AI" label, which claims an answerer this inbox does not
-        // have, and with a person on it it prints their name and the inbox. Either way the three
-        // actions vanish with nothing on screen naming the cause, which is the very state the server
-        // refuses by name (`errors.returnNoResponder`).
-        conv.agentId == null
-        ? t(
-            "conversation.responderNone",
-            "No agent is bound to this inbox, so the conversation cannot be handed back to one.",
-          )
+      : conv.agentId == null
+        ? {
+            label: t("conversation.responderNoneShort", "No agent bound"),
+            detail: t(
+              "conversation.responderNone",
+              "No agent is bound to this inbox, so the conversation cannot be handed back to one.",
+            ),
+          }
         : conv.agentEnabled !== true
-          ? t(
-              "conversation.responderOff",
-              "This inbox's agent is switched off, so the conversation cannot be handed back to it.",
-            )
+          ? {
+              label: t("conversation.responderOffShort", "Agent switched off"),
+              detail: t(
+                "conversation.responderOff",
+                "This inbox's agent is switched off, so the conversation cannot be handed back to it.",
+              ),
+            }
           : conv.agentMode === "monitoring"
-            ? t(
-                "conversation.responderObserves",
-                "This inbox's agent only observes; it does not answer, so the conversation cannot be handed back to it.",
-              )
+            ? {
+                label: t(
+                  "conversation.responderObservesShort",
+                  "Agent only observes",
+                ),
+                detail: t(
+                  "conversation.responderObserves",
+                  "This inbox's agent only observes; it does not answer, so the conversation cannot be handed back to it.",
+                ),
+              }
             : conv.agentHasBot !== true
-              ? t(
-                  "conversation.responderNoBot",
-                  "This inbox's agent has no bot on this Chatwoot; reconnect the instance before handing the conversation back.",
-                )
-              : t(
-                  "conversation.responderTestSilent",
-                  "This inbox's agent is in test mode and was not activated on this conversation, so it would answer nothing.",
-                );
+              ? {
+                  label: t(
+                    "conversation.responderNoBotShort",
+                    "Agent has no bot",
+                  ),
+                  detail: t(
+                    "conversation.responderNoBot",
+                    "This inbox's agent has no bot on this Chatwoot; reconnect the instance before handing the conversation back.",
+                  ),
+                }
+              : {
+                  label: t(
+                    "conversation.responderTestSilentShort",
+                    "Agent not activated here",
+                  ),
+                  detail: t(
+                    "conversation.responderTestSilent",
+                    "This inbox's agent is in test mode and was not activated on this conversation, so it would answer nothing.",
+                  ),
+                };
   // Deep link to this conversation in the operator's Chatwoot (build from the instance origin/account).
   const chatwootUrl = conv
     ? `${conv.chatwootBaseUrl}/app/accounts/${conv.accountId}/conversations/${conv.chatwootConversationId}`
@@ -1686,12 +1719,24 @@ export function ConversationDetailPage() {
                     </>
                   )}
                   {conv.inbox?.name ? ` · ${conv.inbox.name}` : ""}
-                  {conv.observerNames.length > 0 ? (
+                  {conv.observers.length > 0 ? (
                     <span className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-secondary">
                       <Eye className="h-3 w-3" aria-hidden="true" />
-                      {t("conversations.observedBy", "Observed by {{names}}", {
-                        names: conv.observerNames.join(", "),
-                      })}
+                      {t("conversations.observedByLabel", "Observed by")}
+                      {/* Each observer is a link to its own page (issue #494): the badge was the
+                          only place the watcher acting on this conversation was named, and it
+                          led nowhere. */}
+                      {conv.observers.map((o, i) => (
+                        <span key={o.id}>
+                          {i > 0 ? ", " : null}
+                          <Link
+                            to={`/agents/${o.id}/general?from=/conversations/${id}`}
+                            className="underline-offset-2 hover:underline"
+                          >
+                            {o.name}
+                          </Link>
+                        </span>
+                      ))}
                     </span>
                   ) : null}
                   {!isHuman && conv.agentModel ? (
@@ -1779,9 +1824,13 @@ export function ConversationDetailPage() {
                       {t("conversation.handoff", "Handoff to human")}
                     </Button>
                   )}
-                  {noResponderReason !== null && (
-                    <span className="text-text-muted text-xs">
-                      {noResponderReason}
+                  {noResponder !== null && (
+                    <span className="inline-flex items-center gap-1 text-text-muted text-xs">
+                      {noResponder.label}
+                      <HelpPopover
+                        content={noResponder.detail}
+                        label={noResponder.label}
+                      />
                     </span>
                   )}
                   {conv.status === "resolved" && responderAnswers && (
@@ -1882,6 +1931,25 @@ export function ConversationDetailPage() {
                       {t("conversation.configureAgent", "Configure agent")}
                     </Link>
                   )}
+                  {/* With no responder, the observer is the only agent acting on this conversation,
+                      and the page offered no way to reach it (issue #494). */}
+                  {!conv.agentId &&
+                    conv.observers.map((o) => (
+                      <Link
+                        key={o.id}
+                        to={`/agents/${o.id}/general?from=/conversations/${id}`}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+                      >
+                        <Settings className="h-4 w-4" aria-hidden="true" />
+                        {t(
+                          "conversation.configureObserver",
+                          "Configure {{name}}",
+                          {
+                            name: o.name,
+                          },
+                        )}
+                      </Link>
+                    ))}
                 </div>
               </div>
             </Card>

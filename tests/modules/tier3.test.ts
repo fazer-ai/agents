@@ -696,6 +696,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(detail.chatwootConversationId).toBe(500);
     expect(detail.status).toBe("pending");
     expect(detail).not.toHaveProperty("messages");
+    // The observers, by name and by id (issue #494): none on this inbox.
+    expect(detail.observerNames).toEqual([]);
+    expect(detail.observers).toEqual([]);
   });
 
   // The hand-back's own success state, which the type-only test called a takeover. `toggle_status ->

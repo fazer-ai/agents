@@ -103,6 +103,7 @@ import {
   BehaviorTab,
   type ContactAuthState,
   type MemoryState,
+  MONITORING_SECTIONS,
   type ModelFallbackState,
   type SendImageState,
   type TakeoverState,
@@ -120,6 +121,7 @@ import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
 import { memoryToForm, memoryToStored } from "./memoryFormState";
 import {
+  fallbackModelIsMissing,
   modelFallbackToForm,
   modelFallbackToStored,
 } from "./modelFallbackFormState";
@@ -127,6 +129,11 @@ import {
   observabilityToForm,
   observabilityToStored,
 } from "./observabilityFormState";
+import {
+  type ObservationState,
+  observationToForm,
+  observationToStored,
+} from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import {
@@ -202,6 +209,58 @@ const TAB_KEYS: TabKey[] = [
   "channelRedirect",
   "playground",
 ];
+
+// A watcher's editor (issue #494): the tabs that configure how the agent ANSWERS — tools,
+// knowledge, guardrails, the redirect, the playground — are not drawn for an agent in monitoring
+// mode, which never does; drawn for one, they read as if it could. A URL that still names one
+// lands on General. Nothing is deleted: flip the mode back and the tabs return as they were.
+const MONITORING_TABS: ReadonlySet<string> = new Set<TabKey>([
+  "general",
+  "channels",
+  "behavior",
+]);
+// Whether a configuration warning has a CONTROL BEHIND IT in a watcher's editor. Asked of the
+// issue's own deep-link target rather than of a list of keys (issue #494 review, round 3): every
+// issue already carries the tab and section it would scroll to, so the question "is that section on
+// screen for a watcher" is answerable directly — and a key list answers it only for the keys
+// somebody remembered. It had already missed `textCap`, which targets whatever section holds the
+// oversized field and is therefore actionable on Vision, a section the watcher DOES draw.
+//
+// A warning pointing at a control that is not on screen is the failure the warnings exist to
+// prevent; one with no target at all points nowhere for any agent, so it is kept rather than
+// singled out here.
+function watcherCanActOn(issue: {
+  key: string;
+  tab?: string;
+  sectionId?: string;
+}): boolean {
+  // RAG has no tab for a watcher and no use either. Both of these come through with no `tab` — the
+  // knowledge one opens the Knowledge tab's documents modal, the embedding one points at the
+  // tenant's credential — so the target rule below would keep them, and a watcher never invokes
+  // retrieval (issue #494 review, round 4). Sent to configure the embedding credential, the operator
+  // fixes it and is answered with a `knowledge` issue that IS filtered, which is the shape of
+  // busywork a warning panel must not create.
+  if (issue.key === "knowledge" || issue.key === "embedding") return false;
+  // An issue with no target at all points nowhere for any agent, so it is kept rather than singled
+  // out here.
+  if (issue.tab === undefined) return true;
+  return watcherSectionReachable(issue.tab, issue.sectionId);
+}
+
+// Whether a deep-link target is somewhere a watcher's editor actually shows. Shared with the import
+// warnings' Review button (issue #494 review, round 6), which deep-links by the same tab+section
+// pair: a target on a hidden tab is redirected straight back to General, and one on a hidden
+// Behavior section scrolls to something CSS keeps invisible — an action that appears to work and
+// exposes no setting, which is worse than not offering it.
+function watcherSectionReachable(tab: string, sectionId?: string): boolean {
+  if (!MONITORING_TABS.has(tab)) return false;
+  // Behavior is drawn, but only some of its sections are.
+  return (
+    tab !== "behavior" ||
+    sectionId === undefined ||
+    MONITORING_SECTIONS.has(sectionId)
+  );
+}
 
 // The four config sections with their own unsaved-changes baseline + save button. Each is tracked
 // independently so saving one never re-baselines (or drops) another's pending edits.
@@ -448,6 +507,8 @@ function readBehaviorState(a: Agent) {
     // predates the feature, then persist that lie on the next save.
     memory: memoryToForm(s),
     modelFallback: modelFallbackToForm(s),
+    // Through the runtime's reader as well (issue #494), and for the same reason as memory.
+    observation: observationToForm(s),
   };
 }
 
@@ -673,6 +734,22 @@ function AgentEditor() {
   // control nobody is rendering. Off that tab the sentence goes to the toast.
   const [enabled, setEnabled] = useState(true);
   const [agentMode, setAgentMode] = useState<AgentMode>("production");
+  const watcher = agentMode === "monitoring";
+  // NOTE: A URL naming a tab the watcher's editor does not draw (issue #494) lands on General —
+  // CARRYING
+  // the origin (issue #494 review, round 1). Dropping the query string here made `backToConversation`
+  // null and took away the way back, on the one navigation the operator did not ask for; every tab
+  // link on this page preserves it deliberately, and this one has to as well.
+  useEffect(() => {
+    if (agentMode === "monitoring" && !MONITORING_TABS.has(tab)) {
+      navigate(
+        `/agents/${id}/general${
+          backToConversation ? `?from=${backToConversation}` : ""
+        }`,
+        { replace: true },
+      );
+    }
+  }, [agentMode, tab, id, navigate, backToConversation]);
   const [transferWithSummary, setTransferWithSummary] = useState(true);
   const [businessHoursId, setBusinessHoursId] = useState("");
   const [awayEnabled, setAwayEnabled] = useState(false);
@@ -775,6 +852,9 @@ function AgentEditor() {
   // the round-trip pair produces, so a field added to `compaction` cannot default differently here
   // than it does everywhere else.
   const [memory, setMemory] = useState<MemoryState>(() => memoryToForm({}));
+  const [observation, setObservation] = useState<ObservationState>(() =>
+    observationToForm({}),
+  );
   const [modelFallback, setModelFallback] = useState<ModelFallbackState>(() =>
     modelFallbackToForm({}),
   );
@@ -1325,6 +1405,7 @@ function AgentEditor() {
     setObservability(b.observability);
     setSavedObservability(b.observability);
     setMemory(b.memory);
+    setObservation(b.observation);
     setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
     setTakeover(b.takeover);
@@ -1365,6 +1446,7 @@ function AgentEditor() {
     setObservability(b.observability);
     setSavedObservability(b.observability);
     setMemory(b.memory);
+    setObservation(b.observation);
     setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
     setTakeover(b.takeover);
@@ -1661,7 +1743,34 @@ function AgentEditor() {
       // field the form dropped would be deleted on the next save — which is exactly how
       // `tts.baseURL` was lost once, and the round-trip test over ./memoryFormState is the guard.
       memory: memoryToStored(memory),
-      modelFallback: modelFallbackToStored(modelFallback),
+      // WHAT A WATCHER'S SAVE OMITS IS THE PAIR THE BOUNDARY REFUSES, and only that (issue #494
+      // review, rounds 7 and 9). The editor stops drawing the fallback block in monitoring mode, so
+      // the form is no longer an editor of it — but it kept SERIALIZING it, and a half-named pair
+      // picked before the flip then reached the write boundary, which refuses it by name
+      // (`assertSettingsModelFallback`) with the only control that could fix it off screen: Save dead
+      // on a 400, on the one section a watcher does edit.
+      //
+      // Round 7 answered that by omitting the key for every watcher, and omitted too much: a VALID
+      // draft edited before the flip was dropped just as silently, and `applyBehavior` then reloaded
+      // the form from the stored value, so the edit vanished from a tab that had just reported
+      // itself dirty. The predicate is therefore the boundary's own question — `fallbackModelIsMissing`,
+      // the same one the save gate asks where the section IS drawn — and not "is this a watcher".
+      //
+      // When it does omit, `...settings` above keeps what is stored, byte for byte, which is also
+      // the shape the boundary's "only what the write changes" exemption is written for: a stored
+      // pair that is already half-named goes back unchanged and passes, where normalizing it here
+      // would silently delete a provider nobody asked to remove. That half-named DRAFT is lost from
+      // the form on the reload, and it is the one thing here that cannot be kept: the round trip
+      // does not survive it either way (`{provider, model: null}` reads back as "No fallback"), and
+      // the control that would fix it is off screen.
+      //
+      // Read off the DRAFT mode, the same value that decides whether the block is drawn.
+      ...(watcher && fallbackModelIsMissing(modelFallback)
+        ? {}
+        : { modelFallback: modelFallbackToStored(modelFallback) }),
+      // The Observation block (issue #494) replaces `monitoring` the same way; the round-trip test
+      // over ./observationFormState is its guard.
+      monitoring: observationToStored(observation),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -1712,6 +1821,9 @@ function AgentEditor() {
       observability,
       memory,
       modelFallback,
+      // Named after the block the save writes (`monitoring`), which is what the dirty-snapshot
+      // fence reads off the writer; the form state behind it is `observation`.
+      monitoring: observation,
     }),
     // The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded (server-owned,
     // persisted on provision), so provisioning the widget never lights up this tab's unsaved-changes dot.
@@ -1965,7 +2077,7 @@ function AgentEditor() {
     readModelFallbackConfig(syncedAgentRef.current?.settings).credentialRef ??
       "",
   );
-  const configIssues = computeConfigIssues({
+  const allConfigIssues = computeConfigIssues({
     settings: syncedAgentRef.current?.settings,
     // Saved, like the settings above. Absent only before the first load lands, and nothing that
     // reads it can be non-empty that early.
@@ -2015,10 +2127,13 @@ function AgentEditor() {
     redirectEntryInboxId: channelRedirect.entryInboxId,
     redirectWidgetInboxId: channelRedirect.widgetInboxId,
     outOfOfficeInboxes,
-    // The SAVED schedule, next to the saved settings above and for the same reason: the panel
+    // NOTE: The SAVED schedule, next to the saved settings above and for the same reason: the panel
     // describes the row, and a schedule picked but not saved gates nothing yet.
     savedSchedule: scheduleOf(hours, syncedAgentRef.current?.businessHoursId),
   });
+  const configIssues = watcher
+    ? allConfigIssues.filter(watcherCanActOn)
+    : allConfigIssues;
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the
   // vault list with the fill modal pre-opened (?fill=<id>). Otherwise switch to the issue's tab
@@ -2542,6 +2657,14 @@ function AgentEditor() {
   // (TabActionBar) on the config tabs, and the panel itself renders below (PlaygroundFab).
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
   const openPlayground = () => setPlaygroundOpen(true);
+  // NOTE: ...AND THE PANEL CLOSES WITH ITS TRIGGER (issue #494 review, round 6). Flipping a
+  // production agent to monitoring removed the entry point and left an ALREADY-OPEN playground
+  // mounted and usable — a reply surface for an agent whose answering UI is meant to be gone. It is
+  // the one place where hiding the control was not enough, because the control had already been
+  // used.
+  useEffect(() => {
+    if (agentMode === "monitoring") setPlaygroundOpen(false);
+  }, [agentMode]);
   // Guards LEAVING the editor (sidebar, breadcrumbs, the Back link, browser
   // Back, refresh/close) when there are unsaved changes. Switching tabs keeps
   // the component mounted (state survives), so it is intentionally not guarded.
@@ -2582,6 +2705,7 @@ function AgentEditor() {
     setObservability(b.observability);
     setSavedObservability(b.observability);
     setMemory(b.memory);
+    setObservation(b.observation);
     setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
     setTakeover(b.takeover);
@@ -3168,6 +3292,9 @@ function AgentEditor() {
       icon: MessageSquare,
     },
   ];
+  const visibleTabs = watcher
+    ? tabs.filter((item) => MONITORING_TABS.has(item.key))
+    : tabs;
 
   return (
     <PageContainer className="flex min-h-full flex-col gap-4">
@@ -3262,7 +3389,7 @@ function AgentEditor() {
             </div>
 
             <Tabs
-              items={tabs}
+              items={visibleTabs}
               value={tab}
               // Preserve the ?from origin across tab switches so the "back to conversation" link
               // survives navigation within the editor.
@@ -3275,6 +3402,14 @@ function AgentEditor() {
               }
               aria-label={t("editor.tabs", "Agent settings")}
             />
+            {watcher && (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "editor.monitoringTabsHint",
+                  "This agent only observes: the tabs that configure how an agent answers are not shown while it is in monitoring mode. What it does with what it reads is under Behavior, in Observation.",
+                )}
+              </p>
+            )}
 
             {staleNotice && (
               <div
@@ -3367,15 +3502,21 @@ function AgentEditor() {
                         <span className="min-w-0 text-text-secondary text-xs">
                           {importWarningMessage(w)}
                         </span>
-                        {w.target && (
-                          <button
-                            type="button"
-                            onClick={() => goToImportWarning(w)}
-                            className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
-                          >
-                            {t("editor.importWarningReview", "Review")}
-                          </button>
-                        )}
+                        {w.target &&
+                          (!watcher ||
+                            w.target.kind !== "agentField" ||
+                            watcherSectionReachable(
+                              w.target.tab,
+                              w.target.sectionId,
+                            )) && (
+                            <button
+                              type="button"
+                              onClick={() => goToImportWarning(w)}
+                              className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                            >
+                              {t("editor.importWarningReview", "Review")}
+                            </button>
+                          )}
                       </li>
                     ))}
                   </ul>
@@ -3502,7 +3643,7 @@ function AgentEditor() {
                   );
                 }}
                 onDiscard={revertGeneral}
-                onOpenPlayground={openPlayground}
+                onOpenPlayground={watcher ? undefined : openPlayground}
                 onDelete={askDelete}
                 previewVars={playgroundChat.promptVars}
                 catalog={catalog}
@@ -3514,6 +3655,16 @@ function AgentEditor() {
               <ChannelsTab
                 agentId={id}
                 agentName={name}
+                // NOTE: The SAVED mode, not the one General is editing (issue #494 review,
+                // round 1):
+                // binding acts immediately and the server judges the STORED agent, so a draft
+                // flipped to monitoring would route the call to the observer endpoint and be
+                // refused, on a switch with no save behind it.
+                mode={
+                  syncedAgentRef.current
+                    ? normalizeAgentMode(syncedAgentRef.current.mode)
+                    : agentMode
+                }
                 onBindingChanged={() => {
                   setServerSyncTick((n) => n + 1);
                 }}
@@ -3646,6 +3797,9 @@ function AgentEditor() {
                 setLimits={setLimits}
                 memory={memory}
                 setMemory={setMemory}
+                mode={agentMode}
+                observation={observation}
+                setObservation={setObservation}
                 modelFallback={modelFallback}
                 setModelFallback={setModelFallback}
                 observability={observability}
@@ -3720,7 +3874,7 @@ function AgentEditor() {
                   )
                 }
                 onDiscard={revertBehavior}
-                onOpenPlayground={openPlayground}
+                onOpenPlayground={watcher ? undefined : openPlayground}
               />
             )}
 

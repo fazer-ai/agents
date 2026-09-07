@@ -1432,9 +1432,10 @@ async function runRecovery(params: {
   // review, round 7). What this replay owes is an append, so the honest reading of "recovered" is
   // that a route with continuous ingestion made a decision about it: `queued` remembered it,
   // `nothing` is the gate deciding the message needs nothing from here, `no-thread` is a
-  // conversation with nowhere to hold it and nothing a retry finds different. Silence is none of
-  // those — it is no route having asked — and the row goes back to DEAD so the next attempt can
-  // find an inbox that is bound and switched on again.
+  // conversation with nowhere to hold it and nothing a retry finds different, and `covered` is a
+  // route that ingests standing down because the responder already has the message (round 8).
+  // Silence is none of those — it is no route having asked — and the row goes back to DEAD so the
+  // next attempt can find an inbox that is bound and switched on again.
   //
   // Only for the replay that posts nothing: where a turn was owed, `TURN_SETTLED` is the answer and
   // an ingestion never ran beside it.

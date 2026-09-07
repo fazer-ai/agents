@@ -1324,7 +1324,13 @@ export interface ProcessChatwootParams {
   //
   // Opt-in like `onDirectTurn` and for the same reason: the return union is a contract with every
   // caller, and only the one for whom this distinction exists should pay for it.
-  onIngest?: (outcome: IngestOutcome) => void;
+  //
+  // "covered" is not one of the enqueue's own answers: it is a route that ingests standing down on
+  // purpose, because the responder already has the message or is about to consume it as a command
+  // (issue #478 review, round 8). A decision, like the gate's `"nothing"`, and it must not read as
+  // silence — an observer's replay beside a responder reaches it every time, and read as silence the
+  // recovery would put a settled row back on the worklist until it exhausted its attempts.
+  onIngest?: (outcome: IngestOutcome | "covered") => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -5584,18 +5590,21 @@ export async function processChatwootDelivery(
   // paid a provider for the transcription.
   const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;
   let ingested: IngestOutcome = "nothing";
-  if (
+  // NOTE: WHETHER THIS ROUTE INGESTS AT ALL, hoisted out of the condition below so the two halves can
+  // be told apart (issue #478 review, round 8). A route that cannot — no runtime, switched off, a
+  // test agent with nobody watching — reaches no branch and says nothing, and that silence is what a
+  // memory-only recovery reads as "nobody looked". A route that CAN and stands down for the
+  // responder is the opposite, and has to say so.
+  // NOTE: A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19): the row
+  // is written without re-asking the mode, so a change that lands inside the attach window leaves a
+  // test agent observing — and the receiver honours the row over the mode everywhere else. Read
+  // through `ingestsContinuously` alone, that agent's route would mark the message handled and
+  // remember nothing. The switch is still asked: a watcher that is off does nothing.
+  const routeIngests =
     rt !== null &&
-    !responderRemembers &&
-    !responderCommand &&
-    // A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19): the row is
-    // written without re-asking the mode, so a change that lands inside the attach window leaves a
-    // test agent observing — and the receiver honours the row over the mode everywhere else. Read
-    // through `ingestsContinuously` alone, that agent's route would mark the message handled and
-    // remember nothing. The switch is still asked: a watcher that is off does nothing.
     ((rt.enabled && (ingestsContinuously(rt.mode) || observer !== null)) ||
-      handedToObserver)
-  ) {
+      handedToObserver);
+  if (routeIngests && !responderRemembers && !responderCommand) {
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
@@ -5626,6 +5635,13 @@ export async function processChatwootDelivery(
     // NOTE: Inside the branch, so silence means the ingestion never ran rather than that it ran and
     // found nothing. That is the distinction the recovery reads (see `onIngest`).
     params.onIngest?.(ingested);
+  } else if (routeIngests) {
+    // NOTE: A route that INGESTS, standing down on purpose: the responder already has this message,
+    // or is about to consume it as a command. Reported, because the recovery's question is "did
+    // anything look at this message", and a deliberate stand-down is an answer (round 8). Silent, an
+    // observer's replay beside a responder would be put back on the worklist until its attempts ran
+    // out, over a message that was handled.
+    params.onIngest?.("covered");
   }
   // A COLLEAGUE'S REPLY the observer could not remember, its retries spent (round 24). There is no
   // recovery to leave the row for — the sweep cannot rebuild an outgoing body — so the loss is

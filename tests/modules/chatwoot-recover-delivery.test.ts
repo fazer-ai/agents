@@ -1102,6 +1102,57 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     }
   });
 
+  // ISSUE #478 review, round 8. The observer's replay beside a responder that ALREADY has the
+  // message: the receiver stands its ingestion down on purpose, so nothing is enqueued and nothing
+  // is lost. Read as "no route looked", the round-7 check would put a settled row back on the
+  // worklist and retry it until its attempts ran out, over a message the responder handled — a
+  // stranded-delivery record for a loss that never happened.
+  test("an observer's replay that stood down for the responder is still closed", async () => {
+    const convId = 8894;
+    const messageId = 9494;
+    const observerRow = await suDb.inboxObserver.create({
+      // Older than the delivery: the binding has to predate the message for the route to be its.
+      data: {
+        tenantId,
+        inboxId: inboxDbId,
+        agentId: watcherAgentDbId,
+        createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      },
+      select: { id: true },
+    });
+    try {
+      await seedConversation(convId, {
+        assigneeType: "User",
+        assigneeId: 9,
+        status: "open",
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeAgentBotId: OBSERVER_BOT_ID,
+        routeObserved: true,
+      });
+      const stub = stubChatwoot({
+        page: pageWith([{ id: messageId, content: "oi" }]),
+      });
+
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+
+      // Settled, not put back: the responder of this inbox has the message, which is a decision and
+      // not a silence.
+      expect((await ledger(rowId)).status).toBe("PROCESSED");
+      expect(stub.sent).toEqual([]);
+    } finally {
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+    }
+  });
+
   // The role travels with the replay: unbinding the observer and promoting its agent between the
   // strand and the recovery must not turn a watcher's delivery into an answering one.
   test("a stranded observer delivery stays an observer's, even after its binding is gone", async () => {

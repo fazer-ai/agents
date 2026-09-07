@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { chatwootThreadId } from "@/graph/checkpointer";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -1355,5 +1356,373 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       status: "pending",
     });
     expect((await jobs("DEBOUNCE")).length).toBe(1);
+  });
+  // The watcher's verdict (issue #477): a customer message on an observed conversation arms the one
+  // OBSERVE row of that conversation, and a resolve delivered on the observer's route pulls it
+  // forward — on the shared inbox too, where the responder answers for the compaction.
+  async function deliverStatus(
+    route: number,
+    convId: number,
+    inboxId: number,
+    status: string,
+    // A payload the mirror will REJECT as out of order: `updated_at` is the conversation's version,
+    // and one below what the mirror already holds is an event that arrived late.
+    staleVersion = false,
+    // The base to run on, so a test can make a read fail underneath this path.
+    base = appDb,
+  ) {
+    deliverySeq += 1;
+    const raw = conversation(convId, inboxId, { assigneeType: "User", status });
+    const n = normalizeChatwootEvent({
+      event: "conversation_status_changed",
+      ...raw,
+      ...(staleVersion ? { updated_at: 1 } : {}),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${deliverySeq}`,
+        event: "conversation_status_changed",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: route,
+      normalized: n,
+      base,
+    });
+    return delivery.id;
+  }
+
+  function observeRows() {
+    return suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "OBSERVE" },
+      select: { dedupeKey: true, payload: true, runAt: true, status: true },
+      orderBy: { id: "asc" },
+    });
+  }
+
+  test("with a label group, a customer message arms the observer's OBSERVE row; without one nothing was armed", async () => {
+    expect(await observeRows()).toEqual([]);
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    await deliver(OBSERVER_BOT, 4, OBSERVED_ONLY_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    const rows = await observeRows();
+    expect(rows).toHaveLength(1);
+    const armed = rows[0];
+    if (!armed) throw new Error("no OBSERVE row");
+    expect(armed.dedupeKey).toBe(
+      `observe:${chatwootThreadId(tenantId, instanceId, 4)}:${observerId}`,
+    );
+    expect(armed.status).toBe("PENDING");
+    const payload = armed.payload as Record<string, unknown>;
+    expect(payload.reason).toBe("burst");
+    expect(payload.agentId).toBe(String(observerId));
+    expect(payload.conversationId).toBe(4);
+    expect(armed.runAt.getTime()).toBeGreaterThan(Date.now() + 15_000);
+    expect(customerFacing()).toEqual([]);
+  });
+
+  test("a resolve on the observer's route pulls the verdict forward, on the shared inbox as well, and the responder's route arms none", async () => {
+    await deliverStatus(OBSERVER_BOT, 4, OBSERVED_ONLY_INBOX, "resolved");
+    let rows = await observeRows();
+    expect(rows).toHaveLength(1);
+    const pulled = rows[0];
+    if (!pulled) throw new Error("no OBSERVE row");
+    expect((pulled.payload as { reason: string }).reason).toBe("resolved");
+    expect(pulled.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+
+    // The shared inbox: the responder (production) answers it, and the resolve reaches the
+    // observer on its own route. Conversation 1 was mirrored open by the first test above.
+    await deliverStatus(RESPONDER_BOT, 1, SHARED_INBOX, "resolved");
+    expect(await observeRows()).toHaveLength(1);
+    await deliverStatus(OBSERVER_BOT, 1, SHARED_INBOX, "resolved");
+    rows = await observeRows();
+    expect(rows).toHaveLength(2);
+    const shared = rows.find(
+      (r) =>
+        r.dedupeKey ===
+        `observe:${chatwootThreadId(tenantId, instanceId, 1)}:${observerId}`,
+    );
+    if (!shared) throw new Error("no OBSERVE row for the shared inbox");
+    expect((shared.payload as { agentId: string }).agentId).toBe(
+      String(observerId),
+    );
+    expect((shared.payload as { reason: string }).reason).toBe("resolved");
+    expect(customerFacing()).toEqual([]);
+  });
+
+  // A DELAYED RESOLVE THE MIRROR REJECTED is not a resolve: read off the payload alone it pulled the
+  // verdict forward and let an `on_resolve` agent relabel a conversation that is open again (issue
+  // #477 review, round 2). The effective status is the mirror's.
+  test("a stale resolve the mirror rejected arms no verdict", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    // The conversation is open and current...
+    await deliverStatus(OBSERVER_BOT, 9, OBSERVED_ONLY_INBOX, "open");
+    expect(await observeRows()).toHaveLength(0);
+    // ...and a resolve from before that lands late.
+    await deliverStatus(OBSERVER_BOT, 9, OBSERVED_ONLY_INBOX, "resolved", true);
+    expect(await observeRows()).toHaveLength(0);
+    // A resolve that IS current still arms, which is the case this must not break.
+    await deliverStatus(OBSERVER_BOT, 9, OBSERVED_ONLY_INBOX, "resolved");
+    expect(await observeRows()).toHaveLength(1);
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+  });
+
+  // The arming block runs on a delivery that is already CLAIMED, and a status-only event carries no
+  // `inboundMessageId` — nothing recovers it. A transient read failure there used to escape past the
+  // compaction and the redirect closing that follow.
+  test("a read that fails while arming the final verdict does not strand the delivery", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    const failing = (target: any): any =>
+      new Proxy(target, {
+        get(t, prop, recv) {
+          if (prop === "$extends")
+            return (...a: unknown[]) => failing(t.$extends(...a));
+          if (prop === "$transaction")
+            return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+              t.$transaction((tx: unknown) => fn(failing(tx)), ...rest);
+          if (prop !== "inbox") return Reflect.get(t, prop, recv);
+          const delegate = Reflect.get(t, prop, recv);
+          return new Proxy(delegate, {
+            get(d, k, r) {
+              const inner = Reflect.get(d, k, r);
+              if (k !== "findFirst" && k !== "findUnique") return inner;
+              return async () => {
+                throw new Error("pool exhausted");
+              };
+            },
+          });
+        },
+      });
+    const rowId = await deliverStatus(
+      OBSERVER_BOT,
+      10,
+      OBSERVED_ONLY_INBOX,
+      "resolved",
+      false,
+      failing(appDb) as typeof appDb,
+    );
+    // Nothing armed, and the delivery still settled: the block is best-effort as a whole.
+    expect(await observeRows()).toHaveLength(0);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
+  });
+
+  // `observing` is a statement about the ROUTE, not about the agent. A disabled observer still owns
+  // it, and arming there leaves a verdict pending on a message the agent was explicitly off for.
+  test("a switched-off observer arms no burst", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: { enabled: false },
+    });
+    try {
+      await deliver(OBSERVER_BOT, 11, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(await observeRows()).toHaveLength(0);
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { enabled: true },
+      });
+    }
+  });
+
+  // OBSERVATION IS NOT A REPLY PATH. On the shared inbox the observer's bot can still HOLD a
+  // conversation from a life before the rebind: the reply route is then the responder's, correctly,
+  // and `observerRuntimeForRoute` answers null. Hung off that answer the watcher classified none of
+  // the conversations its own bot holds — neither the burst nor the final verdict (issue #477
+  // review, round 4).
+  test("a bound observer whose bot holds the conversation still gets its verdict", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    try {
+      // The observer's own bot is the assignee, on the inbox the responder answers.
+      await deliver(OBSERVER_BOT, 12, SHARED_INBOX, {
+        assigneeType: "AgentBot",
+        assigneeId: OBSERVER_BOT,
+        status: "open",
+      });
+      const rows = await observeRows();
+      expect(rows).toHaveLength(1);
+      expect(
+        (rows[0]?.payload as { agentId: string } | undefined)?.agentId,
+      ).toBe(String(observerId));
+      // ...and the resolve reaches it too.
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+      await deliverStatus(OBSERVER_BOT, 12, SHARED_INBOX, "resolved");
+      const onResolve = await observeRows();
+      expect(onResolve).toHaveLength(1);
+      expect(
+        (onResolve[0]?.payload as { reason: string } | undefined)?.reason,
+      ).toBe("resolved");
+      expect(customerFacing()).toEqual([]);
+    } finally {
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: {} },
+      });
+    }
+  });
+
+  // A BOT THAT WAS DETACHED KEEPS RECEIVING THE EVENTS OF A CONVERSATION IT STILL OWNS, so
+  // "delivery, no row" is the ordinary post-detach state and not evidence of an attachment being
+  // written. Round 11 read it as the latter and armed a verdict for an agent nobody observes with,
+  // which then retried to DEAD on every message (issue #477 review, round 15).
+  test("a detached observer whose bot still holds the conversation arms nothing", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    const rows = await suDb.inboxObserver.findMany({
+      where: { tenantId, agentId: observerId },
+      select: { id: true, inboxId: true },
+    });
+    await suDb.inboxObserver.deleteMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+    });
+    try {
+      await deliver(OBSERVER_BOT, 14, SHARED_INBOX, {
+        assigneeType: "AgentBot",
+        assigneeId: OBSERVER_BOT,
+        status: "open",
+      });
+      expect(await observeRows()).toHaveLength(0);
+      expect(customerFacing()).toEqual([]);
+    } finally {
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+      for (const r of rows)
+        await suDb.inboxObserver.create({
+          data: { tenantId, inboxId: r.inboxId, agentId: observerId },
+        });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: {} },
+      });
+    }
+  });
+
+  // A CONTROL COMMAND IS NOT CUSTOMER CONTENT. `/teste` and `/reset` are an operator talking to the
+  // runtime; the responder consumes them, and a verdict armed on one classifies the conversation off
+  // an instruction — and in `/reset`'s case wakes up after the command cleared the labels and puts
+  // them back (issue #477 review, round 5).
+  test("a control command arms no verdict on the observer's route", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { mode: "test" },
+    });
+    try {
+      await deliver(
+        OBSERVER_BOT,
+        13,
+        SHARED_INBOX,
+        { assigneeType: "User", status: "open" },
+        false,
+        "/teste",
+      );
+      expect(await observeRows()).toHaveLength(0);
+      // An ordinary message on the same conversation still arms, so the gate is the command and not
+      // the route.
+      await deliver(OBSERVER_BOT, 13, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(await observeRows()).toHaveLength(1);
+    } finally {
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { mode: "production" },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: {} },
+      });
+    }
   });
 });

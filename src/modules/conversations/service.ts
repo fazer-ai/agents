@@ -92,6 +92,9 @@ export interface ConversationListItem {
   contact: { name: string | null } | null;
   // The bound persona's name, so the list can show it for AI-handled rows. Null when no agent bound.
   agentName: string | null;
+  // The monitoring agents watching this conversation's inbox as observers (issue #476), by name,
+  // so a row says who is reading it even when nobody of ours answers it.
+  observerNames: string[];
   // True when the bound agent's availability schedule is currently closed (item 23). Computed
   // server-side; false when no agent / no schedule.
   outOfHours: boolean;
@@ -175,7 +178,14 @@ export async function listConversations(
         lastEventAt: true,
         lastError: true,
         lastErrorAt: true,
-        inbox: { select: { id: true, name: true, agentId: true } },
+        inbox: {
+          select: {
+            id: true,
+            name: true,
+            agentId: true,
+            observers: { select: { agentId: true } },
+          },
+        },
         contact: { select: { name: true } },
       },
     }),
@@ -183,7 +193,12 @@ export async function listConversations(
   // Resolve the bound persona names for this page in one batch (Inbox carries agentId, no relation).
   const agentIds = [
     ...new Set(
-      rows.map((r) => r.inbox?.agentId).filter((x): x is bigint => x != null),
+      rows
+        .flatMap((r) => [
+          r.inbox?.agentId,
+          ...(r.inbox?.observers.map((o) => o.agentId) ?? []),
+        ])
+        .filter((x): x is bigint => x != null),
     ),
   ];
   const agentNameById = new Map<string, string>();
@@ -248,6 +263,9 @@ export async function listConversations(
         ? (agentNameById.get(String(r.inbox.agentId)) ?? null)
         : null,
     outOfHours: agentOutOfHours(r.inbox?.agentId),
+    observerNames: (r.inbox?.observers ?? [])
+      .map((o) => agentNameById.get(String(o.agentId)))
+      .filter((n): n is string => n != null),
   }));
   // A full page may have more behind it; the last row's id is the next cursor.
   const nextCursor =
@@ -323,6 +341,8 @@ export interface ConversationDetail {
   // The bound persona, so the console can show its name and deep-link to its editor.
   agentId: string | null;
   agentName: string | null;
+  // The monitoring agents observing this inbox (issue #476), by name.
+  observerNames: string[];
   // The bound persona's operating mode (item 1), so the console can flag a test agent. null = no agent.
   agentMode: AgentMode | null;
   // The model the bound persona runs (e.g. "gpt-5.4-mini"), shown in the conversation header. null = no
@@ -542,6 +562,7 @@ async function loadConvRef(
     name: string;
     agentId: bigint | null;
     chatwootInboxId: number;
+    observers: { agentId: bigint }[];
   } | null;
   contact: { name: string | null; voiceReply: boolean | null } | null;
   instance: { accountId: number; deployment: { baseUrl: string } };
@@ -572,6 +593,7 @@ async function loadConvRef(
             name: true,
             agentId: true,
             chatwootInboxId: true,
+            observers: { select: { agentId: true } },
           },
         },
         contact: { select: { name: true, voiceReply: true } },
@@ -902,6 +924,19 @@ export async function getConversationDetail(
   // The bound persona's Chatwoot agent-bot id, which is what makes "another bot is holding this"
   // answerable at all: without it every AgentBot assignee looks like ours. Same resolution the webhook
   // gate does (Inbox.agentId -> ChatwootAgentBot).
+  const observerIds = conv.inbox?.observers.map((o) => o.agentId) ?? [];
+  const observerNames =
+    observerIds.length > 0
+      ? (
+          await runScopedOn(base, ctx, (db) =>
+            db.agent.findMany({
+              where: { id: { in: observerIds } },
+              select: { name: true },
+              orderBy: { id: "asc" },
+            }),
+          )
+        ).map((a) => a.name)
+      : [];
   const ourAgentBotId =
     agentId != null
       ? ((
@@ -1345,6 +1380,7 @@ export async function getConversationDetail(
       : null,
     agentId: agentId != null ? String(agentId) : null,
     agentName: agent?.name ?? null,
+    observerNames,
     agentMode: agent ? normalizeAgentMode(agent.mode) : null,
     agentModel: (() => {
       const parsed = modelConfigSchema.safeParse(agent?.modelConfig);

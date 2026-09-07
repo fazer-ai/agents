@@ -20,6 +20,12 @@ import {
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { GUARDRAIL_ACTIONS } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
+import {
+  firstLabelGroupConflict,
+  LABEL_GROUP_NAME_MAX,
+  LABEL_VALUE_MAX,
+  RESERVED_GROUP_NAMES,
+} from "@/modules/observe/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
@@ -729,6 +735,99 @@ const toolPreconditions = nativeToolKeys(
   "per-native-tool precondition, checked by the runtime BEFORE the call runs (send `null` for a tool to remove its rule): `key` is the custom-attribute key that must be set on the chosen `scope`, and `equals` is the required value (omit it to require any non-blank value). Unmet, the tool does not run and the model is told why. Only native tools can be guarded (issue #389 tracks the rest).",
 );
 
+// What a monitoring agent does with what it reads (issue #477). Descriptions kept to the bone: the
+// MCP schema ceiling (tests/modules/mcp-tool-descriptions.test.ts) is a ratchet, and the reader has
+// docs/chatwoot.md for the rest.
+const monitoringLabelGroup = z.looseObject({
+  // REFUSED HERE, not dropped later (issue #477 review, round 8). `readLabelGroups` removes a group
+  // whose name collides with the verdict's own metadata fields or with a prototype key, silently and
+  // by design — a stored setting has to normalize to something usable. A CALLER, though, gets told
+  // its patch succeeded while the group it just wrote is gone, and if it was the only group,
+  // observation is off. The schema is where a caller can be answered.
+  // A LENGTH IS A RULE ABOUT THE ENTRY ALONE (issue #477 review, round 23), so it is asked per field
+  // like the reserved name beside it, not over the retained slice the two conflict rules walk: both
+  // of those are about a RELATIONSHIP between entries, and only a retained entry can be in one.
+  // These strings go verbatim into the system prompt and the verdict schema's enum, so unbounded
+  // they make every OBSERVE call fail on the provider's request limit.
+  name: nonBlank("must not be blank")
+    .max(LABEL_GROUP_NAME_MAX, `at most ${LABEL_GROUP_NAME_MAX} characters`)
+    .refine((v) => !RESERVED_GROUP_NAMES.has(v.trim().toLowerCase()), {
+      message: `reserved; pick another name (${[...RESERVED_GROUP_NAMES].join(", ")})`,
+    })
+    .describe("group name, also the verdict's key"),
+  exclusive: z
+    .boolean()
+    .optional()
+    .describe("one value at a time; default true"),
+  values: z
+    .array(
+      nonBlank("must not be blank").max(
+        LABEL_VALUE_MAX,
+        `at most ${LABEL_VALUE_MAX} characters`,
+      ),
+    )
+    .describe(
+      "label titles the verdict may pick; others are refused. Up to 40, truncated; a group with none is dropped",
+    ),
+});
+
+const monitoring = z.looseObject({
+  analysis: oneOf(["incremental", "on_resolve"] as const)
+    .optional()
+    .describe(
+      "per burst + on resolve, or on resolve only; default incremental",
+    ),
+  window: z
+    .looseObject({ messages: z.number().optional() })
+    .optional()
+    .describe(
+      "newest messages the model reads; 4-60, rounded and clamped, default 20",
+    ),
+  debounce: z
+    .looseObject({
+      windowSeconds: z.number().optional(),
+      maxWindowSeconds: z.number().optional(),
+    })
+    .optional()
+    .describe(
+      "burst window; 3-600s, rounded and clamped, default 20s with a 60s ceiling from the START of the burst",
+    ),
+  labelGroups: z
+    .array(monitoringLabelGroup)
+    // A value belongs to ONE group (issue #477 review, round 9): a label is one row in a flat set,
+    // and an exclusive group and an additive one claiming the same value cannot both be honoured.
+    // Refused here so the caller is told which value collides; the reader gives the value to the
+    // first group that lists it, for settings stored before this existed.
+    // A GROUP NAME IS UNIQUE, compared the way the reader compares it — trimmed (issue #477 review,
+    // round 10). `readLabelGroups` keeps the first of two same-named groups and drops the second, so
+    // without this a patch reports success while an entire classification axis is gone.
+    // Both asked of `firstLabelGroupConflict`, which walks the array exactly as `readLabelGroups`
+    // does and answers only about the entries that would be RETAINED (issue #477 review, round 21).
+    // Read over the whole submission, these refused a sixth group for duplicating a retained name
+    // and a forty-first value for being owned elsewhere — entries the caps in the descriptions above
+    // promise to truncate and the reader never stores, so the 400 was about nothing.
+    .refine(
+      (groups) => firstLabelGroupConflict(groups)?.kind !== "duplicate-name",
+      {
+        message: "two groups may not share a name",
+      },
+    )
+    .refine(
+      (groups) => firstLabelGroupConflict(groups)?.kind !== "shared-value",
+      {
+        message: "a label value may appear in only one group",
+      },
+    )
+    .optional()
+    .describe(
+      "replaced as a unit; observation is on while one exists. Up to 5, truncated",
+    ),
+  noteOnChange: z
+    .boolean()
+    .optional()
+    .describe("private note when a verdict moves a label; default true"),
+});
+
 export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
@@ -753,6 +852,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   kanban: kanban.optional(),
   toolGuidance: toolGuidance.optional(),
   toolPreconditions: toolPreconditions.optional(),
+  monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;
 
 export type BehaviorPatchArgs = z.infer<

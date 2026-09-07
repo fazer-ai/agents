@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Clock,
   ExternalLink,
+  Eye,
   Lock,
   Megaphone,
   Paperclip,
@@ -1625,6 +1626,14 @@ export function ConversationDetailPage() {
                     </>
                   )}
                   {conv.inbox?.name ? ` · ${conv.inbox.name}` : ""}
+                  {conv.observerNames.length > 0 ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-secondary">
+                      <Eye className="h-3 w-3" aria-hidden="true" />
+                      {t("conversations.observedBy", "Observed by {{names}}", {
+                        names: conv.observerNames.join(", "),
+                      })}
+                    </span>
+                  ) : null}
                   {!isHuman && conv.agentModel ? (
                     <span className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
                       {conv.agentModel}

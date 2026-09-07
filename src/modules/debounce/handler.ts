@@ -48,6 +48,8 @@ import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { readMemoryConfig } from "@/modules/memory/settings";
+import { armObserve } from "@/modules/observe/job";
+import { readMonitoringConfig } from "@/modules/observe/settings";
 import {
   type ClaimedJob,
   jobRetired,
@@ -824,6 +826,20 @@ async function ingestObservedBurst(args: {
         String(conversationId),
         burst.length,
       );
+      // The burst was the customer's, and a watcher's verdict on it is armed the way the receiver
+      // arms one for each message it hands over (issue #477): best-effort, after the memory has it.
+      await armObserve({
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId: ctx.agentId,
+        reason: "burst",
+        cfg: readMonitoringConfig(ctx.settings),
+        // The newest message of the burst that was just handed over, in Chatwoot's own sequence:
+        // the reset fence the tick is held to is asked in that order (issue #477 review, round 6).
+        atMessageId: handedIds.length > 0 ? Math.max(...handedIds) : null,
+        base,
+      });
       if (!floorInView) {
         // "A later flush answers it" was the round-7 reasoning for leaving the burst unmarked, and
         // it does not hold (rounds 23 and 25): with the watermark already past the burst nothing
@@ -1011,7 +1027,12 @@ export async function flushDebounceJob(
       // the config says no — the burst then left where a disabled agent's is, unremembered.
       const now = await db.agent.findUnique({
         where: { id: inbox.agentId },
-        select: { enabled: true, mode: true },
+        // ...AND THE SETTINGS FROM THE SAME READ (issue #477 review, round 15). `agentRow` predates
+        // the flip this branch just detected, and the edit that flips the mode is usually the edit
+        // that adds the label groups — so arming off it answers `off`, while the burst is ingested
+        // and marked handled, leaving it permanently unclassified. Same defect the receiver had on
+        // its own hand-over path (round 12); this is the flush's copy of it.
+        select: { enabled: true, mode: true, settings: true },
       });
       if (now?.enabled && isMonitoring(now.mode)) {
         return {
@@ -1021,7 +1042,7 @@ export async function flushDebounceJob(
           agentId: inbox.agentId,
           contactInboxId: conv.contactInboxId,
           watermark: conv.lastHandledMessageId,
-          settings: agentRow?.settings ?? {},
+          settings: now.settings,
         };
       }
       return null;

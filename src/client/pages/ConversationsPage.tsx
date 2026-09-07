@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Bot,
   ChevronRight,
+  Eye,
   MessagesSquare,
   Search,
   User,
@@ -71,6 +72,17 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
               </Badge>
             )}
             {c.outOfHours && <OutOfHoursBadge />}
+            {c.observerNames.length > 0 && (
+              <Badge variant="secondary" className="flex items-center gap-1">
+                <Eye className="h-3 w-3" aria-hidden="true" />
+                <span className="sr-only">
+                  {t("conversations.observedBy", "Observed by {{names}}", {
+                    names: c.observerNames.join(", "),
+                  })}
+                </span>
+                <span aria-hidden="true">{c.observerNames.join(", ")}</span>
+              </Badge>
+            )}
           </div>
           <p className="mt-0.5 truncate text-text-muted text-xs">
             {c.inbox?.name ?? t("conversations.noInbox", "No inbox")}

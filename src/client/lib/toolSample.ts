@@ -262,6 +262,13 @@ export function forgetToolSample(toolId: string, since: SampleTicket): void {
 // B sees `/me` answer B directly. Asking only whether the user went away misses it, and the entries
 // are keyed by tenant and tool, so B would be handed A's captured response on the same tool (round
 // 6 of review). So the question is whether the identity is the SAME, not whether there is one.
+//
+// WHAT THIS CANNOT DO IS NOTICE. Every transition the console MAKES is reported here, and none of
+// them is made by a tab that is merely sitting there: after boot nothing revalidates `/me` on focus
+// or on `visibilitychange`, and no event crosses tabs. Such a tab is already showing A's name, A's
+// tenant selection and A's permissions while writing as B, which is the auth model's gap and not
+// this cache's — recorded in `docs/roadmap.md` with the shape of the fix (rounds 9, 12, 15 and 17
+// of review all raised it here).
 export function noteOperator(id: string | null): void {
   if (id === operator) return;
   operator = id;

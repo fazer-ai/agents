@@ -225,7 +225,7 @@ export async function recoverStrandedDelivery(
         status: true,
         attempts: true,
         receivedAt: true,
-        // WHICH EVENT the delivery carried, so the rebuild reproduces it instead of asserting one
+        // NOTE: WHICH EVENT the delivery carried, so the rebuild reproduces it instead of asserting one
         // (issue #478 review, round 1). Two events reach a recovery now: the creation of a customer
         // message, and the `message_updated` that finally carried its transcription. Rebuilding the
         // second as the first is what would make the replay unsafe — a creation drives a turn, so a
@@ -397,7 +397,7 @@ async function runRecovery(params: {
   now: Date;
 }): Promise<RecoveryOutcome> {
   const { base, row, instanceId, conversationId, messageId } = params;
-  // WHETHER THIS REPLAY COULD POST A REPLY, which decides three reads and refusals below. Two ways
+  // NOTE: WHETHER THIS REPLAY COULD POST A REPLY, which decides three reads and refusals below. Two ways
   // it cannot, and they are the same shape from different directions: an OBSERVER's route posts
   // nothing by construction (issue #476), and a `message_updated` drives no turn anywhere, so a
   // transcription replay owes memory and only memory (issue #478). Everything the newest page is
@@ -507,7 +507,7 @@ async function runRecovery(params: {
     // anchored page ends at the stranded message and says nothing about what came after, and the
     // newest page need not contain the stranded message at all (MEASURED: on a 30-message
     // conversation the default page of 20 did not).
-    // ...and NOT on a replay that posts nothing (issue #476 review, round 54; issue #478 review,
+    // NOTE: ...and NOT on a replay that posts nothing (issue #476 review, round 54; issue #478 review,
     // round 2), which is the only reader of this page and does not ask its question. See the
     // freshness block below: neither an observation nor a memory append is an answer, so a newer
     // message neither covers this one nor makes it unanswerable. Left unfetched rather than fetched
@@ -584,7 +584,7 @@ async function runRecovery(params: {
   // Refused here, the message is absent from the only memory the inbox has, permanently, which is
   // the loss this recovery exists for. So the whole block is the responder's, page read included.
   //
-  // AND A TRANSCRIPTION REPLAY IS THE SAME SHAPE ON THE RESPONDER'S OWN ROUTE (issue #478 review,
+  // NOTE: AND A TRANSCRIPTION REPLAY IS THE SAME SHAPE ON THE RESPONDER'S OWN ROUTE (issue #478 review,
   // round 1). What it replays is a `message_updated`, which drives no turn anywhere, so nothing here
   // was ever going to be posted and the newer message's delivery carries no reply for it either.
   // What it owes is the words reaching memory, and an ingest job carries its own message and nothing
@@ -1019,7 +1019,7 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
-  // ...AND ONLY WHERE A REPLY IS COMING (issue #478 review, round 2). Every word above is about
+  // NOTE: ...AND ONLY WHERE A REPLY IS COMING (issue #478 review, round 2). Every word above is about
   // answering a customer hours late. A transcription replay answers nobody: the words arrive on the
   // write-back of an audio that was CREATED before them, so this cutoff refuses precisely the class
   // it cannot help — the older the voice note, the surer the refusal, and the memory gap is
@@ -1043,7 +1043,7 @@ async function runRecovery(params: {
   // and the customer is still waiting. `unreachable` rather than `unrecoverable` for the same reason
   // an untrusted conversation snapshot is: the account answered with something unusable, which the
   // next attempt may not.
-  // EITHER SHAPE THE LEDGER CAN NAME, asked as the classifier asks it. A creation must rebuild as a
+  // NOTE: EITHER SHAPE THE LEDGER CAN NAME, asked as the classifier asks it. A creation must rebuild as a
   // new incoming message; a transcription strand must rebuild still carrying words, because words
   // are the whole of what it owes — an update that comes back without them is a read that lost the
   // transcription, and replaying it would settle the row having remembered nothing (issue #478).
@@ -1100,7 +1100,14 @@ async function runRecovery(params: {
   // responder already executed, and the observer never executes one. Its ingestion is what stranded
   // the row — the live path folds the command in as ordinary text exactly where the responder's own
   // route will not handle it — so refusing here would drop the message this recovery exists for.
+  // NOTE: ...AND ONLY OF A CREATION (issue #478 review, round 5), which is what the live path asks. A
+  // command is text a customer typed, and the live path reads it off the message's creation; an
+  // update of that same message is not a second command and consumes nothing there. Asked of a
+  // transcription replay, the refusal fires on a voice note whose words happen to read as `/reset`
+  // and drops the append it was recovering — a divergence from the delivery path in the direction
+  // that loses the message, which is the same mistake the observer clause below corrects.
   if (
+    isNewIncomingMessage(normalized) &&
     observerRouteBotId === null &&
     agentMode === "test" &&
     controlCommand(normalized) !== null
@@ -1170,7 +1177,16 @@ async function runRecovery(params: {
   // provisions the persona), not something the next attempt finds different — and the row stays in
   // the worklist, which is where they will read it. The agent bound to NOTHING is a different state
   // and deliberately still runs: the delivery path is what writes the operator's `no_agent` line.
-  if (agentId !== null && agentBotId === null) {
+  // NOTE: ...AND ONLY WHERE THE REPLAY WOULD POST (issue #478 review, round 5). Every line above is about
+  // a reply: the token that posts it, and the ownership comparison that decides whether posting is
+  // ours to do. A transcription replay posts nothing and needs no identity — what it owes is an
+  // enqueue — and refusing here would leave the words out of the only memory a human-owned
+  // conversation has, permanently, over a persona that was never going to be used.
+  //
+  // The ownership question is not skipped, it is just not THIS function's: the delivery path asks
+  // it, and a loose answer there costs the append rather than producing a reply, which is the safe
+  // direction for a route that cannot speak.
+  if (replayPosts && agentId !== null && agentBotId === null) {
     logger.warn(
       "chatwoot recovery: %s routes to inbox %d, whose agent has no Chatwoot bot; not answered",
       row.deliveryId,

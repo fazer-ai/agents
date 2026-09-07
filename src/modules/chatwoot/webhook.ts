@@ -1118,7 +1118,7 @@ function ledgerFactsOf(
   return {
     event: n.event,
     conversationId: n.conversationId,
-    // Which CUSTOMER MESSAGE this delivery was working, so the sweep can tell a delivery that lost
+    // NOTE: Which CUSTOMER MESSAGE this delivery was working, so the sweep can tell a delivery that lost
     // one from a delivery that lost nothing (issue #228). The bot's own reply comes back as a
     // `message_created` too, and it is not a customer's, so it stays null.
     //
@@ -1463,7 +1463,7 @@ export async function runEagerMedia(
           });
           if (text) {
             n.message.transcribedText = text;
-            // FILL-ONLY, and immediately: the next statement can throw, and from here on the words
+            // NOTE: FILL-ONLY, and immediately: the next statement can throw, and from here on the words
             // exist nowhere durable but this row. Never an overwrite — a row that already names its
             // message names the right one, and `ledgerFactsOf` is the only other writer.
             await fillLedgerTranscribedMessage(
@@ -3753,7 +3753,7 @@ export async function processChatwootDelivery(
   // AND IT CANNOT DOUBLE-APPEND: `armIngest` keys the job by (thread, message) with `rearm:
   // "same-work"`, so the write-back's arm and the transcribing delivery's arm are the same row, and
   // once the job has run the id is in the dedup window and the second verdict is `duplicate`.
-  // THE WIRE'S ANSWER, which is the right one for the two decisions made here: whether the event
+  // NOTE: THE WIRE'S ANSWER, which is the right one for the two decisions made here: whether the event
   // reaches the runtime at all, and which message the responder-coverage check is about. Both run
   // before anything has looked at the audio. The eager pass can produce a transcription later, and
   // the readers that care about THAT ask again below (`carriesTranscription`) — asked once, at the
@@ -4036,7 +4036,7 @@ export async function processChatwootDelivery(
       n.conversationId,
       // A customer message is named by the inbound column; a colleague's reply, which is outgoing,
       // by the one the takeover recovery reads.
-      // AN UPDATE OF A CUSTOMER MESSAGE NAMES THAT SAME MESSAGE (issue #478 review, rounds 1 and 3).
+      // NOTE: AN UPDATE OF A CUSTOMER MESSAGE NAMES THAT SAME MESSAGE (issue #478 review, rounds 1 and 3).
       // It is not a creation, so without this clause the sibling could not be named and the check
       // answered "not covered" without looking. Both shapes an update comes in are the same message
       // by the same customer, and both cost something when the observer does not stand down: the
@@ -5534,7 +5534,7 @@ export async function processChatwootDelivery(
     // ...and only for a command that responder's route actually RECEIVED (round 33): bound after
     // the emission, it never got the `/reset`, and dropping it here loses it from every memory.
     responderCovers;
-  // ASKED AGAIN, AFTER THE ANALYSIS (issue #478 review, round 4). The value read at the top of this
+  // NOTE: ASKED AGAIN, AFTER THE ANALYSIS (issue #478 review, round 4). The value read at the top of this
   // function is the WIRE's answer, and it is the right one there: it decides whether the event
   // reaches the runtime at all, before anything has looked at the audio. By here the eager pass may
   // have produced the words itself — a `message_updated` that arrived carrying raw audio — and from
@@ -5574,7 +5574,7 @@ export async function processChatwootDelivery(
           mirror.conversationRowId,
           base,
         )),
-      // ...and for a LATE TRANSCRIPTION on any route (issue #478 review, round 2), for the reason the
+      // NOTE: ...and for a LATE TRANSCRIPTION on any route (issue #478 review, round 2), for the reason the
       // observer's is retried: the append is the last chance. The words come around once, on the
       // write-back, and no later event carries them — production's continuous ingestion is
       // best-effort because a turn covers what it misses, and here no turn ever will.
@@ -5631,7 +5631,7 @@ export async function processChatwootDelivery(
       },
     );
   }
-  // A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,
+  // NOTE: A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,
   // round 2). `observerHolds` is inbound-only — a `message_updated` is not `isNewIncoming` — so on
   // its own it settles this delivery PROCESSED whatever the enqueue answered, and a scheduler blip
   // then discards the transcription for good: the sweep sees a terminal row, and the row is the only
@@ -5651,7 +5651,7 @@ export async function processChatwootDelivery(
       `chatwoot: the late transcription could not be armed for ingestion (conv=${convLabel}); leaving the delivery for the sweep`,
     );
   }
-  // "no-thread" IS NOT THAT, and it is left to settle: a conversation neither the payload nor the
+  // NOTE: "no-thread" IS NOT THAT, and it is left to settle: a conversation neither the payload nor the
   // mirror can name a contact-inbox for has nowhere to hold the words, and the replay would find the
   // same nothing. Said at `warn`, which is where the observer's inbound branch says it too.
   if (carriesTranscription && ingested === "no-thread") {

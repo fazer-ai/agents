@@ -173,7 +173,7 @@ export function classifyStrandedDelivery(
   // name it shares with `isNewIncomingMessage` is one constant and not two.
   const bears = bearsTurn(row);
   if (bears === "no") return "no-message";
-  // ANSWERED BEFORE THE LEGACY FENCE, and that ordering is the point rather than a shortcut: the
+  // NOTE: ANSWERED BEFORE THE LEGACY FENCE, and that ordering is the point rather than a shortcut: the
   // pair that identifies a transcription row (a `message_updated` naming an inbound message) is
   // itself proof this build wrote it, so its nulls are recorded and there is nothing for the fence
   // to protect. Asked after it, a transcription row stranded on PROCESSING without a stamp would be

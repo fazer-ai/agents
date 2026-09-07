@@ -259,13 +259,20 @@ function pageWith(
 // `content` is empty, as it is on the wire for an audio: the words live on the attachment, which is
 // what makes the write-back update the only readable form the message ever takes (issue #478).
 function audioPageWith(
-  msgs: Array<{ id: number; transcript: string; createdAt?: number }>,
+  msgs: Array<{
+    id: number;
+    transcript: string;
+    createdAt?: number;
+    // Text beside the audio. Empty is the ordinary voice note; a command-looking string is the case
+    // where the command fence would fire on a message that was never a command (issue #478).
+    content?: string;
+  }>,
   inboxId: number = CHATWOOT_INBOX_ID,
 ) {
   return {
     payload: msgs.map((m) => ({
       id: m.id,
-      content: "",
+      content: m.content ?? "",
       message_type: 0,
       private: false,
       inbox_id: inboxId,
@@ -3667,6 +3674,142 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
     }
   }
+
+  // ISSUE #478 review, round 5. The identity fence refuses a route whose agent has no Chatwoot bot,
+  // because the reply is posted with the persona's token and the ownership comparison needs an id to
+  // compare. Both of those are about a REPLY, and a transcription replay posts none: what it owes is
+  // an enqueue. Refused there, the words stay out of the only memory a human-owned conversation has,
+  // permanently, over a persona that was never going to be used.
+  test("a transcription replay needs no bot identity", async () => {
+    const convId = 8898;
+    const messageId = 9498;
+    const ORPHAN_INBOX = 76;
+    // An inbox that NAMES an agent while that agent has no bot row — the state the console shows as
+    // "missing", and the one the fence exists for.
+    const orphanAgent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Sem persona",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "production",
+        settings: {},
+      },
+      select: { id: true },
+    });
+    const orphanInbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: ORPHAN_INBOX,
+        name: "Sem persona",
+        agentId: orphanAgent.id,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: orphanInbox.id,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      event: "message_updated",
+      receivedAgoMs: 20 * 60 * 1000,
+    });
+    const stub = stubChatwoot({
+      conv: { status: "open", assigneeType: "User", assigneeId: 9 },
+      page: audioPageWith(
+        [{ id: messageId, transcript: "quero trocar a data" }],
+        ORPHAN_INBOX,
+      ),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([]);
+    const armed = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "INGEST_MESSAGE" },
+      select: { payload: true },
+    });
+    expect(
+      armed.filter((j) => JSON.stringify(j.payload).includes(String(messageId)))
+        .length,
+    ).toBeGreaterThan(0);
+  });
+
+  // ISSUE #478 review, round 5. The fence below is about a command the ORIGINAL delivery already
+  // executed, and the live path reads a command off a message's creation alone — an update of that
+  // same message consumes nothing there. Asked of a transcription replay, it fires on a voice note
+  // whose text happens to read as `/reset` and drops the append it was recovering: a divergence from
+  // the delivery path in the direction that loses the message.
+  test("a transcription replay is not refused for looking like a command", async () => {
+    const convId = 8897;
+    const messageId = 9497;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: inboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      event: "message_updated",
+      routeAgentBotId: AGENT_BOT_ID,
+      receivedAgoMs: 20 * 60 * 1000,
+    });
+    const stub = stubChatwoot({
+      conv: { status: "open", assigneeType: "User", assigneeId: 9 },
+      page: audioPageWith([
+        { id: messageId, transcript: "reset", content: "/reset" },
+      ]),
+    });
+
+    const outcome = await asTestModeAgent(() =>
+      recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    );
+
+    // The OUTCOME is the assertion, not an append: a command is only ACTIVE for a test-mode agent,
+    // and a test agent's route does not ingest continuously — so this fixture cannot also show the
+    // words landing. What it shows is the replay reaching the delivery path at all, which is where
+    // the gates that decide the append live. Refused here it never gets there, whatever the route
+    // would have done.
+    expect(outcome).not.toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+  });
 
   test("a control command is never replayed, where one is ACTIVE", async () => {
     // The premise of re-running the delivery path is that the path did not complete — not that it

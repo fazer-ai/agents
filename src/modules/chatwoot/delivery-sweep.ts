@@ -175,7 +175,7 @@ export async function retireCoveredDeliveries(
           // `NOT (col = true)` is NULL for a NULL row, which would exclude rows this filter has to
           // keep and settle nothing at all.
           OR: [{ routeObserved: null }, { routeObserved: false }],
-          // AND NEITHER IS A ROW THAT OWES WORDS RATHER THAN AN ANSWER (issue #478 review, round 4),
+          // NOTE: AND NEITHER IS A ROW THAT OWES WORDS RATHER THAN AN ANSWER (issue #478 review, round 4),
           // which is the observer's rule above applied to the other row that answers nobody. The
           // transcribed `message_updated` names its message now, so without this it matches the wide
           // scope and the CREATION's own settlement closes it — the two are deliveries of the same
@@ -606,7 +606,7 @@ async function record(
   base: PrismaClient,
 ): Promise<void> {
   const label = `${row.deliveryId} (${row.event})`;
-  // THE TRANSCRIPTION STRAND, and it borrows one half from each of its neighbours (issue #478).
+  // NOTE: THE TRANSCRIPTION STRAND, and it borrows one half from each of its neighbours (issue #478).
   //
   // From the LOSS: the row goes DEAD and the ordinary delivery recovery is armed on it. That is not
   // a choice of wording, it is what makes the replay possible at all — `recoverStrandedDelivery`
@@ -630,10 +630,15 @@ async function record(
     try {
       await armDeliveryRecovery(tenantId, row.id, base);
     } catch (error) {
+      // NOTE: Nothing follows it, because the line below would say the replay was armed (issue #478
+      // review, round 5). The row is already DEAD and no later pass revisits it, so two lines
+      // contradicting each other is the whole record an operator gets of a transcription that is
+      // not coming back.
       logger.error(
         { error },
         `chatwoot delivery sweep: ${label} was stranded owing a transcription and its replay could not be armed; the words stay out of the conversation's memory and the row stays DEAD`,
       );
+      return;
     }
     logger.warn(
       "chatwoot delivery sweep: %s stranded on %s carrying the transcription of message %s on conversation %s; nobody is owed a reply, but the words never reached the memory — replay armed",

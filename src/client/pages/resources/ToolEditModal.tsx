@@ -1,4 +1,5 @@
 import { json } from "@codemirror/lang-json";
+import type { EditorView } from "@codemirror/view";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { AlertTriangle, Braces, Plus, Trash2 } from "lucide-react";
@@ -35,6 +36,7 @@ import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { firstJsonProblem, reindentJson } from "@/client/lib/sampleJson";
 import { dialableBaseUrl } from "@/client/lib/secretTypes";
+import { templateExtensions } from "@/client/lib/templateEditor";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -984,6 +986,27 @@ function spliceSelection(
 // line with it when rendered), and leaves the caret on the empty line BETWEEN them: reopening the
 // picker from there offers the items' fields. A caret mid-line gets a line break first, so the
 // opening marker lands standalone; the same for the text after it.
+// THE EDIT ITSELF, apart from who applies it, because two widgets now do: the textarea the
+// appointment fields still are, and the CodeMirror the template became (issue #563). Written once
+// so the line-break rule cannot differ between them — a block whose opening marker is not
+// standalone renders a blank line per item, which is the defect the standalone rule exists to
+// avoid, and it would have appeared in one widget and not the other.
+export function eachBlockEdit(
+  current: string,
+  start: number,
+  end: number,
+  path: string,
+): { insert: string; caret: number } {
+  const before = current.slice(0, start);
+  const after = current.slice(end);
+  const lead = before === "" || before.endsWith("\n") ? "" : "\n";
+  const tail = after === "" || after.startsWith("\n") ? "" : "\n";
+  const open = `${lead}{{#each ${path}}}\n`;
+  // The caret lands on the empty line BETWEEN the markers: that is the line the operator writes,
+  // and asking for the offer from there answers with the items' fields.
+  return { insert: `${open}\n{{/each}}${tail}`, caret: start + open.length };
+}
+
 export function insertEachBlock(
   el: HTMLTextAreaElement | null,
   current: string,
@@ -992,22 +1015,37 @@ export function insertEachBlock(
 ): void {
   const start = el?.selectionStart ?? current.length;
   const end = el?.selectionEnd ?? current.length;
-  let openLength = 0;
-  setValue(
-    spliceSelection(current, start, end, (before, after) => {
-      const lead = before === "" || before.endsWith("\n") ? "" : "\n";
-      const tail = after === "" || after.startsWith("\n") ? "" : "\n";
-      const open = `${lead}{{#each ${path}}}\n`;
-      openLength = open.length;
-      return `${open}\n{{/each}}${tail}`;
-    }),
-  );
+  const { insert, caret } = eachBlockEdit(current, start, end, path);
+  setValue(spliceSelection(current, start, end, () => insert));
   if (!el) return;
   requestAnimationFrame(() => {
     el.focus();
-    const pos = start + openLength;
-    el.setSelectionRange(pos, pos);
+    el.setSelectionRange(caret, caret);
   });
+}
+
+// The same two inserts, applied to a CodeMirror document. A dispatch and not a string splice: the
+// document is the view's, so writing through the controlled prop would race the editor's own state
+// and land the caret wherever the re-render put it.
+export function insertIntoView(
+  view: EditorView | null,
+  edit: (
+    current: string,
+    start: number,
+    end: number,
+  ) => {
+    insert: string;
+    caret: number;
+  },
+): void {
+  if (!view) return;
+  const { from, to } = view.state.selection.main;
+  const { insert, caret } = edit(view.state.doc.toString(), from, to);
+  view.dispatch({
+    changes: { from, to, insert },
+    selection: { anchor: caret },
+  });
+  view.focus();
 }
 
 // Section header inside the variable picker dropdown. Stronger weight/color than the item descriptions
@@ -1198,9 +1236,12 @@ export function ToolEditModal({
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   // Where the caret was when the picker was opened. Read THEN and not on every keystroke: the
   // offer only has to be right for the click that follows it, and clicking the picker's button
-  // moves focus off the textarea without moving its selection.
+  // moves focus off the field without moving its selection.
   const [templateCaret, setTemplateCaret] = useState(0);
-  const templateRef = useRef<HTMLTextAreaElement>(null);
+  // The template field is a CodeMirror since #563, so the caret is a position in ITS document and
+  // the picker writes through a dispatch. Held as state and not a ref because the completion's
+  // extensions are memoized against the sample, and the view has to exist before they matter.
+  const templateViewRef = useRef<EditorView | null>(null);
   const testModal = useModalController<ToolTestTarget>();
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
@@ -1489,6 +1530,25 @@ export function ToolEditModal({
       lists: [] as SampleList[],
     };
   }, [form.outputTemplate, templateCaret, sampleParse]);
+  // The grammar the template field is edited with: the token highlighting and the completion over
+  // the sample's own paths (#563). Memoized because `CodeMirrorField` reconfigures on this value's
+  // IDENTITY, so a fresh array per render would reconfigure per keystroke; keyed on the sample
+  // because that is what the offer is computed from, and on the language because the list's
+  // "N items" is a translated string.
+  const templateGrammar = useMemo(
+    () =>
+      templateExtensions(
+        {
+          body: sampleParse.body,
+          leaves: sampleParse.templates,
+          lists: sampleParse.lists,
+        },
+        t,
+      ),
+    // NOTE: `t` alone covers the language. `useTranslation` hands back a new one when the language
+    // changes, so naming `i18n.language` beside it is a second spelling of the same trigger.
+    [sampleParse, t],
+  );
   // What the model would be handed, rendered against the pasted sample. The point of the whole
   // section: a template is a promise about the model's input, and this is the only place the
   // operator can read that input before a customer does.
@@ -2109,50 +2169,64 @@ export function ToolEditModal({
                   "tools.outputTemplateHint",
                   "Markdown, with {{path.to.field}} for each value and {{#each list}}…{{/each}} around what repeats per item. A number picks a list position: data.items.0.name",
                 )}
-                error={refusal.at("outputSchema", current.outputSchema)}
+                group
+                // SAME SHAPE AS THE SAMPLE ABOVE (#562): a CodeMirror has no single labelable
+                // control for a `<label for>` to point at, so the wrapper carries the group role and
+                // this message reaches the editor through `aria-describedby`.
+                error={
+                  refusal.at("outputSchema", current.outputSchema) ??
+                  (badTemplateTokens.length > 0
+                    ? t(
+                        "tools.outputTemplateBadTokens",
+                        "These are not paths into the response: {{tokens}}. A path is dot-separated keys, with a number for a list position: data.items.0.name",
+                        {
+                          tokens: badTemplateTokens
+                            .map((tok) => `{{${tok}}}`)
+                            .join(", "),
+                        },
+                      )
+                    : strayTemplateDelimiter !== null
+                      ? t(
+                          "tools.outputTemplateStrayBrace",
+                          'There is an unmatched brace near "{{stray}}". A field takes two braces on each side, and a stray one would reach the agent as literal text.',
+                          { stray: strayTemplateDelimiter },
+                        )
+                      : templateTooLong
+                        ? t(
+                            "tools.outputTemplateTooLong",
+                            "This is {{length}} characters and the limit is {{max}}. It is sent to the agent on every call of this tool.",
+                            {
+                              length: form.outputTemplate.trim().length,
+                              max: MAX_TEMPLATE_CHARS,
+                            },
+                          )
+                        : // Whatever else the reader refused — an unstorable character, say. Its
+                          // own sentence names the offending code point, which is the part that
+                          // makes it fixable.
+                          (templateDeclProblem ?? undefined))
+                }
               >
-                <Textarea
-                  ref={templateRef}
+                <CodeMirrorField
                   value={form.outputTemplate}
-                  onChange={(e) =>
-                    setForm({ ...form, outputTemplate: e.target.value })
+                  onChange={(next) =>
+                    setForm((f) => ({ ...f, outputTemplate: next }))
                   }
-                  rows={4}
+                  extensions={templateGrammar}
+                  onView={(v) => {
+                    templateViewRef.current = v;
+                  }}
+                  invalid={templateDeclProblem !== null}
+                  minHeight="6rem"
+                  // Same ceiling as the sample: a template is a handful of lines, and a long one
+                  // must not push the appointment controls under it off the screen.
+                  maxHeight="24rem"
                   placeholder={
                     "**{{razao_social}}** — {{municipio}}\nSituação: {{descricao_situacao_cadastral}}"
                   }
-                  error={templateDeclProblem !== null}
-                  errorMessage={
-                    badTemplateTokens.length > 0
-                      ? t(
-                          "tools.outputTemplateBadTokens",
-                          "These are not paths into the response: {{tokens}}. A path is dot-separated keys, with a number for a list position: data.items.0.name",
-                          {
-                            tokens: badTemplateTokens
-                              .map((tok) => `{{${tok}}}`)
-                              .join(", "),
-                          },
-                        )
-                      : strayTemplateDelimiter !== null
-                        ? t(
-                            "tools.outputTemplateStrayBrace",
-                            'There is an unmatched brace near "{{stray}}". A field takes two braces on each side, and a stray one would reach the agent as literal text.',
-                            { stray: strayTemplateDelimiter },
-                          )
-                        : templateTooLong
-                          ? t(
-                              "tools.outputTemplateTooLong",
-                              "This is {{length}} characters and the limit is {{max}}. It is sent to the agent on every call of this tool.",
-                              {
-                                length: form.outputTemplate.trim().length,
-                                max: MAX_TEMPLATE_CHARS,
-                              },
-                            )
-                          : // Whatever else the reader refused — an unstorable character, say. Its
-                            // own sentence names the offending code point, which is the part that
-                            // makes it fixable.
-                            (templateDeclProblem ?? undefined)
-                  }
+                  aria-label={t(
+                    "tools.outputTemplate",
+                    "What the agent receives",
+                  )}
                 />
               </FormField>
               <PathPicker
@@ -2182,8 +2256,10 @@ export function ToolEditModal({
                 restoresFocus
                 onToggle={() => {
                   if (!templatePickerOpen) {
+                    // The caret in the EDITOR's document. Read when the offer opens, because
+                    // opening it moves focus off the field without moving its selection.
                     setTemplateCaret(
-                      templateRef.current?.selectionStart ??
+                      templateViewRef.current?.state.selection.main.head ??
                         form.outputTemplate.length,
                     );
                   }
@@ -2191,21 +2267,20 @@ export function ToolEditModal({
                 }}
                 onPick={(path) => {
                   // INSERTS at the cursor rather than replacing the field: this box holds a whole
-                  // block of text, unlike the single-path fields below it.
-                  insertToken(
-                    templateRef.current,
-                    form.outputTemplate,
-                    `{{${path}}}`,
-                    (v) => setForm((f) => ({ ...f, outputTemplate: v })),
-                  );
+                  // block of text, unlike the single-path fields below it. Through the view rather
+                  // than through the controlled prop, so the caret lands where the edit put it
+                  // instead of wherever the re-render leaves it.
+                  insertIntoView(templateViewRef.current, (_doc, start) => ({
+                    insert: `{{${path}}}`,
+                    caret: start + `{{${path}}}`.length,
+                  }));
                   setTemplatePickerOpen(false);
                 }}
                 onPickList={(path) => {
-                  insertEachBlock(
-                    templateRef.current,
-                    form.outputTemplate,
-                    path,
-                    (v) => setForm((f) => ({ ...f, outputTemplate: v })),
+                  insertIntoView(
+                    templateViewRef.current,
+                    (current, start, end) =>
+                      eachBlockEdit(current, start, end, path),
                   );
                   setTemplatePickerOpen(false);
                 }}

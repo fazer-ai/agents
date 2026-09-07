@@ -1315,6 +1315,16 @@ export interface ProcessChatwootParams {
   onDirectTurn?: (
     r: { kind: "outcome"; outcome: string } | { kind: "error"; error: unknown },
   ) => void;
+  // WHAT CONTINUOUS INGESTION ANSWERED, for the caller whose whole work IS the ingestion
+  // (issue #478 review, round 7). Called only where the ingestion actually ran, so a caller can tell
+  // "the gate looked at this message and decided" from "no route ever asked" — an inbox unbound,
+  // switched off or flipped to test mode in the half hour a recovery waits reaches neither branch,
+  // and the delivery still returns `"processed"` because nothing failed. A transcription replay that
+  // read that as success would close the row with the words in nobody's memory.
+  //
+  // Opt-in like `onDirectTurn` and for the same reason: the return union is a contract with every
+  // caller, and only the one for whom this distinction exists should pay for it.
+  onIngest?: (outcome: IngestOutcome) => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -5613,6 +5623,9 @@ export async function processChatwootDelivery(
       sleep: params.deps?.sleep,
       base,
     });
+    // NOTE: Inside the branch, so silence means the ingestion never ran rather than that it ran and
+    // found nothing. That is the distinction the recovery reads (see `onIngest`).
+    params.onIngest?.(ingested);
   }
   // A COLLEAGUE'S REPLY the observer could not remember, its retries spent (round 24). There is no
   // recovery to leave the row for — the sweep cannot rebuild an outgoing body — so the loss is

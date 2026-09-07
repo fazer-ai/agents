@@ -283,7 +283,11 @@ function audioPageWith(
           id: 5000 + m.id,
           file_type: "audio",
           data_url: "https://chat.recover.example/audio.ogg",
-          transcribed_text: m.transcript,
+          // UNDER `meta`, which is where the REST message list carries an eager pass's write-back —
+          // the webhook carries it at the top level instead (issue #478 review, round 7). Spelled
+          // the REST way here because that is what the recovery actually reads; spelled the webhook
+          // way, this fixture said the rebuild worked when it could not have.
+          meta: { transcribed_text: m.transcript },
         },
       ],
     })),
@@ -3754,6 +3758,67 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       armed.filter((j) => JSON.stringify(j.payload).includes(String(messageId)))
         .length,
     ).toBeGreaterThan(0);
+  });
+
+  // ISSUE #478 review, round 7. A memory-only replay reports no turn, so every settlement test in
+  // `runRecovery` passes it by construction — right for a replay that answered nobody, wrong for one
+  // that also REMEMBERED nobody. An inbox unbound, switched off or flipped to test mode in the half
+  // hour a recovery waits reaches no ingestion branch at all, and the delivery still comes back
+  // `"processed"` because nothing failed. Read as success, the row closes with the words in nobody's
+  // memory and the worklist loses the only record of it.
+  test("a transcription replay that nothing ingested is not closed", async () => {
+    const convId = 8895;
+    const messageId = 9495;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: inboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      event: "message_updated",
+      routeAgentBotId: AGENT_BOT_ID,
+      receivedAgoMs: 20 * 60 * 1000,
+    });
+    const stub = stubChatwoot({
+      conv: { status: "open", assigneeType: "User", assigneeId: 9 },
+      page: audioPageWith([{ id: messageId, transcript: "e a minha troca?" }]),
+    });
+    // Switched off between the strand and the replay: its route ingests nothing, and nothing else
+    // on this inbox will.
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { enabled: false },
+    });
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unreachable");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { enabled: true },
+      });
+    }
+    // Back on the worklist, so the next attempt can find the inbox switched on again.
+    expect((await ledger(rowId)).status).toBe("DEAD");
+    expect(stub.sent).toEqual([]);
   });
 
   // ISSUE #478 review, round 6, and the other half of the case above. Letting the replay past the

@@ -1294,6 +1294,13 @@ async function runRecovery(params: {
   // status that is not `pending`, a control command consumed — and the gate's decision IS the answer
   // to whether this message is still owed a reply.
   let turnOutcome: string | null = null;
+  // NOTE: WHAT THE INGESTION ANSWERED, and null means it never ran (issue #478 review, round 7).
+  // A memory-only replay reports no turn, so `turnOutcome` stays null and every settlement test
+  // below passes it by construction — which is right for a replay that answered nobody and wrong
+  // for one that also remembered nobody. An inbox unbound, switched off or flipped to test mode in
+  // the half hour a recovery waits reaches no ingestion branch at all, and the delivery still comes
+  // back `"processed"` because nothing failed.
+  let ingestOutcome: string | null = null;
   // HELD ACROSS THE HANDOFF, not merely probed before it. The fence above answers about the moment
   // it ran; this makes the answer stay true until the turn takes its own claim. Balanced in the
   // `finally`, because an unbalanced mark is not a harmless leak — every reader of this key would
@@ -1348,6 +1355,9 @@ async function runRecovery(params: {
       // have moved since (issue #476 review, round 22).
       routeObserved: observerRouteBotId !== null,
       claimFrom: "DEAD",
+      onIngest: (o) => {
+        ingestOutcome = o;
+      },
       onDirectTurn: (r) => {
         if (r.kind === "error") turnThrew = true;
         // Recorded, not judged. `TURN_ANSWERED` below is what decides, and it is a POSITIVE list
@@ -1418,7 +1428,18 @@ async function runRecovery(params: {
   //                  operator-facing line, and both need an operator; what they must not do is take
   //                  the message off the worklist that operator reads.
   const turnUnsettled = turnOutcome !== null && !TURN_SETTLED.has(turnOutcome);
-  if (turnThrew || turnUnsettled) {
+  // NOTE: AND THE MEMORY-ONLY REPLAY IS UNSETTLED WHEN NOTHING LOOKED AT THE MESSAGE (issue #478
+  // review, round 7). What this replay owes is an append, so the honest reading of "recovered" is
+  // that a route with continuous ingestion made a decision about it: `queued` remembered it,
+  // `nothing` is the gate deciding the message needs nothing from here, `no-thread` is a
+  // conversation with nowhere to hold it and nothing a retry finds different. Silence is none of
+  // those — it is no route having asked — and the row goes back to DEAD so the next attempt can
+  // find an inbox that is bound and switched on again.
+  //
+  // Only for the replay that posts nothing: where a turn was owed, `TURN_SETTLED` is the answer and
+  // an ingestion never ran beside it.
+  const memoryUnsettled = !replayPosts && ingestOutcome === null;
+  if (turnThrew || turnUnsettled || memoryUnsettled) {
     // From PROCESSED, and that is the state nothing revisits: the sweep reads PENDING and PROCESSING
     // only. A write that cannot land here leaves the customer out of the worklist with nobody having
     // answered, which is the exact loss this whole subsystem exists to make impossible — so it is
@@ -1439,7 +1460,11 @@ async function runRecovery(params: {
     }
     logger.warn(
       "chatwoot recovery: the turn %s on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
-      turnThrew ? "threw" : `came back "${turnOutcome}"`,
+      turnThrew
+        ? "threw"
+        : memoryUnsettled
+          ? "never ran and no route ingested the message either"
+          : `came back "${turnOutcome}"`,
       row.deliveryId,
       conversationId,
       put === "restored"
@@ -1455,7 +1480,10 @@ async function runRecovery(params: {
     // say, or the route cannot answer — so the job completes and the row stays DEAD on the
     // operator's page, which is the only honest record left of a customer message nothing replied
     // to.
-    return turnThrew ? "unreachable" : "superseded";
+    // `unreachable` for the memory-only case, so the job backs off and tries again: an inbox
+    // unbound or switched off is a condition an operator repairs, and the next attempt finds it
+    // repaired. A settled non-answer is the opposite — nothing a retry improves.
+    return turnThrew || memoryUnsettled ? "unreachable" : "superseded";
   }
 
   // THE LINE THAT CLOSES THE LOSS, and it has to be written HERE rather than left to

@@ -120,6 +120,35 @@ export interface RecoveryMessage {
   createdAt: number | null;
 }
 
+// The three keys an eager pass writes back, spelled at the top level of an attachment the way a
+// webhook carries them, from the `meta` the REST read carries them in. Anything that is not a record
+// is passed through: this reproduces a body, it does not validate one.
+// Local, like the copies in ./messages.ts and ./normalize.ts beside it.
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+const ANALYSIS_META_KEYS = [
+  "transcribed_text",
+  "image_description",
+  "extracted_text",
+] as const;
+
+function liftAnalysisMeta(attachments: unknown[]): unknown[] {
+  return attachments.map((a) => {
+    if (!isRecord(a)) return a;
+    const meta = isRecord(a.meta) ? a.meta : null;
+    if (meta === null) return a;
+    const lifted: Record<string, unknown> = { ...a };
+    for (const key of ANALYSIS_META_KEYS) {
+      if (typeof a[key] === "string" && a[key] !== "") continue;
+      const v = meta[key];
+      if (typeof v === "string" && v !== "") lifted[key] = v;
+    }
+    return lifted;
+  });
+}
+
 export function buildRecoveryPayload(params: {
   // The event name the ledger recorded, replayed verbatim (issue #478 review, round 1). Two reach a
   // recovery: the creation of a customer message, and the `message_updated` that finally carried its
@@ -160,7 +189,19 @@ export function buildRecoveryPayload(params: {
     private: m.private,
     content_attributes: m.contentAttributes ?? {},
     sender: m.sender,
-    attachments: m.attachments,
+    // NOTE: TRANSLATED, NOT FORWARDED (issue #478 review, round 7). The two reads spell an eager
+    // pass's output in different places: a WEBHOOK attachment carries `transcribed_text` at the top
+    // level, which is what `normalizeChatwootEvent` reads, and the REST message list carries it
+    // under `meta` (../chatwoot/messages.ts). This body is webhook-shaped, so REST attachments
+    // handed through unchanged arrive with the words invisible — and for a transcription strand,
+    // whose whole content IS the words, the rebuild then came back carrying nothing and every real
+    // recovery was refused as a degraded read.
+    //
+    // Vision travels with it for the same reason and one more: a creation's replay that loses the
+    // description re-runs the pass and pays the provider again for a message it already analysed.
+    // Only lifted where the top level does not already say it, so a body that is already
+    // webhook-shaped passes through untouched.
+    attachments: liftAnalysisMeta(m.attachments),
     // `inbox` carries the id for the shape that has no conversation scalar (issue #270). Both are
     // filled here because a real message body fills both.
     ...(params.inboxId !== null

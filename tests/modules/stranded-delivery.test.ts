@@ -228,6 +228,31 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "no-message",
     },
     {
+      // UNLESS IT NAMES A MESSAGE, which is the pair issue #478 added and the only way a
+      // `message_updated` can owe anything: the receiver writes the inbound id on the update that
+      // carried the TRANSCRIPTION, and on nothing else. The words are the whole of what that row
+      // owes, so it is neither `no-message` (the defect, which loses them silently) nor `lost` (a
+      // customer waiting on a reply, which nobody here is).
+      name: "a message_updated naming a message owes its transcription",
+      ageMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: 900,
+      expected: "owed-transcription",
+    },
+    {
+      // ANSWERED BEFORE THE LEGACY FENCE, and this is the case that holds the order. The pair that
+      // identifies the row is itself proof this build wrote it — no older build ever wrote an
+      // inbound id on an update — so the fence has nothing to protect, and asked first it would call
+      // this `lost` and page an operator about a customer nobody is keeping waiting.
+      name: "a transcription strand with no claim stamp is still not a loss",
+      ageMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: 901,
+      status: "PROCESSING",
+      claimed: false,
+      expected: "owed-transcription",
+    },
+    {
       // The guard is on the event NAME, not on the ids: a message event whose id columns an older
       // build never wrote is still the row this sweep exists for.
       name: "a message event from a build we cannot read is still a loss",

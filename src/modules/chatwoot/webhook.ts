@@ -147,6 +147,7 @@ import {
   firstVisualAttachment,
   type HumanReplyRoute,
   heldByAnotherParty,
+  inboundTranscriptionOnUpdate,
   incomingRenderable,
   isIncomingMessage,
   isNewHumanReplyToCustomer,
@@ -1072,6 +1073,65 @@ interface LedgerFacts {
   humanReplyMessageId: number | null;
 }
 
+// The one late write to `inboundMessageId`, for the delivery whose words this process produced
+// rather than received (issue #478 review, round 3). Guarded on the column still being null, which
+// is the same rule the legacy fill uses and the reason a redelivery cannot move a value.
+//
+// Only for an UPDATE that now carries a transcription. A creation's id was decided at INSERT from
+// what a creation is, and filling one here could only write an id onto a row that was right to have
+// none.
+//
+// RETRIED like the ledger claim itself and against the same failure (issue #478 review, round 6): a
+// pool momentarily full. What this write buys is the ROW'S RECOVERABILITY, so a single attempt made
+// the crash story depend on a blip — the fill misses, the process dies before the arm, and the sweep
+// reads a `message_updated` naming nothing and closes it. Not thrown when the attempts run out: the
+// delivery is still doing its own work, and taking that away would turn a lost recovery into a lost
+// append. Said at `error` instead, because from there the row cannot be replayed.
+export async function fillLedgerTranscribedMessage(
+  tenantId: bigint,
+  deliveryRowId: bigint | null,
+  n: NormalizedChatwootEvent,
+  base: PrismaClient,
+  // Injected by a test, so the retries cost no wall clock. Real callers pass none.
+  sleep?: (ms: number) => Promise<void>,
+): Promise<void> {
+  const messageId = n.message?.id;
+  if (deliveryRowId === null || messageId == null) return;
+  if (inboundTranscriptionOnUpdate(n) === null) return;
+  let lastErr: unknown;
+  const nap = sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
+    try {
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: { id: deliveryRowId, inboundMessageId: null },
+          data: { inboundMessageId: messageId },
+        }),
+      );
+      return;
+    } catch (err) {
+      lastErr = err;
+      logger.warn(
+        "chatwoot: ledger transcription fill attempt %d/%d failed (delivery row %s): %s",
+        attempt,
+        LEDGER_CLAIM_ATTEMPTS,
+        String(deliveryRowId),
+        errMsg(err),
+      );
+      if (attempt < LEDGER_CLAIM_ATTEMPTS) {
+        await nap(LEDGER_CLAIM_BACKOFF_MS * attempt);
+      }
+    }
+  }
+  logger.error(
+    "chatwoot: the ledger could not record the transcribed message %d (delivery row %s) in %d attempts; a process death before the ingestion is armed loses these words with nothing naming them: %s",
+    messageId,
+    String(deliveryRowId),
+    LEDGER_CLAIM_ATTEMPTS,
+    errMsg(lastErr),
+  );
+}
+
 function ledgerFactsOf(
   n: NormalizedChatwootEvent,
   routeAgentBotId: number | null,
@@ -1083,12 +1143,25 @@ function ledgerFactsOf(
   return {
     event: n.event,
     conversationId: n.conversationId,
-    // Only a NEW INBOUND message, which is the exact set that drives a turn: the sweep uses this to
-    // tell a delivery that lost a customer's message from one that lost nothing (issue #228). The
-    // bot's own reply comes back as a `message_created` too, and an incoming `message_updated` is
-    // usually our own media write-back coming around — neither is a customer waiting for an answer,
-    // so neither may put a row in the loss list.
-    inboundMessageId: isNewIncomingMessage(n) ? (n.message?.id ?? null) : null,
+    // NOTE: Which CUSTOMER MESSAGE this delivery was working, so the sweep can tell a delivery that lost
+    // one from a delivery that lost nothing (issue #228). The bot's own reply comes back as a
+    // `message_created` too, and it is not a customer's, so it stays null.
+    //
+    // AND THE TRANSCRIBED UPDATE, which is the same customer message arriving a second time
+    // (issue #478 review, round 1). Most `message_updated` deliveries are our own media write-back
+    // coming around and still write null here. This one is the write-back that CARRIES THE WORDS,
+    // and on a route where nothing ran the turn at creation it is the message's only readable form —
+    // so a process dying between the claim and the arm loses the transcription with nothing naming
+    // it. Written here, ./stranded-delivery.ts can see that the row owed something.
+    //
+    // The two together are also the DISCRIMINATOR that column has to carry: an id on a
+    // `message_updated` cannot come from an older build, because until this one the condition was
+    // `isNewIncomingMessage` alone and that requires a creation. Every legacy write-back keeps its
+    // null and is closed benign exactly as before.
+    inboundMessageId:
+      isNewIncomingMessage(n) || inboundTranscriptionOnUpdate(n) !== null
+        ? (n.message?.id ?? null)
+        : null,
     // THE OTHER HALF OF THE SAME QUESTION (issue #439): what this delivery OWED. The payload half of
     // the human-reply route, written before anything has read an inbox, so a process that dies in
     // the detached window still leaves behind the fact that a takeover was due. The provider half is
@@ -1242,6 +1315,22 @@ export interface ProcessChatwootParams {
   onDirectTurn?: (
     r: { kind: "outcome"; outcome: string } | { kind: "error"; error: unknown },
   ) => void;
+  // WHAT CONTINUOUS INGESTION ANSWERED, for the caller whose whole work IS the ingestion
+  // (issue #478 review, round 7). Called only where the ingestion actually ran, so a caller can tell
+  // "the gate looked at this message and decided" from "no route ever asked" — an inbox unbound,
+  // switched off or flipped to test mode in the half hour a recovery waits reaches neither branch,
+  // and the delivery still returns `"processed"` because nothing failed. A transcription replay that
+  // read that as success would close the row with the words in nobody's memory.
+  //
+  // Opt-in like `onDirectTurn` and for the same reason: the return union is a contract with every
+  // caller, and only the one for whom this distinction exists should pay for it.
+  //
+  // "covered" is not one of the enqueue's own answers: it is a route that ingests standing down on
+  // purpose, because the responder already has the message or is about to consume it as a command
+  // (issue #478 review, round 8). A decision, like the gate's `"nothing"`, and it must not read as
+  // silence — an observer's replay beside a responder reaches it every time, and read as silence the
+  // recovery would put a settled row back on the worklist until it exhausted its attempts.
+  onIngest?: (outcome: IngestOutcome | "covered") => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -1327,6 +1416,17 @@ export interface EagerMediaOwner {
   // stays primary, for the reason the command fallback gives: an inbox the payload DID name is an
   // answer, and the stored one may be where the conversation was before this event.
   chatwootInboxId: number | null;
+  // The ledger row this delivery is working, so the row can learn what the pass PRODUCED
+  // (issue #478 review, round 3). `ledgerFactsOf` runs before this and reads the wire: on the update
+  // that brings an audio nobody has transcribed yet, it writes no message id, correctly — there were
+  // no words. The pass then pays a provider for them and stashes them on the event, and from that
+  // instant the delivery owes an append that only this row could name. A death in between leaves a
+  // `message_updated` with a null id, which the sweep closes as carrying nothing.
+  //
+  // Null where the caller has no row to fill — nothing outside `processChatwootDelivery` does.
+  deliveryRowId: bigint | null;
+  // Injected by a test, so the ledger fill's retries cost no wall clock. Real callers pass none.
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
@@ -1404,7 +1504,19 @@ export async function runEagerMedia(
             base,
             flow: flow(),
           });
-          if (text) n.message.transcribedText = text;
+          if (text) {
+            n.message.transcribedText = text;
+            // NOTE: FILL-ONLY, and immediately: the next statement can throw, and from here on the words
+            // exist nowhere durable but this row. Never an overwrite — a row that already names its
+            // message names the right one, and `ledgerFactsOf` is the only other writer.
+            await fillLedgerTranscribedMessage(
+              tenantId,
+              owner.deliveryRowId,
+              n,
+              base,
+              owner.sleep,
+            );
+          }
         }
       } catch (err) {
         logger.warn("stt failed (conv=%s): %s", convLabel, errMsg(err));
@@ -1549,8 +1661,40 @@ async function ingestUnhandledMessage(args: {
   //    which only the customer spoke (issue #187). BOTH routes a person can answer by: the Chatwoot
   //    composer, and the phone paired to the number the inbox is connected to (issue #430) — the
   //    second was the half #187 could not see, because the fork stores a device reply sender-less.
+  //  - THE SAME CUSTOMER MESSAGE, arriving a second time as the update that finally carries its
+  //    media (issue #478). Some transports emit `message_created` with no attachment and hang the
+  //    voice note on a `message_updated` a moment later: the creation renders to nothing (no text,
+  //    no attachment) and appends nothing, and the update — analysed by the eager pass a few lines
+  //    up, which stashes the transcription ON `n` — was refused here for not being a creation. The
+  //    provider was paid for a transcription that reached no memory at all.
+  //
+  //    TAKEN FROM THE ATTACHMENT TOO, not only from the event: `n.message.transcribedText` is set
+  //    by the eager pass alone, so it is there on the delivery that transcribed — but the fork also
+  //    re-fires the update once our write-back lands, and that second event carries the words in the
+  //    attachment while the message field is still null. Reading both means the words reach memory
+  //    on whichever of the two arrives, including the case where the first one's arm failed.
+  //
+  //    NOT PROTECTED BY THE DEDUP WINDOW, and that is why the gate below is the same one the
+  //    creation used rather than something looser: the window is written by the ingest job alone, so
+  //    a message a TURN answered is absent from it and a second append would stack a duplicate the
+  //    dedup cannot see. What makes that safe is that an answered message needs nothing from here —
+  //    the turn reads the conversation live from Chatwoot when it runs, so it sees the transcription
+  //    by its own route. The gap this closes is the message no turn ever covered.
+  //    AUDIO ONLY, for the reason `hasPendingInboundMediaUpdate` gives: the fork does not serialize
+  //    the vision write-back into webhook payloads, so an image's description exists here only on the
+  //    delivery that produced it — which is a creation, already covered by the clause above. A visual
+  //    leg would be a branch nothing can reach.
+  const lateTranscription = inboundTranscriptionOnUpdate(n);
+  // Hoisted so the renderer below reads it, the same assignment `runEagerMedia` makes at its top for
+  // the same reason: the transcription lives on the attachment, and every reader downstream asks the
+  // message.
+  if (lateTranscription && n.message && !n.message.transcribedText) {
+    n.message.transcribedText = lateTranscription;
+  }
+  const lateMediaAnalyzed = lateTranscription !== null;
   const incomingUnhandled =
-    isNewIncomingMessage(n) && ((act && consumed) || !act);
+    (isNewIncomingMessage(n) || lateMediaAnalyzed) &&
+    ((act && consumed) || !act);
   const role: IngestRole | null = incomingUnhandled
     ? "customer"
     : isNewHumanReplyToCustomer(n, {
@@ -3634,7 +3778,33 @@ export async function processChatwootDelivery(
   // Issue #430 widened the predicate itself, not this condition: the class of event is the same one
   // (`message_created`, outgoing, a person wrote it), reached by a second route. The sweep above was
   // re-run against it and the answer did not change.
-  const wantsRuntime = isNewIncoming || hasLateMedia || mayBeHumanReply;
+  // ...AND THE WRITE-BACK UPDATE (issue #478), which is the fourth class and the one this predicate
+  // refused for as long as it existed. Without it the transcription of a voice note nobody answers
+  // reaches no memory at all: the creation had no attachment and rendered to nothing, the delivery
+  // that transcribed armed the append, and if that arm failed there was no second chance — and on a
+  // fork that transcribes elsewhere, no first one either.
+  //
+  // THE SWEEP THE PARAGRAPH ABOVE DEMANDS, re-run against this class rather than inherited:
+  //  - `command` is `isNewIncoming ? controlCommand(n) : null`, so every command branch stays inert;
+  //  - the eager-media pass and `activatedTestLateMedia` both require `isNewIncoming || hasLateMedia`,
+  //    so nothing re-analyses and no provider is called twice;
+  //  - the debounce arm, the follow-up cancel and the channel-redirect arm all sit inside
+  //    `isNewIncoming`;
+  //  - the takeover reads `mayBeHumanReply`, which is false on an incoming message;
+  //  - the mirror and the resolve branches never depended on `rt` being null and run either way.
+  // What is left is the ingestion, which is the point.
+  //
+  // AND IT CANNOT DOUBLE-APPEND: `armIngest` keys the job by (thread, message) with `rearm:
+  // "same-work"`, so the write-back's arm and the transcribing delivery's arm are the same row, and
+  // once the job has run the id is in the dedup window and the second verdict is `duplicate`.
+  // NOTE: THE WIRE'S ANSWER, which is the right one for the two decisions made here: whether the event
+  // reaches the runtime at all, and which message the responder-coverage check is about. Both run
+  // before anything has looked at the audio. The eager pass can produce a transcription later, and
+  // the readers that care about THAT ask again below (`carriesTranscription`) — asked once, at the
+  // top, they would stand down on exactly the delivery that paid for the words.
+  const transcriptionOnTheWire = inboundTranscriptionOnUpdate(n) !== null;
+  const wantsRuntime =
+    isNewIncoming || hasLateMedia || mayBeHumanReply || transcriptionOnTheWire;
   // RETRIED, because this pair now stands BEFORE the claim (issue #476 review, round 44). Moving the
   // role onto the claim closed the hole where a second write could fail; what it opened is this one:
   // a transient pool or database error here rejects with the row still PENDING and its role unsaid,
@@ -3910,9 +4080,17 @@ export async function processChatwootDelivery(
       n.conversationId,
       // A customer message is named by the inbound column; a colleague's reply, which is outgoing,
       // by the one the takeover recovery reads.
+      // NOTE: AN UPDATE OF A CUSTOMER MESSAGE NAMES THAT SAME MESSAGE (issue #478 review, rounds 1 and 3).
+      // It is not a creation, so without this clause the sibling could not be named and the check
+      // answered "not covered" without looking. Both shapes an update comes in are the same message
+      // by the same customer, and both cost something when the observer does not stand down: the
+      // TRANSCRIBED one ingests a message the responder's own `message_created` delivery already
+      // handled, which the dedup window cannot catch because a turn-handled id never enters it; the
+      // RAW one sends the audio to STT a second time, so the same voice note is paid for twice and
+      // two write-backs race over the same annotation. Same message, same column, same question.
       n.message?.id == null
         ? null
-        : isNewIncoming
+        : isNewIncoming || transcriptionOnTheWire || hasLateMedia
           ? { id: n.message.id, column: "inbound" as const }
           : mayBeHumanReply
             ? { id: n.message.id, column: "humanReply" as const }
@@ -4624,6 +4802,8 @@ export async function processChatwootDelivery(
       agentId: rt.agentId,
       inboxId: rt.inboxId,
       chatwootInboxId: rt.chatwootInboxId,
+      deliveryRowId: params.deliveryRowId,
+      sleep: params.deps?.sleep,
     });
   }
 
@@ -4755,6 +4935,8 @@ export async function processChatwootDelivery(
         agentId: rt?.agentId ?? null,
         inboxId: rt?.inboxId ?? null,
         chatwootInboxId: rt?.chatwootInboxId ?? null,
+        deliveryRowId: params.deliveryRowId,
+        sleep: params.deps?.sleep,
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -5155,6 +5337,8 @@ export async function processChatwootDelivery(
       agentId: rt.agentId,
       inboxId: rt.inboxId,
       chatwootInboxId: rt.chatwootInboxId,
+      deliveryRowId: params.deliveryRowId,
+      sleep: params.deps?.sleep,
     });
   }
   // THE OBSERVER'S OWN REASON TO MARK is its ingestion having the message (issue #209 review,
@@ -5397,19 +5581,30 @@ export async function processChatwootDelivery(
     // ...and only for a command that responder's route actually RECEIVED (round 33): bound after
     // the emission, it never got the `/reset`, and dropping it here loses it from every memory.
     responderCovers;
+  // NOTE: ASKED AGAIN, AFTER THE ANALYSIS (issue #478 review, round 4). The value read at the top of this
+  // function is the WIRE's answer, and it is the right one there: it decides whether the event
+  // reaches the runtime at all, before anything has looked at the audio. By here the eager pass may
+  // have produced the words itself — a `message_updated` that arrived carrying raw audio — and from
+  // that moment this delivery owes the append and everything that protects it. Read from the top's
+  // value, the retry and the failure guard below would both stand down on exactly the delivery that
+  // paid a provider for the transcription.
+  const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;
   let ingested: IngestOutcome = "nothing";
-  if (
+  // NOTE: WHETHER THIS ROUTE INGESTS AT ALL, hoisted out of the condition below so the two halves can
+  // be told apart (issue #478 review, round 8). A route that cannot — no runtime, switched off, a
+  // test agent with nobody watching — reaches no branch and says nothing, and that silence is what a
+  // memory-only recovery reads as "nobody looked". A route that CAN and stands down for the
+  // responder is the opposite, and has to say so.
+  // NOTE: A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19): the row
+  // is written without re-asking the mode, so a change that lands inside the attach window leaves a
+  // test agent observing — and the receiver honours the row over the mode everywhere else. Read
+  // through `ingestsContinuously` alone, that agent's route would mark the message handled and
+  // remember nothing. The switch is still asked: a watcher that is off does nothing.
+  const routeIngests =
     rt !== null &&
-    !responderRemembers &&
-    !responderCommand &&
-    // A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19): the row is
-    // written without re-asking the mode, so a change that lands inside the attach window leaves a
-    // test agent observing — and the receiver honours the row over the mode everywhere else. Read
-    // through `ingestsContinuously` alone, that agent's route would mark the message handled and
-    // remember nothing. The switch is still asked: a watcher that is off does nothing.
     ((rt.enabled && (ingestsContinuously(rt.mode) || observer !== null)) ||
-      handedToObserver)
-  ) {
+      handedToObserver);
+  if (routeIngests && !responderRemembers && !responderCommand) {
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
@@ -5429,10 +5624,24 @@ export async function processChatwootDelivery(
           mirror.conversationRowId,
           base,
         )),
-      retryArm: observing || handedToObserver,
+      // NOTE: ...and for a LATE TRANSCRIPTION on any route (issue #478 review, round 2), for the reason the
+      // observer's is retried: the append is the last chance. The words come around once, on the
+      // write-back, and no later event carries them — production's continuous ingestion is
+      // best-effort because a turn covers what it misses, and here no turn ever will.
+      retryArm: observing || handedToObserver || carriesTranscription,
       sleep: params.deps?.sleep,
       base,
     });
+    // NOTE: Inside the branch, so silence means the ingestion never ran rather than that it ran and
+    // found nothing. That is the distinction the recovery reads (see `onIngest`).
+    params.onIngest?.(ingested);
+  } else if (routeIngests) {
+    // NOTE: A route that INGESTS, standing down on purpose: the responder already has this message,
+    // or is about to consume it as a command. Reported, because the recovery's question is "did
+    // anything look at this message", and a deliberate stand-down is an answer (round 8). Silent, an
+    // observer's replay beside a responder would be put back on the worklist until its attempts ran
+    // out, over a message that was handled.
+    params.onIngest?.("covered");
   }
   // A COLLEAGUE'S REPLY the observer could not remember, its retries spent (round 24). There is no
   // recovery to leave the row for — the sweep cannot rebuild an outgoing body — so the loss is
@@ -5482,7 +5691,36 @@ export async function processChatwootDelivery(
       },
     );
   }
-  // The observer's verdict, from the enqueue (see the note above the mark). The throw is the one
+  // NOTE: A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,
+  // round 2). `observerHolds` is inbound-only — a `message_updated` is not `isNewIncoming` — so on
+  // its own it settles this delivery PROCESSED whatever the enqueue answered, and a scheduler blip
+  // then discards the transcription for good: the sweep sees a terminal row, and the row is the only
+  // thing that knew.
+  //
+  // ASKED OF EVERY ROUTE and not only the watcher's, because what makes production's continuous
+  // ingestion best-effort is a turn covering what it misses, and there is no turn here by
+  // construction — the words arrive on an update, and an update drives none. Where a turn DID answer
+  // the message, the gate inside the ingestion refuses it and the answer is `"nothing"`, so this
+  // never fires for the ordinary write-back.
+  //
+  // The throw and the one below are the two exits of this function that leave the row on PROCESSING
+  // deliberately: the route logs it, the sweep declares it `owed-transcription`, and the replay
+  // re-runs this path.
+  if (carriesTranscription && ingested === "failed") {
+    throw new Error(
+      `chatwoot: the late transcription could not be armed for ingestion (conv=${convLabel}); leaving the delivery for the sweep`,
+    );
+  }
+  // NOTE: "no-thread" IS NOT THAT, and it is left to settle: a conversation neither the payload nor the
+  // mirror can name a contact-inbox for has nowhere to hold the words, and the replay would find the
+  // same nothing. Said at `warn`, which is where the observer's inbound branch says it too.
+  if (carriesTranscription && ingested === "no-thread") {
+    logger.warn(
+      "chatwoot: a late transcription arrived (conv=%s) but the conversation names no contact-inbox thread to hold it",
+      convLabel,
+    );
+  }
+  // The observer's verdict, from the enqueue (see the note above the mark). The throw is the other
   // exit of this function that leaves the row on PROCESSING deliberately: the route logs it, and
   // the sweep's recovery re-runs the delivery.
   if (observerHolds) {

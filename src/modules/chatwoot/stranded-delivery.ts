@@ -28,7 +28,7 @@
 // and that retirement are both in ./delivery-sweep.ts.
 
 import type { HumanReplyRoute } from "./normalize";
-import { TURN_BEARING_EVENT } from "./normalize";
+import { LATE_TRANSCRIPTION_EVENT, TURN_BEARING_EVENT } from "./normalize";
 
 export interface StrandedDeliveryRow {
   // The Chatwoot event name, as the receiver stored it. The one column here that EVERY build has
@@ -111,6 +111,29 @@ export type StrandedVerdict =
   // REPORTED rather than replayed: on an observer-only inbox the observer's memory is the only one
   // there is, and a hole in it that nothing names is the silence this sweep exists to remove.
   | "observer-strand"
+  // Stranded carrying the TRANSCRIPTION of a customer message, on the `message_updated` that finally
+  // wrote it (issue #478 review, round 1). A verdict of its own for the same reason `owed-takeover`
+  // is one, and the two neighbours it sits between are the same two.
+  //
+  // `no-message` is what shipped and is the defect: the words are the message's only readable form
+  // wherever nothing ran a turn at creation — an inaudible voice note, an observer with no responder
+  // beside it, a conversation a colleague already owns — so closing the row benign loses the whole
+  // of what the customer said, and loses it silently.
+  //
+  // `lost` is wrong in the other direction, and about the WORKLIST rather than about the words.
+  // `DEAD` is the list of customers who wrote and were never answered, and nobody here is waiting on
+  // a reply: on the routes this verdict is about, no reply was ever coming. What was owed is the
+  // ingestion, and it is REPLAYABLE — unlike the observer's reply above, this delivery names a
+  // message id and the words are still readable from the account, so the recovery re-runs the same
+  // delivery path with the same event and the gates decide again exactly as they did.
+  //
+  // WHICH IS ALSO WHY IT IS SAFE ON THE ROWS IT OVER-COVERS. A ledger row cannot tell a transcription
+  // nothing covered from the ordinary write-back of a message a turn already answered — the payload
+  // is not stored — so both reach this verdict. Replaying the ordinary one costs nothing: the replay
+  // is a `message_updated`, which drives no turn, and ../chatwoot/webhook.ts's ingest gate refuses a
+  // message the bot answered. It is the REBUILD BEING FAITHFUL TO THE EVENT that makes that true; a
+  // replay rebuilt as a creation would answer the customer twice.
+  | "owed-transcription"
   // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
   // cannot be read. Nothing will answer it.
   //
@@ -148,7 +171,14 @@ export function classifyStrandedDelivery(
   // fence exists for and the one a rollout produces in bulk. A `message_updated` is that story from
   // the other direction — our own media write-back coming around, driving no turn — which is why the
   // name it shares with `isNewIncomingMessage` is one constant and not two.
-  if (row.event !== TURN_BEARING_EVENT) return "no-message";
+  const bears = bearsTurn(row);
+  if (bears === "no") return "no-message";
+  // NOTE: ANSWERED BEFORE THE LEGACY FENCE, and that ordering is the point rather than a shortcut: the
+  // pair that identifies a transcription row (a `message_updated` naming an inbound message) is
+  // itself proof this build wrote it, so its nulls are recorded and there is nothing for the fence
+  // to protect. Asked after it, a transcription row stranded on PROCESSING without a stamp would be
+  // called `lost` — the one answer it must never get, since no customer is waiting on a reply.
+  if (bears === "transcription") return "owed-transcription";
   // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
   // the literal way, every message the previous release lost would be closed as carrying none — the
   // exact silence this sweep exists to remove, on the rows a deploy is most likely to strand, since
@@ -182,6 +212,26 @@ export function classifyStrandedDelivery(
     return row.routeObserved === true ? "observer-strand" : "owed-takeover";
   }
   return "lost";
+}
+
+// WHETHER THIS ROW COULD HAVE OWED A CUSTOMER AN ANSWER, from the two columns every build writes in
+// the same way. `message_created` on its own, as it always has been. `message_updated` only when it
+// also names an inbound message — the transcription that arrived on the write-back and was the
+// message's only readable form (issue #478 review, round 1).
+//
+// The pair is what makes this safe to widen. `inboundMessageId` was written for `isNewIncomingMessage`
+// and nothing else until this build, and that predicate requires `message_created`, so a
+// `message_updated` row carrying one CANNOT come from an older build. Every legacy write-back keeps
+// the null it has always had, falls through here and is closed benign exactly as before — which
+// matters most on the rows a deploy strands in bulk, since the migration runs while the previous
+// release is still serving.
+function bearsTurn(
+  row: StrandedDeliveryRow,
+): "no" | "message" | "transcription" {
+  if (row.event === TURN_BEARING_EVENT) return "message";
+  if (row.event === LATE_TRANSCRIPTION_EVENT && row.inboundMessageId !== null)
+    return "transcription";
+  return "no";
 }
 
 // Whether the stored shape is one this build can act on. A String column rather than an enum, like

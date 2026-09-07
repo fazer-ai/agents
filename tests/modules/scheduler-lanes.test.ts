@@ -95,6 +95,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   DELIVERY_RECOVERY: "shared",
   TAKEOVER_RECOVERY: "shared",
   SPEND_CEILING_POLL: "shared",
+  OBSERVE: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -125,6 +126,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // customer's turn queues on, to make two HTTP calls.
   TAKEOVER_RECOVERY: false,
   SPEND_CEILING_POLL: false,
+  OBSERVE: true,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -154,6 +156,10 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // when the process died.
   TAKEOVER_RECOVERY: true,
   SPEND_CEILING_POLL: false,
+  // One row per observed CONVERSATION, which is the same shape as DEBOUNCE's — but DEBOUNCE has a
+  // lane of its own, so its rows never share a batch with a reminder. OBSERVE is on `shared`, where
+  // it is the only kind whose count follows how much contacts write (issue #477 review, round 8).
+  OBSERVE: true,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -176,6 +182,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // Same key, same shape, same answer.
   TAKEOVER_RECOVERY: true,
   SPEND_CEILING_POLL: false,
+  OBSERVE: false,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -201,6 +208,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   DELIVERY_RECOVERY: "warn",
   TAKEOVER_RECOVERY: "warn",
   SPEND_CEILING_POLL: "error",
+  OBSERVE: "warn",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

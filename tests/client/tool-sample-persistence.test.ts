@@ -112,7 +112,7 @@ describe("nothing about the sample is sent or stored", () => {
       );
     const before = [dump(localStorage), dump(sessionStorage)];
     rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleTicket());
-    forgetToolSample("42");
+    forgetToolSample("42", sampleTicket());
     noteOperator("someone-else");
     rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleTicket());
     const after = [dump(localStorage), dump(sessionStorage)];
@@ -184,13 +184,40 @@ describe("what the tab remembers", () => {
   // A SUPER_ADMIN switches tenants without reloading, and the tool ids of two tenants are two
   // sequences that overlap. Keyed by the id alone, tool 7 of the tenant just left would be offered
   // as tool 7 of the one just entered.
-  it("does not offer one tenant's response under another tenant's tool", () => {
+  // DEPTH, and it says so: `ToolDefinition.id` is a plain autoincrement on one table, so two tenants
+  // never share a tool id and this is not what stops one tenant's response reaching another. What it
+  // does buy is that a SUPER_ADMIN who switches tenants is not offered entries from the other one.
+  it("keeps a tenant's entries under that tenant", () => {
     localStorage.setItem("@app:active-tenant", "3");
     rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
     localStorage.setItem("@app:active-tenant", "4");
     expect(recallToolSample("7")).toBeNull();
     localStorage.setItem("@app:active-tenant", "3");
     expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
+  });
+
+  // ROUND 7: the selector is shared across tabs and can move while a request is in flight. The write
+  // belongs to the tenant the request went out under, not to whatever is selected when it lands.
+  it("writes under the tenant the request went out under, not the one selected on return", () => {
+    localStorage.setItem("@app:active-tenant", "3");
+    const ticket = sampleTicket();
+    localStorage.setItem("@app:active-tenant", "4");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
+    // Nothing landed in the tenant that happened to be selected when the response came back…
+    expect(recallToolSample("7")).toBeNull();
+    // …and the tenant that asked has its answer.
+    localStorage.setItem("@app:active-tenant", "3");
+    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+  });
+
+  it("clears under the tenant the deletion went out under", () => {
+    localStorage.setItem("@app:active-tenant", "3");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    const ticket = sampleTicket();
+    localStorage.setItem("@app:active-tenant", "4");
+    forgetToolSample("7", ticket);
+    localStorage.setItem("@app:active-tenant", "3");
+    expect(recallToolSample("7")).toBeNull();
   });
 
   it("still works in a browser that refuses storage entirely", () => {
@@ -241,7 +268,7 @@ describe("what the tab remembers", () => {
   it("drops one tool's entry when that tool is gone", () => {
     rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
     rememberToolSample("8", { text: RESPONSE, status: 200 }, sampleTicket());
-    forgetToolSample("7");
+    forgetToolSample("7", sampleTicket());
     expect(recallToolSample("7")).toBeNull();
     expect(recallToolSample("8")).not.toBeNull();
   });
@@ -253,7 +280,7 @@ describe("what the tab remembers", () => {
 describe("a save that lands after the sample's life ended", () => {
   it("does not put it back after the tool was deleted", () => {
     const ticket = sampleTicket();
-    forgetToolSample("7");
+    forgetToolSample("7", sampleTicket());
     rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
     expect(recallToolSample("7")).toBeNull();
   });
@@ -277,15 +304,15 @@ describe("a save that lands after the sample's life ended", () => {
   // drop A's too, and the operator sees a tool they never touched come back with an older response.
   it("is not invalidated by the deletion of a DIFFERENT tool", () => {
     const ticket = sampleTicket();
-    forgetToolSample("8");
+    forgetToolSample("8", sampleTicket());
     rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
     expect(recallToolSample("7")?.text).toBe(RESPONSE);
   });
 
   it("stays rejected for the deleted tool after another one is deleted too", () => {
     const ticket = sampleTicket();
-    forgetToolSample("7");
-    forgetToolSample("8");
+    forgetToolSample("7", sampleTicket());
+    forgetToolSample("8", sampleTicket());
     rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
     expect(recallToolSample("7")).toBeNull();
   });
@@ -418,6 +445,31 @@ describe("the two seams that have to clear it", () => {
     const call = save.slice(
       write,
       save.indexOf(")", save.indexOf("ticket", write)),
+    );
+    expect(call).not.toInclude("sampleTicket");
+    expect(call).toInclude("ticket");
+  });
+
+  // The same question at the OTHER site that mutates the cache after a request. It was written
+  // without one, and round 7 is what found that: a delete whose continuation reads the tenant
+  // selector clears the wrong scope when another tab moved it in the meantime.
+  it("reads the ticket before the delete request too", async () => {
+    const src = codeOnly(
+      await Bun.file("src/client/pages/resources/ToolsPanel.tsx").text(),
+    );
+    const from = src.indexOf("async function confirmDelete()");
+    expect(from).toBeGreaterThan(-1);
+    const body = src.slice(from);
+    const read = body.indexOf("sampleTicket()");
+    const request = body.indexOf(".delete(");
+    const write = body.indexOf("forgetToolSample(");
+    expect(read).toBeGreaterThan(-1);
+    expect(request).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(request);
+    const call = body.slice(
+      write,
+      body.indexOf(")", body.indexOf("ticket", write)),
     );
     expect(call).not.toInclude("sampleTicket");
     expect(call).toInclude("ticket");

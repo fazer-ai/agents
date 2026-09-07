@@ -57,10 +57,22 @@ const samples = new Map<string, ToolSample>();
 // response arrives afterwards and writes the sample back in, so a deletion or a logout would be
 // undone by a request that was already on the wire (round 4 of review).
 //
-// The ticket a save carries is a reading of this clock, which ticks on every forgetting. What it is
-// checked against is per SCOPE rather than global, because a global one over-rejects: deleting tool
-// B while tool A's save is out would drop A's sample too, and the operator sees a tool they never
-// touched come back with an older response or none (round 6 of review).
+// The ticket a request carries is THE WORLD AS IT WAS WHEN IT WENT OUT, and that is one value rather
+// than two because three review rounds found the same shape: something the continuation reads at the
+// end that had already changed. It carries the clock and the tenant the request was sent under, and
+// `keyFor` takes the second so the write lands in the scope that was asked about. The selector lives
+// in `localStorage`, which is shared across tabs and can move while a request is in flight
+// (`activeTenant.ts` says so in as many words), so reading it in the continuation keys the answer to
+// a question nobody asked (round 7 of review).
+//
+// What the tenant in the key is NOT is the thing that stops one tenant's response reaching another:
+// `ToolDefinition.id` is a plain autoincrement on one table, so two tenants never share a tool id
+// and a mis-keyed entry is unreachable rather than aliased. It is depth, and a future reader should
+// not over-trust it.
+//
+// The clock is checked per SCOPE rather than globally, because a global check over-rejects: deleting
+// tool B while tool A's save is out would drop A's sample too, and the operator sees a tool they
+// never touched come back with an older response or none (round 6 of review).
 let clock = 0;
 let clearedAt = 0;
 const forgottenAt = new Map<string, number>();
@@ -70,25 +82,32 @@ const forgottenAt = new Map<string, number>();
 // starting at `null` would make a boot into a signed-out state a no-op rather than a transition.
 let operator: string | null | undefined;
 
-export function sampleTicket(): number {
-  return clock;
+export interface SampleTicket {
+  at: number;
+  tenant: string | null;
 }
 
-// Keyed by the tenant selector as well, so a SUPER_ADMIN switching tenants in the same tab is never
-// offered the sample captured under the other one. Read at call time rather than captured, for the
-// same reason `activeTenant.ts` reads it at call time: the selection can change under a live tab.
-function keyFor(toolId: string): string {
-  let tenant: string | null = null;
+export function sampleTicket(): SampleTicket {
+  return { at: clock, tenant: activeTenant() };
+}
+
+function activeTenant(): string | null {
   try {
-    tenant = localStorage.getItem("@app:active-tenant");
+    return localStorage.getItem("@app:active-tenant");
   } catch {
     // A browser that refuses storage entirely still gets a working cache, under the home tenant.
+    return null;
   }
+}
+
+// Read at call time by the reader (a render asks about the tenant on screen now) and taken from the
+// ticket by the writers (a continuation asks about the tenant its request went out under).
+function keyFor(toolId: string, tenant: string | null): string {
   return `${tenant ?? ""}:${toolId}`;
 }
 
 export function recallToolSample(toolId: string): ToolSample | null {
-  return samples.get(keyFor(toolId)) ?? null;
+  return samples.get(keyFor(toolId, activeTenant())) ?? null;
 }
 
 // Called when the tool is SAVED rather than on every keystroke: what comes back is the sample the
@@ -101,14 +120,14 @@ export function rememberToolSample(
   // nothing says so; required, `tsc` is the one that notices, which is what a source fence over the
   // same question could only approximate (measured: with it optional, dropping the argument at the
   // one call site survived the whole battery).
-  since: number,
+  since: SampleTicket,
 ): void {
-  const key = keyFor(toolId);
+  const key = keyFor(toolId, since.tenant);
   // The session ended after the ticket was taken, or THIS tool was forgotten after it. A forgetting
   // of some other tool is not this save's business.
-  if (clearedAt > since) return;
+  if (clearedAt > since.at) return;
   const forgotten = forgottenAt.get(key);
-  if (forgotten !== undefined && forgotten > since) return;
+  if (forgotten !== undefined && forgotten > since.at) return;
   // DELETED FIRST AND UNCONDITIONALLY, which is also what re-dates the entry: `Map` keeps insertion
   // order, so deleting before setting is what makes the eviction below drop the least recently
   // saved rather than the first one ever saved.
@@ -127,8 +146,8 @@ export function rememberToolSample(
 // customer's data sitting in a tab that has no use for it. Separate from `rememberToolSample(id,
 // null)`, which is a save saying there is no sample: this is a lifecycle event, so it invalidates
 // the saves that are in flight.
-export function forgetToolSample(toolId: string): void {
-  const key = keyFor(toolId);
+export function forgetToolSample(toolId: string, since: SampleTicket): void {
+  const key = keyFor(toolId, since.tenant);
   clock++;
   forgottenAt.set(key, clock);
   samples.delete(key);

@@ -24,6 +24,7 @@ import {
   getAgentToolSelections,
   listAgentsPaged,
   replaceAgentToolSelections,
+  SELECTABLE_AGENT_MODES,
   type ToolGrantInput,
   updateAgent,
 } from "@/modules/agents/service";
@@ -451,16 +452,16 @@ export const agentsController = new Elysia({
               "Whether the agent is active and may handle conversations.",
           }),
         ),
+        // NOTE: the modes on OFFER, which is not every mode the column holds. `monitoring` is held
+        // back from every write boundary until it has an output (`SELECTABLE_AGENT_MODES` in
+        // `src/modules/agents/mode.ts`); a row already carrying it is still read, and still
+        // silenced, everywhere else.
         mode: t.Optional(
           t.Union(
-            [
-              t.Literal("test"),
-              t.Literal("production"),
-              t.Literal("monitoring"),
-            ],
+            SELECTABLE_AGENT_MODES.map((m) => t.Literal(m)),
             {
               description:
-                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
+                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally.",
             },
           ),
         ),
@@ -544,16 +545,16 @@ export const agentsController = new Elysia({
               "Whether the agent is active and may handle conversations.",
           }),
         ),
+        // NOTE: the modes on OFFER, which is not every mode the column holds. `monitoring` is held
+        // back from every write boundary until it has an output (`SELECTABLE_AGENT_MODES` in
+        // `src/modules/agents/mode.ts`); a row already carrying it is still read, and still
+        // silenced, everywhere else.
         mode: t.Optional(
           t.Union(
-            [
-              t.Literal("test"),
-              t.Literal("production"),
-              t.Literal("monitoring"),
-            ],
+            SELECTABLE_AGENT_MODES.map((m) => t.Literal(m)),
             {
               description:
-                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
+                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally.",
             },
           ),
         ),

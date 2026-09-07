@@ -176,6 +176,17 @@ The third line is a **pair**, and passing half of it buys the first two lines on
 
 ## Monitoring mode: bound, reading, never answering (issue #209)
 
+> **Not on offer yet.** The mode is held back from every write boundary until it has an output: an
+> agent bound as an observer BESIDE the inbox's responder (#476), and the job that classifies the
+> conversation and writes the verdict as labels (#477). Until those land, `Inbox.agentId` is one
+> column, so choosing this mode means the inbox is answered by nobody and reports nothing back.
+>
+> What is held back is the OFFER (`SELECTABLE_AGENT_MODES`), never the reading: every seam below is
+> live, and a row already carrying `monitoring` is still silenced by it. Dropping the value from
+> `AGENT_MODES` instead would collapse such a row into `production` at the fallback, which is the
+> failure this whole module is arranged to prevent. `tests/modules/agent-mode-offer.test.ts` holds
+> both halves and goes red when the mode ships.
+
 `Agent.mode` has a third value next to `test` and `production`. A **monitoring** agent stays bound to its inboxes and receives every delivery, and never produces a customer-facing output: no reply, no typing, no follow-up or HSM template, no away or authorization message, and `/teste` never activates it (the command gate asks for `test` and nothing else). It is not `enabled: false`: a disabled agent is asked nothing, while a monitoring agent analyzes media before any gate and folds every message — the customer's and a human colleague's — into its memory exactly like a production agent does for the messages it does not answer. The predicates are `isMonitoring` and `ingestsContinuously` in `src/modules/agents/mode.ts`, and the mode is read through `normalizeAgentMode` everywhere, because the column is a plain string and the old `=== "test" ? … : "production"` ternary read a monitoring agent as a fully answering one.
 
 "Never answers" is held at two seams and one fence rather than at every send:

@@ -9,6 +9,30 @@
 export const AGENT_MODES = ["test", "production", "monitoring"] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
 
+// The modes a WRITE may set, which today is not all of them. `monitoring` is held back from every
+// offer until the work that gives it an output lands: an agent bound as an observer BESIDE the
+// inbox's responder (#476), and the job that classifies the conversation and writes the verdict as
+// labels (#477). Without those, `Inbox.agentId` is one column, so choosing this mode means the
+// inbox is answered by nobody and reports nothing back, which is not a feature to put in front of
+// an operator.
+//
+// HELD BACK AT THE OFFER AND NOWHERE ELSE, deliberately. Dropping the value from `AGENT_MODES`
+// would be one line and would collapse a stored `monitoring` into `production` at the fallback
+// below, which is the worst failure this module has: an agent an operator silenced would start
+// answering customers on upgrade. Every reader keeps the full set; the write side reads this one.
+//
+// THE WRITE SIDE IS ELEVEN SITES, COUNTED, on four surfaces: the console's control, the REST
+// schema on create and on patch, the service schema on each, and on MCP a schema plus a handler
+// signature plus a call-site argument type for each of the two tools. It was written by hand in
+// every one of them before this constant existed, which is why the count was wrong twice while
+// this change was being made: what enumerates them is the compiler, since `SelectableAgentMode` is
+// a distinct type and a site that widens back stops building.
+//
+// Putting it back is deleting this constant and letting those eleven fall back on `AGENT_MODES`;
+// `tests/modules/agent-mode-offer.test.ts` goes red when the mode ships, and says so.
+export const SELECTABLE_AGENT_MODES = ["test", "production"] as const;
+export type SelectableAgentMode = (typeof SELECTABLE_AGENT_MODES)[number];
+
 // The column is a plain string, and a value this build does not know reads as production, as it
 // always has. `monitoring` is named here BEFORE that fallback on purpose: read through the old
 // `=== "test" ? "test" : "production"` ternary, a monitoring agent came back as a fully answering

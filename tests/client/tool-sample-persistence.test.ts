@@ -4,13 +4,12 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import {
   forgetToolSample,
   noteOperator,
-  noteVaultChanged,
   recallToolSample,
   rememberToolSample,
   sampleIsNothing,
   sampleTicket,
 } from "@/client/lib/toolSample";
-import { VAULT_CHANGED_EVENT } from "@/client/lib/vaultCache";
+import { invalidateVault, VAULT_CHANGED_EVENT } from "@/client/lib/vaultCache";
 import {
   captureShapeOf,
   formFromTool,
@@ -875,7 +874,7 @@ describe("a credential changing under the same name", () => {
 
   it("drops the samples that used a credential", () => {
     rememberToolSample("42", WITH, sampleTicket());
-    noteVaultChanged();
+    invalidateVault();
     expect(recallToolSample("42", REV)).toBeNull();
   });
 
@@ -883,7 +882,7 @@ describe("a credential changing under the same name", () => {
   // affected by a vault edit, and the operator would see one they never touched come back empty.
   it("keeps the samples that used none", () => {
     rememberToolSample("43", WITHOUT, sampleTicket());
-    noteVaultChanged();
+    invalidateVault();
     expect(recallToolSample("43", REV)?.text).toBe(RESPONSE);
   });
 
@@ -891,21 +890,21 @@ describe("a credential changing under the same name", () => {
   // and its sample was captured against the resolution that just stopped being current.
   it("refuses a save that was in flight and carried a credential", () => {
     const ticket = sampleTicket();
-    noteVaultChanged();
+    invalidateVault();
     rememberToolSample("44", WITH, ticket);
     expect(recallToolSample("44", REV)).toBeNull();
   });
 
   it("still takes a save that was in flight and carried none", () => {
     const ticket = sampleTicket();
-    noteVaultChanged();
+    invalidateVault();
     rememberToolSample("45", WITHOUT, ticket);
     expect(recallToolSample("45", REV)?.text).toBe(RESPONSE);
   });
 
   // And a save that STARTED after the change is about the vault as it is now.
   it("takes a save that started after the change", () => {
-    noteVaultChanged();
+    invalidateVault();
     rememberToolSample("46", WITH, sampleTicket());
     expect(recallToolSample("46", REV)?.text).toBe(RESPONSE);
   });
@@ -916,7 +915,7 @@ describe("a credential changing under the same name", () => {
   // takes its ticket AFTER the change, so nothing refuses it and the sample goes straight back in,
   // describing a request against the host the credential used to name (round 14 of review).
   it("a sample captured before the change stops describing the request", () => {
-    const opened = formFromTool(toolRow());
+    const opened = formFromTool(toolRow({ credentialRef: "acme" }));
     const captured = shapeOfArrival({
       text: RESPONSE,
       status: 200,
@@ -924,7 +923,7 @@ describe("a credential changing under the same name", () => {
       previous: null,
     });
     expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
-    noteVaultChanged();
+    invalidateVault();
     // The payload has not moved. What moved is what its credential resolves to.
     expect(sampleDescribes(captured, payloadOf(opened))).toBe(false);
   });
@@ -932,8 +931,8 @@ describe("a credential changing under the same name", () => {
   // And a sample captured AFTER the change describes the vault as it is now, so an operator who
   // edits a credential and tests again keeps what comes back.
   it("a sample captured after the change describes the request", () => {
-    noteVaultChanged();
-    const opened = formFromTool(toolRow());
+    invalidateVault();
+    const opened = formFromTool(toolRow({ credentialRef: "acme" }));
     const captured = shapeOfArrival({
       text: RESPONSE,
       status: 200,
@@ -950,22 +949,61 @@ describe("a credential changing under the same name", () => {
   it("reads an empty reference as no credential, whichever way it is spelled", () => {
     rememberToolSample("48", { ...WITH, credentialRef: "" }, sampleTicket());
     expect(recallToolSample("48", REV)?.credentialRef).toBeNull();
-    noteVaultChanged();
+    invalidateVault();
     expect(recallToolSample("48", REV)?.text).toBe(RESPONSE);
 
     const ticket = sampleTicket();
-    noteVaultChanged();
+    invalidateVault();
     rememberToolSample("49", { ...WITH, credentialRef: "" }, ticket);
     expect(recallToolSample("49", REV)?.text).toBe(RESPONSE);
   });
 
   // THE MODULE LISTENS FOR ITSELF, because a credential is edited from the Vault panel, the agent
   // editor and the picker inlined here, and the tool editor is mounted for at most one of those. A
-  // listener living in a component is absent exactly when the edit happens somewhere else.
+  // listener living in a component is absent exactly when the edit happens somewhere else. Every
+  // test above goes through `invalidateVault`, the entry point a mutation actually uses, so what is
+  // exercised is that seam and not a function called by hand.
   it("hears the change without anyone wiring it up", () => {
     rememberToolSample("47", WITH, sampleTicket());
-    window.dispatchEvent(new Event(VAULT_CHANGED_EVENT));
+    invalidateVault();
     expect(recallToolSample("47", REV)).toBeNull();
+  });
+
+  // ONE CHANGE IS ANNOUNCED TWICE. `refreshVault` notifies on the drop and again when the new list
+  // lands, so counting announcements counts one mutation as two: a sample captured between the two
+  // halves would be marked stale by the second half of the change it already describes.
+  it("does not count the second announcement of one change", () => {
+    invalidateVault();
+    const opened = formFromTool(toolRow({ credentialRef: "acme" }));
+    const captured = shapeOfArrival({
+      text: RESPONSE,
+      status: 200,
+      against: opened,
+      previous: null,
+    });
+    // The half of `refreshVault` that only says "the new list is here".
+    window.dispatchEvent(new Event(VAULT_CHANGED_EVENT));
+    expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
+
+    const ticket = sampleTicket();
+    window.dispatchEvent(new Event(VAULT_CHANGED_EVENT));
+    rememberToolSample("50", WITH, ticket);
+    expect(recallToolSample("50", REV)?.text).toBe(RESPONSE);
+  });
+
+  // AND A TOOL THAT NAMES NO CREDENTIAL IS NOT AFFECTED BY ANY VAULT EDIT. Prefixing the marker
+  // unconditionally meant a credential saved anywhere in the console refused a sample nothing could
+  // have invalidated: the save reports success and closes, and the response is silently not kept.
+  it("keeps a sample of a tool that names no credential", () => {
+    const opened = formFromTool(toolRow());
+    const captured = shapeOfArrival({
+      text: RESPONSE,
+      status: 200,
+      against: opened,
+      previous: null,
+    });
+    invalidateVault();
+    expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
   });
 });
 
@@ -1338,7 +1376,7 @@ describe("the two seams that have to clear it", () => {
     expect(call).not.toInclude("?");
     const assembled = save.slice(
       save.indexOf("sampleToRemember({"),
-      save.indexOf("});", save.indexOf("sampleToRemember({")),
+      save.indexOf("}),", save.indexOf("sampleToRemember({")),
     );
     expect(assembled).not.toInclude("?");
     for (const name of [

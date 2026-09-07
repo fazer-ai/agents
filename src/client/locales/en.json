@@ -296,6 +296,7 @@
     "login": "Login",
     "loginFailed": "Login failed",
     "logout": "Logout",
+    "logoutFailed": "Could not sign you out. Please try again.",
     "noAccount": "Don't have an account?",
     "or": "or",
     "password": "Password",

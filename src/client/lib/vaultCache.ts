@@ -103,6 +103,15 @@ export async function refreshVault(): Promise<VaultEntry[]> {
   }
 }
 
+// WHICH VAULT THIS TAB IS ON, as a number that moves when the vault is CHANGED and not when a
+// listener is merely told to re-read. `refreshVault` announces twice on purpose — once on the drop
+// and once when the new list lands — so counting notifications counts one mutation as two, and a
+// reader that pins something to "the vault as it was" would see it expire between the two halves of
+// a single refresh (round 15 of review).
+export function vaultRevision(): number {
+  return generation;
+}
+
 // Drop cached vault data (after a mutation, e.g. a VaultPanel delete) and notify listeners; the next
 // loadVault re-fetches.
 export function invalidateVault(): void {

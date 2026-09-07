@@ -34,7 +34,7 @@
 // WHAT THAT COSTS, stated rather than papered over: a reload, a second tab or a second machine gets
 // what it gets today, which is no offer and "Send a test request" as the way back.
 
-import { VAULT_CHANGED_EVENT } from "@/client/lib/vaultCache";
+import { VAULT_CHANGED_EVENT, vaultRevision } from "@/client/lib/vaultCache";
 
 export interface ToolSample {
   // The revision of the definition this response came back from, as the row's `updatedAt`. A sample
@@ -281,11 +281,23 @@ export function noteOperator(id: string | null): void {
 // place a sample lives: one is also on screen, in a form, with the definition it was captured
 // against recorded beside it, and that recording is what a save compares. Dropping the stored entry
 // leaves that copy untouched, so the save would put it straight back (round 14 of review).
+//
+// It is the vault's OWN revision and not a count of notifications, because `refreshVault` announces
+// twice for one change — on the drop and again when the new list lands — so a sample captured
+// between the two halves of a single refresh would be marked stale by the second half of the change
+// it already describes (round 15 of review).
 export function vaultGeneration(): number {
-  return vaultChangedAt;
+  return vaultRevision();
 }
 
+// What this tab had already reacted to, so the second announcement of one change is not a second
+// change.
+let vaultSeen = vaultRevision();
+
 export function noteVaultChanged(): void {
+  const now = vaultRevision();
+  if (now === vaultSeen) return;
+  vaultSeen = now;
   clock++;
   vaultChangedAt = clock;
   for (const [key, kept] of samples)

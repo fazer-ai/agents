@@ -3,8 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router";
 import { Badge, Button, Logo, Skeleton } from "@/client/components";
+import { useToast } from "@/client/components/Toast";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { afterLogout } from "@/client/lib/logout";
 
 // Standalone OAuth 2.1 consent screen (outside the app shell, like Login). /authorize parks a
 // pending authorization and redirects here with ?req=<id>; we fetch its details, the user approves
@@ -22,6 +24,7 @@ type Decision = "approve" | "deny";
 // biome-ignore lint/plugin/require-page-container: consent page renders its own centered layout outside <Layout>, so <PageContainer> does not apply
 export function OAuthConsentPage() {
   const { t } = useTranslation();
+  const { showToast } = useToast();
   const navigate = useNavigate();
   const { logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -134,10 +137,22 @@ export function OAuthConsentPage() {
   };
 
   const switchAccount = () => {
-    void logout().then(() =>
-      navigate(
-        `/login?redirect=${encodeURIComponent(`/oauth/consent?req=${req}`)}`,
-        { replace: true },
+    // The navigation is the SECOND half of switching, and it only means anything once the first one
+    // happened: `/login` sends a still-signed-in visitor straight back here as the same operator, so
+    // a failed logout made this button do nothing at all, silently.
+    void logout().then((ended) =>
+      afterLogout(
+        ended,
+        () =>
+          navigate(
+            `/login?redirect=${encodeURIComponent(`/oauth/consent?req=${req}`)}`,
+            { replace: true },
+          ),
+        () =>
+          showToast(
+            t("auth.logoutFailed", "Could not sign you out. Please try again."),
+            "error",
+          ),
       ),
     );
   };

@@ -25,17 +25,22 @@ mock.module("@/client/contexts/ThemeContext", () => ({
 }));
 
 import { Header } from "@/client/components/Header";
+import { ToastProvider } from "@/client/components/Toast";
 import { SidebarProvider } from "@/client/contexts/SidebarContext";
 
 function renderHeader(path = "/") {
   return render(
-    <TooltipPrimitive.Provider>
-      <MemoryRouter initialEntries={[path]}>
-        <SidebarProvider>
-          <Header />
-        </SidebarProvider>
-      </MemoryRouter>
-    </TooltipPrimitive.Provider>,
+    // The account menu inside tells the operator when a logout did not end the session, and
+    // `useToast` refuses to run outside its provider.
+    <ToastProvider>
+      <TooltipPrimitive.Provider>
+        <MemoryRouter initialEntries={[path]}>
+          <SidebarProvider>
+            <Header />
+          </SidebarProvider>
+        </MemoryRouter>
+      </TooltipPrimitive.Provider>
+    </ToastProvider>,
   );
 }
 

@@ -306,6 +306,7 @@
     "login": "Entrar",
     "loginFailed": "Falha ao entrar",
     "logout": "Sair",
+    "logoutFailed": "Não foi possível sair. Tente novamente.",
     "noAccount": "Não tem uma conta?",
     "or": "ou",
     "password": "Senha",

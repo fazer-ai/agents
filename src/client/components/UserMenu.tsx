@@ -12,9 +12,11 @@ import {
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
+import { useToast } from "@/client/components/Toast";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useTheme } from "@/client/contexts/ThemeContext";
 import { LANGUAGES } from "@/client/lib/languages";
+import { afterLogout } from "@/client/lib/logout";
 import { cn } from "@/client/lib/utils";
 
 // t('theme.auto', 'Auto')
@@ -33,19 +35,27 @@ const menuLabelCls = "px-2 py-1 font-medium text-text-muted text-xs uppercase";
 
 export function UserMenu() {
   const { t, i18n } = useTranslation();
+  const { showToast } = useToast();
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const emailLabelId = useId();
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-    } finally {
-      // NOTE: always navigate to /login; local session is cleared regardless of server response
-      navigate("/login");
-    }
-  };
+  const handleLogout = async () =>
+    // ONLY WHEN THE SESSION ACTUALLY ENDED. The cookie is HttpOnly, so a logout the server did not
+    // answer leaves the operator signed in, and navigating anyway sends them to `/login`, which
+    // bounces a signed-in visitor to `redirectTo`: the route they were on, gone, with nothing saying
+    // why. The decision is `afterLogout` and not an `if` here, because the consent page makes the
+    // same one.
+    afterLogout(
+      await logout(),
+      () => navigate("/login"),
+      () =>
+        showToast(
+          t("auth.logoutFailed", "Could not sign you out. Please try again."),
+          "error",
+        ),
+    );
 
   return (
     <DropdownMenuPrimitive.Root>

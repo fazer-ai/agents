@@ -413,7 +413,15 @@ export function requestShapeOf(payload: unknown): string {
 // was captured, and a save made after an edit to that vault finds a marker that no longer matches
 // (round 14 of review). NUL as the separator because no JSON `JSON.stringify` produces holds one.
 export function captureShapeOf(payload: unknown): string {
-  return `${vaultGeneration()}\u0000${requestShapeOf(payload)}`;
+  const shape = requestShapeOf(payload);
+  // ONLY FOR A TOOL THAT NAMES ONE. A definition with no credential cannot be changed by a vault
+  // edit, and prefixing it anyway made any credential saved anywhere in the console refuse a sample
+  // that nothing could have invalidated — round 6's over-rejection arriving through the marker
+  // (round 15 of review).
+  const ref = (payload as { credentialRef?: unknown } | null)?.credentialRef;
+  return typeof ref === "string" && ref !== ""
+    ? `${vaultGeneration()}\u0000${shape}`
+    : shape;
 }
 
 // WHICH DEFINITION THE SAMPLE ON SCREEN WAS CAPTURED AGAINST, decided in one place and returned,
@@ -1672,13 +1680,21 @@ export function ToolEditModal({
       // the copy that lives here (round 8 of review).
       // Null is `revisionForSave` saying there is nothing to keep: the sample describes another
       // definition, or neither revision is known.
-      const keep = sampleToRemember({
-        revision,
-        text: sample,
-        status: sampleStatus,
-        payload,
-      });
-      if (keep !== null) rememberToolSample(id, keep, ticket);
+      // UNCONDITIONALLY, null included, because null is the save saying there is nothing to keep and
+      // that is a thing the module has to hear: it is what deletes the entry that was there and
+      // marks the write. Guarded, a sample that stopped describing this definition was refused here
+      // and the previous one stayed in the map, holding a customer's response nobody can be served
+      // and occupying one of the eight slots (round 15 of review).
+      rememberToolSample(
+        id,
+        sampleToRemember({
+          revision,
+          text: sample,
+          status: sampleStatus,
+          payload,
+        }),
+        ticket,
+      );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
       // that has to hear about it, not the dialog now on screen. Nothing was written when nothing
       // was sent, so there is nothing for the list to hear either.

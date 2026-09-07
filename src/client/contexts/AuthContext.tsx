@@ -65,15 +65,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [mcpStdioEnabled, setMcpStdioEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // THE ONE TRANSITION TO UNAUTHENTICATED, and everything that ends a session goes through it: the
-  // explicit logout below, a 401 on any request, and the socket's auth-loss close, the last two via
-  // the `auth:unauthorized` event. The tool editor keeps the last saved sample response in memory
-  // (`client/lib/toolSample`), which is the customer's data; left behind, the next sign-in on this
-  // same tab would be offered the previous operator's responses (round 4 of review).
-  const clearUser = useCallback(() => {
-    setUser(null);
-    forgetToolSamples();
+  // THE ONLY CALLER OF `setUser`, and that is the point rather than a tidiness: what has to happen
+  // on every transition to unauthenticated is written once, where the transition IS, instead of at
+  // each of the places that can cause one. The tool editor keeps the last saved sample response in
+  // memory (`client/lib/toolSample`), which is the customer's data; left behind, the next sign-in on
+  // this same tab would be offered the previous operator's responses.
+  //
+  // Rounds 4 and 5 of review are the same finding twice, which is why this is a chokepoint now and
+  // not a third call added beside the other two. The paths that end a session are the explicit
+  // logout below, a 401 on any request and the socket's auth-loss close (both through the
+  // `auth:unauthorized` event), and a `/me` that answers with a null user, which is how a refresh
+  // observes a session the server has already ended. Only the first is spelled like a logout.
+  const applyUser = useCallback((next: User | null) => {
+    setUser(next);
+    if (next === null) forgetToolSamples();
   }, []);
+
+  const clearUser = useCallback(() => applyUser(null), [applyUser]);
 
   // NOTE: Shared /me fetch used at boot and for explicit refreshes (e.g. after
   // a /setup 409, where the server flipped to "setup complete" but this client
@@ -85,11 +93,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data, error } = await api.api.auth.me.get();
       if (data && !error) {
-        // NOTE: `setUser(data.user ?? null)` (not the prior conditional
+        // NOTE: `applyUser(data.user ?? null)` (not the prior conditional
         // `if (data.user)`) so a refresh() that observes a logged-out server
         // state clears any stale signed-in client state. The boot path is
         // unaffected (user defaults to null), but refresh() relies on this.
-        setUser(data.user ?? null);
+        applyUser(data.user ?? null);
         // NOTE: Seed the SUPER_ADMIN's active-tenant selector on first login/reload so the console
         // opens on a real tenant instead of an empty dashboard. Only fill a NULL selection (never
         // override a deliberate switch). `defaultTenantId` is the first accessible tenant (the one
@@ -137,7 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.warn("Failed to load auth state (transient)", error);
       return false;
     }
-  }, []);
+  }, [applyUser]);
 
   const refresh = useCallback(async () => {
     await fetchAuthState();
@@ -184,7 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // tenant). Non-super users, and browsers that already hold a stored selection, skip the wait.
     const awaitsTenantSeed =
       loggedInUser.role === "SUPER_ADMIN" && getActiveTenantId() === null;
-    setUser(loggedInUser);
+    applyUser(loggedInUser);
     // NOTE: A successful auth means at least one account exists, so first-run
     // setup is necessarily done. Clear the (boot-time) flag so SetupGate stops
     // redirecting to /setup, avoiding a redirect loop right after /setup.

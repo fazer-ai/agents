@@ -254,10 +254,13 @@ describe("a save that lands after the sample's life ended", () => {
 // TWO SOURCE FENCES, and they say so: what they can answer for is a grammar, not intent.
 describe("the two seams that have to clear it", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
-  // The transition to unauthenticated, not the logout REQUEST: a 401 on any call and the socket's
-  // auth-loss close both end the session without one, and they are the common paths. `setUser(null)`
-  // is what all of them come down to, so that is what is counted.
-  const SIGNS_OUT = /setUser\(\s*null\s*\)/;
+  // THE STATE SETTER, not any particular argument to it. Two review rounds walked past two earlier
+  // spellings of this fence: it asked for the logout REQUEST first (a 401 and the socket's auth-loss
+  // close end a session without one), then for `setUser(null)`, which `setUser(data.user ?? null)`
+  // is not, and that is the branch a `/me` takes when the server has already ended the session. Both
+  // times the fence was measuring a SPELLING and the tree had another one. So it counts calls to the
+  // raw setter and requires exactly one: the chokepoint that owns what a transition costs.
+  const SETS_USER = /setUser\(/g;
 
   // `codeOnly` rather than a stripper written here: comments AND string contents out, which is the
   // spelling this repo's own fence over sweeps requires (`tests/lib/source-text.test.ts`), and it
@@ -301,57 +304,41 @@ describe("the two seams that have to clear it", () => {
   // And losing the session empties the whole map, because a tab left on the login screen would
   // otherwise still hold the responses of the operator who just signed out of it, and the next
   // sign-in on that tab would be offered them.
-  it("every transition to unauthenticated empties what the tab remembers", async () => {
+  it("has exactly one place that can set the user, and it empties what the tab remembers", async () => {
     const files = await clientFiles();
-    const offenders: string[] = [];
-    let sites = 0;
+    const sites: string[] = [];
+    let calls = 0;
     for (const f of files) {
       const src = strip(await Bun.file(f).text());
-      if (!SIGNS_OUT.test(src)) continue;
-      sites++;
-      if (!FORGETS.test(src)) offenders.push(f);
+      const found = src.match(SETS_USER)?.length ?? 0;
+      if (found === 0) continue;
+      calls += found;
+      sites.push(f);
+      expect(FORGETS.test(src)).toBe(true);
     }
-    // ONE site, and that is the assertion, not a count that happens to be right: an explicit logout
-    // that clears the user by itself, beside a `clearUser` that also does, is exactly how one of the
-    // two paths ends up not clearing this. A 401 and the socket's auth-loss close both go through
-    // the second one.
-    expect(sites).toBe(1);
-    expect(offenders).toEqual([]);
+    // ONE call, and that is the assertion rather than a count that happens to be right: every second
+    // caller of the setter is a transition that has to remember to do this on its own, and both
+    // findings this fence exists for were exactly that.
+    expect(calls).toBe(1);
+    expect(sites).toEqual(["src/client/contexts/AuthContext.tsx"]);
   });
 
-  // THE EPOCH IS ONLY WORTH ANYTHING IF IT IS READ EARLY. Required by the signature, so `tsc`
-  // catches a call that omits it; what `tsc` cannot see is a call that reads it AT THE WRITE, which
-  // type-checks and always compares equal to itself. That is a question about ORDER, so it is asked
-  // of the source, and asked of the SAVE rather than of the file: `.v1.tools` appears in this module
-  // long before `save()` (the load, and the test-request dialog), so a whole-file index compares two
-  // unrelated positions and answers about neither.
-  it("reads the epoch before the request rather than at the write", async () => {
-    const src = codeOnly(
-      await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
-    );
-    const from = src.indexOf("async function save()");
-    expect(from).toBeGreaterThan(-1);
-    // To the end of that function: the next declaration at the same indent.
-    const rest = src.slice(from + 1);
-    const to = rest.search(/\n {2}(?:async )?function /);
-    const save = to === -1 ? rest : rest.slice(0, to);
-
-    const read = save.indexOf("sampleEpoch()");
-    const request = save.indexOf(".v1.tools");
-    const write = save.indexOf("rememberToolSample(");
-    // All three are inside `save`, so a rename or a move fails here instead of passing on -1s.
-    expect(read).toBeGreaterThan(-1);
-    expect(request).toBeGreaterThan(-1);
-    expect(write).toBeGreaterThan(-1);
-    expect(read).toBeLessThan(request);
-    // And the write is handed a NAME: `sampleEpoch()` inline would read it after everything the
-    // request took, which is the same as not having it at all.
-    const call = save.slice(
-      write,
-      save.indexOf(")", save.indexOf("epoch", write)),
-    );
-    expect(call).not.toInclude("sampleEpoch");
-    expect(call).toInclude("epoch");
+  // The positive control for the fence above, in the shape that got past its two earlier spellings.
+  it("counts a setter call whatever is passed to it", () => {
+    const spellings = [
+      "setUser(null);",
+      "setUser(data.user ?? null);",
+      "setUser(loggedInUser);",
+      "setUser(next);",
+    ];
+    for (const line of spellings)
+      expect(strip(line).match(/setUser\(/g)?.length ?? 0).toBe(1);
+    // And the declaration is not a call, or the chokepoint would count as its own second caller.
+    expect(
+      strip("const [user, setUser] = useState<User | null>(null);").match(
+        /setUser\(/g,
+      ),
+    ).toBeNull();
   });
 
   it("catches a delete that forgets, over the three ways it could look like it did not", () => {

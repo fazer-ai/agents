@@ -1979,4 +1979,97 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await suDb.inboxObserver.deleteMany({ where: { inboxId: inbox.id } });
     }
   });
+  // A PENDING ROW IS NOT A BINDING FOR THE BULK REATTACH TO ASSERT (issue #540, PR review round 2).
+  // Attached upstream by this loop, it would leave the fork delivering to a bot whose row still says
+  // "attaching" — which the observe tick and the receiver believe indefinitely, so the tick retries
+  // for good. Stamping it here instead is worse: the call that wrote it can still be refused, and a
+  // stamp survives its compensation and its detach, leaving a row for an observe that was turned
+  // down. Skipped, both sides say the same thing, and observing again is the repair.
+  test("the bulk reattach passes over an observer row Chatwoot never confirmed", async () => {
+    const vigia = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Vigia pendente",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    const settled = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 74,
+        name: "Confirmada",
+      },
+      select: { id: true, chatwootInboxId: true },
+    });
+    const stuck = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 75,
+        name: "Pendente",
+      },
+      select: { id: true, chatwootInboxId: true },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({ observerRoute: true, observing });
+    await observeInbox(ctx(tenantId), settled.id, vigia.id, cw, appDb);
+    // What a process death between the pending write and the attach leaves behind.
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: stuck.id,
+        agentId: vigia.id,
+        attachedAt: null,
+      },
+    });
+
+    observing.clear();
+    const botRow = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, agentId: vigia.id },
+      select: { chatwootAgentBotId: true },
+    });
+    const healed = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      deletedBots: new Set([botRow.chatwootAgentBotId]),
+      firstBot: 90,
+    });
+    await observeInbox(ctx(tenantId), settled.id, vigia.id, healed, appDb);
+    const newBot = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, agentId: vigia.id },
+      select: { chatwootAgentBotId: true },
+    });
+    // The confirmed binding is put back; the unconfirmed one is left where it is.
+    expect(observing).toEqual(
+      new Set([`${settled.chatwootInboxId}:${newBot.chatwootAgentBotId}`]),
+    );
+    expect(
+      (
+        await suDb.inboxObserver.findFirstOrThrow({
+          where: { tenantId, inboxId: stuck.id, agentId: vigia.id },
+          select: { attachedAt: true },
+        })
+      ).attachedAt,
+    ).toBeNull();
+
+    // ...and observing it again is what settles both sides.
+    await observeInbox(ctx(tenantId), stuck.id, vigia.id, healed, appDb);
+    expect(
+      observing.has(`${stuck.chatwootInboxId}:${newBot.chatwootAgentBotId}`),
+    ).toBe(true);
+    expect(
+      (
+        await suDb.inboxObserver.findFirstOrThrow({
+          where: { tenantId, inboxId: stuck.id, agentId: vigia.id },
+          select: { attachedAt: true },
+        })
+      ).attachedAt,
+    ).not.toBeNull();
+
+    await unobserveInbox(ctx(tenantId), settled.id, vigia.id, healed, appDb);
+    await unobserveInbox(ctx(tenantId), stuck.id, vigia.id, healed, appDb);
+  });
 });

@@ -1575,6 +1575,19 @@ async function ensureAgentBotAndReattach(
           ? {}
           : { inboxId: { not: opts.skipInboxId } }),
         inbox: { chatwootInstanceId: instanceId },
+        // CONFIRMED BINDINGS ONLY (issue #540, PR review round 2). A pending row is an observe that
+        // has not finished, and this loop is the wrong owner for it in both directions. Attaching it
+        // upstream leaves the fork delivering to a bot whose row still says "attaching", which every
+        // reader added by window 5 believes indefinitely: the observe tick retries forever and the
+        // receiver keeps reporting a window that will never close. Stamping it here instead would be
+        // worse — the call that wrote it can still be refused, and a stamp survives its compensation
+        // (which only deletes UNSTAMPED rows) and its detach (which skips a binding that stands),
+        // leaving a row for an observe that was turned down.
+        //
+        // Skipped, the two sides agree: no attachment upstream, and a row that says the observe
+        // never completed. The repair is the one the console already offers for it — observing
+        // again, which asks the fork and stamps the row in its own transaction.
+        attachedAt: { not: null },
       },
       select: { inboxId: true, inbox: { select: { chatwootInboxId: true } } },
     }),

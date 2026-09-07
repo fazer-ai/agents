@@ -5,6 +5,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
+  fillLedgerTranscribedMessage,
   processChatwootDelivery,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
@@ -594,6 +595,86 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
       select: { inboundMessageId: true },
     });
     expect(row?.inboundMessageId).toBeNull();
+  });
+
+  // WHEN THE WORDS ARE OURS, NOT THE WIRE'S (issue #478 review, round 3). `ledgerFactsOf` runs before
+  // the eager pass and reads the payload: on the update that brings an audio nobody has transcribed
+  // yet it writes no message id, correctly — there were no words. The pass then pays a provider for
+  // them and stashes them on the event, and from that instant this delivery owes an append that only
+  // the row could name. So the row learns it there, and these are the two rules that fill has.
+  test("the ledger learns a message whose words the eager pass produced", async () => {
+    const rowId = await newDeliveryRow();
+    const n = lateAudio(6011, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await fillLedgerTranscribedMessage(tenantId, rowId, n, appDb);
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { inboundMessageId: true },
+    });
+    expect(row.inboundMessageId).toBe(6011);
+  });
+
+  // FILL-ONLY, never an overwrite, which is the same rule the legacy fill has and for the same
+  // reason: a row that already names its message names the right one, and a later write could only
+  // move it. And nothing to fill from an update with no words — the pass produced none.
+  test("the fill never moves a message the row already names, and needs words", async () => {
+    const taken = await newDeliveryRow();
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: taken },
+      data: { inboundMessageId: 4242 },
+    });
+    const withWords = lateAudio(6012, { transcribed: true });
+    const without = lateAudio(6013, { transcribed: false });
+    if (!withWords || !without)
+      throw new Error("unreachable: the fixtures are valid");
+
+    await fillLedgerTranscribedMessage(tenantId, taken, withWords, appDb);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: taken },
+          select: { inboundMessageId: true },
+        })
+      ).inboundMessageId,
+    ).toBe(4242);
+
+    const empty = await newDeliveryRow();
+    await fillLedgerTranscribedMessage(tenantId, empty, without, appDb);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: empty },
+          select: { inboundMessageId: true },
+        })
+      ).inboundMessageId,
+    ).toBeNull();
+  });
+
+  // WHERE THE FILL IS CALLED FROM, read off the source. The two cases above prove the rules; this
+  // one proves the wiring, and it is read rather than driven because driving it means a vault
+  // credential and an HTTP fake of a provider — the STT registry is a frozen map, so no stub can be
+  // registered. What matters is the POSITION: inside the branch that just produced a transcription,
+  // before the statement after it, because from there on the words exist nowhere durable but the row.
+  test("the fill sits in the branch that produced the transcription", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url)
+        .pathname,
+    ).text();
+    const stash = src.indexOf("n.message.transcribedText = text;");
+    expect(stash).toBeGreaterThan(-1);
+    const fill = src.indexOf("fillLedgerTranscribedMessage(", stash);
+    expect(fill).toBeGreaterThan(stash);
+    // Nothing between them but the assignment itself, comments, and the fill's own `await`: no other
+    // call, no branch, nothing that could be skipped or that could throw first.
+    const between = src
+      .slice(stash, fill)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("//"))
+      .join(" ");
+    expect(between).toBe("n.message.transcribedText = text; await");
   });
 
   // The gate is what the analysis PRODUCED, not the event's shape: an update carrying an audio

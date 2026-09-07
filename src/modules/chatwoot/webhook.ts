@@ -1073,6 +1073,40 @@ interface LedgerFacts {
   humanReplyMessageId: number | null;
 }
 
+// The one late write to `inboundMessageId`, for the delivery whose words this process produced
+// rather than received (issue #478 review, round 3). Guarded on the column still being null, which
+// is the same rule the legacy fill uses and the reason a redelivery cannot move a value.
+//
+// Only for an UPDATE that now carries a transcription. A creation's id was decided at INSERT from
+// what a creation is, and filling one here could only write an id onto a row that was right to have
+// none. Best-effort in the sense that a failure is logged and not thrown: the delivery is still
+// doing its work, and what is lost is the recoverability of a process death that has not happened.
+export async function fillLedgerTranscribedMessage(
+  tenantId: bigint,
+  deliveryRowId: bigint | null,
+  n: NormalizedChatwootEvent,
+  base: PrismaClient,
+): Promise<void> {
+  const messageId = n.message?.id;
+  if (deliveryRowId === null || messageId == null) return;
+  if (inboundTranscriptionOnUpdate(n) === null) return;
+  try {
+    await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: deliveryRowId, inboundMessageId: null },
+        data: { inboundMessageId: messageId },
+      }),
+    );
+  } catch (err) {
+    logger.warn(
+      "chatwoot: the ledger could not record the transcribed message %d (delivery row %s): %s",
+      messageId,
+      String(deliveryRowId),
+      errMsg(err),
+    );
+  }
+}
+
 function ledgerFactsOf(
   n: NormalizedChatwootEvent,
   routeAgentBotId: number | null,
@@ -1341,6 +1375,15 @@ export interface EagerMediaOwner {
   // stays primary, for the reason the command fallback gives: an inbox the payload DID name is an
   // answer, and the stored one may be where the conversation was before this event.
   chatwootInboxId: number | null;
+  // The ledger row this delivery is working, so the row can learn what the pass PRODUCED
+  // (issue #478 review, round 3). `ledgerFactsOf` runs before this and reads the wire: on the update
+  // that brings an audio nobody has transcribed yet, it writes no message id, correctly — there were
+  // no words. The pass then pays a provider for them and stashes them on the event, and from that
+  // instant the delivery owes an append that only this row could name. A death in between leaves a
+  // `message_updated` with a null id, which the sweep closes as carrying nothing.
+  //
+  // Null where the caller has no row to fill — nothing outside `processChatwootDelivery` does.
+  deliveryRowId: bigint | null;
 }
 
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
@@ -1418,7 +1461,18 @@ export async function runEagerMedia(
             base,
             flow: flow(),
           });
-          if (text) n.message.transcribedText = text;
+          if (text) {
+            n.message.transcribedText = text;
+            // FILL-ONLY, and immediately: the next statement can throw, and from here on the words
+            // exist nowhere durable but this row. Never an overwrite — a row that already names its
+            // message names the right one, and `ledgerFactsOf` is the only other writer.
+            await fillLedgerTranscribedMessage(
+              tenantId,
+              owner.deliveryRowId,
+              n,
+              base,
+            );
+          }
         }
       } catch (err) {
         logger.warn("stt failed (conv=%s): %s", convLabel, errMsg(err));
@@ -3977,14 +4031,17 @@ export async function processChatwootDelivery(
       n.conversationId,
       // A customer message is named by the inbound column; a colleague's reply, which is outgoing,
       // by the one the takeover recovery reads.
-      // A TRANSCRIBED UPDATE NAMES THE SAME INBOUND MESSAGE (issue #478 review, round 1). It is not
-      // a creation, so without this clause the sibling could not be named and the check answered
-      // "not covered" without looking — and the observer then ingested a message the responder's own
-      // `message_created` delivery had already handled, which the dedup window cannot catch because
-      // a turn-handled id never enters it. Same message, same column, same question.
+      // AN UPDATE OF A CUSTOMER MESSAGE NAMES THAT SAME MESSAGE (issue #478 review, rounds 1 and 3).
+      // It is not a creation, so without this clause the sibling could not be named and the check
+      // answered "not covered" without looking. Both shapes an update comes in are the same message
+      // by the same customer, and both cost something when the observer does not stand down: the
+      // TRANSCRIBED one ingests a message the responder's own `message_created` delivery already
+      // handled, which the dedup window cannot catch because a turn-handled id never enters it; the
+      // RAW one sends the audio to STT a second time, so the same voice note is paid for twice and
+      // two write-backs race over the same annotation. Same message, same column, same question.
       n.message?.id == null
         ? null
-        : isNewIncoming || lateTranscriptionUpdate
+        : isNewIncoming || lateTranscriptionUpdate || hasLateMedia
           ? { id: n.message.id, column: "inbound" as const }
           : mayBeHumanReply
             ? { id: n.message.id, column: "humanReply" as const }
@@ -4696,6 +4753,7 @@ export async function processChatwootDelivery(
       agentId: rt.agentId,
       inboxId: rt.inboxId,
       chatwootInboxId: rt.chatwootInboxId,
+      deliveryRowId: params.deliveryRowId,
     });
   }
 
@@ -4827,6 +4885,7 @@ export async function processChatwootDelivery(
         agentId: rt?.agentId ?? null,
         inboxId: rt?.inboxId ?? null,
         chatwootInboxId: rt?.chatwootInboxId ?? null,
+        deliveryRowId: params.deliveryRowId,
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -5227,6 +5286,7 @@ export async function processChatwootDelivery(
       agentId: rt.agentId,
       inboxId: rt.inboxId,
       chatwootInboxId: rt.chatwootInboxId,
+      deliveryRowId: params.deliveryRowId,
     });
   }
   // THE OBSERVER'S OWN REASON TO MARK is its ingestion having the message (issue #209 review,

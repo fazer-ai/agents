@@ -632,6 +632,160 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     ).toBeNull();
   });
 
+  // THE SAME STAND-DOWN, ON THE UPDATE THAT BRINGS THE AUDIO (issue #478 review, round 3). Where the
+  // binding is newer than the event, the check cannot answer from the clocks and looks for the
+  // responder's own delivery of this message in the ledger — which it can only do if the event NAMES
+  // the message. A `message_updated` is not a creation, so it was named nothing and the check
+  // returned "not covered" without looking: the observer's pass then transcribed an audio the
+  // responder's route was already transcribing, two provider bills and two writes racing into the
+  // same attachment.
+  test("beside a responder, the observer stands down on the update that brings the audio too", async () => {
+    const OBSERVER_BOT_ID = 81;
+    const RESPONDER_BOT_ID = 82;
+    const OBS_INBOX_ID = 4415;
+    const OBS_CONV_ID = 9716;
+    const MESSAGE_ID = 5006;
+    const watcher = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Observadora 3",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "monitoring",
+        settings: { stt: { enabled: true, provider: "openai" } },
+      },
+      select: { id: true },
+    });
+    const responder = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Respondedora 3",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "production",
+        settings: { stt: { enabled: true, provider: "openai" } },
+      },
+      select: { id: true },
+    });
+    for (const [agentId, botId, name] of [
+      [watcher.id, OBSERVER_BOT_ID, "Observadora 3"],
+      [responder.id, RESPONDER_BOT_ID, "Respondedora 3"],
+    ] as const) {
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId,
+          chatwootAgentBotId: botId,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `eager-upd-${botId}-${process.pid}`,
+          name,
+        },
+      });
+    }
+    const shared = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OBS_INBOX_ID,
+        name: "Compartilhada 2",
+        agentId: responder.id,
+        // Newer than the event, which is what forces the sibling lookup instead of a clock answer.
+        responderBoundAt: new Date(),
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.create({
+      data: { tenantId, inboxId: shared.id, agentId: watcher.id },
+    });
+    // The responder's own delivery of this message, as the receiver records it: unclaimed, which is
+    // a row whose work is still ahead of it.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `eager-upd-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: OBS_CONV_ID,
+        inboundMessageId: MESSAGE_ID,
+        routeAgentBotId: RESPONDER_BOT_ID,
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_updated",
+      id: MESSAGE_ID,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      // RAW: no `transcribed_text`, which is the audio arriving late rather than our write-back
+      // coming around.
+      attachments: [
+        {
+          id: 93,
+          file_type: "audio",
+          data_url: "https://chat.eager.example/audio/93.ogg",
+        },
+      ],
+      conversation: {
+        id: OBS_CONV_ID,
+        inbox_id: OBS_INBOX_ID,
+        status: "open",
+        contact_inbox: { id: 60_000 + OBS_CONV_ID },
+        meta: {
+          assignee_type: "User",
+          assignee: { id: 9, name: "Humana" },
+          sender: { id: 24, name: "Cliente" },
+        },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000) - 120,
+      },
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `eager-media-upd-${process.pid}`,
+        event: "message_updated",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OBSERVER_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeClient: (async () =>
+          ({
+            downloadAttachment: async () => {
+              throw new Error("the audio must not be downloaded");
+            },
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => {
+          throw new Error("an observer's delivery must not run a turn");
+        },
+      },
+    });
+    const threadId = `${tenantId}:${instanceId}:${OBS_CONV_ID}`;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      await flowLogRow(suDb, {
+        where: { tenantId, threadId, stage: "stt" },
+        select: { agentId: true },
+      }),
+    ).toBeNull();
+  });
+
   test("names them on the answer path too, where a test-mode episode gets its media", async () => {
     const n = normalizeChatwootEvent({
       event: "message_created",

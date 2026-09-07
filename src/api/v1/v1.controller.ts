@@ -44,6 +44,15 @@ import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.conversationNotFound', 'Conversation not found.')
 // translate('errors.reengageNoAgent', 'No agent is bound to the inbox of this conversation.')
+// translate('errors.returnNoResponder', 'No responder is bound to the inbox of this conversation.')
+// translate('errors.returnAgentOff', 'The responder of this inbox is switched off.')
+// translate('errors.returnAgentObserves', 'The responder of this inbox observes; it does not answer.')
+// translate('errors.returnAgentNoBot', 'The responder of this inbox has no bot on this Chatwoot; reconnect the instance.')
+// translate('errors.returnAgentNotAttached', 'The responder of this inbox is not attached in Chatwoot; reconnect the inbox.')
+// translate('errors.returnAgentNotRunnable', 'The responder of this inbox cannot run; check its model credential.')
+// translate('errors.returnAgentTestSilent', 'The responder of this inbox is in test mode and has not been activated on this conversation.')
+// translate('errors.returnConversationMoved', 'This conversation moved to another inbox while it was being returned; try again.')
+// translate('errors.returnResponderChanged', 'The responder of this inbox changed while the conversation was being returned; try again.')
 // translate('errors.tenantConfirmMismatch', 'The name confirmation does not match.')
 
 // NOTE: requireAuth guarantees a user, and tenancyPlugin derives tenantContext from it, so
@@ -529,7 +538,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 409),
     },
   )
   .post(

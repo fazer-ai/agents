@@ -652,6 +652,7 @@ describe.skipIf(!dbUp)(
           assigneeId: null,
           assigneeName: null,
           lastActivityAt: new Date(updatedAt * 1000),
+          inboxId: null,
           updatedAt,
           latestMessageId: null,
         },

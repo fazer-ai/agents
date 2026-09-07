@@ -367,6 +367,13 @@ describe.skipIf(!dbUp)(
           name: "Atendente",
           systemPrompt: "x",
           mode: "test",
+          // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
+          // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+          modelConfig: {
+            provider: "openai-compatible",
+            model: "local",
+            baseURL: "https://llm.example.invalid/v1",
+          },
         },
       });
       const inbox = await suDb.inbox.create({
@@ -687,6 +694,13 @@ describe.skipIf(!dbUp)(
             name: "Atendente",
             systemPrompt: "x",
             mode: "test",
+            // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
+            // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+            modelConfig: {
+              provider: "openai-compatible",
+              model: "local",
+              baseURL: "https://llm.example.invalid/v1",
+            },
           },
         });
         const inbox = await suDb.inbox.create({

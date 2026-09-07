@@ -162,3 +162,57 @@ test("a maximum height reaches the editor, and is absent when not asked for", ()
     ?.parentElement as HTMLElement;
   expect(bare?.className ?? "").not.toContain("max-h-");
 });
+
+// AND A CALLER THAT WRITES AT THE CARET NEEDS THE VIEW (issue #563).
+//
+// The template field keeps the picker #462 shipped, which inserts a token where the cursor is. In a
+// textarea that is `selectionStart` and a string splice; in CodeMirror it is a dispatch, and the
+// caller cannot make one without the view. Handed over rather than reached for: the alternative is
+// `EditorView.findFromDOM` on a query the caller writes, which is a second, silent coupling to this
+// component's markup.
+//
+// The `null` on unmount is the half that matters: a caller holding a destroyed view dispatches into
+// nothing, and CodeMirror throws rather than ignoring it.
+test("the view is handed to the caller, and taken back when it goes", () => {
+  const seen: (EditorView | null)[] = [];
+  const { unmount } = render(
+    <CodeMirrorField
+      value=""
+      onChange={() => {}}
+      onView={(v) => seen.push(v)}
+      aria-label="Field"
+    />,
+  );
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toBe(viewNow());
+  act(() => {
+    (seen[0] as EditorView).dispatch({ changes: { from: 0, insert: "x" } });
+  });
+  expect(viewNow().state.doc.toString()).toBe("x");
+
+  unmount();
+  expect(seen.at(-1)).toBeNull();
+});
+
+// A FRESH LAMBDA IS NOT A NEW EDITOR. The caller writes this inline, so it is a new function on
+// every render; depending on it would rebuild the editor per keystroke of the form around it.
+test("a caller that rebuilds its callback keeps the same view", () => {
+  const { rerender } = render(
+    <CodeMirrorField
+      value=""
+      onChange={() => {}}
+      onView={() => {}}
+      aria-label="Field"
+    />,
+  );
+  const first = viewNow();
+  rerender(
+    <CodeMirrorField
+      value=""
+      onChange={() => {}}
+      onView={() => {}}
+      aria-label="Field"
+    />,
+  );
+  expect(viewNow()).toBe(first);
+});

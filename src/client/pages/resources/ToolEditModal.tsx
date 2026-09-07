@@ -372,6 +372,37 @@ type ToolForm = ReturnType<typeof emptyForm>;
 //
 // `null` when the headers are not parseable JSON, which is a client-side check with no server
 // sentence behind it.
+// WHAT THE SAMPLE DESCRIBES, as the part of the definition that decides WHICH RESPONSE comes back.
+// A sample captured by "Send a test request" and then followed by an edit to the URL, the method,
+// the headers, the body, the query or the credential is a response to a call the tool no longer
+// makes: saved, it would pass the revision check (the save is what set that revision) and go on
+// offering paths that describe an endpoint nobody calls (round 12 of review).
+//
+// An EXCLUSION list, not an inclusion one, and the direction is the point: a field added later
+// counts as response-affecting until someone says otherwise, so the failure is a sample dropped too
+// eagerly rather than a stale one kept. What is excluded is what cannot change the bytes the API
+// sends back: the tool's names, how the reply is projected for the model, and what the runtime does
+// with it afterwards.
+const NOT_RESPONSE_AFFECTING = new Set([
+  "name",
+  "label",
+  "description",
+  "outputSchema",
+  "expectedStatuses",
+  "ackEnabled",
+  "ackMessage",
+  "appointment",
+]);
+
+export function requestShapeOf(payload: unknown): string {
+  if (payload === null || typeof payload !== "object") return "";
+  const kept: Record<string, unknown> = {};
+  for (const key of Object.keys(payload as Record<string, unknown>).sort())
+    if (!NOT_RESPONSE_AFFECTING.has(key))
+      kept[key] = (payload as Record<string, unknown>)[key];
+  return JSON.stringify(kept);
+}
+
 // WHETHER THIS SAVE HAS ANYTHING FOR THE SERVER. The sample is part of the form since #566, so
 // pasting one is an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing
 // about it: with the persisted half untouched, a PATCH would rewrite the whole definition from a
@@ -405,7 +436,12 @@ export function sendsNothing(args: {
 export function revisionForSave(
   row: { updatedAt: unknown } | null,
   opened: string | null,
+  // Whether the sample on screen still describes the definition being saved. False is not a
+  // revision at all rather than a different one: there is nothing to keep, and folding it in here
+  // is what makes the caller's guard load-bearing instead of a second judgement beside it.
+  describesThis: boolean,
 ): string | null {
+  if (!describesThis) return null;
   return row ? String(row.updatedAt) : opened;
 }
 
@@ -1295,8 +1331,21 @@ export function ToolEditModal({
   const sampleStatus = form.sampleStatus;
   // Always together: a body and the status it is judged under are one fact, and setting the text
   // while leaving the previous run's status judges this body by that one's.
+  // The definition the sample on screen describes, recorded when it is put there. Null when there
+  // is no sample, or when it came back from this tab's memory (where it is already matched to a
+  // revision, which is the same question asked at the other end).
+  const sampleShapeRef = useRef<string | null>(null);
+
   const setSample = (text: string, status: number | null) =>
-    setForm((f) => ({ ...f, sample: text, sampleStatus: status }));
+    setForm((f) => {
+      const next = { ...f, sample: text, sampleStatus: status };
+      // Recorded from the form this sample is being put INTO, inside the updater so it is the state
+      // React is about to commit and not a render behind it.
+      sampleShapeRef.current = text.trim()
+        ? requestShapeOf(payloadOf(next))
+        : null;
+      return next;
+    });
 
   const [apptPicker, setApptPicker] = useState<
     "id" | "start" | "summary" | null
@@ -1392,6 +1441,7 @@ export function ToolEditModal({
           }
           const initial = formFromTool(data.tool);
           setForm(initial);
+          sampleShapeRef.current = null;
           baselineRef.current = JSON.stringify(initial);
           openedRevisionRef.current = String(data.tool.updatedAt);
         } catch {
@@ -1407,6 +1457,7 @@ export function ToolEditModal({
       setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
+      sampleShapeRef.current = null;
       baselineRef.current = JSON.stringify(initial);
       // A create has no revision yet, and no persisted half to compare against either.
       openedRevisionRef.current = null;
@@ -1494,7 +1545,15 @@ export function ToolEditModal({
         return;
       }
       const row = saved?.data?.tool ?? null;
-      const revision = revisionForSave(row, openedRevisionRef.current);
+      // A SAMPLE THAT NO LONGER DESCRIBES THIS DEFINITION IS NOT KEPT: captured against one URL and
+      // saved after the URL changed, it would pass the revision check, because this very save is
+      // what set that revision.
+      const revision = revisionForSave(
+        row,
+        openedRevisionRef.current,
+        sampleShapeRef.current === null ||
+          sampleShapeRef.current === requestShapeOf(payload),
+      );
       const id = row?.id ?? (editId as string);
       // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).
       // Here rather than on every keystroke, so what comes back is the sample the tool was last
@@ -1503,11 +1562,8 @@ export function ToolEditModal({
       // Handed over whole, with no judgement here about whether it is worth keeping: what counts as
       // nothing is the module's rule, and it was written in both places until a mutation walked past
       // the copy that lives here (round 8 of review).
-      // DEFENSIVE AND UNREACHABLE, which is said out loud because a mutation that deletes this guard
-      // survives the battery and a reader deserves to know that was understood rather than missed:
-      // `revisionForSave` answers null only when neither the row nor the opened revision is known,
-      // and the gate above sends the request whenever the opened revision is not. The type system
-      // cannot see that chain.
+      // Null is `revisionForSave` saying there is nothing to keep: the sample describes another
+      // definition, or neither revision is known.
       if (revision !== null)
         rememberToolSample(
           id,

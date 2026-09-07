@@ -56,6 +56,37 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+// ENDING A SESSION IS THE SERVER'S ANSWER, not the request being made.
+//
+// The cookie is HttpOnly, so only the response's `Set-Cookie` can end a session: a logout that did
+// not get one leaves the operator signed in on the server while the console shows the login screen.
+// On a shared device that is the failure that matters, and a reload brings the session back for
+// whoever is sitting there (round 12 of review, issue #566).
+//
+// The error arrives as a VALUE, which is why the previous shape (`await`, then clear, with a
+// `catch`) cleared anyway: measured against the treaty with a fetcher that rejects, it answers
+// `{ data: null, error }` rather than raising, so the `catch` only ever saw the rarer case where the
+// client itself throws. Both are handled here.
+//
+// A function taking its two effects rather than a method on the provider, because the provider
+// cannot be rendered in this suite to test it: another file mocks this whole module for the process
+// (`mock.module`), so a test that renders the real `AuthProvider` gets that stub instead.
+export async function performLogout(
+  post: () => Promise<{ error?: unknown }>,
+  endSession: () => void,
+): Promise<void> {
+  try {
+    const { error } = await post();
+    if (error) {
+      console.error("Logout failed", error);
+      return;
+    }
+    endSession();
+  } catch (e) {
+    console.error("Logout failed", e);
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [providers, setProviders] = useState<AuthProviders>({});
@@ -214,18 +245,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logout = async () => {
-    try {
-      await api.api.auth.logout.post();
-    } catch {
-      console.error("Logout failed");
-    } finally {
-      // In the `finally`, and through `clearUser`: a logout whose request failed is still a logout
-      // as far as the person in front of the screen is concerned, and the clearing this owes is the
-      // same one every other way of losing the session owes.
-      clearUser();
-    }
-  };
+  const logout = () =>
+    performLogout(() => api.api.auth.logout.post(), clearUser);
 
   if (loading) {
     return (

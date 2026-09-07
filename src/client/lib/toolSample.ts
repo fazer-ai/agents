@@ -82,6 +82,11 @@ const samples = new Map<string, ToolSample>();
 let clock = 0;
 let clearedAt = 0;
 const forgottenAt = new Map<string, number>();
+// When each key was last written, so a response that was already on the wire cannot land on top of
+// a newer one. Dismiss a slow save, reopen the same tool and save again: the first response arrives
+// last and would put the older opening's sample back, and the revision cannot tell them apart when
+// the second opening loaded the revision the first save committed (round 12 of review).
+const writtenAt = new Map<string, number>();
 
 // The identity the entries belong to. `undefined` is "nobody has said yet", which is not the same
 // as a signed-out `null`: the first thing the console says on boot is a real answer either way, and
@@ -156,6 +161,11 @@ export function rememberToolSample(
   if (clearedAt > since.at) return;
   const forgotten = forgottenAt.get(key);
   if (forgotten !== undefined && forgotten > since.at) return;
+  // A newer save already answered for this tool, so this one is an older opening's answer.
+  const written = writtenAt.get(key);
+  if (written !== undefined && written > since.at) return;
+  clock++;
+  writtenAt.set(key, clock);
   // DELETED FIRST AND UNCONDITIONALLY, which is also what re-dates the entry: `Map` keeps insertion
   // order, so deleting before setting is what makes the eviction below drop the least recently
   // saved rather than the first one ever saved.
@@ -217,6 +227,7 @@ function forgetToolSamples(): void {
   clearedAt = clock;
   samples.clear();
   // Nothing older than a global clear can be accepted anyway, so the per-tool marks are dead weight
-  // from here: this is what keeps that map from growing one entry per tool ever deleted in this tab.
+  // from here: this is what keeps those maps from growing one entry per tool touched in this tab.
   forgottenAt.clear();
+  writtenAt.clear();
 }

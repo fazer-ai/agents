@@ -11,6 +11,7 @@ import {
 import {
   formFromTool,
   payloadOf,
+  requestShapeOf,
   revisionForSave,
   sendsNothing,
   templatePreviewFor,
@@ -147,6 +148,34 @@ describe("what the editor opens with", () => {
   // ROUND 11: pasting a sample is an unsaved change, so Save is how it is kept, and `payloadOf`
   // sends nothing about it. A PATCH for that would rewrite the whole definition from a form loaded
   // before someone else's edit, and advance `updatedAt` for a change the row does not contain.
+  // ROUND 12: a sample captured by a test request, then an edit to the URL before the save. Saved,
+  // it would pass the revision check, because this very save is what set that revision.
+  it("tells a definition that changes the response from one that does not", () => {
+    const base = payloadOf(formFromTool(toolRow()));
+    const same = (over: Record<string, unknown>) =>
+      requestShapeOf({ ...(base as object), ...over }) === requestShapeOf(base);
+    // These cannot change the bytes the API sends back.
+    expect(same({ label: "Outro nome" })).toBe(true);
+    expect(same({ name: "outro_nome" })).toBe(true);
+    expect(same({ outputSchema: { mode: "template", template: "Oi" } })).toBe(
+      true,
+    );
+    expect(same({ ackEnabled: true })).toBe(true);
+    expect(same({ expectedStatuses: [404] })).toBe(true);
+    // And these do.
+    expect(same({ urlTemplate: "https://api.example.com/outro" })).toBe(false);
+    expect(same({ method: "GET" })).toBe(false);
+    expect(same({ headers: { "X-A": "1" } })).toBe(false);
+    expect(same({ query: { a: "1" } })).toBe(false);
+    expect(same({ body: { mode: "raw", raw: "{}" } })).toBe(false);
+    expect(same({ credentialRef: "vault:1" })).toBe(false);
+    // A field nobody has classified counts as response-affecting: the sample is dropped too
+    // eagerly rather than kept when it is stale.
+    expect(same({ somethingNew: 1 })).toBe(false);
+    // Key order is not a change.
+    expect(requestShapeOf({ b: 1, a: 2 })).toBe(requestShapeOf({ a: 2, b: 1 }));
+  });
+
   it("sends nothing when only the sample changed, and sends when the definition did", () => {
     const opened = formFromTool(toolRow());
     const baseline = JSON.stringify(opened);
@@ -198,14 +227,17 @@ describe("what the editor opens with", () => {
 
   it("writes the revision the save returned, and the opened one when it sent nothing", () => {
     // The save moved the revision, so the row that came back is the only one the entry can describe.
-    expect(revisionForSave({ updatedAt: NEWER }, REV)).toBe(NEWER);
+    expect(revisionForSave({ updatedAt: NEWER }, REV, true)).toBe(NEWER);
     // A sample-only save sends nothing, so the row did not move and what the dialog opened with is
     // still the answer.
-    expect(revisionForSave(null, REV)).toBe(REV);
+    expect(revisionForSave(null, REV, true)).toBe(REV);
     // Neither known is not a revision, and nothing is kept under one.
-    expect(revisionForSave(null, null)).toBeNull();
+    expect(revisionForSave(null, null, true)).toBeNull();
+    // And a sample that describes another definition is not kept under any revision.
+    expect(revisionForSave({ updatedAt: NEWER }, REV, false)).toBeNull();
+    expect(revisionForSave(null, REV, false)).toBeNull();
     // The wire types this as `Date` and carries a string, so both arrive as the same key.
-    expect(revisionForSave({ updatedAt: new Date(NEWER) }, REV)).toBe(
+    expect(revisionForSave({ updatedAt: new Date(NEWER) }, REV, true)).toBe(
       String(new Date(NEWER)),
     );
   });
@@ -630,6 +662,40 @@ describe("a save that lands after the sample's life ended", () => {
     expect(recallToolSample("7", REV)).toBeNull();
   });
 
+  // ROUND 12: two openings of the same tool, the slow one answering last. `docs/modals.md` covers
+  // the dialog side of this; the cache has the same problem and the revision cannot see it, because
+  // the second opening loaded exactly the revision the first save committed.
+  it("does not let an older opening's response land on a newer one's", () => {
+    const first = sampleTicket();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: '{"novo":true}', status: 200 },
+      sampleTicket(),
+    );
+    // The first save's response, finally arriving with the ticket it left with.
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      first,
+    );
+    expect(recallToolSample("7", REV)?.text).toBe('{"novo":true}');
+  });
+
+  it("is per tool, so a save for one does not block a slower save for another", () => {
+    const slow = sampleTicket();
+    rememberToolSample(
+      "8",
+      { revision: REV, text: '{"outra":true}', status: 200 },
+      sampleTicket(),
+    );
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      slow,
+    );
+    expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
+  });
+
   it("still writes when nothing cleared while it was out", () => {
     const ticket = sampleTicket();
     rememberToolSample(
@@ -788,6 +854,12 @@ describe("the two seams that have to clear it", () => {
     // What revision gets written is NOT asked here: it is a value now (`revisionForSave`), tested
     // as one below. Two rounds found this call site holding a judgement the module could not see,
     // and the second fence over a spelling is what the next refactor walks past.
+    //
+    // What IS asked is that the save consults the shape the sample was captured against at all,
+    // because the decision being a tested value does not stop a caller from handing it a constant
+    // (measured: replacing that argument with `true` survives the battery otherwise). This is still
+    // a grammar, but a stable one: it says the question is asked, not how.
+    expect(save).toInclude("sampleShapeRef");
   });
 
   // The same question at the OTHER site that mutates the cache after a request. It was written

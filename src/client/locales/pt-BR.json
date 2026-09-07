@@ -2622,7 +2622,7 @@
     "responseSection": "A resposta",
     "sample": "Resposta de exemplo (opcional)",
     "sampleFormat": "Formatar",
-    "sampleHint": "Uma resposta desta API, para você escolher os campos em vez de digitar os caminhos. Ela nunca é salva com a ferramenta: fica neste navegador, e volta aqui na próxima vez que você abrir esta ferramenta.",
+    "sampleHint": "Uma resposta desta API, para você escolher os campos em vez de digitar os caminhos. Ela nunca é salva: fica disponível enquanto esta aba estiver aberta, e some depois de um recarregamento.",
     "sampleInvalid": "Isso não é um JSON válido, então não há de onde escolher. Os campos abaixo continuam funcionando se você digitar os caminhos.",
     "sampleInvalidAt": "Não é JSON válido na linha {{line}}, coluna {{column}}, então não há o que escolher. Os campos abaixo continuam funcionando se você digitar os caminhos.",
     "sampleTooNestedToFormat": "Aninhado demais para formatar: distribuir isto produziria algo que ninguém conseguiria ler, então fica como chegou. Todo o resto desta tela continua funcionando.",

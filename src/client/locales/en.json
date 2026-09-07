@@ -2564,7 +2564,7 @@
     "responseSection": "The response",
     "sample": "Sample response (optional)",
     "sampleFormat": "Format",
-    "sampleHint": "One response from this API, so you can pick fields instead of typing their paths. It is never saved with the tool: it stays in this browser, and comes back here the next time you open this tool.",
+    "sampleHint": "One response from this API, so you can pick fields instead of typing their paths. It is never saved: it stays open for as long as this tab is, and is gone after a reload.",
     "sampleInvalid": "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
     "sampleInvalidAt": "Not valid JSON at line {{line}}, column {{column}}, so there is nothing to pick from. The fields below still work if you type the paths.",
     "sampleTooNestedToFormat": "Too deeply nested to format: laying this out would produce something no one could read, so it is left as it arrived. Everything else on this screen still works.",

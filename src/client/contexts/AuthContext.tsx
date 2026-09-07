@@ -13,6 +13,7 @@ import {
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
+import { forgetToolSamples } from "@/client/lib/toolSample";
 
 export interface User {
   id: string;
@@ -197,6 +198,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
     } catch {
       console.error("Logout failed");
+    } finally {
+      // Whatever the request answered, this operator is done with this tab. The tool editor keeps
+      // the last saved sample response in memory (`client/lib/toolSample`), which is the customer's
+      // data and has no reason to outlive the session that captured it. In the `finally` because a
+      // logout whose request failed is still a logout as far as the person in front of the screen is
+      // concerned.
+      forgetToolSamples();
     }
   };
 

@@ -1,17 +1,21 @@
 /// <reference lib="dom" />
 
 import { beforeEach, describe, expect, it } from "bun:test";
-import { readLocalSample, writeLocalSample } from "@/client/lib/toolSample";
+import {
+  forgetToolSamples,
+  recallToolSample,
+  rememberToolSample,
+} from "@/client/lib/toolSample";
 import {
   formFromTool,
   payloadOf,
 } from "@/client/pages/resources/ToolEditModal";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// THE SAMPLE COMES BACK FROM THIS BROWSER, AND FROM NOWHERE ELSE (issue #566). What is asserted here
-// is the seam: that the editor opens with what this machine kept, that the save keeps it, and, the
-// one that matters most, that none of it reaches the server, which is the invariant the whole
-// design exists to hold without qualification.
+// THE SAMPLE COMES BACK FROM THIS TAB, AND FROM NOWHERE ELSE (issue #566). What is asserted here is
+// the seam: that the editor opens with what this tab remembers, that the save is what makes it
+// remember, and, the one that matters most, that none of it is written down, in the request or in
+// any store. That is the invariant the whole design exists to hold without qualification.
 
 type AnyTool = Parameters<typeof formFromTool>[0];
 
@@ -42,32 +46,34 @@ function toolRow(over: Partial<Record<string, unknown>> = {}): AnyTool {
 const RESPONSE = '{"cliente":{"nome":"Ana","cpf":"12345678901"}}';
 
 beforeEach(() => {
+  forgetToolSamples();
   localStorage.clear();
 });
 
 describe("what the editor opens with", () => {
-  it("offers nothing when this browser kept nothing, which is what a second machine gets", () => {
+  it("offers nothing when this tab remembers nothing, which is what a reload gets", () => {
     const form = formFromTool(toolRow());
     expect(form.sample).toBe("");
     expect(form.sampleStatus).toBeNull();
   });
 
-  it("takes the response this browser kept, with the status it came back under", () => {
-    writeLocalSample("42", { text: RESPONSE, status: 404 });
+  it("takes the response this tab kept, with the status it came back under", () => {
+    rememberToolSample("42", { text: RESPONSE, status: 404 });
     const form = formFromTool(toolRow());
     expect(form.sample).toBe(RESPONSE);
     expect(form.sampleStatus).toBe(404);
   });
 
   it("is per tool, so one tool's response is never offered for another", () => {
-    writeLocalSample("42", { text: RESPONSE, status: null });
+    rememberToolSample("42", { text: RESPONSE, status: null });
     expect(formFromTool(toolRow({ id: "43" })).sample).toBe("");
   });
 });
 
-// THE INVARIANT. Not "the values are redacted": nothing about the sample is sent at all, which is
-// what lets the module header say "we never store the customer's response" with no qualification.
-describe("nothing about the sample reaches the server", () => {
+// THE INVARIANT, IN BOTH DIRECTIONS. Nothing about the sample is sent, and nothing about it is
+// written down: a value kept only for the life of the tab is what lets "we never store the
+// customer's response" stand with no qualification.
+describe("nothing about the sample is sent or stored", () => {
   it("is absent from the body a save sends, response and all", () => {
     const form = {
       ...formFromTool(toolRow()),
@@ -83,6 +89,35 @@ describe("nothing about the sample reaches the server", () => {
     expect(payload?.label).toBe("Consulta");
   });
 
+  // THE SECOND REFUSAL, and the reason this module is a Map and not a `localStorage` key: the
+  // standing rule in `docs/ui.md` says localStorage is not admissible for product data, and it names
+  // this case, "History, save, remember, resume". Asserted over BOTH stores rather than over the one
+  // the module happens to use, because a value written to either outlives the session and every
+  // deletion that does not go through this browser.
+  it("writes nothing into browser storage", () => {
+    // A SNAPSHOT ON BOTH SIDES, not "the store is empty": the suite shares one global environment
+    // and other files leave entries behind, so asserting emptiness measures them and not this. What
+    // this owns is the DIFFERENCE, which is nothing.
+    const dump = (store: Storage) =>
+      JSON.stringify(
+        Array.from({ length: store.length }, (_, i) => {
+          const k = store.key(i) ?? "";
+          return [k, store.getItem(k) ?? ""];
+        }).sort(),
+      );
+    const before = [dump(localStorage), dump(sessionStorage)];
+    rememberToolSample("42", { text: RESPONSE, status: 200 });
+    forgetToolSamples();
+    rememberToolSample("42", { text: RESPONSE, status: 200 });
+    const after = [dump(localStorage), dump(sessionStorage)];
+    expect(after).toEqual(before);
+    // And in case a future entry arrives carrying it, said plainly: no store holds the response.
+    expect(after.join("")).not.toInclude("Ana");
+    expect(after.join("")).not.toInclude("12345678901");
+    // The value is there to be recalled, so this is not passing because nothing was remembered.
+    expect(recallToolSample("42")?.text).toBe(RESPONSE);
+  });
+
   it("is part of the form, and still changes nothing about what would be written", () => {
     const opened = formFromTool(toolRow());
     const pasted = { ...opened, sample: RESPONSE };
@@ -95,95 +130,56 @@ describe("nothing about the sample reaches the server", () => {
   });
 });
 
-describe("the browser's copy", () => {
+describe("what the tab remembers", () => {
   it("round-trips a response and its status", () => {
-    writeLocalSample("7", { text: RESPONSE, status: 200 });
-    expect(readLocalSample("7")).toEqual({ text: RESPONSE, status: 200 });
+    rememberToolSample("7", { text: RESPONSE, status: 200 });
+    expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
   });
 
-  it("clears rather than keeping a previous response when the new one is too large", () => {
-    writeLocalSample("7", { text: RESPONSE, status: null });
-    writeLocalSample("7", { text: "x".repeat(600_000), status: null });
-    expect(readLocalSample("7")).toBeNull();
+  it("drops rather than keeping a previous response when the new one is too large", () => {
+    rememberToolSample("7", { text: RESPONSE, status: null });
+    rememberToolSample("7", { text: "x".repeat(600_000), status: null });
+    expect(recallToolSample("7")).toBeNull();
   });
 
-  it("clears on an empty sample, and on one that is only whitespace", () => {
-    writeLocalSample("7", { text: RESPONSE, status: null });
-    writeLocalSample("7", null);
-    expect(readLocalSample("7")).toBeNull();
+  it("drops on an empty sample, and on one that is only whitespace", () => {
+    rememberToolSample("7", { text: RESPONSE, status: null });
+    rememberToolSample("7", null);
+    expect(recallToolSample("7")).toBeNull();
     // Whitespace is the same thing to the operator and a different thing to `null`, and the module
     // owns that judgement rather than trusting its one caller to keep making it.
-    writeLocalSample("7", { text: RESPONSE, status: null });
-    writeLocalSample("7", { text: "  \n ", status: 200 });
-    expect(readLocalSample("7")).toBeNull();
+    rememberToolSample("7", { text: RESPONSE, status: null });
+    rememberToolSample("7", { text: "  \n ", status: 200 });
+    expect(recallToolSample("7")).toBeNull();
   });
 
-  // WHAT COMES BACK IS A `LocalSample`, WHATEVER IS IN THE STORE. The entry is a string another
-  // version of this app, an extension, or the operator's own console can have written, and the two
-  // fields are both read as their type downstream: `sample` goes into a text control and `status`
-  // is compared numerically to decide whether the body is read verbatim. A string `"200"` there
-  // would answer that comparison wrong rather than throw.
-  it("reads nothing out of a value that is not a stored sample", () => {
-    localStorage.setItem("@app:toolSample:7", "not json");
-    expect(readLocalSample("7")).toBeNull();
-    localStorage.setItem("@app:toolSample:7", JSON.stringify({ status: 200 }));
-    expect(readLocalSample("7")).toBeNull();
-    // A `text` that is not a string is not a sample either, and is refused rather than handed on.
-    localStorage.setItem("@app:toolSample:7", JSON.stringify({ text: 42 }));
-    expect(readLocalSample("7")).toBeNull();
-    localStorage.setItem("@app:toolSample:7", JSON.stringify(["x"]));
-    expect(readLocalSample("7")).toBeNull();
+  // BOUNDED, because this holds response bodies for the life of the tab. The entry that goes is the
+  // least recently SAVED, not the first one ever saved: re-saving a tool has to keep it alive, or
+  // the tool being worked on is the one evicted while seven abandoned ones stay.
+  it("keeps the working set and evicts the least recently saved", () => {
+    for (let i = 1; i <= 8; i++)
+      rememberToolSample(String(i), { text: `{"i":${i}}`, status: null });
+    // Tool 1 is the oldest; saving it again makes tool 2 the oldest instead.
+    rememberToolSample("1", { text: '{"i":1}', status: null });
+    rememberToolSample("9", { text: '{"i":9}', status: null });
+    expect(recallToolSample("2")).toBeNull();
+    expect(recallToolSample("1")).toEqual({ text: '{"i":1}', status: null });
+    expect(recallToolSample("9")).toEqual({ text: '{"i":9}', status: null });
   });
 
-  it("drops a status that is not a number rather than passing the string on", () => {
-    localStorage.setItem(
-      "@app:toolSample:7",
-      JSON.stringify({ text: RESPONSE, status: "200" }),
-    );
-    expect(readLocalSample("7")).toEqual({ text: RESPONSE, status: null });
+  // A SUPER_ADMIN switches tenants without reloading, and the tool ids of two tenants are two
+  // sequences that overlap. Keyed by the id alone, tool 7 of the tenant just left would be offered
+  // as tool 7 of the one just entered.
+  it("does not offer one tenant's response under another tenant's tool", () => {
+    localStorage.setItem("@app:active-tenant", "3");
+    rememberToolSample("7", { text: RESPONSE, status: 200 });
+    localStorage.setItem("@app:active-tenant", "4");
+    expect(recallToolSample("7")).toBeNull();
+    localStorage.setItem("@app:active-tenant", "3");
+    expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
   });
 
-  // ROUND 2 OF REVIEW: `setItem` can throw on a full origin quota, and the previous entry used to
-  // survive that, so the next open restored ANOTHER response's values as though this save had
-  // persisted. Degrading to no sample is honest; degrading to a stale one is not.
-  //
-  // The whole object is swapped rather than `localStorage.setItem = …`: happy-dom backs `Storage`
-  // with a Proxy, so assigning the property STORES AN ITEM CALLED `setItem` and the real method
-  // keeps running. Measured here: the stubbed version of this test passed with the write intact.
-  it("leaves nothing behind when the write itself fails", () => {
-    writeLocalSample("7", { text: RESPONSE, status: 200 });
-    const kept = new Map<string, string>();
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k !== null) kept.set(k, localStorage.getItem(k) ?? "");
-    }
-    // Seeded from the real entry, so this reads back exactly what a quota failure would leave.
-    expect(kept.size).toBe(1);
-    const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
-    const full = {
-      getItem: (k: string) => kept.get(k) ?? null,
-      removeItem: (k: string) => void kept.delete(k),
-      setItem: () => {
-        throw new Error("QuotaExceededError");
-      },
-    };
-    Object.defineProperty(globalThis, "localStorage", {
-      configurable: true,
-      get: () => full,
-    });
-    try {
-      expect(() =>
-        writeLocalSample("7", { text: '{"outro":"cliente"}', status: 200 }),
-      ).not.toThrow();
-      expect(readLocalSample("7")).toBeNull();
-      // And it is gone from the store itself, not merely unreadable.
-      expect(kept.size).toBe(0);
-    } finally {
-      if (real) Object.defineProperty(globalThis, "localStorage", real);
-    }
-  });
-
-  it("survives a browser that refuses storage entirely", () => {
+  it("still works in a browser that refuses storage entirely", () => {
     const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     Object.defineProperty(globalThis, "localStorage", {
       configurable: true,
@@ -193,22 +189,25 @@ describe("the browser's copy", () => {
     });
     try {
       expect(() =>
-        writeLocalSample("7", { text: "x", status: null }),
+        rememberToolSample("7", { text: RESPONSE, status: null }),
       ).not.toThrow();
-      expect(readLocalSample("7")).toBeNull();
+      expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: null });
     } finally {
       if (real) Object.defineProperty(globalThis, "localStorage", real);
     }
   });
+
+  it("is emptied on logout, so a signed-out tab holds no customer data", () => {
+    rememberToolSample("7", { text: RESPONSE, status: 200 });
+    forgetToolSamples();
+    expect(recallToolSample("7")).toBeNull();
+  });
 });
 
-// A SOURCE FENCE, and it says so: what it can answer for is a grammar, not intent. The invariant is
-// that deleting an HTTP tool takes this browser's copy of its response with it. Left behind, a
-// customer's response outlives the row it described, and tool ids come from a sequence, so a later
-// tool could be handed the deleted one's values. There is one delete site today; the fence is for
-// the next one.
-describe("every place that deletes an HTTP tool clears the browser's copy", () => {
+// TWO SOURCE FENCES, and they say so: what they can answer for is a grammar, not intent.
+describe("the two seams that have to clear it", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
+  const LOGOUT = /auth\.logout\.post\(/;
 
   // `codeOnly` rather than a stripper written here: comments AND string contents out, which is the
   // spelling this repo's own fence over sweeps requires (`tests/lib/source-text.test.ts`), and it
@@ -220,7 +219,8 @@ describe("every place that deletes an HTTP tool clears the browser's copy", () =
   // "is it mentioned?" answers yes for the import that survives the deletion it exists to catch.
   const strip = (src: string) =>
     codeOnly(src).replace(/^\s*import\s[\s\S]*?from\s+"[^"]*";$/gm, "");
-  const CLEARS = /writeLocalSample\s*\(/;
+  const CLEARS = /rememberToolSample\s*\(/;
+  const FORGETS = /forgetToolSamples\s*\(/;
 
   async function clientFiles(): Promise<string[]> {
     const out: string[] = [];
@@ -229,7 +229,9 @@ describe("every place that deletes an HTTP tool clears the browser's copy", () =
     return out;
   }
 
-  it("holds over the tree", async () => {
+  // Deleting the tool takes the tab's copy with it. A response left behind describes a row that is
+  // gone, and it is the customer's data sitting in a tab nobody is using it in.
+  it("every place that deletes an HTTP tool clears what the tab remembers", async () => {
     const files = await clientFiles();
     // A scan that reaches nothing is a broken matcher, not a clean tree.
     expect(files.length).toBeGreaterThan(50);
@@ -246,20 +248,36 @@ describe("every place that deletes an HTTP tool clears the browser's copy", () =
     expect(offenders).toEqual([]);
   });
 
+  // And logging out empties it, because a tab left open on the login screen would otherwise still
+  // hold the responses of the operator who just signed out of it.
+  it("every place that logs out empties what the tab remembers", async () => {
+    const files = await clientFiles();
+    const offenders: string[] = [];
+    let sites = 0;
+    for (const f of files) {
+      const src = strip(await Bun.file(f).text());
+      if (!LOGOUT.test(src)) continue;
+      sites++;
+      if (!FORGETS.test(src)) offenders.push(f);
+    }
+    expect(sites).toBe(1);
+    expect(offenders).toEqual([]);
+  });
+
   it("catches a delete that forgets, over the three ways it could look like it did not", () => {
     const forgets = `await api.api.v1.tools({ id: t.id }).delete();`;
     expect(DELETE_CALL.test(strip(forgets))).toBe(true);
     expect(CLEARS.test(strip(forgets))).toBe(false);
     // A comment that remembers is not a call.
     expect(
-      CLEARS.test(strip(`${forgets}\n// writeLocalSample(t.id, null) here`)),
+      CLEARS.test(strip(`${forgets}\n// rememberToolSample(t.id, null) here`)),
     ).toBe(false);
     // Neither is the import that survives deleting the call, the case the battery caught.
-    const importOnly = `import { writeLocalSample } from "@/client/lib/toolSample";\n${forgets}`;
+    const importOnly = `import { rememberToolSample } from "@/client/lib/toolSample";\n${forgets}`;
     expect(CLEARS.test(strip(importOnly))).toBe(false);
     // And a real call counts.
     expect(
-      CLEARS.test(strip(`${forgets}\nwriteLocalSample(t.id, null);`)),
+      CLEARS.test(strip(`${forgets}\nrememberToolSample(t.id, null);`)),
     ).toBe(true);
   });
 });

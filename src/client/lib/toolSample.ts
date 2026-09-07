@@ -1,4 +1,4 @@
-// THE SAMPLE RESPONSE, KEPT WHERE IT ALREADY WAS (issue #566).
+// THE SAMPLE RESPONSE, KEPT FOR AS LONG AS THE TAB IS OPEN AND NOWHERE ELSE (issue #566).
 //
 // The Sample response field in the HTTP tool editor used to be cleared on every open, so an operator
 // coming back to adjust a response template, the most common reason to reopen an HTTP tool, found
@@ -6,35 +6,35 @@
 // were pasting a response again by hand or spending a real call against the customer's API to
 // recover what had been on screen once.
 //
-// So it is kept, in the browser that received it, keyed by tool id.
+// So it is remembered, in this tab, keyed by the tenant selector and the tool id. Closing the modal
+// keeps it, and so does navigating to another page and back; a reload, a second tab and a logout do
+// not.
 //
-// WHY NOTHING IS STORED SERVER-SIDE, WHICH IS THE WHOLE DESIGN. The first draft of this feature put
-// a redacted SHAPE of the response in a column (the keys, with every value replaced by a stand-in)
-// so the pickers would work on any machine. Two rounds of review took that apart on the same
-// question, and the second one settled it: no lexical rule establishes that a key is a field name
-// rather than customer data. `{"users": {"ana@example.com": …}}` is a map keyed by an e-mail;
-// `{"users": {"Ana": …}}` is a map keyed by a first name that any identifier pattern accepts. Since
-// the keys cannot be separated from the data, and a path THROUGH a map is worthless to an operator
-// anyway (it resolves for exactly one customer), there was nothing left worth storing.
+// WHY NOTHING IS PERSISTED, ANYWHERE, WHICH IS THE WHOLE DESIGN. Two earlier drafts were taken apart
+// in review, one for each place a value can be kept, and the two refusals are what this file is:
 //
-// What that costs is written down rather than papered over: an operator on a second machine, or one
-// whose site data was cleared, gets what they get today: no offer, and "Send a test request" as the
-// way back. What it buys is that "we never store the customer's response" needs no qualification: no
-// per-tool opt-in, no backup question, no export rule, and no column whose redaction a future reader
-// has to re-derive before trusting it.
+// 1. A REDACTED SHAPE OF THE RESPONSE IN A COLUMN, so the pickers would work on any machine. No
+//    lexical rule establishes that a key is a field name rather than customer data:
+//    `{"users": {"ana@example.com": …}}` is a map keyed by an e-mail, and `{"users": {"Ana": …}}` is
+//    one keyed by a first name that any identifier pattern accepts. Since the keys cannot be
+//    separated from the data, and a path THROUGH a map is worthless to an operator anyway (it
+//    resolves for exactly one customer), there was nothing left worth storing.
+// 2. THE RESPONSE IN `localStorage`. `docs/ui.md` carries a standing product rule that names this
+//    case outright: localStorage is not admissible for product data, and "History, save, remember,
+//    resume" all belong to a backend with `tenant_id` and RLS. A captured response is content data
+//    and not a UI preference, and the copy would outlive every deletion that does not go through
+//    this browser: a tool dropped over REST or MCP, or from another machine, leaves it behind.
 //
-// EVERY ACCESS IS GUARDED. `localStorage` throws outright in some contexts (a private window with
-// site data blocked, a browser configured to refuse storage) and it can be full. A sample that
-// cannot be kept is not an error the operator can act on. It costs them the values on the next
-// open, which is exactly the behaviour this replaces, so nothing here reports a failure.
+// Both refusals point the same way, and the one place left to keep a value is the one the response
+// already occupies while the modal is open. So it is never written down at all, which is what lets
+// "we never store the customer's response" stand with no qualification: no column, no per-tool
+// opt-in, no backup question, no export rule, no retention policy, and nothing a future reader has
+// to re-derive before trusting it.
+//
+// WHAT THAT COSTS, stated rather than papered over: a reload, a second tab or a second machine gets
+// what it gets today, which is no offer and "Send a test request" as the way back.
 
-const PREFIX = "@app:toolSample:";
-
-// Well under the ~5MB a browser gives an origin, and past anything a person pastes to design a
-// template against. A response bigger than this is one the operator will re-fetch anyway.
-const MAX_STORED_CHARS = 512_000;
-
-export interface LocalSample {
+export interface ToolSample {
   text: string;
   // The status it came back under, or null when it was pasted by hand. Kept with the text because
   // the preview branches on it: a body captured from a 404 the tool declares a "no result" status
@@ -42,48 +42,56 @@ export interface LocalSample {
   status: number | null;
 }
 
+// Bounded on both axes, because this holds response bodies for the life of the tab. An operator
+// works on one tool at a time, so a handful of entries covers going back and forth between a tool
+// and the one it was copied from, and past that the oldest goes. The per-entry cap is well beyond
+// anything a person pastes to design a template against, and a response bigger than it is one they
+// will re-fetch anyway.
+const MAX_ENTRIES = 8;
+const MAX_CHARS = 512_000;
+
+const samples = new Map<string, ToolSample>();
+
+// Keyed by the tenant selector as well, so a SUPER_ADMIN switching tenants in the same tab is never
+// offered the sample captured under the other one. Read at call time rather than captured, for the
+// same reason `activeTenant.ts` reads it at call time: the selection can change under a live tab.
 function keyFor(toolId: string): string {
-  return `${PREFIX}${toolId}`;
-}
-
-export function readLocalSample(toolId: string): LocalSample | null {
+  let tenant: string | null = null;
   try {
-    const raw = localStorage.getItem(keyFor(toolId));
-    if (raw === null) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object") return null;
-    const o = parsed as Record<string, unknown>;
-    if (typeof o.text !== "string") return null;
-    return {
-      text: o.text,
-      status: typeof o.status === "number" ? o.status : null,
-    };
+    tenant = localStorage.getItem("@app:active-tenant");
   } catch {
-    return null;
+    // A browser that refuses storage entirely still gets a working cache, under the home tenant.
   }
+  return `${tenant ?? ""}:${toolId}`;
 }
 
-// Called when the tool is SAVED rather than on every keystroke: what is kept is the sample the tool
-// was last saved with, not a draft the operator abandoned.
-export function writeLocalSample(
+export function recallToolSample(toolId: string): ToolSample | null {
+  return samples.get(keyFor(toolId)) ?? null;
+}
+
+// Called when the tool is SAVED rather than on every keystroke: what comes back is the sample the
+// tool was last saved with, not a draft the operator abandoned.
+export function rememberToolSample(
   toolId: string,
-  sample: LocalSample | null,
+  sample: ToolSample | null,
 ): void {
-  // REMOVED FIRST, unconditionally, and the ordering is the point: `setItem` can throw on a full
-  // origin quota, and leaving the previous entry there means the next open restores ANOTHER
-  // response's values as though this save had persisted (round 2 of review). Degrading to no sample
-  // is the honest failure; degrading to a stale one is not.
-  try {
-    localStorage.removeItem(keyFor(toolId));
-  } catch {
-    // See the module header: nothing to report and nothing to do.
-    return;
-  }
+  const key = keyFor(toolId);
+  // DELETED FIRST AND UNCONDITIONALLY, which is also what re-dates the entry: `Map` keeps insertion
+  // order, so deleting before setting is what makes the eviction below drop the least recently
+  // saved rather than the first one ever saved.
+  samples.delete(key);
   if (sample === null || sample.text.trim() === "") return;
-  if (sample.text.length > MAX_STORED_CHARS) return;
-  try {
-    localStorage.setItem(keyFor(toolId), JSON.stringify(sample));
-  } catch {
-    // Same, and the entry is already gone: the next open offers nothing rather than the wrong thing.
+  if (sample.text.length > MAX_CHARS) return;
+  samples.set(key, { text: sample.text, status: sample.status });
+  while (samples.size > MAX_ENTRIES) {
+    const oldest = samples.keys().next();
+    if (oldest.done) break;
+    samples.delete(oldest.value);
   }
+}
+
+// Logout, and any other point where the console stops answering for this operator. Nothing here
+// survives a reload, so this is about the tab that stays open after someone signs out on it.
+export function forgetToolSamples(): void {
+  samples.clear();
 }

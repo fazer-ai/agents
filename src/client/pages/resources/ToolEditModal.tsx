@@ -37,7 +37,7 @@ import { api } from "@/client/lib/api";
 import { firstJsonProblem, reindentJson } from "@/client/lib/sampleJson";
 import { dialableBaseUrl } from "@/client/lib/secretTypes";
 import { templateExtensions } from "@/client/lib/templateEditor";
-import { readLocalSample, writeLocalSample } from "@/client/lib/toolSample";
+import { recallToolSample, rememberToolSample } from "@/client/lib/toolSample";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -336,10 +336,10 @@ function emptyForm() {
     apptOffsets: "",
     apptAskConfirm: false,
     // THE SAMPLE IS PART OF THE FORM SINCE #566, where it used to be local state deliberately kept
-    // out of it. Nothing about it is submitted: it is kept in this browser (`client/lib/toolSample`)
-    // but it is now kept BY THE SAVE, so pasting one is an unsaved change like any other and the
-    // discard dialog on close is correct. The alternative is telling the operator the sample
-    // survives a reopen and then quietly dropping it when they close the dialog.
+    // out of it. Nothing about it is submitted, and nothing about it is stored: it is remembered in
+    // this tab (`client/lib/toolSample`) but it is remembered BY THE SAVE, so pasting one is an
+    // unsaved change like any other and the discard dialog on close is correct. The alternative is
+    // telling the operator the sample survives a reopen and then dropping it when they close.
     sample: "",
     sampleStatus: null as number | null,
   };
@@ -543,12 +543,12 @@ export function formFromTool(tool: Tool) {
   };
 }
 
-// The sample comes back from this browser alone (issue #566): nothing about it is stored with the
-// tool, so an operator on a second machine gets no offer, the same as before the feature, and
-// "Send a test request" is still the way back.
+// The sample comes back from this tab alone (issue #566): nothing about it is stored anywhere, so a
+// reload, a second tab or a second machine gets no offer, the same as before the feature, and "Send
+// a test request" is still the way back.
 function sampleForm(tool: Tool) {
-  const local = readLocalSample(tool.id);
-  return { sample: local?.text ?? "", sampleStatus: local?.status ?? null };
+  const kept = recallToolSample(tool.id);
+  return { sample: kept?.text ?? "", sampleStatus: kept?.status ?? null };
 }
 
 // The stored `outputSchema`, split into the part this form edits and the part it must not lose. The
@@ -1425,12 +1425,11 @@ export function ToolEditModal({
         if (sessionRef.current === session) setFormError(held(err));
         return;
       }
-      // The response itself, kept in THIS browser and keyed by the id the row got (issue #566).
-      // Written here rather than on every keystroke, so the two halves always describe the same
-      // sample: a text kept locally while the shape beside it was never saved would offer the
-      // operator values for a response the tool does not have. Nothing to await and nothing that
-      // can fail in a way the operator could act on. See `toolSample.ts`.
-      writeLocalSample(
+      // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).
+      // Here rather than on every keystroke, so what comes back is the sample the tool was last
+      // saved with and not a draft the operator abandoned. Nothing to await, nothing that can fail
+      // in a way the operator could act on, and nothing written down. See `toolSample.ts`.
+      rememberToolSample(
         data.tool.id,
         sample.trim() ? { text: sample, status: sampleStatus } : null,
       );
@@ -2070,7 +2069,7 @@ export function ToolEditModal({
                 label={t("tools.sample", "Sample response (optional)")}
                 description={t(
                   "tools.sampleHint",
-                  "One response from this API, so you can pick fields instead of typing their paths. It is never saved with the tool: it stays in this browser, and comes back here the next time you open this tool.",
+                  "One response from this API, so you can pick fields instead of typing their paths. It is never saved: it stays open for as long as this tab is, and is gone after a reload.",
                 )}
                 group
                 // THE FIELD'S OWN ERROR, not a line beside the buttons (round 6 of review). Through

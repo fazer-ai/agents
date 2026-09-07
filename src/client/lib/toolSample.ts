@@ -52,15 +52,26 @@ const MAX_CHARS = 512_000;
 
 const samples = new Map<string, ToolSample>();
 
-// EVERY CLEARING BUMPS THIS, and a save carries the value it read before its request went out. A
-// save is in flight for as long as the operator's API takes, and the two things that end a sample's
-// life can both happen inside that window: the tool is deleted, or the session ends. Without the
-// epoch the response arrives afterwards and writes the sample back in, so a deletion and a logout
-// would both be undone by a request that was already on the wire (round 4 of review).
-let epoch = 0;
+// A save is in flight for as long as the operator's API takes, and both things that end a sample's
+// life can happen inside that window: the tool is deleted, or the session ends. Without this the
+// response arrives afterwards and writes the sample back in, so a deletion or a logout would be
+// undone by a request that was already on the wire (round 4 of review).
+//
+// The ticket a save carries is a reading of this clock, which ticks on every forgetting. What it is
+// checked against is per SCOPE rather than global, because a global one over-rejects: deleting tool
+// B while tool A's save is out would drop A's sample too, and the operator sees a tool they never
+// touched come back with an older response or none (round 6 of review).
+let clock = 0;
+let clearedAt = 0;
+const forgottenAt = new Map<string, number>();
 
-export function sampleEpoch(): number {
-  return epoch;
+// The identity the entries belong to. `undefined` is "nobody has said yet", which is not the same
+// as a signed-out `null`: the first thing the console says on boot is a real answer either way, and
+// starting at `null` would make a boot into a signed-out state a no-op rather than a transition.
+let operator: string | null | undefined;
+
+export function sampleTicket(): number {
+  return clock;
 }
 
 // Keyed by the tenant selector as well, so a SUPER_ADMIN switching tenants in the same tab is never
@@ -85,15 +96,19 @@ export function recallToolSample(toolId: string): ToolSample | null {
 export function rememberToolSample(
   toolId: string,
   sample: ToolSample | null,
-  // REQUIRED, and that is the point: the value the caller read BEFORE its request went out, so a
-  // clearing that happened in the meantime wins. Optional, it is a parameter a caller forgets and
+  // REQUIRED, and that is the point: the ticket the caller read BEFORE its request went out, so a
+  // forgetting that happened in the meantime wins. Optional, it is a parameter a caller forgets and
   // nothing says so; required, `tsc` is the one that notices, which is what a source fence over the
   // same question could only approximate (measured: with it optional, dropping the argument at the
   // one call site survived the whole battery).
   since: number,
 ): void {
-  if (since !== epoch) return;
   const key = keyFor(toolId);
+  // The session ended after the ticket was taken, or THIS tool was forgotten after it. A forgetting
+  // of some other tool is not this save's business.
+  if (clearedAt > since) return;
+  const forgotten = forgottenAt.get(key);
+  if (forgotten !== undefined && forgotten > since) return;
   // DELETED FIRST AND UNCONDITIONALLY, which is also what re-dates the entry: `Map` keeps insertion
   // order, so deleting before setting is what makes the eviction below drop the least recently
   // saved rather than the first one ever saved.
@@ -113,16 +128,37 @@ export function rememberToolSample(
 // null)`, which is a save saying there is no sample: this is a lifecycle event, so it invalidates
 // the saves that are in flight.
 export function forgetToolSample(toolId: string): void {
-  epoch++;
-  samples.delete(keyFor(toolId));
+  const key = keyFor(toolId);
+  clock++;
+  forgottenAt.set(key, clock);
+  samples.delete(key);
 }
 
-// THE OPERATOR IS GONE, by an explicit logout or by any other transition to unauthenticated: a 401
-// on any request, an auth-loss close on the socket, an expired session found at boot. All of them
-// leave the tab on the login screen with this map still full, and the next sign-in on that tab
-// would be offered the previous operator's responses. Nothing here survives a reload, so this is
-// about the tab that stays open.
-export function forgetToolSamples(): void {
-  epoch++;
+// WHOSE SAMPLES THESE ARE, told to this module at every transition the console makes, and the rule
+// lives here rather than at the caller so it can be exercised without one.
+//
+// The obvious half is the session ending: an explicit logout, a 401 on any request, an auth-loss
+// close on the socket, a `/me` that answers with a null user. All of them leave the tab on the login
+// screen with this map still full, and the next sign-in on that tab would be offered the previous
+// operator's responses.
+//
+// The half that is not obvious is A CHANGE FROM ONE OPERATOR TO ANOTHER with no null in between,
+// which is what a shared cookie does: a tab sitting on A while another tab signs out and back in as
+// B sees `/me` answer B directly. Asking only whether the user went away misses it, and the entries
+// are keyed by tenant and tool, so B would be handed A's captured response on the same tool (round
+// 6 of review). So the question is whether the identity is the SAME, not whether there is one.
+export function noteOperator(id: string | null): void {
+  if (id === operator) return;
+  operator = id;
+  forgetToolSamples();
+}
+
+// Nothing here survives a reload, so all of this is about the tab that stays open.
+function forgetToolSamples(): void {
+  clock++;
+  clearedAt = clock;
   samples.clear();
+  // Nothing older than a global clear can be accepted anyway, so the per-tool marks are dead weight
+  // from here: this is what keeps that map from growing one entry per tool ever deleted in this tab.
+  forgottenAt.clear();
 }

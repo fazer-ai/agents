@@ -13,7 +13,7 @@ import {
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
-import { forgetToolSamples } from "@/client/lib/toolSample";
+import { noteOperator } from "@/client/lib/toolSample";
 
 export interface User {
   id: string;
@@ -78,7 +78,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // observes a session the server has already ended. Only the first is spelled like a logout.
   const applyUser = useCallback((next: User | null) => {
     setUser(next);
-    if (next === null) forgetToolSamples();
+    // UNCONDITIONAL, and the comparison is the module's: what it owns is whose captured responses it
+    // is holding, and every transition this console makes is one it has to hear about. That includes
+    // A CHANGING TO B with no null in between, which is what a shared cookie produces when another
+    // tab signs out and back in. What this can answer for is every transition that goes through
+    // here, which is every one this context makes; a tab that never refreshes its auth is still
+    // rendering A entirely, and that is not this module's to fix.
+    noteOperator(next?.id ?? null);
   }, []);
 
   const clearUser = useCallback(() => applyUser(null), [applyUser]);

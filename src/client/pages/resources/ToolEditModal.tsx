@@ -40,7 +40,7 @@ import { templateExtensions } from "@/client/lib/templateEditor";
 import {
   recallToolSample,
   rememberToolSample,
-  sampleEpoch,
+  sampleTicket,
 } from "@/client/lib/toolSample";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
@@ -1411,10 +1411,10 @@ export function ToolEditModal({
     // Cancel is disabled while saving), and the continuation below would then close the dialog the
     // operator reopened and write this tool's state into it (docs/modals.md).
     const session = sessionRef.current;
-    // Read BEFORE the request, handed to the write below. A save can be in flight while the tool is
-    // deleted or the session ends, and both of those clear what this tab remembers; without this,
-    // the response arriving afterwards would put the sample back (round 4 of review).
-    const epoch = sampleEpoch();
+    // Read BEFORE the request, handed to the write below. A save can be in flight while this tool
+    // is deleted or the session ends, and both of those clear what this tab remembers; without the
+    // ticket, the response arriving afterwards would put the sample back (round 4 of review).
+    const ticket = sampleTicket();
     setFormError(null);
     const payload = payloadOf(form);
     if (payload === null) {
@@ -1440,7 +1440,7 @@ export function ToolEditModal({
       rememberToolSample(
         data.tool.id,
         sample.trim() ? { text: sample, status: sampleStatus } : null,
-        epoch,
+        ticket,
       );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
       // that has to hear about it, not the dialog now on screen.

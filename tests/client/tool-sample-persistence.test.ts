@@ -3,10 +3,10 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
   forgetToolSample,
-  forgetToolSamples,
+  noteOperator,
   recallToolSample,
   rememberToolSample,
-  sampleEpoch,
+  sampleTicket,
 } from "@/client/lib/toolSample";
 import {
   formFromTool,
@@ -47,8 +47,11 @@ function toolRow(over: Partial<Record<string, unknown>> = {}): AnyTool {
 
 const RESPONSE = '{"cliente":{"nome":"Ana","cpf":"12345678901"}}';
 
+// A NEW OPERATOR IS HOW THIS MAP IS EMPTIED, so that is what a fresh test starts with, and using
+// the real entry point rather than a reset written for the tests keeps the two from drifting.
+let who = 0;
 beforeEach(() => {
-  forgetToolSamples();
+  noteOperator(`op-${who++}`);
   localStorage.clear();
 });
 
@@ -60,14 +63,14 @@ describe("what the editor opens with", () => {
   });
 
   it("takes the response this tab kept, with the status it came back under", () => {
-    rememberToolSample("42", { text: RESPONSE, status: 404 }, sampleEpoch());
+    rememberToolSample("42", { text: RESPONSE, status: 404 }, sampleTicket());
     const form = formFromTool(toolRow());
     expect(form.sample).toBe(RESPONSE);
     expect(form.sampleStatus).toBe(404);
   });
 
   it("is per tool, so one tool's response is never offered for another", () => {
-    rememberToolSample("42", { text: RESPONSE, status: null }, sampleEpoch());
+    rememberToolSample("42", { text: RESPONSE, status: null }, sampleTicket());
     expect(formFromTool(toolRow({ id: "43" })).sample).toBe("");
   });
 });
@@ -108,9 +111,10 @@ describe("nothing about the sample is sent or stored", () => {
         }).sort(),
       );
     const before = [dump(localStorage), dump(sessionStorage)];
-    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleEpoch());
-    forgetToolSamples();
-    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleEpoch());
+    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleTicket());
+    forgetToolSample("42");
+    noteOperator("someone-else");
+    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleTicket());
     const after = [dump(localStorage), dump(sessionStorage)];
     expect(after).toEqual(before);
     // And in case a future entry arrives carrying it, said plainly: no store holds the response.
@@ -134,28 +138,28 @@ describe("nothing about the sample is sent or stored", () => {
 
 describe("what the tab remembers", () => {
   it("round-trips a response and its status", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
     expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
   });
 
   it("drops rather than keeping a previous response when the new one is too large", () => {
-    rememberToolSample("7", { text: RESPONSE, status: null }, sampleEpoch());
+    rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
     rememberToolSample(
       "7",
       { text: "x".repeat(600_000), status: null },
-      sampleEpoch(),
+      sampleTicket(),
     );
     expect(recallToolSample("7")).toBeNull();
   });
 
   it("drops on an empty sample, and on one that is only whitespace", () => {
-    rememberToolSample("7", { text: RESPONSE, status: null }, sampleEpoch());
-    rememberToolSample("7", null, sampleEpoch());
+    rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
+    rememberToolSample("7", null, sampleTicket());
     expect(recallToolSample("7")).toBeNull();
     // Whitespace is the same thing to the operator and a different thing to `null`, and the module
     // owns that judgement rather than trusting its one caller to keep making it.
-    rememberToolSample("7", { text: RESPONSE, status: null }, sampleEpoch());
-    rememberToolSample("7", { text: "  \n ", status: 200 }, sampleEpoch());
+    rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
+    rememberToolSample("7", { text: "  \n ", status: 200 }, sampleTicket());
     expect(recallToolSample("7")).toBeNull();
   });
 
@@ -167,11 +171,11 @@ describe("what the tab remembers", () => {
       rememberToolSample(
         String(i),
         { text: `{"i":${i}}`, status: null },
-        sampleEpoch(),
+        sampleTicket(),
       );
     // Tool 1 is the oldest; saving it again makes tool 2 the oldest instead.
-    rememberToolSample("1", { text: '{"i":1}', status: null }, sampleEpoch());
-    rememberToolSample("9", { text: '{"i":9}', status: null }, sampleEpoch());
+    rememberToolSample("1", { text: '{"i":1}', status: null }, sampleTicket());
+    rememberToolSample("9", { text: '{"i":9}', status: null }, sampleTicket());
     expect(recallToolSample("2")).toBeNull();
     expect(recallToolSample("1")).toEqual({ text: '{"i":1}', status: null });
     expect(recallToolSample("9")).toEqual({ text: '{"i":9}', status: null });
@@ -182,7 +186,7 @@ describe("what the tab remembers", () => {
   // as tool 7 of the one just entered.
   it("does not offer one tenant's response under another tenant's tool", () => {
     localStorage.setItem("@app:active-tenant", "3");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
     localStorage.setItem("@app:active-tenant", "4");
     expect(recallToolSample("7")).toBeNull();
     localStorage.setItem("@app:active-tenant", "3");
@@ -202,7 +206,7 @@ describe("what the tab remembers", () => {
         rememberToolSample(
           "7",
           { text: RESPONSE, status: null },
-          sampleEpoch(),
+          sampleTicket(),
         ),
       ).not.toThrow();
       expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: null });
@@ -212,14 +216,31 @@ describe("what the tab remembers", () => {
   });
 
   it("is emptied when the session ends, so a signed-out tab holds no customer data", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
-    forgetToolSamples();
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    noteOperator(null);
     expect(recallToolSample("7")).toBeNull();
   });
 
+  // A SHARED COOKIE MOVES FROM ONE OPERATOR TO ANOTHER WITH NO NULL IN BETWEEN: another tab signs
+  // out and back in as B, and this tab's next `/me` answers B directly. The entries are keyed by
+  // tenant and tool, so B opening the same tool would be handed A's captured response.
+  it("is emptied when one operator becomes another, with no signed-out state between them", () => {
+    noteOperator("A");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    noteOperator("B");
+    expect(recallToolSample("7")).toBeNull();
+  });
+
+  it("is left alone when the same operator is reported again", () => {
+    noteOperator("A");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    noteOperator("A");
+    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+  });
+
   it("drops one tool's entry when that tool is gone", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleEpoch());
-    rememberToolSample("8", { text: RESPONSE, status: 200 }, sampleEpoch());
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample("8", { text: RESPONSE, status: 200 }, sampleTicket());
     forgetToolSample("7");
     expect(recallToolSample("7")).toBeNull();
     expect(recallToolSample("8")).not.toBeNull();
@@ -231,22 +252,47 @@ describe("what the tab remembers", () => {
 // deletion and a logout being undone by a request that was already on the wire.
 describe("a save that lands after the sample's life ended", () => {
   it("does not put it back after the tool was deleted", () => {
-    const epoch = sampleEpoch();
+    const ticket = sampleTicket();
     forgetToolSample("7");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, epoch);
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
     expect(recallToolSample("7")).toBeNull();
   });
 
   it("does not put it back after the session ended", () => {
-    const epoch = sampleEpoch();
-    forgetToolSamples();
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, epoch);
+    const ticket = sampleTicket();
+    noteOperator(null);
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
+    expect(recallToolSample("7")).toBeNull();
+  });
+
+  it("does not put it back after one operator became another", () => {
+    noteOperator("A");
+    const ticket = sampleTicket();
+    noteOperator("B");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
+    expect(recallToolSample("7")).toBeNull();
+  });
+
+  // ROUND 6: a global invalidation over-rejects. Deleting tool B while tool A's save is out would
+  // drop A's too, and the operator sees a tool they never touched come back with an older response.
+  it("is not invalidated by the deletion of a DIFFERENT tool", () => {
+    const ticket = sampleTicket();
+    forgetToolSample("8");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
+    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+  });
+
+  it("stays rejected for the deleted tool after another one is deleted too", () => {
+    const ticket = sampleTicket();
+    forgetToolSample("7");
+    forgetToolSample("8");
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
     expect(recallToolSample("7")).toBeNull();
   });
 
   it("still writes when nothing cleared while it was out", () => {
-    const epoch = sampleEpoch();
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, epoch);
+    const ticket = sampleTicket();
+    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
     expect(recallToolSample("7")?.text).toBe(RESPONSE);
   });
 });
@@ -273,7 +319,7 @@ describe("the two seams that have to clear it", () => {
   const strip = (src: string) =>
     codeOnly(src).replace(/^\s*import\s[\s\S]*?from\s+"[^"]*";$/gm, "");
   const CLEARS = /forgetToolSample\s*\(/;
-  const FORGETS = /forgetToolSamples\s*\(/;
+  const NOTES = /noteOperator\s*\(/;
 
   async function clientFiles(): Promise<string[]> {
     const out: string[] = [];
@@ -304,7 +350,7 @@ describe("the two seams that have to clear it", () => {
   // And losing the session empties the whole map, because a tab left on the login screen would
   // otherwise still hold the responses of the operator who just signed out of it, and the next
   // sign-in on that tab would be offered them.
-  it("has exactly one place that can set the user, and it empties what the tab remembers", async () => {
+  it("has exactly one place that can set the user, and it tells this module who that is", async () => {
     const files = await clientFiles();
     const sites: string[] = [];
     let calls = 0;
@@ -314,7 +360,7 @@ describe("the two seams that have to clear it", () => {
       if (found === 0) continue;
       calls += found;
       sites.push(f);
-      expect(FORGETS.test(src)).toBe(true);
+      expect(NOTES.test(src)).toBe(true);
     }
     // ONE call, and that is the assertion rather than a count that happens to be right: every second
     // caller of the setter is a transition that has to remember to do this on its own, and both
@@ -339,6 +385,42 @@ describe("the two seams that have to clear it", () => {
         /setUser\(/g,
       ),
     ).toBeNull();
+  });
+
+  // THE TICKET IS ONLY WORTH ANYTHING IF IT IS READ EARLY. Required by the signature, so `tsc`
+  // catches a call that omits it; what `tsc` cannot see is a call that reads it AT THE WRITE, which
+  // type-checks and always compares equal to itself. That is a question about ORDER, so it is asked
+  // of the source, and asked of the SAVE rather than of the file: `.v1.tools` appears in that module
+  // long before `save()` (the load, and the test-request dialog), so a whole-file index compares two
+  // unrelated positions and answers about neither.
+  //
+  // This fence was written once, then deleted by a later edit that replaced the block around it, and
+  // it was the mutation battery that noticed: two mutations of the call site went from dead to alive
+  // between rounds. A missing test looks exactly like a passing one.
+  it("reads the ticket before the request rather than at the write", async () => {
+    const src = codeOnly(
+      await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
+    );
+    const from = src.indexOf("async function save()");
+    expect(from).toBeGreaterThan(-1);
+    const save = src.slice(from);
+
+    const read = save.indexOf("sampleTicket()");
+    const request = save.indexOf(".v1.tools");
+    const write = save.indexOf("rememberToolSample(");
+    // All three are found after that anchor, so a rename or a move fails here instead of passing.
+    expect(read).toBeGreaterThan(-1);
+    expect(request).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(-1);
+    expect(read).toBeLessThan(request);
+    // And the write is handed a NAME: `sampleTicket()` inline would read it after everything the
+    // request took, which is the same as not having it at all.
+    const call = save.slice(
+      write,
+      save.indexOf(")", save.indexOf("ticket", write)),
+    );
+    expect(call).not.toInclude("sampleTicket");
+    expect(call).toInclude("ticket");
   });
 
   it("catches a delete that forgets, over the three ways it could look like it did not", () => {

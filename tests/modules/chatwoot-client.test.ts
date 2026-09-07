@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import logger from "@/api/lib/logger";
 import {
   ChatwootApiError,
   ChatwootMissingTokenError,
@@ -616,5 +617,179 @@ describe("ChatwootClient", () => {
     await client.updateContact(7, { identifier: null });
     expect(calls[0]?.method).toBe("PUT");
     expect(calls[0]?.body).toEqual({ identifier: null });
+  });
+
+  // Chatwoot names whoever made the request on the activity line it writes, so the token this write
+  // carries decides whether the timeline reads "Observadora added cancelamento" or the name of the
+  // person whose token provisioned the instance (issue #493).
+  describe("conversation labels are written by the persona", () => {
+    test("the write carries the bot token and the read stays on the admin one", async () => {
+      const { fetchImpl, calls } = stub(200, { payload: ["cancelamento"] });
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+
+      await client.getConversationLabels(42);
+      await client.setConversationLabels(42, ["cancelamento"]);
+
+      expect(calls[0]?.method).toBe("GET");
+      expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+      expect(calls[1]?.method).toBe("POST");
+      expect(calls[1]?.url).toBe(
+        "https://chat.example.com/api/v1/accounts/5/conversations/42/labels",
+      );
+      expect(calls[1]?.headers[CHATWOOT_AUTH_HEADER]).toBe("BOT_TOK");
+      expect(calls[1]?.body).toEqual({ labels: ["cancelamento"] });
+    });
+
+    test("asAdmin writes as the admin, for an operator-initiated clear", async () => {
+      const { fetchImpl, calls } = stub(200, {});
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+
+      await client.setConversationLabels(42, [], { asAdmin: true });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+    });
+
+    // `conversations/labels` entered BOT_ACCESSIBLE_ENDPOINTS only on 2026-06-05 (upstream #14655),
+    // and self-hosted versions are not ours to pick: an older instance answers 401. The label is the
+    // observer's whole product, so it is written anyway, by the admin, and the attribution is what is
+    // lost — never the label.
+    // A 401 whose reason is the bot token being refused ON THIS ENDPOINT, which is what a server
+    // older than 2026-06-05 answers.
+    function refusingBot(reason: string) {
+      const calls: Captured[] = [];
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        calls.push({
+          url,
+          method: init?.method ?? "GET",
+          headers,
+          body: init?.body ? JSON.parse(init.body as string) : undefined,
+        });
+        const refused = headers[CHATWOOT_AUTH_HEADER] === "BOT_TOK";
+        return {
+          ok: !refused,
+          status: refused ? 401 : 200,
+          text: async () =>
+            refused ? JSON.stringify({ error: reason }) : "{}",
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+      return { fetchImpl, calls };
+    }
+
+    test("an instance that does not open the endpoint to bots falls back to the admin token", async () => {
+      const { fetchImpl, calls } = refusingBot(
+        "Access to this endpoint is not authorized for bots",
+      );
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+
+      await client.setConversationLabels(42, ["cancelamento"]);
+
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("BOT_TOK");
+      expect(calls[1]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+      expect(calls[1]?.body).toEqual({ labels: ["cancelamento"] });
+    });
+
+    // A BROKEN CREDENTIAL IS ALSO 401 (issue #493 review, round 1), and falling back on it would
+    // hide it behind a write that succeeds under a person's name — this bug, restored, with nothing
+    // left to notice it. Both of Chatwoot's credential refusals are raised instead.
+    test.each([
+      ["Invalid Access Token"],
+      ["Bot is not authorized to access this account"],
+    ])(
+      "a 401 that means the bot's token is no good is raised: %s",
+      async (reason) => {
+        const { fetchImpl, calls } = refusingBot(reason);
+        const client = await createChatwootClient(baseConfig, {
+          fetchImpl,
+          assertSafe: passthroughSafe,
+        });
+
+        await expect(
+          client.setConversationLabels(42, ["cancelamento"]),
+        ).rejects.toBeInstanceOf(ChatwootApiError);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("BOT_TOK");
+      },
+    );
+
+    // The warning names the instance, and the instance is the operator's configured base URL: a URL
+    // carrying userinfo would keep it all the way into the log line (issue #493 review, round 2).
+    test("the fallback warning carries no credential from the base URL", async () => {
+      const { fetchImpl } = refusingBot(
+        "Access to this endpoint is not authorized for bots",
+      );
+      const client = await createChatwootClient(
+        { ...baseConfig, baseUrl: "https://user:s3cr3t@chat.example.com" },
+        { fetchImpl, assertSafe: passthroughSafe },
+      );
+      const warn = spyOn(logger, "warn");
+
+      try {
+        await client.setConversationLabels(42, ["cancelamento"]);
+
+        expect(warn).toHaveBeenCalled();
+        const logged = JSON.stringify(warn.mock.calls);
+        expect(logged).not.toContain("s3cr3t");
+        expect(logged).not.toContain("user:");
+        // Still says WHICH instance, which is what the field is for.
+        expect(logged).toContain("chat.example.com");
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // A 401 Chatwoot did not name (an intermediary, a body that does not parse) is not evidence that
+    // the endpoint is closed to bots, so it is raised too.
+    test("a 401 with no reason Chatwoot recognizes is raised", async () => {
+      const { fetchImpl, calls } = refusingBot("something else entirely");
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+
+      await expect(
+        client.setConversationLabels(42, ["cancelamento"]),
+      ).rejects.toBeInstanceOf(ChatwootApiError);
+      expect(calls).toHaveLength(1);
+    });
+
+    test("a client built outside a persona has no bot token and still writes", async () => {
+      const { fetchImpl, calls } = stub(200, {});
+      const client = await createChatwootClient(
+        { ...baseConfig, botToken: "" },
+        { fetchImpl, assertSafe: passthroughSafe },
+      );
+
+      await client.setConversationLabels(42, ["cancelamento"]);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
+    });
+
+    // Only the two refusals above fall back: anything else is a real failure and must not be turned
+    // into a write by somebody else.
+    test("any other failure is raised, not written as the admin", async () => {
+      const { fetchImpl, calls } = stub(500, {});
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+
+      await expect(
+        client.setConversationLabels(42, ["cancelamento"]),
+      ).rejects.toBeInstanceOf(ChatwootApiError);
+      expect(calls).toHaveLength(1);
+    });
   });
 });

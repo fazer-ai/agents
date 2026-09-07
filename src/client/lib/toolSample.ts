@@ -311,6 +311,14 @@ export function noteVaultChanged(): void {
 // Vault panel, the agent editor, and the picker inlined in this very modal) and the tool editor is
 // mounted for at most one of them. A listener that lives in a component is a listener that is absent
 // exactly when the edit happens somewhere else.
+//
+// WHAT IT DOES NOT HEAR, so a future reader does not over-trust it: `VAULT_CHANGED_EVENT` is a
+// `window` event dispatched by the window that made the change. A credential edited in a second tab,
+// over REST or over MCP never reaches this one, and editing a credential does not move the tool's
+// `updatedAt` either, so such a change is invisible to everything here. That is a property of
+// `vaultCache` and it costs more than a sample — the same window shows the stale base URL under the
+// URL field and sends test requests against it — so it is recorded in `docs/roadmap.md` with the
+// shape of the fix rather than half-closed here (round 16 of review).
 if (typeof window !== "undefined")
   window.addEventListener(VAULT_CHANGED_EVENT, noteVaultChanged);
 

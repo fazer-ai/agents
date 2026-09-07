@@ -35,6 +35,12 @@
 // what it gets today, which is no offer and "Send a test request" as the way back.
 
 export interface ToolSample {
+  // The revision of the definition this response came back from, as the row's `updatedAt`. A sample
+  // describes ONE version of a tool: change the URL or the response contract, from another tab or
+  // over REST or MCP, and the paths it offers stop describing anything, while the picker keeps
+  // offering them and the preview keeps rendering over them (round 9 of review). The id matching is
+  // not enough, because the id is what survives the change.
+  revision: string;
   text: string;
   // The status it came back under, or null when it was pasted by hand. Kept with the text because
   // the preview branches on it: a body captured from a 404 the tool declares a "no result" status
@@ -106,8 +112,17 @@ function keyFor(toolId: string, tenant: string | null): string {
   return `${tenant ?? ""}:${toolId}`;
 }
 
-export function recallToolSample(toolId: string): ToolSample | null {
-  return samples.get(keyFor(toolId, activeTenant())) ?? null;
+// Answers with the entry only when it describes the revision being asked about. The caller passes
+// the `updatedAt` of the row it just loaded, so a definition someone else changed in the meantime
+// gets what a tool this tab has never opened gets: nothing, and "Send a test request".
+export function recallToolSample(
+  toolId: string,
+  revision: string,
+): ToolSample | null {
+  const kept = samples.get(keyFor(toolId, activeTenant()));
+  if (kept === undefined) return null;
+  if (kept.revision !== revision) return null;
+  return kept;
 }
 
 // Called when the tool is SAVED rather than on every keystroke: what comes back is the sample the
@@ -146,7 +161,11 @@ export function rememberToolSample(
   if (sample === null) return;
   if (sample.text.trim() === "" && sample.status === null) return;
   if (sample.text.length > MAX_CHARS) return;
-  samples.set(key, { text: sample.text, status: sample.status });
+  samples.set(key, {
+    revision: sample.revision,
+    text: sample.text,
+    status: sample.status,
+  });
   while (samples.size > MAX_ENTRIES) {
     const oldest = samples.keys().next();
     if (oldest.done) break;

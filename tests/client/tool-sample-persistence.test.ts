@@ -41,12 +41,17 @@ function toolRow(over: Partial<Record<string, unknown>> = {}): AnyTool {
     expectedStatuses: [],
     ackEnabled: false,
     ackMessage: null,
+    updatedAt: REV,
     appointment: null,
     ...over,
   } as unknown as AnyTool;
 }
 
 const RESPONSE = '{"cliente":{"nome":"Ana","cpf":"12345678901"}}';
+// The revision a sample describes: the row's `updatedAt`, stringified at the boundary because the
+// treaty types it as `Date` while the wire carries a string.
+const REV = "2026-09-07T12:00:00.000Z";
+const NEWER = "2026-09-07T13:00:00.000Z";
 
 // A NEW OPERATOR IS HOW THIS MAP IS EMPTIED, so that is what a fresh test starts with, and using
 // the real entry point rather than a reset written for the tests keeps the two from drifting.
@@ -64,14 +69,50 @@ describe("what the editor opens with", () => {
   });
 
   it("takes the response this tab kept, with the status it came back under", () => {
-    rememberToolSample("42", { text: RESPONSE, status: 404 }, sampleTicket());
+    rememberToolSample(
+      "42",
+      { revision: REV, text: RESPONSE, status: 404 },
+      sampleTicket(),
+    );
     const form = formFromTool(toolRow());
     expect(form.sample).toBe(RESPONSE);
     expect(form.sampleStatus).toBe(404);
   });
 
+  // ROUND 9: A SAMPLE DESCRIBES ONE VERSION OF A TOOL. Someone else changing the URL or the response
+  // contract, from another tab or over REST or MCP, leaves the id intact and the paths meaningless,
+  // and the id is exactly what an id-keyed cache matches on. So the editor asks about the revision
+  // it just loaded, and a mismatch gets what a tool this tab never opened gets.
+  it("offers nothing when the definition changed since the sample was captured", () => {
+    rememberToolSample(
+      "42",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
+    const form = formFromTool(toolRow({ updatedAt: NEWER }));
+    expect(form.sample).toBe("");
+    expect(form.sampleStatus).toBeNull();
+    // And the tool that did NOT change still gets its sample, so this is not refusing everything.
+    expect(formFromTool(toolRow()).sample).toBe(RESPONSE);
+  });
+
+  it("takes the revision from the row the SAVE returned, not the one the form opened with", () => {
+    // The save is what moves the revision, so keeping the old one would make the entry describe a
+    // definition that stopped existing the moment it was written.
+    rememberToolSample(
+      "42",
+      { revision: NEWER, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
+    expect(formFromTool(toolRow({ updatedAt: NEWER })).sample).toBe(RESPONSE);
+  });
+
   it("is per tool, so one tool's response is never offered for another", () => {
-    rememberToolSample("42", { text: RESPONSE, status: null }, sampleTicket());
+    rememberToolSample(
+      "42",
+      { revision: REV, text: RESPONSE, status: null },
+      sampleTicket(),
+    );
     expect(formFromTool(toolRow({ id: "43" })).sample).toBe("");
   });
 });
@@ -112,17 +153,25 @@ describe("nothing about the sample is sent or stored", () => {
         }).sort(),
       );
     const before = [dump(localStorage), dump(sessionStorage)];
-    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "42",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     forgetToolSample("42", sampleTicket());
     noteOperator("someone-else");
-    rememberToolSample("42", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "42",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     const after = [dump(localStorage), dump(sessionStorage)];
     expect(after).toEqual(before);
     // And in case a future entry arrives carrying it, said plainly: no store holds the response.
     expect(after.join("")).not.toInclude("Ana");
     expect(after.join("")).not.toInclude("12345678901");
     // The value is there to be recalled, so this is not passing because nothing was remembered.
-    expect(recallToolSample("42")?.text).toBe(RESPONSE);
+    expect(recallToolSample("42", REV)?.text).toBe(RESPONSE);
   });
 
   it("is part of the form, and still changes nothing about what would be written", () => {
@@ -139,29 +188,53 @@ describe("nothing about the sample is sent or stored", () => {
 
 describe("what the tab remembers", () => {
   it("round-trips a response and its status", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
-    expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
+    expect(recallToolSample("7", REV)).toEqual({
+      revision: REV,
+      text: RESPONSE,
+      status: 200,
+    });
   });
 
   it("drops rather than keeping a previous response when the new one is too large", () => {
-    rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
     rememberToolSample(
       "7",
-      { text: "x".repeat(600_000), status: null },
+      { revision: REV, text: RESPONSE, status: null },
       sampleTicket(),
     );
-    expect(recallToolSample("7")).toBeNull();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: "x".repeat(600_000), status: null },
+      sampleTicket(),
+    );
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   it("drops on nothing at all: no text and no status", () => {
-    rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: null },
+      sampleTicket(),
+    );
     rememberToolSample("7", null, sampleTicket());
-    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
     // Whitespace with no status is the same thing to the operator as nothing, and the module owns
     // that judgement rather than trusting its one caller to keep making it.
-    rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
-    rememberToolSample("7", { text: "  \n ", status: null }, sampleTicket());
-    expect(recallToolSample("7")).toBeNull();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: null },
+      sampleTicket(),
+    );
+    rememberToolSample(
+      "7",
+      { revision: REV, text: "  \n ", status: null },
+      sampleTicket(),
+    );
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   // ROUND 8: A STATUS WITHOUT A BODY IS THE SAMPLE THAT MATTERS MOST. A test that came back 404
@@ -170,14 +243,30 @@ describe("what the tab remembers", () => {
   // with it, and the reopened tool previewed that same template as APPLIED, under a box that
   // promises exactly what the agent would receive.
   it("keeps a status that came back with an empty body", () => {
-    rememberToolSample("7", { text: "", status: 404 }, sampleTicket());
-    expect(recallToolSample("7")).toEqual({ text: "", status: 404 });
-    rememberToolSample("8", { text: "   ", status: 204 }, sampleTicket());
-    expect(recallToolSample("8")?.status).toBe(204);
+    rememberToolSample(
+      "7",
+      { revision: REV, text: "", status: 404 },
+      sampleTicket(),
+    );
+    expect(recallToolSample("7", REV)).toEqual({
+      revision: REV,
+      text: "",
+      status: 404,
+    });
+    rememberToolSample(
+      "8",
+      { revision: REV, text: "   ", status: 204 },
+      sampleTicket(),
+    );
+    expect(recallToolSample("8", REV)?.status).toBe(204);
   });
 
   it("hands that status back to the editor, so the preview reads the same as before the save", () => {
-    rememberToolSample("42", { text: "", status: 404 }, sampleTicket());
+    rememberToolSample(
+      "42",
+      { revision: REV, text: "", status: 404 },
+      sampleTicket(),
+    );
     const form = formFromTool(toolRow());
     expect(form.sample).toBe("");
     expect(form.sampleStatus).toBe(404);
@@ -204,15 +293,31 @@ describe("what the tab remembers", () => {
     for (let i = 1; i <= 8; i++)
       rememberToolSample(
         String(i),
-        { text: `{"i":${i}}`, status: null },
+        { revision: REV, text: `{"i":${i}}`, status: null },
         sampleTicket(),
       );
     // Tool 1 is the oldest; saving it again makes tool 2 the oldest instead.
-    rememberToolSample("1", { text: '{"i":1}', status: null }, sampleTicket());
-    rememberToolSample("9", { text: '{"i":9}', status: null }, sampleTicket());
-    expect(recallToolSample("2")).toBeNull();
-    expect(recallToolSample("1")).toEqual({ text: '{"i":1}', status: null });
-    expect(recallToolSample("9")).toEqual({ text: '{"i":9}', status: null });
+    rememberToolSample(
+      "1",
+      { revision: REV, text: '{"i":1}', status: null },
+      sampleTicket(),
+    );
+    rememberToolSample(
+      "9",
+      { revision: REV, text: '{"i":9}', status: null },
+      sampleTicket(),
+    );
+    expect(recallToolSample("2", REV)).toBeNull();
+    expect(recallToolSample("1", REV)).toEqual({
+      revision: REV,
+      text: '{"i":1}',
+      status: null,
+    });
+    expect(recallToolSample("9", REV)).toEqual({
+      revision: REV,
+      text: '{"i":9}',
+      status: null,
+    });
   });
 
   // A SUPER_ADMIN switches tenants without reloading, and the tool ids of two tenants are two
@@ -223,11 +328,19 @@ describe("what the tab remembers", () => {
   // does buy is that a SUPER_ADMIN who switches tenants is not offered entries from the other one.
   it("keeps a tenant's entries under that tenant", () => {
     localStorage.setItem("@app:active-tenant", "3");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     localStorage.setItem("@app:active-tenant", "4");
-    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
     localStorage.setItem("@app:active-tenant", "3");
-    expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: 200 });
+    expect(recallToolSample("7", REV)).toEqual({
+      revision: REV,
+      text: RESPONSE,
+      status: 200,
+    });
   });
 
   // ROUND 7: the selector is shared across tabs and can move while a request is in flight. The write
@@ -236,22 +349,30 @@ describe("what the tab remembers", () => {
     localStorage.setItem("@app:active-tenant", "3");
     const ticket = sampleTicket();
     localStorage.setItem("@app:active-tenant", "4");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
     // Nothing landed in the tenant that happened to be selected when the response came back…
-    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
     // …and the tenant that asked has its answer.
     localStorage.setItem("@app:active-tenant", "3");
-    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+    expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
   });
 
   it("clears under the tenant the deletion went out under", () => {
     localStorage.setItem("@app:active-tenant", "3");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     const ticket = sampleTicket();
     localStorage.setItem("@app:active-tenant", "4");
     forgetToolSample("7", ticket);
     localStorage.setItem("@app:active-tenant", "3");
-    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   it("still works in a browser that refuses storage entirely", () => {
@@ -266,20 +387,28 @@ describe("what the tab remembers", () => {
       expect(() =>
         rememberToolSample(
           "7",
-          { text: RESPONSE, status: null },
+          { revision: REV, text: RESPONSE, status: null },
           sampleTicket(),
         ),
       ).not.toThrow();
-      expect(recallToolSample("7")).toEqual({ text: RESPONSE, status: null });
+      expect(recallToolSample("7", REV)).toEqual({
+        revision: REV,
+        text: RESPONSE,
+        status: null,
+      });
     } finally {
       if (real) Object.defineProperty(globalThis, "localStorage", real);
     }
   });
 
   it("is emptied when the session ends, so a signed-out tab holds no customer data", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     noteOperator(null);
-    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   // A SHARED COOKIE MOVES FROM ONE OPERATOR TO ANOTHER WITH NO NULL IN BETWEEN: another tab signs
@@ -287,24 +416,40 @@ describe("what the tab remembers", () => {
   // tenant and tool, so B opening the same tool would be handed A's captured response.
   it("is emptied when one operator becomes another, with no signed-out state between them", () => {
     noteOperator("A");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     noteOperator("B");
-    expect(recallToolSample("7")).toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   it("is left alone when the same operator is reported again", () => {
     noteOperator("A");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     noteOperator("A");
-    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+    expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
   });
 
   it("drops one tool's entry when that tool is gone", () => {
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, sampleTicket());
-    rememberToolSample("8", { text: RESPONSE, status: 200 }, sampleTicket());
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
+    rememberToolSample(
+      "8",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     forgetToolSample("7", sampleTicket());
-    expect(recallToolSample("7")).toBeNull();
-    expect(recallToolSample("8")).not.toBeNull();
+    expect(recallToolSample("7", REV)).toBeNull();
+    expect(recallToolSample("8", REV)).not.toBeNull();
   });
 });
 
@@ -315,23 +460,35 @@ describe("a save that lands after the sample's life ended", () => {
   it("does not put it back after the tool was deleted", () => {
     const ticket = sampleTicket();
     forgetToolSample("7", sampleTicket());
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
-    expect(recallToolSample("7")).toBeNull();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   it("does not put it back after the session ended", () => {
     const ticket = sampleTicket();
     noteOperator(null);
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
-    expect(recallToolSample("7")).toBeNull();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   it("does not put it back after one operator became another", () => {
     noteOperator("A");
     const ticket = sampleTicket();
     noteOperator("B");
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
-    expect(recallToolSample("7")).toBeNull();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   // ROUND 6: a global invalidation over-rejects. Deleting tool B while tool A's save is out would
@@ -339,22 +496,34 @@ describe("a save that lands after the sample's life ended", () => {
   it("is not invalidated by the deletion of a DIFFERENT tool", () => {
     const ticket = sampleTicket();
     forgetToolSample("8", sampleTicket());
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
-    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
+    expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
   });
 
   it("stays rejected for the deleted tool after another one is deleted too", () => {
     const ticket = sampleTicket();
     forgetToolSample("7", sampleTicket());
     forgetToolSample("8", sampleTicket());
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
-    expect(recallToolSample("7")).toBeNull();
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
+    expect(recallToolSample("7", REV)).toBeNull();
   });
 
   it("still writes when nothing cleared while it was out", () => {
     const ticket = sampleTicket();
-    rememberToolSample("7", { text: RESPONSE, status: 200 }, ticket);
-    expect(recallToolSample("7")?.text).toBe(RESPONSE);
+    rememberToolSample(
+      "7",
+      { revision: REV, text: RESPONSE, status: 200 },
+      ticket,
+    );
+    expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
   });
 });
 
@@ -495,6 +664,11 @@ describe("the two seams that have to clear it", () => {
     // empty body, status and all. A conditional in this argument is that copy coming back, and the
     // module cannot see it.
     expect(call).not.toInclude("?");
+    // AND THE REVISION IS THE ONE THE SAVE RETURNED. This save is what moved it, so the row the form
+    // opened with already names a definition that stopped existing; stored, it would make every
+    // reopen discard the sample this save just kept. The module cannot tell one string from another,
+    // so the question is asked here.
+    expect(call).toInclude("data.tool.updatedAt");
   });
 
   // The same question at the OTHER site that mutates the cache after a request. It was written

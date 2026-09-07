@@ -551,7 +551,11 @@ export function formFromTool(tool: Tool) {
 // reload, a second tab or a second machine gets no offer, the same as before the feature, and "Send
 // a test request" is still the way back.
 function sampleForm(tool: Tool) {
-  const kept = recallToolSample(tool.id);
+  // `String(...)` because the treaty TYPES this as `Date` while the wire carries a string: the
+  // client runs with `parseDate: false`, so nothing ever constructs one (`docs/eden-treaty.md`).
+  // Comparing whatever arrives against whatever was stored is what this needs, and stringifying
+  // both ends answers the same either way.
+  const kept = recallToolSample(tool.id, String(tool.updatedAt));
   return { sample: kept?.text ?? "", sampleStatus: kept?.status ?? null };
 }
 
@@ -1442,7 +1446,14 @@ export function ToolEditModal({
       // the copy that lives here (round 8 of review).
       rememberToolSample(
         data.tool.id,
-        { text: sample, status: sampleStatus },
+        // The revision the response carries, not the one the form opened with: this save IS what
+        // moved it, and keeping the old one would make the entry describe a definition that no
+        // longer exists the moment it is written.
+        {
+          revision: String(data.tool.updatedAt),
+          text: sample,
+          status: sampleStatus,
+        },
         ticket,
       );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list

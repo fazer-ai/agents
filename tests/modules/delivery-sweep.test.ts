@@ -2195,6 +2195,47 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
+  // ISSUE #540, window 2. The same colleague's reply, on a row the claim never reached: the shape is
+  // there (INSERT wrote it) and the role is not, because the claim is the statement that writes it.
+  // This pass cannot tell a watcher's route from the responder's, and each guess costs something
+  // different — so it does both honest things. The takeover is armed, which `recover-takeover`
+  // answers `not-owed` to where it was not due; and the gap is reported, which is what reading the
+  // row as the responder's silently skipped.
+  test("a reply stranded before its route was named is armed AND reported", async () => {
+    const convId = 8872;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 3,
+      // Never claimed: nothing stated the role, and nothing could have.
+      status: "PENDING",
+      humanReplyShape: "composer",
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.roleUnstated).toBe(1);
+    // Not folded into either neighbour: `owed` would say the takeover was owed, `closed` would say
+    // nothing was outstanding, and this row is the one where neither is known.
+    expect(counts.owed).toBe(0);
+    expect(counts.observerStrands).toBe(0);
+    expect(counts.closed).toBe(0);
+    expect(counts.lost).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("PROCESSED");
+    // Armed, unlike `observer-strand`, because the responder's route is the common one and refusing
+    // there costs a real handover.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "TAKEOVER_RECOVERY",
+          dedupeKey: takeoverRecoveryDedupeKey(rowId),
+        },
+      }),
+    ).toBe(1);
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {
     // ISSUE #439. The row a process death leaves when the delivery it was working carried a
     // COLLEAGUE's reply: `message_created`, no inbound message id (nothing a customer sent), and the

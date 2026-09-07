@@ -2792,7 +2792,9 @@ async function maybeConsumeCommandOrGate(params: {
         // In the conversation's label queue like every other writer, so a clear cannot land in the
         // middle of somebody's read-modify-write (issue #477 review, round 3).
         withConversationLabels(params.tenantId, conversationId, () =>
-          client.setConversationLabels(conversationId, []),
+          // As the ADMIN: /reset is a person peeling the episode's labels off, not the persona
+          // deciding something, and the activity line should say so (issue #493).
+          client.setConversationLabels(conversationId, [], { asAdmin: true }),
         ),
       );
       await step("clear custom attributes", "atributos", () =>

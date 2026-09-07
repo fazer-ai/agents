@@ -2967,4 +2967,43 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       });
     }
   });
+
+  // The other half of issue #493: the client the tick builds has to CARRY the persona's token, or the
+  // label write falls back to the admin one and signs the verdict with a person's name. The switch
+  // itself is fenced in chatwoot-client.test.ts; this is the seam that feeds it.
+  test("the tick builds its client with the persona's bot token", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    let captured: { botToken?: string; adminToken?: string } | null = null;
+
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async (cfg) => {
+          captured = cfg as { botToken?: string; adminToken?: string };
+          return stubClient([message(90, "quero cancelar")], [], log);
+        },
+        makeModel: () =>
+          verdictModel(
+            { assunto: "cancelamento", confidence: 1, reason: "" },
+            calls,
+          ),
+      },
+    );
+
+    expect(captured).not.toBeNull();
+    expect((captured as unknown as { botToken?: string })?.botToken).toBe(
+      "BOT",
+    );
+    // And it did write, so the assertion above is about a client that was actually used.
+    expect(log.labelsWritten.at(-1)).toContain("cancelamento");
+  });
 });

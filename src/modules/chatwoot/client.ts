@@ -1,5 +1,7 @@
+import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { redactEndpoint } from "@/modules/audit/projection";
 import { CHATWOOT_AUTH_HEADER, CHATWOOT_SEND_ID_KEY } from "./constants";
 
 // Chatwoot Application API client with the dual-identity profiles (validated against the
@@ -40,6 +42,11 @@ const realSleep = (ms: number): Promise<void> =>
 export class ChatwootApiError extends Error {
   readonly status: number;
   readonly endpoint: string;
+  // The auth failure's reason, verbatim, when Chatwoot named one (see `authFailureDetail`). Kept as
+  // a field and not only inside the message because a caller has to be able to tell WHICH refusal it
+  // got — "this endpoint is not open to bots" and "this token is no good" are both 401 and mean
+  // opposite things (issue #493 review, round 1).
+  readonly reason?: string;
   constructor(status: number, endpoint: string, detail?: string) {
     // NOTE: `detail` is ONLY ever an auth failure's reason (see authFailureDetail) — the response body
     // of any other status carries customer PII / message content and must never reach this message.
@@ -51,6 +58,7 @@ export class ChatwootApiError extends Error {
     this.name = "ChatwootApiError";
     this.status = status;
     this.endpoint = endpoint;
+    this.reason = detail;
   }
 }
 
@@ -80,11 +88,17 @@ export class ChatwootMissingTokenError extends Error {
 // answer whatever it likes, including `{"error":"<customer data>"}`, which would land in shared logs
 // through the callers' `errMsg(err)`. An allowlist keeps the three cases this exists to separate and
 // gives up on everything else, which is exactly the old behavior for anything unrecognized.
+// The ONE refusal that means "this server does not open this endpoint to bots", as opposed to the
+// two that mean "this bot's token is no good". Named because the label write below is allowed to
+// answer them differently, and only this one.
+export const BOT_ENDPOINT_NOT_AUTHORIZED =
+  "Access to this endpoint is not authorized for bots";
+
 const KNOWN_AUTH_REASONS: ReadonlySet<string> = new Set([
   // access_token_auth_helper.rb: the token is blank or matches no user.
   "Invalid Access Token",
   // access_token_auth_helper.rb: the endpoint is outside BOT_ACCESSIBLE_ENDPOINTS.
-  "Access to this endpoint is not authorized for bots",
+  BOT_ENDPOINT_NOT_AUTHORIZED,
   // ensure_current_account_helper.rb: the bot belongs to another account.
   "Bot is not authorized to access this account",
   // accounts/base_controller.rb, on a 403.
@@ -532,10 +546,15 @@ export class ChatwootClient {
     );
   }
 
-  // Conversation labels (admin token — labels are NOT in the bot allowlist). The POST REPLACES the
-  // whole set, so the assign_label native tool reads the current labels first and appends. Shapes
-  // CONFIRMED against the chatwoot-pro fork (2026-06-14): LabelConcern + labels/{index,create}.json
-  // .jbuilder render `json.payload @labels`; create permits `labels: []` and calls `update_labels`.
+  // Conversation labels. The POST REPLACES the whole set, so the assign_label native tool reads the
+  // current labels first and appends. Shapes CONFIRMED against the chatwoot-pro fork (2026-06-14):
+  // LabelConcern + labels/{index,create}.json.jbuilder render `json.payload @labels`; create permits
+  // `labels: []` and calls `update_labels`.
+  //
+  // The READ stays on the admin token for the reason `setConversationCustomAttributes` gives below:
+  // `conversations/labels` entered `BOT_ACCESSIBLE_ENDPOINTS` only on 2026-06-05 (upstream #14655,
+  // the same PR that added `conversations#show`), and self-hosted versions are not ours to pick. A
+  // read attributes nothing, so there is nothing to gain by risking the 401 here.
   async getConversationLabels(conversationId: number): Promise<string[]> {
     const res = (await this.request(
       this.config.adminToken,
@@ -548,16 +567,61 @@ export class ChatwootClient {
       : [];
   }
 
-  setConversationLabels(
+  // THE WRITE IS THE PERSONA'S, because Chatwoot names whoever made the request on the activity line
+  // it writes ("Observadora added cancelamento"). With the admin token that line carries the name of
+  // the person whose token provisioned the instance, so an automated verdict is signed by a human and
+  // the team cannot tell one from the other (issue #493). The bot's own token is authorized for this:
+  // `conversations/labels` → index, create is in `BOT_ACCESSIBLE_ENDPOINTS`, and the controller
+  // authorizes against `ConversationPolicy#show?`, which accepts an agent bot. Fenced upstream in
+  // fazer-ai/chatwoot#476.
+  //
+  // `asAdmin` is for an OPERATOR-initiated write, the way it is on assignToAgent and toggleStatus:
+  // /reset peels an episode's labels off because a person asked, and that is the admin's doing.
+  async setConversationLabels(
     conversationId: number,
     labels: string[],
+    opts: { asAdmin?: boolean } = {},
   ): Promise<unknown> {
-    return this.request(
-      this.config.adminToken,
-      "POST",
-      `/conversations/${conversationId}/labels`,
-      { labels },
-    );
+    const path = `/conversations/${conversationId}/labels`;
+    if (opts.asAdmin)
+      return this.request(this.config.adminToken, "POST", path, { labels });
+    // Two situations cannot use the bot's token, and on both the admin token still can. Losing the
+    // attribution is worse than nothing and better than losing the label, which for an observer IS
+    // the product, so the fall back is taken and NAMED — a silent one would be the bug this method
+    // just fixed, reappearing wherever nobody looks.
+    //   - a client built outside a persona has no bot token (`request` refuses it before the call);
+    //   - an instance older than 2026-06-05 has no labels entry in `BOT_ACCESSIBLE_ENDPOINTS` and
+    //     answers `validate_bot_access_token!` with 401 and THIS reason.
+    //
+    // NOT EVERY 401 (issue #493 review, round 1). A revoked or rotated token, and a bot that belongs
+    // to another account, are 401 as well — and falling back on those would hide a broken credential
+    // behind a write that succeeds under a person's name, which is this bug, restored, with nothing
+    // left to notice it. Chatwoot names the three refusals apart, so they are told apart here.
+    try {
+      return await this.request(this.config.botToken, "POST", path, { labels });
+    } catch (err) {
+      const refused =
+        err instanceof ChatwootMissingTokenError ||
+        (err instanceof ChatwootApiError &&
+          err.status === 401 &&
+          err.reason === BOT_ENDPOINT_NOT_AUTHORIZED);
+      if (!refused) throw err;
+      logger.warn(
+        // REDACTED, because `accountBase` is the operator's configured base URL with the trailing
+        // slashes trimmed and nothing else: a URL carrying userinfo keeps it all the way here, and a
+        // log line is not where a credential goes (issue #493 review, round 2). `redactEndpoint`
+        // keeps the scheme and the host, which is what identifies the instance, and drops the rest;
+        // the account is named separately because the path it lived in is gone with them.
+        {
+          err,
+          conversationId,
+          instance: redactEndpoint(this.accountBase),
+          accountId: this.config.accountId,
+        },
+        "chatwoot: the bot could not write the labels, falling back to the admin token — the activity line will name the admin, not the agent",
+      );
+      return this.request(this.config.adminToken, "POST", path, { labels });
+    }
   }
 
   // Contact labels (admin token, same LabelConcern as conversation labels — POST REPLACES the whole

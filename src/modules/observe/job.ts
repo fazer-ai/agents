@@ -641,25 +641,39 @@ function verdictValues(
 // every compensation in the binding path follows. So is an inbox this conversation does not name —
 // the mirror writes `inboxId` null for a conversation whose first event was sparse, and refusing
 // there would silence observation on exactly the conversations that need it most.
+//
+// ...AND "ATTACHING" IS ITS OWN ANSWER (issue #540, window 5). The observer row is now written
+// BEFORE Chatwoot is asked and stamped after, so an unstamped row is an attach in flight: the
+// binding has not landed, and acting on it would move labels and post a note for an observe that
+// can still be refused and taken back. It is not "no" either — that is a detach, and completing on
+// it is permanent for a resolve. The caller retries, which is what the payload's `attaching` flag
+// bought before this column and now buys only for a job an older release enqueued.
 async function agentStillOnInbox(
   tenantId: bigint,
   inboxId: bigint,
   agentId: bigint,
   base: PrismaClient,
-): Promise<"yes" | "no" | "unreadable"> {
+): Promise<"yes" | "no" | "attaching" | "unreadable"> {
   try {
     return await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const inbox = await db.inbox.findUnique({
         where: { id: inboxId },
         select: {
           agentId: true,
-          observers: { where: { agentId }, select: { id: true } },
+          observers: {
+            where: { agentId },
+            select: { id: true, attachedAt: true },
+          },
         },
       });
       if (!inbox) return "no";
-      return inbox.agentId === agentId || inbox.observers.length > 0
-        ? "yes"
-        : "no";
+      // The RESPONDER binding first, and it is never pending: it is a column on the inbox, written
+      // in one statement (#209's first rung, a monitoring agent bound as the responder).
+      if (inbox.agentId === agentId) return "yes";
+      if (inbox.observers.length === 0) return "no";
+      return inbox.observers.some((o) => o.attachedAt === null)
+        ? "attaching"
+        : "yes";
     });
   } catch (err) {
     logger.warn(
@@ -738,7 +752,7 @@ export async function runObserve(
     // `resolveMark` then suppresses every later delivery of the same resolution, so the tick fails
     // and retries until the row is visible; an attachment the mirror never records dead-letters,
     // which is the right report for a leak nothing else names.
-    if (onInbox === "no" && p.attaching === true) {
+    if (onInbox === "attaching" || (onInbox === "no" && p.attaching === true)) {
       logger.warn(
         "observe: the observer binding has not landed yet (conv=%s, agent=%s); retrying",
         String(conversationId),
@@ -1276,6 +1290,9 @@ export async function runObserve(
         agentId,
         base,
       );
+      // A row that has not landed is the same answer the payload's flag gave: not a detach, and not
+      // a licence to write onto an inbox the agent may not end up on (issue #540, window 5).
+      if (onInbox === "attaching") return "binding_unreadable";
       if (onInbox === "no")
         return p.attaching === true ? "binding_unreadable" : "detached";
       if (onInbox === "unreadable") return "binding_unreadable";

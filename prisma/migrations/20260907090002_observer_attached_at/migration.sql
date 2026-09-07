@@ -1,0 +1,27 @@
+-- THE ATTACH WINDOW GETS A FACT OF ITS OWN (issue #540, window 5). `observeInbox` attaches the bot on
+-- Chatwoot before committing `inbox_observers`, and inside that window the receiver had nothing to
+-- read: no row, and -- if a promotion committed meanwhile -- no monitoring mode either, which was the
+-- proxy standing in for the row. The row is now written before the call with `attached_at` null and
+-- stamped after it.
+--
+-- BACKFILLED, and it has to be: every existing row was written only once Chatwoot had agreed, so
+-- leaving them null would report every established observer as still attaching -- the observe tick
+-- would retry instead of acting, and the receiver would report an attach window that closed months
+-- ago.
+--
+-- BY THE COLUMN DEFAULT, NOT BY AN UPDATE. `ADD COLUMN ... DEFAULT` fills every existing row with
+-- that default, so the backfill is part of the DDL and carries none of the failure mode a data
+-- statement has here: `inbox_observers` is under FORCE ROW LEVEL SECURITY, and an UPDATE run by an
+-- owner who is not a superuser reaches ZERO rows and reports success (docs/deploy.md, and
+-- tests/prisma/migration-rls-bypass.test.ts for why that is asked once rather than per file). The
+-- value is the migration's own clock rather than `created_at`; the only thing any reader asks of
+-- this column is whether it is null.
+--
+-- THE DEFAULT IS WHAT MAKES A ROLLING DEPLOY SAFE (docs/deploy.md). The previous release names no
+-- such column, so every observe it completes during the overlap would insert a null -- read by this
+-- release as an attach that never lands, which would make the observe tick retry forever and the
+-- receiver report a window that closed the instant it opened. With the default, a row written by
+-- anything that does not know about pending rows is confirmed on the spot, and the null is only ever
+-- the one this release writes on purpose between its own insert and the fork's answer.
+ALTER TABLE "inbox_observers"
+  ADD COLUMN "attached_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP;

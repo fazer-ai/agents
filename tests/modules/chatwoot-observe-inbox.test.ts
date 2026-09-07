@@ -500,7 +500,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await bindInbox(ctx(tenantId), vendas.id, null, binding, appDb);
   });
 
-  test("an agent deleted while its attach is in flight: the attach is taken back, and the observe answers not found", async () => {
+  // ...AND A DELETION INSIDE THE SAME WINDOW, refused by the same row (issue #540, window 5).
+  // `deleteAgent` refuses while the agent observes anything, and the pending row is what it now
+  // finds. The P2003 arm in `observeInbox` stays where it is: a deletion that lands between the
+  // preflight and the pending write still reaches the foreign key, and the attachment still goes
+  // back.
+  test("an agent cannot be deleted while its attach is in flight: the pending row is what refuses it", async () => {
     const efemera = await suDb.agent.create({
       data: {
         tenantId,
@@ -521,32 +526,40 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       select: { id: true },
     });
     const observing = new Set<string>();
+    let deletion: unknown = null;
     const cw = fakeChatwoot({
       observerRoute: true,
       observing,
       onAttach: async () => {
-        // `deleteAgent` refuses only while a row exists, and the row is not written yet.
-        await deleteAgent(ctx(tenantId), efemera.id, appDb);
+        deletion = await deleteAgent(ctx(tenantId), efemera.id, appDb).then(
+          () => null,
+          (err: unknown) => err,
+        );
       },
     });
-    await expect(
-      observeInbox(ctx(tenantId), spare.id, efemera.id, cw, appDb),
-    ).rejects.toMatchObject({
-      statusCode: 404,
-      translationKey: "errors.agentNotFound",
+    await observeInbox(ctx(tenantId), spare.id, efemera.id, cw, appDb);
+    expect(deletion).toMatchObject({
+      statusCode: 422,
+      translationKey: "errors.agentObservesInboxes",
     });
-    expect(observing.size).toBe(0);
-    expect(
-      await suDb.inboxObserver.count({ where: { agentId: efemera.id } }),
-    ).toBe(0);
+    expect(observing.size).toBe(1);
+    const row = await suDb.inboxObserver.findFirstOrThrow({
+      where: { agentId: efemera.id },
+      select: { attachedAt: true },
+    });
+    expect(row.attachedAt).not.toBeNull();
+    // Cleaned up so the agent can go: an inbox takes one watcher, and this one is holding a spare.
+    await unobserveInbox(ctx(tenantId), spare.id, efemera.id, cw, appDb);
+    await deleteAgent(ctx(tenantId), efemera.id, appDb);
   });
 
-  // A PROMOTION INSIDE THE ATTACH WINDOW (issue #476 review, round 25). Left unanswered it puts the
-  // fork's attachment on an agent that ANSWERS, with no row naming it — and the receiver, finding
-  // neither a row nor a monitoring mode, reads that route as the responder's and folds the message
-  // in a second time. The mode is re-asked under the agent's row lock, the same lock `updateAgent`
-  // takes, so whichever of the two commits first the other sees it.
-  test("an agent promoted while its attach is in flight: the attach is taken back, and the observe is refused", async () => {
+  // A PROMOTION INSIDE THE ATTACH WINDOW (issue #476 review, round 25) — now REFUSED AT ITS SOURCE
+  // (issue #540, window 5). The row is written before the fork is asked, and `updateAgent` refuses a
+  // mode change while the agent observes anything: the promotion no longer commits inside the window
+  // at all, which is what left the receiver with neither signal. The mode re-check under the agent's
+  // lock stays where it is — a promotion that lands between the preflight and the pending write
+  // still meets it, and the attachment still goes back.
+  test("an agent cannot be promoted while its attach is in flight: the pending row is what refuses it", async () => {
     const promovida = await suDb.agent.create({
       data: {
         tenantId,
@@ -566,29 +579,46 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       select: { id: true },
     });
     const observing = new Set<string>();
+    let promotion: unknown = null;
     const cw = fakeChatwoot({
       observerRoute: true,
       observing,
       onAttach: async () => {
-        // `updateAgent` refuses only while a row exists, and the row is not written yet.
-        await updateAgent(
+        // The pending row is already there, so this is the refusal `updateAgent` makes for an agent
+        // that observes — and it is the whole of the fix: what used to slip through here was a mode
+        // change committing while nothing named the binding.
+        promotion = await updateAgent(
           ctx(tenantId),
           promovida.id,
           { mode: "production" },
           appDb,
+        ).then(
+          () => null,
+          (err: unknown) => err,
         );
       },
     });
-    await expect(
-      observeInbox(ctx(tenantId), spare.id, promovida.id, cw, appDb),
-    ).rejects.toMatchObject({
+    await observeInbox(ctx(tenantId), spare.id, promovida.id, cw, appDb);
+    expect(promotion).toMatchObject({
       statusCode: 422,
-      translationKey: "errors.observerNotMonitoring",
+      translationKey: "errors.agentObservesInboxes",
     });
-    expect(observing.size).toBe(0);
+    // The observe completed, so the attachment and the row are both there — and the row is stamped,
+    // which is what tells the receiver the window has closed.
+    expect(observing.size).toBe(1);
+    const row = await suDb.inboxObserver.findFirstOrThrow({
+      where: { agentId: promovida.id },
+      select: { attachedAt: true },
+    });
+    expect(row.attachedAt).not.toBeNull();
     expect(
-      await suDb.inboxObserver.count({ where: { agentId: promovida.id } }),
-    ).toBe(0);
+      (
+        await suDb.agent.findUniqueOrThrow({
+          where: { id: promovida.id },
+          select: { mode: true },
+        })
+      ).mode,
+    ).toBe("monitoring");
   });
 
   // ONE BOT SERVES EVERY INBOX THIS AGENT WATCHES, so a bot deleted out of band takes them all down
@@ -1055,12 +1085,20 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       observerRoute: true,
       observing,
       onAttach: async () => {
-        // The other call's row, committed while this one's attach is in flight. Written directly:
-        // what is under test is the compensation, not a second observe's own path.
+        // The other call's row, COMMITTED while this one's attach is in flight — stamped, because
+        // that is what committing means since issue #540: the two calls share one row (the unique is
+        // on the inbox), and the stamp is what separates "a call completed and depends on this
+        // attachment" from "a call is still in flight". Written directly: what is under test is the
+        // compensation, not a second observe's own path.
         await suDb.inboxObserver.upsert({
           where: { tenantId_inboxId: { tenantId, inboxId: spare.id } },
-          create: { tenantId, inboxId: spare.id, agentId: vigia.id },
-          update: {},
+          create: {
+            tenantId,
+            inboxId: spare.id,
+            agentId: vigia.id,
+            attachedAt: new Date(),
+          },
+          update: { attachedAt: new Date() },
         });
         // ...and then this call fails to persist.
         await softDisconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
@@ -1738,5 +1776,85 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     });
     expect(after.agentId).toBeNull();
     expect(after.bindingGeneration).toBe(bound.bindingGeneration + 1);
+  });
+  // THE ATTACH WINDOW GETS A FACT OF ITS OWN (issue #540, window 5). The row used to be written only
+  // after Chatwoot agreed, so inside the window there was nothing to read: no row, and — where a
+  // promotion committed in that same window — not even the monitoring mode that stood in for it. The
+  // row now goes in first, unstamped, and is stamped when the fork answers.
+  test("the observer row is written before Chatwoot is asked, unstamped, and stamped when it answers", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 70,
+        name: "Janela de attach",
+      },
+      select: { id: true },
+    });
+    // What the table held WHILE the fork was being asked, recorded as plain strings: the assertions
+    // then say what they mean without depending on how a closure's writes narrow.
+    const during = { rows: "0", agentId: "none", stamp: "none" };
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing: new Set<string>(),
+      onAttach: async () => {
+        const seen = await suDb.inboxObserver.findFirst({
+          where: { tenantId, inboxId: inbox.id },
+          select: { agentId: true, attachedAt: true },
+        });
+        during.rows = seen === null ? "0" : "1";
+        during.agentId = seen === null ? "none" : String(seen.agentId);
+        during.stamp = seen?.attachedAt == null ? "none" : "stamped";
+      },
+    });
+    await observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
+    expect(during.rows).toBe("1");
+    expect(during.agentId).toBe(String(monitoringAgent));
+    expect(during.stamp).toBe("none");
+    const settled = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id },
+      select: { attachedAt: true },
+    });
+    expect(settled.attachedAt).not.toBeNull();
+    await unobserveInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
+  });
+
+  // ...AND IT GOES BACK WITH A CALL THAT DOES NOT COMPLETE. A pending row outliving its call is
+  // worse than no row: it counts as observing, so it would refuse the agent's mode changes and its
+  // deletion for good, and the observe tick would retry against a binding that never lands.
+  test("a failed observe leaves no pending row behind", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 71,
+        name: "Attach que falha",
+      },
+      select: { id: true },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      onAttach: async () => {
+        // The account disconnected inside the Chatwoot window: the transaction below refuses, and
+        // everything this call put in has to go back.
+        await softDisconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
+      },
+    });
+    try {
+      await expect(
+        observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(
+        await suDb.inboxObserver.count({
+          where: { tenantId, inboxId: inbox.id },
+        }),
+      ).toBe(0);
+      // ...and the attachment with it, since no row is left depending on it.
+      expect(observing.size).toBe(0);
+    } finally {
+      await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
+    }
   });
 });

@@ -675,7 +675,13 @@ async function boundObserverRuntime(
         agentId: true,
         responderBoundAt: true,
         bindingGeneration: true,
-        observers: { where: { agentId: bot.agentId }, select: { id: true } },
+        observers: {
+          where: { agentId: bot.agentId },
+          // The STAMP as well as the row (issue #540, window 5): a row with none is an attach the
+          // fork has not confirmed, which counts as observing everywhere it gates a refusal and is
+          // reported as the attach window here.
+          select: { id: true, attachedAt: true },
+        },
       },
     });
     // THE ROW, AND ONLY THE ROW — the attach window is NOT inferable here (issue #477 review, round
@@ -761,7 +767,13 @@ async function observerRuntimeForRoute(
         agentId: true,
         responderBoundAt: true,
         bindingGeneration: true,
-        observers: { where: { agentId: bot.agentId }, select: { id: true } },
+        observers: {
+          where: { agentId: bot.agentId },
+          // The STAMP as well as the row (issue #540, window 5): a row with none is an attach the
+          // fork has not confirmed, which counts as observing everywhere it gates a refusal and is
+          // reported as the attach window here.
+          select: { id: true, attachedAt: true },
+        },
       },
     });
     if (!row) return null;
@@ -829,7 +841,14 @@ async function observerRuntimeForRoute(
     if (row.observers.length === 0 && !isMonitoring(bot.agent.mode))
       return null;
     return {
-      attaching: row.observers.length === 0,
+      // ...OR A ROW THE FORK HAS NOT CONFIRMED (issue #540, window 5). Until this column the attach
+      // window had no fact of its own: the row was written only after Chatwoot agreed, so inside the
+      // window there was nothing but the MODE to go on — and a promotion committing in that same
+      // window took even that away, leaving the delivery read as the responder's or as nobody's.
+      // The row is now written before the call, so the window states itself.
+      attaching:
+        row.observers.length === 0 ||
+        row.observers.some((o) => o.attachedAt === null),
       agentId: bot.agentId,
       inboxId: row.id,
       chatwootInboxId: row.chatwootInboxId,

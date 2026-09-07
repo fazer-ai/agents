@@ -505,11 +505,40 @@ model Inbox {
 // conversation — the inbox keeps starting conversations `open` for whoever answers. The responder
 // stays `Inbox.agentId`, alone; only a `monitoring` agent may be bound this way, and never as both.
 model InboxObserver {
-  id        BigInt   @id @default(autoincrement())
-  tenantId  BigInt   @map("tenant_id")
-  inboxId   BigInt   @map("inbox_id")
-  agentId   BigInt   @map("agent_id")
-  createdAt DateTime @default(now()) @map("created_at")
+  id         BigInt    @id @default(autoincrement())
+  tenantId   BigInt    @map("tenant_id")
+  inboxId    BigInt    @map("inbox_id")
+  agentId    BigInt    @map("agent_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  // WHEN CHATWOOT AGREED, or null while it has not been asked yet (issue #540, window 5).
+  //
+  // The row used to be written only AFTER the fork accepted the attachment, which left the receiver
+  // with no signal at all inside that window: no row yet, and — if a promotion committed meanwhile —
+  // no monitoring mode either, which was the proxy standing in for the row. The row is now written
+  // BEFORE the call and stamped after it, so the window has a fact of its own instead of an
+  // inference, and the compensation that already existed deletes the pending row.
+  //
+  // WHAT THE ROW MEANS therefore changed, from "Chatwoot agreed" to "this inbox is spoken for". Every
+  // reader that asks whether an agent observes an inbox counts a pending row — refusing a mode change
+  // or a deletion, listing the inbox, taking the observer's route — because the attachment may
+  // already be live upstream and answering "no" is the unsafe side. Three readers ask something
+  // narrower and read the stamp itself: the receiver, which reports the attach window; the observe
+  // tick, which retries rather than acting on a binding that has not landed; and `observeInbox`'s own
+  // compensation, which must not read its own pending row as somebody else depending on the
+  // attachment.
+  //
+  // Backfilled for every row the previous release wrote — each of those exists precisely because
+  // Chatwoot had agreed — and by the column's own default rather than by a data statement, since
+  // `inbox_observers` is under FORCE ROW LEVEL SECURITY and an UPDATE there silently reaches zero
+  // rows for a non-superuser owner (see the migration).
+  //
+  // DEFAULTED TO NOW, AND THE DEFAULT IS THE ROLLOUT (docs/deploy.md). The previous release names no
+  // such column, so every row it writes during the overlap would land with a null and be read here as
+  // an attach that never lands: the observe tick would retry forever and the receiver would report a
+  // window that closed the moment it opened. With the default, a row written by anything that does
+  // not know about pending rows is confirmed, and the null is only ever the one THIS module writes on
+  // purpose, in the seconds between its own insert and the fork's answer.
+  attachedAt DateTime? @default(now()) @map("attached_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   inbox  Inbox  @relation(fields: [inboxId], references: [id], onDelete: Cascade)

@@ -2110,4 +2110,107 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     expect(messageId).toBe(sharedMessage);
     expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
   });
+  // WINDOW 5 (issue #540): the attach window used to have no fact of its own. The row was written
+  // only after Chatwoot agreed, so a delivery landing inside it read "no row" — and where a
+  // promotion committed in that same window, not even the monitoring mode that stood in for the
+  // row. The row is now written first, unstamped, and the receiver reports that as the window: the
+  // verdict armed off it says `attaching`, so the tick retries instead of completing on a binding
+  // that has not landed, which for a resolve is permanent.
+  test("a delivery inside the attach window is reported as attaching", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true },
+    });
+    // The row as `observeInbox` writes it before asking the fork.
+    await suDb.inboxObserver.updateMany({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      data: { attachedAt: null },
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: observerId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    try {
+      await deliver(OBSERVER_BOT, 79, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      const rows = await observeRows();
+      expect(rows).toHaveLength(1);
+      const armed = rows[0];
+      if (!armed) throw new Error("no OBSERVE row");
+      expect((armed.payload as { attaching?: boolean }).attaching).toBe(true);
+    } finally {
+      await suDb.inboxObserver.updateMany({
+        where: { tenantId, inboxId: inbox.id, agentId: observerId },
+        data: { attachedAt: new Date() },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: before.settings ?? {} },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  });
+
+  // ...and a stamped row is not a window: the same delivery arms an ordinary verdict.
+  test("a delivery on a settled observer binding is not reported as attaching", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: observerId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    try {
+      await deliver(OBSERVER_BOT, 80, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      const rows = await observeRows();
+      expect(rows).toHaveLength(1);
+      const armed = rows[0];
+      if (!armed) throw new Error("no OBSERVE row");
+      expect(
+        (armed.payload as { attaching?: boolean }).attaching,
+      ).toBeUndefined();
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: before.settings ?? {} },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  });
 });

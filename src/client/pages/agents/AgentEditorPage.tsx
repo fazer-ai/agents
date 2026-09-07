@@ -121,7 +121,6 @@ import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
 import { memoryToForm, memoryToStored } from "./memoryFormState";
 import {
-  fallbackModelIsMissing,
   modelFallbackToForm,
   modelFallbackToStored,
 } from "./modelFallbackFormState";
@@ -1743,31 +1742,13 @@ function AgentEditor() {
       // field the form dropped would be deleted on the next save — which is exactly how
       // `tts.baseURL` was lost once, and the round-trip test over ./memoryFormState is the guard.
       memory: memoryToStored(memory),
-      // WHAT A WATCHER'S SAVE OMITS IS THE PAIR THE BOUNDARY REFUSES, and only that (issue #494
-      // review, rounds 7 and 9). The editor stops drawing the fallback block in monitoring mode, so
-      // the form is no longer an editor of it — but it kept SERIALIZING it, and a half-named pair
-      // picked before the flip then reached the write boundary, which refuses it by name
-      // (`assertSettingsModelFallback`) with the only control that could fix it off screen: Save dead
-      // on a 400, on the one section a watcher does edit.
-      //
-      // Round 7 answered that by omitting the key for every watcher, and omitted too much: a VALID
-      // draft edited before the flip was dropped just as silently, and `applyBehavior` then reloaded
-      // the form from the stored value, so the edit vanished from a tab that had just reported
-      // itself dirty. The predicate is therefore the boundary's own question — `fallbackModelIsMissing`,
-      // the same one the save gate asks where the section IS drawn — and not "is this a watcher".
-      //
-      // When it does omit, `...settings` above keeps what is stored, byte for byte, which is also
-      // the shape the boundary's "only what the write changes" exemption is written for: a stored
-      // pair that is already half-named goes back unchanged and passes, where normalizing it here
-      // would silently delete a provider nobody asked to remove. That half-named DRAFT is lost from
-      // the form on the reload, and it is the one thing here that cannot be kept: the round trip
-      // does not survive it either way (`{provider, model: null}` reads back as "No fallback"), and
-      // the control that would fix it is off screen.
-      //
-      // Read off the DRAFT mode, the same value that decides whether the block is drawn.
-      ...(watcher && fallbackModelIsMissing(modelFallback)
-        ? {}
-        : { modelFallback: modelFallbackToStored(modelFallback) }),
+      // Written unconditionally again (issue #567). Rounds 7 and 9 of #494 taught this line to skip
+      // the half-named pair for a watcher, because the section was hidden and the write boundary's
+      // refusal reached the operator as a 400 on a control they could not see. The section is drawn
+      // for a watcher again, its validator is back on the save gate, and a field on screen that
+      // blocks Save is a better answer than a key the save drops: skipping now would discard an edit
+      // the operator can see themselves making.
+      modelFallback: modelFallbackToStored(modelFallback),
       // The Observation block (issue #494) replaces `monitoring` the same way; the round-trip test
       // over ./observationFormState is its guard.
       monitoring: observationToStored(observation),

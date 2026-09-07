@@ -1259,6 +1259,26 @@ function errMsg(err: unknown): string {
 // serialized into webhook payloads (the fork's Attachment#push_event_data exposes no
 // image_description/extracted_text on any file type), so a visual leg here could not tell "never
 // analyzed" from "our own write-back" and would re-run vision on its own write-back event forever.
+// THE WRITE-BACK UPDATE, and what it is worth. When our transcription lands on the attachment the
+// fork re-fires `message_updated`, and the predicate above calls that a no-op — correctly, because
+// there is nothing left to ANALYSE. It is not a no-op for MEMORY: it is the one event that carries
+// the words for a message no turn is going to answer, and reading them costs nothing, since somebody
+// already paid the provider for them (issue #478).
+//
+// Both places the words can be: on the message, where the eager pass stashes them within the
+// delivery that transcribed, and on the attachment, where the fork serializes them on every later
+// delivery of that message. Either one is the whole transcription.
+export function inboundTranscriptionOnUpdate(
+  n: NormalizedChatwootEvent,
+): string | null {
+  if (n.event !== "message_updated" || !isIncomingMessage(n)) return null;
+  return (
+    n.message?.transcribedText ??
+    firstAudioAttachment(n)?.transcribedText ??
+    null
+  );
+}
+
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
@@ -1549,8 +1569,40 @@ async function ingestUnhandledMessage(args: {
   //    which only the customer spoke (issue #187). BOTH routes a person can answer by: the Chatwoot
   //    composer, and the phone paired to the number the inbox is connected to (issue #430) — the
   //    second was the half #187 could not see, because the fork stores a device reply sender-less.
+  //  - THE SAME CUSTOMER MESSAGE, arriving a second time as the update that finally carries its
+  //    media (issue #478). Some transports emit `message_created` with no attachment and hang the
+  //    voice note on a `message_updated` a moment later: the creation renders to nothing (no text,
+  //    no attachment) and appends nothing, and the update — analysed by the eager pass a few lines
+  //    up, which stashes the transcription ON `n` — was refused here for not being a creation. The
+  //    provider was paid for a transcription that reached no memory at all.
+  //
+  //    TAKEN FROM THE ATTACHMENT TOO, not only from the event: `n.message.transcribedText` is set
+  //    by the eager pass alone, so it is there on the delivery that transcribed — but the fork also
+  //    re-fires the update once our write-back lands, and that second event carries the words in the
+  //    attachment while the message field is still null. Reading both means the words reach memory
+  //    on whichever of the two arrives, including the case where the first one's arm failed.
+  //
+  //    NOT PROTECTED BY THE DEDUP WINDOW, and that is why the gate below is the same one the
+  //    creation used rather than something looser: the window is written by the ingest job alone, so
+  //    a message a TURN answered is absent from it and a second append would stack a duplicate the
+  //    dedup cannot see. What makes that safe is that an answered message needs nothing from here —
+  //    the turn reads the conversation live from Chatwoot when it runs, so it sees the transcription
+  //    by its own route. The gap this closes is the message no turn ever covered.
+  //    AUDIO ONLY, for the reason `hasPendingInboundMediaUpdate` gives: the fork does not serialize
+  //    the vision write-back into webhook payloads, so an image's description exists here only on the
+  //    delivery that produced it — which is a creation, already covered by the clause above. A visual
+  //    leg would be a branch nothing can reach.
+  const lateTranscription = inboundTranscriptionOnUpdate(n);
+  // Hoisted so the renderer below reads it, the same assignment `runEagerMedia` makes at its top for
+  // the same reason: the transcription lives on the attachment, and every reader downstream asks the
+  // message.
+  if (lateTranscription && n.message && !n.message.transcribedText) {
+    n.message.transcribedText = lateTranscription;
+  }
+  const lateMediaAnalyzed = lateTranscription !== null;
   const incomingUnhandled =
-    isNewIncomingMessage(n) && ((act && consumed) || !act);
+    (isNewIncomingMessage(n) || lateMediaAnalyzed) &&
+    ((act && consumed) || !act);
   const role: IngestRole | null = incomingUnhandled
     ? "customer"
     : isNewHumanReplyToCustomer(n, {
@@ -3634,7 +3686,30 @@ export async function processChatwootDelivery(
   // Issue #430 widened the predicate itself, not this condition: the class of event is the same one
   // (`message_created`, outgoing, a person wrote it), reached by a second route. The sweep above was
   // re-run against it and the answer did not change.
-  const wantsRuntime = isNewIncoming || hasLateMedia || mayBeHumanReply;
+  // ...AND THE WRITE-BACK UPDATE (issue #478), which is the fourth class and the one this predicate
+  // refused for as long as it existed. Without it the transcription of a voice note nobody answers
+  // reaches no memory at all: the creation had no attachment and rendered to nothing, the delivery
+  // that transcribed armed the append, and if that arm failed there was no second chance — and on a
+  // fork that transcribes elsewhere, no first one either.
+  //
+  // THE SWEEP THE PARAGRAPH ABOVE DEMANDS, re-run against this class rather than inherited:
+  //  - `command` is `isNewIncoming ? controlCommand(n) : null`, so every command branch stays inert;
+  //  - the eager-media pass and `activatedTestLateMedia` both require `isNewIncoming || hasLateMedia`,
+  //    so nothing re-analyses and no provider is called twice;
+  //  - the debounce arm, the follow-up cancel and the channel-redirect arm all sit inside
+  //    `isNewIncoming`;
+  //  - the takeover reads `mayBeHumanReply`, which is false on an incoming message;
+  //  - the mirror and the resolve branches never depended on `rt` being null and run either way.
+  // What is left is the ingestion, which is the point.
+  //
+  // AND IT CANNOT DOUBLE-APPEND: `armIngest` keys the job by (thread, message) with `rearm:
+  // "same-work"`, so the write-back's arm and the transcribing delivery's arm are the same row, and
+  // once the job has run the id is in the dedup window and the second verdict is `duplicate`.
+  const wantsRuntime =
+    isNewIncoming ||
+    hasLateMedia ||
+    mayBeHumanReply ||
+    inboundTranscriptionOnUpdate(n) !== null;
   // RETRIED, because this pair now stands BEFORE the claim (issue #476 review, round 44). Moving the
   // role onto the claim closed the hole where a second write could fail; what it opened is this one:
   // a transient pool or database error here rejects with the row still PENDING and its role unsaid,

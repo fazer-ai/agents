@@ -547,6 +547,57 @@ async function responderCoversMessage(
   });
 }
 
+// WHAT THE RESPONDER'S OWN DELIVERY OF THIS MESSAGE DECIDED (issue #540, window 3).
+//
+// The stand-down above answers WHETHER the responder has this message. What the observer also needs
+// is what that delivery DOES with it, and until now that was answered by reading the responder
+// agent's mode and switch as they stand at the moment the observer asks. The two deliveries are
+// concurrent by construction — one message, two routes — so a switch flipped between them makes the
+// observer stay quiet about a message the responder never folded in (it had gone to test mode, or
+// off), or fold in a second copy of one it did.
+//
+// The sibling row states it, from the runtime ITS claim resolved, and the claim happens long before
+// either delivery finishes. Rows that have not claimed are skipped rather than read as `false`: they
+// say nothing yet, and the caller falls back to the mode reading, which is what every delivery did
+// before this column. That fallback is the window this does not close — narrowed to a sibling still
+// between its insert and its claim, rather than the whole of both deliveries.
+//
+// At most one row can match: Chatwoot fans one delivery per route, and the route is pinned to the
+// responder's bot here. `orderBy` is for determinism if that ever stops being true.
+async function responderSiblingRemembers(
+  tenantId: bigint,
+  instanceId: bigint,
+  deliveryRowId: bigint,
+  responderBotId: number,
+  conversationId: number | null,
+  message: { id: number; column: "inbound" | "humanReply" } | null,
+  base: PrismaClient,
+): Promise<boolean | null> {
+  if (conversationId === null || message === null) return null;
+  const sibling = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootWebhookDelivery.findFirst({
+      where: {
+        chatwootInstanceId: instanceId,
+        conversationId,
+        ...(message.column === "inbound"
+          ? { inboundMessageId: message.id }
+          : { humanReplyMessageId: message.id }),
+        routeAgentBotId: responderBotId,
+        // A sibling is another row by definition — the same reason the coverage count says so: one
+        // bot serves every role its agent holds, so this delivery's own row can match the responder
+        // bot after a promotion.
+        id: { not: deliveryRowId },
+        // Only a row that has actually stated it. Null is "not yet" or "an older build", and both
+        // are the caller's fallback rather than an answer of `false`.
+        routeRemembers: { not: null },
+      },
+      select: { routeRemembers: true },
+      orderBy: { id: "desc" },
+    }),
+  );
+  return sibling?.routeRemembers ?? null;
+}
+
 // THE ROUTE'S AGENT, WHEN IT WATCHES THE INBOX RATHER THAN ANSWERING IT (issue #476). A delivery
 // arrives on one persona's route, and that persona may be bound to the payload's inbox as an
 // OBSERVER (`InboxObserver`, the fork's second binding) instead of as its responder. Then the
@@ -4110,6 +4161,20 @@ export async function processChatwootDelivery(
   // NOT ON A REPLAY. A recovery arrives with the generation gap already true and by construction
   // wider, and throwing there would spend the row's attempts re-reporting what the sweep's own line
   // already says.
+  // WHAT THIS ROUTE DOES WITH A MESSAGE IT DOES NOT ANSWER (issue #540, window 3), resolved here so
+  // the claim below can state it. An observer's route folds it into memory — that is the whole of
+  // its work; a responder's does while it is switched on and ingests continuously.
+  //
+  // A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19), which is why
+  // `observer !== null` sits inside the switch rather than beside it: the row is written without
+  // re-asking the mode, and the receiver honours the row over the mode everywhere else.
+  //
+  // Named here and reused by `routeIngests` far below, so the fact this delivery RECORDS and the
+  // fact it ACTS on cannot drift apart.
+  const routeRemembers =
+    rt === null
+      ? false
+      : rt.enabled && (ingestsContinuously(rt.mode) || observer !== null);
   const receiptGeneration = params.receiptBindingGeneration ?? null;
   const resolvedGeneration = resolved?.generation ?? null;
   if (
@@ -4133,6 +4198,11 @@ export async function processChatwootDelivery(
         claimedAt: new Date(),
         // The route's role, stated by the claim itself — see the note above the resolution.
         routeObserved: observer !== null,
+        // ...and what that route DOES with a message it does not answer (issue #540, window 3).
+        // Stated by the same statement and for the same reason: the observer beside this route
+        // stands down on the strength of it, and asking the responder's mode when the question comes
+        // up answers about a switch that may have been flipped since.
+        routeRemembers,
         ...(claimFrom === "DEAD" ? { attempts: { increment: 1 } } : {}),
       },
     }),
@@ -4254,6 +4324,17 @@ export async function processChatwootDelivery(
   // standing down for a delivery that does not exist — the audio nobody transcribes, the `/reset`
   // nobody consumes — which is the same loss by another door. The read is paid only by a delivery on
   // an observer's route beside a responder with a route, which is the only shape that can use it.
+  // WHICH MESSAGE the sibling would be named by, spelled once because two questions are asked about
+  // it below and answering them against different messages would be a defect nothing else could
+  // catch.
+  const coveredMessage =
+    n.message?.id == null
+      ? null
+      : isNewIncoming || transcriptionOnTheWire || hasLateMedia
+        ? { id: n.message.id, column: "inbound" as const }
+        : mayBeHumanReply
+          ? { id: n.message.id, column: "humanReply" as const }
+          : null;
   const responderCovers =
     watchingBesideResponder &&
     responderBotId !== null &&
@@ -4274,18 +4355,28 @@ export async function processChatwootDelivery(
       // handled, which the dedup window cannot catch because a turn-handled id never enters it; the
       // RAW one sends the audio to STT a second time, so the same voice note is paid for twice and
       // two write-backs race over the same annotation. Same message, same column, same question.
-      n.message?.id == null
-        ? null
-        : isNewIncoming || transcriptionOnTheWire || hasLateMedia
-          ? { id: n.message.id, column: "inbound" as const }
-          : mayBeHumanReply
-            ? { id: n.message.id, column: "humanReply" as const }
-            : null,
+      coveredMessage,
       // The START of that second, because the field is only ever epoch seconds and reading it early
       // errs toward asking the ledger for evidence rather than toward assuming coverage.
       n.lastActivityAt == null ? null : new Date(n.lastActivityAt * 1000),
       base,
     ));
+  // ...AND WHAT THAT SIBLING DOES WITH IT (issue #540, window 3), read here beside the coverage
+  // answer rather than where it is used, so the two questions about one sibling are one pair of
+  // adjacent reads. Asked only where the answer can change anything: with no coverage there is no
+  // stand-down to decide.
+  const siblingRemembers =
+    responderCovers && responderBotId !== null
+      ? await responderSiblingRemembers(
+          params.tenantId,
+          params.instanceId,
+          params.deliveryRowId,
+          responderBotId,
+          n.conversationId,
+          coveredMessage,
+          base,
+        )
+      : null;
 
   // Mirror metadata (idempotent, monotonic, per-conversation locked) BEFORE the gate so the
   // runtime reads fresh state. Unconditional: applies to every event, not just actionable ones.
@@ -4481,10 +4572,17 @@ export async function processChatwootDelivery(
   // `graph/runtime.ts` states ("a message a turn answers is never ingested"), broken from a second
   // route. So beside a responder this route neither moves the watermark (below) nor appends. With
   // no responder, the observer is the only memory the inbox has.
+  //
+  // ...AND WHAT IT REMEMBERS IS READ FROM THE SIBLING'S OWN STATEMENT WHERE THERE IS ONE (issue #540,
+  // window 3). The mode reading below is about the responder as it stands NOW, and the two
+  // deliveries are concurrent by construction: a switch flipped between them makes this route stay
+  // quiet about a message the responder never folded in, or fold in a second copy of one it did.
+  // The sibling recorded what its own claim resolved. Null is a sibling that has not claimed yet or
+  // a row an older build wrote, and there the mode reading stands, exactly as it always did.
   const responderRemembers =
     responderCovers &&
-    responderRt?.enabled === true &&
-    ingestsContinuously(responderRt.mode);
+    (siblingRemembers ??
+      (responderRt?.enabled === true && ingestsContinuously(responderRt.mode)));
   // THE MARK STAYS THE RESPONDER'S WHENEVER THERE IS ONE (issue #476 review, round 37), and this is
   // deliberately NOT asked of `responderCovers`. An absent sibling row is not proof that none is
   // coming: it is also what a sibling still in transit looks like, and the emission clock is only
@@ -5781,16 +5879,15 @@ export async function processChatwootDelivery(
   // test agent with nobody watching — reaches no branch and says nothing, and that silence is what a
   // memory-only recovery reads as "nobody looked". A route that CAN and stands down for the
   // responder is the opposite, and has to say so.
-  // NOTE: A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19): the row
-  // is written without re-asking the mode, so a change that lands inside the attach window leaves a
-  // test agent observing — and the receiver honours the row over the mode everywhere else. Read
-  // through `ingestsContinuously` alone, that agent's route would mark the message handled and
-  // remember nothing. The switch is still asked: a watcher that is off does nothing.
-  const routeIngests =
-    rt !== null &&
-    ((rt.enabled && (ingestsContinuously(rt.mode) || observer !== null)) ||
-      handedToObserver);
-  if (routeIngests && !responderRemembers && !responderCommand) {
+  //
+  // TWO HALVES, and only the first is a fact about this route: `routeRemembers` was resolved before
+  // the claim and WRITTEN there (issue #540, window 3), so the sibling observer reads what this
+  // delivery decided rather than a switch as it stands later. The second is this delivery handing
+  // the message to a watcher, which is decided here and belongs to nobody else.
+  const routeIngests = rt !== null && (routeRemembers || handedToObserver);
+  // `rt !== null` again, and it is the type checker's rather than the logic's: `routeIngests`
+  // already implies it, but the narrowing does not survive the const.
+  if (rt !== null && routeIngests && !responderRemembers && !responderCommand) {
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,

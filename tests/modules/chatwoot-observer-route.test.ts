@@ -1322,14 +1322,14 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // Chatwoot's agreement, and a binding that moved since is about a different moment.
   test("the delivery row remembers which route it arrived on, observer or responder", async () => {
     requests.length = 0;
-    const { deliveryRowId } = await deliver(OBSERVER_BOT, 53, SHARED_INBOX, {
+    const observerDelivery = await deliver(OBSERVER_BOT, 53, SHARED_INBOX, {
       assigneeType: "User",
       status: "open",
     });
     expect(
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
-          where: { id: deliveryRowId },
+          where: { id: observerDelivery.deliveryRowId },
           select: { routeObserved: true },
         })
       ).routeObserved,
@@ -1346,10 +1346,57 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
           where: { id: responderDelivery.deliveryRowId },
-          select: { routeObserved: true },
+          select: { routeObserved: true, routeRemembers: true },
         })
       ).routeObserved,
     ).toBe(false);
+
+    // ...AND THE SAME STATEMENT SAYS WHAT THE ROUTE DOES WITH A MESSAGE IT DOES NOT ANSWER (issue
+    // #540, window 3). The observer's route folds it in — that is the whole of its work — and so
+    // does a responder that is switched on and ingests continuously.
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: observerDelivery.deliveryRowId },
+          select: { routeRemembers: true },
+        })
+      ).routeRemembers,
+    ).toBe(true);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: responderDelivery.deliveryRowId },
+          select: { routeRemembers: true },
+        })
+      ).routeRemembers,
+    ).toBe(true);
+
+    // A TEST-MODE responder answers what it is activated for and folds nothing else in, and its own
+    // delivery says so — which is the fact the observer beside it reads instead of a mode that may
+    // have moved since.
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { mode: "test" },
+    });
+    try {
+      const inTest = await deliver(RESPONDER_BOT, 77, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: inTest.deliveryRowId },
+            select: { routeRemembers: true },
+          })
+        ).routeRemembers,
+      ).toBe(false);
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { mode: "production" },
+      });
+    }
   });
 
   test("control: the responder's own route on the shared inbox still arms a flush", async () => {
@@ -1957,5 +2004,110 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         data: { tenantId, inboxId: inbox.id, agentId: observerId },
       });
     }
+  });
+  // WINDOW 3 (issue #540): the stand-down beside a responder was decided by reading that responder's
+  // mode and switch AT THE MOMENT THE OBSERVER ASKED. The two deliveries are concurrent by
+  // construction — one message, two routes — so a switch flipped between them makes this route stay
+  // quiet about a message the responder never folded in. The sibling row states what its own claim
+  // resolved, and that is what is read.
+  test("beside a responder whose own delivery recorded that it remembers nothing, the message is remembered here", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    // The responder's own delivery, claimed while its agent was in test mode or switched off. Its
+    // agent reads as production and enabled NOW, which is the whole point: the mode moved between
+    // the two deliveries and only the row remembers what was true for that one.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-none`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 74,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: false,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 74, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect(customerFacing()).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+  });
+
+  // ...AND THE SAME READING IN THE OTHER DIRECTION. The responder's delivery folded the message in;
+  // its agent has since been moved to test mode, which the mode reading would take as "nobody
+  // remembered it" — and this route would append a second copy of a message the shared thread
+  // already holds.
+  test("beside a responder whose own delivery recorded that it remembers, this route stands down even though the mode has since changed", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-yes`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 75,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: true,
+      },
+    });
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { mode: "test" },
+    });
+    try {
+      const { messageId } = await deliver(OBSERVER_BOT, 75, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(messageId).toBe(sharedMessage);
+      expect(customerFacing()).toEqual([]);
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { mode: "production" },
+      });
+    }
+  });
+
+  // ...and a sibling that has not claimed yet says nothing, so the mode reading stands — which is
+  // what every delivery did before the column existed. This is the part of the window the change
+  // narrows rather than closes, and it is asserted so a later reading cannot quietly widen it.
+  test("beside a responder whose delivery has not claimed yet, the mode is what answers", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-unstated`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: 76,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 76, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
   });
 });

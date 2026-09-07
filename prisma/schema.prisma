@@ -410,6 +410,23 @@ model ChatwootWebhookDelivery {
   // reading is about a later moment, and filling it would put a present-day world on a row that
   // arrived in an older one.
   bindingGeneration   Int?                  @map("binding_generation")
+  // WHETHER THIS DELIVERY'S ROUTE FOLDS INTO MEMORY WHAT IT DOES NOT ANSWER (issue #540, window 3),
+  // stated by the claim beside the role, from the runtime that claim resolved. True on an observer's
+  // route, whose whole work is the memory; true on a responder that is switched on and ingests
+  // continuously; false on a test-mode or switched-off responder, and on a route that resolved no
+  // runtime at all.
+  //
+  // It exists because an observer beside a responder stands down on the strength of what the
+  // RESPONDER's own delivery of the same message did, and that was being answered by reading the
+  // responder's mode NOW. A switch flipped between two concurrent deliveries of one message then
+  // makes the observer stay quiet about a message the responder never recorded, or repeat one it
+  // did. The sibling row is the only place that fact exists, and it is written before either
+  // delivery can have finished.
+  //
+  // Null on a row an older build wrote and on one that stranded before the claim — the same
+  // signature `routeObserved` carries. A reader falls back to the mode reading there, which is what
+  // every delivery had before this column.
+  routeRemembers      Boolean?              @map("route_remembers")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

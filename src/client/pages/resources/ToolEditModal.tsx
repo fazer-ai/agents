@@ -1437,9 +1437,12 @@ export function ToolEditModal({
       // Here rather than on every keystroke, so what comes back is the sample the tool was last
       // saved with and not a draft the operator abandoned. Nothing to await, nothing that can fail
       // in a way the operator could act on, and nothing written down. See `toolSample.ts`.
+      // Handed over whole, with no judgement here about whether it is worth keeping: what counts as
+      // nothing is the module's rule, and it was written in both places until a mutation walked past
+      // the copy that lives here (round 8 of review).
       rememberToolSample(
         data.tool.id,
-        sample.trim() ? { text: sample, status: sampleStatus } : null,
+        { text: sample, status: sampleStatus },
         ticket,
       );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list

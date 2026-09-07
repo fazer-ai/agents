@@ -112,6 +112,11 @@ export function recallToolSample(toolId: string): ToolSample | null {
 
 // Called when the tool is SAVED rather than on every keystroke: what comes back is the sample the
 // tool was last saved with, not a draft the operator abandoned.
+//
+// WHAT COUNTS AS NOTHING IS DECIDED HERE and nowhere else. The caller hands over what is on screen,
+// because a caller that pre-judges it is a second copy of this rule, and the copy is what a change
+// to the rule forgets (measured: with the judgement duplicated at the one call site, reverting it
+// there survived the whole battery).
 export function rememberToolSample(
   toolId: string,
   sample: ToolSample | null,
@@ -132,7 +137,14 @@ export function rememberToolSample(
   // order, so deleting before setting is what makes the eviction below drop the least recently
   // saved rather than the first one ever saved.
   samples.delete(key);
-  if (sample === null || sample.text.trim() === "") return;
+  // AN EMPTY BODY WITH A STATUS IS STILL A SAMPLE, and it is the one the preview most needs: a test
+  // that came back 404 with nothing in it makes the runtime bypass the template, and a template that
+  // reads no field previews fine over an empty body. Dropped for having no text, the status went
+  // with it, and the reopened tool previewed that same template as APPLIED, under a box that says
+  // "exactly what the agent would receive" (round 8 of review). So what is nothing here is neither
+  // text nor status.
+  if (sample === null) return;
+  if (sample.text.trim() === "" && sample.status === null) return;
   if (sample.text.length > MAX_CHARS) return;
   samples.set(key, { text: sample.text, status: sample.status });
   while (samples.size > MAX_ENTRIES) {

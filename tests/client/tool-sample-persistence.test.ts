@@ -11,6 +11,7 @@ import {
 import {
   formFromTool,
   payloadOf,
+  templatePreviewFor,
 } from "@/client/pages/resources/ToolEditModal";
 import { codeOnly } from "@/tests/utils/source-text";
 
@@ -152,15 +153,48 @@ describe("what the tab remembers", () => {
     expect(recallToolSample("7")).toBeNull();
   });
 
-  it("drops on an empty sample, and on one that is only whitespace", () => {
+  it("drops on nothing at all: no text and no status", () => {
     rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
     rememberToolSample("7", null, sampleTicket());
     expect(recallToolSample("7")).toBeNull();
-    // Whitespace is the same thing to the operator and a different thing to `null`, and the module
-    // owns that judgement rather than trusting its one caller to keep making it.
+    // Whitespace with no status is the same thing to the operator as nothing, and the module owns
+    // that judgement rather than trusting its one caller to keep making it.
     rememberToolSample("7", { text: RESPONSE, status: null }, sampleTicket());
-    rememberToolSample("7", { text: "  \n ", status: 200 }, sampleTicket());
+    rememberToolSample("7", { text: "  \n ", status: null }, sampleTicket());
     expect(recallToolSample("7")).toBeNull();
+  });
+
+  // ROUND 8: A STATUS WITHOUT A BODY IS THE SAMPLE THAT MATTERS MOST. A test that came back 404
+  // with nothing in it is what makes the runtime bypass the template, and a template reading no
+  // field previews perfectly well over an empty body. Dropped for having no text, the status went
+  // with it, and the reopened tool previewed that same template as APPLIED, under a box that
+  // promises exactly what the agent would receive.
+  it("keeps a status that came back with an empty body", () => {
+    rememberToolSample("7", { text: "", status: 404 }, sampleTicket());
+    expect(recallToolSample("7")).toEqual({ text: "", status: 404 });
+    rememberToolSample("8", { text: "   ", status: 204 }, sampleTicket());
+    expect(recallToolSample("8")?.status).toBe(204);
+  });
+
+  it("hands that status back to the editor, so the preview reads the same as before the save", () => {
+    rememberToolSample("42", { text: "", status: 404 }, sampleTicket());
+    const form = formFromTool(toolRow());
+    expect(form.sample).toBe("");
+    expect(form.sampleStatus).toBe(404);
+    // The preview branches on it: 404 makes the runtime bypass the template, and `null` reads as
+    // 200, which would show the same template as applied.
+    const bypassed = templatePreviewFor({
+      template: "Nada a relatar.",
+      sample: form.sample,
+      status: form.sampleStatus,
+    });
+    const applied = templatePreviewFor({
+      template: "Nada a relatar.",
+      sample: "",
+      status: null,
+    });
+    expect(bypassed?.skipped).not.toBeNull();
+    expect(applied?.skipped).toBeNull();
   });
 
   // BOUNDED, because this holds response bodies for the life of the tab. The entry that goes is the
@@ -440,6 +474,14 @@ describe("the two seams that have to clear it", () => {
     expect(request).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(read).toBeLessThan(request);
+    // AND THE FIRST SUSPENSION AFTER THE READ IS THE REQUEST ITSELF, which is what makes the ticket
+    // and the request see the same tenant selector. Measured: Eden evaluates its `headers` callback
+    // INSIDE the call expression, in the same synchronous block, so another tab's `localStorage`
+    // write (visible only at a task boundary) cannot land between the two reads. An `await` added
+    // in between would open exactly that window, and would look like an innocent refactor.
+    const firstAwait = save.indexOf("await", read);
+    expect(firstAwait).toBeGreaterThan(-1);
+    expect(save.slice(firstAwait).replace(/^await\s*/, "")).toStartWith("api.");
     // And the write is handed a NAME: `sampleTicket()` inline would read it after everything the
     // request took, which is the same as not having it at all.
     const call = save.slice(
@@ -448,6 +490,11 @@ describe("the two seams that have to clear it", () => {
     );
     expect(call).not.toInclude("sampleTicket");
     expect(call).toInclude("ticket");
+    // AND THE SAMPLE GOES OVER WHOLE. What counts as nothing is the module's rule, and round 8 was
+    // this call site holding a second copy of it that said something else: it dropped a 404 with an
+    // empty body, status and all. A conditional in this argument is that copy coming back, and the
+    // module cannot see it.
+    expect(call).not.toInclude("?");
   });
 
   // The same question at the OTHER site that mutates the cache after a request. It was written
@@ -467,6 +514,14 @@ describe("the two seams that have to clear it", () => {
     expect(request).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(read).toBeLessThan(request);
+    // AND THE FIRST SUSPENSION AFTER THE READ IS THE REQUEST ITSELF, which is what makes the ticket
+    // and the request see the same tenant selector. Measured: Eden evaluates its `headers` callback
+    // INSIDE the call expression, in the same synchronous block, so another tab's `localStorage`
+    // write (visible only at a task boundary) cannot land between the two reads. An `await` added
+    // in between would open exactly that window, and would look like an innocent refactor.
+    const firstAwait = body.indexOf("await", read);
+    expect(firstAwait).toBeGreaterThan(-1);
+    expect(body.slice(firstAwait).replace(/^await\s*/, "")).toStartWith("api.");
     const call = body.slice(
       write,
       body.indexOf(")", body.indexOf("ticket", write)),

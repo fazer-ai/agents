@@ -12,6 +12,7 @@ import {
 } from "@/client/lib/toolSample";
 import { VAULT_CHANGED_EVENT } from "@/client/lib/vaultCache";
 import {
+  captureShapeOf,
   formFromTool,
   payloadOf,
   requestShapeOf,
@@ -636,7 +637,7 @@ describe("what the tab remembers", () => {
 // one does to the marker.
 describe("which definition the sample describes", () => {
   const FORM = formFromTool(toolRow());
-  const SHAPE = requestShapeOf(payloadOf(FORM));
+  const SHAPE = captureShapeOf(payloadOf(FORM));
 
   const arrivals: {
     what: string;
@@ -831,7 +832,7 @@ describe("which definition the sample describes", () => {
         against: opened,
         previous: null,
       }),
-    ).toBe(requestShapeOf(payloadOf(opened)));
+    ).toBe(captureShapeOf(payloadOf(opened)));
   });
 
   // And the emptiness rule is the module's, asked rather than spelled again: round 8 was this
@@ -907,6 +908,39 @@ describe("a credential changing under the same name", () => {
     noteVaultChanged();
     rememberToolSample("46", WITH, sampleTicket());
     expect(recallToolSample("46", REV)?.text).toBe(RESPONSE);
+  });
+
+  // THE SAMPLE ON SCREEN IS THE COPY THE DROP ABOVE CANNOT REACH. Editing the credential through
+  // the picker inlined in this very modal drops the stored entry, and leaves the response in the
+  // form with the definition it was captured against recorded beside it: the save that follows
+  // takes its ticket AFTER the change, so nothing refuses it and the sample goes straight back in,
+  // describing a request against the host the credential used to name (round 14 of review).
+  it("a sample captured before the change stops describing the request", () => {
+    const opened = formFromTool(toolRow());
+    const captured = shapeOfArrival({
+      text: RESPONSE,
+      status: 200,
+      against: opened,
+      previous: null,
+    });
+    expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
+    noteVaultChanged();
+    // The payload has not moved. What moved is what its credential resolves to.
+    expect(sampleDescribes(captured, payloadOf(opened))).toBe(false);
+  });
+
+  // And a sample captured AFTER the change describes the vault as it is now, so an operator who
+  // edits a credential and tests again keeps what comes back.
+  it("a sample captured after the change describes the request", () => {
+    noteVaultChanged();
+    const opened = formFromTool(toolRow());
+    const captured = shapeOfArrival({
+      text: RESPONSE,
+      status: 200,
+      against: opened,
+      previous: null,
+    });
+    expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
   });
 
   // TWO SPELLINGS OF "NO CREDENTIAL" REACH THIS MODULE: the form holds an empty string and the
@@ -1037,6 +1071,78 @@ describe("a save that lands after the sample's life ended", () => {
       slow,
     );
     expect(recallToolSample("7", REV)?.text).toBe(RESPONSE);
+  });
+
+  // A DELETION ENDS THE KEY, so it beats a save that started after the delete request went out and
+  // not only one that started before it. The row is gone and nothing will ever ask for that entry
+  // again, so accepting the save leaves the customer's response in a map with no use for it. This
+  // is where the deletion's mark parts company with the write's, which is ordered by request start.
+  it("refuses a save that started after the delete went out", () => {
+    rememberToolSample(
+      "10",
+      { revision: REV, text: RESPONSE, status: 200, credentialRef: null },
+      sampleTicket(),
+    );
+    const removing = sampleTicket();
+    const saving = sampleTicket();
+    forgetToolSample("10", removing);
+    rememberToolSample(
+      "10",
+      { revision: REV, text: RESPONSE, status: 200, credentialRef: null },
+      saving,
+    );
+    expect(recallToolSample("10", REV)).toBeNull();
+  });
+
+  // TWO SAVES OF ONE TOOL THAT START BEFORE EITHER FINISHES. Dismiss a slow save, reopen the tool
+  // and save again: the tickets used to carry the same number, because the clock only moved when
+  // something LANDED, and equal numbers cannot be ordered. Whichever response arrived first marked
+  // the key and the other was refused as stale, so the save the operator made LAST could lose to
+  // the one they made first. Issuing is what orders them now.
+  it("keeps the later save when the earlier one lands first", () => {
+    const first = sampleTicket();
+    const second = sampleTicket();
+    rememberToolSample(
+      "8",
+      { revision: REV, text: "primeiro", status: 200, credentialRef: null },
+      first,
+    );
+    rememberToolSample(
+      "8",
+      { revision: REV, text: "segundo", status: 200, credentialRef: null },
+      second,
+    );
+    expect(recallToolSample("8", REV)?.text).toBe("segundo");
+  });
+
+  // The same pair in the other order, which is round 12's finding and must still hold: the older
+  // opening's answer arriving last does not put its sample back.
+  it("refuses the earlier save when the later one lands first", () => {
+    const first = sampleTicket();
+    const second = sampleTicket();
+    rememberToolSample(
+      "9",
+      { revision: REV, text: "segundo", status: 200, credentialRef: null },
+      second,
+    );
+    rememberToolSample(
+      "9",
+      { revision: REV, text: "primeiro", status: 200, credentialRef: null },
+      first,
+    );
+    expect(recallToolSample("9", REV)?.text).toBe("segundo");
+  });
+
+  // And two tickets are never the same number, which is the property both cases rest on.
+  it("gives every ticket its own place in the order", () => {
+    const issued = [
+      sampleTicket().at,
+      sampleTicket().at,
+      sampleTicket().at,
+      sampleTicket().at,
+    ];
+    expect(new Set(issued).size).toBe(issued.length);
+    expect([...issued].sort((a, b) => a - b)).toEqual(issued);
   });
 
   it("still writes when nothing cleared while it was out", () => {

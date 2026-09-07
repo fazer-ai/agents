@@ -43,6 +43,7 @@ import {
   sampleIsNothing,
   sampleTicket,
   type ToolSample,
+  vaultGeneration,
 } from "@/client/lib/toolSample";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
@@ -405,6 +406,16 @@ export function requestShapeOf(payload: unknown): string {
   return JSON.stringify(kept);
 }
 
+// AND THE CREDENTIAL IS PART OF THE REQUEST WITHOUT BEING PART OF THE PAYLOAD. `credentialRef` is a
+// name; what it resolves to is a row in the vault, and editing that row's base URL or its secret
+// changes the host a relative `urlTemplate` reaches and the authorization it carries while the
+// payload is byte for byte the same. So the marker carries which vault this tab had when the sample
+// was captured, and a save made after an edit to that vault finds a marker that no longer matches
+// (round 14 of review). NUL as the separator because no JSON `JSON.stringify` produces holds one.
+export function captureShapeOf(payload: unknown): string {
+  return `${vaultGeneration()}\u0000${requestShapeOf(payload)}`;
+}
+
 // WHICH DEFINITION THE SAMPLE ON SCREEN WAS CAPTURED AGAINST, decided in one place and returned,
 // because it is maintained at four sites and review round 13 found two of them wrong: a sample
 // restored from this tab's memory recorded NO definition (so a later edit to the URL was invisible
@@ -424,7 +435,7 @@ export function shapeOfArrival(args: {
   // a sample, and it is one that describes a definition like any other.
   if (sampleIsNothing(args.text, args.status)) return null;
   if (args.against === null) return args.previous;
-  return requestShapeOf(payloadOf(args.against));
+  return captureShapeOf(payloadOf(args.against));
 }
 
 // THE ARRIVAL AN OPEN IS: the form as the server just answered it, carrying whatever this tab kept
@@ -451,7 +462,7 @@ export function sampleDescribes(
   // to mean "no objection" as well, and carried three of them: a restored sample, an empty body with
   // a status, and a reformat all recorded null and then survived any edit at all (round 13).
   if (shape === null) return true;
-  return shape === requestShapeOf(payload);
+  return shape === captureShapeOf(payload);
 }
 
 // WHAT A SAVE HANDS THE MODULE, as a value rather than as an object literal assembled at the call

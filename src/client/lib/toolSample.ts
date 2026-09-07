@@ -122,6 +122,13 @@ export interface SampleTicket {
 }
 
 export function sampleTicket(): SampleTicket {
+  // ISSUING IS WHAT ORDERS THEM, so the clock moves here and not only when something lands. Reading
+  // it without moving it gave two saves of the same tool that started before either finished the
+  // SAME number, and equal numbers cannot be ordered: whichever response arrived first marked the
+  // key and the other was refused as stale, so a save could lose to one the operator made earlier
+  // (round 14 of review). The one this guards against, an OLDER opening's answer landing on a newer
+  // one, is the same comparison with the numbers finally distinct.
+  clock++;
   return { at: clock, tenant: activeTenant() };
 }
 
@@ -187,8 +194,10 @@ export function rememberToolSample(
   // A newer save already answered for this tool, so this one is an older opening's answer.
   const written = writtenAt.get(key);
   if (written !== undefined && written > since.at) return;
-  clock++;
-  writtenAt.set(key, clock);
+  // THE TICKET'S OWN NUMBER, not a fresh one: what is being recorded is which REQUEST answered for
+  // this key, and the request is ordered by when it went out. Stamping the moment it landed says
+  // the opposite, that whatever finished first is the newest.
+  writtenAt.set(key, since.at);
   // DELETED FIRST AND UNCONDITIONALLY, which is also what re-dates the entry: `Map` keeps insertion
   // order, so deleting before setting is what makes the eviction below drop the least recently
   // saved rather than the first one ever saved.
@@ -229,6 +238,12 @@ export function rememberToolSample(
 // the saves that are in flight.
 export function forgetToolSample(toolId: string, since: SampleTicket): void {
   const key = keyFor(toolId, since.tenant);
+  // WHEN IT LANDED, and NOT the ticket's own number, which is where this parts company with the
+  // write beside it and the difference is the point. A write is one of several answers competing
+  // for a key, so it is ordered by when its request went out. A deletion ENDS the key: the row is
+  // gone, nothing will ever ask for it again, and a save that started after the delete went out
+  // would leave the customer's response in a map that has no use for it. So it wins over everything
+  // still in flight, whenever that flight began.
   clock++;
   forgottenAt.set(key, clock);
   samples.delete(key);
@@ -262,6 +277,14 @@ export function noteOperator(id: string | null): void {
 // the vault changed and never which entry, the panel can rename and delete as well as edit, and the
 // secret itself is server-side. Between keeping a sample that may describe another host and asking
 // for one more test request, this asks for the test request.
+// THE VAULT AS THIS TAB LAST SAW IT. Exported because the entries in this map are not the only
+// place a sample lives: one is also on screen, in a form, with the definition it was captured
+// against recorded beside it, and that recording is what a save compares. Dropping the stored entry
+// leaves that copy untouched, so the save would put it straight back (round 14 of review).
+export function vaultGeneration(): number {
+  return vaultChangedAt;
+}
+
 export function noteVaultChanged(): void {
   clock++;
   vaultChangedAt = clock;

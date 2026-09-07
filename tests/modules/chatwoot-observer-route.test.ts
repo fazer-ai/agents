@@ -4,7 +4,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  processChatwootDelivery,
+  recordAndProcessChatwootDelivery,
+} from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -1722,6 +1725,236 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       await suDb.agent.update({
         where: { id: observerId },
         data: { settings: {} },
+      });
+    }
+  });
+  // THE WORLD A DELIVERY ARRIVED IN, WRITTEN DOWN (issue #540). Every reader of the route's role
+  // re-derives it from the binding as it stands NOW, and an administrative write can land between
+  // Chatwoot emitting the event and that reading. The generation is what makes the two moments
+  // comparable: the row records the counter it was RECEIVED under, and it is written by the INSERT
+  // rather than by the claim — the rows that most need it are exactly the ones a process death
+  // stranded before any claim.
+  test("the ledger records the inbox's generation at receipt, and a redelivery does not move it", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const received = inbox.bindingGeneration + 7;
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { bindingGeneration: received },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const deliveryId = `obr-${process.pid}-gen-${deliverySeq}`;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(68, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    try {
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+        where: { tenantId, deliveryId },
+        select: { bindingGeneration: true },
+      });
+      expect(row.bindingGeneration).toBe(received);
+
+      // ...AND A REDELIVERY DOES NOT RE-DATE IT. Chatwoot resends the same delivery id, and the
+      // reading taken then is about a later world; written onto the row it would claim the message
+      // arrived under a binding made after it. The row keeps what its own receipt recorded, which is
+      // why this column is deliberately not in the ledger's fillable list.
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: received + 3 },
+      });
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      const again = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+        where: { tenantId, deliveryId },
+        select: { bindingGeneration: true },
+      });
+      expect(again.bindingGeneration).toBe(received);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+    }
+  });
+
+  // WINDOW 1, WHICH IS A SILENT LOSS AND NOT A WRONG ANSWER. The delivery arrived on the observer's
+  // route; an unobserve and a promotion land before it is claimed, and the reading they leave
+  // resolves no runtime at all — on an inbox with no responder there is nothing else to resolve to.
+  // Settled there, the row goes PROCESSED having looked at nothing, and the observer's memory — the
+  // only memory this inbox has — loses a customer message with nobody told. The generation is what
+  // separates that from the ordinary empty reading (an inbox nothing of ours answers), which must go
+  // on settling exactly as it does.
+  test("a delivery whose binding moved before its claim, and now resolves nothing, is left for the sweep", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(69, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-moved-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    try {
+      // The unobserve and the promotion, both landed: the row is gone and the persona no longer
+      // monitors, so nothing on this inbox answers for this bot any more.
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "production" },
+      });
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration + 1 },
+      });
+
+      await expect(
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+          receiptBindingGeneration: inbox.bindingGeneration,
+        }),
+      ).rejects.toThrow("the binding moved");
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true, claimedAt: true },
+      });
+      expect(row.status).toBe("PENDING");
+      expect(row.claimedAt).toBeNull();
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    }
+  });
+
+  // ...AND THE SAME EMPTY READING, WITH THE GENERATION SAYING NOTHING MOVED, SETTLES AS IT ALWAYS
+  // HAS. A bot that still owns an older conversation goes on receiving its events after being
+  // detached, and an inbox nobody of ours answers resolves nothing for perfectly ordinary reasons.
+  // Refusing on the empty reading alone would turn every one of those into a row an operator has to
+  // read.
+  test("a delivery that resolves nothing under an unmoved binding is settled, not refused", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(72, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-steady-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    try {
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "production" },
+      });
+      expect(
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+          receiptBindingGeneration: inbox.bindingGeneration,
+        }),
+      ).toBe("processed");
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
       });
     }
   });

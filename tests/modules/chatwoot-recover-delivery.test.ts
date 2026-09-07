@@ -364,6 +364,9 @@ async function seedDeadDelivery(over: {
   // The event the delivery carried. `message_created` by default; `message_updated` is the write-back
   // that finally brought a voice note's transcription (issue #478).
   event?: string;
+  // The inbox's binding generation when the delivery was received (issue #540). Undefined is a row
+  // an older build wrote, which is the population every reading here already had.
+  bindingGeneration?: number | null;
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -381,6 +384,7 @@ async function seedDeadDelivery(over: {
         over.inboundMessageId === undefined ? 9301 : over.inboundMessageId,
       routeAgentBotId: over.routeAgentBotId ?? null,
       routeObserved: over.routeObserved ?? null,
+      bindingGeneration: over.bindingGeneration ?? null,
     },
     select: { id: true },
   });
@@ -1332,6 +1336,103 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       routeAgentBotId: AGENT_BOT_ID,
       routeObserved: null,
       receivedAgoMs: 60 * 60 * 1000,
+    });
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { responderBoundAt: new Date(Date.now() - 30 * 60 * 1000) },
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("unrecoverable");
+      expect(stub.sent).toEqual([]);
+      expect((await ledger(rowId)).status).toBe("DEAD");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
+  // ...AND THE SAME ROW, WITH THE GENERATION SAYING NO BINDING ACTUALLY MOVED, IS REPLAYED (issue
+  // #540, window 4). The stamp above is one fact and it refuses too much on its own: it is written
+  // by a bind and read against a receipt, so an inbox bound while its own traffic was in flight
+  // produces exactly this pair, and the customer is then left unanswered on an inbox somebody had
+  // just finished setting up. The generation is the second, independent fact — it moves on every
+  // binding write and on nothing else — and where it says nothing moved since receipt, the stamp's
+  // story is an artifact rather than a rebind.
+  test("a stranded delivery with no role, against a binding stamp the generation contradicts, is replayed", async () => {
+    const convId = 8987;
+    const messageId = 9487;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const inboxNow = await suDb.inbox.findUniqueOrThrow({
+      where: { id: inboxDbId },
+      select: { bindingGeneration: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: AGENT_BOT_ID,
+      routeObserved: null,
+      receivedAgoMs: 60 * 60 * 1000,
+      // Received under the world the inbox is still in: nothing about who routes it has moved
+      // since, whatever the stamp below says.
+      bindingGeneration: inboxNow.bindingGeneration,
+    });
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { responderBoundAt: new Date(Date.now() - 30 * 60 * 1000) },
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).not.toBe("unrecoverable");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
+  // ...and where BOTH facts say so, the refusal stands: the generation moved since receipt AND the
+  // responder binding is younger than the delivery. This is the row window 4 is actually about.
+  test("a stranded delivery with no role, against a binding both facts call younger than it, is not replayed", async () => {
+    const convId = 8989;
+    const messageId = 9489;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const inboxNow = await suDb.inbox.findUniqueOrThrow({
+      where: { id: inboxDbId },
+      select: { bindingGeneration: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      routeAgentBotId: AGENT_BOT_ID,
+      routeObserved: null,
+      receivedAgoMs: 60 * 60 * 1000,
+      bindingGeneration: inboxNow.bindingGeneration - 1,
     });
     await suDb.inbox.update({
       where: { id: inboxDbId },

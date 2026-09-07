@@ -248,6 +248,11 @@ async function inboxAgentRuntime(
   // see `responderCoversMessage`. Null on a binding older than the column, read there as older than
   // any delivery. Selected here because this query already reads the row.
   responderBoundAt: Date | null;
+  // HOW MANY TIMES WHO ROUTES THIS INBOX HAS CHANGED (issue #540), as this reading found it. It is
+  // meaningless on its own and only ever compared — against the generation the DELIVERY recorded at
+  // receipt — to ask whether this reading describes the world the message arrived in. Carried on the
+  // runtime because the row is already being read here.
+  bindingGeneration: number;
 } | null> {
   if (chatwootInboxId == null) return null;
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -264,6 +269,7 @@ async function inboxAgentRuntime(
         agentId: true,
         provider: true,
         responderBoundAt: true,
+        bindingGeneration: true,
       },
     });
     if (!inbox?.agentId) return null;
@@ -281,11 +287,65 @@ async function inboxAgentRuntime(
       settings: agent.settings,
       whatsappProvider: inbox.provider,
       responderBoundAt: inbox.responderBoundAt,
+      bindingGeneration: inbox.bindingGeneration,
     };
   });
 }
 
 type InboxRuntime = NonNullable<Awaited<ReturnType<typeof inboxAgentRuntime>>>;
+
+// THE INBOX'S BINDING GENERATION, ON ITS OWN (issue #540). The resolvers above carry it for free
+// when they answer, and this exists for the two moments where nothing answered: the ledger INSERT,
+// which records the world the message arrived in, and a route resolution that resolved no runtime at
+// all — which is precisely the reading window 1 is about.
+//
+// NEVER THROWS. Both callers are past the point where a failure could be retried by anyone: the
+// insert path runs after the 200, and the resolution's own retries are about the runtimes. A read
+// that did not answer is null, which every reader treats as "this row cannot say" — the same word as
+// an inbox we do not mirror and a row an older build wrote.
+async function inboxBindingGenerationAt(
+  tenantId: bigint,
+  instanceId: bigint,
+  at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
+  base: PrismaClient,
+): Promise<number | null> {
+  // The payload's inbox when it names one, otherwise the conversation's mirrored inbox — the same
+  // fallback every resolver above makes, so the generation and the runtime cannot be read off two
+  // different rows.
+  const where =
+    at.chatwootInboxId != null
+      ? { chatwootInstanceId: instanceId, chatwootInboxId: at.chatwootInboxId }
+      : at.chatwootConversationId != null
+        ? {
+            conversations: {
+              some: {
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: at.chatwootConversationId,
+              },
+            },
+          }
+        : null;
+  if (where === null) return null;
+  try {
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.inbox.findFirst({
+        where: { tenantId, ...where },
+        select: { bindingGeneration: true },
+      }),
+    );
+    return row?.bindingGeneration ?? null;
+  } catch (err) {
+    logger.warn(
+      "chatwoot: could not read the inbox binding generation (inbox=%s, conv=%s): %s",
+      at.chatwootInboxId === null ? "?" : String(at.chatwootInboxId),
+      at.chatwootConversationId === null
+        ? "?"
+        : String(at.chatwootConversationId),
+      errMsg(err),
+    );
+    return null;
+  }
+}
 
 // The same runtime, resolved through the CONVERSATION's stored inbox when the payload named none.
 // A sparse payload used to leave `rt` null here, which downstream reads as "no agent bound": the
@@ -318,6 +378,7 @@ async function conversationInboxRuntime(
             provider: true,
             agentId: true,
             responderBoundAt: true,
+            bindingGeneration: true,
           },
         },
       },
@@ -338,6 +399,7 @@ async function conversationInboxRuntime(
       settings: agent.settings,
       whatsappProvider: inbox.provider,
       responderBoundAt: inbox.responderBoundAt,
+      bindingGeneration: inbox.bindingGeneration,
     };
   });
 }
@@ -561,6 +623,7 @@ async function boundObserverRuntime(
         provider: true,
         agentId: true,
         responderBoundAt: true,
+        bindingGeneration: true,
         observers: { where: { agentId: bot.agentId }, select: { id: true } },
       },
     });
@@ -583,6 +646,7 @@ async function boundObserverRuntime(
       settings: bot.agent.settings,
       whatsappProvider: row.provider,
       responderBoundAt: row.responderBoundAt,
+      bindingGeneration: row.bindingGeneration,
     };
   });
 }
@@ -645,6 +709,7 @@ async function observerRuntimeForRoute(
         provider: true,
         agentId: true,
         responderBoundAt: true,
+        bindingGeneration: true,
         observers: { where: { agentId: bot.agentId }, select: { id: true } },
       },
     });
@@ -664,6 +729,7 @@ async function observerRuntimeForRoute(
         // The INBOX's responder binding, carried on the observer's runtime too: same row, and it is
         // the observer that asks how old it is (`responderCoversMessage`).
         responderBoundAt: row.responderBoundAt,
+        bindingGeneration: row.bindingGeneration,
       };
     if (row.agentId === bot.agentId) return null;
     // The mirror answers for a payload that named no assignee: a conversation still assigned to a
@@ -721,6 +787,7 @@ async function observerRuntimeForRoute(
       settings: bot.agent.settings,
       whatsappProvider: row.provider,
       responderBoundAt: row.responderBoundAt,
+      bindingGeneration: row.bindingGeneration,
     };
   });
 }
@@ -1012,11 +1079,24 @@ export async function recordAndProcessChatwootDelivery(
   params: RecordAndProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
-  const { rowId } = await claimDelivery(
+  // READ BEFORE THE ROW IS WRITTEN and carried into it (issue #540): what the delivery records has
+  // to be the world it ARRIVED in, and every reading taken later is about a world an administrative
+  // write may already have moved. One indexed read, on the detached half — the 200 is long since
+  // out, so it costs the ack nothing.
+  const bindingGeneration = await inboxBindingGenerationAt(
+    params.tenantId,
+    params.instanceId,
+    {
+      chatwootInboxId: params.normalized.inboxId ?? null,
+      chatwootConversationId: params.normalized.conversationId,
+    },
+    base,
+  );
+  const { rowId, bindingGeneration: rowGeneration } = await claimDelivery(
     base,
     { tenantId: params.tenantId, instanceId: params.instanceId },
     params.deliveryId,
-    ledgerFactsOf(params.normalized, params.agentBotId),
+    ledgerFactsOf(params.normalized, params.agentBotId, bindingGeneration),
   );
   return processChatwootDelivery({
     tenantId: params.tenantId,
@@ -1024,6 +1104,11 @@ export async function recordAndProcessChatwootDelivery(
     deliveryRowId: rowId,
     agentBotId: params.agentBotId,
     normalized: params.normalized,
+    // THE ROW'S value, never the reading taken above (issue #540). They differ on exactly one path
+    // and it is the one that matters: a redelivery finds a row written under an EARLIER world, which
+    // is the world its message arrived in, while the fresh reading belongs to this attempt. The
+    // recovery passes the row's value for the same reason, so both callers say the same thing.
+    receiptBindingGeneration: rowGeneration,
     base,
     deps: params.deps,
   });
@@ -1056,6 +1141,13 @@ const INGEST_ARM_BACKOFF_MS = 300;
 // The nullable ones, named once so the fill cannot be written against a shorter list than the
 // insert. Spelled out rather than derived from `LedgerFacts`, because `event` is the one field that
 // is never null and must never be filled: a row's event is what it is.
+//
+// `bindingGeneration` is the ONE nullable fact deliberately left out, and leaving it out is what
+// makes it true (issue #540). Every other column here answers about the EVENT, which a redelivery
+// carries unchanged however late it arrives. This one answers about the WORLD, read when the row was
+// first written; a redelivery reads a later world, and filling a legacy null with it would put a
+// present-day binding on a row that arrived under an older one — the single lie the column exists to
+// prevent. A row without it keeps saying it cannot answer, which is correct.
 const LEDGER_FILLABLE = [
   "conversationId",
   "inboundMessageId",
@@ -1071,6 +1163,7 @@ interface LedgerFacts {
   humanReplyShape: HumanReplyRoute | null;
   routeAgentBotId: number | null;
   humanReplyMessageId: number | null;
+  bindingGeneration: number | null;
 }
 
 // The one late write to `inboundMessageId`, for the delivery whose words this process produced
@@ -1135,6 +1228,11 @@ export async function fillLedgerTranscribedMessage(
 function ledgerFactsOf(
   n: NormalizedChatwootEvent,
   routeAgentBotId: number | null,
+  // The world this delivery arrived in (issue #540), read by the caller — the only fact here that
+  // does not come from the payload, and the reason it is a parameter rather than a read: this
+  // function is the single place the insert and the legacy fill agree on, and it stays synchronous
+  // and pure so neither can answer differently.
+  bindingGeneration: number | null,
 ): LedgerFacts {
   // Asked ONCE and read twice below, because the two fields it decides are a pair: a row saying a
   // takeover was owed while naming no message for it would leave the recovery's fence blank on the
@@ -1182,6 +1280,9 @@ function ledgerFactsOf(
     // Written under the same condition as the shape above, from the same answer.
     humanReplyMessageId:
       humanReplyShape !== null ? (n.message?.id ?? null) : null,
+    // WHICH WORLD THIS DELIVERY ARRIVED IN (issue #540). See the schema and `LEDGER_FILLABLE` for
+    // why it is written here, at receipt, and never filled in later.
+    bindingGeneration,
   };
 }
 
@@ -1190,7 +1291,11 @@ async function claimDelivery(
   scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
   facts: LedgerFacts,
-): Promise<{ rowId: bigint; duplicate: boolean }> {
+): Promise<{
+  rowId: bigint;
+  duplicate: boolean;
+  bindingGeneration: number | null;
+}> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
     try {
@@ -1221,7 +1326,15 @@ async function recordDelivery(
   scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
   facts: LedgerFacts,
-): Promise<{ rowId: bigint; duplicate: boolean }> {
+): Promise<{
+  rowId: bigint;
+  duplicate: boolean;
+  // THE ROW'S OWN generation, not the caller's reading (issue #540). On a redelivery the row was
+  // written under an earlier world and that is the one the delivery arrived in; the fresh reading
+  // the caller took belongs to this attempt and would date the message to the wrong world. Handed
+  // back from whichever branch answered, so the value the processing uses is always the stored one.
+  bindingGeneration: number | null;
+}> {
   try {
     const row = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
       db.chatwootWebhookDelivery.create({
@@ -1237,16 +1350,23 @@ async function recordDelivery(
           // column here can hold what the customer wrote.
           ...facts,
         },
-        select: { id: true },
+        select: { id: true, bindingGeneration: true },
       }),
     );
-    return { rowId: row.id, duplicate: false };
+    return {
+      rowId: row.id,
+      duplicate: false,
+      bindingGeneration: row.bindingGeneration,
+    };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
       db.chatwootWebhookDelivery.findFirst({
         where: { chatwootInstanceId: scope.instanceId, deliveryId },
-        select: { id: true },
+        // Read here rather than after the fills below, and it makes no difference which: the fills
+        // deliberately leave `bindingGeneration` alone (see `LEDGER_FILLABLE`), so the stored value
+        // is the same before and after them.
+        select: { id: true, bindingGeneration: true },
       }),
     );
     if (!existing) throw err;
@@ -1276,7 +1396,11 @@ async function recordDelivery(
         }),
       );
     }
-    return { rowId: existing.id, duplicate: true };
+    return {
+      rowId: existing.id,
+      duplicate: true,
+      bindingGeneration: existing.bindingGeneration,
+    };
   }
 }
 
@@ -1295,6 +1419,14 @@ export interface ProcessChatwootParams {
   // and re-deriving would let a delivery that belonged to a watcher be replayed as the responder —
   // which answers. A live delivery leaves it undefined and the route is read as it always is.
   routeObserved?: boolean;
+  // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), as the ledger row
+  // holds it. Both callers pass the ROW's value — the live path from the insert it just made or the
+  // duplicate it found, the recovery from the row it took back — because the question it answers is
+  // about the world the MESSAGE arrived in, and a reading taken now belongs to this attempt.
+  //
+  // Undefined or null is "this row cannot say": a sparse payload, an inbox we do not mirror, a read
+  // that failed, or a row an older build wrote. Never read as generation zero.
+  receiptBindingGeneration?: number | null;
   // What the DIRECT turn did, told to nobody who does not ask. The return union is a contract with
   // every caller (`"processed" | "skipped"`), and widening it would silently change what the live
   // delivery reads; this is opt-in, so only the caller for whom the distinction exists pays for it.
@@ -3854,7 +3986,22 @@ export async function processChatwootDelivery(
           base,
         )
       : null;
-    return { responder, watcher };
+    // THE GENERATION THIS RESOLUTION READ. Free when either runtime answered — the same row, read in
+    // the same query — and paid for only where neither did, which is the one reading window 1 is
+    // about: a delivery that arrived on a bot route and now resolves nothing at all.
+    const generation = wantsRuntime
+      ? ((watcher ?? responder)?.bindingGeneration ??
+        (await inboxBindingGenerationAt(
+          params.tenantId,
+          params.instanceId,
+          {
+            chatwootInboxId: n.inboxId ?? null,
+            chatwootConversationId: n.conversationId,
+          },
+          base,
+        )))
+      : null;
+    return { responder, watcher, generation };
   };
   const routeSleep =
     params.deps?.sleep ??
@@ -3938,6 +4085,45 @@ export async function processChatwootDelivery(
       params.agentBotId === null ? "?" : String(params.agentBotId),
     );
     return "skipped";
+  }
+  // THE WORLD MOVED UNDER THIS DELIVERY, AND WHAT IT MOVED TO CANNOT ANSWER (issue #540, window 1).
+  //
+  // The route's role is read from the binding as it stands NOW, and an administrative write —
+  // an unobserve, a promotion, an unbind — can land between Chatwoot emitting the event and this
+  // resolution. Where it does, and the reading it leaves resolves NO runtime at all, the delivery
+  // settles PROCESSED having looked at nothing: on an observer-only inbox that is the observer's
+  // memory losing a customer message silently, which is the one outcome this subsystem exists to
+  // make impossible.
+  //
+  // The row records the generation it was RECEIVED under, so this is not a guess about clocks: equal
+  // means nothing about who routes this inbox has moved since the message arrived and the empty
+  // reading is simply the truth (an inbox nothing of ours answers, a bot that still owns an old
+  // conversation); different means the reading describes a world the message never arrived in.
+  //
+  // AND IT REFUSES RATHER THAN RE-RESOLVING, because there is nothing better to resolve to. The role
+  // is a fact about receipt time and both readings available here are about now — re-reading would
+  // only produce a newer wrong answer. So the row is left where it is, PENDING and unclaimed, which
+  // is the state the sweep already reads and reports (./stranded-delivery.ts): a customer message
+  // becomes `lost` and is armed for recovery, a colleague's reply becomes `role-unstated`. By then
+  // the binding has usually settled, and the recovery re-asks every gate against it.
+  //
+  // NOT ON A REPLAY. A recovery arrives with the generation gap already true and by construction
+  // wider, and throwing there would spend the row's attempts re-reporting what the sweep's own line
+  // already says.
+  const receiptGeneration = params.receiptBindingGeneration ?? null;
+  const resolvedGeneration = resolved?.generation ?? null;
+  if (
+    claimFrom === "PENDING" &&
+    wantsRuntime &&
+    rt === null &&
+    params.agentBotId !== null &&
+    receiptGeneration !== null &&
+    resolvedGeneration !== null &&
+    resolvedGeneration !== receiptGeneration
+  ) {
+    throw new Error(
+      `chatwoot: the binding moved between this delivery's receipt (generation ${receiptGeneration}) and its route resolution (generation ${resolvedGeneration}), which now resolves no runtime (conv=${n.conversationId === null ? "?" : String(n.conversationId)}, bot=${params.agentBotId}); leaving the delivery for the sweep rather than settling it against a world it never arrived in`,
+    );
   }
   const claimed = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({

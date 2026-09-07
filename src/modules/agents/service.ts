@@ -1384,7 +1384,17 @@ export async function deleteAgent(
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({
       where: { agentId: id },
-      data: { agentId: null, responderBoundAt: null },
+      data: {
+        agentId: null,
+        responderBoundAt: null,
+        // THE FOURTH SITE THAT MOVES A BINDING (issue #540), and the one that is not in
+        // ./../chatwoot/management.ts. Deleting an agent unbinds every inbox it answered, which is
+        // the same movement `bindInbox`'s unbind makes and has to be counted the same way — a
+        // delivery in flight would otherwise re-derive its route from a binding that is gone and
+        // read the counter as saying nothing had changed. The `where` already names only inboxes
+        // this agent held, so every row it touches really moved.
+        bindingGeneration: { increment: 1 },
+      },
     });
     await db.experiment.updateMany({
       where: { agentId: id },

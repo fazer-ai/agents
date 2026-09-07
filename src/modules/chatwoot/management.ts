@@ -2297,6 +2297,10 @@ export async function bindInbox(
   }> {
     return runScopedOn(base, ctx, async (db) => {
       let retiredObserverBotId: number | null = null;
+      // Whether the observer row this call retired was actually there. `retiredObserverBotId` cannot
+      // answer it: a retired row whose persona carries no bot leaves it null, and that row still
+      // moved who routes this inbox.
+      let retiredObserverRow = false;
       // NOTE: The ACCOUNT row first, and the same question the read at the top already asked, because
       // that read predates the Chatwoot calls and a disconnect fits in the window. Without this lock
       // nothing serialises the two: the disconnect stamps the account and unbinds every inbox that was
@@ -2399,6 +2403,7 @@ export async function bindInbox(
             select: { chatwootAgentBotId: true },
           });
           retiredObserverBotId = bot?.chatwootAgentBotId ?? null;
+          retiredObserverRow = true;
         }
       }
       // STAMPED ONLY WHEN THE BINDING MOVES (issue #476 review, round 31). An observer beside a
@@ -2428,6 +2433,16 @@ export async function bindInbox(
         });
       }
       const boundTo = beforeWrite?.agent_id ?? null;
+      // WHO ROUTES THIS INBOX MOVED (issue #540), counted in the same statement that moves it, so a
+      // delivery can never read the counter and the binding from two different moments. Both writes
+      // this transaction makes are movements: the responder changing hands, and the observer row
+      // retired above when the same agent won the responder race.
+      //
+      // ONLY WHEN SOMETHING MOVED, on the same reasoning as `responderBoundAt` above. Re-submitting
+      // the editor with the agent already bound writes nothing and changes nothing, and a counter
+      // stepped there would tell every delivery in flight that the world moved — which costs a
+      // refusal, in a place where refusing means a row an operator has to read.
+      const bindingMoved = boundTo !== agentId || retiredObserverRow;
       await db.inbox.update({
         where: { id: inboxId },
         data: {
@@ -2437,6 +2452,7 @@ export async function bindInbox(
             : boundTo === agentId
               ? {}
               : { responderBoundAt: new Date() }),
+          ...(bindingMoved ? { bindingGeneration: { increment: 1 } } : {}),
         },
       });
       const row = await db.inbox.findUniqueOrThrow({
@@ -2854,6 +2870,15 @@ export async function observeInbox(
         create: { tenantId, inboxId, agentId },
         update: {},
       });
+      // The generation moves with the row and not with the Chatwoot call (issue #540): an observe
+      // that found the row already there is a second click on the same switch, and the retry above
+      // with nothing left to repair — the same condition the audit line uses, for the same reason.
+      if (!already) {
+        await db.inbox.update({
+          where: { id: inboxId },
+          data: { bindingGeneration: { increment: 1 } },
+        });
+      }
       const row = await db.inbox.findUniqueOrThrow({
         where: { id: inboxId },
         select: INBOX_SELECT,
@@ -2980,6 +3005,14 @@ export async function unobserveInbox(
     const { count } = await db.inboxObserver.deleteMany({
       where: { inboxId, agentId },
     });
+    // Same rule as the observe (issue #540): `count` is what says a binding actually went, and a
+    // concurrent unobserve that landed first moved nothing here.
+    if (count > 0) {
+      await db.inbox.update({
+        where: { id: inboxId },
+        data: { bindingGeneration: { increment: 1 } },
+      });
+    }
     const row = await db.inbox.findUniqueOrThrow({
       where: { id: inboxId },
       select: INBOX_SELECT,

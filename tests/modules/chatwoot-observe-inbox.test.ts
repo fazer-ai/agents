@@ -1647,4 +1647,96 @@ describe.skipIf(!dbUp)("the observer binding", () => {
         });
     }
   });
+  // THE COUNTER EVERY LATER READER COMPARES AGAINST (issue #540). A delivery records the generation
+  // it was RECEIVED under, and a reader asks whether the binding it is about to re-derive a fact
+  // from still describes that world. The counter is worth nothing unless it moves on every write
+  // that changes who routes an inbox and on no other — a movement it misses lets a stale derivation
+  // pass as evidence, and one it invents costs a delivery a refusal, which is a row an operator has
+  // to read.
+  test("the generation steps once per binding that actually moves, and stands still for a write that moves none", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 98,
+        name: "Geração",
+      },
+      select: { id: true },
+    });
+    const generation = async () =>
+      (
+        await suDb.inbox.findUniqueOrThrow({
+          where: { id: inbox.id },
+          select: { bindingGeneration: true },
+        })
+      ).bindingGeneration;
+    const cw = fakeChatwoot({ observerRoute: true, observing: new Set() });
+
+    expect(await generation()).toBe(0);
+    await bindInbox(ctx(tenantId), inbox.id, productionAgent, cw, appDb);
+    expect(await generation()).toBe(1);
+    // Re-submitting the editor with the agent already bound: the network branch does nothing and
+    // the binding it leaves never lapsed.
+    await bindInbox(ctx(tenantId), inbox.id, productionAgent, cw, appDb);
+    expect(await generation()).toBe(1);
+
+    await observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
+    expect(await generation()).toBe(2);
+    // Observing again is a second click on the same switch — and the retry that repairs an attach
+    // whose answer was lost, which asks Chatwoot again and changes nothing here.
+    await observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
+    expect(await generation()).toBe(2);
+
+    await unobserveInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
+    expect(await generation()).toBe(3);
+    // ...and again, with nothing left to remove: the detach is idempotent on both sides.
+    await unobserveInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb);
+    expect(await generation()).toBe(3);
+
+    await bindInbox(ctx(tenantId), inbox.id, null, cw, appDb);
+    expect(await generation()).toBe(4);
+    // An unbind of an inbox nothing answers moves nothing either.
+    await bindInbox(ctx(tenantId), inbox.id, null, cw, appDb);
+    expect(await generation()).toBe(4);
+  });
+
+  // THE FOURTH SITE, and the one outside chatwoot/management.ts: deleting an agent unbinds every
+  // inbox it answered. That is the same movement an unbind makes, and a delivery in flight would
+  // otherwise re-derive its route from a binding that is gone while the counter said the world had
+  // stood still.
+  test("deleting a bound agent steps the generation of every inbox it answered", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 99,
+        name: "Geração pela exclusão",
+      },
+      select: { id: true },
+    });
+    const doomed = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Efêmera vinculada",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        mode: "production",
+      },
+      select: { id: true },
+    });
+    const cw = fakeChatwoot({ observerRoute: true, observing: new Set() });
+    await bindInbox(ctx(tenantId), inbox.id, doomed.id, cw, appDb);
+    const bound = await suDb.inbox.findUniqueOrThrow({
+      where: { id: inbox.id },
+      select: { bindingGeneration: true },
+    });
+
+    await deleteAgent(ctx(tenantId), doomed.id, appDb);
+    const after = await suDb.inbox.findUniqueOrThrow({
+      where: { id: inbox.id },
+      select: { agentId: true, bindingGeneration: true },
+    });
+    expect(after.agentId).toBeNull();
+    expect(after.bindingGeneration).toBe(bound.bindingGeneration + 1);
+  });
 });

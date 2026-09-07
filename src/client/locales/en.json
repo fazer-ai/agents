@@ -1566,6 +1566,10 @@
       "GOOGLE_DRIVE": {
         "description": "Find a file, get its link, or send it to the customer over a connected Google account.",
         "label": "Google Drive"
+      },
+      "RESEND": {
+        "description": "Transactional email over a Resend API key. The agent sends confirmations, reminders and follow-ups; the sender address is fixed in the settings below.",
+        "label": "Resend"
       }
     },
     "config": {
@@ -1587,6 +1591,10 @@
       "createCalendarLink": "Need a new calendar? Create one in Google Calendar",
       "createMeetLink": "Create a Google Meet room for each appointment",
       "createMeetLinkHint": "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
+      "emailFrom": "Sender (from)",
+      "emailFromHint": "The domain must be verified on the Resend account. The agent can never change the sender.",
+      "emailFromPlaceholder": "Name <email@yourdomain.com>",
+      "emailReplyTo": "Reply-to (optional)",
       "environment": "Environment",
       "filterFolders": "Filter folders by name",
       "folder": "Folder",
@@ -2396,6 +2404,14 @@
     "drive_send_file": {
       "desc": "Send a Drive file to the customer as an attachment.",
       "label": "Send file"
+    },
+    "email_send": {
+      "desc": "Send an email to the customer (confirmation, reminder, follow-up). The sender address comes from the integration settings.",
+      "label": "Send email"
+    },
+    "email_status": {
+      "desc": "Check whether an email sent with Send email was delivered or bounced.",
+      "label": "Email status"
     }
   },
   "tools": {
@@ -2724,7 +2740,8 @@
       "openai": "OpenAI",
       "openai_compatible": "OpenAI-compatible",
       "openrouter": "OpenRouter",
-      "query": "Query"
+      "query": "Query",
+      "resend": "Resend"
     },
     "secretTypeHint": {
       "basic_auth": "Sent as the Authorization: Basic header. The value must be user:password already base64-encoded.",

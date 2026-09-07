@@ -1603,6 +1603,10 @@
       "GOOGLE_DRIVE": {
         "description": "Busca um arquivo, obtém o link ou o envia ao cliente, em uma conta Google conectada.",
         "label": "Google Drive"
+      },
+      "RESEND": {
+        "description": "E-mail transacional com uma chave de API do Resend. O agente envia confirmações, lembretes e follow-ups; o remetente é fixado nas configurações abaixo.",
+        "label": "Resend"
       }
     },
     "config": {
@@ -1624,6 +1628,10 @@
       "createCalendarLink": "Precisa de uma agenda nova? Criar no Google Calendar",
       "createMeetLink": "Criar uma sala do Google Meet para cada agendamento",
       "createMeetLinkHint": "O agente compartilha o link do Meet com o cliente. Desligue se esta agenda serve apenas para bloquear horários.",
+      "emailFrom": "Remetente (from)",
+      "emailFromHint": "O domínio precisa estar verificado na conta do Resend. O agente nunca consegue trocar o remetente.",
+      "emailFromPlaceholder": "Nome <email@seudominio.com.br>",
+      "emailReplyTo": "Responder para (opcional)",
       "environment": "Ambiente",
       "filterFolders": "Filtrar pastas por nome",
       "folder": "Pasta",
@@ -2452,6 +2460,14 @@
     "drive_send_file": {
       "desc": "Envia um arquivo do Drive ao cliente como anexo.",
       "label": "Enviar arquivo"
+    },
+    "email_send": {
+      "desc": "Envia um e-mail para o cliente (confirmação, lembrete, follow-up). O remetente vem das configurações da integração.",
+      "label": "Enviar e-mail"
+    },
+    "email_status": {
+      "desc": "Verifica se um e-mail enviado com Enviar e-mail foi entregue ou devolveu.",
+      "label": "Status do e-mail"
     }
   },
   "tools": {
@@ -2782,7 +2798,8 @@
       "openai": "OpenAI",
       "openai_compatible": "Compatível com OpenAI",
       "openrouter": "OpenRouter",
-      "query": "Query"
+      "query": "Query",
+      "resend": "Resend"
     },
     "secretTypeHint": {
       "basic_auth": "Enviado como o header Authorization: Basic. O valor deve ser user:password já em base64.",

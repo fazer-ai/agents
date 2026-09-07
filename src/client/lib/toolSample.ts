@@ -119,9 +119,17 @@ export function recallToolSample(
   toolId: string,
   revision: string,
 ): ToolSample | null {
-  const kept = samples.get(keyFor(toolId, activeTenant()));
+  const key = keyFor(toolId, activeTenant());
+  const kept = samples.get(key);
   if (kept === undefined) return null;
-  if (kept.revision !== revision) return null;
+  // A READ THAT DROPS, because a mismatch is the moment this entry becomes known-useless and there
+  // is no other moment where anyone would look at it. Left in place it holds a customer's response
+  // that can never be served again, and it occupies one of the slots below: seven stale entries
+  // would evict the one good sample the operator is actually working with (round 10 of review).
+  if (kept.revision !== revision) {
+    samples.delete(key);
+    return null;
+  }
   return kept;
 }
 

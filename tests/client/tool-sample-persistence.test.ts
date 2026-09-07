@@ -89,11 +89,57 @@ describe("what the editor opens with", () => {
       { revision: REV, text: RESPONSE, status: 200 },
       sampleTicket(),
     );
+    rememberToolSample(
+      "43",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
     const form = formFromTool(toolRow({ updatedAt: NEWER }));
     expect(form.sample).toBe("");
     expect(form.sampleStatus).toBeNull();
-    // And the tool that did NOT change still gets its sample, so this is not refusing everything.
-    expect(formFromTool(toolRow()).sample).toBe(RESPONSE);
+    // A DIFFERENT tool, and one that did not change, still gets its sample: this refuses the
+    // revision, not everything. Asking about the same id would prove nothing here, because the
+    // mismatch above deletes that entry outright.
+    expect(formFromTool(toolRow({ id: "43" })).sample).toBe(RESPONSE);
+  });
+
+  // AND THE STALE ENTRY GOES, rather than sitting there holding a response nobody can be served:
+  // eight of those would evict the one sample the operator is working with, and it is the customer's
+  // data either way.
+  it("drops the stale entry instead of only refusing it", () => {
+    rememberToolSample(
+      "42",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
+    expect(recallToolSample("42", NEWER)).toBeNull();
+    // Asking with the revision it WAS stored under now finds nothing either, which is what proves
+    // the entry is gone rather than merely unmatched.
+    expect(recallToolSample("42", REV)).toBeNull();
+  });
+
+  it("does not let stale entries crowd out a live one", () => {
+    rememberToolSample(
+      "1",
+      { revision: REV, text: RESPONSE, status: 200 },
+      sampleTicket(),
+    );
+    // Seven more, all of which the editor then finds stale…
+    for (let i = 2; i <= 8; i++)
+      rememberToolSample(
+        String(i),
+        { revision: REV, text: `{"i":${i}}`, status: null },
+        sampleTicket(),
+      );
+    for (let i = 2; i <= 8; i++)
+      expect(recallToolSample(String(i), NEWER)).toBeNull();
+    // …so the ninth save has room, and tool 1 is still there.
+    rememberToolSample(
+      "9",
+      { revision: REV, text: '{"i":9}', status: null },
+      sampleTicket(),
+    );
+    expect(recallToolSample("1", REV)?.text).toBe(RESPONSE);
   });
 
   it("takes the revision from the row the SAVE returned, not the one the form opened with", () => {

@@ -255,6 +255,34 @@ function pageWith(
   };
 }
 
+// The same page, for a message whose whole content is a voice note the STT has since transcribed.
+// `content` is empty, as it is on the wire for an audio: the words live on the attachment, which is
+// what makes the write-back update the only readable form the message ever takes (issue #478).
+function audioPageWith(
+  msgs: Array<{ id: number; transcript: string; createdAt?: number }>,
+  inboxId: number = CHATWOOT_INBOX_ID,
+) {
+  return {
+    payload: msgs.map((m) => ({
+      id: m.id,
+      content: "",
+      message_type: 0,
+      private: false,
+      inbox_id: inboxId,
+      created_at: m.createdAt ?? SENT_AT,
+      sender: { id: 77, name: "Cliente", type: "contact" },
+      attachments: [
+        {
+          id: 5000 + m.id,
+          file_type: "audio",
+          data_url: "https://chat.recover.example/audio.ogg",
+          transcribed_text: m.transcript,
+        },
+      ],
+    })),
+  };
+}
+
 // SETTLED and scoped. `emitFlowEvent` is fire-and-forget, so a raw read races the write it is
 // asserting — and the direction that matters is the absence: several cases here assert that NO line
 // was written, and a raw read passes those for the very reason that would make them wrong. The
@@ -322,6 +350,9 @@ async function seedDeadDelivery(over: {
   routeAgentBotId?: number | null;
   // Whether the receiver recorded that route as an OBSERVER's.
   routeObserved?: boolean | null;
+  // The event the delivery carried. `message_created` by default; `message_updated` is the write-back
+  // that finally brought a voice note's transcription (issue #478).
+  event?: string;
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -329,7 +360,7 @@ async function seedDeadDelivery(over: {
       tenantId,
       chatwootInstanceId: instanceId,
       deliveryId: `rec-${process.pid}-${deliverySeq}`,
-      event: "message_created",
+      event: over.event ?? "message_created",
       status: over.status ?? "DEAD",
       receivedAt: new Date(Date.now() - (over.receivedAgoMs ?? 60 * 60 * 1000)),
       claimedAt: new Date(Date.now() - 60 * 60 * 1000),
@@ -903,6 +934,88 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       armed.filter((j) => JSON.stringify(j.payload).includes(String(messageId)))
         .length,
     ).toBeGreaterThan(0);
+  });
+
+  // ISSUE #478 review, round 2. The transcription replay, on the RESPONDER's own route: the update
+  // that carried a voice note's words, stranded before its ingestion was armed. It posts nothing —
+  // a `message_updated` drives no turn anywhere — so every read and refusal that exists to protect a
+  // reply has to stand aside, exactly as it does for an observer.
+  //
+  // Three of them in one case, because they are one premise: the unanchored page is not fetched, a
+  // newer customer message does not refuse it, and the audio being older than the six-hour ceiling
+  // does not either — the words arrive on the write-back of a message CREATED before them, so that
+  // cutoff refuses precisely the class it cannot help. What still bounds the replay is the row's own
+  // receipt, which is recent here.
+  test("a stranded transcription is replayed without the reads a reply would need", async () => {
+    const convId = 8899;
+    const messageId = 9499;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        // A colleague owns the conversation, which is the route where no turn was ever coming and
+        // the append is the only memory the message gets.
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: inboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      event: "message_updated",
+      routeAgentBotId: AGENT_BOT_ID,
+      // Recent: the UPDATE is what this replays, and it is what the ceiling is asked of.
+      receivedAgoMs: 20 * 60 * 1000,
+    });
+    // Older than MAX_RECOVERY_AGE_MS, on the message's own clock.
+    const audioCreatedAt = Math.floor(Date.now() / 1000) - 7 * 60 * 60;
+    const stub = stubChatwoot({
+      // The LIVE conversation says the same thing the mirror does: a colleague holds it. The rebuild
+      // takes its ownership from here, so a stub left on the default (`pending`, unassigned) would
+      // hand the replay a conversation the bot owns — and the ingest gate would correctly refuse it,
+      // for the wrong conversation.
+      conv: { status: "open", assigneeType: "User", assigneeId: 9 },
+      page: audioPageWith([
+        {
+          id: messageId,
+          transcript: "queria remarcar meu ingresso",
+          createdAt: audioCreatedAt,
+        },
+      ]),
+      // Never read on this route. Seeded with a newer customer message so that a build which DID
+      // read it would refuse the replay, rather than passing for the wrong reason.
+      recent: pageWith([
+        { id: messageId + 4, content: "deixa, já resolvi", createdAt: SENT_AT },
+      ]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    // The unanchored read is the one with no `before`. None was made.
+    expect(stub.asked.filter(([, before]) => before === undefined)).toEqual([]);
+    expect(stub.sent).toEqual([]);
+    const armed = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "INGEST_MESSAGE" },
+      select: { payload: true },
+    });
+    expect(
+      armed.filter((j) => JSON.stringify(j.payload).includes(String(messageId)))
+        .length,
+    ).toBeGreaterThan(0);
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
   });
 
   // An inbox that still NAMES a responder while its bot is gone from Chatwoot — the state the console

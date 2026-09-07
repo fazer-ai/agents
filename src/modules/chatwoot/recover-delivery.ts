@@ -397,6 +397,17 @@ async function runRecovery(params: {
   now: Date;
 }): Promise<RecoveryOutcome> {
   const { base, row, instanceId, conversationId, messageId } = params;
+  // WHETHER THIS REPLAY COULD POST A REPLY, which decides three reads and refusals below. Two ways
+  // it cannot, and they are the same shape from different directions: an OBSERVER's route posts
+  // nothing by construction (issue #476), and a `message_updated` drives no turn anywhere, so a
+  // transcription replay owes memory and only memory (issue #478). Everything the newest page is
+  // read for — has the customer written since, does a newer delivery carry the reply — is a question
+  // about a reply, so where none is coming it is neither asked nor paid for.
+  //
+  // Off the ledger's event rather than the rebuild, because the rebuild is two REST reads further
+  // down and one of those reads is what this decides.
+  const replayPosts =
+    row.routeObserved !== true && row.event === TURN_BEARING_EVENT;
 
   const conv = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
@@ -496,14 +507,15 @@ async function runRecovery(params: {
     // anchored page ends at the stranded message and says nothing about what came after, and the
     // newest page need not contain the stranded message at all (MEASURED: on a 30-message
     // conversation the default page of 20 did not).
-    // ...and NOT on an observer's replay (issue #476 review, round 54), which is the only reader of
-    // this page and does not ask its question. See the freshness block below: an observation is not
-    // an answer, so a newer message neither covers this one nor makes it unanswerable. Left
-    // unfetched rather than fetched and ignored, since it is a REST round trip per recovery.
-    recent =
-      row.routeObserved === true
-        ? []
-        : parseChatwootMessages(await client.getMessages(conversationId));
+    // ...and NOT on a replay that posts nothing (issue #476 review, round 54; issue #478 review,
+    // round 2), which is the only reader of this page and does not ask its question. See the
+    // freshness block below: neither an observation nor a memory append is an answer, so a newer
+    // message neither covers this one nor makes it unanswerable. Left unfetched rather than fetched
+    // and ignored: it is a REST round trip per recovery, and a failure on it returns `unreachable`,
+    // which spends the recovery's budget over a page nothing was going to read.
+    recent = replayPosts
+      ? parseChatwootMessages(await client.getMessages(conversationId))
+      : [];
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
     // so this is a DEFERRAL rather than a verdict: the row keeps its attempt budget and the next
@@ -576,12 +588,8 @@ async function runRecovery(params: {
   // round 1). What it replays is a `message_updated`, which drives no turn anywhere, so nothing here
   // was ever going to be posted and the newer message's delivery carries no reply for it either.
   // What it owes is the words reaching memory, and an ingest job carries its own message and nothing
-  // else — so a customer who wrote again does not cover this one, exactly as above. Read off the
-  // ledger's event rather than the rebuild, because the rebuild is two REST reads further down and
-  // this refusal is meant to spend neither.
-  const replayAnswers =
-    row.routeObserved !== true && row.event === TURN_BEARING_EVENT;
-  if (replayAnswers) {
+  // else — so a customer who wrote again does not cover this one, exactly as above.
+  if (replayPosts) {
     const oldestSeen = recent.reduce<number | null>(
       (a, m) => (a === null || m.id < a ? m.id : a),
       null,
@@ -1011,7 +1019,19 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
-  if (params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS) {
+  // ...AND ONLY WHERE A REPLY IS COMING (issue #478 review, round 2). Every word above is about
+  // answering a customer hours late. A transcription replay answers nobody: the words arrive on the
+  // write-back of an audio that was CREATED before them, so this cutoff refuses precisely the class
+  // it cannot help — the older the voice note, the surer the refusal, and the memory gap is
+  // permanent either way. What still bounds it is the row's own receipt, checked before any network,
+  // against the same ceiling: six hours since the UPDATE arrived, which is the event this replays.
+  //
+  // Asked of the EVENT alone and not of `replayPosts`, so an observer's replay of a creation keeps
+  // the ceiling it has always had; widening that is not this issue's to decide.
+  if (
+    row.event === TURN_BEARING_EVENT &&
+    params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS
+  ) {
     return "unrecoverable";
   }
 

@@ -105,11 +105,28 @@ function lateAudio(
   });
 }
 
-async function deliver(
-  n: NonNullable<ReturnType<typeof lateAudio>>,
-  agentBotId = AGENT_BOT_ID,
-) {
-  const delivery = await suDb.chatwootWebhookDelivery.create({
+// A client whose scheduler writes for an ingestion all throw: the transient failure the arm is
+// retried against, driven to the end of its retries.
+function failingIngest() {
+  return appDb.$extends({
+    query: {
+      schedulerJob: {
+        $allOperations({ args, query }) {
+          const shape = JSON.stringify(args, (_k, v) =>
+            typeof v === "bigint" ? String(v) : v,
+          );
+          if (shape.includes("INGEST_MESSAGE")) {
+            throw new Error("injected: scheduler unavailable");
+          }
+          return query(args);
+        },
+      },
+    },
+  }) as unknown as PrismaClient;
+}
+
+async function newDeliveryRow() {
+  const row = await suDb.chatwootWebhookDelivery.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
@@ -119,14 +136,26 @@ async function deliver(
     },
     select: { id: true },
   });
+  return row.id;
+}
+
+async function deliver(
+  n: NonNullable<ReturnType<typeof lateAudio>>,
+  agentBotId = AGENT_BOT_ID,
+  base: PrismaClient = appDb,
+  // Created by the caller when it needs the id even if the delivery throws.
+  deliveryRowId?: bigint,
+) {
+  const rowId = deliveryRowId ?? (await newDeliveryRow());
   await processChatwootDelivery({
     tenantId,
     instanceId,
-    deliveryRowId: delivery.id,
+    deliveryRowId: rowId,
     agentBotId,
     normalized: n,
-    base: appDb,
+    base,
     deps: {
+      sleep: async () => {},
       makeClient: (async () =>
         ({
           downloadAttachment: async () => {
@@ -142,6 +171,7 @@ async function deliver(
       },
     },
   });
+  return rowId;
 }
 
 const ingestJobs = () =>
@@ -458,6 +488,33 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
       (j) => (j.payload as Record<string, unknown>).messageId === 6007,
     );
     expect(mine).toHaveLength(1);
+  });
+
+  // AND WHAT AN ENQUEUE THAT DOES NOT LAND MEANS (issue #478 review, round 2). `observerHolds` is
+  // inbound-only — an update is not a creation — so on its own it settles this delivery PROCESSED
+  // whatever the arm answered, and a scheduler blip then discards the transcription for good: the
+  // row is terminal, and the row was the only thing that knew. The words come around once.
+  //
+  // Two assertions and they are the pair: the delivery must FAIL (the row stays PROCESSING, which is
+  // what the sweep reads and replays) and nothing may be marked handled behind it.
+  test("an arm that cannot be queued leaves the delivery for the sweep", async () => {
+    const n = lateAudio(6010, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const before = (await ingestJobs()).length;
+
+    // The row is created by the test, not by `deliver`, because the delivery is meant to throw and
+    // the id has to outlive it — reading it back is the whole assertion.
+    const rowId = await newDeliveryRow();
+    await expect(
+      deliver(n, AGENT_BOT_ID, failingIngest(), rowId),
+    ).rejects.toThrow("could not be armed");
+
+    expect((await ingestJobs()).length).toBe(before);
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSING");
   });
 
   // WHAT THE LEDGER KEEPS ABOUT IT, which is the difference between a process death here being

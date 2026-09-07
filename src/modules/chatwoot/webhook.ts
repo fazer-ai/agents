@@ -5501,7 +5501,11 @@ export async function processChatwootDelivery(
           mirror.conversationRowId,
           base,
         )),
-      retryArm: observing || handedToObserver,
+      // ...and for a LATE TRANSCRIPTION on any route (issue #478 review, round 2), for the reason the
+      // observer's is retried: the append is the last chance. The words come around once, on the
+      // write-back, and no later event carries them — production's continuous ingestion is
+      // best-effort because a turn covers what it misses, and here no turn ever will.
+      retryArm: observing || handedToObserver || lateTranscriptionUpdate,
       sleep: params.deps?.sleep,
       base,
     });
@@ -5554,7 +5558,36 @@ export async function processChatwootDelivery(
       },
     );
   }
-  // The observer's verdict, from the enqueue (see the note above the mark). The throw is the one
+  // A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,
+  // round 2). `observerHolds` is inbound-only — a `message_updated` is not `isNewIncoming` — so on
+  // its own it settles this delivery PROCESSED whatever the enqueue answered, and a scheduler blip
+  // then discards the transcription for good: the sweep sees a terminal row, and the row is the only
+  // thing that knew.
+  //
+  // ASKED OF EVERY ROUTE and not only the watcher's, because what makes production's continuous
+  // ingestion best-effort is a turn covering what it misses, and there is no turn here by
+  // construction — the words arrive on an update, and an update drives none. Where a turn DID answer
+  // the message, the gate inside the ingestion refuses it and the answer is `"nothing"`, so this
+  // never fires for the ordinary write-back.
+  //
+  // The throw and the one below are the two exits of this function that leave the row on PROCESSING
+  // deliberately: the route logs it, the sweep declares it `owed-transcription`, and the replay
+  // re-runs this path.
+  if (lateTranscriptionUpdate && ingested === "failed") {
+    throw new Error(
+      `chatwoot: the late transcription could not be armed for ingestion (conv=${convLabel}); leaving the delivery for the sweep`,
+    );
+  }
+  // "no-thread" IS NOT THAT, and it is left to settle: a conversation neither the payload nor the
+  // mirror can name a contact-inbox for has nowhere to hold the words, and the replay would find the
+  // same nothing. Said at `warn`, which is where the observer's inbound branch says it too.
+  if (lateTranscriptionUpdate && ingested === "no-thread") {
+    logger.warn(
+      "chatwoot: a late transcription arrived (conv=%s) but the conversation names no contact-inbox thread to hold it",
+      convLabel,
+    );
+  }
+  // The observer's verdict, from the enqueue (see the note above the mark). The throw is the other
   // exit of this function that leaves the row on PROCESSING deliberately: the route logs it, and
   // the sweep's recovery re-runs the delivery.
   if (observerHolds) {

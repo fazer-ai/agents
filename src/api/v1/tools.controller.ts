@@ -158,6 +158,12 @@ export const writeBody = t.Object({
         "Acknowledgement message shown before the call, or null for the default.",
     }),
   ),
+  sampleShape: t.Optional(
+    t.Union([t.Record(t.String(), t.Unknown()), t.Null()], {
+      description:
+        "The SHAPE of a sample response, so the console's path pickers survive a reopen: {status, body}, where every value in `body` is a stand-in of the same type and a string keeps only its length. It is redacted again on write, so a real response sent here is stored as its shape and never as itself; nothing about it reaches the agent runtime. Omit to leave the stored shape alone — an absent or empty value never clears it — and send null to store nothing.",
+    }),
+  ),
 });
 
 // The CREATE route's own body. `writeBody` above describes what a PATCH accepts, where every field

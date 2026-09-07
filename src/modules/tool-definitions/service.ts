@@ -20,6 +20,10 @@ import {
   storableResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
 import {
+  readStorableShape,
+  type StoredSampleShape,
+} from "@/modules/tool-definitions/sample-shape";
+import {
   dialableBaseUrl,
   readableVaultRef,
   readVaultRefFacts,
@@ -87,6 +91,11 @@ export interface ToolDefinitionDto {
   ackMessage: string | null;
   // What this tool's response declares about an appointment, or null (issue #352).
   appointment: Record<string, unknown> | null;
+  // The SHAPE of the last sample response the operator pasted, or null (issue #566). Keys with
+  // stand-in values, never the response: what it exposes is the customer API's field names, which
+  // `outputSchema` already carries as the template's paths, and the editor is the only reader that
+  // needs it.
+  sampleShape: StoredSampleShape | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -110,6 +119,7 @@ const SELECT = {
   ackEnabled: true,
   ackMessage: true,
   appointment: true,
+  sampleShape: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -133,6 +143,7 @@ function toDto(r: {
   ackEnabled: boolean;
   ackMessage: string | null;
   appointment: unknown;
+  sampleShape: unknown;
   createdAt: Date;
   updatedAt: Date;
 }): ToolDefinitionDto {
@@ -170,6 +181,10 @@ function toDto(r: {
       string,
       unknown
     > | null,
+    // Read back through the same reader the write uses, for the reason `appointment` above gives:
+    // a row written before this column existed, or by a caller that sent something else, reads as
+    // no sample rather than as a shape the editor would try to offer paths out of.
+    sampleShape: readStorableShape(r.sampleShape),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -254,6 +269,13 @@ const UNDISCLOSED = [
   "body",
   "ackMessage",
   "appointment",
+  // Compared and never carried, like the four shapes above it and for the same reason plus one of
+  // its own. It is redacted before it is ever written, so nothing here is about secrecy — it is that
+  // this row is append-only and outlives the tool, and the shape is a CACHE of the customer API's
+  // structure that turns over whenever a sample is pasted. Projecting it would copy up to 64k twice
+  // per save into a table nobody queries for it. What a reader needs from the trail is that the
+  // tool changed, which the comparison still records.
+  "sampleShape",
 ] as const;
 
 export const toolDefinitionCreateSchema = z
@@ -318,6 +340,13 @@ export const toolDefinitionCreateSchema = z
         message:
           'appointment must be { action: "book"|"cancel", idPath, startPath (book only), summaryPath?, reminderOffsetsHours?, askConfirmationOnLast? }; a path is dot-separated keys with numeric array indexes, e.g. data.items.0.id',
       }),
+    // The shape of the sample the editor had on screen: { status, body } (issue #566). Deliberately
+    // NOT refused when unreadable, which is the opposite of `appointment` right above, and the two
+    // differ for a reason. An appointment declaration is a RULE the runtime will follow, so one that
+    // looks saved and does nothing is the silence #352 removed. This is an editing convenience with
+    // no runtime behaviour at all: refusing it would make an unsavable tool out of a bad paste, and
+    // `readStorableShape` already answers "nothing storable here" with null.
+    sampleShape: z.record(z.string(), z.unknown()).nullish(),
   })
   .strict();
 export type ToolDefinitionCreate = z.infer<typeof toolDefinitionCreateSchema>;
@@ -666,6 +695,10 @@ export async function createToolDefinition(
         // runtime would ignore.
         appointment: (readAppointmentDeclaration(data.appointment) ??
           Prisma.DbNull) as unknown as Prisma.InputJsonValue,
+        // Redacted HERE and not only in the browser: the client redacts so the response never
+        // travels, and this runs so the COLUMN cannot hold one whatever a client sends.
+        sampleShape: (readStorableShape(data.sampleShape) ??
+          Prisma.DbNull) as unknown as Prisma.InputJsonValue,
       },
       select: SELECT,
     });
@@ -782,6 +815,9 @@ export async function updateToolDefinition(
       patchData.ackMessage = data.ackMessage ?? null;
     if (data.appointment !== undefined)
       patchData.appointment = (readAppointmentDeclaration(data.appointment) ??
+        Prisma.DbNull) as unknown as Prisma.InputJsonValue;
+    if (data.sampleShape !== undefined)
+      patchData.sampleShape = (readStorableShape(data.sampleShape) ??
         Prisma.DbNull) as unknown as Prisma.InputJsonValue;
     await db.toolDefinition.update({ where: { id }, data: patchData });
     const row = await db.toolDefinition.findUniqueOrThrow({

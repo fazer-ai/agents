@@ -652,6 +652,43 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     ).toBeNull();
   });
 
+  // RETRIED, because what this write buys is the ROW'S recoverability (issue #478 review, round 6).
+  // A single attempt made the crash story depend on a blip: the fill misses, the process dies before
+  // the arm, and the sweep reads a `message_updated` naming nothing and closes it. Same attempts and
+  // backoff as the ledger claim, and the sleep is injected so the case costs no wall clock.
+  test("the fill is retried when the write blips", async () => {
+    const rowId = await newDeliveryRow();
+    const n = lateAudio(6014, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    let attempts = 0;
+    const flaky = appDb.$extends({
+      query: {
+        chatwootWebhookDelivery: {
+          $allOperations({ args, query }) {
+            attempts += 1;
+            if (attempts < 3) throw new Error("injected: pool exhausted");
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    await fillLedgerTranscribedMessage(
+      tenantId,
+      rowId,
+      n,
+      flaky,
+      async () => {},
+    );
+
+    expect(attempts).toBeGreaterThan(1);
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { inboundMessageId: true },
+    });
+    expect(row.inboundMessageId).toBe(6014);
+  });
+
   // WHERE THE FILL IS CALLED FROM, read off the source. The two cases above prove the rules; this
   // one proves the wiring, and it is read rather than driven because driving it means a vault
   // credential and an HTTP fake of a provider — the STT registry is a frozen map, so no stub can be

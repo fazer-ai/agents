@@ -1079,32 +1079,57 @@ interface LedgerFacts {
 //
 // Only for an UPDATE that now carries a transcription. A creation's id was decided at INSERT from
 // what a creation is, and filling one here could only write an id onto a row that was right to have
-// none. Best-effort in the sense that a failure is logged and not thrown: the delivery is still
-// doing its work, and what is lost is the recoverability of a process death that has not happened.
+// none.
+//
+// RETRIED like the ledger claim itself and against the same failure (issue #478 review, round 6): a
+// pool momentarily full. What this write buys is the ROW'S RECOVERABILITY, so a single attempt made
+// the crash story depend on a blip — the fill misses, the process dies before the arm, and the sweep
+// reads a `message_updated` naming nothing and closes it. Not thrown when the attempts run out: the
+// delivery is still doing its own work, and taking that away would turn a lost recovery into a lost
+// append. Said at `error` instead, because from there the row cannot be replayed.
 export async function fillLedgerTranscribedMessage(
   tenantId: bigint,
   deliveryRowId: bigint | null,
   n: NormalizedChatwootEvent,
   base: PrismaClient,
+  // Injected by a test, so the retries cost no wall clock. Real callers pass none.
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
   const messageId = n.message?.id;
   if (deliveryRowId === null || messageId == null) return;
   if (inboundTranscriptionOnUpdate(n) === null) return;
-  try {
-    await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.chatwootWebhookDelivery.updateMany({
-        where: { id: deliveryRowId, inboundMessageId: null },
-        data: { inboundMessageId: messageId },
-      }),
-    );
-  } catch (err) {
-    logger.warn(
-      "chatwoot: the ledger could not record the transcribed message %d (delivery row %s): %s",
-      messageId,
-      String(deliveryRowId),
-      errMsg(err),
-    );
+  let lastErr: unknown;
+  const nap = sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
+    try {
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: { id: deliveryRowId, inboundMessageId: null },
+          data: { inboundMessageId: messageId },
+        }),
+      );
+      return;
+    } catch (err) {
+      lastErr = err;
+      logger.warn(
+        "chatwoot: ledger transcription fill attempt %d/%d failed (delivery row %s): %s",
+        attempt,
+        LEDGER_CLAIM_ATTEMPTS,
+        String(deliveryRowId),
+        errMsg(err),
+      );
+      if (attempt < LEDGER_CLAIM_ATTEMPTS) {
+        await nap(LEDGER_CLAIM_BACKOFF_MS * attempt);
+      }
+    }
   }
+  logger.error(
+    "chatwoot: the ledger could not record the transcribed message %d (delivery row %s) in %d attempts; a process death before the ingestion is armed loses these words with nothing naming them: %s",
+    messageId,
+    String(deliveryRowId),
+    LEDGER_CLAIM_ATTEMPTS,
+    errMsg(lastErr),
+  );
 }
 
 function ledgerFactsOf(
@@ -1384,6 +1409,8 @@ export interface EagerMediaOwner {
   //
   // Null where the caller has no row to fill — nothing outside `processChatwootDelivery` does.
   deliveryRowId: bigint | null;
+  // Injected by a test, so the ledger fill's retries cost no wall clock. Real callers pass none.
+  sleep?: (ms: number) => Promise<void>;
 }
 
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
@@ -1471,6 +1498,7 @@ export async function runEagerMedia(
               owner.deliveryRowId,
               n,
               base,
+              owner.sleep,
             );
           }
         }
@@ -4759,6 +4787,7 @@ export async function processChatwootDelivery(
       inboxId: rt.inboxId,
       chatwootInboxId: rt.chatwootInboxId,
       deliveryRowId: params.deliveryRowId,
+      sleep: params.deps?.sleep,
     });
   }
 
@@ -4891,6 +4920,7 @@ export async function processChatwootDelivery(
         inboxId: rt?.inboxId ?? null,
         chatwootInboxId: rt?.chatwootInboxId ?? null,
         deliveryRowId: params.deliveryRowId,
+        sleep: params.deps?.sleep,
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -5292,6 +5322,7 @@ export async function processChatwootDelivery(
       inboxId: rt.inboxId,
       chatwootInboxId: rt.chatwootInboxId,
       deliveryRowId: params.deliveryRowId,
+      sleep: params.deps?.sleep,
     });
   }
   // THE OBSERVER'S OWN REASON TO MARK is its ingestion having the message (issue #209 review,

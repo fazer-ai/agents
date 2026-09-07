@@ -3756,6 +3756,86 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBeGreaterThan(0);
   });
 
+  // ISSUE #478 review, round 6, and the other half of the case above. Letting the replay past the
+  // identity fence is right where a PERSON holds the conversation, and wrong where an AGENT BOT
+  // does: the id is not only a token to post with, it is the left-hand side of the ownership
+  // comparison, so with it null that comparison goes loose, another bot's conversation reads as
+  // ours, `act` comes back true, and the delivery path skips the very ingestion this replay exists
+  // for while the row settles PROCESSED and reports a recovery.
+  //
+  // Named from the LEDGER where it can be — the route the delivery arrived on, replayed rather than
+  // re-derived — and refused where it cannot.
+  test("a transcription replay is refused when a bot it cannot name holds the conversation", async () => {
+    const convId = 8896;
+    const messageId = 9496;
+    const ORPHAN_INBOX_2 = 77;
+    const orphanAgent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Sem persona 2",
+        systemPrompt: "…",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        enabled: true,
+        mode: "production",
+        settings: {},
+      },
+      select: { id: true },
+    });
+    const orphanInbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: ORPHAN_INBOX_2,
+        name: "Sem persona 2",
+        agentId: orphanAgent.id,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "pending",
+        // Another AgentBot holds it, and no persona of ours names a bot id to compare against.
+        assigneeType: "AgentBot",
+        assigneeId: 999,
+        assigneeName: "outro-bot",
+        inboxId: orphanInbox.id,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      event: "message_updated",
+      receivedAgoMs: 20 * 60 * 1000,
+    });
+    const stub = stubChatwoot({
+      conv: { status: "pending", assigneeType: "AgentBot", assigneeId: 999 },
+      page: audioPageWith(
+        [{ id: messageId, transcript: "quero trocar a data" }],
+        ORPHAN_INBOX_2,
+      ),
+    });
+
+    // Refused, and the row stays DEAD on the worklist — which is the honest record, rather than a
+    // recovery that remembered nothing.
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unrecoverable");
+    expect((await ledger(rowId)).status).toBe("DEAD");
+    expect(stub.sent).toEqual([]);
+  });
+
   // ISSUE #478 review, round 5. The fence below is about a command the ORIGINAL delivery already
   // executed, and the live path reads a command off a message's creation alone — an update of that
   // same message consumes nothing there. Asked of a transcription replay, it fires on a voice note

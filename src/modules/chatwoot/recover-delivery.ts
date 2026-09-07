@@ -848,7 +848,20 @@ async function runRecovery(params: {
     );
     return "unrecoverable";
   }
-  const agentBotId = observerRouteBotId ?? responderBotId;
+  // NOTE: ...AND THE LEDGER'S OWN ROUTE, FOR A REPLAY THAT ONLY REMEMBERS (issue #478 review,
+  // round 6). A transcription replay is let past the identity fence below because it posts nothing —
+  // but the id is not only a token to post with, it is the left-hand side of the ownership
+  // comparison, and with it null that comparison goes LOOSE: a conversation another AgentBot holds
+  // reads as ours, `act` comes back true, and the delivery path skips the very ingestion this replay
+  // exists for while the row settles PROCESSED and reports a recovery.
+  //
+  // The ledger recorded WHO the delivery arrived as, and replaying that rather than re-deriving it
+  // is the rule this module already follows for the role (`routeObserved`, issue #476 review,
+  // round 22): bindings move, and the question is about receipt time. Only where the persona is
+  // gone, and only for the replay that cannot answer — a reply-producing one is refused below, and
+  // handing it a bot id its persona no longer carries would post as nobody.
+  const agentBotId =
+    observerRouteBotId ?? responderBotId ?? (replayPosts ? null : routeBotId);
 
   // THE MIRROR LEARNS THE ROUTE, and this is a repair rather than a convenience. Rebuilding the body
   // from the live message answers `runAgentTurn`, which resolves the agent from the inbox the EVENT
@@ -1183,16 +1196,26 @@ async function runRecovery(params: {
   // enqueue — and refusing here would leave the words out of the only memory a human-owned
   // conversation has, permanently, over a persona that was never going to be used.
   //
-  // The ownership question is not skipped, it is just not THIS function's: the delivery path asks
-  // it, and a loose answer there costs the append rather than producing a reply, which is the safe
-  // direction for a route that cannot speak.
-  if (replayPosts && agentId !== null && agentBotId === null) {
-    logger.warn(
-      "chatwoot recovery: %s routes to inbox %d, whose agent has no Chatwoot bot; not answered",
-      row.deliveryId,
-      routeInboxId,
-    );
-    return "unrecoverable";
+  // The ownership question is not skipped, it is asked with the ledger's own route id above — and
+  // where even that is missing, with the one reading that can still go wrong (round 6). A loose
+  // comparison only mis-answers when an AGENT BOT holds the conversation: it reads that bot as
+  // ours, `act` comes back true, and the delivery path skips the ingestion while this pass reports
+  // a recovery. Every other holder — a person, or nobody — answers the same with an id or without
+  // one, and that is the shape the round-5 case is: a colleague's conversation, where the append is
+  // the only memory there will be.
+  if (agentId !== null && agentBotId === null) {
+    const heldByABot = (mirrorNow ?? state).assigneeType === "AgentBot";
+    if (replayPosts || heldByABot) {
+      logger.warn(
+        "chatwoot recovery: %s routes to inbox %d, whose agent has no Chatwoot bot%s; not replayed",
+        row.deliveryId,
+        routeInboxId,
+        heldByABot
+          ? " and the conversation is held by an AgentBot this pass cannot name"
+          : "",
+      );
+      return "unrecoverable";
+    }
   }
   // The key a follow-up nudge reads before it fires, asked here and then HELD to the handoff.
   const handoffKey = chatwootThreadId(

@@ -117,6 +117,7 @@ model Tenant {
   inboxes                       Inbox[]
   contacts                      Contact[]
   contactAuthGrants             ContactAuthGrant[]
+  inboxObservers                InboxObserver[]
   conversations                 Conversation[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
@@ -377,6 +378,12 @@ model ChatwootWebhookDelivery {
   // delivery did and refuse the takeover it exists to run. Null on a delivery whose route resolved
   // to no bot, and on every row written before this column existed.
   routeAgentBotId     Int?                  @map("route_agent_bot_id")
+  // Whether that route was an OBSERVER's, recorded by the receiver the moment it reads it rather
+  // than inferred later (issue #476). What the role is cannot be derived after the fact: the row
+  // that says so is written after Chatwoot agrees, so a delivery inside the attach window has none,
+  // and a binding that changed since answers about a different moment. Null on every event this
+  // question was never asked of — a responder's delivery, and every row written before this column.
+  routeObserved       Boolean?              @map("route_observed")
   // WHICH MESSAGE the owed takeover was about (issue #469), written at INSERT beside the shape. The
   // recovery of issue #439 rebuilds a takeover from this row, and the fence it has to pass is
   // ordered by the source's message sequence — a coordinate the row is the only place to hold, since
@@ -416,6 +423,16 @@ model Inbox {
   // service-window gate (only the official providers have a window). Captured from the inbox-list sync.
   provider           String?
   agentId            BigInt?  @map("agent_id")
+  // WHEN THE CURRENT RESPONDER BINDING WAS MADE (issue #476 review, round 31). Chatwoot picks a
+  // message's webhook recipients from the bindings that exist AT EMISSION, so an observer beside a
+  // responder can only stand down for the responder's own delivery when that responder was already
+  // bound. Bound afterwards, no sibling delivery is coming and standing down drops the message from
+  // memory for good. `updatedAt` cannot answer this — it moves for a rename or a provider sync — so
+  // the moment is stamped on its own, and only when the binding actually MOVES: re-submitting the
+  // editor with the same agent leaves a binding that never lapsed, and its age with it. NULL while
+  // the inbox is unbound, and on every row bound before this column existed, where the reader falls
+  // back to treating the binding as older than any delivery (the behaviour that predates it).
+  responderBoundAt   DateTime? @map("responder_bound_at")
   workingHours       Json?    @map("working_hours")
   // Channel::WebWidget provisioning blob (encryptJson of { websiteToken, hmacToken, hmacMandatory,
   // websiteUrl }) for the WhatsApp→chat redirect feature. The hmac_token is secret (used to compute the
@@ -427,9 +444,37 @@ model Inbox {
   tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance      ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
   conversations Conversation[]
+  observers     InboxObserver[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootInboxId])
   @@map("inboxes")
+}
+
+// An agent WATCHING an inbox (issue #476): its own Agent Bot is attached to the inbox as an OBSERVER
+// on the fork (fazer-ai/chatwoot#453), so it receives every event on its own route and never owns a
+// conversation — the inbox keeps starting conversations `open` for whoever answers. The responder
+// stays `Inbox.agentId`, alone; only a `monitoring` agent may be bound this way, and never as both.
+model InboxObserver {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  inboxId   BigInt   @map("inbox_id")
+  agentId   BigInt   @map("agent_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  inbox  Inbox  @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  // ONE WATCHER PER INBOX, and the unique is on the inbox rather than on the pair (issue #476 review,
+  // round 8). The graph's memory thread is keyed by contact-inbox, NOT by agent, so two observers of
+  // one inbox write the same thread — the very duplicate this feature already refuses between an
+  // observer and a responder — and everything downstream (which route transcribes the audio, which
+  // one folds the message in) becomes a coordination problem with no owner. One watcher answers all
+  // of it. Lifting the cap is a memory change first, not a binding one.
+  @@unique([tenantId, inboxId])
+  @@index([inboxId])
+  @@index([agentId])
+  @@map("inbox_observers")
 }
 
 model Contact {
@@ -904,6 +949,7 @@ model Agent {
   toolSelections    AgentToolSelection[]
   chatwootBots      ChatwootAgentBot[]
   contactAuthGrants ContactAuthGrant[]
+  observedInboxes   InboxObserver[]
 
   @@index([tenantId])
   @@map("agents")

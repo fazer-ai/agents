@@ -1010,6 +1010,64 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(lines[0]?.status).toBe("error");
   });
 
+  // The PERMANENT half of the same loss (issue #476 review, round 37). A conversation whose
+  // contact-inbox neither the payload nor the mirror names has nowhere to hold the reply, so
+  // ingestion answers "no-thread" — nothing to retry, and no later attempt that would find one.
+  // Reported like the spent retries above: unreported, the row settles with the reply in nobody's
+  // memory and no line anywhere, because the mark block is inbound-only and never sees this.
+  test("a colleague's reply with no memory thread is reported, not settled in silence", async () => {
+    requests.length = 0;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const convId = 27;
+    const conv = conversation(convId, {
+      assigneeType: "User",
+      status: "open",
+    }) as Record<string, unknown>;
+    // No contact-inbox anywhere: not in the payload, and the mirror writes none from it either.
+    delete conv.contact_inbox;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "Oi! Vou verificar seu pedido agora.",
+      message_type: "outgoing",
+      sender: { id: 5, name: "Ana", type: "user" },
+      conversation: conv,
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+      },
+      select: { id: true },
+    });
+    expect(
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OUR_BOT,
+        normalized: n,
+        base: appDb,
+      }),
+    ).toBe("processed");
+    expect(customerFacing()).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    const convRow = await row(convId);
+    const lines = await flowLogRows(suDb, {
+      where: { tenantId, stage: "memory", conversationId: convRow?.id },
+    });
+    expect(lines.length).toBe(1);
+    expect(lines[0]?.status).toBe("error");
+  });
+
   test("/teste never activates a monitoring agent, and answers nothing", async () => {
     requests.length = 0;
     await deliver(3, { assigneeType: null, status: "pending" }, "/teste");

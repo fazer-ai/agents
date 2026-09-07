@@ -225,6 +225,13 @@ export async function recoverStrandedDelivery(
         receivedAt: true,
         conversationId: true,
         inboundMessageId: true,
+        // WHICH ROUTE this delivery arrived on, so the recovery re-runs the same one. It matters for
+        // an OBSERVER's delivery (issue #476): its inbox names no responder, so the identity derived
+        // below is null, and the re-run would resolve no runtime at all and lose the message the
+        // observer's ingestion was retrying for. The takeover recovery reads the column for the
+        // neighbouring reason (`recover-takeover.ts`): two routes, two different answers.
+        routeAgentBotId: true,
+        routeObserved: true,
       },
     }),
   );
@@ -293,6 +300,14 @@ interface LoadedRow {
   id: bigint;
   deliveryId: string;
   attempts: number;
+  // When the delivery was RECEIVED, which is what a binding is compared against: a row created after
+  // it says nothing about the route the message arrived on.
+  receivedAt: Date;
+  // The route this delivery arrived on, so the re-run takes the same one — an observer's route
+  // resolves from nothing else (issue #476). Null on a row an older build wrote.
+  routeAgentBotId: number | null;
+  // Whether that route was the OBSERVER's, as the receiver recorded it. Null = never asked.
+  routeObserved: boolean | null;
 }
 
 // PUTTING THE ROW BACK, which is the compensating write both failure roads below take, and the one
@@ -471,7 +486,14 @@ async function runRecovery(params: {
     // anchored page ends at the stranded message and says nothing about what came after, and the
     // newest page need not contain the stranded message at all (MEASURED: on a 30-message
     // conversation the default page of 20 did not).
-    recent = parseChatwootMessages(await client.getMessages(conversationId));
+    // ...and NOT on an observer's replay (issue #476 review, round 54), which is the only reader of
+    // this page and does not ask its question. See the freshness block below: an observation is not
+    // an answer, so a newer message neither covers this one nor makes it unanswerable. Left
+    // unfetched rather than fetched and ignored, since it is a REST round trip per recovery.
+    recent =
+      row.routeObserved === true
+        ? []
+        : parseChatwootMessages(await client.getMessages(conversationId));
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
     // so this is a DEFERRAL rather than a verdict: the row keeps its attempt budget and the next
@@ -531,62 +553,72 @@ async function runRecovery(params: {
   //
   // A page that comes back EMPTY is a different answer: the account rendered nothing where the
   // anchored read just found this message, which is a degraded read rather than a busy conversation.
-  const oldestSeen = recent.reduce<number | null>(
-    (a, m) => (a === null || m.id < a ? m.id : a),
-    null,
-  );
-  if (oldestSeen === null) {
-    logger.warn(
-      "chatwoot recovery: %s got an empty newest page on conversation %d; the REST read is degraded",
-      row.deliveryId,
-      conversationId,
+  //
+  // AND ONLY WHERE THE REPLAY WOULD ANSWER (issue #476 review, round 54). Every line above is about
+  // a reply: the newer message's own delivery carries it, so replaying the older one spends a model
+  // call to post nothing. An OBSERVER's replay posts nothing by construction — its turn is the
+  // ingestion its delivery died before reaching, and an ingest job carries its OWN message and
+  // nothing else, so the newer delivery did not fold this text into memory and no later pass will.
+  // Refused here, the message is absent from the only memory the inbox has, permanently, which is
+  // the loss this recovery exists for. So the whole block is the responder's, page read included.
+  if (row.routeObserved !== true) {
+    const oldestSeen = recent.reduce<number | null>(
+      (a, m) => (a === null || m.id < a ? m.id : a),
+      null,
     );
-    return "unreachable";
-  }
-  if (oldestSeen > messageId) {
-    logger.info(
-      "chatwoot recovery: %s is more than a page behind on conversation %d; not answered",
-      row.deliveryId,
-      conversationId,
-    );
-    return "unrecoverable";
-  }
-  const newest = maxIncomingId(recent, messageId);
-  if (newest > messageId) {
-    // WHICH of the two cases this is, said out loud, because they read the same from the row and an
-    // operator does different things about them.
-    //
-    //   the newer message has a delivery of its own that is NOT dead — the ordinary case, and the
-    //   premise this refusal rests on: that delivery ran or is running, and it carries the reply.
-    //
-    //   the newer message's row is DEAD TOO — one process death stranded a BURST. Nothing has
-    //   answered anything yet; the newest row's own recovery will answer the conversation, and this
-    //   older message's TEXT is never handed to a model, because a direct turn carries its own
-    //   trigger text and nothing back-fills the channel. This row stays DEAD and stays on the
-    //   operator's page, which is the whole signal they get that a customer said something nobody
-    //   read. Measured, not inferred, and tracked separately: recovering a burst together is the
-    //   flush's job and re-implementing it here is what the head of this file refuses to do.
-    const covering = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-      db.chatwootWebhookDelivery.findFirst({
-        where: {
-          tenantId: params.tenantId,
-          chatwootInstanceId: instanceId,
-          conversationId,
-          inboundMessageId: newest,
-        },
-        select: { status: true },
-      }),
-    );
-    logger.info(
-      "chatwoot recovery: %s is behind message %d on conversation %d; not answered (%s)",
-      row.deliveryId,
-      newest,
-      conversationId,
-      covering?.status === "DEAD"
-        ? "that message is stranded too, so this one is part of a burst its own recovery answers"
-        : `that message's delivery is ${covering?.status ?? "not in the ledger"}`,
-    );
-    return "unrecoverable";
+    if (oldestSeen === null) {
+      logger.warn(
+        "chatwoot recovery: %s got an empty newest page on conversation %d; the REST read is degraded",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unreachable";
+    }
+    if (oldestSeen > messageId) {
+      logger.info(
+        "chatwoot recovery: %s is more than a page behind on conversation %d; not answered",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unrecoverable";
+    }
+    const newest = maxIncomingId(recent, messageId);
+    if (newest > messageId) {
+      // WHICH of the two cases this is, said out loud, because they read the same from the row and an
+      // operator does different things about them.
+      //
+      //   the newer message has a delivery of its own that is NOT dead — the ordinary case, and the
+      //   premise this refusal rests on: that delivery ran or is running, and it carries the reply.
+      //
+      //   the newer message's row is DEAD TOO — one process death stranded a BURST. Nothing has
+      //   answered anything yet; the newest row's own recovery will answer the conversation, and this
+      //   older message's TEXT is never handed to a model, because a direct turn carries its own
+      //   trigger text and nothing back-fills the channel. This row stays DEAD and stays on the
+      //   operator's page, which is the whole signal they get that a customer said something nobody
+      //   read. Measured, not inferred, and tracked separately: recovering a burst together is the
+      //   flush's job and re-implementing it here is what the head of this file refuses to do.
+      const covering = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.chatwootWebhookDelivery.findFirst({
+          where: {
+            tenantId: params.tenantId,
+            chatwootInstanceId: instanceId,
+            conversationId,
+            inboundMessageId: newest,
+          },
+          select: { status: true },
+        }),
+      );
+      logger.info(
+        "chatwoot recovery: %s is behind message %d on conversation %d; not answered (%s)",
+        row.deliveryId,
+        newest,
+        conversationId,
+        covering?.status === "DEAD"
+          ? "that message is stranded too, so this one is part of a burst its own recovery answers"
+          : `that message's delivery is ${covering?.status ?? "not in the ledger"}`,
+      );
+      return "unrecoverable";
+    }
   }
 
   const message = findRawMessage(raw, messageId);
@@ -657,7 +689,15 @@ async function runRecovery(params: {
           chatwootInboxId: routeInboxId,
         },
       },
-      select: { id: true, chatwootInboxId: true, name: true, agentId: true },
+      select: {
+        id: true,
+        chatwootInboxId: true,
+        name: true,
+        agentId: true,
+        // When THIS binding was made. A role the row never stated cannot be read off a binding
+        // younger than the delivery — see the refusal below.
+        responderBoundAt: true,
+      },
     });
     const agent =
       found?.agentId == null
@@ -698,10 +738,89 @@ async function runRecovery(params: {
   // body and still above the fence, so a route with no persona keeps answering `unrecoverable`
   // instead of `deferred` on a conversation that is also busy — the better of the two, since
   // retrying never finds a persona that an operator has not bound.
-  const agentBotId =
+  // THE ROUTE'S ROLE, as the receiver recorded it (issue #476 review, round 21). An observer's
+  // delivery is nameable by nothing else — the inbox names the responder, or nobody — and its
+  // ingestion is what leaves the row for the sweep in the first place. Asked of the row rather than
+  // re-derived, because nothing after the fact can answer: the observer row is written only once
+  // Chatwoot agrees, so a delivery inside the attach window has none, and a binding that moved since
+  // is about a different moment. A row with no role recorded takes the inbox's own derivation, which
+  // is also what keeps a rebind answering as the persona the inbox is bound to now.
+  //
+  // A Chatwoot bot id is mutable, so it is checked against the bot rows: a bot re-provisioned since
+  // (its row carries a new id) leaves an observer's delivery nameable by nothing, and re-running it
+  // would resolve no runtime and consume the very message the recovery exists to save — left DEAD on
+  // the worklist instead, where an operator reads it.
+  let observerRouteBotId: number | null = null;
+  const routeBotId = row.routeAgentBotId;
+  if (row.routeObserved === true && routeBotId !== null) {
+    const known = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootAgentBot.findFirst({
+        where: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootAgentBotId: routeBotId,
+        },
+        select: { id: true },
+      }),
+    );
+    if (known === null) {
+      logger.warn(
+        "chatwoot recovery: %s arrived on observer bot %d, which no persona of ours carries any more; not replayed",
+        row.deliveryId,
+        routeBotId,
+      );
+      return "unrecoverable";
+    }
+    observerRouteBotId = routeBotId;
+  }
+  const responderBotId =
     agentId === null
       ? null
       : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
+  // NULL IS "NOBODY DECIDED", NOT "THE RESPONDER'S" (issue #476 review, round 26). The receiver
+  // states the role either way now, so a row with none stranded before it could — between the claim
+  // and that statement — or predates the column, which its own migration settled for every delivery
+  // still on the worklist. Asked only where the answer can differ: a route that IS the inbox's
+  // responder bot is the responder's whatever the column says, and refusing those would turn every
+  // ordinary strand into a dead row. A route that is NOT is one of two things this module cannot
+  // tell apart — an observer's, or a mirror that drifted — and replaying it as the responder is what
+  // the role exists to prevent: on an inbox nobody of ours answers the observation is lost without a
+  // trace, and on a shared one the responder answers a message its own route already carried. Left
+  // DEAD instead, where an operator reads it, on the same reasoning as the re-provisioned bot above.
+  if (
+    row.routeObserved === null &&
+    routeBotId !== null &&
+    routeBotId !== responderBotId
+  ) {
+    logger.warn(
+      "chatwoot recovery: %s arrived on bot %d, which does not answer this inbox, and names no route role; it stranded before the receiver could state one and this module does not guess — not replayed",
+      row.deliveryId,
+      routeBotId,
+    );
+    return "unrecoverable";
+  }
+  // ...AND BOT EQUALITY IS ONLY EVIDENCE WHILE THE BINDING IS OLDER THAN THE DELIVERY (issue #476
+  // review, round 32). One bot serves every role its agent holds, so an observer unobserved and
+  // then BOUND as the responder carries the same Chatwoot id it had as the watcher: the test above
+  // then reads "the route is the responder's" off a binding that did not exist when the message
+  // arrived, and a delivery whose role was never stated is replayed as an answering one — the exact
+  // inversion the column exists to prevent, and this one ends in a late reply to a customer rather
+  // than in a silent loss. The role is a fact about RECEIPT time, so a binding made after receipt
+  // says nothing about it, and this module does not guess: DEAD, where an operator reads it.
+  if (
+    row.routeObserved === null &&
+    routeBotId !== null &&
+    inbox?.responderBoundAt != null &&
+    inbox.responderBoundAt > row.receivedAt
+  ) {
+    logger.warn(
+      "chatwoot recovery: %s arrived on bot %d and names no route role, and the responder binding it would be read against was made after the delivery — the role at receipt is not knowable from here; not replayed",
+      row.deliveryId,
+      routeBotId,
+    );
+    return "unrecoverable";
+  }
+  const agentBotId = observerRouteBotId ?? responderBotId;
 
   // THE MIRROR LEARNS THE ROUTE, and this is a repair rather than a convenience. Rebuilding the body
   // from the live message answers `runAgentTurn`, which resolves the agent from the inbox the EVENT
@@ -928,7 +1047,15 @@ async function runRecovery(params: {
   // wide, entered only when the stranded message is exactly a command, the original process already
   // executed it, and an operator changes the mode inside it. Written up in the PR rather than
   // implied away here.
-  if (agentMode === "test" && controlCommand(normalized) !== null) {
+  // NOT on an OBSERVER's route (issue #476 review, round 17): the fence is about a command the
+  // responder already executed, and the observer never executes one. Its ingestion is what stranded
+  // the row — the live path folds the command in as ordinary text exactly where the responder's own
+  // route will not handle it — so refusing here would drop the message this recovery exists for.
+  if (
+    observerRouteBotId === null &&
+    agentMode === "test" &&
+    controlCommand(normalized) !== null
+  ) {
     logger.info(
       "chatwoot recovery: %s carries a control command; not replayed (conversation %d)",
       row.deliveryId,
@@ -1129,6 +1256,9 @@ async function runRecovery(params: {
       deliveryRowId: row.id,
       agentBotId,
       normalized,
+      // The role the delivery arrived with, so the replay does not re-derive it from bindings that
+      // have moved since (issue #476 review, round 22).
+      routeObserved: observerRouteBotId !== null,
       claimFrom: "DEAD",
       onDirectTurn: (r) => {
         if (r.kind === "error") turnThrew = true;

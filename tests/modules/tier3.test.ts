@@ -448,8 +448,23 @@ describe.skipIf(!dbUp)("tier-3 chatwoot management + inbox binding", () => {
       { makeClient: async () => stub as unknown as ChatwootClient },
       appDb,
     );
-    expect(statuses[String(inboxLive.id)]).toBe("active");
-    expect(statuses[String(inboxGone.id)]).toBe("missing");
+    expect(statuses.inboxes[String(inboxLive.id)]).toBe("active");
+    expect(statuses.inboxes[String(inboxGone.id)]).toBe("missing");
+
+    // The observer's half of the same reading: the binding is a pair, so an agent whose bot is gone
+    // reports missing on the inbox it observes even though that inbox's responder is alive.
+    await suDb.inboxObserver.create({
+      data: { tenantId: tenant, inboxId: inboxLive.id, agentId: agentGone.id },
+    });
+    const withObserver = await reconcileInboxBots(
+      ctx(tenant),
+      { makeClient: async () => stub as unknown as ChatwootClient },
+      appDb,
+    );
+    expect(withObserver.inboxes[String(inboxLive.id)]).toBe("active");
+    expect(withObserver.observers[`${inboxLive.id}:${agentGone.id}`]).toBe(
+      "missing",
+    );
   });
 
   test("listAgentsAndTeams is agent-scoped: lists only for a single-account agent", async () => {

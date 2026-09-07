@@ -5,10 +5,12 @@ import { AppError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
 import type { AgentMode } from "@/modules/agents/mode";
+import { isMonitoring } from "@/modules/agents/mode";
 import {
   type AgentCreate,
   type AgentUpdate,
   assertAgentCreatable,
+  assertAgentNotObserving,
   assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
   assertCredentialRefsUsable,
@@ -241,6 +243,12 @@ export async function agentUpdate(
       await assertCredentialRefsUsable(ctx, rest, base, {
         modelConfig: current.modelConfig,
       });
+      // The apply refuses to SAVE a non-monitoring mode on an agent that observes an inbox (issue
+      // #476): the route it holds answers nothing whatever the mode says. Asked here too, or the
+      // preview approves the one write the apply is certain to reject.
+      if (patch.mode !== undefined && !isMonitoring(patch.mode)) {
+        await assertAgentNotObserving(ctx, id, base);
+      }
       return ok({
         dryRun: true,
         target,
@@ -397,6 +405,10 @@ export async function agentDelete(
     const target = `agent:${id}`;
     const beforeProj = { id: current.id, name: current.name };
     if (args.dry_run !== false) {
+      // The apply refuses to delete an agent that observes an inbox (issue #476): the cascade would
+      // retire the row and the route token while the fork kept delivering to a bot that is gone,
+      // and the detach is a Chatwoot call the deletion's transaction cannot make.
+      await assertAgentNotObserving(ctx, id, base);
       return ok({
         dryRun: true,
         action: "delete",

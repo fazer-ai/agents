@@ -108,9 +108,11 @@ import {
   deploymentRotateToken,
   deploymentSetAccounts,
   inboxBind,
+  inboxObserve,
   inboxReconcile,
   inboxReconnect,
   inboxRemove,
+  inboxUnobserve,
   instanceDisconnect,
   instanceListAccounts,
   instanceSyncInboxes,
@@ -2072,6 +2074,44 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await inboxBind(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "inbox_observe",
+      {
+        description:
+          "Attach a MONITORING agent to an inbox as an observer: it receives every event and never answers, and the inbox keeps starting conversations open for whoever answers it. Provisions the agent's bot and attaches it on Chatwoot (needs the fazer.ai Chatwoot with agent bot observers). Previews and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          inbox_id: z.string(),
+          agent_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { inbox_id: string; agent_id: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await inboxObserve(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "inbox_unobserve",
+      {
+        description:
+          "Detach an agent as an observer of an inbox (calls Chatwoot). Previews and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          inbox_id: z.string(),
+          agent_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { inbox_id: string; agent_id: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await inboxUnobserve(eff, args)),
     );
 
     registerTenantTool(

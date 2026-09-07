@@ -24,6 +24,7 @@ import {
   listInboxes,
   listInboxLabels,
   listServiceWindowTemplates,
+  observeInbox,
   reconcileInboxBots,
   reconnectChatwootInstance,
   reconnectInbox,
@@ -33,6 +34,7 @@ import {
   setConnectedAccounts,
   softDisconnectChatwootInstance,
   syncInboxes,
+  unobserveInbox,
 } from "@/modules/chatwoot/management";
 
 // The error catalog this controller's routes answer with. `bun i18n:extract` materialises
@@ -45,6 +47,12 @@ import {
 // pair would answer "the confirmation does not match" to someone who typed the domain, with no
 // way to tell which of the two fields they got wrong.
 // translate('errors.chatwootBindFailed', 'The bot could not be synced with Chatwoot.')
+// translate('errors.inboxGoneRemote', 'This inbox no longer exists in Chatwoot. Remove its mirror.')
+// translate('errors.agentAlreadyObserves', 'This agent already observes this inbox. Remove it as an observer before making it the answering agent.')
+// translate('errors.observerNotMonitoring', 'Only an agent in monitoring mode can observe an inbox.')
+// translate('errors.inboxAlreadyObserved', 'This inbox already has an observer. Remove it before adding another.')
+// translate('errors.agentIsResponder', 'This agent already answers this inbox; it cannot observe it too.')
+// translate('errors.chatwootObserverUnsupported', 'This Chatwoot has no observer binding on inboxes. Observers need the fazer.ai Chatwoot with agent bot observers.')
 // translate('errors.chatwootDomainConfirmMismatch', 'The domain confirmation does not match.')
 // translate('errors.chatwootNameConfirmMismatch', 'The name confirmation does not match.')
 // translate('errors.chatwootRebindFailed', 'The bot could not be reconnected to Chatwoot.')
@@ -376,15 +384,20 @@ export const chatwootAdminController = new Elysia({
   // unreachable instance simply omits its inboxes (the client shows them as unverified).
   .get(
     "/inboxes/bot-status",
-    async ({ tenantContext }) => ({
-      instance: instanceIdentity,
-      statuses: await reconcileInboxBots(ctxOrThrow(tenantContext)),
-    }),
+    async ({ tenantContext }) => {
+      const reconciled = await reconcileInboxBots(ctxOrThrow(tenantContext));
+      return {
+        instance: instanceIdentity,
+        statuses: reconciled.inboxes,
+        // Keyed `${inboxId}:${agentId}`, one entry per observer binding.
+        observerStatuses: reconciled.observers,
+      };
+    },
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Reconcile inbox bot status",
-        "Per bound inbox, whether its persona's Chatwoot Agent Bot still exists (active) or was deleted out-of-band (missing).",
+        "Per bound inbox and per observer binding, whether that persona's Chatwoot Agent Bot still exists (active) or was deleted out-of-band (missing).",
       ),
       response: errors(400, 401, 403, 404),
     },
@@ -537,6 +550,59 @@ export const chatwootAdminController = new Elysia({
         }),
       }),
       response: errors(400, 401, 403, 404, 422, 502),
+    },
+  )
+  // The OBSERVER binding (issue #476): a monitoring agent attached to the inbox on the fork as an
+  // observer, receiving every event on its own route and answering nothing. Independent of the
+  // responder above; an inbox can carry several observers.
+  .post(
+    "/inboxes/:id/observers",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      inbox: await observeInbox(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        requireDbId((body as { agentId: string }).agentId),
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Add an observer to an inbox",
+        "Attach a MONITORING agent to the inbox as an observer: it receives every event of the inbox on its own Agent Bot and never answers, and the inbox keeps starting conversations open for whoever answers it. Lazily provisions the agent's bot and attaches it as an observer on Chatwoot (needs the fazer.ai Chatwoot with agent bot observers). 422 for an agent that is not in monitoring mode or that already answers the inbox; 502 when Chatwoot was unreachable or has no observer binding.",
+      ),
+      params: t.Object({
+        id: t.String({ description: "Inbox id (BigInt string)." }),
+      }),
+      body: t.Object({
+        agentId: t.String({
+          description: "Agent id (BigInt string) of a monitoring agent.",
+        }),
+      }),
+      response: errors(400, 401, 403, 404, 409, 422, 502),
+    },
+  )
+  .delete(
+    "/inboxes/:id/observers/:agentId",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      inbox: await unobserveInbox(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        requireDbId(params.agentId),
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Remove an observer from an inbox",
+        "Detach the agent's bot as an observer of the inbox on Chatwoot and forget the binding. Succeeds when the inbox was deleted in Chatwoot or the bot was already detached there. 404 when the agent does not observe the inbox; 502 when Chatwoot was unreachable.",
+      ),
+      params: t.Object({
+        id: t.String({ description: "Inbox id (BigInt string)." }),
+        agentId: t.String({ description: "Agent id (BigInt string)." }),
+      }),
+      response: errors(400, 401, 403, 404, 502),
     },
   )
   // Remove the mirror row of an inbox that was deleted in Chatwoot. Refuses (409) while the inbox

@@ -3,6 +3,7 @@ import { AppError } from "@/lib/errors";
 import {
   assertAccountsClaimable,
   assertAccountsSelectable,
+  assertBindTargetNotObserving,
   assertDeploymentConnectable,
   assertDeploymentNotSwitching,
   assertInboxBindable,
@@ -13,7 +14,9 @@ import {
   listChatwootAccounts,
   listDeploymentAccounts,
   listInboxes,
+  observeInbox,
   previewInboxRemoval,
+  readObserveTarget,
   reconcileInboxBots,
   reconnectInbox,
   removeInbox,
@@ -21,6 +24,7 @@ import {
   setConnectedAccounts,
   softDisconnectChatwootInstance,
   syncInboxes,
+  unobserveInbox,
 } from "@/modules/chatwoot/management";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
@@ -315,6 +319,11 @@ export async function inboxBind(
       // agent being bound exists. `listInboxes` above answers neither, and the preview approved a
       // bind the apply refuses with a 409 (#510).
       await assertInboxBindable(ctx, inboxId, agentId, base);
+      // The apply refuses an agent that already OBSERVES this inbox (issue #476 review, round 25),
+      // and a preview that approves it hands the caller a confident yes followed by a 422.
+      if (agentId !== null) {
+        await assertBindTargetNotObserving(ctx, inboxId, agentId, base);
+      }
       return ok({
         dryRun: true,
         action: "bind",
@@ -325,6 +334,71 @@ export async function inboxBind(
       });
     }
     const updated = await bindInbox(ctx, inboxId, agentId, {}, base);
+    return ok({ dryRun: false, applied: true, target, inbox: updated });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// The OBSERVER binding (issue #476): attach a monitoring agent to an inbox as an observer, or
+// detach it. Same preview shape as `inboxBind`; the apply provisions/attaches the agent's bot on
+// Chatwoot (or detaches it) and records the observer list before and after.
+export async function inboxObserve(
+  principal: VerifiedToken,
+  args: { inbox_id: string; agent_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  return observerWrite(principal, args, "observe", deps);
+}
+
+export async function inboxUnobserve(
+  principal: VerifiedToken,
+  args: { inbox_id: string; agent_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  return observerWrite(principal, args, "unobserve", deps);
+}
+
+async function observerWrite(
+  principal: VerifiedToken,
+  args: { inbox_id: string; agent_id: string; dry_run?: boolean },
+  action: "observe" | "unobserve",
+  deps: WriteDeps,
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const inboxId = parseMcpId(args.inbox_id, "inbox_id");
+  if (typeof inboxId !== "bigint") return inboxId;
+  const agentId = parseMcpId(args.agent_id, "agent_id");
+  if (typeof agentId !== "bigint") return agentId;
+  try {
+    const inboxes = await listInboxes(ctx, base);
+    const current = inboxes.find((i) => i.id === String(inboxId));
+    if (!current) return err("inbox not found");
+    const target = `inbox:${inboxId}`;
+    if (args.dry_run !== false) {
+      // Only `observe` has preconditions; `unobserve` is idempotent on both sides and refuses
+      // nothing, so there is nothing for its preview to re-ask.
+      if (action === "observe") {
+        await readObserveTarget(ctx, inboxId, agentId, base);
+      }
+      return ok({
+        dryRun: true,
+        action,
+        target,
+        currentObserverAgentIds: current.observerAgentIds,
+        agentId: String(agentId),
+        note:
+          action === "observe"
+            ? "Observing provisions the agent's bot and attaches it to the inbox as an observer (calls Chatwoot). Only a monitoring agent can observe."
+            : "Detaches the agent's bot as an observer of the inbox (calls Chatwoot).",
+      });
+    }
+    const updated =
+      action === "observe"
+        ? await observeInbox(ctx, inboxId, agentId, {}, base)
+        : await unobserveInbox(ctx, inboxId, agentId, {}, base);
     return ok({ dryRun: false, applied: true, target, inbox: updated });
   } catch (e) {
     return failOf(e);
@@ -353,6 +427,11 @@ export async function inboxRemove(
       name: inbox.name,
       chatwootInboxId: inbox.chatwootInboxId,
       agentId: inbox.agentId,
+      // THE WATCHERS THE CASCADE WILL TAKE (issue #476 review, round 50). `InboxObserver` cascades on
+      // the inbox's foreign key, so this removal discards bindings the caller never named — and those
+      // bindings are what refuse the agent's mode change and its deletion elsewhere. A preview that
+      // omits them shows a removal smaller than the one it is approving.
+      observerAgentIds: inbox.observerAgentIds,
     };
     if (args.dry_run !== false) {
       return ok({
@@ -423,8 +502,16 @@ export async function inboxReconcile(
     });
   }
   try {
-    const status = await reconcileInboxBots(ctx, {}, base);
-    return ok({ dryRun: false, applied: true, target, status });
+    const reconciled = await reconcileInboxBots(ctx, {}, base);
+    // `status` stays the flat responder map it has always been — a caller reading `status[inboxId]`
+    // is not broken by the observers arriving beside it, under their own key (issue #476).
+    return ok({
+      dryRun: false,
+      applied: true,
+      target,
+      status: reconciled.inboxes,
+      observerStatus: reconciled.observers,
+    });
   } catch (e) {
     return failOf(e);
   }

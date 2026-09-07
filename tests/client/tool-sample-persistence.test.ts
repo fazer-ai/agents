@@ -11,6 +11,8 @@ import {
 import {
   formFromTool,
   payloadOf,
+  revisionForSave,
+  sendsNothing,
   templatePreviewFor,
 } from "@/client/pages/resources/ToolEditModal";
 import { codeOnly } from "@/tests/utils/source-text";
@@ -140,6 +142,72 @@ describe("what the editor opens with", () => {
       sampleTicket(),
     );
     expect(recallToolSample("1", REV)?.text).toBe(RESPONSE);
+  });
+
+  // ROUND 11: pasting a sample is an unsaved change, so Save is how it is kept, and `payloadOf`
+  // sends nothing about it. A PATCH for that would rewrite the whole definition from a form loaded
+  // before someone else's edit, and advance `updatedAt` for a change the row does not contain.
+  it("sends nothing when only the sample changed, and sends when the definition did", () => {
+    const opened = formFromTool(toolRow());
+    const baseline = JSON.stringify(opened);
+    const pasted = { ...opened, sample: RESPONSE, sampleStatus: 200 };
+    expect(
+      sendsNothing({
+        editing: true,
+        opened: baseline,
+        openedRevision: REV,
+        payload: payloadOf(pasted),
+      }),
+    ).toBe(true);
+    // A real edit is sent, or this would silently drop the operator's work.
+    expect(
+      sendsNothing({
+        editing: true,
+        opened: baseline,
+        openedRevision: REV,
+        payload: payloadOf({ ...pasted, label: "Outra" }),
+      }),
+    ).toBe(false);
+    // A create has nothing to compare against and is always sent.
+    expect(
+      sendsNothing({
+        editing: false,
+        opened: baseline,
+        openedRevision: REV,
+        payload: payloadOf(pasted),
+      }),
+    ).toBe(false);
+    // And so is an edit whose baseline or revision never arrived.
+    expect(
+      sendsNothing({
+        editing: true,
+        opened: null,
+        openedRevision: REV,
+        payload: payloadOf(pasted),
+      }),
+    ).toBe(false);
+    expect(
+      sendsNothing({
+        editing: true,
+        opened: baseline,
+        openedRevision: null,
+        payload: payloadOf(pasted),
+      }),
+    ).toBe(false);
+  });
+
+  it("writes the revision the save returned, and the opened one when it sent nothing", () => {
+    // The save moved the revision, so the row that came back is the only one the entry can describe.
+    expect(revisionForSave({ updatedAt: NEWER }, REV)).toBe(NEWER);
+    // A sample-only save sends nothing, so the row did not move and what the dialog opened with is
+    // still the answer.
+    expect(revisionForSave(null, REV)).toBe(REV);
+    // Neither known is not a revision, and nothing is kept under one.
+    expect(revisionForSave(null, null)).toBeNull();
+    // The wire types this as `Date` and carries a string, so both arrive as the same key.
+    expect(revisionForSave({ updatedAt: new Date(NEWER) }, REV)).toBe(
+      String(new Date(NEWER)),
+    );
   });
 
   it("takes the revision from the row the SAVE returned, not the one the form opened with", () => {
@@ -696,7 +764,14 @@ describe("the two seams that have to clear it", () => {
     // in between would open exactly that window, and would look like an innocent refactor.
     const firstAwait = save.indexOf("await", read);
     expect(firstAwait).toBeGreaterThan(-1);
-    expect(save.slice(firstAwait).replace(/^await\s*/, "")).toStartWith("api.");
+    // The api call has to be INSIDE that await's operand, which is what makes the suspension happen
+    // after the request is dispatched rather than before it. Asked as "no statement boundary in
+    // between" rather than "the operand starts with `api.`", because the operand is legitimately a
+    // parenthesised ternary here and a grammar that only knew the simpler spelling would fail on a
+    // refactor that changed nothing about the ordering.
+    const firstApi = save.indexOf("api.", firstAwait);
+    expect(firstApi).toBeGreaterThan(firstAwait);
+    expect(save.slice(firstAwait, firstApi)).not.toInclude(";");
     // And the write is handed a NAME: `sampleTicket()` inline would read it after everything the
     // request took, which is the same as not having it at all.
     const call = save.slice(
@@ -710,11 +785,9 @@ describe("the two seams that have to clear it", () => {
     // empty body, status and all. A conditional in this argument is that copy coming back, and the
     // module cannot see it.
     expect(call).not.toInclude("?");
-    // AND THE REVISION IS THE ONE THE SAVE RETURNED. This save is what moved it, so the row the form
-    // opened with already names a definition that stopped existing; stored, it would make every
-    // reopen discard the sample this save just kept. The module cannot tell one string from another,
-    // so the question is asked here.
-    expect(call).toInclude("data.tool.updatedAt");
+    // What revision gets written is NOT asked here: it is a value now (`revisionForSave`), tested
+    // as one below. Two rounds found this call site holding a judgement the module could not see,
+    // and the second fence over a spelling is what the next refactor walks past.
   });
 
   // The same question at the OTHER site that mutates the cache after a request. It was written
@@ -741,7 +814,14 @@ describe("the two seams that have to clear it", () => {
     // in between would open exactly that window, and would look like an innocent refactor.
     const firstAwait = body.indexOf("await", read);
     expect(firstAwait).toBeGreaterThan(-1);
-    expect(body.slice(firstAwait).replace(/^await\s*/, "")).toStartWith("api.");
+    // The api call has to be INSIDE that await's operand, which is what makes the suspension happen
+    // after the request is dispatched rather than before it. Asked as "no statement boundary in
+    // between" rather than "the operand starts with `api.`", because the operand is legitimately a
+    // parenthesised ternary here and a grammar that only knew the simpler spelling would fail on a
+    // refactor that changed nothing about the ordering.
+    const firstApi = body.indexOf("api.", firstAwait);
+    expect(firstApi).toBeGreaterThan(firstAwait);
+    expect(body.slice(firstAwait, firstApi)).not.toInclude(";");
     const call = body.slice(
       write,
       body.indexOf(")", body.indexOf("ticket", write)),

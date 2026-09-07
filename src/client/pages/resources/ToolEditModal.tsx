@@ -372,6 +372,43 @@ type ToolForm = ReturnType<typeof emptyForm>;
 //
 // `null` when the headers are not parseable JSON, which is a client-side check with no server
 // sentence behind it.
+// WHETHER THIS SAVE HAS ANYTHING FOR THE SERVER. The sample is part of the form since #566, so
+// pasting one is an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing
+// about it: with the persisted half untouched, a PATCH would rewrite the whole definition from a
+// form loaded before someone else's edit, and would advance `updatedAt` for a change the row does
+// not contain (round 11 of review).
+//
+// Only ever true for an edit with a baseline and a known revision: a create has nothing to compare
+// against and must always be sent.
+export function sendsNothing(args: {
+  editing: boolean;
+  opened: string | null;
+  openedRevision: string | null;
+  payload: unknown;
+}): boolean {
+  if (!args.editing) return false;
+  if (args.opened === null || args.openedRevision === null) return false;
+  return (
+    JSON.stringify(payloadOf(JSON.parse(args.opened) as ToolForm)) ===
+    JSON.stringify(args.payload)
+  );
+}
+
+// WHICH DEFINITION THE SAMPLE DESCRIBES, decided in one place and returned rather than spelled out
+// at the call site. When the save sent something, it is the row that came back, because the save is
+// what moved the revision and the row the form opened with already names a definition that stopped
+// existing. When it sent nothing (a sample-only change), the row did not move, so the revision this
+// dialog opened with is still the right answer. Null means neither is known, and nothing is kept.
+//
+// A value rather than a source fence, because two rounds of review found this call site holding a
+// judgement the module could not see, and a fence over a spelling is what a refactor walks past.
+export function revisionForSave(
+  row: { updatedAt: unknown } | null,
+  opened: string | null,
+): string | null {
+  return row ? String(row.updatedAt) : opened;
+}
+
 export function payloadOf(form: ToolForm) {
   let headers: Record<string, unknown>;
   try {
@@ -1281,6 +1318,9 @@ export function ToolEditModal({
   const [selectedCredential, setSelectedCredential] =
     useState<VaultEntry | null>(null);
   const baselineRef = useRef<string | null>(null);
+  // The `updatedAt` of the row this dialog opened, so a save that sends nothing can still say
+  // which definition its sample describes. Null on a create, and while the edit fetch is in flight.
+  const openedRevisionRef = useRef<string | null>(null);
   // Identity of the current opening (see the open handler).
   const sessionRef = useRef<object | null>(null);
   // Targets for the variable picker (cursor insertion into the free-text template fields). Union type
@@ -1338,6 +1378,7 @@ export function ToolEditModal({
       // Edit: fetch the full tool by id (the agent editor only carries the id). Baseline is captured
       // once the loaded tool populates the form, so isDirty stays false until the operator edits.
       baselineRef.current = null;
+      openedRevisionRef.current = null;
       setLoadingForm(true);
       void (async () => {
         try {
@@ -1352,6 +1393,7 @@ export function ToolEditModal({
           const initial = formFromTool(data.tool);
           setForm(initial);
           baselineRef.current = JSON.stringify(initial);
+          openedRevisionRef.current = String(data.tool.updatedAt);
         } catch {
           if (mine()) setLoadError(true);
         } finally {
@@ -1366,6 +1408,8 @@ export function ToolEditModal({
       const initial = emptyForm();
       setForm(initial);
       baselineRef.current = JSON.stringify(initial);
+      // A create has no revision yet, and no persisted half to compare against either.
+      openedRevisionRef.current = null;
     }
     // ONE hook per dialog, and the early return that used to sit above is gone for that reason: the
     // per-session reset and the child dialog's teardown both belong to this opening, and a second
@@ -1430,13 +1474,28 @@ export function ToolEditModal({
     const held = (e: unknown) =>
       refusal.capture(e, fallback, payload, payloadOf(formRef.current) ?? {});
     try {
-      const { data, error: err } = editId
-        ? await api.api.v1.tools({ id: editId }).patch(payload)
-        : await api.api.v1.tools.post(payload);
-      if (err || !data) {
-        if (sessionRef.current === session) setFormError(held(err));
+      // NOTHING FOR THE SERVER TO DO. The sample is part of the form since #566, so pasting one is
+      // an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing about it: a
+      // PATCH here would rewrite the whole definition from a form loaded before someone else's edit,
+      // and would advance `updatedAt` for a change the row does not contain (round 11 of review).
+      const untouched = sendsNothing({
+        editing: !!editId,
+        opened: baselineRef.current,
+        openedRevision: openedRevisionRef.current,
+        payload,
+      });
+      const saved = untouched
+        ? null
+        : await (editId
+            ? api.api.v1.tools({ id: editId }).patch(payload)
+            : api.api.v1.tools.post(payload));
+      if (saved && (saved.error || !saved.data)) {
+        if (sessionRef.current === session) setFormError(held(saved.error));
         return;
       }
+      const row = saved?.data?.tool ?? null;
+      const revision = revisionForSave(row, openedRevisionRef.current);
+      const id = row?.id ?? (editId as string);
       // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).
       // Here rather than on every keystroke, so what comes back is the sample the tool was last
       // saved with and not a draft the operator abandoned. Nothing to await, nothing that can fail
@@ -1444,28 +1503,28 @@ export function ToolEditModal({
       // Handed over whole, with no judgement here about whether it is worth keeping: what counts as
       // nothing is the module's rule, and it was written in both places until a mutation walked past
       // the copy that lives here (round 8 of review).
-      rememberToolSample(
-        data.tool.id,
-        // The revision the response carries, not the one the form opened with: this save IS what
-        // moved it, and keeping the old one would make the entry describe a definition that no
-        // longer exists the moment it is written.
-        {
-          revision: String(data.tool.updatedAt),
-          text: sample,
-          status: sampleStatus,
-        },
-        ticket,
-      );
+      // DEFENSIVE AND UNREACHABLE, which is said out loud because a mutation that deletes this guard
+      // survives the battery and a reader deserves to know that was understood rather than missed:
+      // `revisionForSave` answers null only when neither the row nor the opened revision is known,
+      // and the gate above sends the request whenever the opened revision is not. The type system
+      // cannot see that chain.
+      if (revision !== null)
+        rememberToolSample(
+          id,
+          { revision, text: sample, status: sampleStatus },
+          ticket,
+        );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
-      // that has to hear about it, not the dialog now on screen.
+      // that has to hear about it, not the dialog now on screen. Nothing was written when nothing
+      // was sent, so there is nothing for the list to hear either.
       if (sessionRef.current !== session) {
-        onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
+        if (row) onSaved?.({ id: row.id, name: row.name }, !editId);
         return;
       }
       refusal.clear();
       showToast(t("tools.saved", "Tool saved."), "success");
       modal.close();
-      onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
+      if (row) onSaved?.({ id: row.id, name: row.name }, !editId);
     } catch (e) {
       // Same rule as the branch above: a transport failure of a save whose dialog is gone has
       // nowhere to land, and would mark the form the operator has open now.

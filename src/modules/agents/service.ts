@@ -46,11 +46,7 @@ import {
 } from "@/modules/integrations/toolpacks";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
-import {
-  type AgentMode,
-  normalizeAgentMode,
-  SELECTABLE_AGENT_MODES,
-} from "./mode";
+import { AGENT_MODES, type AgentMode, normalizeAgentMode } from "./mode";
 
 // Agent configuration CRUD — the config the whole system orbits (the same core the UI config
 // screen and the MCP `prompt_get/set` tools project over). All reads/writes are tenant-scoped;
@@ -58,13 +54,8 @@ import {
 
 // Agent operating mode (item 1): a "test" agent stays silent in a conversation until /teste; a
 // "production" agent answers normally; a "monitoring" agent never answers (./mode.ts). New agents
-// are created in "test". A WRITE takes `SELECTABLE_AGENT_MODES`, which is not the full set while
-// `monitoring` waits for an output to report; every READ still takes all three.
-export {
-  AGENT_MODES,
-  type AgentMode,
-  SELECTABLE_AGENT_MODES,
-} from "./mode";
+// are created in "test".
+export { AGENT_MODES, type AgentMode } from "./mode";
 
 export interface AgentDto {
   id: string;
@@ -650,7 +641,7 @@ export const agentUpdateSchema = z
     name: z.string().min(1).max(200).optional(),
     systemPrompt: z.string().max(config.agent.promptMaxChars).optional(),
     enabled: z.boolean().optional(),
-    mode: z.enum(SELECTABLE_AGENT_MODES).optional(),
+    mode: z.enum(AGENT_MODES).optional(),
     transferWithSummary: z.boolean().optional(),
     modelConfig: z.record(z.string(), z.unknown()).optional(),
     settings: z.record(z.string(), z.unknown()).optional(),
@@ -920,7 +911,7 @@ export const agentCreateSchema = z
     name: z.string().min(1).max(200),
     systemPrompt: z.string().max(config.agent.promptMaxChars).optional(),
     enabled: z.boolean().optional(),
-    mode: z.enum(SELECTABLE_AGENT_MODES).optional(),
+    mode: z.enum(AGENT_MODES).optional(),
     transferWithSummary: z.boolean().optional(),
     modelConfig: z.record(z.string(), z.unknown()).optional(),
     settings: z.record(z.string(), z.unknown()).optional(),

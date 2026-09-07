@@ -4,7 +4,6 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { agentUpdateAudit } from "@/modules/agents/audit-projection";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
-import type { SelectableAgentMode } from "@/modules/agents/mode";
 import {
   cloneAgent,
   createAgent,
@@ -429,10 +428,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
         name: agent.name,
         systemPrompt: "a different prompt",
         enabled: agent.enabled,
-        // The seeded agent is in an offered mode, and a write no longer takes the one held back
-        // (`SELECTABLE_AGENT_MODES`). Named here on purpose: the point of this case is the action
-        // filed for a patch that NAMES a field it does not change.
-        mode: agent.mode as SelectableAgentMode,
+        mode: agent.mode,
         modelConfig: agent.modelConfig,
       },
       appDb,
@@ -595,10 +591,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
         name: agent.name,
         systemPrompt: agent.systemPrompt,
         enabled: agent.enabled,
-        // The seeded agent is in an offered mode, and a write no longer takes the one held back
-        // (`SELECTABLE_AGENT_MODES`). Named here on purpose: the point of this case is the action
-        // filed for a patch that NAMES a field it does not change.
-        mode: agent.mode as SelectableAgentMode,
+        mode: agent.mode,
       },
       appDb,
     );

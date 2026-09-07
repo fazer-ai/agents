@@ -4,7 +4,7 @@ import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
-import type { SelectableAgentMode } from "@/modules/agents/mode";
+import type { AgentMode } from "@/modules/agents/mode";
 import {
   type AgentCreate,
   type AgentUpdate,
@@ -106,7 +106,7 @@ export interface AgentCreateArgs {
   name: string;
   system_prompt?: string;
   enabled?: boolean;
-  mode?: SelectableAgentMode;
+  mode?: AgentMode;
   transfer_with_summary?: boolean;
   model_config?: Record<string, unknown>;
   business_hours_id?: string | null;
@@ -179,7 +179,7 @@ export interface AgentUpdateArgs {
   agent_id: string;
   name?: string;
   enabled?: boolean;
-  mode?: SelectableAgentMode;
+  mode?: AgentMode;
   transfer_with_summary?: boolean;
   model_config?: Record<string, unknown>;
   business_hours_id?: string | null;

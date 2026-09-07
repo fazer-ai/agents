@@ -20,7 +20,7 @@ import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
-import { type AgentMode, SELECTABLE_AGENT_MODES } from "@/modules/agents/mode";
+import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import type { Schedule } from "@/modules/business-hours/hours";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
@@ -144,16 +144,12 @@ export function GeneralTab({
           label={t("editor.mode", "Mode")}
           description={t(
             "editor.modeHint",
-            "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
+            "A test agent stays silent in a conversation until the customer sends /teste; production answers normally; monitoring receives and remembers every message and never answers.",
           )}
           group
         >
           <div className="inline-flex self-start rounded-lg border border-border bg-bg-tertiary p-0.5">
-            {/* The modes on OFFER, which is not every mode the column holds: `monitoring` is held
-                back until it has an output (see `SELECTABLE_AGENT_MODES`). Offering it back to an
-                agent already stored in it was tried and is worse than not: the write boundary
-                refuses the value too, so the extra button was one the save could not honour. */}
-            {SELECTABLE_AGENT_MODES.map((m) => (
+            {AGENT_MODES.map((m) => (
               <button
                 key={m}
                 type="button"
@@ -168,7 +164,9 @@ export function GeneralTab({
               >
                 {m === "test"
                   ? t("editor.modeTest", "Test")
-                  : t("editor.modeProduction", "Production")}
+                  : m === "monitoring"
+                    ? t("editor.modeMonitoring", "Monitoring")
+                    : t("editor.modeProduction", "Production")}
               </button>
             ))}
           </div>

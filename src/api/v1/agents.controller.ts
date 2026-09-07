@@ -15,6 +15,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import {
+  AGENT_MODES,
   type AgentCreate,
   type AgentUpdate,
   cloneAgent,
@@ -24,7 +25,6 @@ import {
   getAgentToolSelections,
   listAgentsPaged,
   replaceAgentToolSelections,
-  SELECTABLE_AGENT_MODES,
   type ToolGrantInput,
   updateAgent,
 } from "@/modules/agents/service";
@@ -452,16 +452,16 @@ export const agentsController = new Elysia({
               "Whether the agent is active and may handle conversations.",
           }),
         ),
-        // NOTE: the modes on OFFER, which is not every mode the column holds. `monitoring` is held
-        // back from every write boundary until it has an output (`SELECTABLE_AGENT_MODES` in
-        // `src/modules/agents/mode.ts`); a row already carrying it is still read, and still
-        // silenced, everywhere else.
+        // NOTE: derived, not spelled. This list was written by hand here and in ten other places,
+        // and when `monitoring` was briefly held back from the write side (v1.15.0) the compiler
+        // found the copies one at a time because none of them derived from anything. Deriving is
+        // what makes the next change to the set one edit instead of eleven.
         mode: t.Optional(
           t.Union(
-            SELECTABLE_AGENT_MODES.map((m) => t.Literal(m)),
+            AGENT_MODES.map((m) => t.Literal(m)),
             {
               description:
-                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally.",
+                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
             },
           ),
         ),
@@ -545,16 +545,16 @@ export const agentsController = new Elysia({
               "Whether the agent is active and may handle conversations.",
           }),
         ),
-        // NOTE: the modes on OFFER, which is not every mode the column holds. `monitoring` is held
-        // back from every write boundary until it has an output (`SELECTABLE_AGENT_MODES` in
-        // `src/modules/agents/mode.ts`); a row already carrying it is still read, and still
-        // silenced, everywhere else.
+        // NOTE: derived, not spelled. This list was written by hand here and in ten other places,
+        // and when `monitoring` was briefly held back from the write side (v1.15.0) the compiler
+        // found the copies one at a time because none of them derived from anything. Deriving is
+        // what makes the next change to the set one edit instead of eleven.
         mode: t.Optional(
           t.Union(
-            SELECTABLE_AGENT_MODES.map((m) => t.Literal(m)),
+            AGENT_MODES.map((m) => t.Literal(m)),
             {
               description:
-                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally.",
+                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
             },
           ),
         ),

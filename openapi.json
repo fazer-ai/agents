@@ -6257,7 +6257,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6328,7 +6329,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6399,7 +6401,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6749,7 +6752,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6821,7 +6825,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6893,7 +6898,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {

@@ -10,6 +10,7 @@ import {
 } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
+import { observationToForm } from "@/client/pages/agents/observationFormState";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
 
 // Issue #324, second half: `openai` reads PDFs now, `openrouter` and `openai-compatible` still do
@@ -122,6 +123,9 @@ function renderWithProvider(
       baseURL: "",
     },
     setMemory: noop,
+    mode: "production",
+    observation: observationToForm({}),
+    setObservation: noop,
     memoryCredBaseUrl: null,
     modelFallback: {
       provider: "",

@@ -1565,6 +1565,66 @@ export function ConversationDetailPage() {
   // places that genuinely mean a person (the header's assignee line).
   const heldByOther = conv?.heldByAnotherParty === true;
   const isHuman = conv?.assigneeType === "User";
+  // Whether anything ANSWERS this inbox (issue #495): a responder bound, switched on, and not in
+  // monitoring mode. The three actions that hand the conversation to the AI — return, reopen (the
+  // same operation on a resolved one) and respond now — are offered only then. Without one, the
+  // server refuses the return (409) and the reengage (`no-agent`); offering the button first just
+  // parked the conversation pending with nobody on it, on an inbox an observer only watches.
+  // ...AND A BOT TO ANSWER WITH (issue #495 review, round 2). A binding is not an identity: with the
+  // `ChatwootAgentBot` row gone — an instance reconnected, the bot deleted upstream, the reconcile
+  // not run — the server refuses the return with a 409 and the re-engage cannot load the agent, so
+  // offering either just hands the operator a button that fails.
+  const responderAnswers =
+    conv?.agentId != null &&
+    conv.agentEnabled === true &&
+    conv.agentHasBot === true &&
+    conv.agentMode !== "monitoring" &&
+    // NOTE: ...and a `test` agent answers only where `/teste` activated it (issue #495 review,
+    // round 11). The server refuses the hand-back for an unactivated one with
+    // `errors.returnAgentTestSilent`, so offering the button is offering a 409. `testActivatedAt`
+    // here is already the EPISODE's answer (issue #261) rather than this row's stamp, which is the
+    // same question the server asks, so a conversation activated through its redirect sibling keeps
+    // the button.
+    (conv.agentMode !== "test" || conv.testActivatedAt != null);
+  // WHY the actions are missing, in the operator's words (issue #495 review, round 13). Hiding them
+  // on its own is the half that leaves somebody looking for a button that is not there, with no way
+  // to tell a deliberate rule from a bug — and this predicate reads the MIRROR, so on the one
+  // conversation where it is wrong the operator had nothing at all to go on. Derived from fields the
+  // detail already carries, so it costs no call; a null here is either "everything is fine" or "no
+  // agent is bound", which the panel above already says on its own.
+  const noResponderReason: string | null =
+    conv == null || responderAnswers
+      ? null
+      : // NO RESPONDER AT ALL is the FIRST case, not the excluded one (issue #495 review, round 16).
+        // Round 13 left it out saying the panel above already says it, and the panel does not: with
+        // no assignee it prints the generic "AI" label, which claims an answerer this inbox does not
+        // have, and with a person on it it prints their name and the inbox. Either way the three
+        // actions vanish with nothing on screen naming the cause, which is the very state the server
+        // refuses by name (`errors.returnNoResponder`).
+        conv.agentId == null
+        ? t(
+            "conversation.responderNone",
+            "No agent is bound to this inbox, so the conversation cannot be handed back to one.",
+          )
+        : conv.agentEnabled !== true
+          ? t(
+              "conversation.responderOff",
+              "This inbox's agent is switched off, so the conversation cannot be handed back to it.",
+            )
+          : conv.agentMode === "monitoring"
+            ? t(
+                "conversation.responderObserves",
+                "This inbox's agent only observes; it does not answer, so the conversation cannot be handed back to it.",
+              )
+            : conv.agentHasBot !== true
+              ? t(
+                  "conversation.responderNoBot",
+                  "This inbox's agent has no bot on this Chatwoot; reconnect the instance before handing the conversation back.",
+                )
+              : t(
+                  "conversation.responderTestSilent",
+                  "This inbox's agent is in test mode and was not activated on this conversation, so it would answer nothing.",
+                );
   // Deep link to this conversation in the operator's Chatwoot (build from the instance origin/account).
   const chatwootUrl = conv
     ? `${conv.chatwootBaseUrl}/app/accounts/${conv.accountId}/conversations/${conv.chatwootConversationId}`
@@ -1719,7 +1779,12 @@ export function ConversationDetailPage() {
                       {t("conversation.handoff", "Handoff to human")}
                     </Button>
                   )}
-                  {conv.status === "resolved" && (
+                  {noResponderReason !== null && (
+                    <span className="text-text-muted text-xs">
+                      {noResponderReason}
+                    </span>
+                  )}
+                  {conv.status === "resolved" && responderAnswers && (
                     <Button
                       variant="secondary"
                       size="sm"
@@ -1739,6 +1804,7 @@ export function ConversationDetailPage() {
                       differently labelled buttons for one action. Reopen is the right label for a
                       closed conversation whoever holds it, so it keeps that state alone. */}
                   {conv.status !== "resolved" &&
+                    responderAnswers &&
                     (heldByOther || conv.status !== "pending") && (
                       <Button
                         variant="secondary"
@@ -1756,7 +1822,8 @@ export function ConversationDetailPage() {
                     )}
                   {offerReengage &&
                     conv.status === "pending" &&
-                    !heldByOther && (
+                    !heldByOther &&
+                    responderAnswers && (
                       <Button
                         variant="primary"
                         size="sm"
@@ -1838,15 +1905,20 @@ export function ConversationDetailPage() {
                     </p>
                   </div>
                 </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={busy}
-                  onClick={reengage}
-                >
-                  <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                  {t("conversation.reengage.action", "Re-engage")}
-                </Button>
+                {/* Gated like the other two (issue #495 review, round 1): this button calls the
+                    same endpoint, which answers `no-agent` on an inbox nothing answers, and a
+                    conversation keeps its `lastError` long after its responder was unbound. */}
+                {responderAnswers && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy}
+                    onClick={reengage}
+                  >
+                    <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                    {t("conversation.reengage.action", "Re-engage")}
+                  </Button>
+                )}
               </Card>
             )}
 

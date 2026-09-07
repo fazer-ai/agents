@@ -5,6 +5,7 @@ import {
   reengageConversation,
 } from "@/modules/conversations/reengage";
 import {
+  assertConversationReturnable,
   getConversationDetail,
   handoffConversation,
   replyToConversation,
@@ -124,6 +125,19 @@ export async function conversationReturn(
   try {
     const current = await getConversationDetail(ctx, id, base);
     if (args.dry_run !== false) {
+      // THE PREVIEW REFUSES WHAT THE APPLY REFUSES (issue #495 review, round 1). Without this the
+      // dry run answered "this returns the conversation" for an inbox with no responder — unbound,
+      // switched off, only observing, or with no bot on this Chatwoot — and the approved apply then
+      // failed with a 409, which is the incoherence docs/mcp.md rules out.
+      // The INJECTED factory, not a fresh one (issue #495 review, round 5): this preview now makes a
+      // Chatwoot call, so discarding `deps.makeClient` would send a test or an embedded caller at the
+      // real instance behind the operator's back.
+      await assertConversationReturnable(
+        ctx,
+        id,
+        { makeClient: deps.makeClient },
+        base,
+      );
       return ok({
         dryRun: true,
         action: "return",
@@ -132,7 +146,17 @@ export async function conversationReturn(
         note: "Returns the conversation to the bot (unassigns human, status pending). Calls Chatwoot.",
       });
     }
-    const outcome = await returnConversationToAgent(ctx, id, {}, base);
+    // The INJECTED factory here too (issue #495 review, round 7). The preview was given it in round
+    // 5 and the apply beside it kept `{}`, which went unnoticed only because the refusal it is
+    // usually asked for happened before any client was built; now that both halves read the
+    // conversation from Chatwoot first, a caller that passes a factory had it honoured on the
+    // preview and discarded on the apply — the two halves talking to different Chatwoots.
+    const outcome = await returnConversationToAgent(
+      ctx,
+      id,
+      { makeClient: deps.makeClient },
+      base,
+    );
     // Reported, not swallowed: a takeover during the call leaves the conversation with the human who
     // claimed it, and an `applied: true` alone would tell the caller the agent has it back.
     return ok({ dryRun: false, applied: true, target, outcome });

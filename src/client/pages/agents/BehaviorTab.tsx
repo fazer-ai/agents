@@ -1014,12 +1014,12 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observation",
   "memory",
   "observability",
-  // NOTE: THE FALLBACK IS NOT HERE, and that is a statement about the runtime rather than about the
-  // screen (issue #494 review, round 5): `runObserve` calls `runModelCall` with no `fallback`, so
-  // only the response path ever builds one. Drawn for a watcher, the section invited an operator to
-  // configure a second model that could not protect a single verdict — and its health warnings
-  // followed it, which is the same promise made twice. Wiring the fallback into the observer's call
-  // is the better answer and belongs to the observe job, not to a console change.
+  // THE FALLBACK IS BACK, because the runtime changed under it (issue #567). It was removed in the
+  // round-5 review of #494 for a true reason — `runObserve` called `runModelCall` bare, so a second
+  // model configured here protected no verdict, and drawing the section made a promise the runtime
+  // did not keep. `runObserve` now passes the agent's own `modelFallback`, so the section is
+  // configuring something again.
+  "modelFallback",
   //
   // NOTE: STT AND VISION RUN FOR A WATCHER (issue #494 review, round 2), so their controls have to
   // reachable. The receiver's `watcherReads` path runs `runEagerMedia` under the OBSERVER's own
@@ -2900,7 +2900,6 @@ export function BehaviorTab({
 
           <Section
             id="modelFallback"
-            hidden={watcher}
             icon={LifeBuoy}
             title={t("editor.modelFallback", "Fallback provider")}
             help={t(
@@ -3395,13 +3394,15 @@ export function BehaviorTab({
           visionBaseUrlInvalid ||
           memoryBaseUrlInvalid ||
           memoryBaseUrlUnsupported ||
+          // The fallback's three moved back OUT of the watcher exemption with the section (issue
+          // #567): they are asked wherever their fields are, and the fields are on screen again.
+          fallbackBaseUrlInvalid ||
+          fallbackBaseUrlUnsupported ||
+          fallbackModelMissing ||
           (!watcher &&
             (contactAuthUrlInvalid ||
               normalizeBaseUrlInvalid ||
-              normalizeBaseUrlUnsupported ||
-              fallbackBaseUrlInvalid ||
-              fallbackBaseUrlUnsupported ||
-              fallbackModelMissing))
+              normalizeBaseUrlUnsupported))
         }
         onOpenPlayground={onOpenPlayground}
       />

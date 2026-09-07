@@ -45,6 +45,10 @@ describe("the editor of a monitoring agent", () => {
   test("the Behavior tab keeps the blocks that apply to a watcher and hides the rest", () => {
     expect([...MONITORING_SECTIONS].sort()).toEqual([
       "memory",
+      // Back in the set with the runtime that made it mean something (issue #567): `runObserve`
+      // passes the agent's own `modelFallback` now, so the section configures a second provider
+      // that does protect a verdict. It was out for the round-5 review of #494, when it did not.
+      "modelFallback",
       "observability",
       "observation",
       // Media analysis runs on the observer's route under its own settings (issue #494 review,
@@ -248,8 +252,14 @@ describe("the Channels tab of a watcher", () => {
       "src/client/pages/agents/BehaviorTab.tsx",
       "utf8",
     ).replace(/\s+/g, " ");
+    // Only the sections a watcher does NOT draw sit behind the exemption. The fallback's three came
+    // back out of it with the section itself (issue #567): a validator is asked wherever its fields
+    // are, and those are on screen again.
     expect(behavior).toContain(
-      "(!watcher && (contactAuthUrlInvalid || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported || fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing))",
+      "(!watcher && (contactAuthUrlInvalid || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
+    );
+    expect(behavior).toContain(
+      "fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing ||",
     );
   });
 
@@ -260,18 +270,16 @@ describe("the Channels tab of a watcher", () => {
   // (`assertSettingsModelFallback`), with the only control that could fix it off screen. The fallback
   // is the one hidden block whose invalid state the server refuses, so it is the one whose key the
   // save omits; `...settings` then carries the stored value through byte for byte.
-  test("a watcher's save omits only the fallback pair the write boundary refuses", () => {
+  // ...AND THE SAVE WRITES IT AGAIN (issue #567). Rounds 7 and 9 of #494 taught the save to skip the
+  // half-named pair for a watcher, because the section was hidden and the boundary's refusal reached
+  // the operator as a 400 on a control off screen. The section is back and so is its validator, so
+  // the skip would now discard an edit the operator can see themselves making.
+  test("a watcher's save writes the fallback block like any other", () => {
     const flat = EDITOR.replace(/\s+/g, " ");
-    // The predicate is the BOUNDARY's question, not "is this a watcher" (round 9): omitting the key
-    // for every watcher dropped a valid draft too, and `applyBehavior` reloaded over it.
     expect(flat).toContain(
-      "...(watcher && fallbackModelIsMissing(modelFallback) ? {} : { modelFallback: modelFallbackToStored(modelFallback) }),",
+      "modelFallback: modelFallbackToStored(modelFallback),",
     );
-    // And nowhere else: an unconditional write beside it would put the refused pair back on the wire.
-    expect(
-      flat.split("modelFallback: modelFallbackToStored(modelFallback)").length -
-        1,
-    ).toBe(1);
+    expect(flat).not.toContain("watcher && fallbackModelIsMissing");
   });
 
   // ...AND THE PANEL CLOSES WITH ITS TRIGGER (issue #494 review, round 6). Flipping a production

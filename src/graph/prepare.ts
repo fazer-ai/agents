@@ -1569,7 +1569,7 @@ export interface GraphBuildDeps {
 //   * named but unrunnable — `resolveModelOverride` refused the destination (unknown provider, a key
 //                            that belongs to another vendor, an endpoint that would be dropped);
 //   * named with a credential that did not resolve — the ref is stale or was deleted.
-function buildFallbackModel(
+export function buildFallbackModel(
   cfg: AgentConfig,
   makeModel: (mc: ResolvedModelConfig) => BaseChatModel,
   deps: GraphBuildDeps,

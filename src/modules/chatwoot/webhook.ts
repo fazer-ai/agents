@@ -1716,6 +1716,24 @@ function errMsg(err: unknown): string {
 // serialized into webhook payloads (the fork's Attachment#push_event_data exposes no
 // image_description/extracted_text on any file type), so a visual leg here could not tell "never
 // analyzed" from "our own write-back" and would re-run vision on its own write-back event forever.
+// WHETHER A TURN RUNNING ON THIS MESSAGE WOULD HAVE ITS WORDS (issue #576, PR review round 8), which
+// is a narrower question than whether a turn ran over it.
+//
+// A voice note reaches the graph as a placeholder until STT writes back, and a flush armed by an
+// earlier message can legitimately invoke in that window (docs/stt.md, "Known limits"). That turn
+// folded the MESSAGE in and not the WORDS, so recording it as covered suppresses the very ingest the
+// write-back exists to arm — the late transcription is then in nobody's memory, which is the loss
+// this feature is about, reintroduced by its own record.
+//
+// Answered from what the turn's input actually carried: audio with no transcription is a placeholder,
+// and everything else — text, an image, an audio already transcribed — is the message itself.
+export function turnHadTheWords(m: {
+  hasAudio: boolean;
+  transcribedText: string | null | undefined;
+}): boolean {
+  return !m.hasAudio || Boolean(m.transcribedText);
+}
+
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
@@ -5527,8 +5545,20 @@ export async function processChatwootDelivery(
           // decision where it is made, never later.
           let turnFoldedIn = false;
           const onFoldedIn = async (): Promise<void> => {
+            // ONLY THE MESSAGE WHOSE WORDS THE TURN HAD, and the flag says the same (issue #576, PR
+            // review round 8). A voice note still waiting on STT reaches the graph as a placeholder,
+            // and claiming it — here or at the settlement below, which reads this flag — suppresses
+            // the very ingest the write-back exists to arm.
+            if (
+              n.message?.id == null ||
+              n.conversationId === null ||
+              !turnHadTheWords({
+                hasAudio: firstAudioAttachment(n) !== null,
+                transcribedText: n.message?.transcribedText,
+              })
+            )
+              return;
             turnFoldedIn = true;
-            if (n.message?.id == null || n.conversationId === null) return;
             // COVERAGE ONLY, and never the settlement: settling here would close the row mid-turn,
             // and a closed row is a delivery the sweep can no longer see. The settlement below is
             // what says whether a reply reached the customer.

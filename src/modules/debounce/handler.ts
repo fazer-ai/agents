@@ -37,6 +37,7 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
+import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
@@ -319,14 +320,24 @@ export async function coalesceAndRunTurn(
   let foldedIn = false;
   const outcome = await runLoadedTurn({
     onFoldedIn: async () => {
-      foldedIn = true;
-      if (pending.length > 0) {
+      // ONLY THE MESSAGES WHOSE WORDS THIS BURST HAD (issue #576, PR review round 8). A voice note
+      // still waiting on STT is in the burst as a placeholder — this flush may be the one an EARLIER
+      // message armed, re-fetching before the transcription lands (docs/stt.md, "Known limits") —
+      // and claiming it would suppress the ingest its own write-back exists to arm.
+      const withWords = pending.filter((m) =>
+        turnHadTheWords({
+          hasAudio: m.attachmentTypes.includes("audio"),
+          transcribedText: m.transcribedText,
+        }),
+      );
+      foldedIn = withWords.length === pending.length;
+      if (withWords.length > 0) {
         await recordTurnCoverage({
           tenantId,
           instanceId,
           conversationId,
           covered: true,
-          messageIds: pending.map((m) => m.id),
+          messageIds: withWords.map((m) => m.id),
           base,
         });
       }

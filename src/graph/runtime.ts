@@ -1610,19 +1610,17 @@ async function runTurnBody(
     // It NARROWS the window rather than closing it: the invoke below loads the channel again, so an
     // append landing between this read and that load is still possible. The remaining duplicate is
     // two identical system notes, and nothing consumes either.
-    // ONE read, and it answers two questions (issue #576, PR review round 5). The handback note needs
-    // the channel as it stands; so does the error path below, which has to tell an invoke that wrote
-    // nothing from one that checkpointed the customer's message and then threw — and it can only
-    // tell them apart against a count taken BEFORE.
-    const channelBefore = (
-      (
-        await buildThreadStateGraph(
-          params.deps?.checkpointer ?? (await getCheckpointer()),
-        ).getState({ configurable: { thread_id: graphThreadId } })
-      ).values as { messages?: BaseMessage[] } | undefined
-    )?.messages;
     const carriedHandback =
-      handbackDeferred && owesHandbackNote(channelBefore ?? []);
+      handbackDeferred &&
+      owesHandbackNote(
+        (
+          (
+            await buildThreadStateGraph(
+              params.deps?.checkpointer ?? (await getCheckpointer()),
+            ).getState({ configurable: { thread_id: graphThreadId } })
+          ).values as { messages?: BaseMessage[] } | undefined
+        )?.messages ?? [],
+      );
     // THIS INVOKE'S OWN MESSAGE, NAMED (PR review, round 6). The error path below asks whether the
     // customer's words reached the channel, and a COUNT cannot answer that: two turns can overlap on
     // one graph thread (the thread is the contact-inbox's, shared by every conversation on it), so a
@@ -1632,6 +1630,9 @@ async function runTurnBody(
     //
     // An explicit id is what the reducer keys on anyway — `refused-turn.ts` already identifies what
     // a turn produced the same way — so naming ours costs nothing and makes the question exact.
+    //
+    // It also keeps the read below BEHIND its guard (PR review, round 8): an id needs no
+    // before-picture, so the ordinary turn pays no extra round trip and no extra way to fail.
     //
     // NO TEST FAILS WITHOUT THIS, and that is stated rather than hidden. Every failure reachable
     // from outside either happens before the invoke (so the arm below never runs) or after LangGraph

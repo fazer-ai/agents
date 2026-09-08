@@ -659,6 +659,23 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(await armedFor(messageId)).toHaveLength(1);
   });
 
+  // A TURN THAT RAN ON THE PLACEHOLDER DOES NOT HAVE THE WORDS (PR review, round 8). A voice note
+  // reaches the graph as a placeholder until STT writes back, and a flush armed by an EARLIER message
+  // can invoke inside that window (docs/stt.md, "Known limits"). Recorded as covered, that turn
+  // suppresses the ingest the write-back exists to arm and the transcription reaches nobody — the
+  // loss this whole feature is about, reintroduced by its own record.
+  test("a turn that ran before the transcription does not suppress the write-back", async () => {
+    const messageId = 6106;
+    // What the turn writes when it ran on the placeholder: it folded the message in, not the words.
+    await settledSibling(messageId, false, CONV_ID, false);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(1);
+  });
+
   // A TURN THAT RAN AND SAID NOTHING STILL HAS THE MESSAGE (PR review, round 2). `graph.invoke`
   // persists the channel, so an `empty` outcome leaves the customer's words in memory exactly as a
   // posted one does — while the SETTLEMENT calls it `consumed`, the same word a gate that took the

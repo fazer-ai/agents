@@ -111,6 +111,24 @@ export type StrandedVerdict =
   // REPORTED rather than replayed: on an observer-only inbox the observer's memory is the only one
   // there is, and a hole in it that nothing names is the silence this sweep exists to remove.
   | "observer-strand"
+  // Stranded carrying a colleague's reply on a route NOTHING EVER NAMED (issue #540, window 2). The
+  // process died between the INSERT and the claim, and this build writes `claimedAt` and
+  // `routeObserved` in one statement — so an unclaimed row has no role because nothing was there to
+  // state one, not because the answer was "the responder's".
+  //
+  // Read as `owed-takeover`, which is what shipped, the row is silently mis-served in one direction
+  // only: on a WATCHER's route the takeover recovery correctly answers `not-owed` and reports
+  // nothing, so the observer's lost ingestion — the whole of what that route owed — leaves no trace
+  // anywhere. Read as `observer-strand` it would be mis-served in the other: on the far commoner
+  // responder's route a real handover would never be armed, and the conversation stays with the bot
+  // until the next human reply.
+  //
+  // So this verdict does BOTH honest things instead of guessing between them. It arms the takeover,
+  // which is free where it was not owed — `recover-takeover.ts` re-asks every gate and answers
+  // `not-owed` — and it files the gap line, so a watcher's missing memory is named rather than
+  // silent. The uncertainty is in the line, where an operator reads it, rather than resolved by a
+  // coin toss here.
+  | "role-unstated"
   // Stranded carrying the TRANSCRIPTION of a customer message, on the `message_updated` that finally
   // wrote it (issue #478 review, round 1). A verdict of its own for the same reason `owed-takeover`
   // is one, and the two neighbours it sits between are the same two.
@@ -204,11 +222,16 @@ export function classifyStrandedDelivery(
     ) {
       return "no-message";
     }
+    // NOTHING CLAIMED IT, SO NOTHING STATED THE ROLE (issue #540, window 2). Asked before the role
+    // itself, because it is about whether the role column was ever WRITTEN rather than what it says:
+    // the claim is the statement, and a row it never reached carries a null that records nothing.
+    // True of every build, not only this one — a PENDING row is unclaimed whoever wrote it.
+    if (row.claimedAt === null) return "role-unstated";
     // The ROLE decides which of the two, and it is read only here: a takeover is the responder's to
     // owe, and arming one for an observer's row spends a job that answers `not-owed` and reports
-    // nothing (issue #476 review, round 27). Null is not an observer's — the receiver states the
-    // role on every delivery, and a row that predates the column or stranded before the statement is
-    // one this build does not read as a watcher's.
+    // nothing (issue #476 review, round 27). Null HERE is a row the claim reached without stating a
+    // role, which is an older build's — the receiver has stated it on every delivery since #476 —
+    // and that is a population this build does not read as a watcher's.
     return row.routeObserved === true ? "observer-strand" : "owed-takeover";
   }
   return "lost";

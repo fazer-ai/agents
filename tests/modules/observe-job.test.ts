@@ -2494,6 +2494,49 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
+  // ...AND THE ROW SAYS IT ITSELF NOW (issue #540, window 5). `observeInbox` writes the row before
+  // Chatwoot is asked and stamps it after, so an unstamped row IS the attach window — the tick no
+  // longer needs the arm to have carried a flag, which is what a job armed before the flag existed
+  // (or by a delivery that could not tell) had to rely on.
+  test("a tick against a row Chatwoot has not confirmed retries, flag or no flag", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    const rows = await suDb.inboxObserver.findMany({
+      where: { tenantId, agentId },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { attachedAt: null },
+    });
+    try {
+      const result = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "resolved",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => verdictModel({ assunto: "cancelamento" }, calls),
+        },
+      );
+      expect(result.outcome).toBe("fail");
+      expect(calls.n).toBe(0);
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      await suDb.inboxObserver.updateMany({
+        where: { id: { in: rows.map((r) => r.id) } },
+        data: { attachedAt: new Date() },
+      });
+    }
+  });
+
   // The write already landed; only the VERIFICATION pass is best-effort, and returning there
   // skipped the note that describes the change (issue #477 review, round 13).
   test("a failed verification read still posts the change note", async () => {

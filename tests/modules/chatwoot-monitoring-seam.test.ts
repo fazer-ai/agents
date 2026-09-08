@@ -1066,6 +1066,19 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     });
     expect(lines.length).toBe(1);
     expect(lines[0]?.status).toBe("error");
+    // ...AND THE ROW SAYS SO (issue #540, PR review round 16). The claim wrote `routeRemembers` from
+    // the runtime it resolved, which is a promise; this is the delivery that broke it, and it still
+    // settles PROCESSED. Left saying `true`, an observer beside this route would read the reply as
+    // remembered and stay quiet about one nothing folded in — and for a reply nothing else ever
+    // will, since no recovery carries an outgoing body.
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: delivery.id },
+          select: { routeRemembers: true },
+        })
+      ).routeRemembers,
+    ).toBe(false);
   });
 
   test("/teste never activates a monitoring agent, and answers nothing", async () => {
@@ -1875,6 +1888,19 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
       expect(ingested.some((k) => k.endsWith(`:${messageSeq}`))).toBe(true);
       expect((await row(12))?.lastHandledMessageId).toBe(messageSeq);
+      // ...AND THE ROW SAYS SO (issue #540, PR review round 4). The claim recorded `false` — the
+      // runtime it resolved was a test agent, which folds in only what it answers — and this
+      // delivery then ingested anyway. An observer beside this responder reads the RECORDED fact in
+      // preference to the current mode, so a row left at `false` would tell it nobody remembered the
+      // message and it would append the same one to the same thread a second time.
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: delivery.id },
+            select: { routeRemembers: true },
+          })
+        ).routeRemembers,
+      ).toBe(true);
     } finally {
       await suDb.agent.update({
         where: { id: agentDbId },

@@ -391,6 +391,12 @@ export interface SweepCounts {
   // ever coming. Counted apart from `owed` because the recovery is the ordinary delivery replay
   // rather than a side effect of its own.
   owedTranscription: number;
+  // Terminal, a colleague's reply, and a route NOTHING EVER NAMED: the process died between the
+  // INSERT and the claim, so no build stated the role (issue #540, window 2). Counted apart from
+  // `owed` because the takeover is armed on a guess that may not have been owed, and apart from
+  // `observerStrands` because the gap reported may not exist — what is certain is only that one of
+  // the two stories happened and this pass cannot say which.
+  roleUnstated: number;
   // The row moved under the sweep (a redelivery claimed it) between the scan and the write.
   raced: number;
 }
@@ -510,6 +516,7 @@ export async function sweepStrandedDeliveries(
     owed: 0,
     observerStrands: 0,
     owedTranscription: 0,
+    roleUnstated: 0,
     raced: 0,
   };
 
@@ -578,12 +585,14 @@ export async function sweepStrandedDeliveries(
     // of its gap, and `record` marks the row terminal before it could be written. Null here is
     // "could not tell", which the line says out loud rather than resolving one way (round 31).
     const mirror =
-      verdict === "lost" || verdict === "observer-strand"
+      verdict === "lost" ||
+      verdict === "observer-strand" ||
+      verdict === "role-unstated"
         ? await mirrorOf(
             row,
             tenantId,
             base,
-            verdict === "observer-strand",
+            verdict === "observer-strand" || verdict === "role-unstated",
           ).catch((err) => {
             logger.warn(
               { err, deliveryId: row.deliveryId },
@@ -685,6 +694,52 @@ async function record(
           ? "could not be read"
           : mirror.responderHasRoute === true
             ? "has a responder with a route (so that responder's own delivery of the same reply probably owns it)"
+            : "has no responder with a route",
+      );
+      return;
+    }
+    if (verdict === "role-unstated") {
+      counts.roleUnstated += 1;
+      // NOTE: BOTH HONEST THINGS, because this pass cannot tell the two stories apart and each of them
+      // costs something different when guessed wrong (issue #540, window 2).
+      //
+      // The takeover is ARMED, which is free where it was not owed: `recover-takeover.ts` re-asks
+      // every gate — the shape, the provider, the mode, the config, the ownership — and answers
+      // `not-owed` without touching the conversation. On the far commoner responder's route it is
+      // the handover the delivery died owing, and refusing it here would leave the conversation with
+      // the bot until the next human reply.
+      //
+      // And the gap is REPORTED, which is what reading the row as the responder's silently skipped:
+      // on a WATCHER's route the takeover was never owed and what WAS owed — the colleague's reply
+      // folded into the observer's memory — cannot be replayed from here (see `observer-strand`), so
+      // without this line it leaves no trace anywhere at all.
+      // WHETHER IT WAS ACTUALLY ARMED, because the line below is the only record this row leaves and
+      // the row is already PROCESSED — nothing revisits it (PR review, round 6). Stated
+      // unconditionally, that line told an operator a takeover was armed on the exact reading where
+      // it was not, which is the one case they would have had to act on themselves.
+      let armed = true;
+      try {
+        await armTakeoverRecovery(tenantId, row.id, base);
+      } catch (error) {
+        armed = false;
+        logger.warn(
+          { error },
+          `chatwoot delivery sweep: ${label} stranded before its route was named and its takeover could not be armed; if it was the responder's, the conversation stays with the bot until the next human reply`,
+        );
+      }
+      logger.warn(
+        "chatwoot delivery sweep: %s stranded on %s carrying a colleague's reply (%s) on conversation %s BEFORE anything named its route — the claim that states the role never ran. %s; if it was a watcher's, that watcher never folded the reply into its memory and nothing can replay it. The inbox %s NOW, which is not necessarily what it had when the event arrived",
+        label,
+        row.status,
+        String(row.humanReplyShape),
+        String(row.conversationId),
+        armed
+          ? "A takeover is armed in case it was the responder's"
+          : "A takeover COULD NOT BE ARMED, so if it was the responder's the conversation stays with the bot until the next human reply",
+        mirror === null
+          ? "could not be read"
+          : mirror.responderHasRoute === true
+            ? "has a responder with a route"
             : "has no responder with a route",
       );
       return;

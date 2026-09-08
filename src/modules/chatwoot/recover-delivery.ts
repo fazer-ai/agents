@@ -240,6 +240,10 @@ export async function recoverStrandedDelivery(
         // neighbouring reason (`recover-takeover.ts`): two routes, two different answers.
         routeAgentBotId: true,
         routeObserved: true,
+        // THE WORLD THE MESSAGE ARRIVED IN (issue #540): the inbox's binding generation at receipt,
+        // written by the INSERT rather than by the claim — which is what makes it readable on the
+        // rows this module has to reason about, the ones that stranded before a role was stated.
+        bindingGeneration: true,
       },
     }),
   );
@@ -318,6 +322,10 @@ interface LoadedRow {
   routeAgentBotId: number | null;
   // Whether that route was the OBSERVER's, as the receiver recorded it. Null = never asked.
   routeObserved: boolean | null;
+  // The inbox's binding generation when this delivery was received (issue #540). Null on a row an
+  // older build wrote, on a payload that named no inbox, and where the read failed — all three mean
+  // "this row cannot say", never generation zero.
+  bindingGeneration: number | null;
 }
 
 // PUTTING THE ROW BACK, which is the compensating write both failure roads below take, and the one
@@ -725,6 +733,9 @@ async function runRecovery(params: {
         // When THIS binding was made. A role the row never stated cannot be read off a binding
         // younger than the delivery — see the refusal below.
         responderBoundAt: true,
+        // ...AND WHETHER ANY BINDING HAS MOVED SINCE, which the stamp above cannot answer: an
+        // observer attached or detached leaves `responderBoundAt` exactly where it was (issue #540).
+        bindingGeneration: true,
       },
     });
     const agent =
@@ -835,11 +846,34 @@ async function runRecovery(params: {
   // inversion the column exists to prevent, and this one ends in a late reply to a customer rather
   // than in a silent loss. The role is a fact about RECEIPT time, so a binding made after receipt
   // says nothing about it, and this module does not guess: DEAD, where an operator reads it.
+  //
+  // TWO FACTS, AND IT REFUSES ONLY WHERE BOTH SAY SO (issue #540, window 4). The stamp is a moment,
+  // and the issue's own objection to it is that on its own it refuses too much: it is written by a
+  // bind and read against a receipt, and any inbox bound while its traffic was in flight produces a
+  // pair that looks like this one — the delivery is then left DEAD and a customer goes unanswered on
+  // an inbox somebody just finished setting up. The generation is the second, independent fact: it
+  // moves on EVERY binding write and on nothing else, so `equal` means no binding moved between the
+  // receipt and now, and the stamp's story is then an artifact rather than a rebind.
+  //
+  // The generation is not asked to refuse on its own either, and that is the other half. It counts
+  // every movement on the inbox, an observer's included, and an observer attached after receipt says
+  // nothing about whether bot equality proves the RESPONDER's role — the question here. Refusing on
+  // it alone would turn every observe made during a rollout into DEAD rows for the responder's own
+  // deliveries.
+  //
+  // A row with no generation keeps the reading it has always had: the stamp alone. That is every row
+  // an older build wrote, which a rollout produces in bulk, and the migration deliberately leaves
+  // their column null rather than backfilling a world they never arrived in.
+  const bindingMovedSinceReceipt =
+    row.bindingGeneration !== null && inbox?.bindingGeneration != null
+      ? inbox.bindingGeneration !== row.bindingGeneration
+      : true;
   if (
     row.routeObserved === null &&
     routeBotId !== null &&
     inbox?.responderBoundAt != null &&
-    inbox.responderBoundAt > row.receivedAt
+    inbox.responderBoundAt > row.receivedAt &&
+    bindingMovedSinceReceipt
   ) {
     logger.warn(
       "chatwoot recovery: %s arrived on bot %d and names no route role, and the responder binding it would be read against was made after the delivery — the role at receipt is not knowable from here; not replayed",
@@ -1354,6 +1388,10 @@ async function runRecovery(params: {
       // The role the delivery arrived with, so the replay does not re-derive it from bindings that
       // have moved since (issue #476 review, round 22).
       routeObserved: observerRouteBotId !== null,
+      // The world the message arrived in, from the row rather than re-read (issue #540). The replay
+      // resolves the route against the binding as it stands now, and this is what lets that
+      // resolution say whether it describes the same world.
+      receiptBindingGeneration: row.bindingGeneration,
       claimFrom: "DEAD",
       onIngest: (o) => {
         ingestOutcome = o;

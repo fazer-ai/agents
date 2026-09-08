@@ -4,7 +4,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  processChatwootDelivery,
+  recordAndProcessChatwootDelivery,
+} from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -720,6 +723,170 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  // ...AND A `true` THE SIBLING HAS NOT FINISHED ACTING ON DOES NOT SILENCE THIS ROUTE (PR review,
+  // round 15). The claim writes that value from the runtime it resolved, and the ingestion it
+  // promises happens later in the same execution: a responder switched off in between, and then
+  // crashing or failing to enqueue, leaves a row saying it remembers a reply it never folded in. No
+  // sweep repairs that one — a takeover recovery does not carry the reply body — so the reply is
+  // gone from the only memory holding it, permanently, on the strength of an intent.
+  //
+  // Only on the REPLY column, because there being wrong toward ingesting costs an append the dedup
+  // window catches, while on an inbound message it can append one the responder's turn is about to
+  // answer, which nothing catches.
+  test("a reply whose sibling only INTENDED to remember is remembered here", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      data: { responderBoundAt: new Date(Date.now() - 20_000) },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const replyId = messageSeq;
+    // The responder's own delivery, claimed while it was on: `routeRemembers` says `true` and the
+    // row never got past PROCESSING, which is what a crash between the claim and the enqueue leaves.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-reply-intent`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 86,
+        humanReplyShape: "composer",
+        humanReplyMessageId: replyId,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeRemembers: true,
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: replyId,
+      private: false,
+      content: "Oi! Vou verificar seu pedido agora.",
+      message_type: "outgoing",
+      sender: { id: 5, name: "Ana", type: "user" },
+      conversation: conversation(86, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    // ...and the switch flipped after that claim, which is what makes the recorded intent false.
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { enabled: false },
+    });
+    try {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      expect(customerFacing()).toEqual([]);
+      // The reply is folded in HERE, because nothing else is going to.
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { enabled: true },
+      });
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
+  // ...AND THAT HOLDS WITH THE RESPONDER STILL ON (PR review, round 17). Answering `null` for an
+  // unfinished reply sibling fell back to the responder's CURRENT mode, and that mode reads
+  // "remembers" for exactly the responder this is about: one that was on when it claimed and is on
+  // now. The sibling crashing a moment later leaves the reply in nobody's memory, permanently. So
+  // the answer is `false` — the only thing actually known — and being early costs an append the
+  // shared dedupe key and the `human_agent` window refuse.
+  test("a reply whose sibling is still working is remembered here even with the responder on", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      data: { responderBoundAt: new Date(Date.now() - 20_000) },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const replyId = messageSeq;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-reply-working`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 87,
+        humanReplyShape: "composer",
+        humanReplyMessageId: replyId,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeRemembers: true,
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: replyId,
+      private: false,
+      content: "Oi! Vou verificar seu pedido agora.",
+      message_type: "outgoing",
+      sender: { id: 5, name: "Ana", type: "user" },
+      conversation: conversation(87, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    try {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      expect(customerFacing()).toEqual([]);
+      // The responder is production and enabled the whole time: the mode reading would have silenced
+      // this route, and the sibling's own unfinished state is what does not.
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
   // `bindInbox` calls Chatwoot BEFORE it commits `agentId`, so a message arriving inside that window
   // is fanned to a responder route the local mirror does not know yet: that delivery resolves no
   // runtime, answers nothing and settles. Counting it as coverage hands the message to a route that
@@ -1319,14 +1486,14 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // Chatwoot's agreement, and a binding that moved since is about a different moment.
   test("the delivery row remembers which route it arrived on, observer or responder", async () => {
     requests.length = 0;
-    const { deliveryRowId } = await deliver(OBSERVER_BOT, 53, SHARED_INBOX, {
+    const observerDelivery = await deliver(OBSERVER_BOT, 53, SHARED_INBOX, {
       assigneeType: "User",
       status: "open",
     });
     expect(
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
-          where: { id: deliveryRowId },
+          where: { id: observerDelivery.deliveryRowId },
           select: { routeObserved: true },
         })
       ).routeObserved,
@@ -1343,10 +1510,57 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
           where: { id: responderDelivery.deliveryRowId },
-          select: { routeObserved: true },
+          select: { routeObserved: true, routeRemembers: true },
         })
       ).routeObserved,
     ).toBe(false);
+
+    // ...AND THE SAME STATEMENT SAYS WHAT THE ROUTE DOES WITH A MESSAGE IT DOES NOT ANSWER (issue
+    // #540, window 3). The observer's route folds it in — that is the whole of its work — and so
+    // does a responder that is switched on and ingests continuously.
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: observerDelivery.deliveryRowId },
+          select: { routeRemembers: true },
+        })
+      ).routeRemembers,
+    ).toBe(true);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: responderDelivery.deliveryRowId },
+          select: { routeRemembers: true },
+        })
+      ).routeRemembers,
+    ).toBe(true);
+
+    // A TEST-MODE responder answers what it is activated for and folds nothing else in, and its own
+    // delivery says so — which is the fact the observer beside it reads instead of a mode that may
+    // have moved since.
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { mode: "test" },
+    });
+    try {
+      const inTest = await deliver(RESPONDER_BOT, 77, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: inTest.deliveryRowId },
+            select: { routeRemembers: true },
+          })
+        ).routeRemembers,
+      ).toBe(false);
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { mode: "production" },
+      });
+    }
   });
 
   test("control: the responder's own route on the shared inbox still arms a flush", async () => {
@@ -1722,6 +1936,809 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       await suDb.agent.update({
         where: { id: observerId },
         data: { settings: {} },
+      });
+    }
+  });
+  // THE WORLD A DELIVERY ARRIVED IN, WRITTEN DOWN (issue #540). Every reader of the route's role
+  // re-derives it from the binding as it stands NOW, and an administrative write can land between
+  // Chatwoot emitting the event and that reading. The generation is what makes the two moments
+  // comparable: the row records the counter it was RECEIVED under, and it is written by the INSERT
+  // rather than by the claim — the rows that most need it are exactly the ones a process death
+  // stranded before any claim.
+  test("the ledger records the inbox's generation at receipt, and a redelivery does not move it", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const received = inbox.bindingGeneration + 7;
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { bindingGeneration: received },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const deliveryId = `obr-${process.pid}-gen-${deliverySeq}`;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(68, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    try {
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+        where: { tenantId, deliveryId },
+        select: { bindingGeneration: true },
+      });
+      expect(row.bindingGeneration).toBe(received);
+
+      // ...AND A REDELIVERY DOES NOT RE-DATE IT. Chatwoot resends the same delivery id, and the
+      // reading taken then is about a later world; written onto the row it would claim the message
+      // arrived under a binding made after it. The row keeps what its own receipt recorded, which is
+      // why this column is deliberately not in the ledger's fillable list.
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: received + 3 },
+      });
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryId,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      const again = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+        where: { tenantId, deliveryId },
+        select: { bindingGeneration: true },
+      });
+      expect(again.bindingGeneration).toBe(received);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+    }
+  });
+
+  // WINDOW 1, WHICH IS A SILENT LOSS AND NOT A WRONG ANSWER. The delivery arrived on the observer's
+  // route; an unobserve and a promotion land before it is claimed, and the reading they leave
+  // resolves no runtime at all — on an inbox with no responder there is nothing else to resolve to.
+  // Settled there, the row goes PROCESSED having looked at nothing, and the observer's memory — the
+  // only memory this inbox has — loses a customer message with nobody told. The generation is what
+  // separates that from the ordinary empty reading (an inbox nothing of ours answers), which must go
+  // on settling exactly as it does.
+  test("a delivery whose binding moved before its claim, and now resolves nothing, is left for the sweep", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(69, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-moved-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    try {
+      // The unobserve and the promotion, both landed: the row is gone and the persona no longer
+      // monitors, so nothing on this inbox answers for this bot any more.
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "production" },
+      });
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration + 1 },
+      });
+
+      await expect(
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+          receiptBindingGeneration: inbox.bindingGeneration,
+        }),
+      ).rejects.toThrow("the binding moved");
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true, claimedAt: true },
+      });
+      expect(row.status).toBe("PENDING");
+      expect(row.claimedAt).toBeNull();
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    }
+  });
+
+  // A READING THAT FAILED IS NOT A READING THAT SAID NOTHING (PR review, round 9). Both queries the
+  // refusal depends on used to answer null when they threw, and null switches the refusal OFF: the
+  // CAS goes through and the delivery settles PROCESSED with no runtime having looked at it, which
+  // is the exact loss the refusal exists to prevent, produced by a transient database failure on the
+  // one reading standing in its way. Both propagate now, and the row stays PENDING for the sweep.
+  //
+  // Written as a pair because they are two different queries on the same path: the generation, read
+  // inside the resolution (and therefore retried), and the row's own status, read at the refusal.
+  const failingClient = (
+    model: string,
+    op: string,
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    matches: (args: any) => boolean,
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  ): any => {
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    const wrap = (target: any): any =>
+      new Proxy(target, {
+        get(t, prop, recv) {
+          if (prop === "$extends")
+            return (...a: unknown[]) => wrap(t.$extends(...a));
+          if (prop === "$transaction")
+            return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+              t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+          if (prop !== model) return Reflect.get(t, prop, recv);
+          const delegate = Reflect.get(t, prop, recv);
+          return new Proxy(delegate, {
+            get(d, k, r) {
+              const inner = Reflect.get(d, k, r);
+              if (k !== op) return inner;
+              // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+              return async (args: any) => {
+                if (matches(args)) throw new Error("pool exhausted");
+                return (inner as (a: unknown) => Promise<unknown>).call(
+                  d,
+                  args,
+                );
+              };
+            },
+          });
+        },
+      });
+    return wrap(appDb);
+  };
+
+  // The world the two cases below both need: a delivery on a bot route whose binding has since moved
+  // and which now resolves no runtime at all — every condition of the refusal true except the one
+  // query under test.
+  const movedWorld = async (convId: number, prefix: string) => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(convId, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${prefix}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: { mode: "production" },
+    });
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { bindingGeneration: inbox.bindingGeneration + 1 },
+    });
+    const restore = async () => {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    };
+    return { n, delivery, receipt: inbox.bindingGeneration, restore };
+  };
+
+  test("a generation read that fails does not settle the delivery", async () => {
+    const { n, delivery, receipt, restore } = await movedWorld(84, "genfail");
+    try {
+      await expect(
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: failingClient(
+            "inbox",
+            "findFirst",
+            // The FALLBACK query alone, which is the one that used to swallow. The runtime resolvers
+            // read the same column on the same model and must go on answering, or this test would
+            // prove the retry loop and not the swallow: they select more than this one field.
+            (args) =>
+              args?.select?.bindingGeneration === true &&
+              Object.keys(args?.select ?? {}).length === 1,
+          ),
+          receiptBindingGeneration: receipt,
+          deps: { sleep: async () => {} },
+        }),
+      ).rejects.toThrow("pool exhausted");
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true, claimedAt: true },
+      });
+      expect(row.status).toBe("PENDING");
+      expect(row.claimedAt).toBeNull();
+    } finally {
+      await restore();
+    }
+  });
+
+  test("a status read that fails does not settle the delivery either", async () => {
+    const { n, delivery, receipt, restore } = await movedWorld(85, "statfail");
+    try {
+      await expect(
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: failingClient(
+            "chatwootWebhookDelivery",
+            "findUnique",
+            (args) =>
+              args?.select?.status === true &&
+              Object.keys(args?.select ?? {}).length === 1,
+          ),
+          receiptBindingGeneration: receipt,
+          deps: { sleep: async () => {} },
+        }),
+      ).rejects.toThrow("pool exhausted");
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true, claimedAt: true },
+      });
+      expect(row.status).toBe("PENDING");
+      expect(row.claimedAt).toBeNull();
+    } finally {
+      await restore();
+    }
+  });
+
+  // ...AND IT IS NOT RAISED ON A ROW THERE IS NOTHING TO LEAVE (PR review, round 6). `claimFrom` is
+  // what this call EXPECTS the status to be, not what it is: Chatwoot reposting an event whose row is
+  // already settled arrives claiming PENDING all the same, and the CAS is what turns that into the
+  // `skipped` an idempotent duplicate deserves. Raised ahead of the CAS, an ordinary duplicate became
+  // an async dispatch failure whose message promised the sweep would pick the row up — and a settled
+  // row is on no sweep worklist, so the promise was false on top of noisy.
+  test("a repost of a delivery that already settled is skipped, not refused", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(83, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    // The row this delivery already produced, settled half an hour ago.
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-repost-${deliverySeq}`,
+        event: "message_created",
+        status: "PROCESSED",
+        claimedAt: new Date(),
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    try {
+      // ...and the same movement the case above sets up, so every other condition of the refusal is
+      // true and the row's own status is the only thing standing between it and a throw.
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "production" },
+      });
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration + 1 },
+      });
+
+      expect(
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+          receiptBindingGeneration: inbox.bindingGeneration,
+        }),
+      ).toBe("skipped");
+      // ...and the settled row is exactly where it was.
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: delivery.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSED");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    }
+  });
+
+  // ...AND THE SAME EMPTY READING, WITH THE GENERATION SAYING NOTHING MOVED, SETTLES AS IT ALWAYS
+  // HAS. A bot that still owns an older conversation goes on receiving its events after being
+  // detached, and an inbox nobody of ours answers resolves nothing for perfectly ordinary reasons.
+  // Refusing on the empty reading alone would turn every one of those into a row an operator has to
+  // read.
+  test("a delivery that resolves nothing under an unmoved binding is settled, not refused", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(72, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    try {
+      // The world this delivery arrives in is the one AFTER the detach: the point of this case is an
+      // empty reading whose binding has not moved SINCE the message, which is the ordinary shape of
+      // an inbox nothing of ours answers. The generation is therefore read once the row and the mode
+      // are where they will be — and read at all rather than assumed, since the detach itself steps
+      // the counter through the trigger.
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "production" },
+      });
+      const settled = await suDb.inbox.findUniqueOrThrow({
+        where: { id: inbox.id },
+        select: { bindingGeneration: true },
+      });
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `obr-${process.pid}-steady-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+          bindingGeneration: settled.bindingGeneration,
+        },
+        select: { id: true },
+      });
+      expect(
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+          receiptBindingGeneration: settled.bindingGeneration,
+        }),
+      ).toBe("processed");
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    }
+  });
+  // WINDOW 3 (issue #540): the stand-down beside a responder was decided by reading that responder's
+  // mode and switch AT THE MOMENT THE OBSERVER ASKED. The two deliveries are concurrent by
+  // construction — one message, two routes — so a switch flipped between them makes this route stay
+  // quiet about a message the responder never folded in. The sibling row states what its own claim
+  // resolved, and that is what is read.
+  test("beside a responder whose own delivery recorded that it remembers nothing, the message is remembered here", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    // The responder's own delivery, claimed while its agent was in test mode or switched off. Its
+    // agent reads as production and enabled NOW, which is the whole point: the mode moved between
+    // the two deliveries and only the row remembers what was true for that one.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-none`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 74,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: false,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 74, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect(customerFacing()).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+  });
+
+  // ...AND THE SAME READING IN THE OTHER DIRECTION. The responder's delivery folded the message in;
+  // its agent has since been moved to test mode, which the mode reading would take as "nobody
+  // remembered it" — and this route would append a second copy of a message the shared thread
+  // already holds.
+  test("beside a responder whose own delivery recorded that it remembers, this route stands down even though the mode has since changed", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-yes`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 75,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: true,
+      },
+    });
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { mode: "test" },
+    });
+    try {
+      const { messageId } = await deliver(OBSERVER_BOT, 75, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      expect(messageId).toBe(sharedMessage);
+      expect(customerFacing()).toEqual([]);
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { mode: "production" },
+      });
+    }
+  });
+
+  // ...AND THE SIBLING IS THE RESPONDER'S DELIVERY OF THE SAME EVENT (PR review, round 1). One
+  // customer message reaches the ledger twice — the creation, and the `message_updated` that finally
+  // carried a voice note's transcription — and both name it through `inboundMessageId` (issue #478).
+  // Matched without the event, this delivery would read the OTHER one's decision, and where the mode
+  // moved between them it is exactly the wrong one.
+  test("a sibling delivery of a different event does not answer for this one", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    // The responder's TRANSCRIPTION delivery of the same message, claimed while its agent remembered
+    // nothing. The creation this test delivers has no sibling of its own, so the mode reading — the
+    // responder is production and enabled — is what must answer, and it says the responder has it.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-other-event`,
+        event: "message_updated",
+        status: "PROCESSING",
+        conversationId: 81,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: false,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 81, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+  });
+
+  // ...and a sibling that has not claimed yet says nothing, so the mode reading stands — which is
+  // what every delivery did before the column existed. This is the part of the window the change
+  // narrows rather than closes, and it is asserted so a later reading cannot quietly widen it.
+  test("beside a responder whose delivery has not claimed yet, the mode is what answers", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-remembers-unstated`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: 76,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 76, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+  });
+  // ...AND WHEN THE RESPONDER HAS SEVERAL DELIVERIES OF THE SAME EVENT, IT IS THE NEWEST THAT
+  // ANSWERS — including when the newest has not claimed yet (PR review, round 6). One message can
+  // emit `message_updated` more than once (a raw media write, then the transcription's), and a
+  // redelivery repeats an event outright: every one of those rows shares this conversation, message,
+  // route and event, so nothing on the row identifies its fan-out. The query used to skip rows that
+  // had stated nothing, and skipping is what made it walk back to an OLDER delivery's answer and
+  // hand it back as this one's — a mode change between the two then made this route repeat a message
+  // the responder folded in, or stay quiet about one it did not.
+  //
+  // The honest reading is the latest sibling, whatever it says. Null from it means the responder has
+  // not decided yet, which falls back to the responder's CURRENT mode — and that mode is what the
+  // responder's own claim is about to read anyway, so it beats a settled answer to an older
+  // question. Here the older delivery remembered nothing while the responder is production and
+  // enabled now: read from the old row this route would append the message, and it must not.
+  test("the newest sibling answers, even unclaimed, and an older one does not answer for it", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-newest-sibling-old`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 82,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: false,
+      },
+    });
+    // The fan-out this delivery belongs to, still unclaimed: the responder's row is in the ledger
+    // and its decision is not.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-newest-sibling-new`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: 82,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 82, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect(customerFacing()).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+  });
+  // WINDOW 5 (issue #540): the attach window used to have no fact of its own. The row was written
+  // only after Chatwoot agreed, so a delivery landing inside it read "no row" — and where a
+  // promotion committed in that same window, not even the monitoring mode that stood in for the
+  // row. The row is now written first, unstamped, and the receiver reports that as the window: the
+  // verdict armed off it says `attaching`, so the tick retries instead of completing on a binding
+  // that has not landed, which for a resolve is permanent.
+  test("a delivery inside the attach window is reported as attaching", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true },
+    });
+    // The row as `observeInbox` writes it before asking the fork.
+    await suDb.inboxObserver.updateMany({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      data: { attachedAt: null },
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: observerId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    try {
+      await deliver(OBSERVER_BOT, 79, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      const rows = await observeRows();
+      expect(rows).toHaveLength(1);
+      const armed = rows[0];
+      if (!armed) throw new Error("no OBSERVE row");
+      expect((armed.payload as { attaching?: boolean }).attaching).toBe(true);
+    } finally {
+      await suDb.inboxObserver.updateMany({
+        where: { tenantId, inboxId: inbox.id, agentId: observerId },
+        data: { attachedAt: new Date() },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: before.settings ?? {} },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
+      });
+    }
+  });
+
+  // ...and a stamped row is not a window: the same delivery arms an ordinary verdict.
+  test("a delivery on a settled observer binding is not reported as attaching", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: observerId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: {
+        settings: {
+          monitoring: {
+            labelGroups: [
+              { name: "assunto", values: ["cancelamento", "outros"] },
+            ],
+          },
+        },
+      },
+    });
+    try {
+      await deliver(OBSERVER_BOT, 80, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      });
+      const rows = await observeRows();
+      expect(rows).toHaveLength(1);
+      const armed = rows[0];
+      if (!armed) throw new Error("no OBSERVE row");
+      expect(
+        (armed.payload as { attaching?: boolean }).attaching,
+      ).toBeUndefined();
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { settings: before.settings ?? {} },
+      });
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "OBSERVE" },
       });
     }
   });

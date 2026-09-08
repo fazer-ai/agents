@@ -392,6 +392,41 @@ model ChatwootWebhookDelivery {
   // by construction. NULL on every delivery that owed no takeover, and on every row an older build
   // wrote, where the recovery falls back to its unfenced form.
   humanReplyMessageId Int?                  @map("human_reply_message_id")
+  // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), written at INSERT
+  // and never again. Every later reader compares it against the inbox's generation now: equal means
+  // nothing about who routes this inbox has moved since the message arrived, so a fact re-derived
+  // from the binding (which bot answers, which agent is the responder) is evidence about receipt
+  // time; different means the re-derivation describes a world the message never arrived in.
+  //
+  // AT INSERT AND NOT AT THE CLAIM, which is the whole of its value. The role (`routeObserved`) is
+  // stated by the claim, so a row that stranded before it has no role — and that is exactly the row
+  // a later reader has to reason about. Stamped by the claim too, the generation would be null on
+  // precisely those rows and could answer nothing. The cost is one indexed read on the receive path,
+  // paid before the ack.
+  //
+  // Null when the payload named no inbox, when the inbox is not mirrored here, when the read failed,
+  // and on every row an older build wrote. All four are one answer — "this row cannot say" — and no
+  // reader may treat it as generation zero. Deliberately NOT in `LEDGER_FILLABLE`: a redelivery's
+  // reading is about a later moment, and filling it would put a present-day world on a row that
+  // arrived in an older one.
+  bindingGeneration   Int?                  @map("binding_generation")
+  // WHETHER THIS DELIVERY'S ROUTE FOLDS INTO MEMORY WHAT IT DOES NOT ANSWER (issue #540, window 3),
+  // stated by the claim beside the role, from the runtime that claim resolved. True on an observer's
+  // route, whose whole work is the memory; true on a responder that is switched on and ingests
+  // continuously; false on a test-mode or switched-off responder, and on a route that resolved no
+  // runtime at all.
+  //
+  // It exists because an observer beside a responder stands down on the strength of what the
+  // RESPONDER's own delivery of the same message did, and that was being answered by reading the
+  // responder's mode NOW. A switch flipped between two concurrent deliveries of one message then
+  // makes the observer stay quiet about a message the responder never recorded, or repeat one it
+  // did. The sibling row is the only place that fact exists, and it is written before either
+  // delivery can have finished.
+  //
+  // Null on a row an older build wrote and on one that stranded before the claim — the same
+  // signature `routeObserved` carries. A reader falls back to the mode reading there, which is what
+  // every delivery had before this column.
+  routeRemembers      Boolean?              @map("route_remembers")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -409,21 +444,25 @@ model ChatwootWebhookDelivery {
   // NOTE: the sweep's own index is PARTIAL and lives in raw SQL, which Prisma cannot express:
   // `(tenant_id, received_at) WHERE status IN ('PENDING','PROCESSING')`. See the migration for why
   // a full index over this table is the wrong shape.
+  // NOTE: so is the reply half of the sibling lookup, for the same reason:
+  // `(chatwoot_instance_id, conversation_id, human_reply_message_id) WHERE human_reply_message_id IS NOT NULL`.
+  // The inbound half is the named index above; see 20260908170004 for why the absence case is the
+  // one that had to be indexed.
   @@map("chatwoot_webhook_deliveries")
 }
 
 model Inbox {
-  id                 BigInt   @id @default(autoincrement())
-  tenantId           BigInt   @map("tenant_id")
-  chatwootInstanceId BigInt   @map("chatwoot_instance_id")
-  chatwootInboxId    Int      @map("chatwoot_inbox_id")
+  id                 BigInt    @id @default(autoincrement())
+  tenantId           BigInt    @map("tenant_id")
+  chatwootInstanceId BigInt    @map("chatwoot_instance_id")
+  chatwootInboxId    Int       @map("chatwoot_inbox_id")
   name               String
-  channelType        String?  @map("channel_type")
+  channelType        String?   @map("channel_type")
   // WhatsApp provider (whatsapp_cloud | default(=360dialog) | baileys | zapi) when channelType is
   // Channel::Whatsapp; null for other channels or until an inbox sync populates it. Drives the 24h
   // service-window gate (only the official providers have a window). Captured from the inbox-list sync.
   provider           String?
-  agentId            BigInt?  @map("agent_id")
+  agentId            BigInt?   @map("agent_id")
   // WHEN THE CURRENT RESPONDER BINDING WAS MADE (issue #476 review, round 31). Chatwoot picks a
   // message's webhook recipients from the bindings that exist AT EMISSION, so an observer beside a
   // responder can only stand down for the responder's own delivery when that responder was already
@@ -434,13 +473,33 @@ model Inbox {
   // the inbox is unbound, and on every row bound before this column existed, where the reader falls
   // back to treating the binding as older than any delivery (the behaviour that predates it).
   responderBoundAt   DateTime? @map("responder_bound_at")
-  workingHours       Json?    @map("working_hours")
+  // HOW MANY TIMES WHO ROUTES THIS INBOX HAS CHANGED (issue #540). Stepped by a DATABASE TRIGGER on
+  // every write that moves a binding — the responder bound, rebound or unbound, an observer attached
+  // or detached — so the counter and the world it describes commit together and no writer can miss
+  // it. Never written from application code; a value sent for this column is overwritten.
+  //
+  // A TRIGGER RATHER THAN THE FIVE CALL SITES, and the reason is the rolling deploy (docs/deploy.md)
+  // as much as it is tidiness: the previous release moves bindings for the whole length of the
+  // overlap and names no such column, so an application-side counter stands still exactly while a
+  // reader on the new release is trusting it. The same hole swallowed `softDisconnectChatwootInstance`,
+  // which unbinds every inbox of an account with a raw UPDATE of its own.
+  //
+  // A COUNTER AND NOT A TIMESTAMP, deliberately. `responderBoundAt` is a moment on OUR clock, and
+  // every reader of it has to compare against a moment on Chatwoot's; a delivery that straddles a
+  // rebind then reads as evidence when the two clocks are seconds apart and the answer is
+  // unknowable. A counter is exact: a delivery records the value it resolved under, and a later
+  // reader learns "the world moved" or "it did not", with no clock in between.
+  //
+  // It says nothing about WHAT changed, and it does not need to. Every reader that consults it is
+  // deciding whether a re-derivation is still applicable, and any movement is enough to answer no.
+  bindingGeneration  Int       @default(0) @map("binding_generation")
+  workingHours       Json?     @map("working_hours")
   // Channel::WebWidget provisioning blob (encryptJson of { websiteToken, hmacToken, hmacMandatory,
   // websiteUrl }) for the WhatsApp→chat redirect feature. The hmac_token is secret (used to compute the
   // per-lead identifier_hash), so the whole blob is encrypted at rest. NULL for non-web-widget inboxes.
-  webWidget          String?  @map("web_widget")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  webWidget          String?   @map("web_widget")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance      ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -456,11 +515,46 @@ model Inbox {
 // conversation — the inbox keeps starting conversations `open` for whoever answers. The responder
 // stays `Inbox.agentId`, alone; only a `monitoring` agent may be bound this way, and never as both.
 model InboxObserver {
-  id        BigInt   @id @default(autoincrement())
-  tenantId  BigInt   @map("tenant_id")
-  inboxId   BigInt   @map("inbox_id")
-  agentId   BigInt   @map("agent_id")
-  createdAt DateTime @default(now()) @map("created_at")
+  id         BigInt    @id @default(autoincrement())
+  tenantId   BigInt    @map("tenant_id")
+  inboxId    BigInt    @map("inbox_id")
+  agentId    BigInt    @map("agent_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  // WHEN CHATWOOT AGREED, or null while it has not been asked yet (issue #540, window 5).
+  //
+  // The row used to be written only AFTER the fork accepted the attachment, which left the receiver
+  // with no signal at all inside that window: no row yet, and — if a promotion committed meanwhile —
+  // no monitoring mode either, which was the proxy standing in for the row. The row is now written
+  // BEFORE the call and stamped after it, so the window has a fact of its own instead of an
+  // inference, and the compensation that already existed deletes the pending row.
+  //
+  // WHAT THE ROW MEANS therefore changed, from "Chatwoot agreed" to "this inbox is spoken for". Every
+  // reader that asks whether an agent observes an inbox counts a pending row — refusing a mode change
+  // or a deletion, listing the inbox, taking the observer's route — because the attachment may
+  // already be live upstream and answering "no" is the unsafe side. Three readers ask something
+  // narrower and read the stamp itself: the receiver, which reports the attach window; the observe
+  // tick, which retries rather than acting on a binding that has not landed; and `observeInbox`'s own
+  // compensation, which must not read its own pending row as somebody else depending on the
+  // attachment.
+  //
+  // Backfilled for every row the previous release wrote — each of those exists precisely because
+  // Chatwoot had agreed — and by the column's own default rather than by a data statement, since
+  // `inbox_observers` is under FORCE ROW LEVEL SECURITY and an UPDATE there silently reaches zero
+  // rows for a non-superuser owner (see the migration).
+  //
+  // DEFAULTED TO NOW, AND THE DEFAULT IS THE ROLLOUT (docs/deploy.md). The previous release names no
+  // such column, so every row it writes during the overlap would land with a null and be read here as
+  // an attach that never lands: the observe tick would retry forever and the receiver would report a
+  // window that closed the moment it opened. With the default, a row written by anything that does
+  // not know about pending rows is confirmed, and the null is only ever the one THIS module writes on
+  // purpose, in the seconds between its own insert and the fork's answer.
+  //
+  // WHAT THE DEFAULT DOES NOT COVER is the previous release COMPLETING a pending row this one wrote
+  // (PR review, round 18): it reads any existing row as already observing and its upsert carries an
+  // empty update payload, which — measured against this repo's Prisma — emits no UPDATE at all, so
+  // no trigger and no default can settle the stamp from that side. That is a deploy-order note
+  // rather than a column one, and it is written down where the other four of its kind are.
+  attachedAt DateTime? @default(now()) @map("attached_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   inbox  Inbox  @relation(fields: [inboxId], references: [id], onDelete: Cascade)

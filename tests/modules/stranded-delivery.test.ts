@@ -253,6 +253,30 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "owed-transcription",
     },
     {
+      // ISSUE #540, window 2. A colleague's reply whose delivery died between the INSERT and the
+      // claim: the shape is on the row (written at INSERT), and the role is not, because the claim
+      // is the statement that writes it. Read as the responder's — which is what shipped — a
+      // WATCHER's row is silently mis-served: the takeover correctly answers `not-owed` and the
+      // observer's lost ingestion, the whole of what that route owed, leaves no trace anywhere.
+      name: "a reply stranded before the claim names no role",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      status: "PENDING",
+      claimed: false,
+      expected: "role-unstated",
+    },
+    {
+      // ...and the claim having RUN is what makes a null role evidence again: this build states the
+      // role in that same statement, so a claimed row with none is an older build's, and that is the
+      // population the responder reading exists for.
+      name: "a reply the claim reached with no role is still read as the responder's",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      expected: "owed-takeover",
+    },
+    {
       // The guard is on the event NAME, not on the ids: a message event whose id columns an older
       // build never wrote is still the row this sweep exists for.
       name: "a message event from a build we cannot read is still a loss",

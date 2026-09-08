@@ -2195,6 +2195,75 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
+  // ISSUE #540, window 2. The same colleague's reply, on a row the claim never reached: the shape is
+  // there (INSERT wrote it) and the role is not, because the claim is the statement that writes it.
+  // This pass cannot tell a watcher's route from the responder's, and each guess costs something
+  // different — so it does both honest things. The takeover is armed, which `recover-takeover`
+  // answers `not-owed` to where it was not due; and the gap is reported, which is what reading the
+  // row as the responder's silently skipped.
+  test("a reply stranded before its route was named is armed AND reported", async () => {
+    const convId = 8872;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 3,
+      // Never claimed: nothing stated the role, and nothing could have.
+      status: "PENDING",
+      humanReplyShape: "composer",
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.roleUnstated).toBe(1);
+    // Not folded into either neighbour: `owed` would say the takeover was owed, `closed` would say
+    // nothing was outstanding, and this row is the one where neither is known.
+    expect(counts.owed).toBe(0);
+    expect(counts.observerStrands).toBe(0);
+    expect(counts.closed).toBe(0);
+    expect(counts.lost).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("PROCESSED");
+    // Armed, unlike `observer-strand`, because the responder's route is the common one and refusing
+    // there costs a real handover.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "TAKEOVER_RECOVERY",
+          dedupeKey: takeoverRecoveryDedupeKey(rowId),
+        },
+      }),
+    ).toBe(1);
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  // ...AND THE LINE DOES NOT CLAIM AN ARMING THAT DID NOT HAPPEN (PR review, round 6). The row is
+  // PROCESSED by then and nothing revisits it, so this line is the only record it leaves: stated
+  // unconditionally, it told an operator a takeover was armed on the exact reading where it was not,
+  // which is the one case they would have had to act on themselves.
+  //
+  // A SOURCE FENCE, for the reason the loss-line one above gives: making `enqueueJob` throw against
+  // a real database means faking the client out from under the code under test, which proves nothing
+  // about what ships. What is asserted is the branch.
+  test("the reply-stranded line says whether the takeover was actually armed", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
+    ).text();
+    const arm = src.slice(
+      src.indexOf('if (verdict === "role-unstated")'),
+      src.indexOf('if (verdict === "owed-takeover")'),
+    );
+    expect(arm.length).toBeGreaterThan(0);
+    // The catch records the failure...
+    expect(arm).toContain("armed = false;");
+    // ...and the line that follows reads it rather than asserting the happy path.
+    expect(arm).toContain("armed\n");
+    expect(arm).toContain("A takeover COULD NOT BE ARMED");
+    // The unconditional claim is gone: it must not appear outside the ternary's true arm.
+    expect(
+      arm.includes("route. A takeover is armed in case it was the responder's"),
+    ).toBe(false);
+  });
+
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {
     // ISSUE #439. The row a process death leaves when the delivery it was working carried a
     // COLLEAGUE's reply: `message_created`, no inbound message id (nothing a customer sent), and the

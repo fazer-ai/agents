@@ -49,10 +49,44 @@ const GRANDFATHERED = new Set([
   "20260807032257_agent_follow_up_armed_at",
 ]);
 
+// A `CREATE FUNCTION` body is not this migration's DML, and it is the one thing that has to come out
+// before the scan below (issue #540). A statement inside a trigger function does not run when the
+// migration runs: it runs later, once per row written by somebody else, in that writer's own
+// transaction and under that writer's own RLS context. Counted as the migration's own, it demands a
+// bypass that would be both meaningless (there is nothing to bypass at migration time) and wrong
+// (the bracket lifts FORCE for the duration of the migration, not for the trigger's later callers).
+//
+// ONLY a function body, and `DO $$ … $$` deliberately stays in: that one DOES run during the
+// migration and is subject to RLS exactly like a bare UPDATE — a backfill wrapped in a DO block is
+// the shape this rule most needs to keep catching. The tag is matched as Postgres spells it
+// (`$$` or `$name$`) and the body ends at the first repeat of the SAME tag.
+export function stripFunctionBodies(sql: string): string {
+  const re = /\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b/i;
+  let done = "";
+  let rest = sql;
+  for (;;) {
+    const head = re.exec(rest);
+    if (head === null) return done + rest;
+    const tag = /\$([A-Za-z_]\w*)?\$/.exec(rest.slice(head.index));
+    if (!tag) return done + rest;
+    const openAt = head.index + (tag.index ?? 0);
+    const closeAt = rest.indexOf(tag[0], openAt + tag[0].length);
+    if (closeAt === -1) return done + rest;
+    // THE HEADER GOES WITH THE BODY, and the scan resumes AFTER it. Leaving the header behind and
+    // rescanning from the start matches the same `CREATE FUNCTION` again and swallows the next
+    // dollar-quoted block as if it were that function's body — which is a `DO $$ … $$` in
+    // `20260827000000_rls_split_tenant_and_fleet_policies` and in
+    // `20260903120000_rename_http_tools_named_after_natives`, so the rule would quietly stop reading
+    // the DML it exists for.
+    done += `${rest.slice(0, head.index)}CREATE_FUNCTION`;
+    rest = rest.slice(closeAt + tag[0].length);
+  }
+}
+
 // The tables a file's DML writes to. Deliberately syntactic and deliberately blunt: it over-reports
 // rather than under-reports, because a name this misses is a check that silently does not happen.
 export function tablesWrittenBy(sql: string): string[] {
-  const stripped = sql.replace(/^\s*--.*$/gm, "");
+  const stripped = stripFunctionBodies(sql).replace(/^\s*--.*$/gm, "");
   const names: string[] = [];
   const re =
     /\b(?:UPDATE|DELETE\s+FROM|INSERT\s+INTO)\s+"?([A-Za-z_][\w]*)"?/gi;
@@ -134,7 +168,7 @@ export function bracketedTables(sql: string): Set<string> {
 // Blunt like `tablesWrittenBy`, and for the same reason: a `DELETE FROM` target lands here too,
 // which costs nothing since it is bracketed as a write already.
 export function tablesReadBy(sql: string): string[] {
-  const stripped = sql.replace(/^\s*--.*$/gm, "");
+  const stripped = stripFunctionBodies(sql).replace(/^\s*--.*$/gm, "");
   const names: string[] = [];
   const re = /\b(?:FROM|JOIN)\s+"?([A-Za-z_][\w]*)"?/gi;
   for (const m of stripped.matchAll(re)) {
@@ -313,5 +347,45 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     }
     expect(stale).toEqual([]);
     expect(early).toEqual([]);
+  });
+
+  // The narrowing above, asked directly: a trigger function's body comes out, and everything that
+  // actually runs during the migration stays in — a DO block most of all, since a backfill wrapped in
+  // one is exactly the shape this rule exists to catch.
+  test("a function body is not the migration's own DML; a DO block still is", () => {
+    const trigger = `
+      CREATE OR REPLACE FUNCTION bump()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        UPDATE "inboxes" SET binding_generation = binding_generation + 1 WHERE id = NEW.inbox_id;
+        RETURN NEW;
+      END;
+      $$;
+      CREATE TRIGGER t AFTER INSERT ON "inbox_observers" FOR EACH ROW EXECUTE FUNCTION bump();`;
+    expect(tablesWrittenBy(trigger)).toEqual([]);
+
+    const doBlock = `
+      DO $$ BEGIN UPDATE "agents" SET follow_up_armed_at = now(); END $$;`;
+    expect(tablesWrittenBy(doBlock)).toEqual(["agents"]);
+
+    // ...and a bare statement beside a function keeps being seen, so the marker cannot swallow the
+    // rest of the file.
+    const both = `${trigger}
+      UPDATE "agents" SET name = 'x';`;
+    expect(tablesWrittenBy(both)).toEqual(["agents"]);
+
+    // THE SHAPE THE EXISTING MIGRATIONS ACTUALLY HAVE: a function, and then a DO block that runs
+    // during the migration. The second must survive the stripping of the first, or the rule stops
+    // reading the very DML it is for.
+    const functionThenDo = `${trigger}
+      DO $$ BEGIN UPDATE "agents" SET follow_up_armed_at = now(); END $$;`;
+    expect(tablesWrittenBy(functionThenDo)).toEqual(["agents"]);
+
+    // Two functions in one file, with a statement after each: neither header may eat what follows.
+    const twoFunctions = `${trigger}
+      UPDATE "agents" SET name = 'a';
+      ${trigger}
+      UPDATE "inboxes" SET name = 'b';`;
+    expect(tablesWrittenBy(twoFunctions)).toEqual(["agents", "inboxes"]);
   });
 });

@@ -1631,6 +1631,15 @@ export function ToolEditModal({
     // is deleted or the session ends, and both of those clear what this tab remembers; without the
     // ticket, the response arriving afterwards would put the sample back (round 4 of review).
     const ticket = sampleTicket();
+    // READ HERE, WITH THE TICKET, for the same reason the ticket is read here. `sample`,
+    // `sampleStatus` and `payload` are all values this closure captured when Save was pressed; this
+    // is a REF, and reading it in the continuation asks what the form says NOW. Dismiss a slow save
+    // and reopen, and the opening that follows writes its own marker into it: the answer that comes
+    // back is then compared against another opening's capture, which can only turn a right answer
+    // into a wrong one — the sample that did describe this payload discarded, or one that did not
+    // kept. Fourth round to find this shape, something the continuation reads at the end that had
+    // already moved (round 18 of review).
+    const captured = sampleShapeRef.current;
     setFormError(null);
     const payload = payloadOf(form);
     if (payload === null) {
@@ -1668,7 +1677,7 @@ export function ToolEditModal({
       const revision = revisionForSave(
         row,
         openedRevisionRef.current,
-        sampleDescribes(sampleShapeRef.current, payload),
+        sampleDescribes(captured, payload),
       );
       const id = row?.id ?? (editId as string);
       // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).

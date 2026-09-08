@@ -1395,6 +1395,16 @@ describe("the two seams that have to clear it", () => {
     // (measured: replacing that argument with `true` survives the battery otherwise). This is still
     // a grammar, but a stable one: it says the question is asked, not how.
     expect(save).toInclude("sampleShapeRef");
+    // AND IT IS READ BEFORE THE REQUEST, exactly like the ticket. Everything else the continuation
+    // uses (`sample`, `sampleStatus`, `payload`) is a value this closure captured when Save was
+    // pressed; the marker is a REF, so reading it at the end asks what the form says NOW, and a
+    // dismiss-and-reopen while the save is out puts the next opening's answer there. Fourth round to
+    // find this shape, so it is asked of the source the same way the ticket's order is.
+    const shapeRead = save.indexOf("sampleShapeRef.current");
+    expect(shapeRead).toBeGreaterThan(-1);
+    expect(shapeRead).toBeLessThan(request);
+    // ONCE, because a second read is a second answer and only one of them went out with the request.
+    expect(save.match(/sampleShapeRef\.current/g)?.length ?? 0).toBe(1);
   });
 
   // The same question at the OTHER site that mutates the cache after a request. It was written

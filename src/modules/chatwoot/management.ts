@@ -1434,7 +1434,10 @@ export async function reconcileInboxBots(
         id: true,
         chatwootInstanceId: true,
         agentId: true,
-        observers: { select: { agentId: true } },
+        // The STAMP as well (issue #540, PR review round 5). This is the one place an operator finds
+        // out that a binding of theirs is not what the console shows, and until now it asked a
+        // question a pending row answers wrongly — see below.
+        observers: { select: { agentId: true, attachedAt: true } },
       },
     }),
   );
@@ -1483,10 +1486,24 @@ export async function reconcileInboxBots(
       // nothing — and it was invisible, so an operator could not tell an observer that stopped
       // watching from one that is watching quietly. Observing again is its Reconnect: the attach
       // is idempotent and `ensureAgentBot` re-provisions a bot that is gone.
+      // ...AND A ROW CHATWOOT NEVER CONFIRMED IS NOT AN ACTIVE BINDING (issue #540, PR review round
+      // 5). A process dying between the pending insert and the stamp leaves a row nothing settles:
+      // the DTO lists it as an observer, and this reconcile — which asks only whether the persona's
+      // BOT exists — answered `active` off a bot that exists for some other inbox of the same
+      // persona. The console then showed the binding healthy and offered no repair, while the
+      // observe tick retried against a binding that never landed and the receiver went on reporting
+      // an attach window that would never close.
+      //
+      // Reported as `missing`, which is the status the console already offers Reconnect for, and it
+      // is the right instruction for BOTH shapes a pending row can have: one whose attach never ran,
+      // and one that ran and was never stamped. Observing again asks the fork either way (the POST
+      // is idempotent) and stamps the row in its own transaction.
       for (const o of ib.observers) {
         const botId = botByKey.get(`${instanceId}:${o.agentId}`);
         observerResult[`${ib.id}:${o.agentId}`] =
-          botId != null && liveIds.has(botId) ? "active" : "missing";
+          o.attachedAt !== null && botId != null && liveIds.has(botId)
+            ? "active"
+            : "missing";
       }
     }
   }
@@ -2668,6 +2685,47 @@ export async function assertBindTargetNotObserving(
   });
 }
 
+// TAKING BACK A PENDING OBSERVER ROW, and it is a top-level function rather than a closure inside
+// `observeInbox` because it is a TRANSACTION OF ITS OWN (issue #540, PR review round 5): every one
+// of its three call sites runs after the main transaction has ended, on a road out of the call that
+// is not a completed observe. Written here, the lock-order fence in `audit-channel-family.test.ts`
+// reads it as the separate path it is, instead of folding its inbox lock into the enclosing
+// function's account-then-inbox order.
+//
+// Only ever the row the caller wrote, and only while it is still unstamped: a concurrent observe
+// that completed in the meantime owns it by then.
+async function dropPendingObserverRow(
+  ctx: TenantContext,
+  tenantId: bigint,
+  inboxId: bigint,
+  agentId: bigint,
+  base: PrismaClient,
+): Promise<void> {
+  try {
+    await runScopedOn(base, ctx, async (db) => {
+      // THE INBOX FIRST, which is this module's one lock order and now also a deadlock this delete
+      // would otherwise take part in. The DELETE locks the observer row and its AFTER DELETE trigger
+      // then waits on the inbox row, while `bindInbox` and `unobserveInbox` deliberately lock the
+      // inbox and then wait to delete the same observer row: opposite orders, so Postgres aborts one
+      // with 40P01. Aborted here it would be caught and swallowed below, leaving a pending row
+      // behind while the compensation detaches the observer upstream — the two sides disagreeing,
+      // which is what this whole path avoids.
+      await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
+      await db.inboxObserver.deleteMany({
+        where: { tenantId, inboxId, agentId, attachedAt: null },
+      });
+    });
+  } catch (err) {
+    // A row left pending is read as an attach in flight: the receiver reports the attach window and
+    // the observe tick retries rather than acting. Re-observing stamps it and unobserving removes
+    // it, which is the repair every other leak in this path already has.
+    logger.warn(
+      { err, inboxId: String(inboxId), agentId: String(agentId) },
+      "chatwoot: an observer row this call wrote could not be taken back; it stays pending until an observe or an unobserve settles it",
+    );
+  }
+}
+
 export async function observeInbox(
   ctx: TenantContext,
   inboxId: bigint,
@@ -2771,21 +2829,7 @@ export async function observeInbox(
   // completed in the meantime owns it by then.
   const dropPendingRow = async () => {
     if (!wrotePendingRow) return;
-    try {
-      await runScopedOn(base, ctx, (db) =>
-        db.inboxObserver.deleteMany({
-          where: { tenantId, inboxId, agentId, attachedAt: null },
-        }),
-      );
-    } catch (err) {
-      // A row left pending is read as an attach in flight: the receiver reports the attach window
-      // and the observe tick retries rather than acting. Re-observing stamps it and unobserving
-      // removes it, which is the repair every other leak in this path already has.
-      logger.warn(
-        { err, inboxId: String(inboxId), agentId: String(agentId) },
-        "chatwoot: an observer row this call wrote could not be taken back; it stays pending until an observe or an unobserve settles it",
-      );
-    }
+    await dropPendingObserverRow(ctx, tenantId, inboxId, agentId, base);
   };
   let client: ChatwootClient | null = null;
   let botId: number | null = null;

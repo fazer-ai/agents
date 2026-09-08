@@ -502,6 +502,44 @@ describe.skipIf(!dbUp)("tier-3 chatwoot management + inbox binding", () => {
     expect(withObserver.observers[`${inboxLive.id}:${agentGone.id}`]).toBe(
       "missing",
     );
+
+    // ...AND A ROW CHATWOOT NEVER CONFIRMED IS NOT ACTIVE EITHER (issue #540, PR review round 5).
+    // A process dying between the pending insert and the stamp leaves a row nothing settles, and
+    // this reconcile asked only whether the persona's BOT exists — which it does, for the other
+    // inbox that persona is on. Reported active, the console showed the binding healthy and offered
+    // no repair, while the observe tick retried against a binding that never landed.
+    const stuck = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 22,
+        name: "Attach interrompido",
+      },
+    });
+    await suDb.inboxObserver.create({
+      data: {
+        tenantId: tenant,
+        inboxId: stuck.id,
+        agentId: agentLive.id,
+        attachedAt: null,
+      },
+    });
+    // The same persona, confirmed on another inbox: its bot is alive, which is exactly what used to
+    // make the pending row read as healthy.
+    await suDb.inboxObserver.create({
+      data: { tenantId: tenant, inboxId: inboxGone.id, agentId: agentLive.id },
+    });
+    const withPending = await reconcileInboxBots(
+      ctx(tenant),
+      { makeClient: async () => stub as unknown as ChatwootClient },
+      appDb,
+    );
+    expect(withPending.observers[`${stuck.id}:${agentLive.id}`]).toBe(
+      "missing",
+    );
+    expect(withPending.observers[`${inboxGone.id}:${agentLive.id}`]).toBe(
+      "active",
+    );
   });
 
   test("listAgentsAndTeams is agent-scoped: lists only for a single-account agent", async () => {

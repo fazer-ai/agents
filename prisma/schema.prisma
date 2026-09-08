@@ -548,6 +548,12 @@ model InboxObserver {
   // window that closed the moment it opened. With the default, a row written by anything that does
   // not know about pending rows is confirmed, and the null is only ever the one THIS module writes on
   // purpose, in the seconds between its own insert and the fork's answer.
+  //
+  // WHAT THE DEFAULT DOES NOT COVER is the previous release COMPLETING a pending row this one wrote
+  // (PR review, round 18): it reads any existing row as already observing and its upsert carries an
+  // empty update payload, which — measured against this repo's Prisma — emits no UPDATE at all, so
+  // no trigger and no default can settle the stamp from that side. That is a deploy-order note
+  // rather than a column one, and it is written down where the other four of its kind are.
   attachedAt DateTime? @default(now()) @map("attached_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

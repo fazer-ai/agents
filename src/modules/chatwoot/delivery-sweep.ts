@@ -153,8 +153,17 @@ type CoveredMessages =
 // `false` — the burst's own word for the messages its cap dropped — cannot take back a coverage that
 // really happened.
 //
-// NEVER ON A PENDING ROW, the same rule the settlement follows: that is the row whose owner has not
-// arrived, and this call cannot tell "abandoned" from "claimed a millisecond from now".
+// ASYMMETRIC ON A PENDING ROW, which is where this stops following the settlement's rule (PR review,
+// round 7). The settlement skips PENDING because moving that row's STATUS preempts a delivery whose
+// CAS has not run yet; this write touches only the column, so it preempts nothing.
+//
+//   `true` is written there. A flush that re-fetched the thread from Chatwoot legitimately covers a
+//   message whose own row was inserted and not yet claimed, and nothing later repairs that null: the
+//   delivery, when it does run, only re-arms a flush whose watermark has already moved past it.
+//   Left out, the commonest recovery shape in a debounced deployment records nothing.
+//
+//   `false` is not. That row's owner has not arrived, and "no turn covered this" is exactly what its
+//   own delivery is about to decide — writing the absence first would answer for it.
 export async function recordTurnCoverage(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -186,7 +195,7 @@ export async function recordTurnCoverage(params: {
       where: {
         AND: [
           scope,
-          { status: { not: "PENDING" } },
+          ...(covered ? [] : [{ status: { not: "PENDING" as const } }]),
           covered
             ? { OR: [{ turnCovered: null }, { turnCovered: false }] }
             : { turnCovered: null },

@@ -1920,6 +1920,70 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(await read(silenced)).toBe(false);
   });
 
+  // A PENDING ROW TAKES THE COVERAGE AND NOT THE ABSENCE (PR review, round 7). The settlement skips
+  // PENDING because moving that row's STATUS preempts a delivery whose CAS has not run; this write
+  // touches only the column. A flush that re-fetched the thread legitimately covers a message whose
+  // row was inserted and not yet claimed, and nothing later repairs that null — the delivery, when it
+  // runs, only re-arms a flush whose watermark has already moved past it.
+  test("a pending row records a coverage, and never the absence of one", async () => {
+    const convId = 8940;
+    const conv = await seedConversation(convId);
+    const mk = async (messageId: number) =>
+      (
+        await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `turn-covered-pending-${process.pid}-${messageId}`,
+            event: "message_created",
+            status: "PENDING",
+            conversationId: convId,
+            inboundMessageId: messageId,
+          },
+          select: { id: true },
+        })
+      ).id;
+    const coveredRow = await mk(9799);
+    const untouched = await mk(9800);
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "answered",
+      covered: true,
+      messageIds: [9799],
+      base: appDb,
+    });
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "consumed",
+      covered: false,
+      messageIds: [9800],
+      base: appDb,
+    });
+
+    const read = async (id: bigint) =>
+      await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id },
+        select: { turnCovered: true, status: true },
+      });
+    expect(await read(coveredRow)).toEqual({
+      turnCovered: true,
+      // ...and the STATUS is untouched, which is what makes writing there safe: the CAS this row's
+      // own delivery is about to run still finds it PENDING.
+      status: "PENDING",
+    });
+    expect(await read(untouched)).toEqual({
+      turnCovered: null,
+      status: "PENDING",
+    });
+  });
+
   // ...AND IT DOES MOVE THE OTHER WAY. `false` is the ABSENCE of a turn, not a claim that none can
   // ever run: a message consumed with no turn records `false`, and an operator's manual
   // re-engagement then runs a turn over that same tail and checkpoints it. Frozen at `false`, the

@@ -203,6 +203,23 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
   // hold against an export still walking by `id` alone, which is exactly what it must not do since
   // #530. Measured: dropping this row lets the comparison pass with the two readers ordered
   // differently.
+  // AND THEY AGREE ON THE NAME FROM BEFORE THE RENAME TOO (#555). This is the sharp end of the
+  // redirect: the page's empty trail is at least on screen next to a picker offering the new name,
+  // while an export is a file, quoted to a customer, that says "no consent decision was recorded"
+  // with nothing around it to correct the impression. Asserted NON-EMPTY on purpose — the same
+  // comparison over two empty results passes against the defect.
+  test("an export filtered by the spelling from before the rename carries the rows", async () => {
+    await seed(mine, "mcp_oauth_consent.grant", `${TAG}:renamed`, {
+      at: "2026-04-02T00:00:00Z",
+    });
+    const { listAudit } = await import("@/modules/audit/service");
+    const filter = { action: "mcp_oauth_consent_granted" };
+    const page = await listAudit(ctx(), { ...filter, limit: 500 }, appDb);
+    const csv = parseCsv((await exportAudit(ctx(), filter, appDb)).content);
+    expect(col(csv, "action")).toEqual(["mcp_oauth_consent.grant"]);
+    expect(col(csv, "id")).toEqual(page.entries.map((e) => e.id));
+  });
+
   test("the rows are the rows the page shows, for the same filter", async () => {
     const { listAudit } = await import("@/modules/audit/service");
     await seed(mine, "agent.update", `${TAG}:skew`, {

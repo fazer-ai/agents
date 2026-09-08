@@ -101,32 +101,18 @@ export const AUDIT_ACTIONS = [
   "mcp_connection.create",
   "mcp_connection.delete",
   "mcp_connection.update",
+  // The two consent actions carried an older spelling until #523 renamed the producers, and every
+  // recorded row moved to these names in #555, one release later. The gap was the rollout: the
+  // outgoing container's copy of this list is frozen in its image, so moving the rows in the same
+  // release would have offered it two values matching nothing. WHAT THAT STAGING ASSUMES is the
+  // upgrade path, in BOTH directions. An install that jumps straight past #523's release, or rolls
+  // back to an image older than it, has a catalog that never learned these names: its filter reads
+  // the consent family as empty until it rolls forward, and nothing is lost. But such an image also
+  // still WRITES the old spelling, and a decision it records after the backfill stays under a name
+  // this list no longer offers, since the migration is one shot. `docs/deploy.md` carries both
+  // halves and the repair for the second.
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
-  // THE TWO OLD SPELLINGS, AND EVERY ROW RECORDED SO FAR IS UNDER THEM. Nothing in this release
-  // writes them any more — the two above replaced them — and no row has moved, which is the whole
-  // shape of this release rather than an omission.
-  //
-  // The rename and the backfill cannot ship together, and the reason is the deploy rather than the
-  // code. The rollout overlaps: the incoming container runs `prisma migrate deploy` while the
-  // outgoing one is still serving, and that one's catalog is FROZEN with only these two names. Move
-  // the rows in the same release and its picker offers two values that now match nothing, so the
-  // consent family reads as empty on the old container for the length of the upgrade — and
-  // indefinitely after a rollback, which is a thing operators do when a release misbehaves.
-  //
-  // So this release only teaches every reader both spellings, and the backfill is the next one,
-  // where the oldest live catalog already has all four. Both of these leave with it.
-  //
-  // WHAT IS ACCEPTED, DELIBERATELY, is the other side of the same frozen catalog: a decision taken
-  // AFTER this upgrade is written under a dotted name the previous image does not list, so rolling
-  // back to it hides those decisions from the picker until you roll forward again. Nothing is lost
-  // — the rows are there, and the next release's backfill puts every one of them under one name.
-  // Closing that too would mean listing the new names one release before anything writes them,
-  // which puts a value in the operator's picker that matches nothing at all, and then a third
-  // release to finish; a cosmetic rename does not buy three. It goes in the release notes, the way
-  // the `tts.normalize` default did.
-  "mcp_oauth_consent_denied",
-  "mcp_oauth_consent_granted",
   "mcp_token.revoke",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
@@ -144,6 +130,40 @@ export const AUDIT_ACTIONS = [
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+// THE DOOR THE RENAME LEFT OPEN BEHIND IT, and it is a door, not a name.
+//
+// #555 moved every consent row off the two pre-#392 spellings and took them out of the catalog
+// above, which is the point of that change: one act, one name, one row the operator can pick. What
+// the removal ALSO does is turn every filter link somebody saved, every script that hard-codes the
+// query string and every export quoted under the old spelling into a read that matches nothing —
+// an audit trail answering "no consent decision was ever recorded" while the rows sit one name over.
+// That is the shape this subsystem refuses everywhere else (`buildAuditWhere`'s neighbours, the 403
+// on a scope rather than a narrowed answer, #520): an empty result is a sentence, and it must not be
+// said when it is false. The empty CSV handed to a customer is the sharp end of it.
+//
+// So an old spelling is accepted as INPUT and redirected here. It is never in `AUDIT_ACTIONS`, never
+// written by a producer, and never carried by a row that comes back — it exists only to point a
+// reader who learned the name before the rename at the rows that name now lives on.
+//
+// `docs/deploy.md` covers the OTHER half of the same window, and the two are not the same case: an
+// old image's frozen catalog also reads as empty, but that one is transient and closes by rolling
+// forward. A saved link does not close by itself, which is why this one is code and that one is a
+// note.
+// A MAP AND NOT AN OBJECT LITERAL, because the input here is the operator's, arriving off a URL.
+// `?action=toString` is a string like any other, and a plain-object lookup answers it with an
+// INHERITED member — a function, which `?? action` then keeps because it is not nullish. That value
+// reaches Prisma as the `action` filter, where this endpoint promises an empty result and would
+// answer a 500, and reaches the page's filter state, which expects a string. A `Map` has no
+// inherited keys to find, so the whole class is gone rather than guarded at one call site.
+export const RENAMED_AUDIT_ACTIONS: ReadonlyMap<string, AuditAction> = new Map([
+  ["mcp_oauth_consent_denied", "mcp_oauth_consent.deny"],
+  ["mcp_oauth_consent_granted", "mcp_oauth_consent.grant"],
+]);
+
+export function canonicalAuditAction(action: string): string {
+  return RENAMED_AUDIT_ACTIONS.get(action) ?? action;
+}
 
 // The actions whose rows belong to NO TENANT, and therefore never appear on a tenant's trail.
 //

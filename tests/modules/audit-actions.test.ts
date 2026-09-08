@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   AUDIT_ACTIONS,
+  canonicalAuditAction,
   FLEET_LEVEL_ACTIONS,
   isFleetLevelAction,
+  RENAMED_AUDIT_ACTIONS,
 } from "@/lib/audit/actions";
 import { withoutComments } from "@/tests/utils/source-text";
 
@@ -101,16 +103,6 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
-  // The old spellings of the two consent actions. Nothing writes them any more, and every row
-  // recorded so far is still under them: this release renames the producers and teaches every
-  // reader both names, and the backfill is the NEXT one, because the rollout overlaps and the
-  // outgoing container's catalog is frozen with only these two. They and their exemptions leave
-  // together, with that backfill.
-  const THE_SPELLING_THE_ROWS_STILL_CARRY = [
-    "mcp_oauth_consent_denied",
-    "mcp_oauth_consent_granted",
-  ];
-
   // EXTRA — a producer is deleted or renamed and its name stays on the list. The operator picks a
   // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
   // THIS: a union member nobody constructs is not an error anywhere.
@@ -128,9 +120,7 @@ describe("the audit action vocabulary", () => {
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
     const orphaned = AUDIT_ACTIONS.filter(
-      (a) =>
-        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
-        !sources.some((code) => code.includes(`"${a}"`)),
+      (a) => !sources.some((code) => code.includes(`"${a}"`)),
     );
     expect(orphaned).toEqual([]);
   });
@@ -144,37 +134,15 @@ describe("the audit action vocabulary", () => {
   // naming #392 settled. A name in another shape reaches the operator as noise and, worse, suggests
   // the family it belongs to is somewhere else.
   //
-  // The two exceptions are NAMED rather than pattern-matched, so a third one is a decision somebody
-  // makes on purpose and not a hole the regex quietly widened. What they are has changed: until
-  // #523 they were the shape the consent decisions were WRITTEN in; now nothing writes them and
-  // they are on the list because every row RECORDED is still under them.
+  // NO EXCEPTIONS, and that is the state this assertion has been working towards since #392. The
+  // last two, the consent pair, were named rather than pattern-matched so a third would be a
+  // decision somebody made on purpose; they left with #555's backfill, which put every recorded row
+  // under the dotted name and made the old spellings unreachable rather than merely unwritten.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
-      (a) =>
-        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
-        !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
+      (a) => !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
     );
     expect(odd).toEqual([]);
-  });
-
-  // The pair is a STAGE, not a permanent carve-out, so both directions are pinned: the names the
-  // rows carry are on the list, and the names this release writes are the new ones. A rename that
-  // landed in the catalog and not in the controller would leave the first assertion green and this
-  // one red.
-  test("the old names are listed, and nothing here writes them", async () => {
-    const sources = await producerSources();
-    const written = (name: string) =>
-      sources.some((code) => code.includes(`"${name}"`));
-    expect({
-      listed: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(
-        (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
-      ),
-      stillWritten: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(written),
-      replacements: [
-        "mcp_oauth_consent.deny",
-        "mcp_oauth_consent.grant",
-      ].filter((a) => !written(a)),
-    }).toEqual({ listed: [], stillWritten: [], replacements: [] });
   });
 });
 
@@ -278,5 +246,61 @@ describe("which actions belong to no tenant", () => {
       expect([fleet.has(a), tenant.has(a)]).toEqual([true, true]);
       expect(isFleetLevelAction(a)).toBe(false);
     }
+  });
+});
+
+// THE RENAME LEAVES A DOOR OPEN BEHIND IT, and this is the whole contract of that door. #555 moved
+// every consent row off the two pre-#392 spellings and dropped them from the catalog, which is the
+// point of the change: one act, one name. What the drop also does, though, is turn every filter link
+// an operator saved, every script's query string and every quoted export that names the old spelling
+// into a read that matches nothing — an audit answering "no consent decision was ever recorded"
+// while the rows sit one name over. So the old spelling is accepted as INPUT and redirected, and the
+// three assertions below are the three halves of "input only" that a later edit could break
+// separately: it translates, it is not in the vocabulary, and it does not leak into what is written.
+describe("audit actions: the spellings the rename left behind", () => {
+  test("an old spelling is redirected to the name the rows now carry", () => {
+    expect([
+      canonicalAuditAction("mcp_oauth_consent_granted"),
+      canonicalAuditAction("mcp_oauth_consent_denied"),
+    ]).toEqual(["mcp_oauth_consent.grant", "mcp_oauth_consent.deny"]);
+  });
+
+  test("everything else is handed back untouched, including nonsense", () => {
+    for (const value of ["mcp_client.create", "", "not_an_action", "mcp_"]) {
+      expect(canonicalAuditAction(value)).toBe(value);
+    }
+  });
+
+  // A NAME OFF `Object.prototype` IS STILL JUST A NAME THE TRAIL DOES NOT HAVE. `?action=toString`
+  // is a string like any other, and a plain-object lookup answers it with an inherited FUNCTION,
+  // which `?? action` then keeps because it is not nullish. That value goes on to Prisma as the
+  // `action` filter — a 500 where this endpoint promises an empty result — and into the page's
+  // filter state, which expects a string. Asserted as a type, not as a spelling, so the next reader
+  // to add a member cannot pick one this misses.
+  test("a name that Object.prototype happens to carry is handed back untouched", () => {
+    for (const value of [
+      "toString",
+      "constructor",
+      "__proto__",
+      "hasOwnProperty",
+      "valueOf",
+    ]) {
+      const answer = canonicalAuditAction(value);
+      expect(typeof answer).toBe("string");
+      expect(answer).toBe(value);
+    }
+  });
+
+  // THE DIRECTION THAT MATTERS MOST. A redirect is not a name: the moment one of these appears in
+  // the picker, the operator can choose it, and the rename is undone in the only place it was
+  // visible. Every target, meanwhile, must be a real action or the redirect points at nothing.
+  test("no old spelling is offered, and every target is a real action", () => {
+    const offered = [...RENAMED_AUDIT_ACTIONS.keys()].filter((a) =>
+      (AUDIT_ACTIONS as readonly string[]).includes(a),
+    );
+    const dangling = [...RENAMED_AUDIT_ACTIONS.values()].filter(
+      (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
+    );
+    expect([offered, dangling]).toEqual([[], []]);
   });
 });

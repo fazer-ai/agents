@@ -49,6 +49,12 @@ SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
  WHERE t.relname = '<tabela>' AND NOT i.indisvalid;   -- tem que vir vazio
 ```
 
+**O remédio é o arquivo abrir a própria transação**, e ele funciona: `BEGIN;` … `COMMIT;` dentro do `.sql` é honrado pelo `migrate deploy`. Medido na #555, num banco descartável, com uma migration que falha depois do primeiro statement: sem o `BEGIN` o primeiro statement **persiste** através da falha (`x=1`), com ele o estado volta (`x=0`), e nos dois casos a migration fica marcada como falha. Use sempre que o arquivo deixar um **invariante** meio-aplicado, e não só linhas meio-migradas: o caso que motivou isso é o `NO FORCE ROW LEVEL SECURITY` de uma data migration, onde a falha no meio deixa a tabela sem FORCE, ou seja, sem sujeitar o próprio dono à policy de tenant. A exceção é o `CONCURRENTLY` acima, que o Postgres recusa dentro de transação: arquivo com ele não pode ser embrulhado, e aí a defesa é o `DROP INDEX IF EXISTS` mais a asserção de catálogo.
+
+**Como isso convive com o `CONCURRENTLY` acima, já que os dois foram medidos.** Um `DROP INDEX CONCURRENTLY` sozinho no arquivo aplica; com qualquer segundo statement junto, ele falha com `cannot run inside a transaction block` (é a regra que a `tests/prisma/tenant-index-redundancy.test.ts` guarda). Ou seja: o arquivo não é atômico E o `CONCURRENTLY` enxerga um bloco de transação. As duas coisas estão reproduzidas em banco descartável; a explicação que reconcilia as duas **não está**, e por isso nenhum comentário no repo deve afirmar uma. Na prática o que decide é o comportamento: embrulhe em `BEGIN`/`COMMIT` quando o arquivo deixa invariante meio-aplicado, e deixe o `CONCURRENTLY` sozinho no arquivo dele.
+
+**E o teste que roda a migration não prova atomicidade se mandar o arquivo inteiro de uma vez.** Uma string multi-statement sai pelo protocolo simple-query, que o Postgres embrulha numa transação **implícita**: o arquivo fica atômico independentemente do que ele diz, e apagar o `BEGIN` não quebra teste nenhum. Medido na #555, foi exatamente o que aconteceu. Quem quiser asserir a atomicidade executa statement a statement, como o Prisma executa (`tests/prisma/mcp-oauth-consent-action-rename-migration.test.ts`).
+
 Um índice parcial não é modelável pelo Prisma e vive só no `.sql`; o irmão não-parcial pode e deve ir
 no `schema.prisma` como `@@index`, com o nome que a convenção do Prisma geraria (`<tabela>_<coluna>_idx`),
 senão o próximo `migrate dev` gera um `RENAME INDEX`.

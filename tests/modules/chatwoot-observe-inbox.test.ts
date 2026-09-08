@@ -2345,4 +2345,55 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     expect(await generation(to.id)).toBe(toBefore + 1);
     await suDb.inboxObserver.delete({ where: { id: row.id } });
   });
+
+  // ...AND THE DETACH ASKS ABOUT NOW, NOT ABOUT THE START OF THE CALL (issue #540, PR review round
+  // 8). A re-observe reads `alreadyObserving` before the fork is asked, and an unobserve can remove
+  // that confirmed row inside the window — which is the state the 409 above exists for. Gated on the
+  // old reading, this call kept an attachment nothing names any more, and where its POST landed
+  // after the unobserve's own DELETE the fork went on delivering to an agent that had been
+  // unobserved: the silent outcome, since no row is left for anything to report.
+  test("a re-observe whose row is removed mid-attach takes its attachment back", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 83,
+        name: "Desobservada no meio",
+      },
+      select: { id: true },
+    });
+    const observing = new Set<string>();
+    // The binding this call is repairing: confirmed, and read as such by the preflight.
+    await observeInbox(
+      ctx(tenantId),
+      inbox.id,
+      monitoringAgent,
+      fakeChatwoot({ observerRoute: true, observing }),
+      appDb,
+    );
+    expect(observing.size).toBe(1);
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      onAttach: async () => {
+        // The unobserve, landed while the fork was being asked.
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inbox.id },
+        });
+      },
+    });
+    await expect(
+      observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      translationKey: "errors.observeTakenBack",
+    });
+    // Nothing names the attachment any more, so it went back with the refusal.
+    expect(observing.size).toBe(0);
+    expect(
+      await suDb.inboxObserver.count({
+        where: { tenantId, inboxId: inbox.id },
+      }),
+    ).toBe(0);
+  });
 });

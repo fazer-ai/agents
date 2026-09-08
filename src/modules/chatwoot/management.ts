@@ -3149,9 +3149,16 @@ export async function observeInbox(
     // the binding already there must leave it, or a disconnect landing in the window would strip an
     // observer the disconnect itself deliberately keeps — and the reconcile, which asks whether the
     // BOT exists, would go on reporting it as active while nothing reached it.
-    if (!alreadyObserving) {
-      await detachQuietly("the observe did not complete after the attach");
-    }
+    //
+    // WHICH IS A QUESTION ABOUT NOW, not about the start of the call (PR review, round 8).
+    // `alreadyObserving` was read before the fork was asked, and a concurrent unobserve can remove
+    // that confirmed row inside the window — the state the refusal above raises its 409 for. Gated
+    // on the old reading, this call kept an attachment nothing names any more, and where its POST
+    // landed after the unobserve's DELETE the fork went on delivering to an agent that had been
+    // unobserved. `detachQuietly` asks the right question on its own (a CONFIRMED row of this pair,
+    // read now), and returns without touching anything when one stands, so the round 18 case is
+    // still refused — by the reading rather than by the memory of one.
+    await detachQuietly("the observe did not complete after the attach");
     throw err;
   }
   if (persisted.responderWon) {

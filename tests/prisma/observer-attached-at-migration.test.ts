@@ -71,13 +71,25 @@ describe.skipIf(!dbUp)("migration: the observer's attach stamp", () => {
     // The rolling-deploy shape (docs/deploy.md): the release before this one names no such column,
     // so its inserts must land confirmed. Written through the catalog rather than through Prisma,
     // because Prisma's client knows the column and the point is a writer that does not.
+    // UNDER THE FLEET ROLE, from the FIRST insert (PR review, round 8). Every table this seeds
+    // carries FORCE ROW LEVEL SECURITY, and the supported migration account is an owner that is not
+    // a superuser (docs/deploy.md): for it, `tenants` refuses this insert outright, and the GUC that
+    // used to lift RLS has been inert since the policy split — the fence in
+    // `tests/prisma/migration-rls-bypass.test.ts` is where that history is written down. Left as it
+    // was, this test passed only where the migration account happened to be a real superuser, which
+    // is the one configuration the rule exists to stop anybody relying on.
+    //
+    // Session-level (`is_local` false), because these statements are not one transaction, and
+    // released in the `finally` below.
+    await suDb.query(
+      "SELECT set_config('role', public.fazerai_fleet_role(), false)",
+    );
     const tenant = await suDb.query<{ id: string }>(
       `INSERT INTO tenants (name, slug, updated_at)
        VALUES ('OBS-MIG', 'obs-mig-${process.pid}', NOW()) RETURNING id`,
     );
     const tenantId = tenant.rows[0]?.id as string;
     try {
-      await suDb.query("SET app.is_super_admin = 'on'");
       const dep = await suDb.query<{ id: string }>(
         `INSERT INTO chatwoot_deployments (tenant_id, base_url, admin_token, updated_at)
          VALUES ($1, 'https://obs.mig.example', 'x', NOW()) RETURNING id`,
@@ -121,8 +133,8 @@ describe.skipIf(!dbUp)("migration: the observer's attach stamp", () => {
           .query(`DELETE FROM ${t} WHERE tenant_id = $1`, [tenantId])
           .catch(() => {});
       }
-      await suDb.query("RESET app.is_super_admin");
       await suDb.query("DELETE FROM tenants WHERE id = $1", [tenantId]);
+      await suDb.query("RESET ROLE");
     }
   });
 });

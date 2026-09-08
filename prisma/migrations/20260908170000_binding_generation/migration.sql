@@ -15,8 +15,20 @@
 -- NO BACKFILL, and the null is the point. A delivery row that already exists was received under a
 -- world nothing recorded, and writing 0 onto it would claim it arrived under the current binding --
 -- the one lie this column exists to prevent. Those rows keep the readings they always had.
+--
+-- THE TWO COLUMNS ARE ONE INVARIANT, so the file opens its own transaction (PR review round 21).
+-- `migrate deploy` does not wrap a migration, and this one leaves half a fact if it stops in the
+-- middle: the inbox counts and the delivery cannot record what it counted, which is the reading half
+-- of the pair without the writing half. The retry is worse than the state -- the first `ADD COLUMN`
+-- persisted through the failure, so it meets `duplicate_column` and the rollout stops until somebody
+-- edits schema by hand. `BEGIN`/`COMMIT` inside the file is honoured here (.claude/rules/prisma.md,
+-- measured in #555), and nothing in this file is a `CONCURRENTLY` that would refuse the block.
+BEGIN;
+
 ALTER TABLE "inboxes"
   ADD COLUMN "binding_generation" INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE "chatwoot_webhook_deliveries"
   ADD COLUMN "binding_generation" INTEGER;
+
+COMMIT;

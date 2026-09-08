@@ -1066,6 +1066,19 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     });
     expect(lines.length).toBe(1);
     expect(lines[0]?.status).toBe("error");
+    // ...AND THE ROW SAYS SO (issue #540, PR review round 16). The claim wrote `routeRemembers` from
+    // the runtime it resolved, which is a promise; this is the delivery that broke it, and it still
+    // settles PROCESSED. Left saying `true`, an observer beside this route would read the reply as
+    // remembered and stay quiet about one nothing folded in — and for a reply nothing else ever
+    // will, since no recovery carries an outgoing body.
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: delivery.id },
+          select: { routeRemembers: true },
+        })
+      ).routeRemembers,
+    ).toBe(false);
   });
 
   test("/teste never activates a monitoring agent, and answers nothing", async () => {

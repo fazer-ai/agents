@@ -6059,6 +6059,33 @@ export async function processChatwootDelivery(
     // NOTE: Inside the branch, so silence means the ingestion never ran rather than that it ran and
     // found nothing. That is the distinction the recovery reads (see `onIngest`).
     params.onIngest?.(ingested);
+    // ...AND THE RECORD FOLLOWS THE OUTCOME, not only the intent (PR review, round 16). The claim
+    // wrote `routeRemembers` from the runtime it resolved, and this is where that promise is either
+    // kept or not: `failed` and `no-thread` are the two ways it ends unkept, and the delivery still
+    // settles PROCESSED either way. Left saying `true`, the row tells the observer beside it that
+    // this message is remembered — and for a colleague's reply nothing else will ever fold it in,
+    // since no recovery carries an outgoing body.
+    //
+    // `nothing` is NOT one of them: there was nothing to fold in, which is not a promise broken.
+    //
+    // Guarded on the value it corrects, so it only ever moves `true` to `false`, and best-effort for
+    // the same reason its twin above is: this delivery's own work is done, and failing it here to
+    // report a stale sibling fact would trade a message the observer can still save for one nobody
+    // does.
+    if (ingested === "failed" || ingested === "no-thread") {
+      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: { id: params.deliveryRowId, routeRemembers: true },
+          data: { routeRemembers: false },
+        }),
+      ).catch((err) => {
+        logger.warn(
+          "chatwoot: could not record that this delivery failed to fold the message in (conv=%s): %s; an observer beside it may stay quiet about a message nothing remembers",
+          n.conversationId === null ? "?" : String(n.conversationId),
+          errMsg(err),
+        );
+      });
+    }
   } else if (routeIngests) {
     // NOTE: A route that INGESTS, standing down on purpose: the responder already has this message,
     // or is about to consume it as a command. Reported, because the recovery's question is "did

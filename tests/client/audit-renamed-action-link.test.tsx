@@ -83,3 +83,15 @@ test("an unrelated value is left exactly as it was asked", async () => {
   await waitFor(() => expect(sent.length).toBeGreaterThan(0));
   expect(sent.at(-1) ?? "").toContain("not_an_action");
 });
+
+// ...including one that a plain-object lookup would have answered with an inherited FUNCTION, which
+// would reach the filter state as a non-string and the query string as "[object Object]" or worse.
+// Driven through the page rather than the map because this is where the operator's value enters.
+test("a name off Object.prototype travels as the string it is", async () => {
+  mountAt("?action=toString");
+  await waitFor(() => expect(sent.length).toBeGreaterThan(0));
+  const asked = sent.at(-1) ?? "";
+  expect(asked).toContain("action=toString");
+  expect(asked).not.toContain("native+code");
+  expect(asked).not.toContain("object+Object");
+});

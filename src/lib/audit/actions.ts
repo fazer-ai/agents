@@ -150,13 +150,19 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 // old image's frozen catalog also reads as empty, but that one is transient and closes by rolling
 // forward. A saved link does not close by itself, which is why this one is code and that one is a
 // note.
-export const RENAMED_AUDIT_ACTIONS: Readonly<Record<string, AuditAction>> = {
-  mcp_oauth_consent_denied: "mcp_oauth_consent.deny",
-  mcp_oauth_consent_granted: "mcp_oauth_consent.grant",
-};
+// A MAP AND NOT AN OBJECT LITERAL, because the input here is the operator's, arriving off a URL.
+// `?action=toString` is a string like any other, and a plain-object lookup answers it with an
+// INHERITED member — a function, which `?? action` then keeps because it is not nullish. That value
+// reaches Prisma as the `action` filter, where this endpoint promises an empty result and would
+// answer a 500, and reaches the page's filter state, which expects a string. A `Map` has no
+// inherited keys to find, so the whole class is gone rather than guarded at one call site.
+export const RENAMED_AUDIT_ACTIONS: ReadonlyMap<string, AuditAction> = new Map([
+  ["mcp_oauth_consent_denied", "mcp_oauth_consent.deny"],
+  ["mcp_oauth_consent_granted", "mcp_oauth_consent.grant"],
+]);
 
 export function canonicalAuditAction(action: string): string {
-  return RENAMED_AUDIT_ACTIONS[action] ?? action;
+  return RENAMED_AUDIT_ACTIONS.get(action) ?? action;
 }
 
 // The actions whose rows belong to NO TENANT, and therefore never appear on a tenant's trail.

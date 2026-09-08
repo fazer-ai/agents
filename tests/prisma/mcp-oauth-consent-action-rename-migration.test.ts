@@ -74,16 +74,25 @@ async function forced(): Promise<boolean> {
   return r.rows[0]?.f === true;
 }
 
-// RUNS THE FILE THE WAY `migrate deploy` RUNS IT: one statement at a time, on one connection.
+// RUNS THE FILE ONE STATEMENT AT A TIME, on one connection, to reproduce what `migrate deploy` DOES.
 //
-// Handing the whole file to `pg` instead would prove nothing about atomicity. A multi-statement
-// string goes out over the simple-query protocol, which Postgres wraps in an IMPLICIT transaction,
-// so the file is atomic whatever it says — measured, with the file's own BEGIN deleted every
-// assertion here still passed. Prisma splits, which is why the file needs a BEGIN of its own.
+// Handing the whole file to `pg` instead proves nothing about atomicity, and that is not a worry: a
+// multi-statement string goes out over the simple-query protocol, which Postgres wraps in an
+// IMPLICIT transaction, so the file is atomic whatever it says — measured, with the file's own BEGIN
+// deleted every assertion here still passed.
 //
-// Measured directly (a scratch database, `migrate deploy`, a file that fails after its first
-// statement): without BEGIN the first statement PERSISTS through the failure; with it, the state is
-// back. That is the measurement `.claude/rules/prisma.md` records.
+// What `migrate deploy` does is the opposite, measured on a scratch database with a file that fails
+// after its first statement: WITHOUT a BEGIN that statement persists through the failure, WITH one
+// the state is back, and two ordinary statements in one file report two different `txid_current()`.
+// A file is therefore not one unit unless it says so, which is what `.claude/rules/prisma.md`
+// records and what this helper reproduces.
+//
+// THE MECHANISM BEHIND THAT IS NOT ASSERTED HERE, deliberately, because the obvious one is refuted
+// by its neighbour: if the engine simply sent each statement on its own, a lone
+// `DROP INDEX CONCURRENTLY` would not care what else is in the file, and measurably it does — it
+// fails with `cannot run inside a transaction block` as soon as any second statement joins it
+// (`tests/prisma/tenant-index-redundancy.test.ts`, measured the same way). Both behaviours are
+// reproduced; the reconciliation is not, so no comment here should claim one.
 function statementsOf(text: string): string[] {
   const bare = text.replace(/^\s*--.*$/gm, "");
   // Dollar quoting is the one thing this scanner cannot see through, so it refuses the file rather

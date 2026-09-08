@@ -271,14 +271,34 @@ describe("audit actions: the spellings the rename left behind", () => {
     }
   });
 
+  // A NAME OFF `Object.prototype` IS STILL JUST A NAME THE TRAIL DOES NOT HAVE. `?action=toString`
+  // is a string like any other, and a plain-object lookup answers it with an inherited FUNCTION,
+  // which `?? action` then keeps because it is not nullish. That value goes on to Prisma as the
+  // `action` filter — a 500 where this endpoint promises an empty result — and into the page's
+  // filter state, which expects a string. Asserted as a type, not as a spelling, so the next reader
+  // to add a member cannot pick one this misses.
+  test("a name that Object.prototype happens to carry is handed back untouched", () => {
+    for (const value of [
+      "toString",
+      "constructor",
+      "__proto__",
+      "hasOwnProperty",
+      "valueOf",
+    ]) {
+      const answer = canonicalAuditAction(value);
+      expect(typeof answer).toBe("string");
+      expect(answer).toBe(value);
+    }
+  });
+
   // THE DIRECTION THAT MATTERS MOST. A redirect is not a name: the moment one of these appears in
   // the picker, the operator can choose it, and the rename is undone in the only place it was
   // visible. Every target, meanwhile, must be a real action or the redirect points at nothing.
   test("no old spelling is offered, and every target is a real action", () => {
-    const offered = Object.keys(RENAMED_AUDIT_ACTIONS).filter((a) =>
+    const offered = [...RENAMED_AUDIT_ACTIONS.keys()].filter((a) =>
       (AUDIT_ACTIONS as readonly string[]).includes(a),
     );
-    const dangling = Object.values(RENAMED_AUDIT_ACTIONS).filter(
+    const dangling = [...RENAMED_AUDIT_ACTIONS.values()].filter(
       (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
     );
     expect([offered, dangling]).toEqual([[], []]);

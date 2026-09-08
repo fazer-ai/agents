@@ -105,9 +105,12 @@ export const AUDIT_ACTIONS = [
   // recorded row moved to these names in #555, one release later. The gap was the rollout: the
   // outgoing container's copy of this list is frozen in its image, so moving the rows in the same
   // release would have offered it two values matching nothing. WHAT THAT STAGING ASSUMES is the
-  // upgrade path — an install that jumps straight past #523's release, or rolls back to an image
-  // older than it, has a catalog that never learned these names, and its filter reads the consent
-  // family as empty until it rolls forward. Nothing is lost; `docs/deploy.md` carries the note.
+  // upgrade path, in BOTH directions. An install that jumps straight past #523's release, or rolls
+  // back to an image older than it, has a catalog that never learned these names: its filter reads
+  // the consent family as empty until it rolls forward, and nothing is lost. But such an image also
+  // still WRITES the old spelling, and a decision it records after the backfill stays under a name
+  // this list no longer offers, since the migration is one shot. `docs/deploy.md` carries both
+  // halves and the repair for the second.
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
   "mcp_token.revoke",

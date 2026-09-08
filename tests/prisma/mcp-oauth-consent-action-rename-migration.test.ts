@@ -161,6 +161,17 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
     expect((await stateOf("neighbour")).action).toBe("mcp_client.create");
   });
 
+  // THE REPAIR THE DEPLOY NOTE PROMISES. An image that predates #552 still RECORDS the underscored
+  // names, so on a direct upgrade or after a rollback a consent decision can land under one AFTER
+  // this one-shot migration scanned past it, and the new catalog no longer offers that spelling.
+  // `docs/deploy.md` says the remedy is re-running these two UPDATEs; this is that claim, and it is
+  // asserted rather than promised (round 2 of review).
+  test("a re-run moves a legacy row that landed after it", async () => {
+    await row("straggler", "mcp_oauth_consent_denied", tenantId);
+    await suDb.query(sql);
+    expect((await stateOf("straggler")).action).toBe("mcp_oauth_consent.deny");
+  });
+
   test("a re-run rewrites nothing", async () => {
     await suDb.query(sql);
     expect([

@@ -18,6 +18,13 @@
 -- BEFORE UPDATE on the inbox, so the counter rides the same row version as the binding and no second
 -- statement can be lost between them. `IS DISTINCT FROM` rather than `<>`, since null on either side
 -- is the unbind and the first bind.
+-- THE WHOLE FILE IS ONE INVARIANT: every write that moves a binding is counted. Installed half-way
+-- -- the inbox trigger in, the observer triggers not -- it counts responder moves and misses
+-- observer moves, which is a counter that lies rather than one that is missing. `migrate deploy`
+-- does not wrap a migration, so the file opens its own transaction (.claude/rules/prisma.md, and
+-- nothing here is a `CONCURRENTLY` that would refuse the block).
+BEGIN;
+
 CREATE OR REPLACE FUNCTION bump_binding_generation_on_inbox()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -28,10 +35,11 @@ BEGIN
 END;
 $$;
 
--- REPLACE rather than CREATE, because a migration file is not a transaction here (.claude/rules/prisma.md):
--- a deploy interrupted between these two statements would meet `duplicate_object` on the retry and
--- stop the rollout dead until somebody edited database state by hand. `CREATE OR REPLACE TRIGGER` is
--- atomic where a DROP-then-CREATE would leave a window in which a write is not counted at all.
+-- REPLACE rather than CREATE even with the transaction above, and the two answer different failures.
+-- The `BEGIN` covers a deploy that dies mid-file; `OR REPLACE` covers the file meeting a trigger that
+-- is ALREADY THERE -- a repair applied by hand, a database restored from one that had it -- where
+-- `CREATE` alone would raise `duplicate_object` and stop the rollout dead. It is also atomic where a
+-- DROP-then-CREATE would leave a window in which a write is not counted at all.
 CREATE OR REPLACE TRIGGER inboxes_bump_binding_generation
   BEFORE UPDATE ON "inboxes"
   FOR EACH ROW
@@ -109,3 +117,5 @@ CREATE OR REPLACE TRIGGER inbox_observers_bump_binding_generation_on_move
     OR OLD.inbox_id IS DISTINCT FROM NEW.inbox_id
   )
   EXECUTE FUNCTION bump_binding_generation_on_observer();
+
+COMMIT;

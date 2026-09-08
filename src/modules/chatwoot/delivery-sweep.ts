@@ -279,33 +279,46 @@ export async function retireCoveredDeliveries(
             : {}),
           status: "PROCESSING",
         },
-        data: {
-          status: "PROCESSED",
-          processedAt: new Date(),
-          turnCovered: covered,
-        },
+        data: { status: "PROCESSED", processedAt: new Date() },
       }),
   );
 
-  // AND THE ROW THAT IS ALREADY CLOSED STILL HAS TO CARRY THE WORD (issue #576, PR review round 1).
-  // The two statements above move a row's STATUS, so they name the states a row can be moved out of
-  // — and the ordinary debounced delivery is in neither by the time the flush calls this. It armed
-  // the flush and returned, and its own tx2 marked it PROCESSED seconds or minutes before the flush
-  // ran. Left to those two statements the commonest row of all never records what the turn did, and
-  // the late-transcription gate falls back to the ownership reading on exactly the deployment this
-  // change exists for.
+  // AND, IN A STATEMENT OF ITS OWN, WHETHER A TURN FOLDED THESE MESSAGES INTO THE THREAD.
   //
-  // STATUS UNTOUCHED, which is why it is a third statement rather than a wider predicate on the
-  // first: a PROCESSED row is finished, and rewriting `processedAt` would move a timestamp an
-  // operator reads as when the delivery ended.
+  // SEPARATE FROM THE TWO ABOVE because it answers about a different set of rows and with a
+  // different rule. Those move a STATUS, so they name the states a row can be moved out of — and the
+  // ordinary debounced delivery is in neither by the time the flush calls this: it armed the flush
+  // and returned, and its own tx2 marked it PROCESSED minutes earlier. Left to them, the commonest
+  // row of all never recorded anything and the late-transcription gate fell back to the ownership
+  // reading on exactly the deployment this exists for.
   //
-  // ONLY ONTO A ROW THAT HAS SAID NOTHING. The first answer about a message is the one that ran over
-  // it; a later call carrying a different one is about a different turn, and letting it overwrite
-  // would let a burst's answer for the messages its cap dropped erase the coverage of a message a
-  // turn really did fold in.
+  // MONOTONIC (PR review, round 3). `false` is the ABSENCE of a turn, not a claim that none can ever
+  // run: a message consumed with no turn records `false`, and an operator's manual re-engagement
+  // then runs a turn over that same tail and checkpoints it. Only `false -> true` moves, so a later
+  // settlement carrying `false` — the burst's own word for the messages its cap dropped — cannot
+  // take back a coverage that really happened.
+  //
+  // NEVER ON A PENDING ROW, the same rule the status statement above follows: that is the row whose
+  // owner has not arrived, and this call cannot tell "abandoned" from "claimed a millisecond from
+  // now". Its own settlement will speak for it.
   await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({
-      where: { ...where, status: "PROCESSED", turnCovered: null },
+      // `AND` rather than a spread, because `where` already carries an `OR` of its own on the wide
+      // scope and a second one at the same level would replace it.
+      //
+      // And the coverage clause is an explicit LIST rather than `not: true`, for the reason the
+      // observer exclusion above spells out: the column is nullable, and `NOT (col = true)` is NULL
+      // for a NULL row — which is every row that has not yet said anything, i.e. exactly the ones
+      // this statement exists to write. Measured: with `not: true` it settled nothing at all.
+      where: {
+        AND: [
+          where,
+          { status: { not: "PENDING" } },
+          covered
+            ? { OR: [{ turnCovered: null }, { turnCovered: false }] }
+            : { turnCovered: null },
+        ],
+      },
       data: { turnCovered: covered },
     }),
   ).catch((e) => {
@@ -335,11 +348,7 @@ export async function retireCoveredDeliveries(
     (db) =>
       db.chatwootWebhookDelivery.updateManyAndReturn({
         where: { ...where, status: "DEAD" },
-        data: {
-          status: "PROCESSED",
-          processedAt: new Date(),
-          turnCovered: covered,
-        },
+        data: { status: "PROCESSED", processedAt: new Date() },
         select: { deliveryId: true, inboundMessageId: true },
       }),
   );

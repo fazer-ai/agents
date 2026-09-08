@@ -8,7 +8,6 @@ import {
   type RunAgentTurnOutcome,
   type RuntimeDeps,
   runLoadedTurn,
-  turnFoldedMessageIn,
 } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -307,7 +306,14 @@ export async function coalesceAndRunTurn(
       },
     );
   }
+  // WHETHER THE BURST ENDED UP IN THE THREAD, reported by the runtime and not read off the outcome
+  // (issue #576): `graph.invoke` persists the channel, and the outcome word straddles it in both
+  // directions.
+  let foldedIn = false;
   const outcome = await runLoadedTurn({
+    onFoldedIn: () => {
+      foldedIn = true;
+    },
     stillWanted: ctx.stillWanted,
     loaded,
     authContext: ctx.authContext,
@@ -392,9 +398,10 @@ export async function coalesceAndRunTurn(
             : "consumed",
         // A DIFFERENT QUESTION from the word above (issue #576). `graph.invoke` persists the channel,
         // so a burst the model answered with nothing is in memory exactly as a posted one is, while
-        // settling `consumed`. Read off the settlement, the late-transcription gate folded a silent
-        // turn's message in a second time.
-        covered: turnFoldedMessageIn(outcome),
+        // settling `consumed`. Reported by the runtime, because the outcome word straddles the invoke
+        // in both directions (the input guardrail answers `posted` before it, the output guardrail
+        // `blocked` after it).
+        covered: foldedIn,
         messageIds: pending.map((m) => m.id),
         base,
       });

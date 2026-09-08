@@ -152,50 +152,6 @@ export type RunAgentTurnOutcome =
   | "superseded"
   | "blocked";
 
-// WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, which is a different question from whether
-// a reply reached the customer (issue #576, PR review round 2). `graph.invoke` persists the channel,
-// so every outcome decided AFTER it leaves the message checkpointed whatever the model produced, and
-// every outcome decided before it leaves the message in nobody's memory.
-//
-// The two were being read off the settlement word, and there `empty` is `consumed` — a turn that ran
-// and stayed silent, reported exactly like a gate that took the message before any turn existed. The
-// late-transcription gate then folded a message the turn had already checkpointed in a second time,
-// and the dedup window could not catch it: that window is the ingest job's own, so an id a turn
-// handled was never put in it.
-//
-// EXHAUSTIVE ON PURPOSE. A `switch` with no default over the union is what makes the compiler ask
-// about the next outcome somebody adds, instead of letting it inherit an answer by falling through —
-// and the two answers cost different things, so inheriting one silently is not acceptable here.
-export function turnFoldedMessageIn(outcome: RunAgentTurnOutcome): boolean {
-  switch (outcome) {
-    // Decided after the invoke: the message is in the checkpoint.
-    case "posted":
-    case "posted-partial":
-    case "empty":
-    // The post-model ownership recheck, which runs once the turn has already read and written the
-    // thread.
-    case "taken-over":
-      return true;
-    // Decided before the invoke. `blocked` is the INPUT guardrail, which answers ahead of the second
-    // ask that guards the invoke; `skipped` never reaches a graph at all; `no-agent` never loaded
-    // one.
-    case "blocked":
-    case "skipped":
-    case "no-agent":
-    // Both leave the watermark where it is for a later run to answer the burst, so claiming the
-    // message is remembered would take it out of that run's reach.
-    case "stale":
-    case "superseded":
-    // AMBIGUOUS, and answered the safe way. It covers a config that never loaded AND a turn that
-    // loaded, invoked, and then stood down at the send fence. Being wrong toward "not folded in"
-    // costs a duplicate line in memory, which is visible; being wrong the other way costs the
-    // customer's words, which is silent. The runtime's own note on this outcome asks the caller to
-    // fold the burst in for an observer, which is the same answer read from the other side.
-    case "agent-unavailable":
-      return false;
-  }
-}
-
 export interface RuntimeDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
   makeClient?: (
@@ -264,6 +220,17 @@ async function notePartialDelivery(params: {
 
 export interface RunLoadedTurnParams {
   loaded: AgentConfig;
+  // WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, reported by the runtime rather than
+  // inferred from the outcome (issue #576, PR review round 3). `graph.invoke` persists the channel,
+  // so the fact is "the invoke returned" and nothing else — and the outcome word cannot stand in for
+  // it, in either direction: the INPUT guardrail's replacement answers `posted` before the invoke,
+  // and the OUTPUT guardrail's suppression answers `blocked` after it. Called at most once, straight
+  // after the invoke returns; a refusal below suppresses the SEND and rolls back what the MODEL
+  // produced, never the customer's message.
+  //
+  // The caller records it on the ledger beside the settlement, which answers the other question
+  // (did a reply reach the customer), and continuous ingestion reads this one.
+  onFoldedIn?: () => void;
   // What the authorization endpoint said about this contact on the check that let THIS turn happen,
   // or null when the gate is off (or this path has no verdict of its own). Required, not optional:
   // every path that reaches here asks the gate immediately before it, and a path that forgot to
@@ -1653,6 +1620,7 @@ async function runTurnBody(
           ).values as { messages?: BaseMessage[] } | undefined
         )?.messages ?? [],
       );
+    // Hoisted so the report below fires exactly once, on the statement that persisted the channel.
     const result = await withFlowStage(
       flow,
       "generate",
@@ -1693,6 +1661,13 @@ async function runTurnBody(
       await deliverHandoffPromise();
       throw e;
     });
+    // THE CUSTOMER'S MESSAGE IS IN THE THREAD FROM THIS LINE ON (issue #576), which is the fact
+    // continuous ingestion needs and the one the outcome word cannot carry — the input guardrail's
+    // replacement answers `posted` above this point, and the output guardrail's suppression answers
+    // `blocked` below it. Reported here and only here: an invoke that threw goes out through the
+    // catch above without reaching this, and every refusal below rolls back what the MODEL produced,
+    // never what the customer said.
+    params.onFoldedIn?.();
     // EVERY REFUSAL FROM HERE DOWN GOES OUT THROUGH THIS, and the fence in
     // tests/graph/refused-turn-callsites.test.ts is what keeps that true.
     //
@@ -2227,6 +2202,8 @@ async function runTurnBody(
 }
 
 export interface RunAgentTurnParams {
+  // See `RunLoadedTurnParams.onFoldedIn`; forwarded verbatim.
+  onFoldedIn?: () => void;
   tenantId: bigint;
   instanceId: bigint;
   agentBotId: number | null;
@@ -2368,6 +2345,7 @@ export async function runAgentTurn(
       : undefined;
 
   const outcome = await runLoadedTurn({
+    ...(params.onFoldedIn ? { onFoldedIn: params.onFoldedIn } : {}),
     // The direct path answers exactly one message, so the receipt set is that message.
     readMessageIds: typeof n.message?.id === "number" ? [n.message.id] : [],
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is

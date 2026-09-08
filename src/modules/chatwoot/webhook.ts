@@ -17,11 +17,7 @@ import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
-import {
-  type RuntimeDeps,
-  runAgentTurn,
-  turnFoldedMessageIn,
-} from "@/graph/runtime";
+import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
@@ -5518,7 +5514,12 @@ export async function processChatwootDelivery(
           // write is fire-and-forget. That is the point: the contract must not rest on a property of
           // three unrelated call sites that any of them could drop. Bound to the turn here, it
           // cannot.
+          // WHETHER THE MESSAGE ENDED UP IN THE THREAD, reported by the runtime (issue #576).
+          let turnFoldedIn = false;
           const outcome = await runAgentTurn({
+            onFoldedIn: () => {
+              turnFoldedIn = true;
+            },
             tenantId: params.tenantId,
             instanceId: params.instanceId,
             agentBotId: params.agentBotId,
@@ -5605,8 +5606,10 @@ export async function processChatwootDelivery(
                 : "consumed",
               // NOT the same reading as the word beside it: `graph.invoke` persists the channel, so
               // a turn that ran and stayed silent left the message in memory while settling
-              // `consumed` (issue #576).
-              turnFoldedMessageIn(outcome),
+              // `consumed` (issue #576). Reported by the runtime rather than read off the outcome,
+              // which straddles the invoke in both directions: the input guardrail's replacement
+              // answers `posted` before it, the output guardrail's suppression `blocked` after it.
+              turnFoldedIn,
             );
           }
           // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line

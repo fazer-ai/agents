@@ -1920,6 +1920,49 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(await read(silenced)).toBe(false);
   });
 
+  // ...AND IT DOES MOVE THE OTHER WAY. `false` is the ABSENCE of a turn, not a claim that none can
+  // ever run: a message consumed with no turn records `false`, and an operator's manual
+  // re-engagement then runs a turn over that same tail and checkpoints it. Frozen at `false`, the
+  // late transcription would be folded in a second time.
+  test("a turn that runs later promotes a row that recorded no coverage", async () => {
+    const convId = 8934;
+    const conv = await seedConversation(convId);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `turn-covered-promote-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: convId,
+        inboundMessageId: 9793,
+        routeObserved: false,
+        turnCovered: false,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "answered",
+      covered: true,
+      messageIds: [9793],
+      base: appDb,
+    });
+
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: row.id },
+          select: { turnCovered: true },
+        })
+      ).turnCovered,
+    ).toBe(true);
+  });
+
   // AND THE COMMONEST ROW OF ALL IS ALREADY CLOSED WHEN THE WORD ARRIVES (issue #576, PR review
   // round 1). With debounce on, the creation delivery arms the flush and returns, and its own tx2
   // marks it PROCESSED seconds or minutes before the flush runs and calls this. The two
@@ -1969,11 +2012,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(after.processedAt?.getTime()).toBe(closedAt.getTime());
   });
 
-  // THE FIRST WORD ABOUT A MESSAGE STANDS. A later call carrying a different one is about a
-  // different turn — the burst's `consumed` for the messages its cap dropped is the shape that
-  // reaches this — and letting it overwrite would erase the `answered` of a message really replied
-  // to.
-  test("a second settlement does not rewrite the word already on the row", async () => {
+  // COVERAGE IS MONOTONIC, and it moves in one direction only (PR review, round 3). A later call
+  // carrying `false` is the burst's own word for the messages its cap dropped, and letting it
+  // overwrite would take back a coverage that really happened.
+  test("a second settlement does not take back a coverage already on the row", async () => {
     const convId = 8933;
     const conv = await seedConversation(convId);
     const row = await suDb.chatwootWebhookDelivery.create({

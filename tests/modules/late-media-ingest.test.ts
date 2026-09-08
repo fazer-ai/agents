@@ -57,6 +57,9 @@ const OBSERVER_BOT_ID = 79;
 // already did (issue #478 review, round 1).
 const BOTH_INBOX_ID = 4713;
 const BOTH_CONV_ID = 9743;
+// The same inbox, on a conversation the bot may act on: `pending` and unassigned. `act` is read from
+// the MIRROR's status (`mirror.status ?? n.status`), so the payload alone cannot produce it.
+const BOT_OWNED_CONV_ID = 9744;
 const RESPONDER_BOT_ID = 80;
 
 let tenantId: bigint;
@@ -74,8 +77,13 @@ function lateAudio(
     transcribed: boolean;
     conversationId?: number;
     chatwootInboxId?: number;
+    // The conversation is the bot's and nobody has taken it: `act` is true, which is the reading
+    // issue #576 is about on an update.
+    ownedByBot?: boolean;
   },
 ) {
+  const convId =
+    opts.conversationId ?? (opts.ownedByBot ? BOT_OWNED_CONV_ID : CONV_ID);
   return normalizeChatwootEvent({
     event: "message_updated",
     id: messageId,
@@ -91,13 +99,19 @@ function lateAudio(
       },
     ],
     conversation: {
-      id: opts.conversationId ?? CONV_ID,
+      id: convId,
       inbox_id: opts.chatwootInboxId ?? CHATWOOT_INBOX_ID,
-      status: "open",
-      contact_inbox: { id: 70_000 + (opts.conversationId ?? CONV_ID) },
+      // `shouldBotHandle` needs BOTH: pending, and nobody else holding it. The default is the shape
+      // every other case here uses — a colleague owns the conversation, so `act` is false.
+      status: opts.ownedByBot ? "pending" : "open",
+      contact_inbox: { id: 70_000 + convId },
       meta: {
-        assignee_type: "user",
-        assignee: { id: 5, name: "Atendente humana" },
+        ...(opts.ownedByBot
+          ? { assignee_type: "agent_bot" }
+          : {
+              assignee_type: "user",
+              assignee: { id: 5, name: "Atendente humana" },
+            }),
         sender: { id: 21, name: "Cliente" },
       },
       channel: "Channel::Api",
@@ -174,6 +188,39 @@ async function deliver(
   });
   return rowId;
 }
+
+// The creation's own row for `messageId`, already settled with the word a turn (or a gate) gave it.
+// PROCESSED, because that is what `retireCoveredDeliveries` leaves behind, and the column is the
+// only thing the reader asks about.
+// The creation's own row for `messageId`, already settled. The two facts are separate on purpose:
+// `answered` is whether a reply reached the customer, `covered` is whether a turn folded the message
+// into the thread, and an `empty` turn is the shape where they disagree.
+async function settledSibling(
+  messageId: number,
+  answered: boolean,
+  conversationId: number = CONV_ID,
+  covered: boolean = answered,
+): Promise<bigint> {
+  const row = await suDb.chatwootWebhookDelivery.create({
+    data: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      deliveryId: `late-media-sib-${process.pid}-${crypto.randomUUID()}`,
+      event: "message_created",
+      status: "PROCESSED",
+      conversationId,
+      inboundMessageId: messageId,
+      turnCovered: covered,
+    },
+    select: { id: true },
+  });
+  return row.id;
+}
+
+const armedFor = async (messageId: number) =>
+  (await ingestJobs()).filter(
+    (j) => (j.payload as Record<string, unknown>).messageId === messageId,
+  );
 
 const ingestJobs = () =>
   suDb.schedulerJob.findMany({
@@ -327,6 +374,18 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
         chatwootConversationId: CONV_ID,
         status: "open",
         threadId: `${tenantId}:${instanceId}:${CONV_ID}`,
+        lastEventAt: new Date(Date.now() - 60_000),
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inboxDbId,
+        chatwootConversationId: BOT_OWNED_CONV_ID,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${BOT_OWNED_CONV_ID}`,
         lastEventAt: new Date(Date.now() - 60_000),
       },
       select: { id: true },
@@ -563,6 +622,107 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
   // And the row an ordinary write-back leaves is unchanged, which is what keeps the pair a
   // discriminator: an inbound id on a `message_updated` can only have come from this build, so the
   // sweep can read it as "a transcription was owed" without mistaking a legacy row for one.
+  // ── WHAT A TURN DID WITH THE MESSAGE, AGAINST WHO OWNS THE CONVERSATION NOW (issue #576) ──
+  //
+  // The gate reads bot ownership at the moment it runs. On an update that is a reading taken after
+  // the decision it is asking about, and it is wrong in both directions. Both tests below plant the
+  // creation's own settled row — which is what the ledger really holds — and then deliver the
+  // write-back into an ownership that disagrees with it.
+
+  // THE DUPLICATE. The write-back lands once the conversation changed hands, so `act` is false and
+  // the old gate reads "no turn is coming" — appending a second copy of what the turn already folded
+  // in. The dedup window cannot catch it: that window is the ingest job's own, so an id a TURN
+  // handled was never put in it.
+  test("a message a turn answered is not folded in again when the bot no longer holds it", async () => {
+    const messageId = 6101;
+    await settledSibling(messageId, true);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(0);
+  });
+
+  // THE LOSS, and it is the half that costs data. A row stranded while a colleague held the
+  // conversation is replayed once the bot has it back: `act && !consumed` reads as "a turn will
+  // cover this", nothing is appended, and the row closes as recovered with the words in nobody's
+  // memory.
+  test("a message deliberately silenced is folded in even when the bot holds the conversation now", async () => {
+    const messageId = 6102;
+    await settledSibling(messageId, false, BOT_OWNED_CONV_ID);
+    const n = lateAudio(messageId, { transcribed: true, ownedByBot: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(1);
+  });
+
+  // A TURN THAT RAN ON THE PLACEHOLDER DOES NOT HAVE THE WORDS (PR review, round 8). A voice note
+  // reaches the graph as a placeholder until STT writes back, and a flush armed by an EARLIER message
+  // can invoke inside that window (docs/stt.md, "Known limits"). Recorded as covered, that turn
+  // suppresses the ingest the write-back exists to arm and the transcription reaches nobody — the
+  // loss this whole feature is about, reintroduced by its own record.
+  test("a turn that ran before the transcription does not suppress the write-back", async () => {
+    const messageId = 6106;
+    // What the turn writes when it ran on the placeholder: it folded the message in, not the words.
+    await settledSibling(messageId, false, CONV_ID, false);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(1);
+  });
+
+  // A TURN THAT RAN AND SAID NOTHING STILL HAS THE MESSAGE (PR review, round 2). `graph.invoke`
+  // persists the channel, so an `empty` outcome leaves the customer's words in memory exactly as a
+  // posted one does — while the SETTLEMENT calls it `consumed`, the same word a gate that took the
+  // message before any turn existed gets. Read off the settlement, this folded the message in a
+  // second time, and the dedup window could not catch it: that window is the ingest job's own, so an
+  // id a turn handled was never put in it.
+  test("a turn that produced nothing still counts as having the message", async () => {
+    const messageId = 6105;
+    // What the direct path writes for `empty`: consumed to the sweep, covered to memory.
+    await settledSibling(messageId, false, CONV_ID, true);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(0);
+  });
+
+  // AN `answered` IS NOT HIDDEN BY A LATER `consumed` (PR review, round 1). One message reaches
+  // several rows — the two bot routes Chatwoot fans to, plus its own creation and update — and they
+  // do not all say the same thing: an observer settles its own row `consumed` because it answers
+  // nobody by design, and so does a route that stood down for the bot holding the conversation. With
+  // the newest row deciding, that `false` landing after the responder's `true` hid it on nothing
+  // better than insertion order, and the message was folded in a second time.
+  test("a consumed sibling inserted after an answered one does not undo the answer", async () => {
+    const messageId = 6104;
+    await settledSibling(messageId, true);
+    await settledSibling(messageId, false);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(0);
+  });
+
+  // AND WITHOUT A ROW THAT CAN SAY, the ownership reading is what answers — the fallback the column
+  // narrows rather than removes. Same event as the loss case above, minus the sibling.
+  test("with no settled sibling the gate falls back to ownership", async () => {
+    const n = lateAudio(6103, { transcribed: true, ownedByBot: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(6103)).toHaveLength(0);
+  });
+
   test("an update with nothing analysed leaves the ledger's message column null", async () => {
     const n = lateAudio(6009, { transcribed: false });
     if (!n) throw new Error("unreachable: the fixture is a valid event");

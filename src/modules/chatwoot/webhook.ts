@@ -58,7 +58,10 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
+import {
+  recordTurnCoverage,
+  retireCoveredDeliveries,
+} from "@/modules/chatwoot/delivery-sweep";
 import {
   describeClosedGate,
   type GateCloseDetail,
@@ -682,6 +685,77 @@ async function responderSiblingRemembers(
     return false;
   }
   return true;
+}
+
+// WHETHER A TURN ALREADY COVERED THIS MESSAGE, asked of the ledger instead of inferred from who owns
+// the conversation now (issue #576).
+//
+// The gate that decides continuous ingestion is `(act && consumed) || !act`, and `act` is bot
+// ownership AT THE MOMENT OF THE READ. On a `message_created` that is the right question by accident
+// of timing: the decision to run a turn is taken on that same delivery, so "the bot owns it" and "a
+// turn will cover this" are one fact. On the `message_updated` that finally carries a voice note's
+// transcription they come apart, because the reading is taken after the decision it is asking about,
+// and it comes apart in BOTH directions:
+//
+//   * the write-back lands once the conversation changed hands (resolved, or a colleague took it in
+//     the seconds between our PATCH and the fork's re-dispatch). `!act` reads as "no turn is
+//     coming", and a second copy of what the turn already folded in is appended. The dedup window
+//     does not catch it: that window is written by the ingest job alone, so an id a TURN handled was
+//     never put in it.
+//   * a row stranded while a person held the conversation is replayed half an hour later, by which
+//     time the bot has it back. `act && !consumed` reads as "a turn will cover this", nothing is
+//     appended, and the row closes as recovered with the customer's words in nobody's memory.
+//
+// THE ANSWER IS ON THE CREATION'S ROW, not on this one. One customer message reaches the ledger
+// twice and only the first carries a turn's verdict, so this asks about the MESSAGE and not about
+// the event — which is the one way it differs from `responderSiblingRemembers` above, and the
+// difference is load-bearing: narrowed by event, it would find nothing every time.
+//
+// NOT NARROWED BY ROUTE either. `retireCoveredDeliveries` settles on the wide scope precisely
+// because a turn, a command or a gate answers the MESSAGE whichever route carried it, and the rows
+// it excludes there (an observer's, and one that owes words rather than an answer) are the ones that
+// never state a value here at all.
+//
+// Null is "no row can say", and the caller falls back to the ownership reading every delivery made
+// before this column: no row for the message has settled yet, or every one of them predates this
+// release. It narrows the window rather than closing it, and the residue is the creation's own row
+// dying before it settled — the one case where nothing anywhere recorded what was going to happen.
+async function turnCoveredMessage(
+  tenantId: bigint,
+  instanceId: bigint,
+  deliveryRowId: bigint,
+  conversationId: number | null,
+  messageId: number,
+  base: PrismaClient,
+): Promise<boolean | null> {
+  if (conversationId === null) return null;
+  const sibling = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootWebhookDelivery.findFirst({
+      where: {
+        chatwootInstanceId: instanceId,
+        conversationId,
+        inboundMessageId: messageId,
+        // A sibling is another row by definition, and this one has not settled anything yet.
+        id: { not: deliveryRowId },
+        // Only a row that STATED something. A null is the absence this function reports as null of
+        // its own, and letting one win the ordering would hide a settled sibling behind a row that
+        // has said nothing.
+        turnCovered: { not: null },
+      },
+      select: { turnCovered: true },
+      // ANY `true` WINS, and receipt order decides nothing (PR review, round 1). Several rows carry
+      // the same message — the two bot routes Chatwoot fans to, plus this message's own creation and
+      // update — and they do not all say the same thing: an observer settles its own row `consumed`
+      // (it answers nobody by design), as does a route that stood down because another bot held the
+      // conversation. Taking the newest row let that `false` land after the responder's `true` and
+      // hide it, on nothing better than which delivery was inserted last, and the message was then
+      // folded in a second time. A message cannot become UNANSWERED once a route has answered it, so
+      // `true` is the fact and `false` is only the absence of one; among rows that all say `false`,
+      // the newest is as good an answer as any.
+      orderBy: [{ turnCovered: "desc" }, { id: "desc" }],
+    }),
+  );
+  return sibling?.turnCovered ?? null;
 }
 
 // THE ROUTE'S AGENT, WHEN IT WATCHES THE INBOX RATHER THAN ANSWERING IT (issue #476). A delivery
@@ -1642,6 +1716,28 @@ function errMsg(err: unknown): string {
 // serialized into webhook payloads (the fork's Attachment#push_event_data exposes no
 // image_description/extracted_text on any file type), so a visual leg here could not tell "never
 // analyzed" from "our own write-back" and would re-run vision on its own write-back event forever.
+// WHETHER A TURN RUNNING ON THIS MESSAGE WOULD HAVE ITS WORDS (issue #576, PR review round 8), which
+// is a narrower question than whether a turn ran over it.
+//
+// A voice note reaches the graph as a placeholder until STT writes back, and a flush armed by an
+// earlier message can legitimately invoke in that window (docs/stt.md, "Known limits"). That turn
+// folded the MESSAGE in and not the WORDS, so recording it as covered suppresses the very ingest the
+// write-back exists to arm — the late transcription is then in nobody's memory, which is the loss
+// this feature is about, reintroduced by its own record.
+//
+// Answered from what the turn's input actually carried: audio with no transcription is a placeholder,
+// and everything else — text, an image, an audio already transcribed — is the message itself.
+//
+// `hasAudio` is the FILE TYPE and never STT eligibility: an attachment whose id or url has not landed
+// yet cannot be transcribed and still reaches the graph as a placeholder, so a predicate that asked
+// "could STT run" would call it a text message and claim its words.
+export function turnHadTheWords(m: {
+  hasAudio: boolean;
+  transcribedText: string | null | undefined;
+}): boolean {
+  return !m.hasAudio || Boolean(m.transcribedText);
+}
+
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
@@ -1900,6 +1996,9 @@ type IngestOutcome = "queued" | "nothing" | "no-thread" | "failed";
 async function ingestUnhandledMessage(args: {
   tenantId: bigint;
   instanceId: bigint;
+  // THIS DELIVERY'S OWN ROW, so the coverage question below can exclude it from its own answer
+  // (issue #576). Nothing else here needs it.
+  deliveryRowId: bigint;
   n: NormalizedChatwootEvent;
   act: boolean;
   consumed: boolean;
@@ -1986,9 +2085,28 @@ async function ingestUnhandledMessage(args: {
     n.message.transcribedText = lateTranscription;
   }
   const lateMediaAnalyzed = lateTranscription !== null;
+  // WHAT DECIDES THE LATE-TRANSCRIPTION ARM IS THE LEDGER, NOT OWNERSHIP NOW (issue #576). `act` is
+  // read here, on a `message_updated`, about a decision taken on the creation's delivery — so it is
+  // right by accident on a creation and wrong in both directions on an update. `turnCoveredMessage`
+  // asks the creation's own row what actually happened to the message; a null there means no row can
+  // say, and the fallback is the reading every delivery made before this column.
+  //
+  // The creation arm keeps `act`, deliberately. There the two questions ARE the same fact, and the
+  // ledger has nothing to add: the row that would answer is this one, and it has not settled yet.
+  const covered = lateMediaAnalyzed
+    ? await turnCoveredMessage(
+        tenantId,
+        instanceId,
+        args.deliveryRowId,
+        n.conversationId,
+        messageId,
+        base,
+      )
+    : null;
+  const unhandledByOwnership = (act && consumed) || !act;
   const incomingUnhandled =
     (isNewIncomingMessage(n) || lateMediaAnalyzed) &&
-    ((act && consumed) || !act);
+    (covered === null ? unhandledByOwnership : !covered);
   const role: IngestRole | null = incomingUnhandled
     ? "customer"
     : isNewHumanReplyToCustomer(n, {
@@ -5272,6 +5390,10 @@ export async function processChatwootDelivery(
   const settleDelivery = async (
     messageId: number,
     settlement: "answered" | "consumed",
+    // Whether a turn folded the message into the thread — a different question from the settlement,
+    // and only the caller knows (issue #576). Ignored on the `this-delivery` scope, which speaks for
+    // one route rather than for the message.
+    covered: boolean,
     scope: "conversation" | "this-delivery" = "conversation",
   ): Promise<void> => {
     // Narrows for the call below, which takes a number. Every caller is already inside a branch that
@@ -5284,9 +5406,12 @@ export async function processChatwootDelivery(
         conversationId: n.conversationId,
         conversationRowId: mirror.conversationRowId,
         settlement,
+        // `covered` rides the wide scope only: a single-row settlement is this route reporting about
+        // ITSELF, and "I am not handling this" says nothing about the route that is (issue #576, PR
+        // review round 4). The union in ../chatwoot/delivery-sweep.ts is what enforces it.
         ...(scope === "this-delivery"
           ? { deliveryRowId: params.deliveryRowId }
-          : { messageIds: [messageId] }),
+          : { messageIds: [messageId], covered }),
         base,
       });
     } catch (e) {
@@ -5417,7 +5542,49 @@ export async function processChatwootDelivery(
           // write is fire-and-forget. That is the point: the contract must not rest on a property of
           // three unrelated call sites that any of them could drop. Bound to the turn here, it
           // cannot.
+          // WHETHER THE MESSAGE ENDED UP IN THE THREAD, reported by the runtime and WRITTEN THERE
+          // (issue #576). Not carried to the settlement below: a TTS or a send that fails after the
+          // invoke jumps to the catch, tx2 closes the row anyway, and the fact would be lost on a row
+          // that really does hold the message. Same rule as `settleDelivery` itself — record the
+          // decision where it is made, never later.
+          let turnFoldedIn = false;
+          const onFoldedIn = async (): Promise<void> => {
+            // ONLY THE MESSAGE WHOSE WORDS THE TURN HAD, and the flag says the same (issue #576, PR
+            // review round 8). A voice note still waiting on STT reaches the graph as a placeholder,
+            // and claiming it — here or at the settlement below, which reads this flag — suppresses
+            // the very ingest the write-back exists to arm.
+            if (
+              n.message?.id == null ||
+              n.conversationId === null ||
+              !turnHadTheWords({
+                // FROM THE FILE TYPES, not from `firstAudioAttachment` (PR review, round 9). That
+                // one answers whether STT could RUN — it requires a usable id and data_url — and an
+                // audio whose url has not landed yet fails it while still reaching the graph as a
+                // placeholder. Asked that way, the message read as "no audio", coverage was claimed,
+                // and the transcription that followed was suppressed. The debounce path was already
+                // asking the file types; this makes the two the same question.
+                hasAudio: (n.message?.attachments ?? []).some(
+                  (a) => a.fileType === "audio",
+                ),
+                transcribedText: n.message?.transcribedText,
+              })
+            )
+              return;
+            turnFoldedIn = true;
+            // COVERAGE ONLY, and never the settlement: settling here would close the row mid-turn,
+            // and a closed row is a delivery the sweep can no longer see. The settlement below is
+            // what says whether a reply reached the customer.
+            await recordTurnCoverage({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              conversationId: n.conversationId,
+              covered: true,
+              messageIds: [n.message.id],
+              base,
+            });
+          };
           const outcome = await runAgentTurn({
+            onFoldedIn,
             tenantId: params.tenantId,
             instanceId: params.instanceId,
             agentBotId: params.agentBotId,
@@ -5502,6 +5669,16 @@ export async function processChatwootDelivery(
               outcome === "posted" || outcome === "posted-partial"
                 ? "answered"
                 : "consumed",
+              // NOT the same reading as the word beside it: `graph.invoke` persists the channel, so
+              // a turn that ran and stayed silent left the message in memory while settling
+              // `consumed` (issue #576). Reported by the runtime rather than read off the outcome,
+              // which straddles the invoke in both directions: the input guardrail's replacement
+              // answers `posted` before it, the output guardrail's suppression `blocked` after it.
+              // The runtime's own answer, kept rather than hardcoded `false` (PR review, round 6).
+              // `onFoldedIn` already wrote it, but that write is best-effort: a transient failure
+              // there followed by an unconditional `false` here would put the LIE on the row, where
+              // repeating the true answer leaves the null the reader falls back on at worst.
+              turnFoldedIn,
             );
           }
           // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line
@@ -5867,6 +6044,9 @@ export async function processChatwootDelivery(
     await settleDelivery(
       messageId,
       "consumed",
+      // This whole path is the one no turn takes: the gate closed, a person or another bot holds the
+      // conversation, or the observer owes the memory instead. Nothing invoked a graph.
+      false,
       heldByAnotherBot || observer !== null ? "this-delivery" : "conversation",
     );
   };
@@ -6040,6 +6220,7 @@ export async function processChatwootDelivery(
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
+      deliveryRowId: params.deliveryRowId,
       n,
       act: act && !observing && !handedToObserver,
       consumed,

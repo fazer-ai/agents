@@ -99,7 +99,7 @@ export const auditController = new Elysia({
         cursor: t.Optional(
           t.String({
             description:
-              "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one. A cursor from before #530 (a bare id) is read as that release's own `id <` bound, so a walk that spans a rolling deploy finishes without losing a row; anything else is refused.",
+              "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one. Anything else is refused, a bare id included: that was the cursor before #530 and it names a position this ordering does not have.",
           }),
         ),
         scope: t.Optional(

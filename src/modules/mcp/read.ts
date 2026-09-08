@@ -1005,10 +1005,9 @@ export async function auditList(
     opts.actorId = v;
   }
   if (args.cursor !== undefined) {
-    // TWO COLUMNS SINCE #530, so not `parseMcpId`. A cursor from the release before it is a bare
-    // id, and the codec reads it as that release's own `id <` BOUND -- an agent that stored one
-    // mid-walk keeps walking, from the same place and not from a different one, for the length of
-    // one rolling deploy. See `AuditCursor.beforeId`.
+    // TWO COLUMNS SINCE #530, so not `parseMcpId`. A bare id was the cursor before that, and was
+    // accepted for one release after it so an agent holding one mid-walk kept walking across a
+    // rolling deploy; since #544 it is refused like any other malformed cursor.
     const c = parseAuditCursor(args.cursor);
     if (c === null) {
       return err(

@@ -1,0 +1,23 @@
+-- The last index #530 replaced, and the one that could not go with the others (#544).
+--
+-- `audit_logs_fleet_id_idx` served exactly one query: the fleet trail's `ORDER BY id`, which no
+-- reader in this codebase issues since #530 moved every audit read onto `(created_at, id)`. The
+-- three other indexes that release replaced were dropped in its own PR, because the new
+-- `(created_at DESC, id DESC)` pair answers the old questions too. This one has no such
+-- replacement: after #530 no audit index leads with `id` at all.
+--
+-- WHY IT OUTLIVED THEM BY A RELEASE. `docs/deploy.md` describes ROLLING deploys, so for one overlap
+-- a container from the release before #530 goes on asking that question, and without the index it
+-- walks the primary key past every tenant row: 8,687 buffers and 21.5 ms against 2, measured on a
+-- 500k-row probe with the fleet slice at the far end. #530 shipped in v1.15.0, so this release is
+-- the one release later the note asked for, and no such container can be part of a normal upgrade
+-- any more. An operator who skips a release still overlaps one, and pays that page's cost for the
+-- length of the drain -- slower, never wrong, and gone when the old process is.
+--
+-- ONE STATEMENT, AND THAT IS NOT STYLE. A `DROP INDEX CONCURRENTLY` applies when it is alone in its
+-- file and fails with `cannot run inside a transaction block` as soon as any second statement joins
+-- it (measured; `tests/prisma/tenant-index-redundancy.test.ts` is the fence). Concurrently rather
+-- than plain because the plain drop takes an ACCESS EXCLUSIVE on `audit_logs`, which every write
+-- that records an audit row would queue behind, and this runs on the new container while the old
+-- one is still serving.
+DROP INDEX CONCURRENTLY IF EXISTS "audit_logs_fleet_id_idx";

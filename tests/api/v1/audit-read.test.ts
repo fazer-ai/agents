@@ -261,30 +261,33 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       });
     }
 
-    // A CURSOR FROM BEFORE #530 IS A BARE ID, and it is read as THAT RELEASE'S OWN `id <` BOUND
-    // rather than reinterpreted or translated. The format changed and deploys are rolling, so for
-    // one overlap the previous release is still handing these out; refusing would be a 400 in the
-    // middle of an operator's walk. The bound continues from the same place the old walk would
-    // have, which neither reading the number as the new key nor translating it into that row's
-    // instant does -- see `AuditCursor.beforeId`, and the walk asserted in the service's own file.
-    test("a cursor from before the keyset change continues the same walk", async () => {
+    // A CURSOR FROM BEFORE #530 IS A BARE ID, AND IT IS A 400 AGAIN (#544). It was accepted for one
+    // release after the format changed, read as that release's own `id <` bound, because deploys
+    // are rolling and refusing would have been a 400 in the middle of an operator's walk. #530
+    // shipped in v1.15.0 and this is the release after it, so nothing is handing one out any more.
+    //
+    // The 400 is also the only honest answer left: neither reading the number as the new key nor
+    // translating it into that row's instant resumes from where the old walk stopped, so accepting
+    // it would page a different trail under a pager still saying "Page 2" (`AuditCursor.at`).
+    test("a cursor from before the keyset change is refused", async () => {
       role = "TENANT_ADMIN";
       const first = await get("?limit=1", await sign("TENANT_ADMIN"));
       const page = (await first.json()) as Page & { nextCursor: string };
       const oldStyle = page.nextCursor.split("|")[1] as string;
+      expect(oldStyle).toBeTruthy();
 
       const viaOld = await get(
         `?limit=1&cursor=${encodeURIComponent(oldStyle)}`,
         await sign("TENANT_ADMIN"),
       );
+      expect(viaOld.status).toBe(400);
+      // ...while the shape this release emits is still accepted, so the 400 is about the FORM and
+      // not about cursors having stopped working.
       const viaNew = await get(
         `?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`,
         await sign("TENANT_ADMIN"),
       );
-      expect(viaOld.status).toBe(200);
-      expect((await viaOld.json()).entries).toEqual(
-        (await viaNew.json()).entries,
-      );
+      expect(viaNew.status).toBe(200);
     });
 
     test("a cursor that is neither shape is still refused", async () => {
@@ -296,6 +299,9 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         // Bounded like every other id: past 2^63-1 Postgres refuses it at bind time, so parsing it
         // here would answer a plainly malformed value with a 500.
         "9".repeat(40),
+        // The three-part form #530 emitted while it still carried the pre-#530 bound. It came out
+        // with the bound in #544, and a cursor held across that upgrade lands here.
+        "2026-01-01T00:00:00.000Z|7|99",
       ]) {
         const res = await get(
           `?cursor=${encodeURIComponent(bad)}`,

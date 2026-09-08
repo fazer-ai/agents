@@ -1727,6 +1727,10 @@ function errMsg(err: unknown): string {
 //
 // Answered from what the turn's input actually carried: audio with no transcription is a placeholder,
 // and everything else — text, an image, an audio already transcribed — is the message itself.
+//
+// `hasAudio` is the FILE TYPE and never STT eligibility: an attachment whose id or url has not landed
+// yet cannot be transcribed and still reaches the graph as a placeholder, so a predicate that asked
+// "could STT run" would call it a text message and claim its words.
 export function turnHadTheWords(m: {
   hasAudio: boolean;
   transcribedText: string | null | undefined;
@@ -5553,7 +5557,15 @@ export async function processChatwootDelivery(
               n.message?.id == null ||
               n.conversationId === null ||
               !turnHadTheWords({
-                hasAudio: firstAudioAttachment(n) !== null,
+                // FROM THE FILE TYPES, not from `firstAudioAttachment` (PR review, round 9). That
+                // one answers whether STT could RUN — it requires a usable id and data_url — and an
+                // audio whose url has not landed yet fails it while still reaching the graph as a
+                // placeholder. Asked that way, the message read as "no audio", coverage was claimed,
+                // and the transcription that followed was suppressed. The debounce path was already
+                // asking the file types; this makes the two the same question.
+                hasAudio: (n.message?.attachments ?? []).some(
+                  (a) => a.fileType === "audio",
+                ),
                 transcribedText: n.message?.transcribedText,
               })
             )

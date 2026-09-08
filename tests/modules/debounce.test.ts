@@ -17,7 +17,10 @@ import {
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
-import { flushDebounceJob } from "@/modules/debounce/handler";
+import {
+  flushDebounceJob,
+  selectAnswerableBurst,
+} from "@/modules/debounce/handler";
 import {
   armDebounce,
   debounceDedupeKey,
@@ -1027,6 +1030,60 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toBe(0);
 
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
+  });
+
+  // THE LEDGER READS THE LIST THE TURN'S INPUT CAME FROM, not the one the selector produced (issue
+  // #576, PR review round 10). The two are identical today — `pendingIncoming` admits a message on
+  // `content OR an attachment`, the exact complement of the one branch `renderInboundMessage`
+  // returns "" on — so this asks the seam directly, with a `selectPending` that hands the burst a
+  // message the real one would have dropped. That is what a drift between those two predicates
+  // would look like from in here, and the cost of reading `pending` instead is a message recorded
+  // as covered by a turn that never saw it, whose own write-back then finds the record and stays
+  // quiet.
+  test("the burst separates what rendered from what was selected", async () => {
+    const convId = 8942;
+    await seedConversation(convId);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const burst = await selectAnswerableBurst(
+      {
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        convDbId: conv.id,
+        // Every incoming message, renderable or not — the drift, made explicit.
+        selectPending: async (messages) =>
+          messages.filter((m) => m.messageType === "incoming" && !m.private),
+        settings: {},
+        label: "test",
+      },
+      appDb,
+      {
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "tem horário?" },
+              // Nothing to render: no content, no attachment. This is the shape the real selector
+              // drops, and the shape a voice note takes before its attachment lands (issue #478).
+              { id: 2, content: "" },
+            ]),
+          ],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+      },
+    );
+
+    expect(burst).not.toBeNull();
+    // The selector's word: both messages are in the burst, so the watermark advances past both.
+    expect(burst?.pending.map((m) => m.id)).toEqual([1, 2]);
+    expect(burst?.targetWatermark).toBe(2);
+    // The turn's word: only the one that rendered is in what the model reads, and so only that one
+    // can be claimed as folded in.
+    expect(burst?.inTurn.map((m) => m.id)).toEqual([1]);
+    expect(burst?.text).toBe("tem horário?");
   });
 
   test("the burst CAP takes messages out, and the ledger says so too", async () => {

@@ -148,6 +148,10 @@ export interface CoalesceTurnContext {
 interface AnswerableBurst {
   client: Awaited<ReturnType<typeof loadChatwootClient>>;
   pending: ChatwootMessageRow[];
+  // The subset of `pending` that RENDERED into `text`, and so is the only part of the burst the turn
+  // ever saw. A message renders to nothing when there is nothing answerable in it yet: an audio
+  // whose attachment has not landed, a reaction, an unrecognised type.
+  inTurn: ChatwootMessageRow[];
   // The messages the burst cap took OUT. Answered by nobody, on purpose.
   dropped: ChatwootMessageRow[];
   targetWatermark: number;
@@ -216,9 +220,20 @@ export async function selectAnswerableBurst(
   // Resolve quoted/replied-to messages from the full page, then render each pending message for the
   // agent (markers for audio/image/file, quote context). Coalesce into one turn.
   const resolveQuoted = buildQuoteResolver(messages);
+  // PAIRED WITH THE MESSAGE IT CAME FROM, so the ledger can read the same list the turn's input was
+  // built from (issue #576, PR review round 10). Today the filter below drops nothing: `selectPending`
+  // ends in `pendingIncoming`, which admits a message only on `content OR an attachment`, and that is
+  // the exact complement of the one branch `renderInboundMessage` returns "" on. The pairing is
+  // against DRIFT, not a live loss — the two predicates sit in different files, this function already
+  // hedges the same way (the filter, and the `rendered.length === 0` exit below), and read off
+  // `pending` a burst member the turn never saw would be recorded as covered and its own write-back
+  // would find that record and stay quiet.
   const rendered = pending
-    .map((m) => renderInboundMessage(toRenderable(m), { resolveQuoted }))
-    .filter((s) => s.length > 0);
+    .map((m) => ({
+      message: m,
+      text: renderInboundMessage(toRenderable(m), { resolveQuoted }),
+    }))
+    .filter((r) => r.text.length > 0);
   if (rendered.length === 0) {
     // Nothing in the burst renders to answerable text — it never will, so mark it handled or every
     // future flush re-fetches and re-stops on the same messages.
@@ -236,7 +251,8 @@ export async function selectAnswerableBurst(
     dropped,
     targetWatermark,
     lastMessageId,
-    text: rendered.join("\n"),
+    inTurn: rendered.map((r) => r.message),
+    text: rendered.map((r) => r.text).join("\n"),
   };
 }
 
@@ -257,8 +273,15 @@ export async function coalesceAndRunTurn(
 
   const burst = await selectAnswerableBurst(ctx, base, deps);
   if (!burst) return "empty";
-  const { client, pending, dropped, targetWatermark, lastMessageId, text } =
-    burst;
+  const {
+    client,
+    pending,
+    inTurn,
+    dropped,
+    targetWatermark,
+    lastMessageId,
+    text,
+  } = burst;
 
   // 2. Post gate, first half: re-fetch to detect mid-turn arrivals (supersede). Re-fetch failure is
   //    non-fatal. The second half — the monotonic claim that makes this exclusive with every other
@@ -320,11 +343,16 @@ export async function coalesceAndRunTurn(
   let foldedIn = false;
   const outcome = await runLoadedTurn({
     onFoldedIn: async () => {
-      // ONLY THE MESSAGES WHOSE WORDS THIS BURST HAD (issue #576, PR review round 8). A voice note
-      // still waiting on STT is in the burst as a placeholder — this flush may be the one an EARLIER
-      // message armed, re-fetching before the transcription lands (docs/stt.md, "Known limits") —
-      // and claiming it would suppress the ingest its own write-back exists to arm.
-      const withWords = pending.filter((m) =>
+      // ONLY THE MESSAGES WHOSE WORDS THIS BURST HAD (issue #576, PR review round 8), and only the
+      // ones that REACHED the turn's input at all (round 10). A voice note still waiting on STT is
+      // in the burst as a placeholder — this flush may be the one an EARLIER message armed,
+      // re-fetching before the transcription lands (docs/stt.md, "Known limits") — and claiming it
+      // would suppress the ingest its own write-back exists to arm. `inTurn` rather than `pending`
+      // for a different reason and not a second loss: the two lists are identical today (see
+      // `selectAnswerableBurst`), and reading the one the turn's INPUT came from is what keeps them
+      // identical, since a member filtered out of the text has no audio to fail the words test with
+      // and would be claimed by a turn that never saw it.
+      const withWords = inTurn.filter((m) =>
         turnHadTheWords({
           hasAudio: m.attachmentTypes.includes("audio"),
           transcribedText: m.transcribedText,

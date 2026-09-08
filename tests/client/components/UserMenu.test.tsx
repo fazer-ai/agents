@@ -21,7 +21,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { createTestI18n } from "@/tests/utils/i18n";
 
-const mockLogout = mock(async () => {});
+const mockLogout = mock(async () => true);
 const mockSetTheme = mock((_: string) => {});
 
 mock.module("@/client/contexts/AuthContext", () => ({
@@ -49,20 +49,28 @@ const i18n = createTestI18n();
 const changeLanguage = spyOn(i18n, "changeLanguage");
 
 import { I18nextProvider } from "react-i18next";
+import { ToastProvider } from "@/client/components/Toast";
 import { UserMenu } from "@/client/components/UserMenu";
 
 function renderMenu() {
   return render(
     <I18nextProvider i18n={i18n}>
-      <TooltipPrimitive.Provider>
-        <MemoryRouter initialEntries={["/"]}>
-          <Routes>
-            <Route path="/" element={<UserMenu />} />
-            <Route path="/login" element={<div>LOGIN_PAGE_MARKER</div>} />
-            <Route path="/settings" element={<div>SETTINGS_PAGE_MARKER</div>} />
-          </Routes>
-        </MemoryRouter>
-      </TooltipPrimitive.Provider>
+      {/* The menu tells the operator when a logout did not end the session, and `useToast` refuses
+          to run outside its provider. */}
+      <ToastProvider>
+        <TooltipPrimitive.Provider>
+          <MemoryRouter initialEntries={["/"]}>
+            <Routes>
+              <Route path="/" element={<UserMenu />} />
+              <Route path="/login" element={<div>LOGIN_PAGE_MARKER</div>} />
+              <Route
+                path="/settings"
+                element={<div>SETTINGS_PAGE_MARKER</div>}
+              />
+            </Routes>
+          </MemoryRouter>
+        </TooltipPrimitive.Provider>
+      </ToastProvider>
     </I18nextProvider>,
   );
 }
@@ -136,10 +144,12 @@ describe("UserMenu", () => {
     expect(screen.getByText("LOGIN_PAGE_MARKER")).toBeInTheDocument();
   });
 
-  test("navigates to /login even if logout rejects", async () => {
-    mockLogout.mockImplementationOnce(async () => {
-      throw new Error("network");
-    });
+  // IT USED TO NAVIGATE WHATEVER HAPPENED, and that is the finding this replaces (#566, round 15).
+  // The cookie is HttpOnly, so a logout the server did not answer leaves the operator signed in:
+  // `/login` bounces a signed-in visitor to `redirectTo`, so the old behaviour cost them the route
+  // they were on and said nothing about why.
+  test("stays put and says so when the session did not end", async () => {
+    mockLogout.mockImplementationOnce(async () => false);
     renderMenu();
     openDropdown();
     const logoutItem = screen.getByRole("menuitem", { name: /logout/i });
@@ -147,6 +157,7 @@ describe("UserMenu", () => {
       fireEvent.click(logoutItem);
       await Promise.resolve();
     });
-    expect(screen.getByText("LOGIN_PAGE_MARKER")).toBeInTheDocument();
+    expect(screen.queryByText("LOGIN_PAGE_MARKER")).not.toBeInTheDocument();
+    expect(screen.getByText(/could not sign you out/i)).toBeInTheDocument();
   });
 });

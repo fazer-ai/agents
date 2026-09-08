@@ -16,6 +16,7 @@ import {
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { forgetToolSample, sampleTicket } from "@/client/lib/toolSample";
 import { NATIVE_TOOL_CATEGORY, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { CodeToolEditModal, type CodeToolListed } from "./CodeToolEditModal";
 import { type Tool, ToolEditModal } from "./ToolEditModal";
@@ -110,6 +111,11 @@ export function ToolsPanel() {
   async function confirmDelete() {
     const target = deleteModal.payload;
     if (!target) return;
+    // Read BEFORE the request, for the same reason the save reads one: the tenant selector lives in
+    // `localStorage` and another tab can move it while this is in flight, and the clearing has to
+    // land in the scope this delete was sent under rather than in whatever is selected when it
+    // comes back (round 7 of review).
+    const ticket = sampleTicket();
     setDeleting(true);
     try {
       const { error: err } =
@@ -123,6 +129,9 @@ export function ToolsPanel() {
         );
         return;
       }
+      // The response this tab kept for that tool goes with it (issue #566). Left behind it is a
+      // customer's response outliving the row it described, in a tab that has no use for it.
+      if (target.kind === "http") forgetToolSample(target.id, ticket);
       showToast(t("tools.deleted", "Tool deleted."), "success");
       deleteModal.close();
       load();

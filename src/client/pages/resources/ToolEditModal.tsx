@@ -37,6 +37,14 @@ import { api } from "@/client/lib/api";
 import { firstJsonProblem, reindentJson } from "@/client/lib/sampleJson";
 import { dialableBaseUrl } from "@/client/lib/secretTypes";
 import { templateExtensions } from "@/client/lib/templateEditor";
+import {
+  recallToolSample,
+  rememberToolSample,
+  sampleIsNothing,
+  sampleTicket,
+  type ToolSample,
+  vaultGeneration,
+} from "@/client/lib/toolSample";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -334,6 +342,13 @@ function emptyForm() {
     apptSummaryPath: "",
     apptOffsets: "",
     apptAskConfirm: false,
+    // THE SAMPLE IS PART OF THE FORM SINCE #566, where it used to be local state deliberately kept
+    // out of it. Nothing about it is submitted, and nothing about it is stored: it is remembered in
+    // this tab (`client/lib/toolSample`) but it is remembered BY THE SAVE, so pasting one is an
+    // unsaved change like any other and the discard dialog on close is correct. The alternative is
+    // telling the operator the sample survives a reopen and then dropping it when they close.
+    sample: "",
+    sampleStatus: null as number | null,
   };
 }
 
@@ -360,6 +375,170 @@ type ToolForm = ReturnType<typeof emptyForm>;
 //
 // `null` when the headers are not parseable JSON, which is a client-side check with no server
 // sentence behind it.
+// WHAT THE SAMPLE DESCRIBES, as the part of the definition that decides WHICH RESPONSE comes back.
+// A sample captured by "Send a test request" and then followed by an edit to the URL, the method,
+// the headers, the body, the query or the credential is a response to a call the tool no longer
+// makes: saved, it would pass the revision check (the save is what set that revision) and go on
+// offering paths that describe an endpoint nobody calls (round 12 of review).
+//
+// An EXCLUSION list, not an inclusion one, and the direction is the point: a field added later
+// counts as response-affecting until someone says otherwise, so the failure is a sample dropped too
+// eagerly rather than a stale one kept. What is excluded is what cannot change the bytes the API
+// sends back: the tool's names, how the reply is projected for the model, and what the runtime does
+// with it afterwards.
+const NOT_RESPONSE_AFFECTING = new Set([
+  "name",
+  "label",
+  "description",
+  "outputSchema",
+  "expectedStatuses",
+  "ackEnabled",
+  "ackMessage",
+  "appointment",
+]);
+
+export function requestShapeOf(payload: unknown): string {
+  if (payload === null || typeof payload !== "object") return "";
+  const kept: Record<string, unknown> = {};
+  for (const key of Object.keys(payload as Record<string, unknown>).sort())
+    if (!NOT_RESPONSE_AFFECTING.has(key))
+      kept[key] = (payload as Record<string, unknown>)[key];
+  return JSON.stringify(kept);
+}
+
+// AND THE CREDENTIAL IS PART OF THE REQUEST WITHOUT BEING PART OF THE PAYLOAD. `credentialRef` is a
+// name; what it resolves to is a row in the vault, and editing that row's base URL or its secret
+// changes the host a relative `urlTemplate` reaches and the authorization it carries while the
+// payload is byte for byte the same. So the marker carries which vault this tab had when the sample
+// was captured, and a save made after an edit to that vault finds a marker that no longer matches
+// (round 14 of review). NUL as the separator because no JSON `JSON.stringify` produces holds one.
+export function captureShapeOf(payload: unknown): string {
+  const shape = requestShapeOf(payload);
+  // ONLY FOR A TOOL THAT NAMES ONE. A definition with no credential cannot be changed by a vault
+  // edit, and prefixing it anyway made any credential saved anywhere in the console refuse a sample
+  // that nothing could have invalidated — round 6's over-rejection arriving through the marker
+  // (round 15 of review).
+  const ref = (payload as { credentialRef?: unknown } | null)?.credentialRef;
+  return typeof ref === "string" && ref !== ""
+    ? `${vaultGeneration()}\u0000${shape}`
+    : shape;
+}
+
+// WHICH DEFINITION THE SAMPLE ON SCREEN WAS CAPTURED AGAINST, decided in one place and returned,
+// because it is maintained at four sites and review round 13 found two of them wrong: a sample
+// restored from this tab's memory recorded NO definition (so a later edit to the URL was invisible
+// to the save's refusal, which is the very defect round 12 fixed, surviving a reopen), and Format
+// re-recorded the definition on screen NOW (so pretty-printing a sample after editing the URL erased
+// the mismatch).
+//
+// The rule is one sentence: the shape changes only when a NEW sample arrives. `against` is the form
+// the sample is going into, or null for an arrival that carries no capture with it.
+export function shapeOfArrival(args: {
+  text: string;
+  status: number | null;
+  against: ToolForm | null;
+  previous: string | null;
+}): string | null {
+  // The module's own rule, asked here rather than spelled out again: an empty body with a status is
+  // a sample, and it is one that describes a definition like any other.
+  if (sampleIsNothing(args.text, args.status)) return null;
+  if (args.against === null) return args.previous;
+  return captureShapeOf(payloadOf(args.against));
+}
+
+// THE ARRIVAL AN OPEN IS: the form as the server just answered it, carrying whatever this tab kept
+// for that tool. A function rather than the call spelled out at the two open sites, so what an open
+// records is a value a test can ask about instead of a shape a fence has to read off the source.
+export function shapeOfOpening(form: ToolForm): string | null {
+  return shapeOfArrival({
+    text: form.sample,
+    status: form.sampleStatus,
+    against: form,
+    previous: null,
+  });
+}
+
+// WHETHER THE SAMPLE ON SCREEN STILL DESCRIBES THE REQUEST BEING SAVED, which is the question the
+// revision cannot answer: the save is what sets the revision, so a response captured against one URL
+// and saved after the URL changed passes that check by construction (round 12 of review).
+export function sampleDescribes(
+  shape: string | null,
+  payload: unknown,
+): boolean {
+  // NO SAMPLE WAS CAPTURED, so there is nothing that could have stopped describing anything, and
+  // whether this save keeps one is the module's emptiness rule rather than this question. Null used
+  // to mean "no objection" as well, and carried three of them: a restored sample, an empty body with
+  // a status, and a reformat all recorded null and then survived any edit at all (round 13).
+  if (shape === null) return true;
+  return shape === captureShapeOf(payload);
+}
+
+// WHAT A SAVE HANDS THE MODULE, as a value rather than as an object literal assembled at the call
+// site. The module cannot see a call site, so every field spelled there is a field a mutation can
+// change with nothing to notice: `credentialRef` taken from the form instead of the payload, or
+// dropped for null, survived the battery when this was written inline.
+export function sampleToRemember(args: {
+  revision: string | null;
+  text: string;
+  status: number | null;
+  payload: { credentialRef: string | null };
+}): ToolSample | null {
+  // `revisionForSave` saying there is nothing to keep: the sample describes another definition, or
+  // neither revision is known.
+  if (args.revision === null) return null;
+  return {
+    revision: args.revision,
+    text: args.text,
+    status: args.status,
+    // From the payload and not from the form, so it is the reference the request that was just
+    // saved carries. A change of SELECTION is caught by the shape; this is for the credential
+    // being edited under the same name (round 13 of review).
+    credentialRef: args.payload.credentialRef,
+  };
+}
+
+// WHETHER THIS SAVE HAS ANYTHING FOR THE SERVER. The sample is part of the form since #566, so
+// pasting one is an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing
+// about it: with the persisted half untouched, a PATCH would rewrite the whole definition from a
+// form loaded before someone else's edit, and would advance `updatedAt` for a change the row does
+// not contain (round 11 of review).
+//
+// Only ever true for an edit with a baseline and a known revision: a create has nothing to compare
+// against and must always be sent.
+export function sendsNothing(args: {
+  editing: boolean;
+  opened: string | null;
+  openedRevision: string | null;
+  payload: unknown;
+}): boolean {
+  if (!args.editing) return false;
+  if (args.opened === null || args.openedRevision === null) return false;
+  return (
+    JSON.stringify(payloadOf(JSON.parse(args.opened) as ToolForm)) ===
+    JSON.stringify(args.payload)
+  );
+}
+
+// WHICH DEFINITION THE SAMPLE DESCRIBES, decided in one place and returned rather than spelled out
+// at the call site. When the save sent something, it is the row that came back, because the save is
+// what moved the revision and the row the form opened with already names a definition that stopped
+// existing. When it sent nothing (a sample-only change), the row did not move, so the revision this
+// dialog opened with is still the right answer. Null means neither is known, and nothing is kept.
+//
+// A value rather than a source fence, because two rounds of review found this call site holding a
+// judgement the module could not see, and a fence over a spelling is what a refactor walks past.
+export function revisionForSave(
+  row: { updatedAt: unknown } | null,
+  opened: string | null,
+  // Whether the sample on screen still describes the definition being saved. False is not a
+  // revision at all rather than a different one: there is nothing to keep, and folding it in here
+  // is what makes the caller's guard load-bearing instead of a second judgement beside it.
+  describesThis: boolean,
+): string | null {
+  if (!describesThis) return null;
+  return row ? String(row.updatedAt) : opened;
+}
+
 export function payloadOf(form: ToolForm) {
   let headers: Record<string, unknown>;
   try {
@@ -531,7 +710,20 @@ export function formFromTool(tool: Tool) {
     ackMessage: tool.ackMessage ?? "",
     ...outputSchemaForm(tool.outputSchema),
     ...appointmentForm(tool.appointment),
+    ...sampleForm(tool),
   };
+}
+
+// The sample comes back from this tab alone (issue #566): nothing about it is stored anywhere, so a
+// reload, a second tab or a second machine gets no offer, the same as before the feature, and "Send
+// a test request" is still the way back.
+function sampleForm(tool: Tool) {
+  // `String(...)` because the treaty TYPES this as `Date` while the wire carries a string: the
+  // client runs with `parseDate: false`, so nothing ever constructs one (`docs/eden-treaty.md`).
+  // Comparing whatever arrives against whatever was stored is what this needs, and stringifying
+  // both ends answers the same either way.
+  const kept = recallToolSample(tool.id, String(tool.updatedAt));
+  return { sample: kept?.text ?? "", sampleStatus: kept?.status ?? null };
 }
 
 // The stored `outputSchema`, split into the part this form edits and the part it must not lose. The
@@ -1218,18 +1410,54 @@ export function ToolEditModal({
   // rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
-  // The pasted (or tested) sample response and which field's picker is open. ONE sample for the whole
-  // screen: the response template and the appointment declaration point into the same body, and
-  // asking for it twice is the kind of duplication an operator reads as two different questions.
-  // Local, never submitted, never part of the dirty comparison — see sampleParse.
-  const [sample, setSample] = useState("");
-  // The STATUS the sample came back under, or null when it was pasted by hand. It exists because the
-  // runtime projects on 2xx alone: a sample captured from a 404 the tool declares a result would be
-  // handed to the model RAW, and a preview that rendered the template over it would promise
-  // something the runtime never does — under a label that says "exactly what the agent would
-  // receive". Null reads as 2xx, which is the right assumption for a hand-pasted body: nobody
-  // pastes an error response to design a success template against.
-  const [sampleStatus, setSampleStatus] = useState<number | null>(null);
+  // The pasted (or tested) sample response, and the STATUS it came back under (null when it was
+  // pasted by hand). ONE sample for the whole screen: the response template and the appointment
+  // declaration point into the same body, and asking for it twice is the kind of duplication an
+  // operator reads as two different questions.
+  //
+  // Part of `form` since #566, where it was local state. The status exists because the runtime
+  // projects on 2xx alone: a sample captured from a 404 the tool declares a result would be handed
+  // to the model RAW, and a preview that rendered the template over it would promise something the
+  // runtime never does, under a label that says "exactly what the agent would receive". Null reads
+  // as 2xx, which is the right assumption for a hand-pasted body: nobody pastes an error response
+  // to design a success template against.
+  const sample = form.sample;
+  const sampleStatus = form.sampleStatus;
+  // Always together: a body and the status it is judged under are one fact, and setting the text
+  // while leaving the previous run's status judges this body by that one's.
+  // The definition the sample on screen describes, recorded when it is put there. Null when there
+  // is no sample, or when it came back from this tab's memory (where it is already matched to a
+  // revision, which is the same question asked at the other end).
+  const sampleShapeRef = useRef<string | null>(null);
+
+  const setSample = (text: string, status: number | null) =>
+    setForm((f) => {
+      const next = { ...f, sample: text, sampleStatus: status };
+      // Recorded from the form this sample is being put INTO, inside the updater so it is the state
+      // React is about to commit and not a render behind it.
+      sampleShapeRef.current = shapeOfArrival({
+        text,
+        status,
+        against: next,
+        previous: sampleShapeRef.current,
+      });
+      return next;
+    });
+
+  // THE SAME SAMPLE, RE-INDENTED, which is why it does not re-capture: Format changes whitespace and
+  // never a value, so the definition this response came back from is the one it already had.
+  const reformatSample = (text: string) =>
+    setForm((f) => {
+      const next = { ...f, sample: text };
+      sampleShapeRef.current = shapeOfArrival({
+        text,
+        status: f.sampleStatus,
+        against: null,
+        previous: sampleShapeRef.current,
+      });
+      return next;
+    });
+
   const [apptPicker, setApptPicker] = useState<
     "id" | "start" | "summary" | null
   >(null);
@@ -1250,6 +1478,9 @@ export function ToolEditModal({
   const [selectedCredential, setSelectedCredential] =
     useState<VaultEntry | null>(null);
   const baselineRef = useRef<string | null>(null);
+  // The `updatedAt` of the row this dialog opened, so a save that sends nothing can still say
+  // which definition its sample describes. Null on a create, and while the edit fetch is in flight.
+  const openedRevisionRef = useRef<string | null>(null);
   // Identity of the current opening (see the open handler).
   const sessionRef = useRef<object | null>(null);
   // Targets for the variable picker (cursor insertion into the free-text template fields). Union type
@@ -1294,8 +1525,6 @@ export function ToolEditModal({
     setSelectedCredential(null);
     // The sample belongs to the tool being edited, so it does not survive into the next one: a
     // response pasted for tool A offering its paths while editing tool B is worse than no offer.
-    setSample("");
-    setSampleStatus(null);
     setApptPicker(null);
     setTemplatePickerOpen(false);
     const payloadId = modal.payload?.id;
@@ -1309,6 +1538,7 @@ export function ToolEditModal({
       // Edit: fetch the full tool by id (the agent editor only carries the id). Baseline is captured
       // once the loaded tool populates the form, so isDirty stays false until the operator edits.
       baselineRef.current = null;
+      openedRevisionRef.current = null;
       setLoadingForm(true);
       void (async () => {
         try {
@@ -1322,7 +1552,13 @@ export function ToolEditModal({
           }
           const initial = formFromTool(data.tool);
           setForm(initial);
+          // A sample this tab kept was captured against the definition it is being restored beside,
+          // so THAT is the shape it describes: `recallToolSample` only answers when the revision it
+          // was stored under is the one that just loaded. Left null, an edit to the URL after a
+          // reopen would save the old response against the new definition (round 13 of review).
+          sampleShapeRef.current = shapeOfOpening(initial);
           baselineRef.current = JSON.stringify(initial);
+          openedRevisionRef.current = String(data.tool.updatedAt);
         } catch {
           if (mine()) setLoadError(true);
         } finally {
@@ -1336,7 +1572,12 @@ export function ToolEditModal({
       setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
+      // Through the same rule as the other open, and it answers null: a create form has no sample.
+      // Written as the call rather than as the answer, so there is one place that decides.
+      sampleShapeRef.current = shapeOfOpening(initial);
       baselineRef.current = JSON.stringify(initial);
+      // A create has no revision yet, and no persisted half to compare against either.
+      openedRevisionRef.current = null;
     }
     // ONE hook per dialog, and the early return that used to sit above is gone for that reason: the
     // per-session reset and the child dialog's teardown both belong to this opening, and a second
@@ -1386,6 +1627,19 @@ export function ToolEditModal({
     // Cancel is disabled while saving), and the continuation below would then close the dialog the
     // operator reopened and write this tool's state into it (docs/modals.md).
     const session = sessionRef.current;
+    // Read BEFORE the request, handed to the write below. A save can be in flight while this tool
+    // is deleted or the session ends, and both of those clear what this tab remembers; without the
+    // ticket, the response arriving afterwards would put the sample back (round 4 of review).
+    const ticket = sampleTicket();
+    // READ HERE, WITH THE TICKET, for the same reason the ticket is read here. `sample`,
+    // `sampleStatus` and `payload` are all values this closure captured when Save was pressed; this
+    // is a REF, and reading it in the continuation asks what the form says NOW. Dismiss a slow save
+    // and reopen, and the opening that follows writes its own marker into it: the answer that comes
+    // back is then compared against another opening's capture, which can only turn a right answer
+    // into a wrong one — the sample that did describe this payload discarded, or one that did not
+    // kept. Fourth round to find this shape, something the continuation reads at the end that had
+    // already moved (round 18 of review).
+    const captured = sampleShapeRef.current;
     setFormError(null);
     const payload = payloadOf(form);
     if (payload === null) {
@@ -1397,23 +1651,70 @@ export function ToolEditModal({
     const held = (e: unknown) =>
       refusal.capture(e, fallback, payload, payloadOf(formRef.current) ?? {});
     try {
-      const { data, error: err } = editId
-        ? await api.api.v1.tools({ id: editId }).patch(payload)
-        : await api.api.v1.tools.post(payload);
-      if (err || !data) {
-        if (sessionRef.current === session) setFormError(held(err));
+      // NOTHING FOR THE SERVER TO DO. The sample is part of the form since #566, so pasting one is
+      // an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing about it: a
+      // PATCH here would rewrite the whole definition from a form loaded before someone else's edit,
+      // and would advance `updatedAt` for a change the row does not contain (round 11 of review).
+      const untouched = sendsNothing({
+        editing: !!editId,
+        opened: baselineRef.current,
+        openedRevision: openedRevisionRef.current,
+        payload,
+      });
+      const saved = untouched
+        ? null
+        : await (editId
+            ? api.api.v1.tools({ id: editId }).patch(payload)
+            : api.api.v1.tools.post(payload));
+      if (saved && (saved.error || !saved.data)) {
+        if (sessionRef.current === session) setFormError(held(saved.error));
         return;
       }
+      const row = saved?.data?.tool ?? null;
+      // A SAMPLE THAT NO LONGER DESCRIBES THIS DEFINITION IS NOT KEPT: captured against one URL and
+      // saved after the URL changed, it would pass the revision check, because this very save is
+      // what set that revision.
+      const revision = revisionForSave(
+        row,
+        openedRevisionRef.current,
+        sampleDescribes(captured, payload),
+      );
+      const id = row?.id ?? (editId as string);
+      // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).
+      // Here rather than on every keystroke, so what comes back is the sample the tool was last
+      // saved with and not a draft the operator abandoned. Nothing to await, nothing that can fail
+      // in a way the operator could act on, and nothing written down. See `toolSample.ts`.
+      // Handed over whole, with no judgement here about whether it is worth keeping: what counts as
+      // nothing is the module's rule, and it was written in both places until a mutation walked past
+      // the copy that lives here (round 8 of review).
+      // Null is `revisionForSave` saying there is nothing to keep: the sample describes another
+      // definition, or neither revision is known.
+      // UNCONDITIONALLY, null included, because null is the save saying there is nothing to keep and
+      // that is a thing the module has to hear: it is what deletes the entry that was there and
+      // marks the write. Guarded, a sample that stopped describing this definition was refused here
+      // and the previous one stayed in the map, holding a customer's response nobody can be served
+      // and occupying one of the eight slots (round 15 of review).
+      rememberToolSample(
+        id,
+        sampleToRemember({
+          revision,
+          text: sample,
+          status: sampleStatus,
+          payload,
+        }),
+        ticket,
+      );
       // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
-      // that has to hear about it, not the dialog now on screen.
+      // that has to hear about it, not the dialog now on screen. Nothing was written when nothing
+      // was sent, so there is nothing for the list to hear either.
       if (sessionRef.current !== session) {
-        onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
+        if (row) onSaved?.({ id: row.id, name: row.name }, !editId);
         return;
       }
       refusal.clear();
       showToast(t("tools.saved", "Tool saved."), "success");
       modal.close();
-      onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
+      if (row) onSaved?.({ id: row.id, name: row.name }, !editId);
     } catch (e) {
       // Same rule as the branch above: a transport failure of a save whose dialog is gone has
       // nowhere to land, and would mark the form the operator has open now.
@@ -2040,7 +2341,7 @@ export function ToolEditModal({
                 label={t("tools.sample", "Sample response (optional)")}
                 description={t(
                   "tools.sampleHint",
-                  "One response from this API, so you can pick fields instead of typing their paths. It is not saved and never leaves this screen.",
+                  "One response from this API, so you can pick fields instead of typing their paths. It is never saved: it stays open for as long as this tab is, and is gone after a reload.",
                 )}
                 group
                 // THE FIELD'S OWN ERROR, not a line beside the buttons (round 6 of review). Through
@@ -2069,10 +2370,8 @@ export function ToolEditModal({
                 <CodeMirrorField
                   value={sample}
                   onChange={(next) => {
-                    setSample(next);
-                    // Typed or pasted by hand: there is no status behind it any more, and keeping
-                    // the last run's would judge this body by that one's.
-                    setSampleStatus(null);
+                    // Typed or pasted by hand: there is no status behind it any more.
+                    setSample(next, null);
                   }}
                   extensions={SAMPLE_LANGUAGE}
                   invalid={sampleParse.state === "invalid"}
@@ -2122,10 +2421,11 @@ export function ToolEditModal({
                   onClick={() => {
                     const tidy = sampleFormat.text;
                     if (tidy === null) return;
-                    // NOTE: the status is NOT cleared here, unlike on a keystroke: re-indenting
-                    // changes the whitespace and never a value, so the last run's status still
-                    // describes this body.
-                    setSample(tidy);
+                    // NOTE: neither the status nor the captured definition is touched here,
+                    // unlike on a keystroke: re-indenting changes the whitespace and never a value,
+                    // so the last run's status still describes this body and so does the definition
+                    // it came back from.
+                    reformatSample(tidy);
                   }}
                 >
                   {t("tools.sampleFormat", "Format")}
@@ -2690,8 +2990,7 @@ export function ToolEditModal({
           // Safe to do here for the same reason Format is safe at all: `reindentJson` copies every
           // literal out verbatim, so an id no JavaScript number can hold survives the trip.
           const tidy = readsBodyVerbatim(status) ? null : reindentJson(raw);
-          setSample(tidy?.ok ? tidy.text : raw);
-          setSampleStatus(status);
+          setSample(tidy?.ok ? tidy.text : raw, status);
         }}
       />
     </>

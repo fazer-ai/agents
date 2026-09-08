@@ -723,6 +723,95 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  // ...AND A `true` THE SIBLING HAS NOT FINISHED ACTING ON DOES NOT SILENCE THIS ROUTE (PR review,
+  // round 15). The claim writes that value from the runtime it resolved, and the ingestion it
+  // promises happens later in the same execution: a responder switched off in between, and then
+  // crashing or failing to enqueue, leaves a row saying it remembers a reply it never folded in. No
+  // sweep repairs that one — a takeover recovery does not carry the reply body — so the reply is
+  // gone from the only memory holding it, permanently, on the strength of an intent.
+  //
+  // Only on the REPLY column, because there being wrong toward ingesting costs an append the dedup
+  // window catches, while on an inbound message it can append one the responder's turn is about to
+  // answer, which nothing catches.
+  test("a reply whose sibling only INTENDED to remember is remembered here", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      data: { responderBoundAt: new Date(Date.now() - 20_000) },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const replyId = messageSeq;
+    // The responder's own delivery, claimed while it was on: `routeRemembers` says `true` and the
+    // row never got past PROCESSING, which is what a crash between the claim and the enqueue leaves.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-reply-intent`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 86,
+        humanReplyShape: "composer",
+        humanReplyMessageId: replyId,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeRemembers: true,
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: replyId,
+      private: false,
+      content: "Oi! Vou verificar seu pedido agora.",
+      message_type: "outgoing",
+      sender: { id: 5, name: "Ana", type: "user" },
+      conversation: conversation(86, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    // ...and the switch flipped after that claim, which is what makes the recorded intent false.
+    await suDb.agent.update({
+      where: { id: responderId },
+      data: { enabled: false },
+    });
+    try {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      expect(customerFacing()).toEqual([]);
+      // The reply is folded in HERE, because nothing else is going to.
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { enabled: true },
+      });
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
   // `bindInbox` calls Chatwoot BEFORE it commits `agentId`, so a message arriving inside that window
   // is fanned to a responder route the local mirror does not know yet: that delivery resolves no
   // runtime, answers nothing and settles. Counting it as coverage hands the message to a route that

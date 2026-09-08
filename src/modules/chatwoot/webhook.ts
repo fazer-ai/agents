@@ -630,7 +630,10 @@ async function responderSiblingRemembers(
         // bot after a promotion.
         id: { not: deliveryRowId },
       },
-      select: { routeRemembers: true },
+      // ...AND ITS STATUS, because a `true` written by the CLAIM is an intent and not a completion
+      // (PR review, round 15). See the rule below for the one column where that difference decides
+      // anything.
+      select: { routeRemembers: true, status: true },
       // THE NEWEST SIBLING, whatever it says — INCLUDING null (issue #540, PR review round 6). This
       // query used to skip rows that had not stated a value, and skipping is what made it answer
       // about the wrong fan-out: one message can emit several `message_updated` webhooks (a raw
@@ -647,7 +650,30 @@ async function responderSiblingRemembers(
       orderBy: { id: "desc" },
     }),
   );
-  return sibling?.routeRemembers ?? null;
+  if (sibling === null) return null;
+  if (sibling.routeRemembers !== true) return sibling.routeRemembers;
+  // A `true` THIS ROUTE HAS NOT FINISHED ACTING ON IS AN INTENT (PR review, round 15). The claim
+  // writes it from the runtime it resolved, and the ingestion it promises happens later in that same
+  // execution: a responder switched off in between, and then crashing or failing to enqueue, leaves
+  // a row saying it remembers a message it never folded in. The sweep cannot repair that one — a
+  // takeover recovery does not carry the reply body — so the message is gone from the only memory
+  // holding it, permanently, on the strength of this value.
+  //
+  // Asked ONLY of a colleague's REPLY, and the asymmetry is the whole reason the rule is narrow:
+  //
+  //   * on a reply, being wrong toward INGESTING costs an append the dedup window catches (the
+  //     responder folds replies in as `human_agent`, and `recentAgentMessageIds` is the same set this
+  //     route would write), while being wrong toward standing down costs the message;
+  //   * on an INBOUND message, being wrong toward ingesting can append one the responder's turn is
+  //     about to ANSWER — and a turn-handled id never enters the dedup window, so nothing catches
+  //     that. There the intent is the safer reading and stays authoritative.
+  //
+  // Settled means PROCESSED. A row still PROCESSING has not enqueued yet, and a DEAD one was given
+  // up on, which is the case this exists for.
+  if (message.column === "humanReply" && sibling.status !== "PROCESSED") {
+    return null;
+  }
+  return true;
 }
 
 // THE ROUTE'S AGENT, WHEN IT WATCHES THE INBOX RATHER THAN ANSWERING IT (issue #476). A delivery

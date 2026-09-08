@@ -23,6 +23,7 @@ import {
 } from "@/modules/chatwoot/webhook";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
+import { HandoffThenThrowModel } from "@/tests/utils/scripted-models";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot delivery stranded by a process death, and the sweep that says so (issue #228).
@@ -2009,6 +2010,214 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // operator reads as when the delivery ended.
     expect(after.status).toBe("PROCESSED");
     expect(after.processedAt?.getTime()).toBe(closedAt.getTime());
+  });
+
+  // Debounce OFF, so the delivery runs the turn itself instead of arming a flush and returning.
+  // Restored by the caller, since the rest of this file relies on the default.
+  async function withDirectTurn<T>(fn: () => Promise<T>): Promise<T> {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: false } } },
+    });
+    try {
+      return await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: {} },
+      });
+    }
+  }
+
+  // A customer message on a conversation the bot holds, so the gate opens and a turn actually runs.
+  function turnEventFor(convId: number, messageId: number) {
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: CHATWOOT_INBOX_ID,
+        status: "pending",
+        contact_inbox: { id: 61_000 + convId },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    return n;
+  }
+
+  // ── COVERAGE SURVIVES A TURN THAT FAILS (issue #576, PR review round 5) ──
+  //
+  // The fact is decided at `graph.invoke` and the settlement happens much later, so anything that
+  // throws in between skips the settlement while tx2 closes the row all the same. Recorded only
+  // there, the coverage was lost on rows that really do hold the customer's message, and the late
+  // transcription then read "no row can say" and folded it in again.
+
+  // A SEND THAT FAILS AFTER THE INVOKE. The turn ran, the message is in the checkpoint, and the
+  // reply never left.
+  test("a turn whose reply fails to send still records that it has the message", async () => {
+    const convId = 8936;
+    const messageId = 9795;
+    await seedConversation(convId);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `covered-send-fails-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const client = {
+      getMessages: async () => ({ payload: [] }),
+      sendMessage: async () => {
+        throw new Error("injected: Chatwoot is down");
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    await withDirectTurn(async () => {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: row.id,
+        agentBotId: AGENT_BOT_ID,
+        normalized: turnEventFor(convId, messageId),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: ["claro!"] }) as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+    });
+
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: row.id },
+          select: { turnCovered: true },
+        })
+      ).turnCovered,
+    ).toBe(true);
+  });
+
+  // AND AN INVOKE THAT CHECKPOINTED AND THEN THREW. LangGraph writes as it goes, so the handoff tool
+  // runs, the customer's message is in the channel, and the exception leaves through the invoke's own
+  // catch without ever reaching the line that reports coverage.
+  test("an invoke that ran supersteps and then threw still records the message", async () => {
+    const convId = 8937;
+    const messageId = 9796;
+    await seedConversation(convId);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `covered-invoke-throws-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const client = {
+      getMessages: async () => ({ payload: [] }),
+      sendMessage: async () => ({}),
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+      assignConversation: async () => ({}),
+      toggleStatus: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    await withDirectTurn(async () => {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: row.id,
+        agentBotId: AGENT_BOT_ID,
+        normalized: turnEventFor(convId, messageId),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new HandoffThenThrowModel(
+              "Um humano vai te atender.",
+            ) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+    });
+
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: row.id },
+          select: { turnCovered: true },
+        })
+      ).turnCovered,
+    ).toBe(true);
+  });
+
+  // ...AND AN INVOKE THAT NEVER WROTE ANYTHING STAYS UNCOVERED, which is the other half of the same
+  // read: being wrong toward "covered" costs the customer's words, silently.
+  test("a turn that never reached the invoke records no coverage", async () => {
+    const convId = 8938;
+    const messageId = 9797;
+    await seedConversation(convId);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `covered-never-invoked-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    await withDirectTurn(async () => {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: row.id,
+        agentBotId: AGENT_BOT_ID,
+        normalized: turnEventFor(convId, messageId),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error("injected: the model could not be built");
+          },
+          makeClient: async () =>
+            ({
+              getMessages: async () => ({ payload: [] }),
+              sendMessage: async () => ({}),
+              toggleTyping: async () => ({}),
+            }) as unknown as ChatwootClient,
+          checkpointer: new MemorySaver(),
+        },
+      });
+    });
+
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: row.id },
+          select: { turnCovered: true },
+        })
+      ).turnCovered,
+    ).toBeNull();
   });
 
   // A ROUTE REPORTING ABOUT ITSELF STATES NOTHING ABOUT THE MESSAGE (PR review, round 4). Chatwoot

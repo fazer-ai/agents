@@ -15,7 +15,10 @@ import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
 import { retireRedirectFollowUp } from "@/modules/channel-redirect/followup";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
-import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
+import {
+  recordTurnCoverage,
+  retireCoveredDeliveries,
+} from "@/modules/chatwoot/delivery-sweep";
 import {
   describeClosedGate,
   type GateCloseDetail,
@@ -309,10 +312,24 @@ export async function coalesceAndRunTurn(
   // WHETHER THE BURST ENDED UP IN THE THREAD, reported by the runtime and not read off the outcome
   // (issue #576): `graph.invoke` persists the channel, and the outcome word straddles it in both
   // directions.
+  //
+  // WRITTEN THERE and not carried to the settlement below: a send that fails after the invoke jumps
+  // past it, and the fact would be lost on a burst that really is in memory. Coverage only, never the
+  // settlement — closing a row mid-turn takes it out of the sweep's sight.
   let foldedIn = false;
   const outcome = await runLoadedTurn({
-    onFoldedIn: () => {
+    onFoldedIn: async () => {
       foldedIn = true;
+      if (pending.length > 0) {
+        await recordTurnCoverage({
+          tenantId,
+          instanceId,
+          conversationId,
+          covered: true,
+          messageIds: pending.map((m) => m.id),
+          base,
+        });
+      }
     },
     stillWanted: ctx.stillWanted,
     loaded,

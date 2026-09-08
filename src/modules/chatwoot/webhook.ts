@@ -58,7 +58,10 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
+import {
+  recordTurnCoverage,
+  retireCoveredDeliveries,
+} from "@/modules/chatwoot/delivery-sweep";
 import {
   describeClosedGate,
   type GateCloseDetail,
@@ -5517,12 +5520,27 @@ export async function processChatwootDelivery(
           // write is fire-and-forget. That is the point: the contract must not rest on a property of
           // three unrelated call sites that any of them could drop. Bound to the turn here, it
           // cannot.
-          // WHETHER THE MESSAGE ENDED UP IN THE THREAD, reported by the runtime (issue #576).
-          let turnFoldedIn = false;
+          // WHETHER THE MESSAGE ENDED UP IN THE THREAD, reported by the runtime and WRITTEN THERE
+          // (issue #576). Not carried to the settlement below: a TTS or a send that fails after the
+          // invoke jumps to the catch, tx2 closes the row anyway, and the fact would be lost on a row
+          // that really does hold the message. Same rule as `settleDelivery` itself — record the
+          // decision where it is made, never later.
+          const onFoldedIn = async (): Promise<void> => {
+            if (n.message?.id == null || n.conversationId === null) return;
+            // COVERAGE ONLY, and never the settlement: settling here would close the row mid-turn,
+            // and a closed row is a delivery the sweep can no longer see. The settlement below is
+            // what says whether a reply reached the customer.
+            await recordTurnCoverage({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              conversationId: n.conversationId,
+              covered: true,
+              messageIds: [n.message.id],
+              base,
+            });
+          };
           const outcome = await runAgentTurn({
-            onFoldedIn: () => {
-              turnFoldedIn = true;
-            },
+            onFoldedIn,
             tenantId: params.tenantId,
             instanceId: params.instanceId,
             agentBotId: params.agentBotId,
@@ -5612,7 +5630,9 @@ export async function processChatwootDelivery(
               // `consumed` (issue #576). Reported by the runtime rather than read off the outcome,
               // which straddles the invoke in both directions: the input guardrail's replacement
               // answers `posted` before it, the output guardrail's suppression `blocked` after it.
-              turnFoldedIn,
+              // Already written by `onFoldedIn` above where it is true; repeated here so a turn that
+              // never reached the invoke says so, and the write is monotonic either way.
+              false,
             );
           }
           // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line

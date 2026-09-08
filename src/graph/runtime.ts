@@ -228,9 +228,10 @@ export interface RunLoadedTurnParams {
   // after the invoke returns; a refusal below suppresses the SEND and rolls back what the MODEL
   // produced, never the customer's message.
   //
-  // The caller records it on the ledger beside the settlement, which answers the other question
-  // (did a reply reach the customer), and continuous ingestion reads this one.
-  onFoldedIn?: () => void;
+  // The caller writes it to the ledger HERE rather than carrying it to the settlement: a TTS or a
+  // send that fails after this point jumps past the settlement, tx2 closes the row all the same, and
+  // the fact would be lost on a row that really does hold the message. Awaited and best-effort.
+  onFoldedIn?: () => void | Promise<void>;
   // What the authorization endpoint said about this contact on the check that let THIS turn happen,
   // or null when the gate is off (or this path has no verdict of its own). Required, not optional:
   // every path that reaches here asks the gate immediately before it, and a path that forgot to
@@ -1609,18 +1610,39 @@ async function runTurnBody(
     // It NARROWS the window rather than closing it: the invoke below loads the channel again, so an
     // append landing between this read and that load is still possible. The remaining duplicate is
     // two identical system notes, and nothing consumes either.
+    // ONE read, and it answers two questions (issue #576, PR review round 5). The handback note needs
+    // the channel as it stands; so does the error path below, which has to tell an invoke that wrote
+    // nothing from one that checkpointed the customer's message and then threw — and it can only
+    // tell them apart against a count taken BEFORE.
+    const channelBefore = (
+      (
+        await buildThreadStateGraph(
+          params.deps?.checkpointer ?? (await getCheckpointer()),
+        ).getState({ configurable: { thread_id: graphThreadId } })
+      ).values as { messages?: BaseMessage[] } | undefined
+    )?.messages;
+    const messagesBefore = channelBefore?.length ?? 0;
     const carriedHandback =
-      handbackDeferred &&
-      owesHandbackNote(
-        (
-          (
-            await buildThreadStateGraph(
-              params.deps?.checkpointer ?? (await getCheckpointer()),
-            ).getState({ configurable: { thread_id: graphThreadId } })
-          ).values as { messages?: BaseMessage[] } | undefined
-        )?.messages ?? [],
-      );
-    // Hoisted so the report below fires exactly once, on the statement that persisted the channel.
+      handbackDeferred && owesHandbackNote(channelBefore ?? []);
+    // WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, reported the moment it becomes true and
+    // never later (issue #576). Awaited, because the caller writes it to the ledger there and a
+    // throw further down this function must not be able to lose it — the same rule `settleDelivery`
+    // follows in ../modules/chatwoot/webhook.ts, and for the same reason.
+    let reportedFoldedIn = false;
+    const reportFoldedIn = async (): Promise<void> => {
+      if (reportedFoldedIn) return;
+      reportedFoldedIn = true;
+      try {
+        await params.onFoldedIn?.();
+      } catch (e) {
+        // Best-effort: a report that fails leaves the null the reader falls back on, and must not
+        // turn a turn that worked into a retried one.
+        logger.warn(
+          { err: e, conversationId: String(conversationId) },
+          "turn: could not report that the message was folded in",
+        );
+      }
+    };
     const result = await withFlowStage(
       flow,
       "generate",
@@ -1658,6 +1680,30 @@ async function runTurnBody(
           },
         ),
     ).catch(async (e) => {
+      // A GRAPH THAT RAN SUPERSTEPS AND THEN THREW STILL LEFT THE MESSAGE BEHIND (PR review, round
+      // 5). LangGraph checkpoints as it goes, so a tool that ran before a later model call failed
+      // leaves the customer's `HumanMessage` in the channel while control leaves through here — and
+      // a late transcription then read "no row can say" and folded the same message in again.
+      //
+      // Asked of the CHANNEL rather than assumed from the throw, and against the count taken before
+      // the invoke: an invoke that died before writing anything must stay uncovered, since being
+      // wrong that way costs a duplicate line while being wrong the other way costs the customer's
+      // words. A read that itself fails leaves the row unstated, which is the same safe side.
+      try {
+        const after = (
+          (
+            await buildThreadStateGraph(
+              params.deps?.checkpointer ?? (await getCheckpointer()),
+            ).getState({ configurable: { thread_id: graphThreadId } })
+          ).values as { messages?: BaseMessage[] } | undefined
+        )?.messages;
+        if ((after?.length ?? 0) > messagesBefore) await reportFoldedIn();
+      } catch (readErr) {
+        logger.warn(
+          { err: readErr, conversationId: String(conversationId) },
+          "turn: could not read the channel after a failed invoke; leaving coverage unstated",
+        );
+      }
       await deliverHandoffPromise();
       throw e;
     });
@@ -1667,7 +1713,7 @@ async function runTurnBody(
     // `blocked` below it. Reported here and only here: an invoke that threw goes out through the
     // catch above without reaching this, and every refusal below rolls back what the MODEL produced,
     // never what the customer said.
-    params.onFoldedIn?.();
+    await reportFoldedIn();
     // EVERY REFUSAL FROM HERE DOWN GOES OUT THROUGH THIS, and the fence in
     // tests/graph/refused-turn-callsites.test.ts is what keeps that true.
     //
@@ -2203,7 +2249,7 @@ async function runTurnBody(
 
 export interface RunAgentTurnParams {
   // See `RunLoadedTurnParams.onFoldedIn`; forwarded verbatim.
-  onFoldedIn?: () => void;
+  onFoldedIn?: () => void | Promise<void>;
   tenantId: bigint;
   instanceId: bigint;
   agentBotId: number | null;

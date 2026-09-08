@@ -1607,6 +1607,13 @@ async function ensureAgentBotAndReattach(
         attachedAt: { not: null },
       },
       select: { inboxId: true, inbox: { select: { chatwootInboxId: true } } },
+      // A STABLE ORDER, because there was none. Postgres returns rows in whatever order the plan
+      // yields, and that moves with the table's own churn — so the loop below walked the same
+      // inboxes in a different order from one run to the next. Nothing downstream depends on WHICH
+      // order (every inbox is reattached either way), and everything depends on there BEING one: the
+      // window this loop is asked about is "what changed between two of its steps", which is not a
+      // reproducible question without it.
+      orderBy: { inboxId: "asc" },
     }),
     await db.inbox.findMany({
       where: {
@@ -1617,6 +1624,7 @@ async function ensureAgentBotAndReattach(
           : { id: { not: opts.skipInboxId } }),
       },
       select: { id: true, chatwootInboxId: true },
+      orderBy: { id: "asc" },
     }),
   ]);
   const reattach = [

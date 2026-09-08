@@ -611,11 +611,21 @@ async function responderSiblingRemembers(
         // bot serves every role its agent holds, so this delivery's own row can match the responder
         // bot after a promotion.
         id: { not: deliveryRowId },
-        // Only a row that has actually stated it. Null is "not yet" or "an older build", and both
-        // are the caller's fallback rather than an answer of `false`.
-        routeRemembers: { not: null },
       },
       select: { routeRemembers: true },
+      // THE NEWEST SIBLING, whatever it says — INCLUDING null (issue #540, PR review round 6). This
+      // query used to skip rows that had not stated a value, and skipping is what made it answer
+      // about the wrong fan-out: one message can emit several `message_updated` webhooks (a raw
+      // media write followed by the transcription's), each fanned out to responder and observer, and
+      // every one of those rows shares this conversation, message, route and event. With the newest
+      // sibling still unclaimed, the skip walked back to an OLDER update's answer and handed it back
+      // as this fan-out's — so a mode change between the two updates made the observer repeat a
+      // message the responder had folded in, or stay quiet about one it had not.
+      //
+      // Nothing on the row identifies its fan-out, so the honest reading is the latest one: null
+      // from it is "the responder has not decided yet", which is the caller's fallback to the
+      // responder's CURRENT mode — and that mode is what the responder's own claim is about to read
+      // anyway, which makes it the better guess than a settled answer to an older question.
       orderBy: { id: "desc" },
     }),
   );

@@ -2696,8 +2696,10 @@ export async function assertBindTargetNotObserving(
 // that completed in the meantime owns it by then.
 async function dropPendingObserverRow(
   ctx: TenantContext,
-  tenantId: bigint,
   inboxId: bigint,
+  // THE ROW, not the pair it names: see where it is written for what the pair stops identifying
+  // once an unobserve and a second observe can both land inside the attach window.
+  pendingRowId: bigint,
   agentId: bigint,
   base: PrismaClient,
 ): Promise<void> {
@@ -2712,7 +2714,7 @@ async function dropPendingObserverRow(
       // which is what this whole path avoids.
       await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
       await db.inboxObserver.deleteMany({
-        where: { tenantId, inboxId, agentId, attachedAt: null },
+        where: { id: pendingRowId, attachedAt: null },
       });
     });
   } catch (err) {
@@ -2801,10 +2803,18 @@ export async function observeInbox(
   // the repair the console offers for it (a bot to re-provision, an attach whose answer was lost).
   // Deleting it on a failure here would take away a binding this call never made, which is the rule
   // the compensation below already follows.
-  let wrotePendingRow = false;
+  //
+  // ITS ID IS KEPT, and every later reference to this row goes through the id rather than through
+  // the pair it names (issue #540, PR review round 6). `(tenantId, inboxId)` does not identify a
+  // ROW across time: an unobserve can take this call's row away while the fork is being asked, and
+  // a second observe of the same pair then puts its own row in the same slot. Settling by the pair
+  // would stamp that second call's intent as confirmed off this call's attach, and the compensation
+  // would look for an unstamped row and find none — leaving a confirmed observer in the database
+  // with nothing attached on Chatwoot, which is the state this whole path exists to prevent.
+  let pendingRowId: bigint | null = null;
   if (!alreadyObserving) {
     try {
-      await runScopedOn(base, ctx, (db) =>
+      const created = await runScopedOn(base, ctx, (db) =>
         db.inboxObserver.create({
           // EXPLICITLY NULL, against the column's own default. The default exists so that anything
           // which does not know about pending rows — the previous release during a rolling deploy, a
@@ -2814,7 +2824,7 @@ export async function observeInbox(
           select: { id: true },
         }),
       );
-      wrotePendingRow = true;
+      pendingRowId = created.id;
     } catch (err) {
       // The agent was deleted between the preflight and here; the foreign key is the answer, and it
       // is the same one the transaction below gives for the same race.
@@ -2828,8 +2838,8 @@ export async function observeInbox(
   // ever the row THIS call wrote, and only while it is still unstamped — a concurrent observe that
   // completed in the meantime owns it by then.
   const dropPendingRow = async () => {
-    if (!wrotePendingRow) return;
-    await dropPendingObserverRow(ctx, tenantId, inboxId, agentId, base);
+    if (pendingRowId === null) return;
+    await dropPendingObserverRow(ctx, inboxId, pendingRowId, agentId, base);
   };
   let client: ChatwootClient | null = null;
   let botId: number | null = null;
@@ -3012,10 +3022,13 @@ export async function observeInbox(
         // The intent goes here rather than in the compensation outside, because the DTO this branch
         // returns is read from the same transaction (issue #540): left in, this call's own pending
         // row would be reported to the console as an observer of an inbox the same call is about to
-        // stop observing.
-        await db.inboxObserver.deleteMany({
-          where: { tenantId, inboxId, agentId, attachedAt: null },
-        });
+        // stop observing. BY ID, for the reason the write states: another call's row can be sitting
+        // in the same slot by now, and it is not this call's to remove.
+        if (pendingRowId !== null) {
+          await db.inboxObserver.deleteMany({
+            where: { id: pendingRowId, attachedAt: null },
+          });
+        }
         const settled = await db.inbox.findUniqueOrThrow({
           where: { id: inboxId },
           select: INBOX_SELECT,
@@ -3056,14 +3069,42 @@ export async function observeInbox(
           where: { tenantId, inboxId, agentId, attachedAt: { not: null } },
           select: { id: true },
         })) !== null;
-      // The stamp: Chatwoot agreed, and the row says so. An upsert rather than an update because the
-      // pending write above can have been refused by the unique index — and by here the cap check
-      // has established that whatever row exists for this inbox is this pair's.
-      await db.inboxObserver.upsert({
-        where: { tenantId_inboxId: { tenantId, inboxId } },
-        create: { tenantId, inboxId, agentId, attachedAt: new Date() },
-        update: { attachedAt: new Date() },
+      // THE STAMP: Chatwoot agreed, and the row says so.
+      //
+      // It settles THE ROW THIS CALL WROTE, by id, and nothing else (issue #540, PR review round 6).
+      // The upsert this replaces addressed the row by `(tenantId, inboxId)`, and that pair names a
+      // SLOT rather than a row: an unobserve inside the attach window takes this call's row away and
+      // a second observe of the same pair fills the slot with its own, so the upsert stamped a
+      // stranger's intent as confirmed off this call's attach — and its `create` arm went further,
+      // reviving a binding an unobserve had just removed, on a call whose whole evidence was an
+      // attach that predated the removal.
+      //
+      // WHERE NO ROW WAS WRITTEN the pair is the right address, and deliberately so: this call is
+      // then settling the row it DEFERRED to — the confirmed one it is repairing, or the one the
+      // unique violation handed it — and that row already names this inbox and this agent, which is
+      // exactly what the stamp asserts and what this call just attached on the fork. It is also the
+      // one repair a row abandoned mid-attach has (the reconcile reports it `missing` and the console
+      // offers Reconnect); refusing here would leave it with none.
+      const stampedAt = new Date();
+      const settled = await db.inboxObserver.updateMany({
+        where:
+          pendingRowId !== null
+            ? { id: pendingRowId, attachedAt: null }
+            : { tenantId, inboxId, agentId },
+        data: { attachedAt: stampedAt },
       });
+      // NOTHING TO STAMP means the intent was taken back while the fork was being asked: an unobserve
+      // removed this call's row, or removed the row it deferred to. Refused rather than recreated —
+      // the `create` arm this replaces would have revived a binding an unobserve had just removed,
+      // on a call whose whole evidence was an attach that predated the removal — and the catch
+      // outside takes the attachment back.
+      if (settled.count === 0) {
+        throw new AppError(
+          "this observe was taken back while the attach was in flight",
+          409,
+          "errors.observeTakenBack",
+        );
+      }
       const row = await db.inbox.findUniqueOrThrow({
         where: { id: inboxId },
         select: INBOX_SELECT,

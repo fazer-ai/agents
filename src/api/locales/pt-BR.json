@@ -176,6 +176,7 @@
     "monitoringReservedGroupName": "\"{{name}}\" é um nome reservado de grupo de etiquetas; escolha outro.",
     "noExtractableText": "Nenhum texto extraível encontrado neste arquivo {{kind}}",
     "noUpdatableFields": "Nenhum campo atualizável foi informado",
+    "observeTakenBack": "Esta observação foi desfeita enquanto o vínculo ainda estava em andamento. Tente de novo.",
     "observerNotMonitoring": "Só um agente em modo de monitoramento pode observar uma caixa de entrada.",
     "passwordChangeUnavailable": "A troca de senha não está disponível para esta conta",
     "passwordRequired": "Sua senha é obrigatória para confirmar esta ação",

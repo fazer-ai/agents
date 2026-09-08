@@ -2212,4 +2212,137 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await suDb.inboxObserver.count({ where: { agentId: promovida.id } }),
     ).toBe(0);
   });
+
+  // THE PAIR NAMES A SLOT, NOT A ROW (issue #540, PR review round 6). `(tenantId, inboxId)` is
+  // unique, so it looks like an identity — and it is not one across time. An unobserve inside the
+  // attach window takes this call's row away, and a second observe of the same pair puts its own
+  // row in the slot before the fork answers. Settling by the pair then stamped THAT call's intent as
+  // confirmed off THIS call's attach, and the compensation, looking for an unstamped row of the
+  // pair, found a stamped one and left it: a confirmed observer in the database with nothing
+  // attached on Chatwoot, reached through the fix for exactly that state.
+  test("an observe settles the row it wrote, never the row that replaced it", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 80,
+        name: "Slot reocupado",
+      },
+      select: { id: true },
+    });
+    let intruderId: bigint | null = null;
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      onAttach: async () => {
+        // The unobserve, and then the second observe: the row this call wrote is gone and another
+        // call's pending row is sitting in the slot it used to hold.
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inbox.id },
+        });
+        const intruder = await suDb.inboxObserver.create({
+          data: {
+            tenantId,
+            inboxId: inbox.id,
+            agentId: monitoringAgent,
+            attachedAt: null,
+          },
+          select: { id: true },
+        });
+        intruderId = intruder.id;
+      },
+    });
+    await expect(
+      observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      translationKey: "errors.observeTakenBack",
+    });
+    // The other call's row is untouched: still pending, still waiting on its own fork answer.
+    const left = await suDb.inboxObserver.findUniqueOrThrow({
+      where: { id: intruderId ?? 0n },
+      select: { attachedAt: true },
+    });
+    expect(left.attachedAt).toBeNull();
+    // ...and this call's attachment went back, because this call did not complete.
+    expect(observing.size).toBe(0);
+    await suDb.inboxObserver.deleteMany({
+      where: { tenantId, inboxId: inbox.id },
+    });
+  });
+
+  // A ROW THAT MOVES IN PLACE MOVES A BINDING (issue #540, PR review round 6). A repair that rewrites
+  // `agent_id` or `inbox_id` changes who observes an inbox exactly as an insert and a delete would,
+  // and the counter is a trigger precisely so that it does not depend on anybody writing the shape
+  // this release happens to use. The inbox the row LEFT counts too: it lost an observer.
+  //
+  // And the write that must NOT count is the stamp, which is why the trigger is narrowed to those
+  // two columns: a pending row already counts as observing for every reader that gates a refusal, so
+  // stepping the generation when it settles would make the receiver refuse deliveries whose route
+  // derivation was right the whole time.
+  test("moving an observer row steps both inboxes, and stamping one steps neither", async () => {
+    const [from, to] = await Promise.all([
+      suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: OTHER_INBOX_ID + 81,
+          name: "De onde saiu",
+        },
+        select: { id: true },
+      }),
+      suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: OTHER_INBOX_ID + 82,
+          name: "Para onde foi",
+        },
+        select: { id: true },
+      }),
+    ]);
+    const generation = async (id: bigint) =>
+      (
+        await suDb.inbox.findUniqueOrThrow({
+          where: { id },
+          select: { bindingGeneration: true },
+        })
+      ).bindingGeneration;
+    const row = await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: from.id,
+        agentId: monitoringAgent,
+        attachedAt: null,
+      },
+      select: { id: true },
+    });
+
+    // THE STAMP, first: the settle `observeInbox` writes, on its own.
+    const beforeStamp = await generation(from.id);
+    await suDb.inboxObserver.update({
+      where: { id: row.id },
+      data: { attachedAt: new Date() },
+    });
+    expect(await generation(from.id)).toBe(beforeStamp);
+
+    // The identity, second: same inbox, another agent watching it.
+    await suDb.inboxObserver.update({
+      where: { id: row.id },
+      data: { agentId: productionAgent },
+    });
+    expect(await generation(from.id)).toBe(beforeStamp + 1);
+
+    // ...and across inboxes, where both ends of the move changed.
+    const fromBefore = await generation(from.id);
+    const toBefore = await generation(to.id);
+    await suDb.inboxObserver.update({
+      where: { id: row.id },
+      data: { inboxId: to.id },
+    });
+    expect(await generation(from.id)).toBe(fromBefore + 1);
+    expect(await generation(to.id)).toBe(toBefore + 1);
+    await suDb.inboxObserver.delete({ where: { id: row.id } });
+  });
 });

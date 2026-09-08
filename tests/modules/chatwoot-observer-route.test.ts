@@ -2154,6 +2154,61 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     expect(messageId).toBe(sharedMessage);
     expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
   });
+  // ...AND WHEN THE RESPONDER HAS SEVERAL DELIVERIES OF THE SAME EVENT, IT IS THE NEWEST THAT
+  // ANSWERS — including when the newest has not claimed yet (PR review, round 6). One message can
+  // emit `message_updated` more than once (a raw media write, then the transcription's), and a
+  // redelivery repeats an event outright: every one of those rows shares this conversation, message,
+  // route and event, so nothing on the row identifies its fan-out. The query used to skip rows that
+  // had stated nothing, and skipping is what made it walk back to an OLDER delivery's answer and
+  // hand it back as this one's — a mode change between the two then made this route repeat a message
+  // the responder folded in, or stay quiet about one it did not.
+  //
+  // The honest reading is the latest sibling, whatever it says. Null from it means the responder has
+  // not decided yet, which falls back to the responder's CURRENT mode — and that mode is what the
+  // responder's own claim is about to read anyway, so it beats a settled answer to an older
+  // question. Here the older delivery remembered nothing while the responder is production and
+  // enabled now: read from the old row this route would append the message, and it must not.
+  test("the newest sibling answers, even unclaimed, and an older one does not answer for it", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const sharedMessage = messageSeq + 1;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-newest-sibling-old`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 82,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeObserved: false,
+        routeRemembers: false,
+      },
+    });
+    // The fan-out this delivery belongs to, still unclaimed: the responder's row is in the ledger
+    // and its decision is not.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-newest-sibling-new`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: 82,
+        inboundMessageId: sharedMessage,
+        routeAgentBotId: RESPONDER_BOT,
+      },
+    });
+    const { messageId } = await deliver(OBSERVER_BOT, 82, SHARED_INBOX, {
+      assigneeType: "User",
+      status: "open",
+    });
+    expect(messageId).toBe(sharedMessage);
+    expect(customerFacing()).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+  });
   // WINDOW 5 (issue #540): the attach window used to have no fact of its own. The row was written
   // only after Chatwoot agreed, so a delivery landing inside it read "no row" — and where a
   // promotion committed in that same window, not even the monitoring mode that stood in for the

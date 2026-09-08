@@ -49,6 +49,17 @@ CREATE OR REPLACE TRIGGER inboxes_bump_binding_generation
 -- The DELETE arm deliberately does NOT assert. `inbox_observers` cascades from `inboxes`, so
 -- dropping an inbox fires this trigger for a parent row the same command has already removed; there
 -- the counter has nothing left to count and a raise would break the delete.
+-- AN UPDATE THAT MOVES THE ROW COUNTS TOO, on BOTH inboxes (PR review round 6). A repair that
+-- rewrites `agent_id` or `inbox_id` in place changes who observes an inbox exactly as an insert and
+-- a delete would, and the whole point of a trigger over a list of call sites is that it does not
+-- depend on anybody choosing the shape this release happens to write. The inbox the row LEFT is
+-- stepped as well: it lost an observer, and a delivery stamped before the move must not read its old
+-- route derivation as current.
+--
+-- The move is a SECOND trigger rather than a third arm of this one, and Postgres leaves no choice: a
+-- `WHEN` clause may not name OLD on a trigger that also fires on INSERT (nor NEW on one that fires
+-- on DELETE), and `TG_OP` is a plpgsql variable that does not exist in `WHEN` at all. One function,
+-- two triggers.
 CREATE OR REPLACE FUNCTION bump_binding_generation_on_observer()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -59,6 +70,13 @@ BEGIN
        SET binding_generation = binding_generation + 1
      WHERE id = OLD.inbox_id;
     RETURN OLD;
+  END IF;
+  -- The inbox it left, when the move crossed inboxes. Not asserted: the row may have come from an
+  -- inbox this statement has already removed, the same reason the DELETE arm does not assert.
+  IF TG_OP = 'UPDATE' AND OLD.inbox_id IS DISTINCT FROM NEW.inbox_id THEN
+    UPDATE "inboxes"
+       SET binding_generation = binding_generation + 1
+     WHERE id = OLD.inbox_id;
   END IF;
   UPDATE "inboxes"
      SET binding_generation = binding_generation + 1
@@ -75,4 +93,19 @@ $$;
 CREATE OR REPLACE TRIGGER inbox_observers_bump_binding_generation
   AFTER INSERT OR DELETE ON "inbox_observers"
   FOR EACH ROW
+  EXECUTE FUNCTION bump_binding_generation_on_observer();
+
+-- The `WHEN` is what keeps THE STAMP out of the count: `observeInbox` settles a pending row by
+-- writing `attached_at`, and that write moves nothing -- a pending row already counts as observing
+-- for every reader that gates a refusal. Counted, it would step the generation in the middle of the
+-- attach window and make the receiver refuse deliveries whose route derivation was right all along.
+-- `UPDATE OF` narrows by the columns the statement names; the `WHEN` narrows by what actually
+-- changed, since naming a column is not changing it.
+CREATE OR REPLACE TRIGGER inbox_observers_bump_binding_generation_on_move
+  AFTER UPDATE OF agent_id, inbox_id ON "inbox_observers"
+  FOR EACH ROW
+  WHEN (
+    OLD.agent_id IS DISTINCT FROM NEW.agent_id
+    OR OLD.inbox_id IS DISTINCT FROM NEW.inbox_id
+  )
   EXECUTE FUNCTION bump_binding_generation_on_observer();

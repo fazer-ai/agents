@@ -670,8 +670,16 @@ async function responderSiblingRemembers(
   //
   // Settled means PROCESSED. A row still PROCESSING has not enqueued yet, and a DEAD one was given
   // up on, which is the case this exists for.
+  //
+  // ANSWERED `false`, NOT null (PR review, round 17). Null would fall back to the responder's current
+  // mode, and that mode reads "remembers" for exactly the responder this is about — one that was on
+  // when it claimed and is still on now. The sibling crashing a moment later then leaves the reply in
+  // nobody's memory, permanently. `false` says the only thing that is actually known: this sibling has
+  // not folded it in yet. Where it goes on to, the two routes carry the SAME dedupe key
+  // (`ingest:<thread>:<message>`) and the same `recentAgentMessageIds` window, so the cost of being
+  // early is an append that is refused, and the cost of being late is the reply.
   if (message.column === "humanReply" && sibling.status !== "PROCESSED") {
-    return null;
+    return false;
   }
   return true;
 }

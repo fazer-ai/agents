@@ -812,6 +812,81 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  // ...AND THAT HOLDS WITH THE RESPONDER STILL ON (PR review, round 17). Answering `null` for an
+  // unfinished reply sibling fell back to the responder's CURRENT mode, and that mode reads
+  // "remembers" for exactly the responder this is about: one that was on when it claimed and is on
+  // now. The sibling crashing a moment later leaves the reply in nobody's memory, permanently. So
+  // the answer is `false` — the only thing actually known — and being early costs an append the
+  // shared dedupe key and the `human_agent` window refuse.
+  test("a reply whose sibling is still working is remembered here even with the responder on", async () => {
+    requests.length = 0;
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      data: { responderBoundAt: new Date(Date.now() - 20_000) },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const replyId = messageSeq;
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-reply-working`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: 87,
+        humanReplyShape: "composer",
+        humanReplyMessageId: replyId,
+        routeAgentBotId: RESPONDER_BOT,
+        claimedAt: new Date(),
+        routeRemembers: true,
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: replyId,
+      private: false,
+      content: "Oi! Vou verificar seu pedido agora.",
+      message_type: "outgoing",
+      sender: { id: 5, name: "Ana", type: "user" },
+      conversation: conversation(87, SHARED_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    try {
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OBSERVER_BOT,
+        normalized: n,
+        base: appDb,
+      });
+      expect(customerFacing()).toEqual([]);
+      // The responder is production and enabled the whole time: the mode reading would have silenced
+      // this route, and the sibling's own unfinished state is what does not.
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
   // `bindInbox` calls Chatwoot BEFORE it commits `agentId`, so a message arriving inside that window
   // is fanned to a responder route the local mirror does not know yet: that delivery resolves no
   // runtime, answers nothing and settles. Counting it as coverage hands the message to a route that

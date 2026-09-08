@@ -5525,7 +5525,9 @@ export async function processChatwootDelivery(
           // invoke jumps to the catch, tx2 closes the row anyway, and the fact would be lost on a row
           // that really does hold the message. Same rule as `settleDelivery` itself — record the
           // decision where it is made, never later.
+          let turnFoldedIn = false;
           const onFoldedIn = async (): Promise<void> => {
+            turnFoldedIn = true;
             if (n.message?.id == null || n.conversationId === null) return;
             // COVERAGE ONLY, and never the settlement: settling here would close the row mid-turn,
             // and a closed row is a delivery the sweep can no longer see. The settlement below is
@@ -5630,9 +5632,11 @@ export async function processChatwootDelivery(
               // `consumed` (issue #576). Reported by the runtime rather than read off the outcome,
               // which straddles the invoke in both directions: the input guardrail's replacement
               // answers `posted` before it, the output guardrail's suppression `blocked` after it.
-              // Already written by `onFoldedIn` above where it is true; repeated here so a turn that
-              // never reached the invoke says so, and the write is monotonic either way.
-              false,
+              // The runtime's own answer, kept rather than hardcoded `false` (PR review, round 6).
+              // `onFoldedIn` already wrote it, but that write is best-effort: a transient failure
+              // there followed by an unconditional `false` here would put the LIE on the row, where
+              // repeating the true answer leaves the null the reader falls back on at worst.
+              turnFoldedIn,
             );
           }
           // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line

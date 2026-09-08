@@ -1621,9 +1621,25 @@ async function runTurnBody(
         ).getState({ configurable: { thread_id: graphThreadId } })
       ).values as { messages?: BaseMessage[] } | undefined
     )?.messages;
-    const messagesBefore = channelBefore?.length ?? 0;
     const carriedHandback =
       handbackDeferred && owesHandbackNote(channelBefore ?? []);
+    // THIS INVOKE'S OWN MESSAGE, NAMED (PR review, round 6). The error path below asks whether the
+    // customer's words reached the channel, and a COUNT cannot answer that: two turns can overlap on
+    // one graph thread (the thread is the contact-inbox's, shared by every conversation on it), so a
+    // channel that grew may have grown by somebody else's message while this invoke died before
+    // writing its own. Read that way, the words are recorded as remembered and nothing ever folds
+    // them in.
+    //
+    // An explicit id is what the reducer keys on anyway — `refused-turn.ts` already identifies what
+    // a turn produced the same way — so naming ours costs nothing and makes the question exact.
+    //
+    // NO TEST FAILS WITHOUT THIS, and that is stated rather than hidden. Every failure reachable
+    // from outside either happens before the invoke (so the arm below never runs) or after LangGraph
+    // has written the input (so a count and an id agree); reaching the difference means simulating
+    // the checkpointer's own write ordering, which would be a test about LangGraph rather than about
+    // this. Adopted on the argument: matching the id is strictly narrower than counting, and the
+    // reading it removes is one that costs the customer's words in silence.
+    const inputMessageId = crypto.randomUUID();
     // WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, reported the moment it becomes true and
     // never later (issue #576). Awaited, because the caller writes it to the ledger there and a
     // throw further down this function must not be able to lose it — the same rule `settleDelivery`
@@ -1669,6 +1685,7 @@ async function runTurnBody(
               // Stamped with the conversation it belongs to: that stamp, not the divider, is what the
               // compaction cut reads to find where this attendance starts.
               new HumanMessage({
+                id: inputMessageId,
                 content: text,
                 additional_kwargs: conversationStamp(conversationId),
               }),
@@ -1685,8 +1702,8 @@ async function runTurnBody(
       // leaves the customer's `HumanMessage` in the channel while control leaves through here — and
       // a late transcription then read "no row can say" and folded the same message in again.
       //
-      // Asked of the CHANNEL rather than assumed from the throw, and against the count taken before
-      // the invoke: an invoke that died before writing anything must stay uncovered, since being
+      // Asked of the CHANNEL, and about THIS invoke's own message rather than about the channel
+      // having grown: an invoke that died before writing anything must stay uncovered, since being
       // wrong that way costs a duplicate line while being wrong the other way costs the customer's
       // words. A read that itself fails leaves the row unstated, which is the same safe side.
       try {
@@ -1697,7 +1714,7 @@ async function runTurnBody(
             ).getState({ configurable: { thread_id: graphThreadId } })
           ).values as { messages?: BaseMessage[] } | undefined
         )?.messages;
-        if ((after?.length ?? 0) > messagesBefore) await reportFoldedIn();
+        if (after?.some((m) => m.id === inputMessageId)) await reportFoldedIn();
       } catch (readErr) {
         logger.warn(
           { err: readErr, conversationId: String(conversationId) },

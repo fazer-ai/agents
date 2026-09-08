@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import type { AuditAction } from "@/lib/audit/actions";
+import { canonicalAuditAction } from "@/lib/audit/actions";
 import type { AuditScope } from "@/lib/audit/scope";
 import { parseDbId } from "@/lib/db-id";
 import { ForbiddenError } from "@/lib/errors";
@@ -221,7 +222,9 @@ export function buildAuditWhere(
   if (opts.since) createdAt.gte = opts.since;
   if (opts.until) createdAt.lte = opts.until;
   return {
-    ...(opts.action ? { action: opts.action } : {}),
+    // Through the redirect, so a reader who learned a name before it was renamed still finds the
+    // rows. THE ONLY FUNNEL: the page, the export and the MCP door all arrive here.
+    ...(opts.action ? { action: canonicalAuditAction(opts.action) } : {}),
     ...(opts.actorType ? { actorType: opts.actorType } : {}),
     ...(opts.actorId !== undefined ? { actorId: opts.actorId } : {}),
     ...(opts.since || opts.until ? { createdAt } : {}),

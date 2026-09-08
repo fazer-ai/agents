@@ -131,6 +131,34 @@ export const AUDIT_ACTIONS = [
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
+// THE DOOR THE RENAME LEFT OPEN BEHIND IT, and it is a door, not a name.
+//
+// #555 moved every consent row off the two pre-#392 spellings and took them out of the catalog
+// above, which is the point of that change: one act, one name, one row the operator can pick. What
+// the removal ALSO does is turn every filter link somebody saved, every script that hard-codes the
+// query string and every export quoted under the old spelling into a read that matches nothing —
+// an audit trail answering "no consent decision was ever recorded" while the rows sit one name over.
+// That is the shape this subsystem refuses everywhere else (`buildAuditWhere`'s neighbours, the 403
+// on a scope rather than a narrowed answer, #520): an empty result is a sentence, and it must not be
+// said when it is false. The empty CSV handed to a customer is the sharp end of it.
+//
+// So an old spelling is accepted as INPUT and redirected here. It is never in `AUDIT_ACTIONS`, never
+// written by a producer, and never carried by a row that comes back — it exists only to point a
+// reader who learned the name before the rename at the rows that name now lives on.
+//
+// `docs/deploy.md` covers the OTHER half of the same window, and the two are not the same case: an
+// old image's frozen catalog also reads as empty, but that one is transient and closes by rolling
+// forward. A saved link does not close by itself, which is why this one is code and that one is a
+// note.
+export const RENAMED_AUDIT_ACTIONS: Readonly<Record<string, AuditAction>> = {
+  mcp_oauth_consent_denied: "mcp_oauth_consent.deny",
+  mcp_oauth_consent_granted: "mcp_oauth_consent.grant",
+};
+
+export function canonicalAuditAction(action: string): string {
+  return RENAMED_AUDIT_ACTIONS[action] ?? action;
+}
+
 // The actions whose rows belong to NO TENANT, and therefore never appear on a tenant's trail.
 //
 // `tenant_id` answers to the record that changed, not to the principal that changed it, and these

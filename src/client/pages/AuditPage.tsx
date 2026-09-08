@@ -40,7 +40,11 @@ import {
   todayKey,
 } from "@/client/lib/auditPeriod";
 import { cn, formatDateTime } from "@/client/lib/utils";
-import { AUDIT_ACTIONS, isFleetLevelAction } from "@/lib/audit/actions";
+import {
+  AUDIT_ACTIONS,
+  canonicalAuditAction,
+  isFleetLevelAction,
+} from "@/lib/audit/actions";
 import { AUDIT_MARKER_KEYS, carriesAuditMarker } from "@/lib/audit/markers";
 import { AUDIT_SCOPES, type AuditScope, isAuditScope } from "@/lib/audit/scope";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
@@ -446,7 +450,11 @@ export function AuditPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const action = searchParams.get("action") ?? "";
+  // THROUGH THE REDIRECT, at the edge where the URL becomes state. A link saved before the two
+  // consent actions were renamed (#555) names a spelling no row carries any more, and taking it
+  // verbatim would render a dead filter over an empty trail. Normalising here rather than at the
+  // request means the control shows the name that works, so the operator is not taught the old one.
+  const action = canonicalAuditAction(searchParams.get("action") ?? "");
   const actorType = searchParams.get("actorType") ?? "";
   // A date, which is what an operator arrives with. Widened to an instant here, because the endpoint
   // refuses a bare date on purpose (a date is not an instant) and picking the boundary is the page's

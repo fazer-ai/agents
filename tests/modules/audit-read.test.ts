@@ -320,6 +320,39 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     ).toEqual(["b.five"]);
   });
 
+  // THE FILTER ANSWERS THE NAME THE READER LEARNED, not only the one the rows carry today. #555
+  // renamed the two consent actions and moved every row, which turns a saved filter link, a script's
+  // query string and a quoted export naming the old spelling into a read that matches nothing — an
+  // audit saying "this never happened" about rows sitting one name over. Asserted through `listAudit`
+  // rather than on the map, because what has to hold is that the READER goes through the redirect:
+  // the map being right while `buildAuditWhere` ignores it is exactly the failure, and it is silent.
+  test("a filter naming the spelling from before the rename finds the rows", async () => {
+    await seed("mcp_oauth_consent.grant", "2024-03-04T09:00:00Z");
+    try {
+      const viaOldName = await listAudit(
+        ctx(),
+        { action: "mcp_oauth_consent_granted" },
+        appDb,
+      );
+      const viaNewName = await listAudit(
+        ctx(),
+        { action: "mcp_oauth_consent.grant" },
+        appDb,
+      );
+      expect(viaOldName.entries.map((e) => e.action)).toEqual([
+        "mcp_oauth_consent.grant",
+      ]);
+      expect(viaOldName.entries.map((e) => e.id)).toEqual(
+        viaNewName.entries.map((e) => e.id),
+      );
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}
+          AND action = 'mcp_oauth_consent.grant'`,
+      );
+    }
+  });
+
   // The detector. Until every family records, comparing this against a record's own updatedAt is
   // the only way an operator learns that a write happened which the trail cannot describe — and it
   // keeps working afterwards, as how a family that was missed shows up. It therefore answers for the

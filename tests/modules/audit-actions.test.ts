@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   AUDIT_ACTIONS,
+  canonicalAuditAction,
   FLEET_LEVEL_ACTIONS,
   isFleetLevelAction,
+  RENAMED_AUDIT_ACTIONS,
 } from "@/lib/audit/actions";
 import { withoutComments } from "@/tests/utils/source-text";
 
@@ -244,5 +246,41 @@ describe("which actions belong to no tenant", () => {
       expect([fleet.has(a), tenant.has(a)]).toEqual([true, true]);
       expect(isFleetLevelAction(a)).toBe(false);
     }
+  });
+});
+
+// THE RENAME LEAVES A DOOR OPEN BEHIND IT, and this is the whole contract of that door. #555 moved
+// every consent row off the two pre-#392 spellings and dropped them from the catalog, which is the
+// point of the change: one act, one name. What the drop also does, though, is turn every filter link
+// an operator saved, every script's query string and every quoted export that names the old spelling
+// into a read that matches nothing — an audit answering "no consent decision was ever recorded"
+// while the rows sit one name over. So the old spelling is accepted as INPUT and redirected, and the
+// three assertions below are the three halves of "input only" that a later edit could break
+// separately: it translates, it is not in the vocabulary, and it does not leak into what is written.
+describe("audit actions: the spellings the rename left behind", () => {
+  test("an old spelling is redirected to the name the rows now carry", () => {
+    expect([
+      canonicalAuditAction("mcp_oauth_consent_granted"),
+      canonicalAuditAction("mcp_oauth_consent_denied"),
+    ]).toEqual(["mcp_oauth_consent.grant", "mcp_oauth_consent.deny"]);
+  });
+
+  test("everything else is handed back untouched, including nonsense", () => {
+    for (const value of ["mcp_client.create", "", "not_an_action", "mcp_"]) {
+      expect(canonicalAuditAction(value)).toBe(value);
+    }
+  });
+
+  // THE DIRECTION THAT MATTERS MOST. A redirect is not a name: the moment one of these appears in
+  // the picker, the operator can choose it, and the rename is undone in the only place it was
+  // visible. Every target, meanwhile, must be a real action or the redirect points at nothing.
+  test("no old spelling is offered, and every target is a real action", () => {
+    const offered = Object.keys(RENAMED_AUDIT_ACTIONS).filter((a) =>
+      (AUDIT_ACTIONS as readonly string[]).includes(a),
+    );
+    const dangling = Object.values(RENAMED_AUDIT_ACTIONS).filter(
+      (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
+    );
+    expect([offered, dangling]).toEqual([[], []]);
   });
 });

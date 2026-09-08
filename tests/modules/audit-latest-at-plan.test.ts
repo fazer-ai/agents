@@ -65,8 +65,8 @@ const FLEET_PAGE =
 //
 // Every assertion in this file is about which index the planner REACHES, and that is a cost choice:
 // on a table holding a handful of fleet rows every partial index costs about the same, so the
-// planner picks whichever is narrower -- `audit_logs_fleet_id_idx`, which is kept only for the
-// pre-#530 rolling overlap -- and pays a `Sort` and a `Filter` on top. That is the exact shape these
+// planner picks whichever is narrower -- it was `audit_logs_fleet_id_idx`, kept for the pre-#530
+// rolling overlap until #544 dropped it -- and pays a `Sort` and a `Filter` on top. That is the exact shape these
 // tests exist to forbid, and it appeared only because the plan was being read off whatever rows
 // other suites happened to leave in a shared table: the same assertions pass alone and failed inside
 // the full run (measured, on the master tree, where the suite writes more of them).
@@ -208,7 +208,9 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // of them also gives the ORDER the page is read in, and the other buys it with a `Sort`,
         // which is half of what #530 removed. Accepting both hid that, and it was accepted only
         // because the plan was being read off a table whose contents belong to the rest of the
-        // suite. With the slice seeded above it is a fact about the indexes again.
+        // suite. With the slice seeded above it is a fact about the indexes again. (That other
+        // index is gone since #544; the naming stays deliberate, because what this pins is that the
+        // page is answered by the index carrying its ORDER, not merely by one that is partial.)
         expect(withIndex).toContain(
           '"Index Name":"audit_logs_fleet_created_at_id_idx"',
         );
@@ -219,11 +221,9 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // same index already chose.)
         expect(withIndex).not.toContain('"Filter"');
 
-        // BOTH of them, for the negative half: leaving one standing proves nothing about the other.
+        // One index to drop now, where there were two: `audit_logs_fleet_id_idx` came out in #544
+        // and the drop of it here would be a no-op that reads like a live concern.
         await db.$executeRawUnsafe(`DROP INDEX ${INDEX_FOR.fleet}`);
-        await db.$executeRawUnsafe(
-          `DROP INDEX IF EXISTS audit_logs_fleet_id_idx`,
-        );
         const without = await planIn(db, FLEET_PAGE);
         // WITHOUT it, no index gives BOTH the predicate and the id order, so the plan has to buy one
         // of them with a full pass. Which pass depends on the table: on a large one the planner
@@ -231,8 +231,8 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // page of 51); on a small one it gathers every fleet row off the other partial index and
         // sorts. Either is unbounded by the page size, which is the property being asserted -- so
         // the assertion names both rather than pinning the plan of whichever table it runs on.
-        expect(without).not.toMatch(
-          /"Index Name":"audit_logs_fleet_(created_at_id|id)_idx"/,
+        expect(without).not.toContain(
+          '"Index Name":"audit_logs_fleet_created_at_id_idx"',
         );
         expect(without).toMatch(
           /"Node Type":"Sort"|"Filter":"\(tenant_id IS NULL\)"/,
@@ -312,14 +312,21 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
     for (const r of ordering) {
       expect(r.indexdef).toMatch(/created_at DESC, id DESC/);
     }
-    // ...and `audit_logs_fleet_id_idx` IS STILL HERE, on purpose. It serves only the old
-    // `ORDER BY id` fleet page, which this release stops issuing -- but `docs/deploy.md` describes
-    // rolling deploys, so for the length of one overlap a container from the previous release is
-    // still asking that question, and without the index it walks the primary key past every tenant
-    // row: measured, 8,687 buffers and 21.5 ms against 2. It comes out in a later release, once no
-    // old process can be serving (docs/roadmap.md). The other three old indexes went now because
-    // the new ones answer their queries too, verified on the same probe.
-    expect(rows.map((r) => r.indexname)).toContain("audit_logs_fleet_id_idx");
+    // ...and `audit_logs_fleet_id_idx` IS GONE (#544). It served only the old `ORDER BY id` fleet
+    // page, which nothing has issued since #530; it outlived the other three by a release because
+    // `docs/deploy.md` describes ROLLING deploys, and for one overlap a container from the release
+    // before #530 was still asking that question — without the index, a primary-key walk past every
+    // tenant row, measured at 8,687 buffers and 21.5 ms against 2. #530 shipped in v1.15.0, so that
+    // container is a release behind now.
+    //
+    // ASSERTED AS ABSENCE, and that is the direction that can rot: the index is created by
+    // `20260903140000_audit_latest_at_indexes` and dropped by `20260908160000_audit_drop_fleet_id_idx`,
+    // so a revert of the drop, or a database whose migrations stopped in between, brings it back
+    // with nothing else to notice. Absence here is also what says no audit index leads with `id`
+    // any more, which is the premise the removed cursor path rests on.
+    expect(rows.map((r) => r.indexname)).not.toContain(
+      "audit_logs_fleet_id_idx",
+    );
   });
 
   // The partial predicate is the whole point of the fleet indexes: without it an index would hold

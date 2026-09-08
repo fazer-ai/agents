@@ -102,6 +102,42 @@ describe("a concurrent index drop is alone in its migration", () => {
     expect(concurrent).toBeGreaterThan(10);
     expect(offenders).toEqual([]);
   });
+
+  // AND THE CONVERSE, which is the half that was missing: a file whose ONLY job is to drop an index
+  // must drop it concurrently. Found by mutation on #544 — taking `CONCURRENTLY` out of that
+  // migration passed every test in the tree, and it is the exact shape `.claude/rules/prisma.md`
+  // warns about. `migrate deploy` runs on the NEW container while the OLD one is still serving, and
+  // a plain `DROP INDEX` takes ACCESS EXCLUSIVE on the TABLE, not on the index: every read and every
+  // write that records an audit row queues behind it for the length of the drop.
+  //
+  // ONLY-STATEMENT IS WHAT MAKES THE RULE EXCEPTIONLESS, rather than a list of grandfathered files.
+  // A plain drop is legitimate and necessary in two other shapes, both of which have a second
+  // statement: dropping a possibly-invalid leftover immediately before rebuilding it (the concurrent
+  // DROP form cannot share a file with `CREATE INDEX CONCURRENTLY`), and dropping a unique index as
+  // part of a larger schema change. Swept over the tree: every plain drop in it is one of those two,
+  // and every file that does nothing but drop already uses CONCURRENTLY.
+  test("a migration that only drops an index drops it concurrently", () => {
+    const dir = "prisma/migrations";
+    const offenders: string[] = [];
+    let dropOnly = 0;
+    for (const name of readdirSync(dir)) {
+      const file = `${dir}/${name}/migration.sql`;
+      if (!existsSync(file)) continue;
+      const sql = readFileSync(file, "utf8")
+        .split("\n")
+        .filter((l) => !l.trimStart().startsWith("--"))
+        .join("\n")
+        .replace(/\$\$[\s\S]*?\$\$/g, "$$BODY$$");
+      const statements = sql.split(";").filter((s) => s.trim().length > 0);
+      if (statements.length !== 1) continue;
+      const only = statements[0] as string;
+      if (!/^\s*DROP\s+INDEX/i.test(only)) continue;
+      dropOnly += 1;
+      if (!/DROP\s+INDEX\s+CONCURRENTLY/i.test(only)) offenders.push(name);
+    }
+    expect(dropOnly).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
 });
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;

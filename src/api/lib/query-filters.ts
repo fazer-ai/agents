@@ -98,10 +98,9 @@ export function parseQueryCount(
 }
 
 // TWO COLUMNS SINCE #530, so not `parseQueryId`: a cursor is `<ISO instant>|<id>`, opaque by
-// contract, and the parse belongs to the codec that emits it. A cursor from the previous release is
-// a bare id and is read as that release's own `id <` bound, so a walk that spans a rolling deploy
-// finishes without losing a row -- see `AuditCursor.beforeId`. Anything else is the same 400 every
-// other malformed parameter gets.
+// contract, and the parse belongs to the codec that emits it. A bare id was the cursor before #530
+// and was accepted for one release after it, for a walk spanning a rolling deploy; since #544 it is
+// the same 400 every other malformed parameter gets.
 export function parseQueryAuditCursor(
   s: string | undefined,
   param: string,

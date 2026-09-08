@@ -2870,16 +2870,44 @@ export async function observeInbox(
     // the same pair then puts its own row in the same slot.
     if (!alreadyObserving) {
       try {
-        const created = await runScopedOn(base, ctx, (db) =>
-          db.inboxObserver.create({
+        const created = await runScopedOn(base, ctx, async (db) => {
+          // THE AGENT'S OWN ROW, LOCKED, IN THE SAME TRANSACTION AS THE INSERT (PR review, round
+          // 13). The insert alone does not serialize against a promotion: its foreign key takes only
+          // `KEY SHARE`, which is compatible with the `FOR NO KEY UPDATE` that `updateAgent` holds
+          // while it counts observers and finds none. Both commit — and a process death before the
+          // recheck in the transaction below then leaves a PRODUCTION agent carrying a pending
+          // observer row: a row that routes, that blocks the ordinary edits, and that observing
+          // again cannot settle, because that recheck exempts a CONFIRMED row and not this one.
+          //
+          // The same lock the promotion takes, so one of the two must see the other: either
+          // `updateAgent` counts this row, or this reads the mode it wrote.
+          //
+          // Lock order agent → inbox, which is `deleteAgent`'s: the insert's own trigger steps the
+          // inbox's binding generation, so the inbox row is taken after this one either way.
+          const rows = await db.$queryRaw<Array<{ mode: string }>>`
+            SELECT mode FROM agents WHERE id = ${agentId} FOR NO KEY UPDATE`;
+          const modeNow = rows[0]?.mode;
+          // Gone between the preflight and here: the same answer the foreign key gives on the insert
+          // below, and the same one the transaction gives for the same race.
+          if (modeNow === undefined) {
+            throw new NotFoundError("agent not found", "errors.agentNotFound");
+          }
+          if (!isMonitoring(modeNow)) {
+            throw new AppError(
+              "only a monitoring agent can observe an inbox",
+              422,
+              "errors.observerNotMonitoring",
+            );
+          }
+          return db.inboxObserver.create({
             // EXPLICITLY NULL, against the column's own default. The default exists so that anything
             // which does not know about pending rows — the previous release during a rolling deploy,
             // a fixture, a repair by hand — writes a confirmed one; this is the single writer that
             // means the null.
             data: { tenantId, inboxId, agentId, attachedAt: null },
             select: { id: true },
-          }),
-        );
+          });
+        });
         pendingRowId = created.id;
       } catch (err) {
         // The agent was deleted between the preflight and here; the foreign key is the answer, and

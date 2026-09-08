@@ -2479,4 +2479,86 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       }),
     ).toBe(0);
   });
+
+  // ...AND THE INSERT SERIALIZES AGAINST A PROMOTION (issue #540, PR review round 13). The insert
+  // alone does not: its foreign key on the agent takes `KEY SHARE`, which is compatible with the
+  // `FOR NO KEY UPDATE` that `updateAgent` holds while it counts observers and finds none, so the
+  // promotion and the pending row both commit. A process death before the recheck in the transaction
+  // below then leaves a PRODUCTION agent carrying a pending row: it routes, it blocks the ordinary
+  // edits, and observing again cannot settle it, because that recheck exempts a CONFIRMED row and
+  // not this one.
+  //
+  // What is asserted is that the row is never written at all when the mode has already moved — the
+  // refusal downstream produces the same 422 either way, so the observable that separates the two is
+  // WHETHER THE TABLE EVER HELD THE ROW.
+  test("a promotion landing before the insert stops the row from being written", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 85,
+        name: "Promovida antes do insert",
+      },
+      select: { id: true },
+    });
+    const vigia = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Vigia promovida no meio",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    // What the table held at the moment the fork was asked to attach — which is AFTER the insert.
+    let rowsAtAttach = -1;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      const method = init?.method ?? "GET";
+      const json = (status: number, body: unknown) =>
+        ({
+          ok: status < 300,
+          status,
+          text: async () => JSON.stringify(body),
+        }) as unknown as Response;
+      if (path.endsWith("/agent_bots") && method === "POST") {
+        // The promotion, committed while the bot is being provisioned: before the insert, after the
+        // preflight that read the mode.
+        await suDb.$executeRawUnsafe(
+          `UPDATE agents SET mode = 'production', updated_at = now() WHERE id = ${vigia.id}`,
+        );
+        return json(200, { id: 77, access_token: "tok-77", secret: "sec-77" });
+      }
+      if (path.endsWith("/agent_bots") && method === "GET")
+        return json(200, []);
+      if (/\/inboxes\/\d+\/agent_bot_observers$/.test(path)) {
+        rowsAtAttach = await suDb.inboxObserver.count({
+          where: { tenantId, inboxId: inbox.id },
+        });
+        return json(200, { id: 1 });
+      }
+      return json(200, {});
+    }) as unknown as typeof fetch;
+    const deps = {
+      makeClient: (cfg: ConstructorParameters<typeof ChatwootClient>[0]) =>
+        createChatwootClient(cfg, {
+          fetchImpl,
+          assertSafe: async (u: string) => new URL(u),
+        }),
+    };
+    await expect(
+      observeInbox(ctx(tenantId), inbox.id, vigia.id, deps, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      translationKey: "errors.observerNotMonitoring",
+    });
+    // Never written: the locked read saw the mode the promotion committed. Left at -1 the fork was
+    // never asked, which is also a pass — the refusal happened before the attach.
+    expect(rowsAtAttach).toBeLessThanOrEqual(0);
+    expect(
+      await suDb.inboxObserver.count({
+        where: { tenantId, inboxId: inbox.id },
+      }),
+    ).toBe(0);
+  });
 });

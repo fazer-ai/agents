@@ -2236,6 +2236,34 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
+  // ...AND THE LINE DOES NOT CLAIM AN ARMING THAT DID NOT HAPPEN (PR review, round 6). The row is
+  // PROCESSED by then and nothing revisits it, so this line is the only record it leaves: stated
+  // unconditionally, it told an operator a takeover was armed on the exact reading where it was not,
+  // which is the one case they would have had to act on themselves.
+  //
+  // A SOURCE FENCE, for the reason the loss-line one above gives: making `enqueueJob` throw against
+  // a real database means faking the client out from under the code under test, which proves nothing
+  // about what ships. What is asserted is the branch.
+  test("the reply-stranded line says whether the takeover was actually armed", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
+    ).text();
+    const arm = src.slice(
+      src.indexOf('if (verdict === "role-unstated")'),
+      src.indexOf('if (verdict === "owed-takeover")'),
+    );
+    expect(arm.length).toBeGreaterThan(0);
+    // The catch records the failure...
+    expect(arm).toContain("armed = false;");
+    // ...and the line that follows reads it rather than asserting the happy path.
+    expect(arm).toContain("armed\n");
+    expect(arm).toContain("A takeover COULD NOT BE ARMED");
+    // The unconditional claim is gone: it must not appear outside the ternary's true arm.
+    expect(
+      arm.includes("route. A takeover is armed in case it was the responder's"),
+    ).toBe(false);
+  });
+
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {
     // ISSUE #439. The row a process death leaves when the delivery it was working carried a
     // COLLEAGUE's reply: `message_created`, no inbound message id (nothing a customer sent), and the

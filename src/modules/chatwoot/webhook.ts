@@ -579,6 +579,22 @@ async function responderCoversMessage(
 //
 // At most one row can match: Chatwoot fans one delivery per route, and the route is pinned to the
 // responder's bot here. `orderBy` is for determinism if that ever stops being true.
+// THE ROW'S STATUS AS IT STANDS, asked only where a refusal is about to be raised on the strength of
+// it. Null when the row cannot be read, which is not "PENDING" and therefore not a refusal.
+async function deliveryStatusOf(
+  base: PrismaClient,
+  tenantId: bigint,
+  deliveryRowId: bigint,
+): Promise<string | null> {
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootWebhookDelivery.findUnique({
+      where: { id: deliveryRowId },
+      select: { status: true },
+    }),
+  ).catch(() => null);
+  return row?.status ?? null;
+}
+
 async function responderSiblingRemembers(
   tenantId: bigint,
   instanceId: bigint,
@@ -4243,7 +4259,18 @@ export async function processChatwootDelivery(
     params.agentBotId !== null &&
     receiptGeneration !== null &&
     resolvedGeneration !== null &&
-    resolvedGeneration !== receiptGeneration
+    resolvedGeneration !== receiptGeneration &&
+    // ...AND THE ROW IS STILL THERE TO LEAVE (PR review, round 6). `claimFrom` is what this call
+    // EXPECTS the status to be, not what it is: a repost of an event already settled arrives with
+    // `claimFrom === "PENDING"` all the same, and the CAS below is what turns it into the `skipped`
+    // an idempotent duplicate deserves. Thrown ahead of that CAS, an ordinary duplicate became an
+    // async dispatch failure whose message promised the sweep would pick the row up — and a settled
+    // row is on no sweep worklist, so the promise was false as well as noisy.
+    //
+    // One read, on the refusal path only. A row that settles between this read and the throw costs
+    // a log line and nothing else, which is the same price the race had before the column existed.
+    (await deliveryStatusOf(base, params.tenantId, params.deliveryRowId)) ===
+      "PENDING"
   ) {
     throw new Error(
       `chatwoot: the binding moved between this delivery's receipt (generation ${receiptGeneration}) and its route resolution (generation ${resolvedGeneration}), which now resolves no runtime (conv=${n.conversationId === null ? "?" : String(n.conversationId)}, bot=${params.agentBotId}); leaving the delivery for the sweep rather than settling it against a world it never arrived in`,

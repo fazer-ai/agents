@@ -713,20 +713,29 @@ async function record(
       // on a WATCHER's route the takeover was never owed and what WAS owed — the colleague's reply
       // folded into the observer's memory — cannot be replayed from here (see `observer-strand`), so
       // without this line it leaves no trace anywhere at all.
+      // WHETHER IT WAS ACTUALLY ARMED, because the line below is the only record this row leaves and
+      // the row is already PROCESSED — nothing revisits it (PR review, round 6). Stated
+      // unconditionally, that line told an operator a takeover was armed on the exact reading where
+      // it was not, which is the one case they would have had to act on themselves.
+      let armed = true;
       try {
         await armTakeoverRecovery(tenantId, row.id, base);
       } catch (error) {
+        armed = false;
         logger.warn(
           { error },
           `chatwoot delivery sweep: ${label} stranded before its route was named and its takeover could not be armed; if it was the responder's, the conversation stays with the bot until the next human reply`,
         );
       }
       logger.warn(
-        "chatwoot delivery sweep: %s stranded on %s carrying a colleague's reply (%s) on conversation %s BEFORE anything named its route — the claim that states the role never ran. A takeover is armed in case it was the responder's; if it was a watcher's, that watcher never folded the reply into its memory and nothing can replay it. The inbox %s NOW, which is not necessarily what it had when the event arrived",
+        "chatwoot delivery sweep: %s stranded on %s carrying a colleague's reply (%s) on conversation %s BEFORE anything named its route — the claim that states the role never ran. %s; if it was a watcher's, that watcher never folded the reply into its memory and nothing can replay it. The inbox %s NOW, which is not necessarily what it had when the event arrived",
         label,
         row.status,
         String(row.humanReplyShape),
         String(row.conversationId),
+        armed
+          ? "A takeover is armed in case it was the responder's"
+          : "A takeover COULD NOT BE ARMED, so if it was the responder's the conversation stays with the bot until the next human reply",
         mirror === null
           ? "could not be read"
           : mirror.responderHasRoute === true

@@ -1938,6 +1938,97 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  // ...AND IT IS NOT RAISED ON A ROW THERE IS NOTHING TO LEAVE (PR review, round 6). `claimFrom` is
+  // what this call EXPECTS the status to be, not what it is: Chatwoot reposting an event whose row is
+  // already settled arrives claiming PENDING all the same, and the CAS is what turns that into the
+  // `skipped` an idempotent duplicate deserves. Raised ahead of the CAS, an ordinary duplicate became
+  // an async dispatch failure whose message promised the sweep would pick the row up — and a settled
+  // row is on no sweep worklist, so the promise was false on top of noisy.
+  test("a repost of a delivery that already settled is skipped, not refused", async () => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(83, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    // The row this delivery already produced, settled half an hour ago.
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-repost-${deliverySeq}`,
+        event: "message_created",
+        status: "PROCESSED",
+        claimedAt: new Date(),
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    try {
+      // ...and the same movement the case above sets up, so every other condition of the refusal is
+      // true and the row's own status is the only thing standing between it and a throw.
+      await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "production" },
+      });
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration + 1 },
+      });
+
+      expect(
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+          receiptBindingGeneration: inbox.bindingGeneration,
+        }),
+      ).toBe("skipped");
+      // ...and the settled row is exactly where it was.
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: delivery.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSED");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    }
+  });
+
   // ...AND THE SAME EMPTY READING, WITH THE GENERATION SAYING NOTHING MOVED, SETTLES AS IT ALWAYS
   // HAS. A bot that still owns an older conversation goes on receiving its events after being
   // detached, and an inbox nobody of ours answers resolves nothing for perfectly ordinary reasons.

@@ -1914,6 +1914,96 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(await read(silenced)).toBe(false);
   });
 
+  // AND THE COMMONEST ROW OF ALL IS ALREADY CLOSED WHEN THE WORD ARRIVES (issue #576, PR review
+  // round 1). With debounce on, the creation delivery arms the flush and returns, and its own tx2
+  // marks it PROCESSED seconds or minutes before the flush runs and calls this. The two
+  // status-moving statements name PROCESSING and DEAD, so that row matched neither and never
+  // recorded anything — leaving the late-transcription gate on the ownership reading in exactly the
+  // deployment this change exists for.
+  test("records the word on a row that was already processed, without moving it", async () => {
+    const convId = 8932;
+    const conv = await seedConversation(convId);
+    const closedAt = new Date(Date.now() - 120_000);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `turn-answered-processed-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSED",
+        receivedAt: new Date(Date.now() - 180_000),
+        claimedAt: new Date(Date.now() - 180_000),
+        processedAt: closedAt,
+        conversationId: convId,
+        inboundMessageId: 9791,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "answered",
+      messageIds: [9791],
+      base: appDb,
+    });
+
+    const after = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: row.id },
+      select: { turnAnswered: true, status: true, processedAt: true },
+    });
+    expect(after.turnAnswered).toBe(true);
+    // The row is finished, and stays finished at the moment it finished: `processedAt` is what an
+    // operator reads as when the delivery ended.
+    expect(after.status).toBe("PROCESSED");
+    expect(after.processedAt?.getTime()).toBe(closedAt.getTime());
+  });
+
+  // THE FIRST WORD ABOUT A MESSAGE STANDS. A later call carrying a different one is about a
+  // different turn — the burst's `consumed` for the messages its cap dropped is the shape that
+  // reaches this — and letting it overwrite would erase the `answered` of a message really replied
+  // to.
+  test("a second settlement does not rewrite the word already on the row", async () => {
+    const convId = 8933;
+    const conv = await seedConversation(convId);
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `turn-answered-first-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSED",
+        conversationId: convId,
+        inboundMessageId: 9792,
+        routeObserved: false,
+        turnAnswered: true,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "consumed",
+      messageIds: [9792],
+      base: appDb,
+    });
+
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: row.id },
+          select: { turnAnswered: true },
+        })
+      ).turnAnswered,
+    ).toBe(true);
+  });
+
   test("the correction does NOT page, and the reason is written down", async () => {
     // The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the loss
     // pages, and the `warn` that closes it reaches the Logs page and nobody else, so an operator who

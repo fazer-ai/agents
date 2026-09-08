@@ -655,6 +655,24 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(await armedFor(messageId)).toHaveLength(1);
   });
 
+  // AN `answered` IS NOT HIDDEN BY A LATER `consumed` (PR review, round 1). One message reaches
+  // several rows — the two bot routes Chatwoot fans to, plus its own creation and update — and they
+  // do not all say the same thing: an observer settles its own row `consumed` because it answers
+  // nobody by design, and so does a route that stood down for the bot holding the conversation. With
+  // the newest row deciding, that `false` landing after the responder's `true` hid it on nothing
+  // better than insertion order, and the message was folded in a second time.
+  test("a consumed sibling inserted after an answered one does not undo the answer", async () => {
+    const messageId = 6104;
+    await settledSibling(messageId, true);
+    await settledSibling(messageId, false);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(0);
+  });
+
   // AND WITHOUT A ROW THAT CAN SAY, the ownership reading is what answers — the fallback the column
   // narrows rather than removes. Same event as the loss case above, minus the sibling.
   test("with no settled sibling the gate falls back to ownership", async () => {

@@ -740,10 +740,16 @@ async function turnCoveredMessage(
         turnAnswered: { not: null },
       },
       select: { turnAnswered: true },
-      // The newest that stated a value. Several rows can carry the same message — the two bot routes
-      // Chatwoot fans to, plus this message's own creation and update — and the last word about it
-      // is the one to act on.
-      orderBy: { id: "desc" },
+      // ANY `true` WINS, and receipt order decides nothing (PR review, round 1). Several rows carry
+      // the same message — the two bot routes Chatwoot fans to, plus this message's own creation and
+      // update — and they do not all say the same thing: an observer settles its own row `consumed`
+      // (it answers nobody by design), as does a route that stood down because another bot held the
+      // conversation. Taking the newest row let that `false` land after the responder's `true` and
+      // hide it, on nothing better than which delivery was inserted last, and the message was then
+      // folded in a second time. A message cannot become UNANSWERED once a route has answered it, so
+      // `true` is the fact and `false` is only the absence of one; among rows that all say `false`,
+      // the newest is as good an answer as any.
+      orderBy: [{ turnAnswered: "desc" }, { id: "desc" }],
     }),
   );
   return sibling?.turnAnswered ?? null;

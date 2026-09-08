@@ -276,6 +276,37 @@ export async function retireCoveredDeliveries(
       }),
   );
 
+  // AND THE ROW THAT IS ALREADY CLOSED STILL HAS TO CARRY THE WORD (issue #576, PR review round 1).
+  // The two statements above move a row's STATUS, so they name the states a row can be moved out of
+  // — and the ordinary debounced delivery is in neither by the time the flush calls this. It armed
+  // the flush and returned, and its own tx2 marked it PROCESSED seconds or minutes before the flush
+  // ran. Left to those two statements the commonest row of all never records what the turn did, and
+  // the late-transcription gate falls back to the ownership reading on exactly the deployment this
+  // change exists for.
+  //
+  // STATUS UNTOUCHED, which is why it is a third statement rather than a wider predicate on the
+  // first: a PROCESSED row is finished, and rewriting `processedAt` would move a timestamp an
+  // operator reads as when the delivery ended.
+  //
+  // ONLY ONTO A ROW THAT HAS SAID NOTHING. The first word about a message is the one that ran over
+  // it; a later call carrying a different one is about a different turn, and letting it overwrite
+  // would let a burst's `consumed` for the messages the cap dropped erase the `answered` of a
+  // message that was really replied to.
+  await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
+    db.chatwootWebhookDelivery.updateMany({
+      where: { ...where, status: "PROCESSED", turnAnswered: null },
+      data: { turnAnswered: answered },
+    }),
+  ).catch((e) => {
+    // Best-effort, like every other write on this path: a miss leaves the null the reader falls
+    // back on, never a wrong answer.
+    logger.warn(
+      "chatwoot: could not record what the turn did with the message on conversation %d: %s",
+      params.conversationId,
+      e instanceof Error ? e.message : String(e),
+    );
+  });
+
   // AND THE ROWS THAT NEED A CLOSING LINE, which are the ones that were DEAD.
   //
   // READING them first would race the sweep in both directions: a row turning DEAD between the read

@@ -1938,6 +1938,181 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  // A READING THAT FAILED IS NOT A READING THAT SAID NOTHING (PR review, round 9). Both queries the
+  // refusal depends on used to answer null when they threw, and null switches the refusal OFF: the
+  // CAS goes through and the delivery settles PROCESSED with no runtime having looked at it, which
+  // is the exact loss the refusal exists to prevent, produced by a transient database failure on the
+  // one reading standing in its way. Both propagate now, and the row stays PENDING for the sweep.
+  //
+  // Written as a pair because they are two different queries on the same path: the generation, read
+  // inside the resolution (and therefore retried), and the row's own status, read at the refusal.
+  const failingClient = (
+    model: string,
+    op: string,
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    matches: (args: any) => boolean,
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  ): any => {
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    const wrap = (target: any): any =>
+      new Proxy(target, {
+        get(t, prop, recv) {
+          if (prop === "$extends")
+            return (...a: unknown[]) => wrap(t.$extends(...a));
+          if (prop === "$transaction")
+            return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+              t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+          if (prop !== model) return Reflect.get(t, prop, recv);
+          const delegate = Reflect.get(t, prop, recv);
+          return new Proxy(delegate, {
+            get(d, k, r) {
+              const inner = Reflect.get(d, k, r);
+              if (k !== op) return inner;
+              // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+              return async (args: any) => {
+                if (matches(args)) throw new Error("pool exhausted");
+                return (inner as (a: unknown) => Promise<unknown>).call(
+                  d,
+                  args,
+                );
+              };
+            },
+          });
+        },
+      });
+    return wrap(appDb);
+  };
+
+  // The world the two cases below both need: a delivery on a bot route whose binding has since moved
+  // and which now resolves no runtime at all — every condition of the refusal true except the one
+  // query under test.
+  const movedWorld = async (convId: number, prefix: string) => {
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
+      select: { id: true, bindingGeneration: true },
+    });
+    const observerRow = await suDb.inboxObserver.findFirstOrThrow({
+      where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      select: { id: true },
+    });
+    deliverySeq += 1;
+    messageSeq += 1;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageSeq,
+      private: false,
+      content: "quero cancelar meu ingresso",
+      message_type: "incoming",
+      sender: { id: 99, name: "Cliente", type: null },
+      conversation: conversation(convId, OBSERVED_ONLY_INBOX, {
+        assigneeType: "User",
+        status: "open",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `obr-${process.pid}-${prefix}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        bindingGeneration: inbox.bindingGeneration,
+      },
+      select: { id: true },
+    });
+    await suDb.inboxObserver.delete({ where: { id: observerRow.id } });
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: { mode: "production" },
+    });
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { bindingGeneration: inbox.bindingGeneration + 1 },
+    });
+    const restore = async () => {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { bindingGeneration: inbox.bindingGeneration },
+      });
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+    };
+    return { n, delivery, receipt: inbox.bindingGeneration, restore };
+  };
+
+  test("a generation read that fails does not settle the delivery", async () => {
+    const { n, delivery, receipt, restore } = await movedWorld(84, "genfail");
+    try {
+      await expect(
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: failingClient(
+            "inbox",
+            "findFirst",
+            // The FALLBACK query alone, which is the one that used to swallow. The runtime resolvers
+            // read the same column on the same model and must go on answering, or this test would
+            // prove the retry loop and not the swallow: they select more than this one field.
+            (args) =>
+              args?.select?.bindingGeneration === true &&
+              Object.keys(args?.select ?? {}).length === 1,
+          ),
+          receiptBindingGeneration: receipt,
+          deps: { sleep: async () => {} },
+        }),
+      ).rejects.toThrow("pool exhausted");
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true, claimedAt: true },
+      });
+      expect(row.status).toBe("PENDING");
+      expect(row.claimedAt).toBeNull();
+    } finally {
+      await restore();
+    }
+  });
+
+  test("a status read that fails does not settle the delivery either", async () => {
+    const { n, delivery, receipt, restore } = await movedWorld(85, "statfail");
+    try {
+      await expect(
+        processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: failingClient(
+            "chatwootWebhookDelivery",
+            "findUnique",
+            (args) =>
+              args?.select?.status === true &&
+              Object.keys(args?.select ?? {}).length === 1,
+          ),
+          receiptBindingGeneration: receipt,
+          deps: { sleep: async () => {} },
+        }),
+      ).rejects.toThrow("pool exhausted");
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true, claimedAt: true },
+      });
+      expect(row.status).toBe("PENDING");
+      expect(row.claimedAt).toBeNull();
+    } finally {
+      await restore();
+    }
+  });
+
   // ...AND IT IS NOT RAISED ON A ROW THERE IS NOTHING TO LEAVE (PR review, round 6). `claimFrom` is
   // what this call EXPECTS the status to be, not what it is: Chatwoot reposting an event whose row is
   // already settled arrives claiming PENDING all the same, and the CAS is what turns that into the

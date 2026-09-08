@@ -345,21 +345,18 @@ async function inboxBindingGenerationAt(
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
   base: PrismaClient,
 ): Promise<number | null> {
-  try {
-    return await runScopedOn(base, sysCtx(tenantId), (db) =>
-      inboxBindingGenerationIn(db, instanceId, at),
-    );
-  } catch (err) {
-    logger.warn(
-      "chatwoot: could not read the inbox binding generation (inbox=%s, conv=%s): %s",
-      at.chatwootInboxId === null ? "?" : String(at.chatwootInboxId),
-      at.chatwootConversationId === null
-        ? "?"
-        : String(at.chatwootConversationId),
-      errMsg(err),
-    );
-    return null;
-  }
+  // IT THROWS, and that is the point (PR review, round 9). This used to log and answer null, and a
+  // null here reads as "the generation cannot say" — which switches the window-1 refusal OFF, lets
+  // the CAS through and settles the delivery PROCESSED with no runtime having looked at it. A
+  // transient database failure would have silently produced the exact loss the refusal exists to
+  // prevent, on the one reading where it is the only thing standing in the way.
+  //
+  // The caller resolves the route inside a retry loop and rethrows when it is spent, which leaves
+  // the row PENDING and unclaimed for the sweep. Null is still a real answer from the query itself:
+  // an inbox this delivery cannot name.
+  return runScopedOn(base, sysCtx(tenantId), (db) =>
+    inboxBindingGenerationIn(db, instanceId, at),
+  );
 }
 
 // The same runtime, resolved through the CONVERSATION's stored inbox when the payload named none.
@@ -586,12 +583,17 @@ async function deliveryStatusOf(
   tenantId: bigint,
   deliveryRowId: bigint,
 ): Promise<string | null> {
+  // NOT SWALLOWED (PR review, round 9). Read only where every other condition of the refusal already
+  // holds, so an unreadable status is the last thing between this delivery and a claim that settles
+  // it PROCESSED with no runtime. Answering null there would skip the refusal on a failure — an
+  // unknown state read as a settled one, which is the single inversion this fence cannot afford. The
+  // throw leaves the row PENDING and unclaimed, which is what the refusal itself would have done.
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findUnique({
       where: { id: deliveryRowId },
       select: { status: true },
     }),
-  ).catch(() => null);
+  );
   return row?.status ?? null;
 }
 

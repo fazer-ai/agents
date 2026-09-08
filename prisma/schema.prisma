@@ -444,6 +444,10 @@ model ChatwootWebhookDelivery {
   // NOTE: the sweep's own index is PARTIAL and lives in raw SQL, which Prisma cannot express:
   // `(tenant_id, received_at) WHERE status IN ('PENDING','PROCESSING')`. See the migration for why
   // a full index over this table is the wrong shape.
+  // NOTE: so is the reply half of the sibling lookup, for the same reason:
+  // `(chatwoot_instance_id, conversation_id, human_reply_message_id) WHERE human_reply_message_id IS NOT NULL`.
+  // The inbound half is the named index above; see 20260908150000 for why the absence case is the
+  // one that had to be indexed.
   @@map("chatwoot_webhook_deliveries")
 }
 

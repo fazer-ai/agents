@@ -233,6 +233,13 @@ export async function retireCoveredDeliveries(
   // it preempts nothing: its own tx2 writes PROCESSED over this a moment later. What it leaves out
   // is a delivery that died in the sliver between its insert and its CAS, reported as a loss even
   // though a later burst answered it — two statements wide, against a whole turn for PROCESSING.
+  // Hoisted above the two writes below, which now record it. WHAT A TURN DID WITH THE MESSAGE is the
+  // fact continuous ingestion needs and could not ask for (issue #576): its gate reads who owns the
+  // conversation NOW, which on a `message_updated` is a reading taken after the decision it is
+  // asking about. This call is where the word is decided and where every caller already had to
+  // supply it, so it is where the word is written down. Best-effort like everything else here: a
+  // write that does not land leaves the null the reader falls back on.
+  const answered = params.settlement === "answered";
   const { count } = await runScopedOn(
     params.base,
     sysCtx(params.tenantId),
@@ -261,7 +268,11 @@ export async function retireCoveredDeliveries(
             : {}),
           status: "PROCESSING",
         },
-        data: { status: "PROCESSED", processedAt: new Date() },
+        data: {
+          status: "PROCESSED",
+          processedAt: new Date(),
+          turnAnswered: answered,
+        },
       }),
   );
 
@@ -282,12 +293,15 @@ export async function retireCoveredDeliveries(
     (db) =>
       db.chatwootWebhookDelivery.updateManyAndReturn({
         where: { ...where, status: "DEAD" },
-        data: { status: "PROCESSED", processedAt: new Date() },
+        data: {
+          status: "PROCESSED",
+          processedAt: new Date(),
+          turnAnswered: answered,
+        },
         select: { deliveryId: true, inboundMessageId: true },
       }),
   );
 
-  const answered = params.settlement === "answered";
   const total = count + corrected.length;
   if (total > 0) {
     logger.info(

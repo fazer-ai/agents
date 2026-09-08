@@ -1851,6 +1851,69 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     );
   });
 
+  // WHAT A TURN DID WITH THE MESSAGE, WRITTEN DOWN (issue #576). Every caller of this function
+  // already had to supply the word, and until now it was spent on a log line — so continuous
+  // ingestion, which needs exactly this fact on a `message_updated`, had to infer it from who owns
+  // the conversation at the moment it asks. Both statuses this function moves carry the word, and
+  // they carry the caller's, never a guess.
+  test("records on the row what the turn actually did with the message", async () => {
+    const convId = 8931;
+    const conv = await seedConversation(convId);
+    const mk = async (status: "PROCESSING" | "DEAD", messageId: number) =>
+      (
+        await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `turn-answered-${status}-${process.pid}-${messageId}`,
+            event: "message_created",
+            status,
+            receivedAt: new Date(Date.now() - 60_000),
+            claimedAt: new Date(Date.now() - 60_000),
+            conversationId: convId,
+            inboundMessageId: messageId,
+            routeObserved: false,
+          },
+          select: { id: true },
+        })
+      ).id;
+    const answeredProcessing = await mk("PROCESSING", 9781);
+    const answeredDead = await mk("DEAD", 9782);
+    const silenced = await mk("PROCESSING", 9783);
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "answered",
+      messageIds: [9781, 9782],
+      base: appDb,
+    });
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      // A deliberate silence is not an answer, and the column has to say which — reading `false` as
+      // "no record" is what would put the loss half of #576 back.
+      settlement: "consumed",
+      messageIds: [9783],
+      base: appDb,
+    });
+
+    const read = async (id: bigint) =>
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id },
+          select: { turnAnswered: true },
+        })
+      ).turnAnswered;
+    expect(await read(answeredProcessing)).toBe(true);
+    expect(await read(answeredDead)).toBe(true);
+    expect(await read(silenced)).toBe(false);
+  });
+
   test("the correction does NOT page, and the reason is written down", async () => {
     // The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the loss
     // pages, and the `warn` that closes it reaches the Logs page and nobody else, so an operator who

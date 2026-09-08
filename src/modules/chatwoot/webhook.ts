@@ -684,6 +684,71 @@ async function responderSiblingRemembers(
   return true;
 }
 
+// WHETHER A TURN ALREADY COVERED THIS MESSAGE, asked of the ledger instead of inferred from who owns
+// the conversation now (issue #576).
+//
+// The gate that decides continuous ingestion is `(act && consumed) || !act`, and `act` is bot
+// ownership AT THE MOMENT OF THE READ. On a `message_created` that is the right question by accident
+// of timing: the decision to run a turn is taken on that same delivery, so "the bot owns it" and "a
+// turn will cover this" are one fact. On the `message_updated` that finally carries a voice note's
+// transcription they come apart, because the reading is taken after the decision it is asking about,
+// and it comes apart in BOTH directions:
+//
+//   * the write-back lands once the conversation changed hands (resolved, or a colleague took it in
+//     the seconds between our PATCH and the fork's re-dispatch). `!act` reads as "no turn is
+//     coming", and a second copy of what the turn already folded in is appended. The dedup window
+//     does not catch it: that window is written by the ingest job alone, so an id a TURN handled was
+//     never put in it.
+//   * a row stranded while a person held the conversation is replayed half an hour later, by which
+//     time the bot has it back. `act && !consumed` reads as "a turn will cover this", nothing is
+//     appended, and the row closes as recovered with the customer's words in nobody's memory.
+//
+// THE ANSWER IS ON THE CREATION'S ROW, not on this one. One customer message reaches the ledger
+// twice and only the first carries a turn's verdict, so this asks about the MESSAGE and not about
+// the event — which is the one way it differs from `responderSiblingRemembers` above, and the
+// difference is load-bearing: narrowed by event, it would find nothing every time.
+//
+// NOT NARROWED BY ROUTE either. `retireCoveredDeliveries` settles on the wide scope precisely
+// because a turn, a command or a gate answers the MESSAGE whichever route carried it, and the rows
+// it excludes there (an observer's, and one that owes words rather than an answer) are the ones that
+// never state a value here at all.
+//
+// Null is "no row can say", and the caller falls back to the ownership reading every delivery made
+// before this column: no row for the message has settled yet, or every one of them predates this
+// release. It narrows the window rather than closing it, and the residue is the creation's own row
+// dying before it settled — the one case where nothing anywhere recorded what was going to happen.
+async function turnCoveredMessage(
+  tenantId: bigint,
+  instanceId: bigint,
+  deliveryRowId: bigint,
+  conversationId: number | null,
+  messageId: number,
+  base: PrismaClient,
+): Promise<boolean | null> {
+  if (conversationId === null) return null;
+  const sibling = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootWebhookDelivery.findFirst({
+      where: {
+        chatwootInstanceId: instanceId,
+        conversationId,
+        inboundMessageId: messageId,
+        // A sibling is another row by definition, and this one has not settled anything yet.
+        id: { not: deliveryRowId },
+        // Only a row that STATED something. A null is the absence this function reports as null of
+        // its own, and letting one win the ordering would hide a settled sibling behind a row that
+        // has said nothing.
+        turnAnswered: { not: null },
+      },
+      select: { turnAnswered: true },
+      // The newest that stated a value. Several rows can carry the same message — the two bot routes
+      // Chatwoot fans to, plus this message's own creation and update — and the last word about it
+      // is the one to act on.
+      orderBy: { id: "desc" },
+    }),
+  );
+  return sibling?.turnAnswered ?? null;
+}
+
 // THE ROUTE'S AGENT, WHEN IT WATCHES THE INBOX RATHER THAN ANSWERING IT (issue #476). A delivery
 // arrives on one persona's route, and that persona may be bound to the payload's inbox as an
 // OBSERVER (`InboxObserver`, the fork's second binding) instead of as its responder. Then the
@@ -1900,6 +1965,9 @@ type IngestOutcome = "queued" | "nothing" | "no-thread" | "failed";
 async function ingestUnhandledMessage(args: {
   tenantId: bigint;
   instanceId: bigint;
+  // THIS DELIVERY'S OWN ROW, so the coverage question below can exclude it from its own answer
+  // (issue #576). Nothing else here needs it.
+  deliveryRowId: bigint;
   n: NormalizedChatwootEvent;
   act: boolean;
   consumed: boolean;
@@ -1986,9 +2054,28 @@ async function ingestUnhandledMessage(args: {
     n.message.transcribedText = lateTranscription;
   }
   const lateMediaAnalyzed = lateTranscription !== null;
+  // WHAT DECIDES THE LATE-TRANSCRIPTION ARM IS THE LEDGER, NOT OWNERSHIP NOW (issue #576). `act` is
+  // read here, on a `message_updated`, about a decision taken on the creation's delivery — so it is
+  // right by accident on a creation and wrong in both directions on an update. `turnCoveredMessage`
+  // asks the creation's own row what actually happened to the message; a null there means no row can
+  // say, and the fallback is the reading every delivery made before this column.
+  //
+  // The creation arm keeps `act`, deliberately. There the two questions ARE the same fact, and the
+  // ledger has nothing to add: the row that would answer is this one, and it has not settled yet.
+  const covered = lateMediaAnalyzed
+    ? await turnCoveredMessage(
+        tenantId,
+        instanceId,
+        args.deliveryRowId,
+        n.conversationId,
+        messageId,
+        base,
+      )
+    : null;
+  const unhandledByOwnership = (act && consumed) || !act;
   const incomingUnhandled =
     (isNewIncomingMessage(n) || lateMediaAnalyzed) &&
-    ((act && consumed) || !act);
+    (covered === null ? unhandledByOwnership : !covered);
   const role: IngestRole | null = incomingUnhandled
     ? "customer"
     : isNewHumanReplyToCustomer(n, {
@@ -6040,6 +6127,7 @@ export async function processChatwootDelivery(
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
+      deliveryRowId: params.deliveryRowId,
       n,
       act: act && !observing && !handedToObserver,
       consumed,

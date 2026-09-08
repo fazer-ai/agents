@@ -427,6 +427,29 @@ model ChatwootWebhookDelivery {
   // signature `routeObserved` carries. A reader falls back to the mode reading there, which is what
   // every delivery had before this column.
   routeRemembers      Boolean?              @map("route_remembers")
+  // WHETHER A TURN RAN OVER THIS DELIVERY'S MESSAGE AND ANSWERED IT (issue #576), written where the
+  // settlement is decided (`retireCoveredDeliveries`) and carrying the same word the caller had to
+  // supply there: true is a reply that reached the customer, false is a deliberate silence — a gate
+  // that took the message, a model that produced nothing, a human who took the conversation
+  // mid-turn. The fact already existed at that call and was spent on a log line.
+  //
+  // It exists because CONTINUOUS INGESTION DECIDES BY OWNERSHIP NOW rather than by coverage of the
+  // message. `(act && consumed) || !act` answers the right question by accident on a
+  // `message_created`, where the decision to run a turn is taken on that same delivery. On a
+  // `message_updated` carrying a late transcription it does not: `act` is read after a decision
+  // taken before, so a write-back landing once the conversation changed hands appends a second copy
+  // of what a turn already folded in, and a stranded row replayed half an hour later — when the
+  // conversation has come back to the bot — appends nothing and loses the words for good.
+  //
+  // ONE ROW PER MESSAGE PER ROUTE, and the reader asks the SIBLING rather than itself: the update
+  // has a row of its own, and the fact belongs to the creation's. A debounced burst needs no
+  // enumeration for the same reason — the flush retires every message it covered, with the right
+  // word for each, so each message's own row carries its own answer.
+  //
+  // Null on a row an older build wrote, on one that stranded before settling, and on one whose
+  // settlement never reached it. All three are "this row cannot say", and the reader falls back to
+  // the ownership reading every delivery made before this column.
+  turnAnswered        Boolean?              @map("turn_answered")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

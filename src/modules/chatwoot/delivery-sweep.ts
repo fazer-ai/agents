@@ -92,10 +92,19 @@ function sysCtx(tenantId: bigint): TenantContext {
 //   handled; it is a statement that WE are not handling it. Keyed by conversation and message, that
 //   exit retires the other route's row, and if that route's process then dies the loss is invisible.
 //   `deliveryRowId` is the caller saying "only the delivery I am".
+//
+// AND `covered` RIDES THE SHAPE, for the same reason and stated by the same union (issue #576, PR
+// review round 4). Whether a turn folded the message into the thread is a fact about the MESSAGE,
+// so only a caller speaking for the message may state it; a route saying "I am not handling this"
+// says nothing about whether the route that IS handling it will. Recorded as a message-wide `false`,
+// that stand-down was read as evidence while the owner's own row sat unsettled, and the owner's late
+// transcription was folded in a second time on the strength of it. Spelled `?: never` on the
+// single-row shape, so there is no such call to write.
 type CoveredMessages =
   // The burst a turn ran over, known exactly because the thread was re-fetched.
   | {
       messageIds: number[];
+      covered: boolean;
       afterMessageId?: never;
       upToMessageId?: never;
       deliveryRowId?: never;
@@ -115,12 +124,14 @@ type CoveredMessages =
   // the bound is inclusive because that message is the one most in need of retiring.
   | {
       messageIds?: never;
+      covered: boolean;
       afterMessageId: number | null;
       upToMessageId: number;
       deliveryRowId?: never;
     }
   | {
       deliveryRowId: bigint;
+      covered?: never;
       messageIds?: never;
       afterMessageId?: never;
       upToMessageId?: never;
@@ -146,17 +157,6 @@ export async function retireCoveredDeliveries(
     // mid-turn. Assuming the first would tell an operator their customer was answered when nobody
     // replied, which is the same class of lie this whole sweep exists to remove.
     settlement: "answered" | "consumed";
-    // WHETHER A TURN FOLDED THESE MESSAGES INTO THE THREAD, and it is a second fact rather than a
-    // reading of the first (issue #576, PR review round 2). The settlement says whether a reply
-    // reached the customer; this says whether the message is in the agent's memory, and the two part
-    // company on exactly the outcome that motivated the column: a turn that ran and produced nothing
-    // settles `consumed` while `graph.invoke` has already persisted the message. Read off the
-    // settlement, that folded a silent turn's message in a second time.
-    //
-    // From the caller, like the settlement and for the same reason: a gate knows no turn ran, and a
-    // turn path knows what it did (`turnFoldedMessageIn` in ../../graph/runtime.ts classifies the
-    // outcome, exhaustively).
-    covered: boolean;
     base: PrismaClient;
   },
 ): Promise<number> {
@@ -249,7 +249,6 @@ export async function retireCoveredDeliveries(
   // reading taken after the decision it is asking about. This call is where every settlement passes,
   // so it is where the fact is written down. Best-effort like everything else here: a write that does
   // not land leaves the null the reader falls back on.
-  const covered = params.covered;
   const answered = params.settlement === "answered";
   const { count } = await runScopedOn(
     params.base,
@@ -285,51 +284,58 @@ export async function retireCoveredDeliveries(
 
   // AND, IN A STATEMENT OF ITS OWN, WHETHER A TURN FOLDED THESE MESSAGES INTO THE THREAD.
   //
-  // SEPARATE FROM THE TWO ABOVE because it answers about a different set of rows and with a
-  // different rule. Those move a STATUS, so they name the states a row can be moved out of — and the
-  // ordinary debounced delivery is in neither by the time the flush calls this: it armed the flush
-  // and returned, and its own tx2 marked it PROCESSED minutes earlier. Left to them, the commonest
-  // row of all never recorded anything and the late-transcription gate fell back to the ownership
-  // reading on exactly the deployment this exists for.
+  // ONLY WHERE THE SCOPE SPEAKS FOR THE MESSAGE, which the union above is what says: a single-row
+  // settlement is a route reporting about ITSELF, and "I am not handling this" is not evidence about
+  // the route that is.
   //
-  // MONOTONIC (PR review, round 3). `false` is the ABSENCE of a turn, not a claim that none can ever
-  // run: a message consumed with no turn records `false`, and an operator's manual re-engagement
-  // then runs a turn over that same tail and checkpoints it. Only `false -> true` moves, so a later
-  // settlement carrying `false` — the burst's own word for the messages its cap dropped — cannot
-  // take back a coverage that really happened.
+  // SEPARATE FROM THE TWO STATEMENTS ABOVE because it answers about a different set of rows and with
+  // a different rule. Those move a STATUS, so they name the states a row can be moved out of — and
+  // the ordinary debounced delivery is in neither by the time the flush calls this: it armed the
+  // flush and returned, and its own tx2 marked it PROCESSED minutes earlier. Left to them, the
+  // commonest row of all never recorded anything and the late-transcription gate fell back to the
+  // ownership reading on exactly the deployment this exists for.
+  //
+  // MONOTONIC. `false` is the ABSENCE of a turn, not a claim that none can ever run: a message
+  // consumed with no turn records `false`, and an operator's manual re-engagement then runs a turn
+  // over that same tail and checkpoints it. Only `false -> true` moves, so a later settlement
+  // carrying `false` — the burst's own word for the messages its cap dropped — cannot take back a
+  // coverage that really happened.
   //
   // NEVER ON A PENDING ROW, the same rule the status statement above follows: that is the row whose
   // owner has not arrived, and this call cannot tell "abandoned" from "claimed a millisecond from
   // now". Its own settlement will speak for it.
-  await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
-    db.chatwootWebhookDelivery.updateMany({
-      // `AND` rather than a spread, because `where` already carries an `OR` of its own on the wide
-      // scope and a second one at the same level would replace it.
-      //
-      // And the coverage clause is an explicit LIST rather than `not: true`, for the reason the
-      // observer exclusion above spells out: the column is nullable, and `NOT (col = true)` is NULL
-      // for a NULL row — which is every row that has not yet said anything, i.e. exactly the ones
-      // this statement exists to write. Measured: with `not: true` it settled nothing at all.
-      where: {
-        AND: [
-          where,
-          { status: { not: "PENDING" } },
-          covered
-            ? { OR: [{ turnCovered: null }, { turnCovered: false }] }
-            : { turnCovered: null },
-        ],
-      },
-      data: { turnCovered: covered },
-    }),
-  ).catch((e) => {
-    // Best-effort, like every other write on this path: a miss leaves the null the reader falls
-    // back on, never a wrong answer.
-    logger.warn(
-      "chatwoot: could not record whether a turn folded the message in on conversation %d: %s",
-      params.conversationId,
-      e instanceof Error ? e.message : String(e),
-    );
-  });
+  if (params.covered !== undefined) {
+    const covered = params.covered;
+    await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        // `AND` rather than a spread, because `where` already carries an `OR` of its own on the wide
+        // scope and a second one at the same level would replace it.
+        //
+        // And the coverage clause is an explicit LIST rather than `not: true`, for the reason the
+        // observer exclusion above spells out: the column is nullable, and `NOT (col = true)` is
+        // NULL for a NULL row — which is every row that has not yet said anything, i.e. exactly the
+        // ones this statement exists to write. Measured: with `not: true` it settled nothing at all.
+        where: {
+          AND: [
+            where,
+            { status: { not: "PENDING" } },
+            covered
+              ? { OR: [{ turnCovered: null }, { turnCovered: false }] }
+              : { turnCovered: null },
+          ],
+        },
+        data: { turnCovered: covered },
+      }),
+    ).catch((e) => {
+      // Best-effort, like every other write on this path: a miss leaves the null the reader falls
+      // back on, never a wrong answer.
+      logger.warn(
+        "chatwoot: could not record whether a turn folded the message in on conversation %d: %s",
+        params.conversationId,
+        e instanceof Error ? e.message : String(e),
+      );
+    });
+  }
 
   // AND THE ROWS THAT NEED A CLOSING LINE, which are the ones that were DEAD.
   //

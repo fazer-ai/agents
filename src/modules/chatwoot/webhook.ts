@@ -5366,7 +5366,8 @@ export async function processChatwootDelivery(
     messageId: number,
     settlement: "answered" | "consumed",
     // Whether a turn folded the message into the thread — a different question from the settlement,
-    // and only the caller knows (issue #576).
+    // and only the caller knows (issue #576). Ignored on the `this-delivery` scope, which speaks for
+    // one route rather than for the message.
     covered: boolean,
     scope: "conversation" | "this-delivery" = "conversation",
   ): Promise<void> => {
@@ -5380,10 +5381,12 @@ export async function processChatwootDelivery(
         conversationId: n.conversationId,
         conversationRowId: mirror.conversationRowId,
         settlement,
-        covered,
+        // `covered` rides the wide scope only: a single-row settlement is this route reporting about
+        // ITSELF, and "I am not handling this" says nothing about the route that is (issue #576, PR
+        // review round 4). The union in ../chatwoot/delivery-sweep.ts is what enforces it.
         ...(scope === "this-delivery"
           ? { deliveryRowId: params.deliveryRowId }
-          : { messageIds: [messageId] }),
+          : { messageIds: [messageId], covered }),
         base,
       });
     } catch (e) {

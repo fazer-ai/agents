@@ -1694,7 +1694,6 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "consumed",
-      covered: false,
       deliveryRowId: own.id,
       base: appDb,
     });
@@ -2010,6 +2009,49 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // operator reads as when the delivery ended.
     expect(after.status).toBe("PROCESSED");
     expect(after.processedAt?.getTime()).toBe(closedAt.getTime());
+  });
+
+  // A ROUTE REPORTING ABOUT ITSELF STATES NOTHING ABOUT THE MESSAGE (PR review, round 4). Chatwoot
+  // fans one message to two bot routes, and the one that does NOT hold the conversation stands down
+  // with a single-row settlement while the owner's row is still being worked. Recorded as a
+  // message-wide `false`, that stand-down was read as evidence — the owner's own row said nothing
+  // yet — and the owner's late transcription was folded in a second time on the strength of it.
+  test("a single-row settlement records nothing about the message", async () => {
+    const convId = 8935;
+    const conv = await seedConversation(convId);
+    const standDown = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `turn-covered-route-local-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 9794,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "consumed",
+      deliveryRowId: standDown.id,
+      base: appDb,
+    });
+
+    const after = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: standDown.id },
+      select: { turnCovered: true, status: true },
+    });
+    // The row is settled — that part is this route's to say — and says nothing about coverage.
+    expect(after.status).toBe("PROCESSED");
+    expect(after.turnCovered).toBeNull();
   });
 
   // COVERAGE IS MONOTONIC, and it moves in one direction only (PR review, round 3). A later call

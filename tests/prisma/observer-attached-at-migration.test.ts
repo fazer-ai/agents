@@ -18,7 +18,7 @@ import { Client } from "pg";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
-  "prisma/migrations/20260907090002_observer_attached_at/migration.sql";
+  "prisma/migrations/20260908170002_observer_attached_at/migration.sql";
 
 let dbUp = false;
 let sql = "";

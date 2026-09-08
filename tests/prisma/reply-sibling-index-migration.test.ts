@@ -18,9 +18,9 @@ import { Client } from "pg";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const INDEX =
-  "prisma/migrations/20260908150000_human_reply_sibling_idx/migration.sql";
+  "prisma/migrations/20260908170004_human_reply_sibling_idx/migration.sql";
 const ASSERT =
-  "prisma/migrations/20260908150001_assert_delivery_indexes_valid/migration.sql";
+  "prisma/migrations/20260908170005_assert_delivery_indexes_valid/migration.sql";
 const IDX_NAME = "chatwoot_webhook_deliveries_reply_sibling_idx";
 
 let dbUp = false;

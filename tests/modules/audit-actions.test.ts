@@ -101,16 +101,6 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
-  // The old spellings of the two consent actions. Nothing writes them any more, and every row
-  // recorded so far is still under them: this release renames the producers and teaches every
-  // reader both names, and the backfill is the NEXT one, because the rollout overlaps and the
-  // outgoing container's catalog is frozen with only these two. They and their exemptions leave
-  // together, with that backfill.
-  const THE_SPELLING_THE_ROWS_STILL_CARRY = [
-    "mcp_oauth_consent_denied",
-    "mcp_oauth_consent_granted",
-  ];
-
   // EXTRA — a producer is deleted or renamed and its name stays on the list. The operator picks a
   // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
   // THIS: a union member nobody constructs is not an error anywhere.
@@ -128,9 +118,7 @@ describe("the audit action vocabulary", () => {
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
     const orphaned = AUDIT_ACTIONS.filter(
-      (a) =>
-        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
-        !sources.some((code) => code.includes(`"${a}"`)),
+      (a) => !sources.some((code) => code.includes(`"${a}"`)),
     );
     expect(orphaned).toEqual([]);
   });
@@ -144,37 +132,15 @@ describe("the audit action vocabulary", () => {
   // naming #392 settled. A name in another shape reaches the operator as noise and, worse, suggests
   // the family it belongs to is somewhere else.
   //
-  // The two exceptions are NAMED rather than pattern-matched, so a third one is a decision somebody
-  // makes on purpose and not a hole the regex quietly widened. What they are has changed: until
-  // #523 they were the shape the consent decisions were WRITTEN in; now nothing writes them and
-  // they are on the list because every row RECORDED is still under them.
+  // NO EXCEPTIONS, and that is the state this assertion has been working towards since #392. The
+  // last two, the consent pair, were named rather than pattern-matched so a third would be a
+  // decision somebody made on purpose; they left with #555's backfill, which put every recorded row
+  // under the dotted name and made the old spellings unreachable rather than merely unwritten.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
-      (a) =>
-        !THE_SPELLING_THE_ROWS_STILL_CARRY.includes(a) &&
-        !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
+      (a) => !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
     );
     expect(odd).toEqual([]);
-  });
-
-  // The pair is a STAGE, not a permanent carve-out, so both directions are pinned: the names the
-  // rows carry are on the list, and the names this release writes are the new ones. A rename that
-  // landed in the catalog and not in the controller would leave the first assertion green and this
-  // one red.
-  test("the old names are listed, and nothing here writes them", async () => {
-    const sources = await producerSources();
-    const written = (name: string) =>
-      sources.some((code) => code.includes(`"${name}"`));
-    expect({
-      listed: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(
-        (a) => !(AUDIT_ACTIONS as readonly string[]).includes(a),
-      ),
-      stillWritten: THE_SPELLING_THE_ROWS_STILL_CARRY.filter(written),
-      replacements: [
-        "mcp_oauth_consent.deny",
-        "mcp_oauth_consent.grant",
-      ].filter((a) => !written(a)),
-    }).toEqual({ listed: [], stillWritten: [], replacements: [] });
   });
 });
 

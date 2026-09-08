@@ -103,30 +103,6 @@ export const AUDIT_ACTIONS = [
   "mcp_connection.update",
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
-  // THE TWO OLD SPELLINGS, AND EVERY ROW RECORDED SO FAR IS UNDER THEM. Nothing in this release
-  // writes them any more — the two above replaced them — and no row has moved, which is the whole
-  // shape of this release rather than an omission.
-  //
-  // The rename and the backfill cannot ship together, and the reason is the deploy rather than the
-  // code. The rollout overlaps: the incoming container runs `prisma migrate deploy` while the
-  // outgoing one is still serving, and that one's catalog is FROZEN with only these two names. Move
-  // the rows in the same release and its picker offers two values that now match nothing, so the
-  // consent family reads as empty on the old container for the length of the upgrade — and
-  // indefinitely after a rollback, which is a thing operators do when a release misbehaves.
-  //
-  // So this release only teaches every reader both spellings, and the backfill is the next one,
-  // where the oldest live catalog already has all four. Both of these leave with it.
-  //
-  // WHAT IS ACCEPTED, DELIBERATELY, is the other side of the same frozen catalog: a decision taken
-  // AFTER this upgrade is written under a dotted name the previous image does not list, so rolling
-  // back to it hides those decisions from the picker until you roll forward again. Nothing is lost
-  // — the rows are there, and the next release's backfill puts every one of them under one name.
-  // Closing that too would mean listing the new names one release before anything writes them,
-  // which puts a value in the operator's picker that matches nothing at all, and then a third
-  // release to finish; a cosmetic rename does not buy three. It goes in the release notes, the way
-  // the `tts.normalize` default did.
-  "mcp_oauth_consent_denied",
-  "mcp_oauth_consent_granted",
   "mcp_token.revoke",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",

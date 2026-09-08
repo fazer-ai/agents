@@ -3172,6 +3172,32 @@ export async function observeInbox(
       // on a call whose whole evidence was an attach that predated the removal — and the catch
       // outside takes the attachment back.
       if (settled.count === 0) {
+        // TWO WAYS TO GET HERE, and they are not the same thing to be told (PR review, round 19).
+        //
+        // With a row of this call's own, an unobserve took the intent back: the message says so, and
+        // retrying would meet whatever the operator just asked for.
+        //
+        // With NO row of its own AND no confirmed binding at the start, this call deferred to a row
+        // another observe of the same pair had just put in — the unique violation above — and that
+        // call's own compensation can delete it, on a road out that has nothing to do with an
+        // unobserve. Both requests then fail on one failure, which is a retry rather than a decision,
+        // and the message says which it is. A REPAIR of a binding that was confirmed when this call
+        // started is the first case, not this one: there the row really was taken back.
+        //
+        // NOT recovered by writing the row here, and that is the deliberate half: this path cannot
+        // tell "the other observe failed" from "an unobserve ran", and creating a row on the second
+        // reading revives a binding an operator has just removed. That is the exact arm round 6 took
+        // out of the upsert. A retry is the cheaper wrong answer, and it is one the operator makes.
+        // TWO THROWS AND NOT A TERNARY: the error-catalog fence reads the message that sits beside
+        // each key at the call site, and a key whose sentence is chosen elsewhere is one it cannot
+        // see (tests/api/error-catalog.test.ts).
+        if (pendingRowId === null && !alreadyObserving) {
+          throw new AppError(
+            "another observe of this inbox was in flight and did not complete",
+            409,
+            "errors.observeRacedAnother",
+          );
+        }
         throw new AppError(
           "this observe was taken back while the attach was in flight",
           409,

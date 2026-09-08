@@ -1985,6 +1985,59 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await suDb.inboxObserver.deleteMany({ where: { inboxId: inbox.id } });
     }
   });
+  // ...AND WHEN THE ROW IT DEFERRED TO IS TAKEN AWAY, IT SAYS WHICH FAILURE THAT WAS (PR review,
+  // round 19). Two first-time observes of the same pair share one row: the first writes it, the
+  // second meets the unique and relies on it. The first failing then deletes the only row the second
+  // could stamp, and both fail on one failure — a retry rather than a decision, and the message is
+  // what tells the operator that.
+  //
+  // NOT recovered by writing the row here, deliberately: this path cannot tell "the other observe
+  // failed" from "an unobserve ran", and creating a row on the second reading revives a binding an
+  // operator has just removed, which is the arm round 6 took out of the upsert.
+  test("an observe whose adopted row is deleted mid-attach reports the race, not a take-back", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 87,
+        name: "Corrida entre dois observes",
+      },
+      select: { id: true },
+    });
+    // The other call's row, as it stands while its own POST is in flight.
+    const adopted = await suDb.inboxObserver.create({
+      data: {
+        tenantId,
+        inboxId: inbox.id,
+        agentId: monitoringAgent,
+        attachedAt: null,
+      },
+      select: { id: true },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      onAttach: async () => {
+        // ...and that call's own compensation, on a road out that is not an unobserve.
+        await suDb.inboxObserver.delete({ where: { id: adopted.id } });
+      },
+    });
+    await expect(
+      observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      translationKey: "errors.observeRacedAnother",
+    });
+    // Consistent either way: no row, and the attachment went back with the refusal.
+    expect(
+      await suDb.inboxObserver.count({
+        where: { tenantId, inboxId: inbox.id },
+      }),
+    ).toBe(0);
+    expect(observing.size).toBe(0);
+  });
+
   // A PENDING ROW IS NOT A BINDING FOR THE BULK REATTACH TO ASSERT (issue #540, PR review round 2).
   // Attached upstream by this loop, it would leave the fork delivering to a bot whose row still says
   // "attaching" — which the observe tick and the receiver believe indefinitely, so the tick retries

@@ -2406,4 +2406,77 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       }),
     ).toBe(0);
   });
+
+  // A PENDING ROW MEANS A CALL THAT CAN TAKE THE ATTACHMENT BACK (issue #540, PR review round 11).
+  // The row used to go in before the bot was provisioned, so it also stood for a call that could
+  // still fail without ever reaching Chatwoot. Two overlapping observes then had a road where both
+  // fail and the fork keeps an observer nothing names: the second attaches, fails to persist, and
+  // SKIPS its detach because the first one's row is in the table — and the first, having never
+  // obtained a bot id, deletes that row with nothing it can detach.
+  //
+  // Closed by WHERE the row is written, not by a second state on it: after the bot id and before the
+  // attach. Nothing is attached for this inbox before that point, so the window the row exists for is
+  // untouched — and the fact a compensation now leans on ("somebody who can detach is in flight") is
+  // true of every pending row there is.
+  test("no observer row exists before the fork has a bot to attach", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 84,
+        name: "Sem bot ainda",
+      },
+      select: { id: true },
+    });
+    const novata = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Vigia sem bot",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    // What the table held AT THE MOMENT the bot was being provisioned — the window in which the old
+    // position had a row standing for a call that had not asked Chatwoot for anything yet.
+    let rowsWhileProvisioning = -1;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      const method = init?.method ?? "GET";
+      if (path.endsWith("/agent_bots") && method === "POST") {
+        rowsWhileProvisioning = await suDb.inboxObserver.count({
+          where: { tenantId, inboxId: inbox.id },
+        });
+        // ...and then it fails, which is the road that has no bot id to detach with.
+        return {
+          ok: false,
+          status: 500,
+          text: async () => JSON.stringify({ error: "boom" }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(path.endsWith("/agent_bots") ? [] : {}),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const deps = {
+      makeClient: (cfg: ConstructorParameters<typeof ChatwootClient>[0]) =>
+        createChatwootClient(cfg, {
+          fetchImpl,
+          assertSafe: async (u: string) => new URL(u),
+        }),
+    };
+    await expect(
+      observeInbox(ctx(tenantId), inbox.id, novata.id, deps, appDb),
+    ).rejects.toBeDefined();
+    expect(rowsWhileProvisioning).toBe(0);
+    // ...and nothing is left behind either way.
+    expect(
+      await suDb.inboxObserver.count({
+        where: { tenantId, inboxId: inbox.id },
+      }),
+    ).toBe(0);
+  });
 });

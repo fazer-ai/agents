@@ -2814,50 +2814,6 @@ export async function observeInbox(
       return true;
     }
   };
-  // THE ROW BEFORE THE CALL (issue #540, window 5), carrying no stamp: "this inbox is spoken for,
-  // Chatwoot has not agreed yet". Written here and not in the transaction below because the whole
-  // point is to exist DURING the network call — the window in which a delivery can arrive with
-  // nothing to read, and in which a promotion committing meanwhile used to take away the mode that
-  // was standing in for the row.
-  //
-  // A unique violation means another observe won the inbox between the preflight and here. Nothing
-  // is written and nothing changes: the cap re-asked under the lock below is the authority, and it
-  // refuses with the attachment taken back, exactly as it did before this row existed.
-  //
-  // Not written when this pair is ALREADY observing: that row is the previous call's and this one is
-  // the repair the console offers for it (a bot to re-provision, an attach whose answer was lost).
-  // Deleting it on a failure here would take away a binding this call never made, which is the rule
-  // the compensation below already follows.
-  //
-  // ITS ID IS KEPT, and every later reference to this row goes through the id rather than through
-  // the pair it names (issue #540, PR review round 6). `(tenantId, inboxId)` does not identify a
-  // ROW across time: an unobserve can take this call's row away while the fork is being asked, and
-  // a second observe of the same pair then puts its own row in the same slot. Settling by the pair
-  // would stamp that second call's intent as confirmed off this call's attach, and the compensation
-  // would look for an unstamped row and find none — leaving a confirmed observer in the database
-  // with nothing attached on Chatwoot, which is the state this whole path exists to prevent.
-  if (!alreadyObserving) {
-    try {
-      const created = await runScopedOn(base, ctx, (db) =>
-        db.inboxObserver.create({
-          // EXPLICITLY NULL, against the column's own default. The default exists so that anything
-          // which does not know about pending rows — the previous release during a rolling deploy, a
-          // fixture, a repair by hand — writes a confirmed one; this is the single writer that means
-          // the null.
-          data: { tenantId, inboxId, agentId, attachedAt: null },
-          select: { id: true },
-        }),
-      );
-      pendingRowId = created.id;
-    } catch (err) {
-      // The agent was deleted between the preflight and here; the foreign key is the answer, and it
-      // is the same one the transaction below gives for the same race.
-      if ((err as { code?: string }).code === "P2003") {
-        throw new NotFoundError("agent not found", "errors.agentNotFound");
-      }
-      if ((err as { code?: string }).code !== "P2002") throw err;
-    }
-  }
   // Taking back the intent, for every road out of this call that is not a completed observe. Only
   // ever the row THIS call wrote, and only while it is still unstamped — a concurrent observe that
   // completed in the meantime owns it by then.
@@ -2882,6 +2838,58 @@ export async function observeInbox(
       { skipInboxId: inboxId, base },
     );
     botId = bot.chatwootAgentBotId;
+    // THE INTENT, WRITTEN HERE AND NOT EARLIER (issue #540, window 5; position corrected in PR
+    // review round 11). It has to exist while the fork is being asked — that is the window in which
+    // a delivery arrives with nothing to read, and in which a promotion committing meanwhile used to
+    // take away the mode that was standing in for the row — and the line below is that request.
+    //
+    // What the position buys is an INVARIANT the compensations depend on: a pending row means a call
+    // that HOLDS a client and a bot id is in flight, so a call that skips its own detach because
+    // that row is there is handing the attachment to somebody who can take it back. Written before
+    // the bot was provisioned, the row also stood for a call that could still fail without ever
+    // reaching Chatwoot — it would then delete its row and have nothing to detach, while the call
+    // that trusted it had already skipped its own detach, both failing and the fork left holding an
+    // observer no row names.
+    //
+    // Nothing is attached for THIS inbox before this point (`ensureAgentBotAndReattach` is passed
+    // `skipInboxId`), so no delivery can reach this route as an observer of it while the row is
+    // missing.
+    //
+    // A unique violation means another observe won the inbox between the preflight and here. Nothing
+    // is written and nothing changes: the cap re-asked under the lock below is the authority, and it
+    // refuses with the attachment taken back, exactly as it did before this row existed.
+    //
+    // Not written when this pair is ALREADY observing: that row is the previous call's and this one
+    // is the repair the console offers for it (a bot to re-provision, an attach whose answer was
+    // lost). Deleting it on a failure here would take away a binding this call never made, which is
+    // the rule the compensation below already follows.
+    //
+    // ITS ID IS KEPT, and every later reference to this row goes through the id rather than through
+    // the pair it names (round 6). `(tenantId, inboxId)` does not identify a ROW across time: an
+    // unobserve can take this call's row away while the fork is being asked, and a second observe of
+    // the same pair then puts its own row in the same slot.
+    if (!alreadyObserving) {
+      try {
+        const created = await runScopedOn(base, ctx, (db) =>
+          db.inboxObserver.create({
+            // EXPLICITLY NULL, against the column's own default. The default exists so that anything
+            // which does not know about pending rows — the previous release during a rolling deploy,
+            // a fixture, a repair by hand — writes a confirmed one; this is the single writer that
+            // means the null.
+            data: { tenantId, inboxId, agentId, attachedAt: null },
+            select: { id: true },
+          }),
+        );
+        pendingRowId = created.id;
+      } catch (err) {
+        // The agent was deleted between the preflight and here; the foreign key is the answer, and
+        // it is the same one the transaction below gives for the same race.
+        if ((err as { code?: string }).code === "P2003") {
+          throw new NotFoundError("agent not found", "errors.agentNotFound");
+        }
+        if ((err as { code?: string }).code !== "P2002") throw err;
+      }
+    }
     try {
       await client.addInboxObserver(inbox.chatwootInboxId, botId);
     } catch (err) {

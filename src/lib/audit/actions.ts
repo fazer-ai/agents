@@ -101,6 +101,13 @@ export const AUDIT_ACTIONS = [
   "mcp_connection.create",
   "mcp_connection.delete",
   "mcp_connection.update",
+  // The two consent actions carried an older spelling until #523 renamed the producers, and every
+  // recorded row moved to these names in #555, one release later. The gap was the rollout: the
+  // outgoing container's copy of this list is frozen in its image, so moving the rows in the same
+  // release would have offered it two values matching nothing. WHAT THAT STAGING ASSUMES is the
+  // upgrade path — an install that jumps straight past #523's release, or rolls back to an image
+  // older than it, has a catalog that never learned these names, and its filter reads the consent
+  // family as empty until it rolls forward. Nothing is lost; `docs/deploy.md` carries the note.
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
   "mcp_token.revoke",

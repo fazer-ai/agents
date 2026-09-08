@@ -2910,10 +2910,23 @@ export async function observeInbox(
         });
         pendingRowId = created.id;
       } catch (err) {
-        // The agent was deleted between the preflight and here; the foreign key is the answer, and
-        // it is the same one the transaction below gives for the same race.
+        // A FOREIGN KEY HERE NAMES THE INBOX, NOT THE AGENT (PR review, round 14). It used to answer
+        // `agentNotFound` for every P2003, which was right while nothing had established that the
+        // agent was there — and stopped being right the moment the lock above did: the agent is read
+        // and held for the length of this transaction two statements up, so it cannot be the row
+        // that went missing. What can, and does, is the inbox: `removeInbox` deletes the mirror, and
+        // the read that found it predates the whole Chatwoot call.
+        //
+        // The constraint is asked when Prisma names it, so a foreign key added later reports itself
+        // rather than inheriting this reasoning. `field_name` is the only place that name appears.
         if ((err as { code?: string }).code === "P2003") {
-          throw new NotFoundError("agent not found", "errors.agentNotFound");
+          const field = String(
+            (err as { meta?: { field_name?: unknown } }).meta?.field_name ?? "",
+          );
+          if (field.includes("agent_id")) {
+            throw new NotFoundError("agent not found", "errors.agentNotFound");
+          }
+          throw new NotFoundError("inbox not found", "errors.inboxNotFound");
         }
         if ((err as { code?: string }).code !== "P2002") throw err;
       }

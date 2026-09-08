@@ -2561,4 +2561,67 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       }),
     ).toBe(0);
   });
+
+  // ...AND A FOREIGN KEY AT THAT INSERT NAMES THE INBOX (issue #540, PR review round 14). Answering
+  // `agentNotFound` for every P2003 was right while nothing had established the agent was there, and
+  // stopped being right the moment the lock above did: the agent is held for the length of that
+  // transaction, so it cannot be the row that went missing. What can is the inbox — `removeInbox`
+  // deletes the mirror, and the read that found it predates the whole Chatwoot call.
+  test("an inbox removed mid-call is reported as the inbox, not as the agent", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 86,
+        name: "Removida no meio",
+      },
+      select: { id: true },
+    });
+    const vigia = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Vigia da removida",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      const method = init?.method ?? "GET";
+      const json = (status: number, body: unknown) =>
+        ({
+          ok: status < 300,
+          status,
+          text: async () => JSON.stringify(body),
+        }) as unknown as Response;
+      if (path.endsWith("/agent_bots") && method === "POST") {
+        // The mirror deleted while the bot is being provisioned: after the read that found it, before
+        // the insert that names it.
+        await suDb.inbox.delete({ where: { id: inbox.id } });
+        return json(200, { id: 78, access_token: "tok-78", secret: "sec-78" });
+      }
+      if (path.endsWith("/agent_bots") && method === "GET")
+        return json(200, []);
+      return json(200, {});
+    }) as unknown as typeof fetch;
+    const deps = {
+      makeClient: (cfg: ConstructorParameters<typeof ChatwootClient>[0]) =>
+        createChatwootClient(cfg, {
+          fetchImpl,
+          assertSafe: async (u: string) => new URL(u),
+        }),
+    };
+    await expect(
+      observeInbox(ctx(tenantId), inbox.id, vigia.id, deps, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      translationKey: "errors.inboxNotFound",
+    });
+    // ...and the agent is still there, which is what makes the old message wrong rather than merely
+    // imprecise: an operator told to look for a deleted agent would find one that is fine.
+    expect(await suDb.agent.count({ where: { tenantId, id: vigia.id } })).toBe(
+      1,
+    );
+  });
 });

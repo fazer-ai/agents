@@ -74,6 +74,57 @@ async function forced(): Promise<boolean> {
   return r.rows[0]?.f === true;
 }
 
+// RUNS THE FILE THE WAY `migrate deploy` RUNS IT: one statement at a time, on one connection.
+//
+// Handing the whole file to `pg` instead would prove nothing about atomicity. A multi-statement
+// string goes out over the simple-query protocol, which Postgres wraps in an IMPLICIT transaction,
+// so the file is atomic whatever it says — measured, with the file's own BEGIN deleted every
+// assertion here still passed. Prisma splits, which is why the file needs a BEGIN of its own.
+//
+// Measured directly (a scratch database, `migrate deploy`, a file that fails after its first
+// statement): without BEGIN the first statement PERSISTS through the failure; with it, the state is
+// back. That is the measurement `.claude/rules/prisma.md` records.
+function statementsOf(text: string): string[] {
+  const bare = text.replace(/^\s*--.*$/gm, "");
+  // Dollar quoting is the one thing this scanner cannot see through, so it refuses the file rather
+  // than cutting a function body in half and running the halves.
+  if (bare.includes("$$")) {
+    throw new Error(
+      "statementsOf: dollar quoting needs a real parser, not this scanner",
+    );
+  }
+  const out: string[] = [];
+  let current = "";
+  let inLiteral = false;
+  for (const ch of bare) {
+    // An escaped quote inside a literal is doubled, which toggles twice and lands back inside it.
+    if (ch === "'") inLiteral = !inLiteral;
+    if (ch === ";" && !inLiteral) {
+      if (current.trim()) out.push(`${current.trim()};`);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) {
+    throw new Error(
+      "statementsOf: the file does not end on a statement terminator",
+    );
+  }
+  return out;
+}
+
+async function runMigration(text: string): Promise<void> {
+  try {
+    for (const statement of statementsOf(text)) await suDb.query(statement);
+  } catch (e) {
+    // The engine drops the connection when a migration fails, which rolls back whatever transaction
+    // the file had open. Ending it here is that teardown, on a client the rest of the suite shares.
+    await suDb.query("ROLLBACK").catch(() => {});
+    throw e;
+  }
+}
+
 describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
   let before: Record<string, Awaited<ReturnType<typeof stateOf>>> = {};
 
@@ -100,7 +151,7 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
         Object.keys(ids).map(async (k) => [k, await stateOf(k)] as const),
       ),
     );
-    await suDb.query(sql);
+    await runMigration(sql);
   });
 
   afterAll(async () => {
@@ -168,12 +219,12 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
   // asserted rather than promised (round 2 of review).
   test("a re-run moves a legacy row that landed after it", async () => {
     await row("straggler", "mcp_oauth_consent_denied", tenantId);
-    await suDb.query(sql);
+    await runMigration(sql);
     expect((await stateOf("straggler")).action).toBe("mcp_oauth_consent.deny");
   });
 
   test("a re-run rewrites nothing", async () => {
-    await suDb.query(sql);
+    await runMigration(sql);
     expect([
       (await stateOf("already-new")).action,
       (await stateOf("granted-tenant")).action,
@@ -186,6 +237,21 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
   });
 
   test("FORCE ROW LEVEL SECURITY is back on the table it lifted it from", async () => {
+    expect(await forced()).toBe(true);
+  });
+
+  // AND IT IS BACK EVEN WHEN THE FILE FAILS HALFWAY, which is what the BEGIN buys. Prisma runs the
+  // `.sql` OUTSIDE a transaction (measured in #520, in both modes), so without one a failure after
+  // the lift leaves `audit_logs` with FORCE off: the table stops binding its owner to the tenant
+  // policy, and the migration is marked applied. Asserted by making the file fail on purpose rather
+  // than by trusting the BEGIN is there (round 3 of review).
+  test("a failure after the lift restores FORCE instead of leaving it off", async () => {
+    const broken = sql.replace(
+      'ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;',
+      'SELECT 1 / 0;\nALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;',
+    );
+    expect(broken).not.toBe(sql);
+    await expect(runMigration(broken)).rejects.toThrow();
     expect(await forced()).toBe(true);
   });
 });

@@ -25,6 +25,18 @@
 -- (.claude/rules/prisma.md, tests/prisma/migration-rls-bypass.test.ts). Without it, on the managed
 -- Postgres where `MIGRATION_DATABASE_URL` is the owner without rolsuper, both statements match ZERO
 -- rows and report success.
+--
+-- AND THE FILE OPENS ITS OWN TRANSACTION, because Prisma does not open one for it. Measured in #520
+-- and again here, against a scratch database with a migration that fails after its first statement:
+-- without a BEGIN that statement PERSISTS through the failure, with one the state is back, and both
+-- times the migration is marked as failed. Without the BEGIN, a failure after the lift would leave
+-- `audit_logs` with FORCE OFF — the table stops binding its owner to
+-- the tenant policy, which is a weaker invariant than the half-renamed rows beside it and the one
+-- worth being atomic about (round 3 of review). Safe here because nothing in this file is a
+-- statement Postgres refuses inside a transaction (`CREATE INDEX CONCURRENTLY` is the one that is,
+-- and this file has none).
+
+BEGIN;
 
 ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
 
@@ -35,3 +47,5 @@ UPDATE "audit_logs" SET action = 'mcp_oauth_consent.deny'
  WHERE action = 'mcp_oauth_consent_denied';
 
 ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
+
+COMMIT;

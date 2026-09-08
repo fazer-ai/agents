@@ -5933,8 +5933,34 @@ export async function processChatwootDelivery(
   // TWO HALVES, and only the first is a fact about this route: `routeRemembers` was resolved before
   // the claim and WRITTEN there (issue #540, window 3), so the sibling observer reads what this
   // delivery decided rather than a switch as it stands later. The second is this delivery handing
-  // the message to a watcher, which is decided here and belongs to nobody else.
+  // the message to a watcher, decided here — and where it happens it CORRECTS the recorded fact,
+  // below, because the claim's `false` stops being true the moment this delivery ingests anyway.
   const routeIngests = rt !== null && (routeRemembers || handedToObserver);
+  // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
+  // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
+  // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,
+  // the row tells the observer beside it that nobody remembered — and the observer, which trusts
+  // the recorded fact over the current mode, appends the same message to the same contact-inbox
+  // thread a second time.
+  //
+  // Guarded on the value it corrects, so it can only ever move `false` to `true`: a redelivery, a
+  // replay and a concurrent reader all leave a row that already says `true` alone. Best-effort and
+  // not thrown: the delivery's own work is the ingestion below, and taking that away to report a
+  // stale sibling fact would trade a duplicate line in memory for a missing one.
+  if (routeIngests && !routeRemembers) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId, routeRemembers: false },
+        data: { routeRemembers: true },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that this delivery handed the message to a watcher (conv=%s): %s; an observer beside it may append the same message a second time",
+        n.conversationId === null ? "?" : String(n.conversationId),
+        errMsg(err),
+      );
+    });
+  }
   // `rt !== null` again, and it is the type checker's rather than the logic's: `routeIngests`
   // already implies it, but the narrowing does not survive the const.
   if (rt !== null && routeIngests && !responderRemembers && !responderCommand) {

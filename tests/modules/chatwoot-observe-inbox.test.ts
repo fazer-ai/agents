@@ -2160,4 +2160,56 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await unobserveInbox(ctx(tenantId), i.id, vigia.id, healed, appDb);
     }
   });
+  // ...AND THE MODE RECHECK MUST NOT TAKE THIS CALL'S OWN PENDING ROW AS THE EXEMPTION (issue #540,
+  // PR review round 4). `updateAgent` refuses a mode change while the agent observes anything, but
+  // the two writes do not serialize: it counts observers and locks the agent `FOR NO KEY UPDATE`,
+  // while the pending insert's foreign key takes only `KEY SHARE`, which is compatible — so a
+  // promotion and the pending row can both commit. The raw update below is that outcome. Read
+  // literally, the exemption sees the row this call just wrote, skips the refusal, and stamps a
+  // confirmed observer binding for an agent that ANSWERS: the state window 5 exists to prevent,
+  // reached through the fix for it.
+  test("a promotion that raced past updateAgent's own refusal is still caught by the mode recheck", async () => {
+    const promovida = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Promovida à força",
+        systemPrompt: "x",
+        mode: "monitoring",
+      },
+      select: { id: true },
+    });
+    const spare = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX_ID + 79,
+        name: "Promovida à força",
+      },
+      select: { id: true },
+    });
+    const observing = new Set<string>();
+    const cw = fakeChatwoot({
+      observerRoute: true,
+      observing,
+      onAttach: async () => {
+        // What the lock race leaves behind: the agent answers, and this call's pending row is
+        // already in the table.
+        await suDb.$executeRawUnsafe(
+          `UPDATE agents SET mode = 'production', updated_at = now() WHERE id = ${promovida.id}`,
+        );
+      },
+    });
+    await expect(
+      observeInbox(ctx(tenantId), spare.id, promovida.id, cw, appDb),
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      translationKey: "errors.observerNotMonitoring",
+    });
+    // The attachment goes back and the pending row with it: nothing is left naming a production
+    // agent as this inbox's watcher.
+    expect(observing.size).toBe(0);
+    expect(
+      await suDb.inboxObserver.count({ where: { agentId: promovida.id } }),
+    ).toBe(0);
+  });
 });

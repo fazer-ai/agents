@@ -2938,10 +2938,20 @@ export async function observeInbox(
       // console offers for a row whose bot needs re-provisioning, and refusing it would leave that
       // row with nothing able to fix it. An agent that vanished meanwhile falls through to the
       // upsert, whose foreign key is what answers for a deleted agent (P2003, handled below).
+      // ...AND THE EXEMPTION IS A CONFIRMED ROW, never this call's own pending one (issue #540, PR
+      // review round 4). `updateAgent` refuses a mode change while the agent observes anything, but
+      // the two writes do not serialize: it counts observers and takes `FOR NO KEY UPDATE` on the
+      // agent, and the pending insert's foreign key takes only `KEY SHARE`, which is compatible — so
+      // the promotion and the pending row can both commit. Read literally, the exemption then sees
+      // the row THIS call just wrote, skips the refusal, and stamps a confirmed observer binding for
+      // an agent that answers: exactly the state window 5 exists to prevent, reached through the
+      // fix for it.
       if (
         agentNow[0] !== undefined &&
         !isMonitoring(agentNow[0].mode) &&
-        !before.observers.some((o) => o.agentId === agentId)
+        !before.observers.some(
+          (o) => o.agentId === agentId && o.attachedAt !== null,
+        )
       ) {
         throw new AppError(
           "only a monitoring agent can observe an inbox",

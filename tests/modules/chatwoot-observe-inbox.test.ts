@@ -1935,7 +1935,7 @@ describe.skipIf(!dbUp)("the observer binding", () => {
   // as "already observing" is the worst of both answers: this call writes no row AND its
   // compensation skips the detach, so if the other call then fails and takes the row away, the
   // attachment upstream is left with nothing here naming it.
-  test("an observe that meets another call's pending row still takes its own attachment back", async () => {
+  test("an observe that meets another call's pending row leaves the attachment they share", async () => {
     const inbox = await suDb.inbox.create({
       data: {
         tenantId,
@@ -1968,8 +1968,14 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await expect(
         observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
       ).rejects.toMatchObject({ statusCode: 409 });
-      // The attachment goes back, because nothing COMPLETED depends on it.
-      expect(observing.size).toBe(0);
+      // THE ATTACHMENT STAYS, and this assertion is the one round 10 turned around. "Nothing
+      // COMPLETED depends on it" was the wrong question: the other call's row is unstamped only for
+      // the length of its own network call, and the POST being idempotent the two share ONE
+      // attachment upstream. Pulled here, it would be gone the instant that call stamped its row —
+      // a confirmed observer in the database over a detached fork. What takes it back if that call
+      // fails is that call's own compensation; what repairs a row nothing ever settles is the
+      // reconcile reporting it `missing` and the Reconnect it offers.
+      expect(observing.size).toBe(1);
       // ...and the other call's row is left exactly where it was: this call did not write it.
       expect(
         await suDb.inboxObserver.count({ where: { id: pending.id } }),
@@ -2265,8 +2271,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       select: { attachedAt: true },
     });
     expect(left.attachedAt).toBeNull();
-    // ...and this call's attachment went back, because this call did not complete.
-    expect(observing.size).toBe(0);
+    // ...AND THE ATTACHMENT STAYS, which is the half round 10 corrected. This call did not complete,
+    // but the other one did attach — the POST is idempotent, so the two share one attachment
+    // upstream — and its row is unstamped only for the length of its own network call. Pulled here,
+    // the attachment would be gone the instant that call stamped a confirmed row over a detached
+    // fork. Its own compensation is what takes it back if it fails.
+    expect(observing.size).toBe(1);
     await suDb.inboxObserver.deleteMany({
       where: { tenantId, inboxId: inbox.id },
     });

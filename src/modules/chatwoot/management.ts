@@ -2762,13 +2762,26 @@ export async function observeInbox(
   // nothing reached it. So the row is re-read at compensation time and the detach is skipped when
   // one stands: `alreadyObserving` answers about the start of the call, and what authorizes the
   // attachment is the state now.
-  // ...AND IT ASKS FOR A CONFIRMED ROW, NEVER A PENDING ONE (issue #540, window 5). The row is now
+  // DECLARED HERE, above `bindingStands`, because that reading has to be able to name it: the row
+  // this call wrote is the one row a compensation of this call must not count. Assigned below, where
+  // it is written.
+  let pendingRowId: bigint | null = null;
+  // ...AND IT SKIPS EXACTLY ONE ROW: THE ONE THIS CALL WROTE (issue #540, window 5). The row is now
   // written BEFORE the fork is asked, so this call's own intent is sitting in the table while this
   // compensation runs — counted, it would read as somebody depending on the attachment and skip the
-  // detach it exists to make, leaving an attachment nothing names. `attachedAt` is what separates
-  // "a call completed and depends on this" from "a call is in flight". The window round 29 named is
-  // unchanged by that: two first-time observes share one row, and the loser skips the detach exactly
-  // while the winner has stamped it — which is the same instant the winner used to commit the row at.
+  // detach it exists to make, leaving an attachment nothing names.
+  //
+  // BY ID, and not by "is it stamped" (PR review, round 10). Reading every pending row as absent was
+  // the wrong generalisation of that: an unobserve can take this call's row away and a SECOND observe
+  // of the same pair put its own pending row in the slot, having already attached on the fork. Its
+  // row is unstamped for the length of its own network call, and in that window this compensation
+  // read it as nobody, pulled the attachment that second call had just made, and let it stamp a
+  // confirmed row over a detached fork — the state this whole path exists to prevent, reached by the
+  // compensation itself. Another call's pending row is a dependency in the making and counts; only
+  // this call's own does not.
+  //
+  // The window round 29 named is unchanged: two first-time observes share one attachment, and the
+  // loser skips the detach while the winner's row — stamped or still in flight — is there.
   const bindingStands = async (): Promise<boolean> => {
     try {
       return await runScopedOn(
@@ -2776,7 +2789,19 @@ export async function observeInbox(
         ctx,
         async (db) =>
           (await db.inboxObserver.count({
-            where: { tenantId, inboxId, agentId, attachedAt: { not: null } },
+            where: {
+              tenantId,
+              inboxId,
+              agentId,
+              // Every row of this pair EXCEPT this call's own while it is still unstamped. The two
+              // halves matter separately: the unique is on the inbox, so a concurrent call that
+              // completed did it by stamping THIS row — excluding it by id alone would read the
+              // winner's own commit as absent — while a row that is unstamped and not this call's is
+              // another call in flight, which the fork has already attached for.
+              ...(pendingRowId === null
+                ? {}
+                : { NOT: { id: pendingRowId, attachedAt: null } }),
+            },
           })) > 0,
       );
     } catch (err) {
@@ -2811,7 +2836,6 @@ export async function observeInbox(
   // would stamp that second call's intent as confirmed off this call's attach, and the compensation
   // would look for an unstamped row and find none — leaving a confirmed observer in the database
   // with nothing attached on Chatwoot, which is the state this whole path exists to prevent.
-  let pendingRowId: bigint | null = null;
   if (!alreadyObserving) {
     try {
       const created = await runScopedOn(base, ctx, (db) =>

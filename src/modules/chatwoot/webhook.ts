@@ -17,7 +17,11 @@ import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
-import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
+import {
+  type RuntimeDeps,
+  runAgentTurn,
+  turnFoldedMessageIn,
+} from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
@@ -737,9 +741,9 @@ async function turnCoveredMessage(
         // Only a row that STATED something. A null is the absence this function reports as null of
         // its own, and letting one win the ordering would hide a settled sibling behind a row that
         // has said nothing.
-        turnAnswered: { not: null },
+        turnCovered: { not: null },
       },
-      select: { turnAnswered: true },
+      select: { turnCovered: true },
       // ANY `true` WINS, and receipt order decides nothing (PR review, round 1). Several rows carry
       // the same message — the two bot routes Chatwoot fans to, plus this message's own creation and
       // update — and they do not all say the same thing: an observer settles its own row `consumed`
@@ -749,10 +753,10 @@ async function turnCoveredMessage(
       // folded in a second time. A message cannot become UNANSWERED once a route has answered it, so
       // `true` is the fact and `false` is only the absence of one; among rows that all say `false`,
       // the newest is as good an answer as any.
-      orderBy: [{ turnAnswered: "desc" }, { id: "desc" }],
+      orderBy: [{ turnCovered: "desc" }, { id: "desc" }],
     }),
   );
-  return sibling?.turnAnswered ?? null;
+  return sibling?.turnCovered ?? null;
 }
 
 // THE ROUTE'S AGENT, WHEN IT WATCHES THE INBOX RATHER THAN ANSWERING IT (issue #476). A delivery
@@ -5365,6 +5369,9 @@ export async function processChatwootDelivery(
   const settleDelivery = async (
     messageId: number,
     settlement: "answered" | "consumed",
+    // Whether a turn folded the message into the thread — a different question from the settlement,
+    // and only the caller knows (issue #576).
+    covered: boolean,
     scope: "conversation" | "this-delivery" = "conversation",
   ): Promise<void> => {
     // Narrows for the call below, which takes a number. Every caller is already inside a branch that
@@ -5377,6 +5384,7 @@ export async function processChatwootDelivery(
         conversationId: n.conversationId,
         conversationRowId: mirror.conversationRowId,
         settlement,
+        covered,
         ...(scope === "this-delivery"
           ? { deliveryRowId: params.deliveryRowId }
           : { messageIds: [messageId] }),
@@ -5595,6 +5603,10 @@ export async function processChatwootDelivery(
               outcome === "posted" || outcome === "posted-partial"
                 ? "answered"
                 : "consumed",
+              // NOT the same reading as the word beside it: `graph.invoke` persists the channel, so
+              // a turn that ran and stayed silent left the message in memory while settling
+              // `consumed` (issue #576).
+              turnFoldedMessageIn(outcome),
             );
           }
           // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line
@@ -5960,6 +5972,9 @@ export async function processChatwootDelivery(
     await settleDelivery(
       messageId,
       "consumed",
+      // This whole path is the one no turn takes: the gate closed, a person or another bot holds the
+      // conversation, or the observer owes the memory instead. Nothing invoked a graph.
+      false,
       heldByAnotherBot || observer !== null ? "this-delivery" : "conversation",
     );
   };

@@ -427,11 +427,16 @@ model ChatwootWebhookDelivery {
   // signature `routeObserved` carries. A reader falls back to the mode reading there, which is what
   // every delivery had before this column.
   routeRemembers      Boolean?              @map("route_remembers")
-  // WHETHER A TURN RAN OVER THIS DELIVERY'S MESSAGE AND ANSWERED IT (issue #576), written where the
-  // settlement is decided (`retireCoveredDeliveries`) and carrying the same word the caller had to
-  // supply there: true is a reply that reached the customer, false is a deliberate silence — a gate
-  // that took the message, a model that produced nothing, a human who took the conversation
-  // mid-turn. The fact already existed at that call and was spent on a log line.
+  // WHETHER A TURN FOLDED THIS DELIVERY'S MESSAGE INTO THE THREAD (issue #576), written where the
+  // settlement is decided (`retireCoveredDeliveries`) and supplied by every caller, which is the only
+  // side that knows.
+  //
+  // NOT "did a reply reach the customer", which is the settlement's own word and a different
+  // question. `graph.invoke` persists the channel, so a turn that ran and produced nothing left the
+  // message in memory just as a posted one did — while a gate that took the message before any turn
+  // existed left it in nobody's. Both are `consumed` to the sweep, and reading coverage off that word
+  // folded a silent turn's message in a second time (`turnFoldedMessageIn` in src/graph/runtime.ts,
+  // which is exhaustive over the outcome union so the next outcome added has to be classified).
   //
   // It exists because CONTINUOUS INGESTION DECIDES BY OWNERSHIP NOW rather than by coverage of the
   // message. `(act && consumed) || !act` answers the right question by accident on a
@@ -449,7 +454,7 @@ model ChatwootWebhookDelivery {
   // Null on a row an older build wrote, on one that stranded before settling, and on one whose
   // settlement never reached it. All three are "this row cannot say", and the reader falls back to
   // the ownership reading every delivery made before this column.
-  turnAnswered        Boolean?              @map("turn_answered")
+  turnCovered         Boolean?              @map("turn_covered")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

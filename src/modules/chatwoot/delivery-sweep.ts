@@ -146,6 +146,17 @@ export async function retireCoveredDeliveries(
     // mid-turn. Assuming the first would tell an operator their customer was answered when nobody
     // replied, which is the same class of lie this whole sweep exists to remove.
     settlement: "answered" | "consumed";
+    // WHETHER A TURN FOLDED THESE MESSAGES INTO THE THREAD, and it is a second fact rather than a
+    // reading of the first (issue #576, PR review round 2). The settlement says whether a reply
+    // reached the customer; this says whether the message is in the agent's memory, and the two part
+    // company on exactly the outcome that motivated the column: a turn that ran and produced nothing
+    // settles `consumed` while `graph.invoke` has already persisted the message. Read off the
+    // settlement, that folded a silent turn's message in a second time.
+    //
+    // From the caller, like the settlement and for the same reason: a gate knows no turn ran, and a
+    // turn path knows what it did (`turnFoldedMessageIn` in ../../graph/runtime.ts classifies the
+    // outcome, exhaustively).
+    covered: boolean;
     base: PrismaClient;
   },
 ): Promise<number> {
@@ -233,12 +244,12 @@ export async function retireCoveredDeliveries(
   // it preempts nothing: its own tx2 writes PROCESSED over this a moment later. What it leaves out
   // is a delivery that died in the sliver between its insert and its CAS, reported as a loss even
   // though a later burst answered it — two statements wide, against a whole turn for PROCESSING.
-  // Hoisted above the two writes below, which now record it. WHAT A TURN DID WITH THE MESSAGE is the
-  // fact continuous ingestion needs and could not ask for (issue #576): its gate reads who owns the
-  // conversation NOW, which on a `message_updated` is a reading taken after the decision it is
-  // asking about. This call is where the word is decided and where every caller already had to
-  // supply it, so it is where the word is written down. Best-effort like everything else here: a
-  // write that does not land leaves the null the reader falls back on.
+  // WHETHER A TURN FOLDED THE MESSAGE IN is the fact continuous ingestion needs and could not ask
+  // for (issue #576): its gate reads who owns the conversation NOW, which on a `message_updated` is a
+  // reading taken after the decision it is asking about. This call is where every settlement passes,
+  // so it is where the fact is written down. Best-effort like everything else here: a write that does
+  // not land leaves the null the reader falls back on.
+  const covered = params.covered;
   const answered = params.settlement === "answered";
   const { count } = await runScopedOn(
     params.base,
@@ -271,7 +282,7 @@ export async function retireCoveredDeliveries(
         data: {
           status: "PROCESSED",
           processedAt: new Date(),
-          turnAnswered: answered,
+          turnCovered: covered,
         },
       }),
   );
@@ -288,20 +299,20 @@ export async function retireCoveredDeliveries(
   // first: a PROCESSED row is finished, and rewriting `processedAt` would move a timestamp an
   // operator reads as when the delivery ended.
   //
-  // ONLY ONTO A ROW THAT HAS SAID NOTHING. The first word about a message is the one that ran over
+  // ONLY ONTO A ROW THAT HAS SAID NOTHING. The first answer about a message is the one that ran over
   // it; a later call carrying a different one is about a different turn, and letting it overwrite
-  // would let a burst's `consumed` for the messages the cap dropped erase the `answered` of a
-  // message that was really replied to.
+  // would let a burst's answer for the messages its cap dropped erase the coverage of a message a
+  // turn really did fold in.
   await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({
-      where: { ...where, status: "PROCESSED", turnAnswered: null },
-      data: { turnAnswered: answered },
+      where: { ...where, status: "PROCESSED", turnCovered: null },
+      data: { turnCovered: covered },
     }),
   ).catch((e) => {
     // Best-effort, like every other write on this path: a miss leaves the null the reader falls
     // back on, never a wrong answer.
     logger.warn(
-      "chatwoot: could not record what the turn did with the message on conversation %d: %s",
+      "chatwoot: could not record whether a turn folded the message in on conversation %d: %s",
       params.conversationId,
       e instanceof Error ? e.message : String(e),
     );
@@ -327,7 +338,7 @@ export async function retireCoveredDeliveries(
         data: {
           status: "PROCESSED",
           processedAt: new Date(),
-          turnAnswered: answered,
+          turnCovered: covered,
         },
         select: { deliveryId: true, inboundMessageId: true },
       }),

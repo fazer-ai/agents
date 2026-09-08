@@ -152,6 +152,50 @@ export type RunAgentTurnOutcome =
   | "superseded"
   | "blocked";
 
+// WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, which is a different question from whether
+// a reply reached the customer (issue #576, PR review round 2). `graph.invoke` persists the channel,
+// so every outcome decided AFTER it leaves the message checkpointed whatever the model produced, and
+// every outcome decided before it leaves the message in nobody's memory.
+//
+// The two were being read off the settlement word, and there `empty` is `consumed` — a turn that ran
+// and stayed silent, reported exactly like a gate that took the message before any turn existed. The
+// late-transcription gate then folded a message the turn had already checkpointed in a second time,
+// and the dedup window could not catch it: that window is the ingest job's own, so an id a turn
+// handled was never put in it.
+//
+// EXHAUSTIVE ON PURPOSE. A `switch` with no default over the union is what makes the compiler ask
+// about the next outcome somebody adds, instead of letting it inherit an answer by falling through —
+// and the two answers cost different things, so inheriting one silently is not acceptable here.
+export function turnFoldedMessageIn(outcome: RunAgentTurnOutcome): boolean {
+  switch (outcome) {
+    // Decided after the invoke: the message is in the checkpoint.
+    case "posted":
+    case "posted-partial":
+    case "empty":
+    // The post-model ownership recheck, which runs once the turn has already read and written the
+    // thread.
+    case "taken-over":
+      return true;
+    // Decided before the invoke. `blocked` is the INPUT guardrail, which answers ahead of the second
+    // ask that guards the invoke; `skipped` never reaches a graph at all; `no-agent` never loaded
+    // one.
+    case "blocked":
+    case "skipped":
+    case "no-agent":
+    // Both leave the watermark where it is for a later run to answer the burst, so claiming the
+    // message is remembered would take it out of that run's reach.
+    case "stale":
+    case "superseded":
+    // AMBIGUOUS, and answered the safe way. It covers a config that never loaded AND a turn that
+    // loaded, invoked, and then stood down at the send fence. Being wrong toward "not folded in"
+    // costs a duplicate line in memory, which is visible; being wrong the other way costs the
+    // customer's words, which is silent. The runtime's own note on this outcome asks the caller to
+    // fold the burst in for an observer, which is the same answer read from the other side.
+    case "agent-unavailable":
+      return false;
+  }
+}
+
 export interface RuntimeDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
   makeClient?: (

@@ -8,6 +8,7 @@ import {
   type RunAgentTurnOutcome,
   type RuntimeDeps,
   runLoadedTurn,
+  turnFoldedMessageIn,
 } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -389,6 +390,11 @@ export async function coalesceAndRunTurn(
           outcome === "posted" || outcome === "posted-partial"
             ? "answered"
             : "consumed",
+        // A DIFFERENT QUESTION from the word above (issue #576). `graph.invoke` persists the channel,
+        // so a burst the model answered with nothing is in memory exactly as a posted one is, while
+        // settling `consumed`. Read off the settlement, the late-transcription gate folded a silent
+        // turn's message in a second time.
+        covered: turnFoldedMessageIn(outcome),
         messageIds: pending.map((m) => m.id),
         base,
       });
@@ -402,6 +408,8 @@ export async function coalesceAndRunTurn(
           conversationId,
           conversationRowId: convDbId,
           settlement: "consumed",
+          // The cap took these out before the burst was built, so no turn ever saw them.
+          covered: false,
           messageIds: dropped.map((m) => m.id),
           base,
         });
@@ -481,6 +489,8 @@ async function settleGateExit(params: {
       conversationRowId: params.conversationRowId,
       // A gate exit is a deliberate silence by definition: it decided before any model call.
       settlement: "consumed",
+      // ...which is the same reason nothing was folded in: no graph ran.
+      covered: false,
       afterMessageId: params.afterMessageId,
       upToMessageId: params.upToMessageId,
       base: params.base,
@@ -810,6 +820,8 @@ async function ingestObservedBurst(args: {
             conversationId,
             conversationRowId: ctx.convDbId,
             settlement: "consumed",
+            // The observer owes the memory and pays it on its own schedule; this route ran no turn.
+            covered: false,
             messageIds: handedIds,
             base,
           });

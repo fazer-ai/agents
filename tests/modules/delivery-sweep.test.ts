@@ -1539,6 +1539,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: 1,
       conversationRowId: null,
       settlement: "consumed",
+      covered: false,
       base: appDb,
     };
     expect(neither.settlement).toBe("consumed");
@@ -1579,6 +1580,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "answered",
+      covered: true,
       messageIds: [messageId],
       base: appDb,
     });
@@ -1650,6 +1652,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "consumed",
+      covered: false,
       messageIds: [messageId],
       base: appDb,
     });
@@ -1691,6 +1694,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "consumed",
+      covered: false,
       deliveryRowId: own.id,
       base: appDb,
     });
@@ -1865,7 +1869,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
           data: {
             tenantId,
             chatwootInstanceId: instanceId,
-            deliveryId: `turn-answered-${status}-${process.pid}-${messageId}`,
+            deliveryId: `turn-covered-${status}-${process.pid}-${messageId}`,
             event: "message_created",
             status,
             receivedAt: new Date(Date.now() - 60_000),
@@ -1887,6 +1891,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "answered",
+      covered: true,
       messageIds: [9781, 9782],
       base: appDb,
     });
@@ -1898,6 +1903,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       // A deliberate silence is not an answer, and the column has to say which — reading `false` as
       // "no record" is what would put the loss half of #576 back.
       settlement: "consumed",
+      covered: false,
       messageIds: [9783],
       base: appDb,
     });
@@ -1906,9 +1912,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
           where: { id },
-          select: { turnAnswered: true },
+          select: { turnCovered: true },
         })
-      ).turnAnswered;
+      ).turnCovered;
     expect(await read(answeredProcessing)).toBe(true);
     expect(await read(answeredDead)).toBe(true);
     expect(await read(silenced)).toBe(false);
@@ -1928,7 +1934,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       data: {
         tenantId,
         chatwootInstanceId: instanceId,
-        deliveryId: `turn-answered-processed-${process.pid}`,
+        deliveryId: `turn-covered-processed-${process.pid}`,
         event: "message_created",
         status: "PROCESSED",
         receivedAt: new Date(Date.now() - 180_000),
@@ -1947,15 +1953,16 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "answered",
+      covered: true,
       messageIds: [9791],
       base: appDb,
     });
 
     const after = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
       where: { id: row.id },
-      select: { turnAnswered: true, status: true, processedAt: true },
+      select: { turnCovered: true, status: true, processedAt: true },
     });
-    expect(after.turnAnswered).toBe(true);
+    expect(after.turnCovered).toBe(true);
     // The row is finished, and stays finished at the moment it finished: `processedAt` is what an
     // operator reads as when the delivery ended.
     expect(after.status).toBe("PROCESSED");
@@ -1973,13 +1980,13 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       data: {
         tenantId,
         chatwootInstanceId: instanceId,
-        deliveryId: `turn-answered-first-${process.pid}`,
+        deliveryId: `turn-covered-first-${process.pid}`,
         event: "message_created",
         status: "PROCESSED",
         conversationId: convId,
         inboundMessageId: 9792,
         routeObserved: false,
-        turnAnswered: true,
+        turnCovered: true,
       },
       select: { id: true },
     });
@@ -1990,6 +1997,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "consumed",
+      covered: false,
       messageIds: [9792],
       base: appDb,
     });
@@ -1998,9 +2006,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       (
         await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
           where: { id: row.id },
-          select: { turnAnswered: true },
+          select: { turnCovered: true },
         })
-      ).turnAnswered,
+      ).turnCovered,
     ).toBe(true);
   });
 
@@ -2049,6 +2057,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: convId,
       conversationRowId: conv.id,
       settlement: "answered",
+      covered: true,
       messageIds: [9771],
       base: appDb,
     });

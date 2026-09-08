@@ -192,10 +192,14 @@ async function deliver(
 // The creation's own row for `messageId`, already settled with the word a turn (or a gate) gave it.
 // PROCESSED, because that is what `retireCoveredDeliveries` leaves behind, and the column is the
 // only thing the reader asks about.
+// The creation's own row for `messageId`, already settled. The two facts are separate on purpose:
+// `answered` is whether a reply reached the customer, `covered` is whether a turn folded the message
+// into the thread, and an `empty` turn is the shape where they disagree.
 async function settledSibling(
   messageId: number,
   answered: boolean,
   conversationId: number = CONV_ID,
+  covered: boolean = answered,
 ): Promise<bigint> {
   const row = await suDb.chatwootWebhookDelivery.create({
     data: {
@@ -206,7 +210,7 @@ async function settledSibling(
       status: "PROCESSED",
       conversationId,
       inboundMessageId: messageId,
-      turnAnswered: answered,
+      turnCovered: covered,
     },
     select: { id: true },
   });
@@ -653,6 +657,24 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     await deliver(n);
 
     expect(await armedFor(messageId)).toHaveLength(1);
+  });
+
+  // A TURN THAT RAN AND SAID NOTHING STILL HAS THE MESSAGE (PR review, round 2). `graph.invoke`
+  // persists the channel, so an `empty` outcome leaves the customer's words in memory exactly as a
+  // posted one does — while the SETTLEMENT calls it `consumed`, the same word a gate that took the
+  // message before any turn existed gets. Read off the settlement, this folded the message in a
+  // second time, and the dedup window could not catch it: that window is the ingest job's own, so an
+  // id a turn handled was never put in it.
+  test("a turn that produced nothing still counts as having the message", async () => {
+    const messageId = 6105;
+    // What the direct path writes for `empty`: consumed to the sweep, covered to memory.
+    await settledSibling(messageId, false, CONV_ID, true);
+    const n = lateAudio(messageId, { transcribed: true });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+
+    await deliver(n);
+
+    expect(await armedFor(messageId)).toHaveLength(0);
   });
 
   // AN `answered` IS NOT HIDDEN BY A LATER `consumed` (PR review, round 1). One message reaches

@@ -600,7 +600,7 @@ describe.skipIf(!dbUp)(
     });
 
     // Review round 2 on #199. Between our own toggle and the arrival of ITS event, the mirror still
-    // reads the pre-toggle status. A conversation event serialized BEFORE the toggle (an assign_label
+    // reads the pre-toggle status. A conversation event serialized BEFORE the toggle (an set_labels
     // or set_custom_attribute earlier in the same turn) can be delivered after the stamp, still
     // outrank the stored version, and apply its own non-resolved status over an identical stored one.
     // That no-op used to erase the stamp, and the resolved event arriving next preserved the NULL:

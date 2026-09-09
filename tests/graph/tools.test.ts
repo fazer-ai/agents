@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import {
+  applyLabelIntent,
   buildNativeTools,
   type HandoffTurnState,
   handoffAnsweredTheTurn,
@@ -384,7 +385,53 @@ describe("native tools", () => {
     expect(out).toContain("after your final reply");
   });
 
-  test("assign_label appends to the existing labels (read-modify-write)", async () => {
+  describe("applyLabelIntent", () => {
+    test("no shown set ⇒ a pure union, whatever the model left out", () => {
+      expect(applyLabelIntent(undefined, ["b"], ["a"])).toEqual({
+        next: ["a", "b"],
+        added: ["b"],
+        removed: [],
+      });
+    });
+
+    test("only what was SHOWN and left out is removed", () => {
+      // `c` is standing but was never shown, so silence about it is not a request to remove it.
+      expect(applyLabelIntent(["a", "b"], ["a"], ["a", "b", "c"])).toEqual({
+        next: ["a", "c"],
+        added: [],
+        removed: ["b"],
+      });
+    });
+
+    test("a shown label the conversation no longer carries is not reported as removed", () => {
+      // Somebody took `b` off between the read and the write. The intent still says "not b", and
+      // the answer is the same set — but the report is about what THIS write did, and it did not
+      // remove anything.
+      expect(applyLabelIntent(["a", "b"], ["a"], ["a"])).toEqual({
+        next: ["a"],
+        added: [],
+        removed: [],
+      });
+    });
+
+    test("blank and duplicate entries are dropped, and order is stable", () => {
+      expect(
+        applyLabelIntent([], ["  vip ", "vip", "", "   ", "lead"], []),
+      ).toEqual({ next: ["vip", "lead"], added: ["vip", "lead"], removed: [] });
+    });
+
+    test("an empty desired list with nothing shown writes nothing at all", () => {
+      // The clear-everything call and the never-read case have to be told apart, or an unread
+      // context turns every "no labels apply" into wiping the conversation.
+      expect(applyLabelIntent(undefined, [], ["a", "b"])).toEqual({
+        next: ["a", "b"],
+        added: [],
+        removed: [],
+      });
+    });
+  });
+
+  test("set_labels without a shown set only ADDS (the safe degenerate)", async () => {
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["vip"],
@@ -393,15 +440,78 @@ describe("native tools", () => {
         return {};
       },
     } as unknown as ChatwootClient;
+    // No shownLabels: the model never saw what was there, so leaving "vip" out of the list cannot
+    // mean "remove it" — the read that would have justified the removal did not happen.
     const tools = buildNativeTools({ client, conversationId: 9 });
     const out = String(
-      await byName(tools, "assign_label").invoke({ label: "lead" }),
+      await byName(tools, "set_labels").invoke({ labels: ["lead"] }),
     );
     expect(setCalls).toEqual([[9, ["vip", "lead"]]]);
     expect(out).toContain("lead");
   });
 
-  test("assign_label is a no-op when the label is already present", async () => {
+  test("set_labels removes a label the model was shown and left out", async () => {
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["vip", "lead"],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["vip", "lead"] },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({ labels: ["vip"] }),
+    );
+    expect(setCalls).toEqual([[9, ["vip"]]]);
+    expect(out).toContain('removed "lead"');
+  });
+
+  test("set_labels does NOT erase a label added while the model was generating", async () => {
+    // The whole reason the write is a diff and not the model's list: `agente-off` landed between
+    // the turn's read and this call. The model never saw it, so it never asked for it to go — and
+    // sending its list verbatim would take it out and put the agent back on a conversation somebody
+    // had just switched it off.
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["dúvidas-evento", "agente-off"],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["dúvidas-evento"] },
+    });
+    await byName(tools, "set_labels").invoke({ labels: ["cancelamento"] });
+    expect(setCalls).toEqual([[9, ["agente-off", "cancelamento"]]]);
+  });
+
+  test("set_labels with an empty list clears what was shown, and nothing else", async () => {
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["vip", "agente-off"],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["vip"] },
+    });
+    await byName(tools, "set_labels").invoke({ labels: [] });
+    expect(setCalls).toEqual([[9, ["agente-off"]]]);
+  });
+
+  test("set_labels writes nothing when the set already matches", async () => {
     let setCount = 0;
     const client = {
       getConversationLabels: async () => ["vip"],
@@ -410,12 +520,19 @@ describe("native tools", () => {
         return {};
       },
     } as unknown as ChatwootClient;
-    const tools = buildNativeTools({ client, conversationId: 9 });
-    await byName(tools, "assign_label").invoke({ label: "vip" });
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["vip"] },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({ labels: ["vip"] }),
+    );
     expect(setCount).toBe(0);
+    expect(out.toLowerCase()).toContain("already set");
   });
 
-  test("assign_label task scope appends to the card's labels (snapshot read + write)", async () => {
+  test("set_labels task scope writes the card's labels (snapshot read + write)", async () => {
     const setCalls: unknown[][] = [];
     const client = {
       setKanbanTaskLabels: async (...args: unknown[]) => {
@@ -429,8 +546,8 @@ describe("native tools", () => {
       kanban: kanbanCtx, // card.labels: []
     });
     const out = String(
-      await byName(tools, "assign_label").invoke({
-        label: "quente",
+      await byName(tools, "set_labels").invoke({
+        labels: ["quente"],
         scope: "task",
       }),
     );
@@ -438,21 +555,21 @@ describe("native tools", () => {
     expect(out.toLowerCase()).toContain("card");
   });
 
-  test("assign_label task scope is offered only when a card is linked", () => {
+  test("set_labels task scope is offered only when a card is linked", () => {
     const { client } = recordingClient();
     const withCard = byName(
       buildNativeTools({ client, conversationId: 9, kanban: kanbanCtx }),
-      "assign_label",
+      "set_labels",
     ).description;
     const without = byName(
       buildNativeTools({ client, conversationId: 9 }),
-      "assign_label",
+      "set_labels",
     ).description;
     expect(withCard).toContain("kanban card");
     expect(without ?? "").not.toContain("kanban card");
   });
 
-  test("assign_label contact scope without a contact in ctx → safe message (no write)", async () => {
+  test("set_labels contact scope without a contact in ctx → safe message (no write)", async () => {
     let setCount = 0;
     const client = {
       getContactLabels: async () => [],
@@ -463,8 +580,8 @@ describe("native tools", () => {
     } as unknown as ChatwootClient;
     const tools = buildNativeTools({ client, conversationId: 9 });
     const out = String(
-      await byName(tools, "assign_label").invoke({
-        label: "lead",
+      await byName(tools, "set_labels").invoke({
+        labels: ["lead"],
         scope: "contact",
       }),
     );
@@ -472,25 +589,57 @@ describe("native tools", () => {
     expect(out.toLowerCase()).toContain("contact");
   });
 
-  test("operator guidance reaches set_custom_attribute + assign_label descriptions", () => {
+  test("the description shows the labels standing now, and omits a scope it could not read", () => {
+    const { client } = recordingClient();
+    const desc =
+      byName(
+        buildNativeTools({
+          client,
+          conversationId: 9,
+          shownLabels: { conversation: ["vip", "aguardando-cliente"] },
+        }),
+        "set_labels",
+      ).description ?? "";
+    expect(desc).toContain("<current_labels>");
+    expect(desc).toContain("vip, aguardando-cliente");
+    // The contact was not read, so it is absent rather than empty: `<contact empty="true"/>` would
+    // tell the model the contact has no labels, which is what makes a model clear them.
+    expect(desc).not.toContain("<contact");
+  });
+
+  test("a scope read as EMPTY is shown as empty, which is not the same as unread", () => {
+    const { client } = recordingClient();
+    const desc =
+      byName(
+        buildNativeTools({
+          client,
+          conversationId: 9,
+          shownLabels: { conversation: [] },
+        }),
+        "set_labels",
+      ).description ?? "";
+    expect(desc).toContain('<conversation empty="true"/>');
+  });
+
+  test("operator guidance reaches set_custom_attribute + set_labels descriptions", () => {
     const { client } = recordingClient();
     const tools = buildNativeTools({
       client,
       conversationId: 7,
       toolInstructions: {
         set_custom_attribute: "Sempre grave a etapa do funil em lead_stage.",
-        assign_label: "Use 'vip' só para clientes premium.",
+        set_labels: "Use 'vip' só para clientes premium.",
       },
     });
     expect(byName(tools, "set_custom_attribute").description ?? "").toContain(
       "Operator guidance: Sempre grave a etapa do funil em lead_stage.",
     );
-    expect(byName(tools, "assign_label").description ?? "").toContain(
+    expect(byName(tools, "set_labels").description ?? "").toContain(
       "Operator guidance: Use 'vip' só para clientes premium.",
     );
   });
 
-  test("vocab grounds the assign_label + set_custom_attribute descriptions", () => {
+  test("vocab grounds the set_labels + set_custom_attribute descriptions", () => {
     const { client } = recordingClient();
     const vocab = {
       labels: ["lead", "vip"],
@@ -512,7 +661,7 @@ describe("native tools", () => {
       ],
     };
     const tools = buildNativeTools({ client, conversationId: 7, vocab });
-    const label = byName(tools, "assign_label").description ?? "";
+    const label = byName(tools, "set_labels").description ?? "";
     expect(label).toContain("<label>lead</label>");
     expect(label).toContain("<label>vip</label>");
     const attr = byName(tools, "set_custom_attribute").description ?? "";

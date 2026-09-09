@@ -601,9 +601,9 @@ describe("withFollowupSilenceChannel", () => {
   test("it revokes nothing else", () => {
     expect(
       withFollowupSilenceChannel({
-        nativeToolsAllow: ["private_note", "assign_label"],
+        nativeToolsAllow: ["private_note", "set_labels"],
       }).nativeToolsAllow,
-    ).toEqual(["private_note", "assign_label", SKIP_REPLY_TOOL]);
+    ).toEqual(["private_note", "set_labels", SKIP_REPLY_TOOL]);
   });
 
   test("the fence wants the channel ARGUMENT too, not just the grant", () => {

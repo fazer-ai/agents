@@ -274,7 +274,7 @@ describe("agent editor save errors", () => {
       ["vision.extractionPrompt", "DEFAULT_EXTRACTION_PROMPT"],
       ["handoff.instructions", "serializeHandoff(handoff).instructions"],
       ["kanban.instructions", "kanbanInstructions.trim()"],
-      ["toolGuidance.assign_label", "labelInstructions.trim()"],
+      ["toolGuidance.set_labels", "labelInstructions.trim()"],
     ] as const) {
       expect(body, field).toContain(writer);
     }

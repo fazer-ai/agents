@@ -2360,8 +2360,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     if (!code || !bundle.components?.codeTools) {
       throw new Error("bundle missing validar_cpf");
     }
-    code.name = "assign_label";
-    code.label = "Assign label";
+    code.name = "set_labels";
+    code.label = "Set labels";
     bundle.components.codeTools.push({
       ...structuredClone(code),
       name: "consultar_cep",
@@ -2371,7 +2371,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       (g) => g?.source === "CODE" && g.tool === "validar_cpf",
     );
     if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
-    grant.tool = "assign_label";
+    grant.tool = "set_labels";
     bundle.agent.tools.push({ source: "CODE", tool: "consultar_cep" });
     await suDb.toolDefinition.create({
       data: {
@@ -2388,7 +2388,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: {
         tenantId: dstTenant,
         OR: [
-          { name: { startsWith: "assign_label" } },
+          { name: { startsWith: "set_labels" } },
           { name: { startsWith: "consultar_cep" } },
         ],
       },
@@ -2398,13 +2398,13 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // NOTE: the label follows the name where the console would derive the old one from it, the
     // same rule as an HTTP tool's (round 20 of PR #485).
     expect(rows.map((r) => [r.name, r.label])).toEqual([
-      ["assign_label_2", "Assign label 2"],
       ["consultar_cep_2", "Consultar CEP 2"],
+      ["set_labels_2", "Set labels 2"],
     ]);
     expect(warnings).toContainEqual({
       code: "codeToolRenamed",
-      params: { name: "assign_label", renamed: "assign_label_2" },
-      target: { kind: "codeTool", name: "assign_label_2" },
+      params: { name: "set_labels", renamed: "set_labels_2" },
+      target: { kind: "codeTool", name: "set_labels_2" },
     });
     expect(warnings).toContainEqual({
       code: "codeToolRenamed",

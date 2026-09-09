@@ -90,11 +90,11 @@ function integrationIcon(catalogType: string): LucideIcon {
 // the tool's model-facing description.
 const HANDOFF_TOOL = "handoff_to_human";
 const KANBAN_TOOL = "kanban_move_card";
-// set_custom_attribute + assign_label both act on conversation/contact/task (scope) and accept
+// set_custom_attribute + set_labels both act on conversation/contact/task (scope) and accept
 // operator-authored "when to use" guidance, so they render as configurable cards too. Their guidance
 // lives in the flat agent.settings.toolGuidance map (handoff/kanban use their own grouped config).
 const ATTR_TOOL = "set_custom_attribute";
-const LABEL_TOOL = "assign_label";
+const LABEL_TOOL = "set_labels";
 // update_kanban_task (edit the linked card's title/description/priority/dates) also takes optional
 // operator guidance, so it renders as a configurable card next to kanban_move_card.
 const UPDATE_KANBAN_TOOL = "update_kanban_task";
@@ -118,7 +118,7 @@ interface Props {
   // steps), appended to its model-facing description. Persisted in agent.settings.kanban.instructions.
   kanbanInstructions: string;
   setKanbanInstructions: (v: string) => void;
-  // Operator-authored guidance for set_custom_attribute + assign_label (when to use each scope/label/
+  // Operator-authored guidance for set_custom_attribute + set_labels (when to use each scope/label/
   // attribute), appended to their model-facing descriptions. Persisted in agent.settings.toolGuidance.
   customAttributeInstructions: string;
   // The refused note this editor draws, if the standing refusal is about one -- see ToolRefusals.
@@ -1689,7 +1689,7 @@ export function ToolGrantsEditor({
               group
               description={t(
                 "editor.labelInstructionsHint",
-                "Optional. Explains which label to add to the conversation, the contact, or the kanban card, and when. The AI already sees the existing labels; this adds your rules. Appended to the tool description.",
+                "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
               )}
             >
               <Textarea
@@ -1699,7 +1699,7 @@ export function ToolGrantsEditor({
                 maxLength={TOOL_INSTRUCTIONS_MAX}
                 placeholder={t(
                   "editor.labelInstructionsPlaceholder",
-                  'e.g. Add "vip" to the contact for premium customers; tag the conversation "urgent" when the customer is upset.',
+                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": when you set one, leave the others out. Keep "vip" and "agente-off" wherever they already are.',
                 )}
               />
             </FormField>

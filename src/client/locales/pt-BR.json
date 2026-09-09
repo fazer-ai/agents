@@ -1313,8 +1313,8 @@
       "suggestEnable": "Permitir que o agente sugira novas entradas"
     },
     "labelInstructions": "Orientação de uso",
-    "labelInstructionsHint": "Opcional. Explica qual etiqueta adicionar na conversa, no contato ou no card do kanban, e quando. A IA já vê as etiquetas existentes; isto acrescenta suas regras. Anexado à descrição da ferramenta.",
-    "labelInstructionsPlaceholder": "ex.: adicione \"vip\" ao contato para clientes premium; marque a conversa como \"urgente\" quando o cliente estiver irritado.",
+    "labelInstructionsHint": "Opcional. Quais etiquetas a conversa, o contato ou o card devem carregar, e quando. A IA já vê as que estão valendo; escreva aqui as suas regras, inclusive quais delas se excluem.",
+    "labelInstructionsPlaceholder": "ex.: a conversa carrega exatamente uma entre \"cancelamento\", \"compra-de-ingresso\" e \"outros\": ao definir uma, deixe as outras de fora. Mantenha \"vip\" e \"agente-off\" onde já estiverem.",
     "limits": "Limites de execução",
     "limitsHint": "Limite quanto trabalho o agente faz em um único turno antes de ter que responder.",
     "limitsMaxHistoryTokens": "Teto de histórico",
@@ -2098,10 +2098,6 @@
     }
   },
   "nativeTools": {
-    "assign_label": {
-      "desc": "Adiciona uma etiqueta à conversa, ao contato ou ao card do kanban para categorizá-los (vip, urgente, lead…).",
-      "label": "Adicionar etiqueta"
-    },
     "calculator": {
       "desc": "Avalia expressões aritméticas com exatidão (+ - * / % ^ e parênteses).",
       "label": "Calculadora"
@@ -2137,6 +2133,10 @@
     "set_custom_attribute": {
       "desc": "Define um atributo personalizado na conversa, no contato ou no card do kanban (ex.: estágio do lead, qualificação).",
       "label": "Definir atributo"
+    },
+    "set_labels": {
+      "desc": "Define quais etiquetas a conversa, o contato ou o card do kanban carrega, acrescentando e removendo numa escrita só (vip, urgente, lead…).",
+      "label": "Definir etiquetas"
     },
     "set_voice_preference": {
       "desc": "Registra se o cliente prefere respostas em áudio ou em texto.",

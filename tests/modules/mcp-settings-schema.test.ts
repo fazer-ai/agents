@@ -316,7 +316,7 @@ describe("agent_settings_set argument schema", () => {
     const read = readBehaviorSettings({
       handoff: { mode: "route", instructions: "   " },
       kanban: { instructions: "" },
-      toolGuidance: { handoff_to_human: "  ", assign_label: "" },
+      toolGuidance: { handoff_to_human: "  ", set_labels: "" },
     });
     expect(read.handoff.instructions).toBeNull();
     expect(read.kanban.instructions).toBeNull();
@@ -540,21 +540,21 @@ describe("agent_settings_set over MCP", () => {
   test("a blank note is refused, naming the field", async () => {
     const r = await callSettingsSet({
       agent_id: "1",
-      toolGuidance: { assign_label: "   " },
+      toolGuidance: { set_labels: "   " },
     });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain("toolGuidance.assign_label");
+    expect(r.text).toContain("toolGuidance.set_labels");
   });
 
   test("a blank precondition key is refused, naming the field", async () => {
     const r = await callSettingsSet({
       agent_id: "1",
       toolPreconditions: {
-        assign_label: { kind: "attribute", scope: "contact", key: " " },
+        set_labels: { kind: "attribute", scope: "contact", key: " " },
       },
     });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain("toolPreconditions.assign_label.key");
+    expect(r.text).toContain("toolPreconditions.set_labels.key");
   });
 
   test("a clamped value is NOT refused, it goes through to the readers", async () => {

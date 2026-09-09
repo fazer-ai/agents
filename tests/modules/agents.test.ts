@@ -935,7 +935,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
       { kanban: { instructions: "k".repeat(TOOL_INSTRUCTIONS_MAX + 1) } },
       {
         toolGuidance: {
-          assign_label: "l".repeat(TOOL_INSTRUCTIONS_MAX + 1),
+          set_labels: "l".repeat(TOOL_INSTRUCTIONS_MAX + 1),
         },
       },
       { guardrails: { customPolicy: "p".repeat(CUSTOM_POLICY_MAX + 1) } },

@@ -208,11 +208,11 @@ describe("invalidToolPreconditions", () => {
       invalidToolPreconditions({
         toolPreconditions: {
           private_note: { kind: "attribute", scope: "contact", key: "cpf" },
-          assign_label: { kind: "nope" },
+          set_labels: { kind: "nope" },
           send_image: { kind: "attribute", scope: "moon", key: "cpf" },
         },
       }),
-    ).toEqual(["assign_label", "send_image"]);
+    ).toEqual(["set_labels", "send_image"]);
   });
 
   test("a bag of the wrong shape is ONE refusal, because there are no names", () => {

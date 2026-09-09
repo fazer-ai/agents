@@ -396,7 +396,7 @@ function readBehaviorState(a: Agent) {
     transferWithSummary: a.transferWithSummary,
     kanbanInstructions: str(ka.instructions),
     customAttributeInstructions: str(tg.set_custom_attribute),
-    labelInstructions: str(tg.assign_label),
+    labelInstructions: str(tg.set_labels),
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -903,7 +903,7 @@ function AgentEditor() {
   // Operator funnel guidance for kanban_move_card (Tools-tab config, like handoff). Synced only by
   // syncToolConfig (NOT applyAgent), so a Behavior save never wipes an unsaved edit here.
   const [kanbanInstructions, setKanbanInstructions] = useState("");
-  // Operator usage guidance for set_custom_attribute + assign_label (Tools-tab config, like kanban).
+  // Operator usage guidance for set_custom_attribute + set_labels (Tools-tab config, like kanban).
   // Persisted in agent.settings.toolGuidance; synced only by syncToolConfig.
   const [customAttributeInstructions, setCustomAttributeInstructions] =
     useState("");
@@ -1129,7 +1129,7 @@ function AgentEditor() {
     "handoff.instructions": serializeHandoff(handoff).instructions,
     "kanban.instructions": kanbanInstructions.trim() || null,
     "toolGuidance.set_custom_attribute": customAttributeInstructions.trim(),
-    "toolGuidance.assign_label": labelInstructions.trim(),
+    "toolGuidance.set_labels": labelInstructions.trim(),
     "toolGuidance.update_kanban_task": updateKanbanTaskInstructions.trim(),
     // Through the writer itself: `followUpToStored` trims each note, and a second spelling of that
     // here is the drift this whole block is against.
@@ -2909,8 +2909,8 @@ function AgentEditor() {
       const updateKanbanNote = updateKanbanTaskInstructions.trim();
       if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
       else delete toolGuidanceJson.set_custom_attribute;
-      if (labelNote) toolGuidanceJson.assign_label = labelNote;
-      else delete toolGuidanceJson.assign_label;
+      if (labelNote) toolGuidanceJson.set_labels = labelNote;
+      else delete toolGuidanceJson.set_labels;
       if (updateKanbanNote)
         toolGuidanceJson.update_kanban_task = updateKanbanNote;
       else delete toolGuidanceJson.update_kanban_task;
@@ -3707,8 +3707,8 @@ function AgentEditor() {
                     currentRef.current["toolGuidance.set_custom_attribute"],
                   ),
                   labelInstructions: refusal.at(
-                    "toolGuidance.assign_label",
-                    currentRef.current["toolGuidance.assign_label"],
+                    "toolGuidance.set_labels",
+                    currentRef.current["toolGuidance.set_labels"],
                   ),
                   updateKanbanInstructions: refusal.at(
                     "toolGuidance.update_kanban_task",

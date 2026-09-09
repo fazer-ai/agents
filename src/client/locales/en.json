@@ -1280,8 +1280,8 @@
       "suggestEnable": "Let the agent suggest new entries"
     },
     "labelInstructions": "Usage guidance",
-    "labelInstructionsHint": "Optional. Explains which label to add to the conversation, the contact, or the kanban card, and when. The AI already sees the existing labels; this adds your rules. Appended to the tool description.",
-    "labelInstructionsPlaceholder": "e.g. Add \"vip\" to the contact for premium customers; tag the conversation \"urgent\" when the customer is upset.",
+    "labelInstructionsHint": "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
+    "labelInstructionsPlaceholder": "e.g. The conversation carries exactly one of \"cancelamento\", \"compra-de-ingresso\" or \"outros\": when you set one, leave the others out. Keep \"vip\" and \"agente-off\" wherever they already are.",
     "limits": "Execution limits",
     "limitsHint": "Cap how much work the agent does in a single turn before it must answer.",
     "limitsMaxHistoryTokens": "History ceiling",
@@ -2046,10 +2046,6 @@
     }
   },
   "nativeTools": {
-    "assign_label": {
-      "desc": "Add a label (tag) to the conversation, the contact, or the kanban card to categorize it (vip, urgent, lead…).",
-      "label": "Add label"
-    },
     "calculator": {
       "desc": "Evaluate arithmetic expressions exactly (+ - * / % ^ and parentheses).",
       "label": "Calculator"
@@ -2085,6 +2081,10 @@
     "set_custom_attribute": {
       "desc": "Set a custom attribute on the conversation, the contact, or the kanban card (e.g. lead stage, qualification flag).",
       "label": "Set attribute"
+    },
+    "set_labels": {
+      "desc": "Set which labels (tags) the conversation, the contact or the kanban card carries, adding and removing in one write (vip, urgent, lead…).",
+      "label": "Set labels"
     },
     "set_voice_preference": {
       "desc": "Record whether the customer prefers audio or text replies.",

@@ -101,7 +101,7 @@ class LabelsThenSkipsModel {
             content: "",
             tool_calls: [
               {
-                name: "assign_label",
+                name: "set_labels",
                 args: { scope: "conversation", label: "follow-up" },
                 id: "call_label",
               },

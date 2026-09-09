@@ -123,8 +123,8 @@ describe("planTurnRollback", () => {
         nudge("n1"),
         calling("a1", "skip_reply"),
         toolResult("t1", "ok", "skip_reply"),
-        calling("a2", "assign_label"),
-        toolResult("t2", "ok", "assign_label"),
+        calling("a2", "set_labels"),
+        toolResult("t2", "ok", "set_labels"),
         a("a3", ""),
       ];
       return {
@@ -279,8 +279,8 @@ describe("planTurnRollback", () => {
       // the marker the graph writes on its own refusal.
       const produced = [
         nudge("n1"),
-        calling("a1", "assign_label"),
-        refused("t1", "assign_label", "a1-c"),
+        calling("a1", "set_labels"),
+        refused("t1", "set_labels", "a1-c"),
         a("a2", ""),
       ];
       return {
@@ -299,9 +299,9 @@ describe("planTurnRollback", () => {
         new AIMessage({
           id: "a1",
           content: "",
-          tool_calls: [{ name: "assign_label", args: {} }],
+          tool_calls: [{ name: "set_labels", args: {} }],
         }),
-        refused("t1", "assign_label", ""),
+        refused("t1", "set_labels", ""),
         a("a2", ""),
       ];
       return {
@@ -317,11 +317,7 @@ describe("planTurnRollback", () => {
       // a real tool result is caught on its own line. It is not caught here — a calling turn whose
       // result is simply absent is a call that may well have gone out, and the conservative answer
       // for a write nothing can undo is to keep the slice.
-      const produced = [
-        nudge("n1"),
-        calling("a1", "assign_label"),
-        a("a2", ""),
-      ];
+      const produced = [nudge("n1"), calling("a1", "set_labels"), a("a2", "")];
       return {
         name: "a calling turn followed by anything else is still a turn that may have acted",
         produced,
@@ -334,8 +330,8 @@ describe("planTurnRollback", () => {
       // before the turn was called off, and that write is in the world: the slice stays whole.
       const produced = [
         nudge("n1"),
-        calling("a1", "assign_label"),
-        toolResult("t1", "Label applied.", "assign_label"),
+        calling("a1", "set_labels"),
+        toolResult("t1", "Label applied.", "set_labels"),
         calling("a2", "set_custom_attribute"),
         refused("t2", "set_custom_attribute", "a2-c"),
         a("a3", ""),

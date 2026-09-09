@@ -4,7 +4,7 @@ import { readToolInstructions } from "@/modules/handoff/settings";
 const NATIVE_SET = new Set<string>(NATIVE_TOOL_NAMES);
 
 // Operator-authored "when to use this tool" guidance, keyed by native tool name, for tools whose ONLY
-// per-agent config is that note (set_custom_attribute, assign_label, …). It is appended to the tool's
+// per-agent config is that note (set_custom_attribute, set_labels, …). It is appended to the tool's
 // model-facing description via withOperatorNote (see ToolCtx.toolInstructions) so the transfer/funnel/
 // attribute logic lives WITH the tool instead of being buried in the system prompt.
 //

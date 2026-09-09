@@ -1312,7 +1312,7 @@ export async function runObserve(
   // one conversation — a monitoring responder and the observer beside it — hold two rows now, so
   // their ticks can overlap, and Chatwoot has no compare-and-set on this endpoint: both read the
   // same set and the later POST erases the earlier one's group. `withConversationLabels` is the ONE
-  // queue for this conversation's labels — `assign_label`, the nudge's merge and the reset's clear
+  // queue for this conversation's labels — `set_labels`, the nudge's merge and the reset's clear
   // are all inside it too, so no writer in this process can land between our read and our POST;
   // across processes the second pass is what closes it, and it costs one GET on a tick that actually
   // changed something. The pass reads again and re-applies the SAME verdict: our value still

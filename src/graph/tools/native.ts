@@ -209,9 +209,20 @@ export interface ToolCtx {
   // falling back to DEFAULT_TIMEZONE).
   timezone?: string;
   // The account's labels + custom-attribute definitions (resolved at turn prep, best-effort), so
-  // assign_label / set_custom_attribute enumerate KNOWN values in their descriptions instead of
+  // set_labels / set_custom_attribute enumerate KNOWN values in their descriptions instead of
   // letting the model guess. Absent ⇒ the tools fall back to generic descriptions.
   vocab?: ChatwootVocab;
+  // WHAT THE MODEL WAS SHOWN, per scope, and the only thing that gives `set_labels` the right to
+  // REMOVE (issue #568). The tool takes the complete list a scope should end up with, so the labels
+  // the model left out are the ones it wants gone — but "left out" is only meaningful against a
+  // list it actually saw. A scope missing here was never shown, so a call naming it can add and
+  // never subtract, which is what keeps a failed context read from wiping a conversation clean.
+  // Read at turn prep alongside the vocab; the card's set comes free with the kanban snapshot.
+  shownLabels?: {
+    conversation?: string[];
+    contact?: string[];
+    task?: string[];
+  };
   // This conversation's kanban card context (board + current step + available steps + card snapshot),
   // resolved at turn prep when kanban_move_card is granted. Lets kanban_move_card take a STEP NAME (the
   // model can't know ids), surface the funnel state, and set_custom_attribute target the task. Absent ⇒
@@ -671,49 +682,142 @@ function existingLabelsXml(labels: string[]): string {
   return `<existing_labels>\n${els.join("\n")}\n</existing_labels>`;
 }
 
-// Adds a label (tag) to the conversation, the contact, or this conversation's kanban card (scope,
-// default 'conversation'). Labels are admin-token only and every backing endpoint REPLACES the whole
-// set, so we read the current labels and append (idempotent — a label already present is a no-op).
+// Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card
+// (scope, default 'conversation'). Every backing endpoint REPLACES the whole set, and this tool
+// exposes that shape instead of hiding it: the model passes the complete list the scope should
+// have, so adding, removing and swapping are one gesture with one write, and a swap never leaves
+// the conversation holding both values or neither.
+//
+// What it does NOT do is send that list to Chatwoot verbatim. See applyLabelIntent below.
+//
 // Shapes confirmed against the chatwoot-pro fork: conversation + contact labels GET → { payload: [] },
 // POST /{conversations|contacts}/{id}/labels { labels } replaces (LabelConcern); task labels via PATCH
 // /kanban/tasks/{id} { task: { labels } } (update_labels), with the current set read from the card
 // snapshot. NOTE: the enumerated labels are the account's Label titles; task tags may use a separate
 // taggable namespace on the fork — confirm live before relying on the suggestion for task scope.
-function assignLabelTool(ctx: ToolCtx) {
+
+// THE MODEL'S LIST IS AN INTENT, NOT A WRITE. Between the read that produced `shown` (turn prep)
+// and this call, another writer — an operator, an automation rule, the observer, n8n — can have
+// added a label the model never saw. Sending `desired` as-is would erase it, which is the same
+// class of bug as the unqueued read-then-POST that issue #477 closed, just with a wider window: a
+// whole turn instead of two calls.
+//
+// So the intent is read as a DIFF against what the model saw, applied to what is standing now:
+// a label the model was shown and left out is a removal, everything else it never spoke about. An
+// unshown scope yields no removals at all — the safe degenerate, because a model that cannot see
+// what is there cannot mean "and nothing else".
+export function applyLabelIntent(
+  shown: string[] | undefined,
+  desired: string[],
+  current: string[],
+): { next: string[]; added: string[]; removed: string[] } {
+  const want = [...new Set(desired.map((l) => l.trim()).filter(Boolean))];
+  const wanted = new Set(want);
+  const dropped = new Set((shown ?? []).filter((l) => !wanted.has(l)));
+  const kept = current.filter((l) => !dropped.has(l));
+  const next = [...new Set([...kept, ...want])];
+  return {
+    next,
+    added: want.filter((l) => !current.includes(l)),
+    removed: current.filter((l) => dropped.has(l)),
+  };
+}
+
+// What a write DID, in the model's own terms. Reports against what was standing rather than against
+// what the model asked for: "already set" is the answer a second identical call has to get, or a
+// model reading its own transcript concludes the write did not land and tries again.
+function labelWriteReport(
+  where: string,
+  added: string[],
+  removed: string[],
+): string {
+  const parts: string[] = [];
+  if (added.length)
+    parts.push(`added ${added.map((l) => `"${l}"`).join(", ")}`);
+  if (removed.length)
+    parts.push(`removed ${removed.map((l) => `"${l}"`).join(", ")}`);
+  if (parts.length === 0) return `Labels on the ${where} were already set.`;
+  return `Labels on the ${where}: ${parts.join("; ")}.`;
+}
+
+// WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the diff
+// in applyLabelIntent read the SAME `ctx.shownLabels`, on purpose: "shown" has to mean the list the
+// model was actually handed, or a removal is computed against something it never read. Rendered in
+// the tool description rather than in the system prompt for that reason — one value, one place, no
+// way for the two to describe different turns.
+//
+// A scope absent here is a scope whose read failed or was never made, and it renders no element at
+// all rather than an empty one: `<conversation/>` would tell the model the conversation has no
+// labels, which is a different claim from "we could not find out", and it is the claim that makes a
+// model confidently drop everything.
+function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
+  if (!shown) return "";
+  const els: string[] = [];
+  for (const scope of ["conversation", "contact", "task"] as const) {
+    const list = shown[scope];
+    if (!list) continue;
+    els.push(
+      list.length === 0
+        ? `  <${scope} empty="true"/>`
+        : `  <${scope}>${list.map((l) => xmlEscape(l)).join(", ")}</${scope}>`,
+    );
+  }
+  if (els.length === 0) return "";
+  return `<current_labels>\n${els.join("\n")}\n</current_labels>`;
+}
+
+function setLabelsTool(ctx: ToolCtx) {
   const labelsXml = existingLabelsXml(ctx.vocab?.labels ?? []);
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
   const scopeSchema = taskScope
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
-  const baseDescription = `Add a label (tag) to categorize the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation'). Existing labels are kept.${labelsXml ? " Prefer an EXISTING label from `<existing_labels>` below." : ""}`;
+  const shown = ctx.shownLabels ?? {};
+  const currentXml = currentLabelsXml(ctx.shownLabels);
+  const baseDescription = [
+    `Set the labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
+    "Pass the COMPLETE list that scope should have afterwards: keep the labels that still apply, leave out the ones that no longer do, and add the new ones.",
+    "Leaving out a label REMOVES it, so to add one without touching the rest, repeat the labels that are already there.",
+    currentXml &&
+      "What is set right now is in `<current_labels>` below; a scope not listed there could not be read, and a call naming it can only add.",
+    labelsXml &&
+      "Prefer an EXISTING label from `<existing_labels>` below; a label that is not listed is created.",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return tool(
     async ({
-      label,
+      labels,
       scope,
     }: {
-      label: string;
+      labels: string[];
       scope?: "conversation" | "contact" | "task";
     }) => {
-      const clean = label.trim();
-      if (!clean) return "No label provided.";
+      // Trimming and de-duplicating is applyLabelIntent's job, so the three scopes cannot drift.
+      const desired = labels;
       if (scope === "task") {
         if (!ctx.kanban) {
-          return "Could not add the label (this conversation has no linked card).";
+          return "Could not set the labels (this conversation has no linked card).";
         }
-        const current = ctx.kanban.card.labels;
-        if (current.includes(clean)) {
-          return `Label "${clean}" was already on the card.`;
-        }
-        await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, [
-          ...current,
-          clean,
-        ]);
-        return `Label "${clean}" added to the kanban card.`;
+        // The card's set is the TURN-PREP SNAPSHOT on both sides — it is what the model was shown
+        // and the only reading we have, since resolving the card again costs the two or three calls
+        // loadKanbanContext makes. So a label somebody added to the card during the turn is erased
+        // by this write, exactly as the append-only version erased it before; the scope is unchanged
+        // by this tool's new power, and closing it means re-resolving the card before every write.
+        const { next, added, removed } = applyLabelIntent(
+          shown.task,
+          desired,
+          ctx.kanban.card.labels,
+        );
+        if (added.length === 0 && removed.length === 0)
+          return labelWriteReport("kanban card", added, removed);
+        await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
+        return labelWriteReport("kanban card", added, removed);
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
-          return "Could not add the contact label (no contact in scope).";
+          return "Could not set the contact labels (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
@@ -724,23 +828,25 @@ function assignLabelTool(ctx: ToolCtx) {
           }),
         );
         if (!contact?.chatwootContactId) {
-          return "Could not add the contact label (contact not linked to Chatwoot).";
+          return "Could not set the contact labels (contact not linked to Chatwoot).";
         }
         const current = await ctx.client.getContactLabels(
           contact.chatwootContactId,
         );
-        if (current.includes(clean)) {
-          return `Label "${clean}" was already on the contact.`;
-        }
-        await ctx.client.setContactLabels(contact.chatwootContactId, [
-          ...current,
-          clean,
-        ]);
-        return `Label "${clean}" added to the contact.`;
+        const { next, added, removed } = applyLabelIntent(
+          shown.contact,
+          desired,
+          current,
+        );
+        if (added.length === 0 && removed.length === 0)
+          return labelWriteReport("contact", added, removed);
+        await ctx.client.setContactLabels(contact.chatwootContactId, next);
+        return labelWriteReport("contact", added, removed);
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
       // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
-      // another writer added between the two (issue #477 review, round 3).
+      // another writer added between the two (issue #477 review, round 3). The queue serialises OUR
+      // writers; the diff above is what survives the ones it does not reach.
       return withConversationLabels(
         ctx.tenantId,
         ctx.conversationId,
@@ -748,33 +854,42 @@ function assignLabelTool(ctx: ToolCtx) {
           const current = await ctx.client.getConversationLabels(
             ctx.conversationId,
           );
-          if (current.includes(clean))
-            return `Label "${clean}" was already set.`;
-          await ctx.client.setConversationLabels(ctx.conversationId, [
-            ...current,
-            clean,
-          ]);
-          return `Label "${clean}" added to the conversation.`;
+          const { next, added, removed } = applyLabelIntent(
+            shown.conversation,
+            desired,
+            current,
+          );
+          if (added.length === 0 && removed.length === 0)
+            return labelWriteReport("conversation", added, removed);
+          await ctx.client.setConversationLabels(ctx.conversationId, next);
+          return labelWriteReport("conversation", added, removed);
         },
       );
     },
     {
-      name: "assign_label",
+      name: "set_labels",
       description: withOperatorNote(
         baseDescription,
         ctx,
-        "assign_label",
-        labelsXml,
+        "set_labels",
+        [currentXml, labelsXml].filter(Boolean).join("\n"),
       ),
       schema: z.object({
-        label: z
-          .string()
-          .min(1)
-          .describe("The label/tag to add, e.g. 'vip' or 'orçamento'."),
+        labels: z.array(z.string()).describe(
+          // The current set is repeated HERE, on the argument, and not only in the description
+          // above: this is the field the model fills, and the failure this tool can cause that
+          // the old add-only one could not is a model treating it as "the label to add" and
+          // silently dropping the rest.
+          `The COMPLETE list of labels this scope should have after the call, e.g. ['vip', 'orçamento']. Labels currently set and left out of this list are REMOVED, so repeat the ones that should stay. An empty list clears them all.${
+            shown.conversation
+              ? ` The conversation currently has: ${shown.conversation.length ? shown.conversation.join(", ") : "(none)"}.`
+              : ""
+          }`,
+        ),
         scope: scopeSchema
           .optional()
           .describe(
-            `Where to add it: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
+            `Which labels to set: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
           ),
       }),
     },
@@ -1375,7 +1490,7 @@ export function buildNativeTools(
     handoffTool(ctx),
     privateNoteTool(ctx),
     setCustomAttributeTool(ctx),
-    assignLabelTool(ctx),
+    setLabelsTool(ctx),
     resolveConversationTool(ctx),
     kanbanMoveTool(ctx),
     updateKanbanTaskTool(ctx),

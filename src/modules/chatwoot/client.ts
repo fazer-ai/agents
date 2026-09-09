@@ -546,8 +546,9 @@ export class ChatwootClient {
     );
   }
 
-  // Conversation labels. The POST REPLACES the whole set, so the assign_label native tool reads the
-  // current labels first and appends. Shapes CONFIRMED against the chatwoot-pro fork (2026-06-14):
+  // Conversation labels. The POST REPLACES the whole set, so the set_labels native tool reads the
+  // current labels first and writes the set it derived from them. Shapes CONFIRMED against the
+  // chatwoot-pro fork (2026-06-14):
   // LabelConcern + labels/{index,create}.json.jbuilder render `json.payload @labels`; create permits
   // `labels: []` and calls `update_labels`.
   //
@@ -625,7 +626,7 @@ export class ChatwootClient {
   }
 
   // Contact labels (admin token, same LabelConcern as conversation labels — POST REPLACES the whole
-  // set, so assign_label reads then appends). Shapes CONFIRMED against the chatwoot-pro fork:
+  // set, so set_labels reads then writes the whole set). Shapes CONFIRMED against the chatwoot-pro fork:
   // contacts/labels/{index,create}.json.jbuilder render `json.payload @labels`; LabelsController
   // includes LabelConcern (create → model.update_labels). Route: /contacts/{id}/labels.
   async getContactLabels(contactId: number): Promise<string[]> {
@@ -649,7 +650,7 @@ export class ChatwootClient {
     );
   }
 
-  // Account-level label TITLES (admin token). Surfaced in the assign_label description so the agent
+  // Account-level label TITLES (admin token). Surfaced in the set_labels description so the agent
   // picks an existing tag. Shape confirmed (2026-06-14): GET /labels → { payload: [{ title }] }.
   async listLabels(): Promise<string[]> {
     const res = (await this.request(
@@ -1376,7 +1377,7 @@ export class ChatwootClient {
 
   // Kanban task labels (admin token). The fork's tasks#update accepts `task: { labels: [...] }` and
   // calls update_labels, which REPLACES the whole set (same acts_as_taggable as conversation/contact),
-  // so assign_label reads the current set (from the card snapshot) then appends. Shape CONFIRMED
+  // so set_labels reads the current set (from the card snapshot) and writes the whole one. Shape CONFIRMED
   // against the chatwoot-pro `feat-kanban-task-labels` branch (tasks_controller#update_task_labels;
   // _task.json.jbuilder renders `json.labels task.cached_label_list_array`).
   setKanbanTaskLabels(taskId: number, labels: string[]): Promise<unknown> {

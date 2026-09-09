@@ -36,6 +36,7 @@ import {
   renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
+import { underSignal } from "@/modules/contact-auth/check";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -314,6 +315,9 @@ export interface ObserveDeps {
   // The row this tick is running FOR, so the generation fence below can ask whether it still is
   // (issue #477 review, round 7). Optional because `runObserve` is callable without the scheduler.
   claim?: { jobId: bigint; claimSeq: number };
+  // The turn's deadline, injectable so a test can assert the tick gives up without waiting a
+  // minute for it. Production never passes it.
+  timeoutMs?: number;
 }
 
 // A ROW THE TRANSCRIPT CAN USE. Factored out of `transcriptFromRows` so the paging below counts the
@@ -1006,23 +1010,38 @@ export async function runObserve(
 
   const startedAt = Date.now();
   let toolCalls = 0;
+  // A DEADLINE, because this tick runs on the SHARED scheduler. `runSchedulerTick` awaits every
+  // handler and `startScheduler` skips the next tick while one is still running, so a provider that
+  // never answers does not just lose this observation: it stops reminders and every other scheduled
+  // job behind it. The verdict call this replaced carried `AbortSignal.timeout(OBSERVE_TIMEOUT_MS)`
+  // and the graph invoke came up without one (round 2 of review).
+  //
+  // BOTH HALVES, and they answer different questions. The signal in the config is what the model
+  // client receives, so the provider request is actually cancelled rather than left in flight;
+  // `underSignal` is what guarantees THIS function stops waiting, whatever a link in the chain does
+  // with the signal it was handed. The scheduler's problem is the waiting, not the socket.
+  const deadline = AbortSignal.timeout(deps.timeoutMs ?? OBSERVE_TIMEOUT_MS);
   try {
-    const result = await graph.invoke(
-      { messages: [new HumanMessage(observeTurnText(transcript, current))] },
-      {
-        configurable: { thread_id: graphThreadId },
-        callbacks: buildCallbacks(cfg, {
-          tenantId,
-          threadId,
-          node: "observer",
-          model: cfg.mc.model,
-          conversationId: conv?.id ?? null,
-          source: "inbox",
-          turnId,
-          base,
-          tools,
-        }),
-      },
+    const result = await underSignal(
+      graph.invoke(
+        { messages: [new HumanMessage(observeTurnText(transcript, current))] },
+        {
+          signal: deadline,
+          configurable: { thread_id: graphThreadId },
+          callbacks: buildCallbacks(cfg, {
+            tenantId,
+            threadId,
+            node: "observer",
+            model: cfg.mc.model,
+            conversationId: conv?.id ?? null,
+            source: "inbox",
+            turnId,
+            base,
+            tools,
+          }),
+        },
+      ),
+      deadline,
     );
     // WHAT THE TURN DID is its tool calls, never its prose: there is no reply channel here, so the
     // final text is the model talking to a wall. Counted for the trail and dropped.

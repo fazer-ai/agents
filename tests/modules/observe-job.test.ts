@@ -1755,6 +1755,55 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
+  // THE TICK RUNS ON THE SHARED SCHEDULER, so a provider that never answers is not just this
+  // observation lost: `runSchedulerTick` awaits every handler and `startScheduler` skips the next
+  // tick while one is still running, so reminders and every other job queue up behind it. The
+  // verdict call this replaced carried a deadline; the graph invoke came up without one.
+  test("a model that never answers gives the tick back instead of hanging the scheduler", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    // An ARRAY and not a `let`: control-flow analysis narrows a variable assigned only inside a
+    // callback to `never`, and the release below stops type-checking.
+    const release: (() => void)[] = [];
+    const stalled = {
+      calls: 0,
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      },
+      bindTools(_tools: unknown) {
+        return {
+          invoke(): Promise<AIMessage> {
+            // Never resolves on its own: only the deadline can end this.
+            return new Promise<AIMessage>((resolve) => {
+              release.push(() => resolve(new AIMessage("tarde demais")));
+            });
+          },
+        };
+      },
+    };
+    const started = Date.now();
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => stalled as unknown as BaseChatModel,
+        timeoutMs: 200,
+      },
+    );
+    for (const r of release) r();
+    expect(res.outcome).toBe("fail");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(log.labelsWritten).toEqual([]);
+  });
+
   test("a superseded run acts on nothing", async () => {
     await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };

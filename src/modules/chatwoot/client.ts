@@ -132,12 +132,14 @@ export interface ChatwootClientConfig {
   adminToken: string;
   botToken: string;
   // A CLIENT THAT CANNOT SPEAK TO THE CUSTOMER (issue #568). A monitoring agent runs the ordinary
-  // graph — its tools, its MCP, its knowledge — and the one thing it must never do is post something
-  // the customer can see. The refusal is enforced at the TRANSPORT rather than on the four methods
-  // that send today (sendMessage, sendTemplate, sendAudioMessage, sendFileAttachment), because a
-  // list of methods is a list that the method added next week is not on, and this repo has paid for
-  // that kind of list before. Every one of them POSTs to the same endpoint, so one URL is the whole
-  // check — and so is the fifth one, whoever writes it.
+  // graph — its tools, its MCP, its knowledge — and the one thing it must never do is put something
+  // in front of the customer. The refusal is enforced at the TRANSPORT rather than on the methods
+  // that send today, because a list of methods is a list that the method added next week is not on.
+  //
+  // But the transport is not ONE url either, and saying it was is what let a reaction through
+  // (round 2 of review): "a sender" is not the boundary, "the customer perceives it" is. See
+  // CUSTOMER_FACING_PATHS — a message, a reaction, a typing indicator and a read receipt, three of
+  // which are not messages at all and all four of which land on the customer's phone.
   //
   // It is a BACKSTOP, not the mechanism: the observe path simply never delivers a reply. Reaching
   // this refusal means something tried to, which is a defect and throws rather than passing quietly.
@@ -155,9 +157,33 @@ export class ChatwootMutedError extends Error {
   }
 }
 
-// POST .../conversations/<id>/messages, and nothing else — the label, attribute and status writes
-// live on their own paths and a watcher is meant to make them.
-const CUSTOMER_MESSAGE_PATH = /\/conversations\/\d+\/messages\/?$/;
+// EVERYTHING THE CUSTOMER PERCEIVES, which is a bigger set than "everything that sends a message".
+// Each entry was checked against the fork rather than assumed:
+//
+//   messages            — sendMessage / sendTemplate / sendAudioMessage / sendFileAttachment, and
+//                         the fifth sender whoever writes it. A PRIVATE note takes this same path
+//                         and is allowed; that is the one exemption, and isPrivateSend decides it.
+//   .../reactions       — addMessageReaction, behind `react_to_message`. Lands on the customer's
+//                         own message as an emoji.
+//   toggle_typing_status— `channel_listener.rb` forwards `conversation_typing_on` to the channel
+//                         (`channel.toggle_typing_status`), so on WhatsApp the customer watches the
+//                         persona compose a reply that is never coming.
+//   read_receipt        — the fork maps it to the session's `mark_read` capability, which is what
+//                         turns the ticks blue on their phone: the customer is told somebody read.
+//
+// The label, attribute, status, assignment and kanban writes are deliberately NOT here: they are
+// internal, and a watcher exists to make them.
+const CUSTOMER_FACING_PATHS: readonly RegExp[] = [
+  /\/conversations\/\d+\/messages\/?$/,
+  /\/conversations\/\d+\/messages\/\d+\/reactions\/?$/,
+  /\/conversations\/\d+\/toggle_typing_status\/?$/,
+  /\/conversations\/\d+\/read_receipt\/?$/,
+];
+
+// The private-note exemption belongs to the MESSAGE path alone: a reaction, a typing indicator and
+// a read receipt have no private variant to check for, so a body that happened to carry
+// `private: true` must not buy one a pass.
+const PRIVATE_CAPABLE_PATH = /\/conversations\/\d+\/messages\/?$/;
 
 // Is this POST a PRIVATE note? Read off the body the caller actually built, in both shapes it can
 // take: JSON for `sendMessage`/`sendTemplate`, multipart for the attachment senders (which set no
@@ -189,12 +215,12 @@ function mutedFetch(inner: typeof fetch): typeof fetch {
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
-    if (
-      method === "POST" &&
-      CUSTOMER_MESSAGE_PATH.test(new URL(url).pathname) &&
-      !isPrivateSend(init?.body)
-    ) {
-      throw new ChatwootMutedError(`POST ${new URL(url).pathname}`);
+    if (method === "POST") {
+      const { pathname } = new URL(url);
+      const facing = CUSTOMER_FACING_PATHS.some((re) => re.test(pathname));
+      const exempt =
+        PRIVATE_CAPABLE_PATH.test(pathname) && isPrivateSend(init?.body);
+      if (facing && !exempt) throw new ChatwootMutedError(`POST ${pathname}`);
     }
     return inner(input, init);
   }) as typeof fetch;

@@ -1,16 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import type { ResolvedModelConfig } from "@/graph/models";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   armObserve,
   observeDedupeKey,
@@ -156,6 +155,64 @@ class VerdictModel extends UsageReportingModel {
 
 function verdictModel(answer: unknown, calls: { n: number }): BaseChatModel {
   return new VerdictModel(answer, calls);
+}
+
+// A WATCHER'S TURN IS ITS TOOL CALLS. The graph asks the model, runs whatever it called, asks again,
+// and the second answer is prose nobody delivers — so a double that calls a tool on the first hop
+// and answers on the second is what an observation turn looks like end to end.
+class LabellingModel {
+  calls = 0;
+  constructor(
+    private readonly labels: string[],
+    // Runs after the model "answers" and before the tool node asks the fence, which is the window
+    // every one of these fences exists for: the world moved while the model was generating.
+    private readonly whileGenerating?: () => Promise<unknown>,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    this.calls++;
+    return new AIMessage("pronto");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        self.calls++;
+        n++;
+        if (n === 1 && self.whileGenerating) await self.whileGenerating();
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "set_labels",
+                  args: { labels: self.labels },
+                  id: "call_labels",
+                },
+              ],
+            })
+          : new AIMessage("classifiquei a conversa.");
+      },
+    };
+  }
+}
+
+// ...and one that decides nothing changed, which is what most ticks should look like.
+class SilentModel {
+  calls = 0;
+  async invoke(): Promise<AIMessage> {
+    this.calls++;
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    return {
+      async invoke(): Promise<AIMessage> {
+        self.calls++;
+        return new AIMessage("nada mudou.");
+      },
+    };
+  }
 }
 
 const observeLines = () =>
@@ -350,225 +407,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(await suDb.schedulerJob.count({ where: { tenantId } })).toBe(1);
   });
 
-  test("nothing is armed without a label group, and a burst is not armed for an agent that only looks at the end", async () => {
-    expect(
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId: CONV + 1,
-        agentId,
-        reason: "burst",
-        cfg: readMonitoringConfig({}),
-        base: appDb,
-      }),
-    ).toBe("off");
-    const onResolve = readMonitoringConfig({
-      monitoring: { ...MONITORING, analysis: "on_resolve" },
-    });
-    expect(
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId: CONV + 1,
-        agentId,
-        reason: "burst",
-        cfg: onResolve,
-        base: appDb,
-      }),
-    ).toBe("off");
-    expect(
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId: CONV + 1,
-        agentId,
-        reason: "resolved",
-        cfg: onResolve,
-        base: appDb,
-      }),
-    ).toBe("armed");
-    await suDb.schedulerJob.deleteMany({
-      where: { tenantId, dedupeKey: { contains: `:${CONV + 1}` } },
-    });
-  });
-
-  test("the tick writes the exclusive label once, posts one private note, and writes one observe line", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["agente-off", "compra-de-ingresso"];
-    const calls = { n: 0 };
-    const res = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient(
-            [
-              message(1, "oi, comprei ingresso para sábado"),
-              message(2, "Olá! Como posso ajudar?", "outgoing"),
-              message(3, "quero cancelar, não vou conseguir ir"),
-            ],
-            labels,
-            log,
-          ),
-        makeModel: () =>
-          verdictModel(
-            {
-              assunto: "cancelamento",
-              confidence: 0.92,
-              reason: "O cliente pediu para cancelar o ingresso.",
-            },
-            calls,
-          ),
-      },
-    );
-    expect(res).toEqual({ outcome: "done" });
-    expect(calls.n).toBe(1);
-    expect(log.labelsWritten).toEqual([["agente-off", "cancelamento"]]);
-    expect(log.notes).toEqual([
-      "🔎 Observadora · assunto: compra-de-ingresso → cancelamento\nO cliente pediu para cancelar o ingresso.",
-    ]);
-    expect(log.publicSends).toBe(0);
-    const lines = await observeLines();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.status).toBe("ok");
-    expect(lines[0]?.agentId).toBe(agentId);
-    const detail = detailOf(lines, 0);
-    expect(detail.changed).toBe(true);
-    expect(detail.reason).toBe("burst");
-    expect(detail.verdict).toEqual({ assunto: "cancelamento" });
-    expect(detail.noted).toBe(true);
-    expect(JSON.stringify(detail)).not.toContain("pediu para cancelar");
-    const usage = await suDb.llmUsage.findMany({
-      where: { tenantId },
-      select: { node: true, conversationId: true },
-    });
-    expect(usage.map((u) => u.node)).toEqual(["observer"]);
-    expect(usage[0]?.conversationId).toBe(convRowId);
-  });
-
-  test("the same verdict again writes nothing and says so; a value outside the list is refused", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    // A resolve verdict runs on a conversation that IS resolved (issue #477 review, round 6).
-    await suDb.conversation.update({
-      where: { id: convRowId },
-      data: { status: "resolved" },
-    });
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "resolved",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(3, "quero cancelar")], ["cancelamento"], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 1, reason: "" },
-            calls,
-          ),
-      },
-    );
-    await suDb.conversation.update({
-      where: { id: convRowId },
-      data: { status: "open" },
-    });
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(4, "quero reembolso")], ["cancelamento"], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "reembolso", confidence: 0.7, reason: "x" },
-            calls,
-          ),
-      },
-    );
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines).toHaveLength(3);
-    expect(detailOf(lines, 1).changed).toBe(false);
-    expect(detailOf(lines, 1).reason).toBe("resolved");
-    expect(lines[2]?.level).toBe("warn");
-    // The GROUP that refused, never what it refused: a value outside the enum is the model's own
-    // text, and `ExecutionLog.detail` carries no model text (issue #477 review, round 3).
-    expect(detailOf(lines, 2).refused).toEqual(["assunto"]);
-    expect(detailOf(lines, 2).verdict).toEqual({ assunto: null });
-    expect(JSON.stringify(detailOf(lines, 2))).not.toContain("reembolso");
-  });
-
-  test("an answer in prose is read for its JSON; one nothing can read is a done tick with an error line", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient(
-            [message(5, "afinal vou comprar outro")],
-            ["cancelamento"],
-            log,
-          ),
-        makeModel: () =>
-          verdictModel(
-            'Claro! {"assunto": "compra-de-ingresso", "confidence": 0.8, "reason": "novo pedido"} fim',
-            calls,
-          ),
-      },
-    );
-    expect(log.labelsWritten).toEqual([["compra-de-ingresso"]]);
-    const res = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(6, "oi")], ["cancelamento"], log),
-        makeModel: () => verdictModel("não sei dizer", calls),
-      },
-    );
-    expect(res).toEqual({ outcome: "done" });
-    const lines = await observeLines();
-    expect(lines.at(-1)?.status).toBe("error");
-    expect(detailOf(lines, -1).failed).toBe("unreadable_verdict");
-  });
-
   test("a conversation with nobody from the customer in view is skipped without a model call", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -591,52 +429,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(calls.n).toBe(0);
     expect(log.labelsWritten).toEqual([]);
     expect((await observeLines()).at(-1)?.status).toBe("skipped");
-  });
-
-  test("an agent flipped to answering while the tick was reading writes nothing", async () => {
-    // The flip lands AFTER the tick loaded the agent and BEFORE it writes: the model has answered,
-    // and the re-read before the write is what keeps the verdict off a responder's conversation.
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const client = stubClient([message(9, "cancela tudo")], [], log);
-    const flipping = {
-      ...client,
-      getConversationLabels: async () => {
-        await suDb.agent.update({
-          where: { id: agentId },
-          data: { mode: "production" },
-        });
-        return [];
-      },
-    } as unknown as ChatwootClient;
-    try {
-      const res = await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => flipping,
-          makeModel: () => verdictModel({ assunto: "cancelamento" }, calls),
-        },
-      );
-      expect(res).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const last = detailOf(await observeLines(), -1);
-      expect(last.skipped).toBe("agent_no_longer_observes");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { mode: "monitoring" },
-      });
-    }
   });
 
   test("an agent that stopped observing between the arm and the tick writes nothing", async () => {
@@ -671,103 +463,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         data: { mode: "monitoring" },
       });
     }
-  });
-
-  // `setConversationLabels` REPLACES the set, so the write has to be built on the labels as they are
-  // when it goes out. Built on the snapshot taken before the model call, a label a colleague added
-  // in those seconds is deleted by a feature whose whole promise is not to touch what is outside its
-  // groups (issue #477 review, round 1).
-  test("a label added while the model was answering survives the write", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["compra-de-ingresso"];
-    const calls = { n: 0 };
-    const client = stubClient(
-      [message(1, "quero cancelar, não vou conseguir ir")],
-      labels,
-      log,
-    );
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // The colleague's label lands between the read that feeds the prompt and the one that feeds
-        // the write; from then on it is part of the live set.
-        if (reads === 2) labels.push("vip");
-        return [...labels];
-      };
-    const res = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () => client,
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-            calls,
-          ),
-      },
-    );
-    expect(res).toEqual({ outcome: "done" });
-    // Three: the prompt's, the write's, and the verification pass that finds the write standing and
-    // writes nothing more.
-    expect(reads).toBe(3);
-    expect(log.labelsWritten).toEqual([["vip", "cancelamento"]]);
-  });
-
-  // A read that fails does not get to write a stale set. The tick does not end there either: the
-  // FIRST read failing is the verdict lost, since nothing re-arms an `on_resolve` row, so it fails
-  // and the scheduler retries (issue #477 review, round 7).
-  test("labels that cannot be re-read fail the tick without writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const client = stubClient(
-      [message(1, "quero cancelar")],
-      ["compra-de-ingresso"],
-      log,
-    );
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        if (reads === 1) return ["compra-de-ingresso"];
-        throw new Error("chatwoot 502");
-      };
-    const before = (await observeLines()).length;
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-              calls,
-            ),
-        },
-      ),
-    ).toEqual({
-      outcome: "fail",
-      error: "observe: the labels could not be read before writing",
-    });
-    expect(log.labelsWritten).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("labels_unreadable");
   });
 
   // TWO CLASSIFIERS, TWO ROWS. An inbox can carry a monitoring responder and a different observer,
@@ -1066,200 +761,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // Chatwoot has no compare-and-set on the labels endpoint, and two classifiers hold two rows now:
-  // the later POST erases the earlier one's group. The verification pass re-applies the same verdict
-  // onto the newest set (issue #477 review, round 2).
-  test("a write another classifier clobbered is re-applied once", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["compra-de-ingresso"];
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], labels, log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // The other classifier's POST lands between our write and the verification read, and it was
-        // built on the set as it was before ours.
-        if (reads === 3) labels.splice(0, labels.length, "urgente");
-        return [...labels];
-      };
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-              calls,
-            ),
-        },
-      ),
-    ).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([
-      ["cancelamento"],
-      ["urgente", "cancelamento"],
-    ]);
-    // ...and the other classifier's own label is kept, which is the point of re-applying rather than
-    // re-posting what we had.
-    expect(labels).toEqual(["urgente", "cancelamento"]);
-  });
-
-  // THE REPAIR'S SUBJECT IS THE WRITE IT REPAIRS (issue #477 review, round 24). A group the first
-  // pass left alone, edited by a person between our POST and the verification read, is an edit we
-  // have SEEN — re-applying the verdict over it would revert a manual classification and fire
-  // whatever the label triggers.
-  test("a group the first pass did not move is left alone by the repair", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    // Two groups: the verdict moves `assunto` and repeats what `sinal` already holds.
-    const labels = ["compra-de-ingresso", "morno"];
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], labels, log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // Read 1 feeds the prompt, read 2 is the pre-write re-read, read 3 the verification.
-        if (reads === 3)
-          // Another classifier clobbers OUR group, and a person moves the other one.
-          labels.splice(0, labels.length, "urgente", "quente");
-        return [...labels];
-      };
-    try {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: {
-          settings: {
-            monitoring: {
-              labelGroups: [
-                ...MONITORING.labelGroups,
-                {
-                  name: "sinal",
-                  exclusive: true,
-                  values: ["morno", "quente"],
-                },
-              ],
-            },
-          },
-        },
-      });
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () => client,
-            makeModel: () =>
-              verdictModel(
-                {
-                  assunto: "cancelamento",
-                  sinal: "morno",
-                  confidence: 0.9,
-                  reason: "pediu",
-                },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      // The repair puts OUR value back onto the set as it stands, and leaves `quente` — the edit it
-      // did not make and has now seen — exactly where the person put it.
-      expect(log.labelsWritten).toEqual([
-        // `assunto` moved; `sinal` was already on the value the verdict repeats.
-        ["morno", "cancelamento"],
-        // Without the restriction the repair would also sweep `quente` back to `morno`.
-        ["urgente", "quente", "cancelamento"],
-      ]);
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // THE REPAIR IS HELD TO THE TAXONOMY IT WROTE (issue #477 review, round 23). The in-queue fence
-  // hands back the CURRENT configuration on both passes; the groups the repair applies were chosen
-  // on the first, so a taxonomy replaced while our first POST was in flight would have the second
-  // pass write a value from a group that is gone — the very thing the first pass refuses to do.
-  test("a group replaced between the write and the repair is not repaired", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["compra-de-ingresso"];
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], labels, log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // Read 1 feeds the prompt, read 2 is the pre-write re-read, read 3 the verification.
-        if (reads === 3) {
-          // Another classifier clobbers our write...
-          labels.splice(0, labels.length, "urgente");
-          // ...and the operator replaces the group we wrote under, in the same window.
-          await suDb.agent.update({
-            where: { id: agentId },
-            data: {
-              settings: {
-                monitoring: {
-                  labelGroups: [
-                    { name: "assunto", exclusive: false, values: ["outros"] },
-                  ],
-                },
-              },
-            },
-          });
-        }
-        return [...labels];
-      };
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () => client,
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      // The first write landed and stands; the repair wrote nothing, because the group it would
-      // have repaired is not the group standing now.
-      expect(log.labelsWritten).toEqual([["cancelamento"]]);
-      expect(labels).toEqual(["urgente"]);
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
   // A PENDING RESOLVE IS NOT THE BURST THIS MESSAGE JOINS (issue #477 review, round 2). Read as one,
   // the new burst inherits the resolve's `burstStartedAt` — by then past the max window — and runs
   // immediately instead of waiting the window it was configured with.
@@ -1442,199 +943,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // THE TAXONOMY IS A DIFFERENT THING FROM THE AGENT. An operator edits it from the console while a
-  // model call is in flight, and applied from the snapshot this tick loaded the verdict lands under
-  // a group that was replaced — or on an agent whose last group was deleted, which is how
-  // observation is switched off (issue #477 review, round 5).
-  test("label groups cleared during the model call stop the write", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient([message(1, "quero cancelar")], [], log),
-            makeModel: () => {
-              // The operator clears the taxonomy while the model is answering.
-              const m = verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.agent.update({
-                  where: { id: agentId },
-                  data: { settings: { monitoring: { labelGroups: [] } } },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("observation_off");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // ...AND THE SAME EDIT LANDING ONE ROUND TRIP LATER (issue #477 review, round 22). The fence used
-  // to be asked once, at the top of the label queue, with a Chatwoot GET between it and the POST:
-  // an operator switching observation off inside that window reached the write unseen, and the
-  // scheduler's CAS only notices after the label, the note and whatever the label triggered have
-  // landed.
-  test("label groups cleared during the label read stop the write", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    const client = stubClient([message(1, "quero cancelar")], [], log);
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        // The console write lands while this read is in flight.
-        await suDb.agent.update({
-          where: { id: agentId },
-          data: { settings: { monitoring: { labelGroups: [] } } },
-        });
-        return [];
-      };
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () => client,
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      // The model was still paid for — the fence is downstream of the call by design — but nothing
-      // was written.
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("observation_off");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // A TICK ALREADY CLAIMED IS PAST EVERY CANCEL. `/reset` retires the pending rows, but one whose
-  // model call was in flight when the command landed would write back the labels the operator was
-  // just told were cleared. The fence is the one the direct turn is held to, asked in Chatwoot's own
-  // message sequence (issue #477 review, round 6).
-  test("a verdict about a message the reset erased writes nothing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    await suDb.conversation.update({
-      where: { id: convRowId },
-      data: { resetAtMessageId: 500 },
-    });
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            // Armed on a message the command then erased.
-            atMessageId: 499,
-          },
-          appDb,
-          {
-            // A post-reset message stands too, so the transcript is not empty and the tick reaches
-            // the reset FENCE rather than exiting earlier for having nothing to read.
-            makeClient: async () =>
-              stubClient(
-                [message(499, "quero cancelar"), message(501, "oi")],
-                [],
-                log,
-              ),
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(detailOf(await observeLines(), -1).skipped).toBe("reset");
-      // A verdict about a message that arrived AFTER the command is a new episode, and writes.
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: 501,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient([message(501, "quero cancelar")], [], log),
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([["cancelamento"]]);
-      expect((await observeLines()).length).toBe(before + 2);
-    } finally {
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { resetAtMessageId: null },
-      });
-    }
-  });
-
   // An `on_resolve` agent arms nothing on a reopening message, so the row queued for the old
   // resolution is still there — and it would classify a live conversation as if it had ended.
   test("a resolve verdict on a conversation that reopened writes nothing", async () => {
@@ -1668,244 +976,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const lines = await observeLines();
     expect(lines.length).toBe(before + 1);
     expect(detailOf(lines, -1).skipped).toBe("conversation_reopened");
-  });
-
-  // The arm asks two questions; the pre-write fence has to ask both. An operator switching to
-  // `on_resolve` while the call is in flight is refusing exactly this verdict.
-  test("analysis switched to on_resolve during the call stops the burst verdict", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient([message(1, "quero cancelar")], [], log),
-            makeModel: () => {
-              const m = verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.agent.update({
-                  where: { id: agentId },
-                  data: {
-                    settings: {
-                      monitoring: { ...MONITORING, analysis: "on_resolve" },
-                    },
-                  },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("analysis_changed");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-  // A message that lands while the model answers re-arms the SAME row, so the tick holding the older
-  // transcript is superseded before it writes. The scheduler's CAS only catches that after the
-  // handler returns, by which point the note is posted (issue #477 review, round 7).
-  test("a superseded run writes nothing and posts no note", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const key = observeDedupeKey(
-      chatwootThreadId(tenantId, instanceId, CONV),
-      agentId,
-    );
-    await suDb.schedulerJob.deleteMany({ where: { tenantId, dedupeKey: key } });
-    const row = await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "OBSERVE",
-        dedupeKey: key,
-        runAt: new Date(),
-        status: "CLAIMED",
-        claimSeq: 4,
-        payload: {},
-      },
-      select: { id: true },
-    });
-    const before = (await observeLines()).length;
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            // The claim this tick holds is generation 4; the row moved on to 5 meanwhile.
-            claim: { jobId: row.id, claimSeq: 4 },
-            makeClient: async () =>
-              stubClient([message(1, "quero cancelar")], [], log),
-            makeModel: () => {
-              const m = verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.schedulerJob.update({
-                  where: { id: row.id },
-                  data: { status: "PENDING", claimSeq: 5 },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("superseded");
-    } finally {
-      await suDb.schedulerJob.deleteMany({
-        where: { tenantId, dedupeKey: key },
-      });
-    }
-  });
-
-  // Unreadable is not absent: folded into `null`, a failed read says "no reset happened" and the
-  // verdict writes anyway, which is the one answer the reset fence must never give (round 7).
-  test("an unreadable conversation row fails the tick instead of writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    // The LOAD reads the row and succeeds; the pre-write read is the one that breaks, which is the
-    // only way to tell "unreadable" apart from "absent" — deleting the row would exercise `null`,
-    // the case that must NOT fail the tick.
-    const flaky = appDb.$extends({
-      query: {
-        conversation: {
-          findUnique({ args, query }) {
-            // The pre-write read is the one that asks for exactly these two columns.
-            const select = args.select as Record<string, unknown> | undefined;
-            if (
-              select?.status === true &&
-              select.resetAtMessageId === true &&
-              select.id !== true
-            )
-              throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("conversation_unreadable");
-  });
-
-  // `agentObservesNow` answers in three values precisely so the caller can tell a transient read
-  // failure from a definite "no"; collapsing them discarded a verdict already paid for (round 8).
-  test("an unreadable agent state fails the tick instead of standing down", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    // The load reads the agent with four columns; the pre-write re-read asks for exactly two.
-    const flaky = appDb.$extends({
-      query: {
-        agent: {
-          findUnique({ args, query }) {
-            const select = args.select as Record<string, unknown> | undefined;
-            if (
-              select?.enabled === true &&
-              select.mode === true &&
-              select.name !== true
-            )
-              throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("agent_state_unreadable");
   });
 
   // A credential the vault cannot hand over is not an operator switching observation off, and the
@@ -1956,69 +1026,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       await suDb.conversation.update({
         where: { id: convRowId },
         data: { status: "open" },
-      });
-    }
-  });
-
-  // `/reset` clears the labels INSIDE `withConversationLabels`. A fence read OUTSIDE that queue
-  // passes, the reset then takes the queue first and clears, and the tick enters afterwards and puts
-  // back exactly what the operator was told was gone (issue #477 review, round 8). Here another
-  // holder of the queue writes the marker while the tick is blocked on it: the fence only sees the
-  // marker if it is read after the queue is entered.
-  test("a reset that lands while the tick waits for the label queue wins", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    let release = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    // Enter the queue first and stay in it, the way `/reset` does while it clears.
-    const holder = withConversationLabels(tenantId, CONV, () => held);
-    try {
-      const tick = runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          // The burst is about message 40; the reset above lands after it.
-          atMessageId: 40,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            ),
-        },
-      );
-      // Let the tick get past everything that is NOT the queue and block on it. The marker is
-      // written only now: a fence read before the queue has already passed by this point, so the
-      // refusal below is evidence the fence is read after the queue is entered, not merely late.
-      await new Promise((r) => setTimeout(r, 50));
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { resetAtMessageId: 41 },
-      });
-      release();
-      await holder;
-      expect(await tick).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("reset");
-    } finally {
-      release();
-      await holder.catch(() => {});
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { resetAtMessageId: null },
       });
     }
   });
@@ -2180,53 +1187,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // At load time "unreadable keeps the tick" is right; on the other side of the model call it means
-  // WRITES, onto an inbox the agent may already be off (issue #477 review, round 10).
-  test("an unreadable binding fails the tick instead of writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    let reads = 0;
-    const flaky = appDb.$extends({
-      query: {
-        inbox: {
-          findUnique({ args, query }) {
-            reads += 1;
-            // The load asks once, before the model call; the pre-write fence is the second.
-            if (reads > 1) throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("binding_unreadable");
-  });
-
   // Enough ROWS is not enough CONTEXT: a reply inside the window can quote something on an older
   // page, and a terse "sim" without its question is what the resolver exists for (round 11).
   test("paging continues for a quote the window points at", async () => {
@@ -2284,153 +1244,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(calls.n).toBe(1);
     // The quoted line is rendered with the reply that points at it.
     expect(seen).toContain("boa tarde");
-  });
-
-  // A conversation moved to another inbox mid-call leaves the load's snapshot naming the old one,
-  // and the binding fence would ask about an inbox it is no longer on (round 11).
-  test("the binding fence asks about the inbox the conversation is on now", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    const other = await suDb.inbox.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootInboxId: 98765,
-        name: "Outra",
-      },
-      select: { id: true },
-    });
-    try {
-      const result = await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
-          makeModel: () => {
-            const m = verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            );
-            const inner = m.invoke.bind(m);
-            (m as { invoke: unknown }).invoke = async (
-              msgs: Parameters<typeof inner>[0],
-              opts: Parameters<typeof inner>[1],
-            ) => {
-              // The move lands while the model answers: nothing observes the new inbox.
-              await suDb.conversation.update({
-                where: { id: convRowId },
-                data: { inboxId: other.id },
-              });
-              return inner(msgs, opts);
-            };
-            return m;
-          },
-        },
-      );
-      expect(result).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("agent_no_longer_on_inbox");
-    } finally {
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { inboxId: inboxRowId },
-      });
-      await suDb.inbox.delete({ where: { id: other.id } });
-    }
-  });
-
-  // The taxonomy is what the verdict is applied AGAINST, so an unreadable re-read is not "keep the
-  // snapshot": it writes labels from a taxonomy an operator may have just replaced (round 12).
-  test("unreadable monitoring settings fail the tick instead of writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    // The load reads four columns off the agent; the settings re-read asks for one.
-    const flaky = appDb.$extends({
-      query: {
-        agent: {
-          findUnique({ args, query }) {
-            const select = args.select as Record<string, unknown> | undefined;
-            if (
-              select?.settings === true &&
-              select.name !== true &&
-              select.mode !== true
-            )
-              throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("settings_unreadable");
-  });
-
-  // The prompt asks for 0 to 1; a prose answer gives whatever it likes, and a number the reader
-  // cannot vouch for is better absent than wrong (issue #477 review, round 12).
-  test("a confidence outside the advertised range is not recorded", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 75, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).confidence).toBe(null);
   });
 
   // The row not having landed reads identical to a detach on the row alone, and completing was
@@ -2535,46 +1348,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         data: { attachedAt: new Date() },
       });
     }
-  });
-
-  // The write already landed; only the VERIFICATION pass is best-effort, and returning there
-  // skipped the note that describes the change (issue #477 review, round 13).
-  test("a failed verification read still posts the change note", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], [], log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // 1: the prompt's read. 2: the pre-write read. 3: the verification, which fails.
-        if (reads >= 3) throw new Error("chatwoot 502");
-        return [];
-      };
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-              calls,
-            ),
-        },
-      ),
-    ).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([["cancelamento"]]);
-    expect(log.notes).toHaveLength(1);
-    expect(log.notes[0]).toContain("cancelamento");
   });
 
   // The verdict was computed against the set the prompt showed; a person who moved one of OUR groups
@@ -2713,160 +1486,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // The queue can be held by another writer for as long as its own Chatwoot round trips take, and
-  // the checks before it are seconds old by the time the tick enters (issue #477 review, round 19).
-  test("observation switched off while the tick waits for the queue writes nothing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    let release = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    const holder = withConversationLabels(tenantId, CONV, () => held);
-    try {
-      const tick = runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            ),
-        },
-      );
-      // The tick is blocked on the queue by now; the switch is thrown only here, so a check made
-      // before the queue has already passed.
-      await new Promise((r) => setTimeout(r, 50));
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: {} },
-      });
-      release();
-      await holder;
-      expect(await tick).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("observation_off");
-    } finally {
-      release();
-      await holder.catch(() => {});
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // THE SECOND PROVIDER RUNS FOR A VERDICT (issue #567). `runModelCall` carries the recovery
-  // LangChain does not make, and the observer used to call it bare: an agent with a fallback
-  // configured had nothing behind its provider here, and an intermittent 503 cost the LABEL — the
-  // tick ends, the conversation keeps its old classification, and nothing says why.
-  //
-  // Both models come out of the SAME `makeModel`, told apart by the model id, which is also how the
-  // job builds them: the fallback is `buildFallbackModel` over the agent's own `modelFallback`.
-  test("a transient provider failure is answered by the configured fallback", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const built: ResolvedModelConfig[] = [];
-    await suDb.agent.update({
-      where: { id: agentId },
-      data: {
-        settings: {
-          monitoring: MONITORING,
-          // Same vendor, another model: the resolution then takes the agent's own credential, so
-          // this needs no second vault entry to be runnable.
-          modelFallback: { provider: "openai", model: "gpt-5.4" },
-        },
-      },
-    });
-    try {
-      const res = await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient(
-              [
-                message(1, "oi, comprei ingresso para sábado"),
-                message(2, "quero cancelar, não vou conseguir ir"),
-              ],
-              ["agente-off"],
-              log,
-            ),
-          makeModel: (mc) => {
-            built.push(mc);
-            if (mc.model === "gpt-5.4")
-              return verdictModel(
-                {
-                  assunto: "cancelamento",
-                  confidence: 0.9,
-                  reason: "O cliente pediu cancelamento.",
-                },
-                calls,
-              );
-            // The primary answers with a status the fallback exists for (503), not with a refusal:
-            // a 400 would be the same answer from anybody and must NOT be failed over.
-            const m = verdictModel({ assunto: "outros" }, calls);
-            (m as { invoke: unknown }).invoke = async () => {
-              const err = new Error("service unavailable") as Error & {
-                status?: number;
-              };
-              err.status = 503;
-              throw err;
-            };
-            return m;
-          },
-        },
-      );
-      expect(res).toEqual({ outcome: "done" });
-      // Both models were built, and the verdict written is the FALLBACK's. The FALLBACK COMES FIRST
-      // in this list, and that order is itself the round-1 fix: the primary's bounds depend on
-      // whether a fallback exists, so it cannot be built before the answer to that question.
-      expect(built.map((m) => m.model)).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
-      // ...and the primary WAS bounded, because one exists (issue #567 review, round 1). Unbounded,
-      // LangChain's six retries and its unbounded wait spend the observer's whole abort on the
-      // provider that already failed, and the second one never gets a turn.
-      const primaryBuilt = built.find((m) => m.model === "gpt-5.4-mini");
-      expect(primaryBuilt?.maxRetries).toBe(0);
-      expect(primaryBuilt?.timeoutMs).toBeGreaterThan(0);
-      expect(log.labelsWritten.at(-1)).toContain("cancelamento");
-      // The usage row is filed under the model that actually answered, not under the primary's
-      // name: the fallback gets its own callbacks for exactly this.
-      const usage = await suDb.llmUsage.findMany({
-        where: { tenantId, node: "observer" },
-        select: { model: true },
-        orderBy: { id: "desc" },
-        take: 1,
-      });
-      expect(usage.at(0)?.model).toBe("gpt-5.4");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
   // BOTH PROVIDERS DOWN LEAVES ONE ALARM, NOT TWO (issue #567 review, round 1). The `observe` stage
   // emits its own error when the tick fails, and alert coalescing keys on (channel, stage, level):
   // a second `observe`/`error` line for the same failure bumps one delivery to "×2", or sends two if
@@ -2942,83 +1561,86 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // A FALLBACK THAT CANNOT BE BUILT SAYS SO, AT BUILD TIME (issue #567 review, round 1). A deleted
-  // credential leaves the tick with nothing behind its provider, which is indistinguishable from
-  // having configured none — and a server log is not where the operator who configured it looks.
-  test("a fallback that cannot be built leaves a warning on the trail", async () => {
+  // ── the turn ───────────────────────────────────────────────────────────────
+  //
+  // A watcher runs the ordinary graph now (issue #568): the agent's own tools act on the
+  // conversation, and the classifier that used to live in this module — one call, a JSON verdict, a
+  // deterministic apply — is gone with the taxonomy it needed.
+
+  test("the tick runs the agent's turn, and its tool call is what writes", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    await suDb.agent.update({
-      where: { id: agentId },
-      data: {
-        settings: {
-          monitoring: MONITORING,
-          // Another vendor, so the resolution demands its OWN credential, and the ref resolves to
-          // nothing: `buildFallbackModel` reports `credential_not_found`.
-          modelFallback: {
-            provider: "anthropic",
-            model: "claude-4-5-haiku",
-            credentialRef: "vault:999999",
-          },
-        },
+    const labels = ["agente-off", "compra-de-ingresso"];
+    const model = new LabellingModel(["agente-off", "cancelamento"]);
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
       },
-    });
-    const before2 = (await observeLines()).length;
-    try {
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient(
-              [message(1, "quero cancelar, não vou conseguir ir")],
-              ["agente-off"],
-              log,
-            ),
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            ),
-        },
-      );
-      const lines = (await observeLines()).slice(before2);
-      const unavailable = lines.find(
-        (l) =>
-          (l.detail as Record<string, unknown> | null)?.fallbackUnavailable !==
-          undefined,
-      );
-      expect(unavailable?.level).toBe("warn");
-      // The tick still ran on the primary: a fallback that cannot be built is a warning, not a stop.
-      expect(log.labelsWritten.at(-1)).toContain("cancelamento");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-      await clearFlowLog(suDb, {
-        tenantId,
-        conversationId: convRowId,
-        stage: "observe",
-      });
-    }
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient(
+            [
+              message(1, "oi, comprei ingresso para sábado"),
+              message(2, "Olá! Como posso ajudar?", "outgoing"),
+              message(3, "quero cancelar, não vou conseguir ir"),
+            ],
+            labels,
+            log,
+          ),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([["agente-off", "cancelamento"]]);
+    // NOTHING REACHES THE CUSTOMER, which is the one promise the mode makes. The final prose is the
+    // model talking to a wall: the turn delivers no reply, and the client it holds would refuse one.
+    expect(log.publicSends).toBe(0);
+    const lines = await observeLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.status).toBe("ok");
+    expect(lines[0]?.agentId).toBe(agentId);
+    const detail = detailOf(lines, 0);
+    expect(detail.acted).toBe(true);
+    expect(detail.toolCalls).toBe(1);
+    expect(detail.reason).toBe("burst");
   });
 
-  // The other half of issue #493: the client the tick builds has to CARRY the persona's token, or the
-  // label write falls back to the admin one and signs the verdict with a person's name. The switch
-  // itself is fenced in chatwoot-client.test.ts; this is the seam that feeds it.
-  test("the tick builds its client with the persona's bot token", async () => {
+  test("a turn that calls nothing writes nothing, and says so on the trail", async () => {
+    await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    let captured: { botToken?: string; adminToken?: string } | null = null;
+    const model = new SilentModel();
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "obrigado!")], ["cancelamento"], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    expect(log.notes).toEqual([]);
+    const detail = detailOf(await observeLines(), 0);
+    expect(detail.acted).toBe(false);
+    expect(detail.toolCalls).toBe(0);
+  });
 
+  test("the tick builds its client MUTED, with the persona's bot token", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let built: { botToken?: string; mute?: boolean } | null = null;
     await runObserve(
       tenantId,
       {
@@ -3030,23 +1652,166 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
       appDb,
       {
-        makeClient: async (cfg) => {
-          captured = cfg as { botToken?: string; adminToken?: string };
-          return stubClient([message(90, "quero cancelar")], [], log);
+        makeClient: async (config) => {
+          built = config as { botToken?: string; mute?: boolean };
+          return stubClient([message(1, "oi")], [], log);
         },
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 1, reason: "" },
-            calls,
-          ),
+        makeModel: () => new SilentModel() as unknown as BaseChatModel,
       },
     );
+    // The bot token is the persona's, so the private notes and labels it writes are signed by the
+    // watcher and not by a person; the mute is what makes the rest of the graph safe to run.
+    expect(built).not.toBeNull();
+    expect((built as unknown as { botToken: string }).botToken).toBe("BOT");
+    expect((built as unknown as { mute: boolean }).mute).toBe(true);
+  });
 
-    expect(captured).not.toBeNull();
-    expect((captured as unknown as { botToken?: string })?.botToken).toBe(
-      "BOT",
+  // ── the fences ─────────────────────────────────────────────────────────────
+  //
+  // They used to be asked once, between the verdict and the single write. A turn has as many writes
+  // as the model has tool calls, so they are asked at every tool HOP now — which is where a tool
+  // that would write is stopped, rather than after it already has.
+
+  test("an agent flipped to answering while the tick was reading acts on nothing", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const model = new LabellingModel(["cancelamento"], () =>
+      suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      }),
     );
-    // And it did write, so the assertion above is about a client that was actually used.
-    expect(log.labelsWritten.at(-1)).toContain("cancelamento");
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { mode: "monitoring" },
+    });
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+  });
+
+  test("a superseded run acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const job = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: `sup-${process.pid}`,
+        status: "CLAIMED",
+        claimSeq: 7,
+        runAt: new Date(),
+        payload: {},
+      },
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
+        // A message that landed while the model answered re-armed the row, so the claim this tick
+        // holds is no longer the current one.
+        claim: { jobId: job.id, claimSeq: 6 },
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    const detail = detailOf(await observeLines(), 0);
+    expect(detail.skipped).toBe("superseded");
+  });
+
+  test("a turn about a message the reset erased acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { resetAtMessageId: 500 },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: 400,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(600, "quero cancelar")], [], log),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
+      },
+    );
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { resetAtMessageId: null },
+    });
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    const detail = detailOf(await observeLines(), 0);
+    expect(detail.skipped).toBe("reset");
+  });
+
+  test("an observer taken off the inbox while the model answered acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"], () =>
+            suDb.inboxObserver.deleteMany({
+              where: { tenantId, inboxId: inboxRowId, agentId },
+            }),
+          ) as unknown as BaseChatModel,
+      },
+    );
+    const stillThere = await suDb.inboxObserver.count({
+      where: { tenantId, inboxId: inboxRowId, agentId },
+    });
+    await suDb.inboxObserver.createMany({
+      data: [{ tenantId, inboxId: inboxRowId, agentId }],
+      skipDuplicates: true,
+    });
+    // The detach has to have actually landed, or this asserts nothing about the fence.
+    expect(stillThere).toBe(0);
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
   });
 });

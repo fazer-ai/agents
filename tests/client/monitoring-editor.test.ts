@@ -21,16 +21,20 @@ describe("the editor of a monitoring agent", () => {
     const def = EDITOR.indexOf("const MONITORING_TABS");
     expect(def).toBeGreaterThan(-1);
     const body = EDITOR.slice(def, EDITOR.indexOf("]);", def));
-    for (const key of ["general", "channels", "behavior"]) {
-      expect(body).toContain(`"${key}"`);
-    }
+    // TOOLS AND KNOWLEDGE ARE DRAWN (issue #568): a watcher runs the ordinary graph, so its grants
+    // and its knowledge bases are the whole of what it can do.
     for (const key of [
+      "general",
+      "channels",
+      "behavior",
       "tools",
       "knowledge",
-      "guardrails",
-      "channelRedirect",
-      "playground",
     ]) {
+      expect(body).toContain(`"${key}"`);
+    }
+    // What stays out is what only an agent that SPEAKS has: a reply to screen, a redirect that
+    // messages the customer on another channel, a conversation to hold in the playground.
+    for (const key of ["guardrails", "channelRedirect", "playground"]) {
       expect(body).not.toContain(`"${key}"`);
     }
     // And the list the Tabs control draws is the filtered one, keyed on the mode.
@@ -44,10 +48,11 @@ describe("the editor of a monitoring agent", () => {
 
   test("the Behavior tab keeps the blocks that apply to a watcher and hides the rest", () => {
     expect([...MONITORING_SECTIONS].sort()).toEqual([
+      // The prompt block built on every turn, this one included (issue #568).
+      "attributeContext",
+      // ...and the ceiling on the tool calls a watcher now actually makes.
+      "limits",
       "memory",
-      // Back in the set with the runtime that made it mean something (issue #567): `runObserve`
-      // passes the agent's own `modelFallback` now, so the section configures a second provider
-      // that does protect a verdict. It was out for the round-5 review of #494, when it did not.
       "modelFallback",
       "observability",
       "observation",
@@ -76,10 +81,9 @@ describe("the editor of a monitoring agent", () => {
     // one the watcher's editor draws, so a new issue kind that targets a visible section is kept
     // without anybody remembering to add it.
     expect(EDITOR).toContain("function watcherCanActOn(");
-    // ...with RAG dropped by key, since both of its issues arrive with no tab and a watcher never
-    // invokes retrieval: kept, they send the operator to configure a feature nothing here uses
-    // (issue #494 review, round 4).
-    expect(EDITOR.replace(/\s+/g, " ")).toContain(
+    // ...and RAG issues are no longer dropped by key: a watcher searches the knowledge bases it was
+    // granted, so a broken embedding credential is a real fault with a real screen behind it.
+    expect(EDITOR.replace(/\s+/g, " ")).not.toContain(
       'issue.key === "knowledge" || issue.key === "embedding"',
     );
     expect(EDITOR).toContain("MONITORING_SECTIONS.has(sectionId)");

@@ -210,14 +210,21 @@ const TAB_KEYS: TabKey[] = [
   "playground",
 ];
 
-// A watcher's editor (issue #494): the tabs that configure how the agent ANSWERS — tools,
-// knowledge, guardrails, the redirect, the playground — are not drawn for an agent in monitoring
-// mode, which never does; drawn for one, they read as if it could. A URL that still names one
-// lands on General. Nothing is deleted: flip the mode back and the tabs return as they were.
+// A watcher's editor. TOOLS and KNOWLEDGE are drawn now (issue #568): a monitoring agent runs the
+// ordinary graph, so its tool grants and its knowledge bases are the whole of what it can do, and
+// hiding them was what made the mode need a classifier screen of its own.
+//
+// What stays hidden is what only makes sense for an agent that speaks: GUARDRAILS screen a reply
+// before it goes out, the CHANNEL REDIRECT moves a conversation by messaging the customer on
+// another channel, and the PLAYGROUND is a conversation with the agent — none of which a watcher
+// has. A URL that still names one lands on General. Nothing is deleted: flip the mode back and the
+// tabs return as they were.
 const MONITORING_TABS: ReadonlySet<string> = new Set<TabKey>([
   "general",
   "channels",
   "behavior",
+  "tools",
+  "knowledge",
 ]);
 // Whether a configuration warning has a CONTROL BEHIND IT in a watcher's editor. Asked of the
 // issue's own deep-link target rather than of a list of keys (issue #494 review, round 3): every
@@ -234,13 +241,11 @@ function watcherCanActOn(issue: {
   tab?: string;
   sectionId?: string;
 }): boolean {
-  // RAG has no tab for a watcher and no use either. Both of these come through with no `tab` — the
-  // knowledge one opens the Knowledge tab's documents modal, the embedding one points at the
-  // tenant's credential — so the target rule below would keep them, and a watcher never invokes
-  // retrieval (issue #494 review, round 4). Sent to configure the embedding credential, the operator
-  // fixes it and is answered with a `knowledge` issue that IS filtered, which is the shape of
-  // busywork a warning panel must not create.
-  if (issue.key === "knowledge" || issue.key === "embedding") return false;
+  // RAG ISSUES ARE KEPT NOW (issue #568). They were dropped here because a watcher had no Knowledge
+  // tab and never invoked retrieval; it runs the ordinary graph today, so a knowledge base it was
+  // granted is one it actually searches, and a broken embedding credential is a real fault with a
+  // real screen behind it.
+  //
   // An issue with no target at all points nowhere for any agent, so it is kept rather than singled
   // out here.
   if (issue.tab === undefined) return true;

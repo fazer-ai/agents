@@ -122,6 +122,55 @@ BEGIN
       CASE WHEN r.src = 'http' THEN 'tool:' ELSE 'code_tool:' END || r.id,
       jsonb_build_object('name', r.name, 'label', r.label), jsonb_build_object('name', candidate, 'label', new_label), NOW()
     );
+    -- ...AND THE OPERATOR'S RULES FOLLOW THE ROW. `settings.toolPreconditions` and
+    -- `settings.toolGuidance` are keyed by tool NAME, so a rule written for this custom tool stays
+    -- on `set_labels` while the tool answers as `set_labels_N`. Left alone it does not merely go
+    -- inert: `set_labels` becomes a NATIVE name the moment this code ships, so the operator's rule
+    -- silently re-attaches to a DIFFERENT tool — a guard moved onto something nobody guarded, and
+    -- not even the unmatched-precondition warning to say so.
+    --
+    -- Only agents that GRANT this row, because for an agent that does not, `set_labels` after this
+    -- migration means the native tool and the rule is already about the right thing. The write
+    -- boundary refuses a non-native precondition key (isGuardableToolName), so these bags arrive by
+    -- agent IMPORT, which copies settings verbatim — the case tool-preconditions.ts names.
+    --
+    -- Runs BEFORE the `assign_label` -> `set_labels` move further down, which is the order that
+    -- makes both correct on an agent carrying rules for the custom tool AND for the native.
+    FOR ag IN
+      SELECT a.id
+      FROM "agents" a
+      JOIN "agent_tool_selections" sel
+        ON sel.agent_id = a.id
+       AND (
+         (r.src = 'http' AND sel.tool_definition_id = r.id)
+         OR (r.src = 'code' AND sel.code_tool_definition_id = r.id)
+       )
+      WHERE a.tenant_id = r.tenant_id
+      ORDER BY a.id
+    LOOP
+      UPDATE "agents"
+      SET settings = jsonb_set(
+            settings #- ARRAY['toolPreconditions', r.name],
+            ARRAY['toolPreconditions', candidate],
+            settings #> ARRAY['toolPreconditions', r.name]
+          ),
+          updated_at = NOW()
+      WHERE id = ag.id
+        AND jsonb_typeof(settings -> 'toolPreconditions') = 'object'
+        AND jsonb_exists(settings -> 'toolPreconditions', r.name)
+        AND NOT jsonb_exists(settings -> 'toolPreconditions', candidate);
+      UPDATE "agents"
+      SET settings = jsonb_set(
+            settings #- ARRAY['toolGuidance', r.name],
+            ARRAY['toolGuidance', candidate],
+            settings #> ARRAY['toolGuidance', r.name]
+          ),
+          updated_at = NOW()
+      WHERE id = ag.id
+        AND jsonb_typeof(settings -> 'toolGuidance') = 'object'
+        AND jsonb_exists(settings -> 'toolGuidance', r.name)
+        AND NOT jsonb_exists(settings -> 'toolGuidance', candidate);
+    END LOOP;
     -- strpos, not LIKE: the underscore in the name is a LIKE wildcard.
     FOR ag IN
       SELECT id FROM "agents"

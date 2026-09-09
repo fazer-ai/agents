@@ -8,6 +8,7 @@ import {
   handoffAnsweredTheTurn,
   NATIVE_TOOL_NAMES,
 } from "@/graph/tools/native";
+import { applyToolPreconditions } from "@/graph/tools/precondition";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 
 function recordingClient() {
@@ -645,6 +646,58 @@ describe("native tools", () => {
       tool.invoke({ labels: ["b"] }),
     ]);
     expect(setCalls).toHaveLength(2);
+    expect([...current].sort()).toEqual(["a", "b"]);
+  });
+
+  test("a guarded batch shares its baseline, whatever the state reads do", async () => {
+    // The precondition wrapper AWAITS the state read before the tool's own handler is entered, so
+    // "snapshot at the top of the handler" is not the dispatch point: the second call can arrive
+    // after the first has written. The baseline is keyed on LangGraph's batch instead of timed.
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    // One slow state read and one fast one, so the second call lands after the first has finished.
+    let reads = 0;
+    const guarded = applyToolPreconditions(
+      tools,
+      {
+        set_labels: { kind: "attribute", scope: "conversation", key: "ok" },
+      },
+      async () => {
+        reads++;
+        if (reads === 2) await new Promise((r) => setTimeout(r, 60));
+        return {
+          conversationAttributes: { ok: "1" },
+          contactAttributes: {},
+        };
+      },
+    );
+    const tool = byName(guarded, "set_labels");
+    // The batch metadata LangGraph itself supplies: one step for both calls (measured — the two
+    // calls of a batch carry the same `langgraph_step`, the next batch a different one).
+    const batch = {
+      metadata: {
+        thread_id: "t",
+        langgraph_checkpoint_ns: "",
+        langgraph_step: 2,
+      },
+    };
+    await Promise.all([
+      tool.invoke({ labels: ["a"] }, batch),
+      tool.invoke({ labels: ["b"] }, batch),
+    ]);
     expect([...current].sort()).toEqual(["a", "b"]);
   });
 

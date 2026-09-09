@@ -208,6 +208,55 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
     );
     tenant2Id = BigInt(t2.rows[0].id);
     ids.code = await mkCode(tenant2Id, "set_labels", "Set labels");
+    // An IMPORTED agent whose rules were written for the custom tool: the write boundary refuses a
+    // non-native precondition key, so this bag can only have arrived verbatim from an import. It
+    // GRANTS the code tool, which is what makes `set_labels` mean that tool and not the native.
+    ids.importer = await (async () => {
+      const r = await suDb.query(
+        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+         VALUES ($1, 'importer', 'p', '{}'::jsonb, $2::jsonb, NOW(), NOW()) RETURNING id`,
+        [
+          String(tenant2Id),
+          JSON.stringify({
+            toolPreconditions: {
+              set_labels: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "pode_etiquetar",
+              },
+            },
+            toolGuidance: { set_labels: "só depois da triagem" },
+          }),
+        ],
+      );
+      return BigInt(r.rows[0].id);
+    })();
+    await suDb.query(
+      `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, code_tool_definition_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
+       VALUES ($1, $2, 'CODE', $3, '{}', '{}', NOW(), NOW())`,
+      [String(tenant2Id), String(ids.importer), String(ids.code)],
+    );
+    // ...and one that does NOT grant it. For this agent `set_labels` means the native tool the
+    // moment this ships, so its rule is already about the right thing and must not move.
+    ids.bystander = await (async () => {
+      const r = await suDb.query(
+        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+         VALUES ($1, 'bystander', 'p', '{}'::jsonb, $2::jsonb, NOW(), NOW()) RETURNING id`,
+        [
+          String(tenant2Id),
+          JSON.stringify({
+            toolPreconditions: {
+              set_labels: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "nativo",
+              },
+            },
+          }),
+        ],
+      );
+      return BigInt(r.rows[0].id);
+    })();
     // The candidate `set_labels_2` is free among HTTP tools in THIS tenant and taken by a code
     // tool: a free-name search that scans one table walks the moved row onto this one.
     ids.code_taken = await mkCode(tenant2Id, "set_labels_2", "Outro code");
@@ -289,11 +338,11 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       [String(tenantId), String(tenant2Id)],
     ]);
     await suDb.query(
-      'DELETE FROM "agent_tool_selections" WHERE tenant_id = $1',
-      [String(tenantId)],
+      'DELETE FROM "agent_tool_selections" WHERE tenant_id = ANY($1)',
+      [[String(tenantId), String(tenant2Id)]],
     );
-    await suDb.query('DELETE FROM "agents" WHERE tenant_id = $1', [
-      String(tenantId),
+    await suDb.query('DELETE FROM "agents" WHERE tenant_id = ANY($1)', [
+      [String(tenantId), String(tenant2Id)],
     ]);
     await suDb.query('DELETE FROM "tool_definitions" WHERE tenant_id = $1', [
       String(tenantId),
@@ -424,6 +473,35 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
     expect(audit.rows.map((x) => x.target)).toEqual([
       `code_tool:${id("code")}`,
     ]);
+  });
+
+  test("an imported rule follows the custom tool it was written for", async () => {
+    // Left behind it would not go inert: `set_labels` is a native name after this migration, so the
+    // operator's guard would re-attach to a tool nobody guarded, with no unmatched warning either.
+    const moved = await suDb.query(
+      'SELECT settings FROM "agents" WHERE id = $1',
+      [String(id("importer"))],
+    );
+    const s = moved.rows[0].settings as Record<string, Record<string, unknown>>;
+    expect(s.toolPreconditions).toEqual({
+      set_labels_3: {
+        kind: "attribute",
+        scope: "conversation",
+        key: "pode_etiquetar",
+      },
+    });
+    expect(s.toolGuidance).toEqual({ set_labels_3: "só depois da triagem" });
+    // The agent that does not grant the renamed tool keeps its rule where it is.
+    const kept = await suDb.query(
+      'SELECT settings FROM "agents" WHERE id = $1',
+      [String(id("bystander"))],
+    );
+    expect(
+      (kept.rows[0].settings as Record<string, Record<string, unknown>>)
+        .toolPreconditions,
+    ).toEqual({
+      set_labels: { kind: "attribute", scope: "conversation", key: "nativo" },
+    });
   });
 
   test("re-running it rewrites nothing", async () => {

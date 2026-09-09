@@ -835,15 +835,42 @@ function setLabelsTool(ctx: ToolCtx) {
   // below is the opposite on purpose — a description is serialised once, so it can only ever be the
   // snapshot, which is why the report states the resulting set.
   //
-  // "CALL TIME" MEANS WHEN THE CALL IS DISPATCHED, NOT WHEN IT REACHES THE FRONT OF THE QUEUE.
-  // LangGraph runs a batch of tool calls concurrently, so two `set_labels` in one batch were both
-  // written by the model from the SAME snapshot — neither could have read the other's result. Read
-  // after the queue wait, the second one sees the first one's write recorded as "shown" and takes
-  // it for a label it saw and left out: `["a"]` and `["b"]` side by side end as `b` alone. So every
-  // branch below snapshots synchronously, before its first await, and `recordShown` then only moves
-  // the set for calls the model writes AFTER reading these results.
-  const shown = (): NonNullable<ToolCtx["shownLabels"]> =>
-    ctx.shownLabels ?? {};
+  // ONE BASELINE PER MODEL BATCH, and the batch is the unit because that is what the model saw.
+  // LangGraph runs every tool call of one AIMessage concurrently and returns to the model only when
+  // the whole batch is done, so two `set_labels` side by side were both written from the SAME
+  // snapshot and neither could have read the other's result. A baseline taken per CALL lets the
+  // second one see the first one's write recorded as "shown" and take it for a label it saw and
+  // left out: `["a"]` and `["b"]` end as `b` alone.
+  //
+  // "Synchronously at the top of the handler" is not enough, and that is the whole reason this is
+  // keyed rather than timed: `applyToolPreconditions` wraps the tool and AWAITS the state read
+  // before this handler is entered, so with a precondition configured the second call can arrive
+  // after the first has already written. Timing cannot separate the two cases; the batch key can.
+  //
+  // The key is LangGraph's own, measured rather than assumed: `langgraph_step` is identical for
+  // every call of one batch and differs between batches (2, 2, 4 for two batches of a probe run),
+  // and the namespace and thread go with it so a subgraph cannot collide with its parent. When
+  // there is no config at all — a direct invocation in a test, the playground — there is no batch
+  // to share and each call reads the live set, which is right because those calls ARE sequential.
+  let batch: {
+    key: string;
+    shown: NonNullable<ToolCtx["shownLabels"]>;
+  } | null = null;
+  const batchKey = (config?: ToolRunnableConfig): string | null => {
+    const md = config?.metadata as Record<string, unknown> | undefined;
+    const step = md?.langgraph_step;
+    if (typeof step !== "number") return null;
+    return `${String(md?.thread_id ?? "")}|${String(md?.langgraph_checkpoint_ns ?? "")}|${step}`;
+  };
+  const baselineFor = (
+    config?: ToolRunnableConfig,
+  ): NonNullable<ToolCtx["shownLabels"]> => {
+    const key = batchKey(config);
+    if (key === null) return { ...(ctx.shownLabels ?? {}) };
+    if (batch?.key !== key)
+      batch = { key, shown: { ...(ctx.shownLabels ?? {}) } };
+    return batch.shown;
+  };
   const currentXml = currentLabelsXml(ctx.shownLabels);
   const baseDescription = [
     `Set the labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
@@ -857,18 +884,20 @@ function setLabelsTool(ctx: ToolCtx) {
     .filter(Boolean)
     .join(" ");
   return tool(
-    async ({
-      labels,
-      scope,
-    }: {
-      labels: string[];
-      scope?: "conversation" | "contact" | "task";
-    }) => {
+    async (
+      {
+        labels,
+        scope,
+      }: {
+        labels: string[];
+        scope?: "conversation" | "contact" | "task";
+      },
+      config?: ToolRunnableConfig,
+    ) => {
       // Trimming and de-duplicating is applyLabelIntent's job, so the three scopes cannot drift.
       const desired = labels;
-      // SYNCHRONOUS, before any await: see the note on `shown` above. This is the batch's shared
-      // view of the world, and it has to stay the view the model actually wrote against.
-      const seenNow = { ...shown() };
+      // The batch's shared view of the world, which has to stay the view the model wrote against.
+      const seenNow = baselineFor(config);
       if (scope === "task") {
         if (!ctx.kanban) {
           return "Could not set the labels (this conversation has no linked card).";

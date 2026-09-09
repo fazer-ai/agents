@@ -223,6 +223,12 @@ export interface ToolCtx {
     contact?: string[];
     task?: string[];
   };
+  // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
+  // graph already asks it at the tool boundary; waiting for that queue is a wait AFTER the ask, and
+  // `/reset` clears the episode's labels in this very queue, so a write admitted at the boundary can
+  // still land on a conversation the operator has just been told was cleared. Absent ⇒ the write
+  // proceeds, which is what every caller that has no fence to offer means.
+  stillWanted?: () => Promise<boolean>;
   // This conversation's kanban card context (board + current step + available steps + card snapshot),
   // resolved at turn prep when kanban_move_card is granted. Lets kanban_move_card take a STEP NAME (the
   // model can't know ids), surface the funnel state, and set_custom_attribute target the task. Absent ⇒
@@ -702,10 +708,26 @@ function existingLabelsXml(labels: string[]): string {
 // class of bug as the unqueued read-then-POST that issue #477 closed, just with a wider window: a
 // whole turn instead of two calls.
 //
-// So the intent is read as a DIFF against what the model saw, applied to what is standing now:
-// a label the model was shown and left out is a removal, everything else it never spoke about. An
-// unshown scope yields no removals at all — the safe degenerate, because a model that cannot see
-// what is there cannot mean "and nothing else".
+// So the intent is read as a DIFF against what the model saw, applied to what is standing now, and
+// it is a diff in BOTH directions:
+//
+//   shown and left out  -> a removal;
+//   asked for, not shown -> an addition;
+//   shown AND asked for  -> the model said nothing about it, so neither.
+//
+// The third line is the one that is easy to get wrong, because the model writes those labels out
+// again on every call — the tool asks it to, since leaving one out would delete it. Repeating a
+// label is therefore NOT a request to have it; it is the absence of a request to lose it. Treating
+// it as an addition puts back exactly what a concurrent writer has just removed: an operator peels
+// `vip` off while the model generates, the model repeats `vip` merely to keep the rest, and the
+// tool undoes the operator. That is the same class as erasing a concurrent ADD, which is what the
+// removal half exists to prevent; both halves are the same rule, applied in the two directions.
+//
+// An unshown scope yields no removals at all and every label as an addition — the safe degenerate,
+// because a model that cannot see what is there cannot mean "and nothing else".
+//
+// `added` and `removed` are then read off `next` rather than off the intent: they are what this
+// write DID, and the intent and the write differ exactly in the unchanged-label case above.
 export function applyLabelIntent(
   shown: string[] | undefined,
   desired: string[],
@@ -713,31 +735,66 @@ export function applyLabelIntent(
 ): { next: string[]; added: string[]; removed: string[] } {
   const want = [...new Set(desired.map((l) => l.trim()).filter(Boolean))];
   const wanted = new Set(want);
+  const seen = new Set(shown ?? []);
   const dropped = new Set((shown ?? []).filter((l) => !wanted.has(l)));
   const kept = current.filter((l) => !dropped.has(l));
-  const next = [...new Set([...kept, ...want])];
+  const fresh = want.filter((l) => !seen.has(l));
+  const next = [...new Set([...kept, ...fresh])];
   return {
     next,
-    added: want.filter((l) => !current.includes(l)),
-    removed: current.filter((l) => dropped.has(l)),
+    added: next.filter((l) => !current.includes(l)),
+    removed: current.filter((l) => !next.includes(l)),
   };
 }
 
-// What a write DID, in the model's own terms. Reports against what was standing rather than against
-// what the model asked for: "already set" is the answer a second identical call has to get, or a
-// model reading its own transcript concludes the write did not land and tries again.
+// What a write DID, in the model's own terms, and what the scope holds AFTERWARDS. Reports against
+// what was standing rather than against what the model asked for: "already as requested" is the
+// answer a second identical call has to get, or a model reading its own transcript concludes the
+// write did not land and tries again.
+//
+// THE RESULTING SET IS STATED because this line is the model's only way to learn it. The
+// `<current_labels>` block in the description is built once, at turn prep, so from the second call
+// onward it describes the past — including the model's own first write. Without this, a model that
+// added `pending` and then wanted the scope empty would pass `[]`, have it diffed against a
+// snapshot that never held `pending`, and be told nothing changed.
+//
+// Saying it is also what LICENCES the next call to act on it: `recordShown` stores exactly this
+// list as what the model was shown, so a label a concurrent writer added mid-turn becomes removable
+// only after the model has actually been handed it. "Shown" has to keep meaning shown.
 function labelWriteReport(
   where: string,
   added: string[],
   removed: string[],
+  next: string[],
 ): string {
+  const now = next.length ? next.map((l) => `"${l}"`).join(", ") : "(none)";
   const parts: string[] = [];
   if (added.length)
     parts.push(`added ${added.map((l) => `"${l}"`).join(", ")}`);
   if (removed.length)
     parts.push(`removed ${removed.map((l) => `"${l}"`).join(", ")}`);
-  if (parts.length === 0) return `Labels on the ${where} were already set.`;
-  return `Labels on the ${where}: ${parts.join("; ")}.`;
+  if (parts.length === 0)
+    return `Labels on the ${where} were already as requested. Now set: ${now}.`;
+  return `Labels on the ${where}: ${parts.join("; ")}. Now set: ${now}.`;
+}
+
+// THE MODEL-VISIBLE SET, kept current for the rest of the turn. A turn has as many label writes as
+// the model has tool calls, and every one of them is diffed against what the model saw; leaving
+// that at the turn-prep snapshot means the second call is answered as if the first had not
+// happened — `set_labels(['pending'])` then `set_labels([])` leaves `pending` standing and reports
+// that nothing changed.
+//
+// What gets stored is the list the report just handed the model, not some private view of the
+// world: the two have to be the same list, for the same reason the description block and the diff
+// read one value. It also promotes a scope that could not be read at prep — the contact's, which is
+// deliberately never read there — into a known one, since the tool's own GET answered it.
+function recordShown(
+  ctx: ToolCtx,
+  scope: "conversation" | "contact" | "task",
+  next: string[],
+): void {
+  if (!ctx.shownLabels) ctx.shownLabels = {};
+  ctx.shownLabels[scope] = [...next];
 }
 
 // WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the diff
@@ -773,7 +830,12 @@ function setLabelsTool(ctx: ToolCtx) {
   const scopeSchema = taskScope
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
-  const shown = ctx.shownLabels ?? {};
+  // READ AT CALL TIME, not captured here: `recordShown` moves this set forward as the turn writes,
+  // and a value closed over at build time would freeze it at the turn-prep snapshot. The XML block
+  // below is the opposite on purpose — a description is serialised once, so it can only ever be the
+  // snapshot, which is why the report states the resulting set.
+  const shown = (): NonNullable<ToolCtx["shownLabels"]> =>
+    ctx.shownLabels ?? {};
   const currentXml = currentLabelsXml(ctx.shownLabels);
   const baseDescription = [
     `Set the labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
@@ -806,14 +868,21 @@ function setLabelsTool(ctx: ToolCtx) {
         // by this write, exactly as the append-only version erased it before; the scope is unchanged
         // by this tool's new power, and closing it means re-resolving the card before every write.
         const { next, added, removed } = applyLabelIntent(
-          shown.task,
+          shown().task,
           desired,
           ctx.kanban.card.labels,
         );
-        if (added.length === 0 && removed.length === 0)
-          return labelWriteReport("kanban card", added, removed);
+        if (added.length === 0 && removed.length === 0) {
+          recordShown(ctx, "task", next);
+          return labelWriteReport("kanban card", added, removed, next);
+        }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
-        return labelWriteReport("kanban card", added, removed);
+        // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
+        // the same turn would otherwise diff against the set before this write and put back what it
+        // just removed.
+        ctx.kanban.card.labels = [...next];
+        recordShown(ctx, "task", next);
+        return labelWriteReport("kanban card", added, removed, next);
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
@@ -834,14 +903,17 @@ function setLabelsTool(ctx: ToolCtx) {
           contact.chatwootContactId,
         );
         const { next, added, removed } = applyLabelIntent(
-          shown.contact,
+          shown().contact,
           desired,
           current,
         );
-        if (added.length === 0 && removed.length === 0)
-          return labelWriteReport("contact", added, removed);
+        if (added.length === 0 && removed.length === 0) {
+          recordShown(ctx, "contact", next);
+          return labelWriteReport("contact", added, removed, next);
+        }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
-        return labelWriteReport("contact", added, removed);
+        recordShown(ctx, "contact", next);
+        return labelWriteReport("contact", added, removed, next);
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
       // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
@@ -855,14 +927,27 @@ function setLabelsTool(ctx: ToolCtx) {
             ctx.conversationId,
           );
           const { next, added, removed } = applyLabelIntent(
-            shown.conversation,
+            shown().conversation,
             desired,
             current,
           );
-          if (added.length === 0 && removed.length === 0)
-            return labelWriteReport("conversation", added, removed);
+          if (added.length === 0 && removed.length === 0) {
+            recordShown(ctx, "conversation", next);
+            return labelWriteReport("conversation", added, removed, next);
+          }
+          // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
+          // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
+          // peels the episode's labels off in this very queue (webhook.ts), so a call that was
+          // wanted when it entered can land on a conversation the operator has just been told was
+          // cleared — and it would put the old episode's labels back. The nudge asks at the same
+          // point, for the same reason. Only an explicit `false` stops the write: a fence that
+          // could not answer is not a withdrawal.
+          if (ctx.stillWanted && !(await ctx.stillWanted())) {
+            return "Could not set the labels (the run was called off while this write waited its turn).";
+          }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
-          return labelWriteReport("conversation", added, removed);
+          recordShown(ctx, "conversation", next);
+          return labelWriteReport("conversation", added, removed, next);
         },
       );
     },
@@ -881,8 +966,8 @@ function setLabelsTool(ctx: ToolCtx) {
           // the old add-only one could not is a model treating it as "the label to add" and
           // silently dropping the rest.
           `The COMPLETE list of labels this scope should have after the call, e.g. ['vip', 'orçamento']. Labels currently set and left out of this list are REMOVED, so repeat the ones that should stay. An empty list clears them all.${
-            shown.conversation
-              ? ` The conversation currently has: ${shown.conversation.length ? shown.conversation.join(", ") : "(none)"}.`
+            ctx.shownLabels?.conversation
+              ? ` The conversation currently has: ${ctx.shownLabels.conversation.length ? ctx.shownLabels.conversation.join(", ") : "(none)"}.`
               : ""
           }`,
         ),

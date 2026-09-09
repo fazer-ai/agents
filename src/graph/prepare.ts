@@ -924,6 +924,7 @@ export interface ToolBuildDeps {
         contact?: string[];
         task?: string[];
       };
+      stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
       fetchImpl?: typeof fetch;
@@ -1221,6 +1222,9 @@ export async function buildToolset(
       timezone: cfg.timezone,
       vocab,
       shownLabels,
+      // The same fence the ack above asks, handed on to set_labels: its write waits for a queue
+      // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
+      stillWanted: ctx.stillWanted,
       kanban,
       sendImage: cfg.sendImageConfig,
       fetchImpl: ctx.imageDeps?.fetchImpl,

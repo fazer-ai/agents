@@ -420,6 +420,26 @@ describe("native tools", () => {
       ).toEqual({ next: ["vip", "lead"], added: ["vip", "lead"], removed: [] });
     });
 
+    test("repeating a shown label does NOT put it back after somebody removed it", () => {
+      // The mirror of the case above, and the one a removals-only diff gets wrong. An operator
+      // peeled `vip` off while the model was generating; the model repeats it only because leaving
+      // it out would delete it. Read as an addition, the tool undoes the operator — the same harm
+      // as erasing a concurrent ADD, in the other direction.
+      expect(applyLabelIntent(["vip"], ["vip", "lead"], [])).toEqual({
+        next: ["lead"],
+        added: ["lead"],
+        removed: [],
+      });
+    });
+
+    test("a label shown, kept, and still standing is left exactly alone", () => {
+      expect(applyLabelIntent(["vip"], ["vip", "lead"], ["vip"])).toEqual({
+        next: ["vip", "lead"],
+        added: ["lead"],
+        removed: [],
+      });
+    });
+
     test("an empty desired list with nothing shown writes nothing at all", () => {
       // The clear-everything call and the never-read case have to be told apart, or an unread
       // context turns every "no labels apply" into wiping the conversation.
@@ -529,7 +549,98 @@ describe("native tools", () => {
       await byName(tools, "set_labels").invoke({ labels: ["vip"] }),
     );
     expect(setCount).toBe(0);
-    expect(out.toLowerCase()).toContain("already set");
+    expect(out.toLowerCase()).toContain("already as requested");
+    // The resulting set is stated even when nothing moved: it is the model's only reading of the
+    // scope after its own writes, since the description block is frozen at turn prep.
+    expect(out).toContain('Now set: "vip"');
+  });
+
+  test("a second call in the same turn can undo what the first one wrote", async () => {
+    // The model's visible set is not the turn-prep snapshot for the whole turn: it moves with the
+    // model's own writes. Without that, `set_labels(['pending'])` then `set_labels([])` diffs the
+    // second call against a snapshot that never held `pending`, leaves it standing, and reports
+    // that nothing changed.
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const first = String(
+      await byName(tools, "set_labels").invoke({ labels: ["pending"] }),
+    );
+    expect(first).toContain('added "pending"');
+    const second = String(
+      await byName(tools, "set_labels").invoke({ labels: [] }),
+    );
+    expect(setCalls).toEqual([
+      [9, ["pending"]],
+      [9, []],
+    ]);
+    expect(second).toContain('removed "pending"');
+    expect(second).toContain("Now set: (none)");
+  });
+
+  test("a label a concurrent writer added becomes removable only once reported", async () => {
+    // `urgente` lands between the turn's read and the first call. The first write keeps it (the
+    // model never saw it) and the report hands it over; only then may a later call drop it — which
+    // is what keeps "shown" meaning shown while still letting the state move.
+    let current: string[] = ["urgente"];
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const first = String(
+      await byName(tools, "set_labels").invoke({ labels: ["compra"] }),
+    );
+    expect(setCalls[0]).toEqual([9, ["urgente", "compra"]]);
+    expect(first).toContain('Now set: "urgente", "compra"');
+    await byName(tools, "set_labels").invoke({ labels: ["compra"] });
+    expect(setCalls).toHaveLength(2);
+    expect(setCalls[1]).toEqual([9, ["compra"]]);
+  });
+
+  test("set_labels refuses to write when the fence is withdrawn inside the queue", async () => {
+    // `/reset` clears the episode's labels in this very queue, so the ask at the tool boundary is
+    // not the last word: the wait for the queue comes after it.
+    let setCount = 0;
+    const client = {
+      getConversationLabels: async () => ["vip"],
+      setConversationLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["vip"] },
+      stillWanted: async () => false,
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({ labels: ["cancelamento"] }),
+    );
+    expect(setCount).toBe(0);
+    expect(out).toContain("called off");
   });
 
   test("set_labels task scope writes the card's labels (snapshot read + write)", async () => {

@@ -61,18 +61,17 @@ import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 // thread never saw. Chatwoot has all of it, and a transcription written by anyone is read through the
 // same renderers the turn uses.
 //
-// ONE model call, constrained to a schema DERIVED from the label groups, and the verdict is applied
-// deterministically (./apply.ts): the model names a value per group, the code decides the set. It
-// never touches a label outside its groups, never writes a value the group does not list, and never
-// writes at all when nothing changed. A change is announced as a PRIVATE note on the conversation,
-// so the person answering it sees why the label moved without opening the console; nothing here has
-// a customer-facing channel.
+// THEN THE ORDINARY TURN, on a muted client: `buildToolset` and `buildModelAndGraph`, the same two
+// calls the reactive turn and the nudge make. What the watcher does with what it read is its prompt
+// and its tools, not this file's business — this file only guarantees that nothing it does can
+// reach the customer, and that it stops when the world moves under it. It used to be one model call
+// constrained to a schema derived from `settings.monitoring.labelGroups`, with the verdict applied
+// deterministically here and announced as a private note; issue #568 is that whole shape.
 
 export type ObserveReason = "burst" | "resolved";
 
 export const OBSERVE_TIMEOUT_MS = 60_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
-export const OBSERVE_NOTE_REASON_MAX = 300;
 const TRANSCRIPT_MAX_CHARS = 40_000;
 const FENCE_TAG = /<\s*\/?\s*(transcricao|etiquetas-atuais)[^>]*>/gi;
 
@@ -85,11 +84,11 @@ function sysCtx(tenantId: bigint): TenantContext {
 //
 // THE AGENT IS PART OF THE KEY (issue #477 review, round 1). An inbox can be watched by TWO
 // personas at once — a monitoring agent bound as the RESPONDER (#209's first rung) and a different
-// agent bound beside it as the OBSERVER — and both routes arm a verdict, by design, each with its
-// own label groups. Keyed by the conversation alone the two upserts are the same row: the second
-// overwrites `payload.agentId`, and which persona classifies is decided by which delivery happens
-// to land last, with the other's verdict dropped and nothing anywhere saying so. Two classifiers is
-// two rows, two bursts and two model calls, which is what configuring two of them asks for.
+// agent bound beside it as the OBSERVER — and both routes arm a tick, by design, each with its own
+// prompt and its own tools. Keyed by the conversation alone the two upserts are the same row: the
+// second overwrites `payload.agentId`, and which persona gets to look is decided by which delivery
+// happens to land last, with the other's turn dropped and nothing anywhere saying so. Two watchers
+// is two rows, two bursts and two model calls, which is what configuring two of them asks for.
 export function observeDedupeKey(threadId: string, agentId: bigint): string {
   return `${observeKeyPrefix(threadId)}${String(agentId)}`;
 }
@@ -639,7 +638,7 @@ export async function runObserve(
   }
   if (!loaded) {
     logger.info(
-      "observe: nothing to do (conv=%s): the agent no longer observes, or has no label group",
+      "observe: nothing to do (conv=%s): the agent no longer observes, or this burst is refused by its `analysis` setting",
       String(conversationId),
     );
     return { outcome: "done" };

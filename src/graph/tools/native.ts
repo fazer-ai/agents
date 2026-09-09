@@ -834,6 +834,14 @@ function setLabelsTool(ctx: ToolCtx) {
   // and a value closed over at build time would freeze it at the turn-prep snapshot. The XML block
   // below is the opposite on purpose — a description is serialised once, so it can only ever be the
   // snapshot, which is why the report states the resulting set.
+  //
+  // "CALL TIME" MEANS WHEN THE CALL IS DISPATCHED, NOT WHEN IT REACHES THE FRONT OF THE QUEUE.
+  // LangGraph runs a batch of tool calls concurrently, so two `set_labels` in one batch were both
+  // written by the model from the SAME snapshot — neither could have read the other's result. Read
+  // after the queue wait, the second one sees the first one's write recorded as "shown" and takes
+  // it for a label it saw and left out: `["a"]` and `["b"]` side by side end as `b` alone. So every
+  // branch below snapshots synchronously, before its first await, and `recordShown` then only moves
+  // the set for calls the model writes AFTER reading these results.
   const shown = (): NonNullable<ToolCtx["shownLabels"]> =>
     ctx.shownLabels ?? {};
   const currentXml = currentLabelsXml(ctx.shownLabels);
@@ -858,6 +866,9 @@ function setLabelsTool(ctx: ToolCtx) {
     }) => {
       // Trimming and de-duplicating is applyLabelIntent's job, so the three scopes cannot drift.
       const desired = labels;
+      // SYNCHRONOUS, before any await: see the note on `shown` above. This is the batch's shared
+      // view of the world, and it has to stay the view the model actually wrote against.
+      const seenNow = { ...shown() };
       if (scope === "task") {
         if (!ctx.kanban) {
           return "Could not set the labels (this conversation has no linked card).";
@@ -868,7 +879,7 @@ function setLabelsTool(ctx: ToolCtx) {
         // by this write, exactly as the append-only version erased it before; the scope is unchanged
         // by this tool's new power, and closing it means re-resolving the card before every write.
         const { next, added, removed } = applyLabelIntent(
-          shown().task,
+          seenNow.task,
           desired,
           ctx.kanban.card.labels,
         );
@@ -903,7 +914,7 @@ function setLabelsTool(ctx: ToolCtx) {
           contact.chatwootContactId,
         );
         const { next, added, removed } = applyLabelIntent(
-          shown().contact,
+          seenNow.contact,
           desired,
           current,
         );
@@ -927,7 +938,7 @@ function setLabelsTool(ctx: ToolCtx) {
             ctx.conversationId,
           );
           const { next, added, removed } = applyLabelIntent(
-            shown().conversation,
+            seenNow.conversation,
             desired,
             current,
           );

@@ -42,6 +42,7 @@ if (suUrl) {
 const suDb = su as Client;
 
 let tenantId = 0n;
+let tenant2Id = 0n;
 const ids: Record<string, bigint> = {};
 
 // The keys are filled in beforeAll; reading one before then is a bug in this file, not a case.
@@ -185,6 +186,32 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
     ids.http = await mk("set_labels", "Set labels");
     ids.http_taken = await mk("set_labels_2", "Outro");
 
+    // ...and a CODE tool in the same namespace. `set_labels` is a legal code-tool name on the base
+    // branch (the write boundary refuses only the natives of the day), and code tools reach
+    // `dropDuplicateToolNames` like every other source, so this row is dropped by the reservation
+    // exactly as the HTTP one would be. In a tenant of its own, so the two walks do not interfere.
+    const mkCode = async (
+      tid: bigint,
+      name: string,
+      label: string,
+    ): Promise<bigint> => {
+      const r = await suDb.query(
+        `INSERT INTO "code_tool_definitions" (tenant_id, name, label, description, code, created_at, updated_at)
+         VALUES ($1, $2, $3, 'd', 'return {}', NOW(), NOW()) RETURNING id`,
+        [String(tid), name, label],
+      );
+      return BigInt(r.rows[0].id);
+    };
+    const t2 = await suDb.query(
+      "INSERT INTO tenants (name, slug, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id",
+      ["SETLBL2", `setlbl2-${process.pid}`],
+    );
+    tenant2Id = BigInt(t2.rows[0].id);
+    ids.code = await mkCode(tenant2Id, "set_labels", "Set labels");
+    // The candidate `set_labels_2` is free among HTTP tools in THIS tenant and taken by a code
+    // tool: a free-name search that scans one table walks the moved row onto this one.
+    ids.code_taken = await mkCode(tenant2Id, "set_labels_2", "Outro code");
+
     ids.only_old = await agent("only_old", "{}");
     ids.grant_only_old = await grant(ids.only_old, ["assign_label"]);
     ids.mixed = await agent("mixed", "{}");
@@ -258,8 +285,8 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
   });
 
   afterAll(async () => {
-    await suDb.query('DELETE FROM "audit_logs" WHERE tenant_id = $1', [
-      String(tenantId),
+    await suDb.query('DELETE FROM "audit_logs" WHERE tenant_id = ANY($1)', [
+      [String(tenantId), String(tenant2Id)],
     ]);
     await suDb.query(
       'DELETE FROM "agent_tool_selections" WHERE tenant_id = $1',
@@ -271,7 +298,13 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
     await suDb.query('DELETE FROM "tool_definitions" WHERE tenant_id = $1', [
       String(tenantId),
     ]);
-    await suDb.query("DELETE FROM tenants WHERE id = $1", [String(tenantId)]);
+    await suDb.query(
+      'DELETE FROM "code_tool_definitions" WHERE tenant_id = $1',
+      [String(tenant2Id)],
+    );
+    await suDb.query("DELETE FROM tenants WHERE id = ANY($1)", [
+      [String(tenantId), String(tenant2Id)],
+    ]);
     await suDb.end();
   });
 
@@ -367,6 +400,30 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       [String(tenantId)],
     );
     expect(r.rows[0].n).toBe(0);
+  });
+
+  test("a CODE tool on the reserved name is moved too, and the walk sees both tables", async () => {
+    const r = await suDb.query(
+      'SELECT name, label FROM "code_tool_definitions" WHERE id = $1',
+      [String(id("code"))],
+    );
+    // `set_labels_2` is taken by a code tool in this tenant, so the walk has to reach `_3` — which
+    // a search scanning only `tool_definitions` would never do, since that table is empty here.
+    expect(r.rows[0]).toEqual({ name: "set_labels_3", label: "Set labels 3" });
+    expect(normalizeToolName(r.rows[0].label)).toBe(r.rows[0].name);
+    const untouched = await suDb.query(
+      'SELECT name FROM "code_tool_definitions" WHERE id = $1',
+      [String(id("code_taken"))],
+    );
+    expect(untouched.rows[0].name).toBe("set_labels_2");
+    // The audit target carries the kind: the two tables have independent id sequences.
+    const audit = await suDb.query(
+      `SELECT target FROM "audit_logs" WHERE tenant_id = $1 AND action = 'tool.renamed_by_upgrade'`,
+      [String(tenant2Id)],
+    );
+    expect(audit.rows.map((x) => x.target)).toEqual([
+      `code_tool:${id("code")}`,
+    ]);
   });
 
   test("re-running it rewrites nothing", async () => {

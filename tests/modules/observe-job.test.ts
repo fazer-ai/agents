@@ -215,12 +215,16 @@ class SilentModel {
   }
 }
 
-const observeLines = () =>
+// ONE reader for this file, parameterised by stage: the tool logger writes `tool` lines and the
+// tick writes `observe` ones, and a second `flowLogRows` call here would be a second reader for
+// `flowlog-reader-scope.test.ts` to account for. Scoping stays in one place either way.
+const stageLines = (stage: "observe" | "tool") =>
   flowLogRows(suDb, {
-    where: { conversationId: convRowId, stage: "observe" },
+    where: { conversationId: convRowId, stage },
     orderBy: { id: "asc" },
     select: { status: true, level: true, detail: true, agentId: true },
   });
+const observeLines = () => stageLines("observe");
 
 describe.skipIf(!dbUp)("the OBSERVE job", () => {
   beforeAll(async () => {
@@ -1491,6 +1495,87 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // a second `observe`/`error` line for the same failure bumps one delivery to "×2", or sends two if
   // it loses the coalesce window. The attribution line is `info` with `status: "error"` — it exists
   // only to say WHICH model died, because the stage is labelled with the primary by construction.
+  // THE PER-TOOL LINE, which `buildCallbacks` does not carry. Without it a watcher whose tool fails
+  // finishes the graph normally and the tick reports `ok` with `acted: true`: a tool error with no
+  // line and no alert, and no second copy anywhere, since the observer's checkpoint is discarded.
+  test("a tool call writes its own flow line under the tick", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const model = new LabellingModel(["cancelamento"]);
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    const tools = await stageLines("tool");
+    expect(
+      tools.some(
+        (t) => (t.detail as { tool?: string } | null)?.tool === "set_labels",
+      ),
+    ).toBe(true);
+  });
+
+  // A FALLBACK THAT CANNOT BE BUILT is indistinguishable from no fallback at all, and the primary
+  // answering fine is exactly when nobody finds out. Reported at build time for that reason; the
+  // verdict path used to and the graph build came up without the callback.
+  test("a fallback that cannot be built is reported even when the primary answers", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          // A provider with no credential in this tenant: buildFallbackModel has nothing to build.
+          modelFallback: { provider: "anthropic", model: "claude-opus-5" },
+        },
+      },
+    });
+    const before = (await observeLines()).length;
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new SilentModel() as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      const lines = (await observeLines()).slice(before);
+      const warned = lines.find(
+        (l) =>
+          (l.detail as { fallbackUnavailable?: string } | null)
+            ?.fallbackUnavailable !== undefined,
+      );
+      expect(warned).toBeDefined();
+      expect(warned?.level).toBe("warn");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
   test("when the fallback fails too, the attribution line does not raise a second alarm", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };

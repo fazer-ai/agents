@@ -12,6 +12,7 @@ import {
   loadAgentConfig,
 } from "@/graph/prepare";
 import { resetLandedAfter } from "@/graph/reset-episode";
+import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
@@ -958,6 +959,20 @@ export async function runObserve(
           model,
           detail: { fallbackFailed: why },
         }),
+      // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
+      // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
+      // nothing behind it, which is indistinguishable from having configured none. Reported at
+      // build time rather than on the failure, because by then it is too late to be the warning it
+      // needs to be, and a tick whose primary keeps answering would otherwise hide it forever.
+      onModelFallbackUnavailable: ({ provider, model, reason: why }) =>
+        emitFlowEvent(flow, {
+          stage: "observe",
+          level: "warn",
+          status: "ok",
+          provider,
+          model,
+          detail: { fallbackUnavailable: why },
+        }),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1028,17 +1043,26 @@ export async function runObserve(
         {
           signal: deadline,
           configurable: { thread_id: graphThreadId },
-          callbacks: buildCallbacks(cfg, {
-            tenantId,
-            threadId,
-            node: "observer",
-            model: cfg.mc.model,
-            conversationId: conv?.id ?? null,
-            source: "inbox",
-            turnId,
-            base,
-            tools,
-          }),
+          // THE TOOL LOGGER TOO, exactly as the reactive runtime installs it. `buildCallbacks`
+          // carries usage capture and the optional trace; the per-tool line is separate, and
+          // without it a watcher whose HTTP or MCP tool answers `toolFailure` finishes the graph
+          // normally and this job reports `ok` with `acted: true` — a tool error with no line and
+          // no alert. There is no second copy to fall back on either: the observer's checkpoint is
+          // thrown away, so an install without Langfuse loses the diagnostic entirely.
+          callbacks: [
+            ...buildCallbacks(cfg, {
+              tenantId,
+              threadId,
+              node: "observer",
+              model: cfg.mc.model,
+              conversationId: conv?.id ?? null,
+              source: "inbox",
+              turnId,
+              base,
+              tools,
+            }),
+            new ToolFlowLogger(flow, { logValues: cfg.logToolValues, tools }),
+          ],
         },
       ),
       deadline,

@@ -619,6 +619,35 @@ describe("native tools", () => {
     expect(setCalls[1]).toEqual([9, ["compra"]]);
   });
 
+  test("two calls in ONE batch do not read each other's writes", async () => {
+    // LangGraph dispatches a tool-call batch concurrently, and both calls were written by the model
+    // from the same snapshot — neither could have read the other's result. If the second one reads
+    // the shown set AFTER waiting for the queue, it takes the first one's write for a label it saw
+    // and left out, and `["a"]` beside `["b"]` ends as `b` alone.
+    let current: string[] = [];
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        current = [...(args[1] as string[])];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const tool = byName(tools, "set_labels");
+    await Promise.all([
+      tool.invoke({ labels: ["a"] }),
+      tool.invoke({ labels: ["b"] }),
+    ]);
+    expect(setCalls).toHaveLength(2);
+    expect([...current].sort()).toEqual(["a", "b"]);
+  });
+
   test("set_labels refuses to write when the fence is withdrawn inside the queue", async () => {
     // `/reset` clears the episode's labels in this very queue, so the ask at the tool boundary is
     // not the last word: the wait for the queue comes after it.

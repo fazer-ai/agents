@@ -5,7 +5,7 @@
 -- because the OLD name is stored in a tenant's own rows, and every reader of those rows drops what
 -- it does not recognise: silently, with a 200, and with the capability simply gone.
 --
--- 1. HTTP tools NAMED `set_labels`. Same reason as every other file of this name (see
+-- 1. TENANT TOOLS NAMED `set_labels`. Same reason as every other file of this name (see
 --    20260903120000): the assembly reserves every native name granted or not
 --    (src/graph/tools/unique-names.ts, #457), so a tenant row carrying the new name would stop
 --    reaching the model the moment this migration's code ships. Moved to the first free
@@ -13,6 +13,13 @@
 --    derive the old one from it, and one audit line per moved row plus one per agent whose system
 --    prompt names the tool. `tests/prisma/native-tool-names-renamed-by-migration.test.ts` asks for
 --    this file by name.
+--
+--    BOTH TABLES, and the free-name search asks both too. HTTP tools and CODE tools are ONE
+--    namespace to the model (code-tools/service.ts checks a new name against both) and both reach
+--    `dropDuplicateToolNames`, so a code tool named `set_labels` is dropped by the same
+--    reservation, and a candidate `set_labels_2` free among HTTP tools can be taken by a code tool.
+--    The files of this name that predate `code_tool_definitions` (20260903140100) had only one
+--    table to scan; this one has two.
 --
 -- 2. The GRANT. `agent_tool_selections` with source NATIVE holds the exact allowlist
 --    (src/graph/tools/assemble.ts: an explicit row means EXACTLY this set, fail-closed), so an
@@ -66,6 +73,7 @@ $fn$;
 BEGIN;
 
 ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "code_tool_definitions" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agents" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agent_tool_selections" NO FORCE ROW LEVEL SECURITY;
@@ -79,16 +87,20 @@ DECLARE
   n INTEGER;
 BEGIN
   FOR r IN
-    SELECT id, tenant_id, name, label
-    FROM "tool_definitions"
-    WHERE name IN ('set_labels')
-    ORDER BY id
+    SELECT 'http' AS src, id, tenant_id, name, label FROM "tool_definitions" WHERE name IN ('set_labels')
+    UNION ALL
+    SELECT 'code' AS src, id, tenant_id, name, label FROM "code_tool_definitions" WHERE name IN ('set_labels')
+    ORDER BY src, id
   LOOP
     n := 2;
     LOOP
       candidate := r.name || '_' || n;
+      -- ...FREE IN BOTH TABLES. One namespace reaches the model, so a candidate that only clears
+      -- the table being scanned lands on the other one's row and neither survives assembly.
       EXIT WHEN NOT EXISTS (
         SELECT 1 FROM "tool_definitions" WHERE tenant_id = r.tenant_id AND name = candidate
+      ) AND NOT EXISTS (
+        SELECT 1 FROM "code_tool_definitions" WHERE tenant_id = r.tenant_id AND name = candidate
       );
       n := n + 1;
     END LOOP;
@@ -97,10 +109,17 @@ BEGIN
       WHEN length(r.label || ' ' || n) > 200 THEN candidate
       ELSE r.label || ' ' || n
     END;
-    UPDATE "tool_definitions" SET name = candidate, label = new_label, updated_at = NOW() WHERE id = r.id;
+    IF r.src = 'http' THEN
+      UPDATE "tool_definitions" SET name = candidate, label = new_label, updated_at = NOW() WHERE id = r.id;
+    ELSE
+      UPDATE "code_tool_definitions" SET name = candidate, label = new_label, updated_at = NOW() WHERE id = r.id;
+    END IF;
+    -- The target carries the KIND, because the two tables have independent id sequences and
+    -- `tool:7` would otherwise name two different tools.
     INSERT INTO "audit_logs" (tenant_id, actor_id, actor_type, action, target, "before", "after", created_at)
     VALUES (
-      r.tenant_id, NULL, 'system', 'tool.renamed_by_upgrade', 'tool:' || r.id,
+      r.tenant_id, NULL, 'system', 'tool.renamed_by_upgrade',
+      CASE WHEN r.src = 'http' THEN 'tool:' ELSE 'code_tool:' END || r.id,
       jsonb_build_object('name', r.name, 'label', r.label), jsonb_build_object('name', candidate, 'label', new_label), NOW()
     );
     -- strpos, not LIKE: the underscore in the name is a LIKE wildcard.
@@ -181,6 +200,7 @@ WHERE jsonb_typeof(settings -> 'toolPreconditions') = 'object'
 ALTER TABLE "agent_tool_selections" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "code_tool_definitions" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;
 
 COMMIT;

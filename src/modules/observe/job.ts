@@ -793,6 +793,14 @@ export async function runObserve(
   // `unreadable` is kept apart from `no` throughout, because folding a transient read failure into
   // "the operator switched it off" throws away a turn already paid for and says something false on
   // the trail (issue #477, rounds 7, 8 and 10).
+  //
+  // AND THE TWO ANSWERS END THE TICK DIFFERENTLY, which is the other half of keeping them apart. A
+  // withdrawal is done: the operator moved the world and the turn was right to stop, so the job
+  // completes. A read that FAILED is a verdict lost, not a verdict declined — nothing re-arms this
+  // row on its own, an `on_resolve` agent has no later burst and a resolve happens once, so a
+  // transient database blip here is a conversation that is never classified (issue #477 review,
+  // round 7). Those fail, and the scheduler retries with backoff up to the cap; the retry spends the
+  // model call again, which is the price, and the spend ceiling gates it like every other tick.
   let refusal: string | null = null;
   const fence = async (): Promise<boolean> => {
     if (refusal !== null) return false;
@@ -976,6 +984,27 @@ export async function runObserve(
     return { outcome: "done" };
   }
 
+  // The four `*_unreadable` reasons, by name rather than by suffix: a refusal that is added later
+  // and happens to end in the word is a decision about retries, and it should be made here on
+  // purpose instead of inherited from how it was spelled.
+  const UNREADABLE_REFUSALS = new Set([
+    "agent_state_unreadable",
+    "settings_unreadable",
+    "conversation_unreadable",
+    "binding_unreadable",
+  ]);
+  const endOnRefusal = (why: string): JobResult => {
+    if (!UNREADABLE_REFUSALS.has(why)) {
+      line("skipped", { skipped: why, messagesRead: transcript.length });
+      return { outcome: "done" };
+    }
+    line("error", { failed: why, messagesRead: transcript.length }, "error");
+    return {
+      outcome: "fail",
+      error: `observe: a fence could not be re-read before writing (${why})`,
+    };
+  };
+
   const startedAt = Date.now();
   let toolCalls = 0;
   try {
@@ -1004,12 +1033,10 @@ export async function runObserve(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    // A REFUSED FENCE IS NOT A FAILURE. `stillWanted` stops the turn by refusing the tool node, and
-    // whatever that surfaces as, the tick is done: the world moved and the turn was right to stop.
-    if (refusal !== null) {
-      line("skipped", { skipped: refusal, messagesRead: transcript.length });
-      return { outcome: "done" };
-    }
+    // A REFUSED FENCE IS NOT A MODEL FAILURE. `stillWanted` stops the turn by refusing the tool
+    // node, and whatever that surfaces as, the exception is not what went wrong — the world moved.
+    // Whether the tick is DONE or retried is the fence's own answer, not this catch's.
+    if (refusal !== null) return endOnRefusal(refusal);
     emitFlowEvent(flow, {
       stage: "observe",
       level: "error",
@@ -1022,10 +1049,7 @@ export async function runObserve(
     });
     return { outcome: "fail", error: `observe: ${msg}` };
   }
-  if (refusal !== null) {
-    line("skipped", { skipped: refusal, messagesRead: transcript.length });
-    return { outcome: "done" };
-  }
+  if (refusal !== null) return endOnRefusal(refusal);
   emitFlowEvent(flow, {
     stage: "observe",
     level: "info",

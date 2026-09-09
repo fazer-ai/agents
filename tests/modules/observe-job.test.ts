@@ -1704,6 +1704,57 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
+  // A WITHDRAWAL COMPLETES THE TICK; A FENCE THAT COULD NOT BE READ RETRIES IT. The two answers are
+  // kept apart everywhere else in this module for the same reason they have to end differently
+  // here: nothing re-arms this row on its own, an `on_resolve` agent has no later burst and a
+  // resolve happens once, so a transient database blip that completes the job is a conversation
+  // that is never classified (issue #477 review, round 7).
+  test("a fence that could not be read fails the tick instead of completing it", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let generating = false;
+    // The fence's own conversation read, and only once the model is answering: the same read at
+    // LOAD time is a different question, and failing it there is not what this test is about.
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (generating && sel?.resetAtMessageId === true) {
+              throw new Error("conversation row unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const model = new LabellingModel(["cancelamento"], async () => {
+      generating = true;
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      unreadable,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+    expect(log.labelsWritten).toEqual([]);
+    const rows = await observeLines();
+    expect(rows.at(-1)?.status).toBe("error");
+    expect((rows.at(-1)?.detail as { failed?: string })?.failed).toBe(
+      "conversation_unreadable",
+    );
+  });
+
   test("a superseded run acts on nothing", async () => {
     await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };

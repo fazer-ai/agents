@@ -844,6 +844,14 @@ export async function runObserve(
   }
 
   const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
+  // MUTED, and this is where the guarantee that a watcher never answers now lives (issue #568).
+  // It used to live in `loadAgentConfig`, which refuses to build a config for a monitoring agent at
+  // all — and that refusal is why this module had to grow its own model call in the first place: the
+  // graph could not run, so a bespoke classifier was written beside it. `loadAgentConfig` keeps
+  // refusing for every customer-facing caller, which is what it is for; here the tick loads the
+  // config with `ignoreMode` and gets a client that cannot post to the customer instead, so the
+  // ordinary graph — the agent's tools, its MCP, its knowledge — can run for a watcher exactly as it
+  // does for a responder, minus the one thing a watcher must not do.
   const client: ChatwootClient = await loadChatwootClient(
     tenantId,
     instanceId,
@@ -851,6 +859,7 @@ export async function runObserve(
       base,
       botToken: bot?.accessToken,
       makeClient: deps.makeClient,
+      mute: true,
     },
   );
   const fetched = await readWindowRows(

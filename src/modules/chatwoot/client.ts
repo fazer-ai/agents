@@ -131,6 +131,73 @@ export interface ChatwootClientConfig {
   accountId: number;
   adminToken: string;
   botToken: string;
+  // A CLIENT THAT CANNOT SPEAK TO THE CUSTOMER (issue #568). A monitoring agent runs the ordinary
+  // graph — its tools, its MCP, its knowledge — and the one thing it must never do is post something
+  // the customer can see. The refusal is enforced at the TRANSPORT rather than on the four methods
+  // that send today (sendMessage, sendTemplate, sendAudioMessage, sendFileAttachment), because a
+  // list of methods is a list that the method added next week is not on, and this repo has paid for
+  // that kind of list before. Every one of them POSTs to the same endpoint, so one URL is the whole
+  // check — and so is the fifth one, whoever writes it.
+  //
+  // It is a BACKSTOP, not the mechanism: the observe path simply never delivers a reply. Reaching
+  // this refusal means something tried to, which is a defect and throws rather than passing quietly.
+  mute?: boolean;
+}
+
+// Thrown by a muted client when something tries to post a customer-visible message. Named so a
+// caller can tell it from a Chatwoot rejection: nothing left this process.
+export class ChatwootMutedError extends Error {
+  constructor(endpoint: string) {
+    super(
+      `Chatwoot ${endpoint} refused: this client belongs to a monitoring agent, which never posts to the customer. Private notes are allowed.`,
+    );
+    this.name = "ChatwootMutedError";
+  }
+}
+
+// POST .../conversations/<id>/messages, and nothing else — the label, attribute and status writes
+// live on their own paths and a watcher is meant to make them.
+const CUSTOMER_MESSAGE_PATH = /\/conversations\/\d+\/messages\/?$/;
+
+// Is this POST a PRIVATE note? Read off the body the caller actually built, in both shapes it can
+// take: JSON for `sendMessage`/`sendTemplate`, multipart for the attachment senders (which set no
+// `private` field at all, so they are outgoing and refused). A body that cannot be read is NOT
+// assumed private: an unparseable send is exactly the one nobody has thought about.
+function isPrivateSend(body: BodyInit | null | undefined): boolean {
+  if (typeof body === "string") {
+    try {
+      const parsed = JSON.parse(body) as { private?: unknown };
+      return parsed?.private === true;
+    } catch {
+      return false;
+    }
+  }
+  if (body instanceof FormData) return body.get("private") === "true";
+  return false;
+}
+
+// The mute itself: one wrapper around the client's own fetch, so `request` and the multipart senders
+// that build their own call are both covered without either of them knowing about it.
+function mutedFetch(inner: typeof fetch): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : "GET")
+    ).toUpperCase();
+    if (
+      method === "POST" &&
+      CUSTOMER_MESSAGE_PATH.test(new URL(url).pathname) &&
+      !isPrivateSend(init?.body)
+    ) {
+      throw new ChatwootMutedError(`POST ${new URL(url).pathname}`);
+    }
+    return inner(input, init);
+  }) as typeof fetch;
 }
 
 export interface ChatwootClientDeps {
@@ -227,7 +294,7 @@ export class ChatwootClient {
     private readonly config: ChatwootClientConfig,
     fetchImpl: typeof fetch,
   ) {
-    this.fetchImpl = fetchImpl;
+    this.fetchImpl = config.mute ? mutedFetch(fetchImpl) : fetchImpl;
     const root = config.baseUrl.replace(/\/+$/, "");
     this.accountBase = `${root}/api/v1/accounts/${config.accountId}`;
   }

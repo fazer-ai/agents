@@ -25,8 +25,21 @@
 --    vanish from the description on the next turn with nothing to show it ever existed. Moved only
 --    when the new key is absent, for the same reason as the grant.
 --
+-- 4. The PRECONDITION. `settings.toolPreconditions` is keyed by tool name too, and it is the one
+--    entry here whose loss is not a lost capability but a lost GUARD: `readToolPreconditions` keeps
+--    whatever name it finds and `applyToolPreconditions` matches by tool name, so a rule left under
+--    the old name simply stops matching and the tool the operator fenced runs unfenced, with the
+--    editor still showing the rule. The write side is stricter than the reader and would refuse the
+--    next save outright (`isGuardableToolName` checks the KEY against the native catalog), so an
+--    unmoved key also bricks settings saves for that agent. Same two-step as the guidance.
+--
 -- FORCE ROW LEVEL SECURITY binds the table owner too, so an UPDATE here would reach zero rows and
 -- report success. Lifted on the four tables for the file and put back (.claude/rules/prisma.md).
+--
+-- ONE TRANSACTION, because the lift above is exactly the invariant `.claude/rules/prisma.md` names:
+-- `migrate deploy` runs the file OUTSIDE a transaction, so a failure between the lift and the
+-- restore leaves four tables no longer binding their own owner to the tenant policy, with the
+-- migration marked applied and nothing in the log. `BEGIN`/`COMMIT` inside the `.sql` is honoured.
 --
 -- `console_tool_name` is copied VERBATIM from 20260903120000, translate table and all, because it
 -- has to answer what the console's `normalizeToolName` answers: the console submits
@@ -49,6 +62,8 @@ LANGUAGE sql IMMUTABLE AS $fn$
       ''),
     'tool')
 $fn$;
+
+BEGIN;
 
 ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
@@ -142,7 +157,30 @@ SET settings = settings #- '{toolGuidance,assign_label}',
 WHERE jsonb_typeof(settings -> 'toolGuidance') = 'object'
   AND jsonb_exists(settings -> 'toolGuidance', 'assign_label');
 
+-- The precondition, same shape and same two steps. Not a duplicate of the block above for the sake
+-- of symmetry: this is a different key with a different failure. A guidance note left behind is a
+-- hint that stops appearing; a PRECONDITION left behind is a tool the operator fenced that now runs
+-- unfenced, and the editor keeps showing the fence.
+UPDATE "agents"
+SET settings = jsonb_set(
+      settings #- '{toolPreconditions,assign_label}',
+      '{toolPreconditions,set_labels}',
+      settings #> '{toolPreconditions,assign_label}'
+    ),
+    updated_at = NOW()
+WHERE jsonb_typeof(settings -> 'toolPreconditions') = 'object'
+  AND jsonb_exists(settings -> 'toolPreconditions', 'assign_label')
+  AND NOT jsonb_exists(settings -> 'toolPreconditions', 'set_labels');
+
+UPDATE "agents"
+SET settings = settings #- '{toolPreconditions,assign_label}',
+    updated_at = NOW()
+WHERE jsonb_typeof(settings -> 'toolPreconditions') = 'object'
+  AND jsonb_exists(settings -> 'toolPreconditions', 'assign_label');
+
 ALTER TABLE "agent_tool_selections" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;
+
+COMMIT;

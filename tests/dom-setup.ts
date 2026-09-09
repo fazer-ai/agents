@@ -30,21 +30,4 @@ __nativeBunGlobals.BunWebSocket = WebSocket;
 __nativeBunGlobals.BunResponse = Response;
 __nativeBunGlobals.BunRequest = Request;
 
-// NOTE: `MessagePort` is put back after registration, unlike the three above,
-// which are only stashed. Bun 1.4.0's `new Worker()` (node:worker_threads)
-// resolves `MessagePort` from the mutable global rather than the intrinsic, so
-// happy-dom's DOM version (which has `addEventListener` but no `.on`) makes
-// Worker construction throw `port.on is not a function` from inside Bun itself:
-// https://github.com/oven-sh/bun/issues/40268. Nothing in our own code builds a
-// Worker, but pino does whenever it has a `transport` (through thread-stream),
-// which `src/api/lib/logger.ts` configures outside production, so on 1.4.0
-// this took down every test file that transitively imports the logger: the
-// suite went from 4133 passing to 2096 passing / 156 failing, with no change of
-// ours. Measured on 1.3.14 and 1.4.0; restoring `MessagePort` alone is enough
-// (`MessageChannel` does not need it), and no test uses the DOM `MessagePort`.
-// Remove when the upstream bug is fixed and our Bun floor is past that release.
-const NativeMessagePort = globalThis.MessagePort;
-
 GlobalRegistrator.register();
-
-globalThis.MessagePort = NativeMessagePort;

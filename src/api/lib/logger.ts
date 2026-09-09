@@ -65,8 +65,9 @@ export function deepSanitizeObject(
 //     229), so it is the worker, not the file. With this branch taken: 8192 pass, and the run drops
 //     from 193.6s to 50.8s at `--parallel=12`.
 //
-// The same worker has taken this suite down once before by another path: see the MessagePort note
-// in tests/dom-setup.ts, where Bun 1.4.0's `new Worker()` cut the suite from 4133 passing to 2096.
+// The same worker has taken this suite down once before by another path: on Bun 1.4.0 `new Worker()`
+// read `MessagePort` off the mutable global, which happy-dom replaces, and the suite fell from 4133
+// passing to 2096 (oven-sh/bun#40268, fixed in 1.4.1; the preload carried a restore until then).
 // Nothing else in this codebase constructs a Worker; pino's transport was always the only one.
 let logger = pino(
   config.env !== "development"

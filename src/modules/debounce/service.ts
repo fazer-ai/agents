@@ -117,6 +117,42 @@ export async function stampDeferral(params: {
   );
 }
 
+// Drops the deferral stamp, because the waiting it measured is over.
+//
+// Without this the deadline outlives the burst it belonged to, and the protection turns ITSELF off:
+// a deferred flush eventually runs, a message arriving during its delivery re-arms the row and
+// carries the stamp into the NEW burst, and the flush cannot clear it on completion because that
+// compare-and-set needs a row that is still CLAIMED. Once the carried stamp is older than the
+// ceiling, every later flush skips the busy-thread check outright, even against a turn that just
+// started. Found in review of #588, one round after the bug it mirrors.
+//
+// Under the arm lock, like the stamp, so a re-arm racing this cannot resurrect what it removed.
+export async function clearDeferral(params: {
+  tenantId: bigint;
+  threadId: string;
+  base?: PrismaClient;
+}): Promise<void> {
+  const base = params.base ?? basePrisma;
+  const dedupeKey = debounceDedupeKey(params.threadId);
+  await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
+      const row = await db.schedulerJob.findFirst({
+        where: { kind: "DEBOUNCE", dedupeKey },
+        select: { id: true, payload: true },
+      });
+      if (!row || readDeferringSince(row.payload) === null) return;
+      const { deferringSince: _dropped, ...rest } = row.payload as Record<
+        string,
+        unknown
+      >;
+      await db.schedulerJob.update({
+        where: { id: row.id },
+        data: { payload: rest as Prisma.InputJsonObject },
+      });
+    }),
+  );
+}
+
 export interface ArmDebounceParams {
   tenantId: bigint;
   threadId: string;

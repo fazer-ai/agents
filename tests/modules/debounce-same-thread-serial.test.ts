@@ -60,6 +60,7 @@ const CONV_CORRIDA_A = 4246;
 const CONV_CORRIDA_B = 4247;
 const CONTACT_INBOX_CORRIDA = 778;
 const CONV_CARIMBO = 4249;
+const CONV_LIMPEZA = 4250;
 const CHATWOOT_INBOX_ID = 7;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -566,5 +567,67 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     const stamp = (row.payload as { deferringSince?: number }).deferringSince;
     console.log(`[carimbo] deferringSince gravado: ${stamp ?? "NENHUM"}`);
     expect(typeof stamp).toBe("number");
+  }, 30_000);
+
+  test("the stamp is dropped once the flush actually runs, so it cannot outlive its burst", async () => {
+    // The mirror of the bug above, found one review round later. A deferred flush eventually runs; a
+    // message arriving during its delivery re-arms the row and carries the stamp into the NEW burst,
+    // and completion cannot clear it because that CAS needs a CLAIMED row. Aged past the ceiling, the
+    // carried stamp makes every later flush skip the busy-thread check outright — the protection
+    // switching itself off, which is worse than the defect it was built for.
+    await seedConversation(CONV_LIMPEZA);
+    const thread = threadOf(CONV_LIMPEZA);
+    const key = debounceDedupeKey(thread);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND dedupe_key = '${key}'`,
+    );
+    const velho = Date.now() - 120_000;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: key,
+        status: "PENDING",
+        runAt: new Date(),
+        payload: {
+          threadId: thread,
+          agentBotId: 9,
+          burstStartedAt: velho,
+          deferringSince: velho,
+        },
+      },
+    });
+
+    // No turn in flight: the flush runs, which is when the waiting it measured is over.
+    const out = await flushDebounceJob({
+      job: {
+        id: jobIdA,
+        tenantId,
+        kind: "DEBOUNCE",
+        payload: {
+          threadId: thread,
+          agentBotId: 9,
+          burstStartedAt: velho,
+          deferringSince: velho,
+        },
+        attempts: 0,
+        claimSeq: 0,
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => overlapModel(10, { active: 0, max: 0 }, []),
+        makeClient: stub([]),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(out.outcome).not.toBe("reschedule");
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+      select: { payload: true },
+    });
+    const stamp = (row.payload as { deferringSince?: number }).deferringSince;
+    console.log(`[limpeza] deferringSince apos rodar: ${stamp ?? "removido"}`);
+    expect(stamp).toBeUndefined();
   }, 30_000);
 });

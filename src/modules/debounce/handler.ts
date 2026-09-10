@@ -77,6 +77,7 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import {
+  clearDeferral,
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
@@ -1836,6 +1837,18 @@ export async function flushDebounceJob(
   // turn therefore made every debounce rollback skip and every queued message miss its own reply.
   // `markFlushHold` is read by this line and by nothing else.
   markFlushHold(graphThreadId);
+  // THE WAITING IS OVER, so the stamp that measured it goes. Left behind, it outlives its burst: a
+  // message arriving during this flush's delivery re-arms the row and carries the stamp into the
+  // next burst, and completion cannot clear it because that CAS needs a CLAIMED row. Once it ages
+  // past the ceiling every later flush skips the check above outright — the protection switching
+  // itself off, which is worse than the defect it was built for.
+  //
+  // Only when this job actually carried one: the claimed payload IS the row's payload at claim time,
+  // and no other writer stamps this thread, so an absent field means there is nothing to clear. That
+  // keeps the extra write off the path almost every flush takes.
+  if (readDeferringSince(job.payload) !== null) {
+    await clearDeferral({ tenantId, threadId, base });
+  }
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).

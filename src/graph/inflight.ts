@@ -79,6 +79,35 @@ export function clearTurnInFlight(threadId: string): void {
   else inFlight.delete(threadId);
 }
 
+// A THIRD REGISTRY, and it is deliberately invisible to the two questions above.
+//
+// The debounce flush needs to exclude ANOTHER FLUSH over the stretch between "is this thread free"
+// and the moment its turn takes its own claim, several awaits later (issue #588). The obvious way to
+// get that was `markTurnReserved`, and it was wrong for a reason review had to find: `reserved` is
+// counted by `isTurnInFlight`, which two subsystems ask before doing their own work on the thread.
+// `undoRefusedTurn` refuses to roll back a superseded answer while it reads true, so a reservation
+// held across the whole turn made EVERY debounce rollback skip, leaving answers the customer never
+// received sitting in memory; and `claimIngestWrite` answers busy, so `drainPendingIngest` reached
+// none of the queued messages and the reply went out without the history it was supposed to carry.
+//
+// So the flush-to-flush hold gets its own map. It says nothing to anybody else, which is the whole
+// requirement: the only reader is the flush, and what it excludes is another flush.
+const flushHolds = new Map<string, number>();
+
+export function markFlushHold(threadId: string): void {
+  flushHolds.set(threadId, (flushHolds.get(threadId) ?? 0) + 1);
+}
+
+export function clearFlushHold(threadId: string): void {
+  const left = (flushHolds.get(threadId) ?? 0) - 1;
+  if (left > 0) flushHolds.set(threadId, left);
+  else flushHolds.delete(threadId);
+}
+
+export function isFlushHeld(threadId: string): boolean {
+  return (flushHolds.get(threadId) ?? 0) > 0;
+}
+
 // Either kind of hold: an invoke that is reading the thread, or a reservation for one that is about
 // to. This is the answer every writer wants.
 export function isTurnInFlight(threadId: string): boolean {

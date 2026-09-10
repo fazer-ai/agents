@@ -1,6 +1,12 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
+import {
+  clearFlushHold,
+  isFlushHeld,
+  isTurnInFlight,
+  markFlushHold,
+} from "@/graph/inflight";
 import { armIngest } from "@/graph/ingest-job";
 import { parseThreadId } from "@/graph/nudge";
 import { type AgentConfig, loadAgentConfig } from "@/graph/prepare";
@@ -70,9 +76,28 @@ import {
   SPEND_CEILING_BURST_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
-import { readLastMessageId } from "./service";
+import {
+  clearDeferral,
+  readBurstStart,
+  readDeferringSince,
+  readLastMessageId,
+  stampDeferral,
+} from "./service";
 import { readDebounceConfig } from "./settings";
 import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
+
+// How long a flush waits before asking again whether the thread is free. Matched to the debounce
+// worker's own tick (DEBOUNCE_WORKER_INTERVAL_MS, 2500ms by default) rather than to the minute
+// continuous ingestion uses: nothing is gained by coming back sooner than the next tick, and unlike
+// an ingestion nobody is waiting on, there is a customer at the other end of this one.
+const DEFER_ON_TURN_MS = 2_000;
+
+// The total a burst may spend waiting for a busy thread, measured from when the burst opened. Past
+// it the flush answers anyway: an unanswered customer is worse than a duplicated line in memory.
+// Five minutes is past any legitimate turn — model, tools at their own bound, and a split delivery
+// paying out its balloons — and short enough that a thread wedged by a dead process does not swallow
+// the conversation.
+const DEFER_CEILING_MS = 5 * 60_000;
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -1718,11 +1743,133 @@ export async function flushDebounceJob(
     }
   }
 
+  // A TURN ALREADY RUNNING ON THIS THREAD is the one thing between here and the invoke that no gate
+  // above asks about (issue #588), and the arm side decided it deliberately: `armDebounce` treats a
+  // claim in flight as "the previous flush is finished business", so a customer writing mid-turn
+  // opens a NEW burst and its flush fires a window later, while the first turn is still in the
+  // model, in a tool, or paying out its split balloons.
+  //
+  // MEASURED rather than reasoned about, on 4b35f318: two flushes on one conversation gave a peak of
+  // two concurrent model calls, both handed a history without the other's answer, and a checkpoint
+  // whose channel held the customer's burst TWICE — each invoke is a read-modify-write of the whole
+  // channel, so each appended what it had loaded. The duplicate is permanent memory the summarizer
+  // reads. What did NOT happen is a second reply: the watermark CAS already dedups the post, which
+  // is why this defers the TURN and not the answer.
+  //
+  // HERE AND NOT INSIDE `coalesceAndRunTurn`, which the operator's re-engage button calls too
+  // (../conversations/reengage.ts): an exclusion in there would turn a deliberate human action into
+  // a silent no-op. The flush is the caller that has somewhere to defer TO.
+  //
+  // THE GRAPH THREAD is the key, not the conversation's: the channel is per contact-inbox, so two
+  // conversations of the same contact corrupt the same memory and have to take turns on it. The
+  // narrower key would leave that case exactly as it is today.
+  //
+  // Same shape as continuous ingestion, which had this hazard first and answered it the same way
+  // (../../graph/ingest-job.ts): put the work down and come back, rather than append into a channel
+  // somebody else is about to overwrite.
+  const graphThreadId = resolveGraphThreadId(
+    tenantId,
+    instanceId,
+    conversationId,
+    ctx.contactInboxId,
+  );
+  if (isTurnInFlight(graphThreadId) || isFlushHeld(graphThreadId)) {
+    const now = Date.now();
+    // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
+    // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and
+    // a deferral loop never reaches DEAD. A counter carried in the payload is worse: `armDebounce`
+    // re-arms with a full payload and `upsertJobRow` treats a present payload as authoritative, so
+    // the next message the customer types ERASES it — the counter would vanish in exactly the case
+    // it exists for, a customer who keeps writing at a thread that is stuck.
+    //
+    // `burstStartedAt` survives because `armDebounce` reads it back off the row and rewrites it
+    // while the burst continues, which is the same anchor its own anti-starvation cap uses.
+    //
+    // `deferringSince` is stamped on the FIRST deferral and carried by `armDebounce` across every
+    // re-arm of a live row. `burstStartedAt` alone was not enough and review of this change is what
+    // showed it: a message arriving while the flush is CLAIMED opens a new burst by design, taking a
+    // fresh `burstStartedAt` with it, so a customer who kept typing at a wedged thread pushed the
+    // deadline forward on every arrival and was never answered. It falls back to `burstStartedAt`
+    // for the first pass, before any stamp exists.
+    const since =
+      readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? now;
+    if (now < since + DEFER_CEILING_MS) {
+      logger.info(
+        "debounce flush: a turn is in flight (thread=%s), deferring the burst on conversation %s",
+        graphThreadId,
+        String(conversationId),
+      );
+      // NOT a failure, and the distinction is load-bearing: a `fail` here would spend an attempt,
+      // stamp `last_error` on the conversation and eventually dead-letter a burst whose only problem
+      // is that it arrived at a busy moment.
+      //
+      // Stamped through its own write under the ARM lock rather than as a `payloadPatch` here: the
+      // patch rides `rescheduleJob`, whose CAS requires the row to still be CLAIMED, and the window
+      // the stamp has to survive is exactly the one where a message re-armed it to PENDING and the
+      // CAS fails. See `stampDeferral`.
+      await stampDeferral({ tenantId, threadId, since, base });
+      return {
+        outcome: "reschedule",
+        runAt: new Date(now + DEFER_ON_TURN_MS),
+      };
+    }
+    // PAST THE DEADLINE WE RUN ANYWAY, which is a choice and not an oversight. A turn that never
+    // releases the thread would otherwise leave the customer unanswered forever, and an unanswered
+    // customer is worse than a duplicated line in the agent's memory. Loud, because a thread that
+    // reaches this has something wrong with it that no other line would report.
+    logger.warn(
+      "debounce flush: a turn has held thread %s past the deferral ceiling; answering conversation %s anyway",
+      graphThreadId,
+      String(conversationId),
+    );
+  }
+  // RESERVED IN THE SAME TURN OF THE EVENT LOOP as the check above, with no await between them, and
+  // that adjacency is the whole point. A turn marks itself deep inside `runLoadedTurn`, several
+  // awaits past here — a message fetch, the burst selection, the authorization gate — so between the
+  // check and the mark there is a window in which a SECOND flush reads an unheld thread and passes.
+  // The window is reachable: two conversations of one contact are two scheduler rows, claimed in the
+  // same tick and started concurrently by `runDebounceTick`, and they share this key.
+  //
+  // ITS OWN REGISTRY, not `markTurnReserved`, and review is what showed why. `reserved` is counted
+  // by `isTurnInFlight`, which two subsystems ask before doing their own work on this thread:
+  // `undoRefusedTurn` refuses to roll back a superseded answer while it reads true, and
+  // `claimIngestWrite` answers busy so `drainPendingIngest` reaches nothing. A hold across the whole
+  // turn therefore made every debounce rollback skip and every queued message miss its own reply.
+  // `markFlushHold` is read by this line and by nothing else.
+  markFlushHold(graphThreadId);
+  // THE WAITING IS OVER, so the stamp that measured it goes. Left behind, it outlives its burst: a
+  // message arriving during this flush's delivery re-arms the row and carries the stamp into the
+  // next burst, and completion cannot clear it because that CAS needs a CLAIMED row. Once it ages
+  // past the ceiling every later flush skips the check above outright — the protection switching
+  // itself off, which is worse than the defect it was built for.
+  //
+  // Only when this job actually carried one: the claimed payload IS the row's payload at claim time,
+  // and no other writer stamps this thread, so an absent field means there is nothing to clear. That
+  // keeps the extra write off the path almost every flush takes.
+
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).
   // The error is also surfaced on the conversation (item 6) so the operator can re-engage; a
   // successful answer clears it.
   try {
+    // INSIDE the try, so the `finally` below releases the hold no matter how this ends. Sitting
+    // above it, a rejection here — a statement timeout on the cleanup write, say — left the hold
+    // marked and never released, and every later burst on this graph thread then waited out its
+    // five-minute ceiling until the process restarted (round 5 of the review).
+    //
+    // And best-effort on top of that, so a failed cleanup does not become a failed turn: a stale
+    // stamp costs an early ceiling later, which is smaller than refusing to answer the customer.
+    // The `.catch` also keeps it out of the turn-failure handler below, whose side effects (the
+    // observer hand-over, the conversation error banner) are about a turn that ran, not about this.
+    if (readDeferringSince(job.payload) !== null) {
+      await clearDeferral({ tenantId, threadId, base }).catch((e) =>
+        logger.warn(
+          "debounce flush: could not clear the deferral stamp on thread %s: %s",
+          graphThreadId,
+          err(e),
+        ),
+      );
+    }
     const outcome = await coalesceAndRunTurn(
       {
         tenantId,
@@ -1811,6 +1958,12 @@ export async function flushDebounceJob(
       });
     }
     throw e;
+  } finally {
+    // Balanced, on every exit including the throw: an unbalanced release hands the thread to a
+    // writer this flush is about to undo, and an unbalanced hold wedges the conversation until the
+    // process restarts. The turn takes its own claim inside `runLoadedTurn`; this one only covers
+    // the stretch before it.
+    clearFlushHold(graphThreadId);
   }
 }
 

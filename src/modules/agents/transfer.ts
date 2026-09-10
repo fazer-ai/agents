@@ -44,6 +44,7 @@ import {
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import { auditMutation } from "@/modules/audit/service";
 import {
   MAX_SCHEDULE_EXCEPTIONS,
@@ -1298,6 +1299,20 @@ export async function importAgent(
       warnings.push({
         code: "guidanceClipped",
         params: { field: clipped.path, max: clipped.max },
+      });
+    }
+
+    // The protected-label list over its ceiling is clamped for exactly the reasons above, and one
+    // more that is specific to it: `readProtectedLabels` stops AT the ceiling, so a longer stored
+    // list shows the operator guards that guard nothing — the console reloads what was stored, and
+    // the tool honours only the first ones. The direct writes refuse (the person is at the keyboard);
+    // a bundle authored elsewhere is clamped, warned about, and lands disabled and in test mode for
+    // the operator to review (issue #568, review round 23).
+    const dropped = clampProtectedLabelsInPlace(settings);
+    if (dropped > 0) {
+      warnings.push({
+        code: "protectedLabelsClipped",
+        params: { count: dropped, max: PROTECTED_LABELS_MAX },
       });
     }
 
@@ -2614,6 +2629,33 @@ async function createMissingComponents(
 // bundle. Same argument that put RENAMED_NATIVE_TOOLS on this boundary, with the opposite verdict:
 // there the old key had to be MOVED because its value still governs something, here it is dropped
 // because its value governs nothing.
+// Cuts `settings.setLabels.protected` down to the ceiling, IN PLACE, and answers how many entries
+// it dropped. Counted the way the reader counts (blanks, non-strings and duplicates never became
+// guards), so the number in the warning is the number of guards the operator loses.
+function clampProtectedLabelsInPlace(settings: unknown): number {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return 0;
+  const block = (settings as Record<string, unknown>).setLabels;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return 0;
+  const raw = (block as Record<string, unknown>).protected;
+  if (!Array.isArray(raw)) return 0;
+  const kept: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const label = entry.trim();
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    kept.push(label);
+  }
+  if (kept.length <= PROTECTED_LABELS_MAX) return 0;
+  (block as Record<string, unknown>).protected = kept.slice(
+    0,
+    PROTECTED_LABELS_MAX,
+  );
+  return kept.length - PROTECTED_LABELS_MAX;
+}
+
 function stripRetiredLabelKeys(settings: unknown): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;

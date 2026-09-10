@@ -14,6 +14,7 @@ import {
 } from "@/graph/prepare";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
+import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
@@ -862,9 +863,9 @@ export async function runObserve(
   // invitation the guard is there to withdraw. The unfiltered `current` still goes to `buildToolset`
   // as the ONE read: what the tool does with it (seed `shownLabels`, minus the guard) is its rule to
   // apply, and copying the subtraction here would make two places responsible for one decision.
-  const currentForPrompt = cfg.protectedLabels.length
-    ? current.filter((l) => !cfg.protectedLabels.includes(l))
-    : current;
+  // Through the same projection the tool renders: the guard subtracted AND the ceiling applied, so
+  // this block cannot advertise a label the tool's own description leaves out (see label-view.ts).
+  const currentForPrompt = modelVisibleLabels(current, cfg.protectedLabels);
 
   // THE TURN ITSELF, and from here on this is the ordinary graph (issue #568). What used to sit in
   // these lines was a classifier: one model call with a JSON schema built from the operator's label

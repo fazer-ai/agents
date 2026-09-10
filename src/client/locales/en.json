@@ -1259,6 +1259,8 @@
       "mcpReused": "MCP server \"{{name}}\" already existed and was reused; check it is right.",
       "mcpUnsafeStdio": "MCP server \"{{name}}\" has an unsupported command and was skipped.",
       "nativeToolUnknown": "Built-in tool \"{{name}}\" is not one this version has, so it was left out of the agent.",
+      "protectedLabelsClipped_one": "The bundle carried more than {{max}} labels out of reach, so {{count}} of them was dropped on import.",
+      "protectedLabelsClipped_other": "The bundle carried more than {{max}} labels out of reach, so {{count}} of them were dropped on import.",
       "toolSchemaAdjusted": "Tool \"{{name}}\": the imported input schema was adjusted — {{reason}}. Check the arguments the agent may send.",
       "unknownGrantSourceSkipped_one": "{{count}} tool grant came from a newer version and was skipped.",
       "unknownGrantSourceSkipped_other": "{{count}} tool grants came from a newer version and were skipped."

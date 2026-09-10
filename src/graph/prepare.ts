@@ -7,6 +7,7 @@ import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
+import { modelVisibleLabels } from "@/graph/tools/label-view";
 import {
   applyToolPreconditions,
   preconditionFlowEvent,
@@ -1219,10 +1220,10 @@ export async function buildToolset(
   // in the two places that have to agree. Filtered at the SEAM rather than at each reader, because a
   // scope that leaked one into the description would offer the model a label it is not allowed to
   // keep and would then be told it kept it anyway.
+  // Guarded ones subtracted AND the ceiling applied, through the tool's own projection: this seam
+  // and the tool's description have to answer the same question with the same function.
   const hideGuarded = (labels: string[]): string[] =>
-    cfg.protectedLabels.length === 0
-      ? labels
-      : labels.filter((l) => !cfg.protectedLabels.includes(l));
+    modelVisibleLabels(labels, cfg.protectedLabels);
   if (grantsLabels && ctx.conversationId > 0) {
     if (kanban) shownLabels.task = hideGuarded(kanban.card.labels);
     try {
@@ -1302,22 +1303,28 @@ export async function buildToolset(
   const { tools, dropped } = dropDuplicateToolNames(
     [
       ...nativeTools,
-      ...buildDocumentTools(cfg.documentSelections, {
-        tenantId: ctx.tenantId,
-        turnState: ctx.turnState,
-        // The document is bound to the conversation by its THREAD key, never by the conversation id
-        // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
-        // have several. Absent off a real conversation, and the document is then issued unbound.
-        threadId: apptThreadId ?? undefined,
-        chatwootInstanceId: ctx.conversationId > 0 ? ctx.instanceId : null,
-        conversationDbId: cfg.conversationDbId,
-        base: ctx.base,
-        storageDir: ctx.documentsStorageDir,
-        // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
-        // cannot disagree by a day.
-        timezone: cfg.timezone,
-        simulate: deps.simulateDocuments,
-      }),
+      // A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so a muted turn is not offered one: without a
+      // turnState to queue into it refuses every call anyway, and with one it would deliver through
+      // the very send this client exists to refuse. Same reading `buildNativeTools` and the
+      // toolpacks make (issue #568, review round 23).
+      ...(ctx.client.muted
+        ? []
+        : buildDocumentTools(cfg.documentSelections, {
+            tenantId: ctx.tenantId,
+            turnState: ctx.turnState,
+            // The document is bound to the conversation by its THREAD key, never by the conversation id
+            // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
+            // have several. Absent off a real conversation, and the document is then issued unbound.
+            threadId: apptThreadId ?? undefined,
+            chatwootInstanceId: ctx.conversationId > 0 ? ctx.instanceId : null,
+            conversationDbId: cfg.conversationDbId,
+            base: ctx.base,
+            storageDir: ctx.documentsStorageDir,
+            // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
+            // cannot disagree by a day.
+            timezone: cfg.timezone,
+            simulate: deps.simulateDocuments,
+          })),
       ...buildHttpTools(cfg.httpToolDefs, {
         resolveCredential,
         emitAck,

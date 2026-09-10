@@ -2261,6 +2261,12 @@ function AgentEditor() {
           'The text in "{{field}}" was longer than {{max}} characters and was trimmed on import.',
           p,
         );
+      case "protectedLabelsClipped":
+        return t(
+          "editor.importWarning.protectedLabelsClipped",
+          "The bundle carried more than {{max}} labels out of reach, so {{count}} of them were dropped on import.",
+          { ...p, count: importWarningCount(p) },
+        );
       case "credentialNotFound":
         return t(
           "editor.importWarning.credentialNotFound",

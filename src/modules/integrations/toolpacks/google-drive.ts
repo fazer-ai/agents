@@ -181,7 +181,13 @@ const SEND_FILE_SCHEMA = z.object({
 
 const DRIVE_TOOL_SPECS: ToolSpec[] = [
   { name: "drive_find_file", schema: FIND_FILE_SCHEMA },
-  { name: "drive_send_file", schema: SEND_FILE_SCHEMA },
+  // The file goes to the customer as an attachment, after a download that costs real time and
+  // Google quota — so a muted turn is not offered it at all.
+  {
+    name: "drive_send_file",
+    schema: SEND_FILE_SCHEMA,
+    deliversToCustomer: true,
+  },
 ];
 
 function buildFindFileTool(

@@ -124,6 +124,12 @@ export interface ToolArgSpec {
 export interface ToolSpec {
   name: string;
   schema: z.ZodObject<z.ZodRawShape>;
+  // WHETHER THIS TOOL'S WHOLE POINT IS TO PUT SOMETHING IN FRONT OF THE CUSTOMER. A muted turn (the
+  // observer's, issue #568) is not offered one: the send is refused at that client's transport, and
+  // the tool would have done its expensive half — Drive downloads the file first — before finding
+  // out. Declared on the SPEC rather than guessed from the name, so a pack added later states it
+  // where its tools are already listed.
+  deliversToCustomer?: boolean;
 }
 
 // One integration's outbound tools. Pure builder: returns StructuredTools filtered to the
@@ -200,12 +206,25 @@ export function buildToolpackTools(
         fetchImpl: deadlineFetch(ctx.fetchImpl ?? fetch, ctx.expiresOn),
       }
     : ctx;
+  // A MUTED CLIENT DECIDES WHAT THE TURN MAY BE OFFERED, here as in buildNativeTools: a tool whose
+  // delivery this client refuses costs a model round and answers with a failure the operator reads
+  // as a broken integration. Read off the client the ctx already carries, so the mute and the
+  // toolset cannot disagree.
+  const muted = ctx.chatwoot?.client?.muted === true;
   const out: StructuredToolInterface[] = [];
   for (const sel of selections) {
     if (sel.enabledTools.length === 0) continue;
     const pack = getToolpack(sel.catalogType);
     if (!pack) continue;
-    out.push(...pack.build(sel, bounded));
+    const built = pack.build(sel, bounded);
+    if (!muted) {
+      out.push(...built);
+      continue;
+    }
+    const delivers = new Set(
+      pack.toolSpecs.filter((t) => t.deliversToCustomer).map((t) => t.name),
+    );
+    out.push(...built.filter((t) => !delivers.has(t.name)));
   }
   return out;
 }

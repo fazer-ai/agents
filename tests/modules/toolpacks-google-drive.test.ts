@@ -3,9 +3,10 @@ import type { ToolMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { googleDriveToolpack } from "@/modules/integrations/toolpacks/google-drive";
-import type {
-  IntegrationSelection,
-  ToolpackCtx,
+import {
+  buildToolpackTools,
+  type IntegrationSelection,
+  type ToolpackCtx,
 } from "@/modules/integrations/toolpacks/types";
 
 // A fetch stub whose handler decides the response per request — Drive flows mix JSON (metadata)
@@ -438,5 +439,37 @@ describe("google drive toolpack — integration failures are marked (issue #40)"
     expect(out2.status).toBe("error");
     expect(String(out2.content)).toContain("not connected");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("a muted turn is not offered the delivery tool", () => {
+  // The observer runs the ordinary toolset (issue #568), and `drive_send_file` ends in a Chatwoot
+  // send the muted client refuses — after downloading the file from Google, which costs real time
+  // and quota. Declared on the pack's own spec (`deliversToCustomer`) and filtered at the one build
+  // seam, so a pack added later states it where its tools are already listed.
+  function ctxWithMute(muted: boolean): ToolpackCtx {
+    return baseCtx({
+      chatwoot: {
+        client: { muted } as unknown as ChatwootClient,
+        conversationId: 5,
+      },
+    });
+  }
+  const selection = sel({
+    enabledTools: ["drive_find_file", "drive_send_file"],
+  });
+
+  test("the send is gone; the search stays", () => {
+    const names = buildToolpackTools([selection], ctxWithMute(true)).map(
+      (t) => t.name,
+    );
+    expect(names).toEqual(["drive_find_file"]);
+  });
+
+  test("an ordinary turn keeps both", () => {
+    const names = buildToolpackTools([selection], ctxWithMute(false)).map(
+      (t) => t.name,
+    );
+    expect(names).toEqual(["drive_find_file", "drive_send_file"]);
   });
 });

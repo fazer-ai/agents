@@ -58,6 +58,7 @@ import {
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
 import { NATIVE_TOOL_CATEGORY, type NativeToolName } from "./catalog";
+import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 
 // Native Chatwoot tools the agent can call mid-turn, all over the bot token. Each is bound to a
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
@@ -819,7 +820,13 @@ function labelWriteReport(
   removed: string[],
   next: string[],
 ): string {
-  const now = next.length ? next.map((l) => `"${l}"`).join(", ") : "(none)";
+  // The report is the THIRD statement about the same list, so it is capped like the other two —
+  // and it says how many it left out rather than presenting a partial set as the whole truth.
+  const head = next.slice(0, SHOWN_LABELS_MAX);
+  const rest = next.length - head.length;
+  const now = next.length
+    ? `${head.map((l) => `"${l}"`).join(", ")}${rest > 0 ? ` (+${rest} more)` : ""}`
+    : "(none)";
   const parts: string[] = [];
   if (added.length)
     parts.push(`added ${added.map((l) => `"${l}"`).join(", ")}`);
@@ -846,7 +853,10 @@ function recordShown(
   next: string[],
 ): void {
   if (!ctx.shownLabels) ctx.shownLabels = {};
-  ctx.shownLabels[scope] = [...next];
+  // Through the same projection the description renders, so a second call in this turn diffs
+  // against exactly what the model was handed — including the ceiling. A label past it is unseen,
+  // and unseen is never a removal.
+  ctx.shownLabels[scope] = modelVisibleLabels(next, ctx.protectedLabels);
 }
 
 // WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the diff

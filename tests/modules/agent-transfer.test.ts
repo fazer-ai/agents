@@ -5,8 +5,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import type { TenantContext } from "@/lib/tenancy";
-import { assertSettingsRetiredLabelKeys } from "@/modules/agents/service";
+import {
+  assertSettingsProtectedLabels,
+  assertSettingsRetiredLabelKeys,
+} from "@/modules/agents/service";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import {
   type AgentExport,
   configBusinessHoursId,
@@ -1922,6 +1926,67 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ).toBe(20);
     // And the agent it produced saves again, which is the whole point of dropping instead of storing.
     expect(() => assertSettingsRetiredLabelKeys(stored)).not.toThrow();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A BUNDLE OVER THE PROTECTED-LABEL CEILING IS CLAMPED, not refused and not stored whole: the
+  // reader stops AT the ceiling, so a longer stored list would show the operator guards that guard
+  // nothing, and the agent it produced would fail its own first save (issue #568, review round 23).
+  test("a bundle with more guards than the ceiling imports clamped, and says so", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com guardas demais";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.setLabels = {
+      protected: Array.from({ length: 57 }, (_, i) => `guarda-${i}`),
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = (row.settings as Record<string, Record<string, string[]>>)
+      .setLabels?.protected;
+    expect(stored?.length).toBe(PROTECTED_LABELS_MAX);
+    // The list kept is the FRONT of the bundle's, which is the same one the reader would have
+    // honoured — so what the console shows and what the tool guards are the same set.
+    expect(stored?.[0]).toBe("guarda-0");
+    expect(stored?.at(-1)).toBe(`guarda-${PROTECTED_LABELS_MAX - 1}`);
+    // And the operator is told, with the count of guards that are gone.
+    const w = warnings.find((x) => x.code === "protectedLabelsClipped");
+    expect(w?.params).toEqual({ count: 7, max: PROTECTED_LABELS_MAX });
+    // The agent it produced saves again, which is the point of clamping instead of storing whole.
+    expect(() =>
+      assertSettingsProtectedLabels(row.settings, undefined),
+    ).not.toThrow();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a bundle within the ceiling is stored untouched, and warns about nothing", async () => {
+    // The negative above is worth nothing without this: a clamp that ran always would pass it and
+    // would be reshaping every ordinary bundle on the way in.
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com guardas de menos";
+    (bundle.agent.settings as Record<string, unknown>).setLabels = {
+      protected: ["agente-off", "testando-agente"],
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect(
+      (row.settings as Record<string, Record<string, string[]>>).setLabels
+        ?.protected,
+    ).toEqual(["agente-off", "testando-agente"]);
+    expect(warnings.some((x) => x.code === "protectedLabelsClipped")).toBe(
+      false,
+    );
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 

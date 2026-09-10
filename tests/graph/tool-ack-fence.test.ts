@@ -136,6 +136,40 @@ describe.skipIf(!dbUp)(
       expect(r.requests.length).toBe(1);
     });
 
+    test("a MUTED turn is not offered a document tool either", async () => {
+      // A document is an attachment to the customer: without a turnState to queue into it refuses
+      // every call, and with one it would deliver through the very send the muted client exists to
+      // refuse. Same reading the native toolset and the toolpacks make (issue #568, round 23).
+      const cfg = config() as unknown as Record<string, unknown>;
+      cfg.documentSelections = [
+        {
+          templateId: 1n,
+          name: "Recibo",
+          slug: "recibo",
+          description: null,
+          fields: [],
+        },
+      ];
+      const named = async (muted: boolean) => {
+        const client = { muted } as unknown as ChatwootClient;
+        const tools = await buildToolset(
+          cfg as unknown as AgentConfig,
+          {
+            tenantId: 1n,
+            instanceId: 1n,
+            base: appDb,
+            client,
+            conversationId: 77,
+            threadId: `t-doc-${process.pid}`,
+          },
+          { buildNativeTools: () => [] },
+        );
+        return tools.map((t) => t.name);
+      };
+      expect(await named(false)).toContain("send_recibo");
+      expect(await named(true)).not.toContain("send_recibo");
+    });
+
     test("a MUTED turn has no ack at all, and the tool runs", async () => {
       // The ack is a message in front of the customer, and the muted transport refuses one by
       // design — reaching that refusal is a defect, so an observation must not arm an ack it

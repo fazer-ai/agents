@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { modelVisibleLabels, SHOWN_LABELS_MAX } from "@/graph/tools/label-view";
 import {
   applyLabelIntent,
   buildNativeTools,
@@ -1598,6 +1599,96 @@ describe("no native tool takes code from the model", () => {
 // nor a write is recorded as UNKNOWN and fails the battery, so a client call added to a handler
 // later cannot join the trace silently. Same for the tool table — it is asked to cover every name in
 // the catalog, so a tool added later arrives with an entry or the suite says which one is missing.
+describe("what the model is shown has a ceiling", () => {
+  // Every other model-facing list in the file is capped; a conversation's own set was not, and it is
+  // the one an automation can grow without an operator looking. Uncapped it lands in the observer's
+  // prompt and TWICE in this tool's description, so a bulk-labelled conversation can push the whole
+  // tick past the provider's context limit — and every retry of it fails the same way.
+  const many = Array.from({ length: 90 }, (_, i) => `etq-${i}`);
+
+  test("the description shows the ceiling, not the whole set", () => {
+    const { client } = recordingClient();
+    const desc =
+      byName(
+        buildNativeTools({
+          client,
+          conversationId: 9,
+          shownLabels: { conversation: modelVisibleLabels(many) },
+        }),
+        "set_labels",
+      ).description ?? "";
+    expect(desc).toContain("etq-0");
+    expect(desc).toContain(`etq-${SHOWN_LABELS_MAX - 1}`);
+    expect(desc).not.toContain(`etq-${SHOWN_LABELS_MAX}`);
+  });
+
+  test("what falls off the end is UNSEEN, so it is never removed", async () => {
+    // This is why a ceiling is safe here and a refusal is not needed: the diff only removes what the
+    // model was shown, so the labels past it keep standing without the model having to name them.
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => many,
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: modelVisibleLabels(many) },
+    });
+    await byName(tools, "set_labels").invoke({ labels: ["resolvido"] });
+    const next = (setCalls[0]?.[1] ?? []) as string[];
+    // The 40 it saw and left out are gone; the 50 it never saw are all still there, plus the new one.
+    expect(next).not.toContain("etq-0");
+    expect(next).toContain(`etq-${SHOWN_LABELS_MAX}`);
+    expect(next).toContain("etq-89");
+    expect(next).toContain("resolvido");
+    expect(next.length).toBe(many.length - SHOWN_LABELS_MAX + 1);
+  });
+
+  test("the report is capped too, and says how many it left out", async () => {
+    // The report is the third statement about the same list. Uncapped it would hand back the very
+    // text the ceiling exists to keep out of the context, and a silent cut would present a partial
+    // set as the whole truth.
+    const client = {
+      getConversationLabels: async () => many,
+      setConversationLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({ labels: ["resolvido"] }),
+    );
+    expect(out).toContain(`etq-${SHOWN_LABELS_MAX - 1}`);
+    expect(out).not.toContain(`"etq-${SHOWN_LABELS_MAX}"`);
+    expect(out).toContain("more)");
+  });
+
+  test("a second call in the turn diffs against the capped list, not the full one", async () => {
+    // `recordShown` stores what the model was HANDED, ceiling included. Storing the full set would
+    // make the next call's baseline something the model never read, which is the one thing this
+    // whole contract is built to avoid.
+    const client = {
+      getConversationLabels: async () => many,
+      setConversationLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const ctx: Record<string, unknown> = {
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: [] },
+    };
+    const tools = buildNativeTools(ctx as never);
+    await byName(tools, "set_labels").invoke({ labels: ["resolvido"] });
+    const shown = (ctx.shownLabels as { conversation: string[] }).conversation;
+    expect(shown.length).toBe(SHOWN_LABELS_MAX);
+  });
+});
+
 describe("a muted turn is not offered what it cannot complete", () => {
   // The observer runs the ordinary toolset now (issue #568), and two of those tools are entirely
   // customer-facing: the reaction's POST is refused at the muted transport, and the image is

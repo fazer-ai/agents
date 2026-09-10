@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
+  notesFromRows,
   observeTurnText,
   renderTranscript,
   transcriptFromRows,
@@ -198,5 +199,65 @@ describe("what the transcript sees", () => {
     );
     expect(t[1]?.text).toContain("Quer cancelar ou remarcar?");
     expect(t[1]?.text).toContain("cancelar");
+  });
+});
+
+// A TICK IS STATELESS ON PURPOSE — its own thread, an in-memory checkpointer — so "do not write if
+// nothing changed" is a question the model can only answer against what is WRITTEN on the
+// conversation. Labels it can see. A private note it left on the last burst it could not, because
+// the transcript is public messages only, and it filed the same note again on every burst.
+describe("the notes the conversation already carries", () => {
+  test("private notes are read, public messages and reactions are not", () => {
+    const notes = notesFromRows(
+      [
+        row({ id: 1, content: "quero cancelar", messageType: "incoming" }),
+        row({
+          id: 2,
+          content: "cliente já pediu reembolso duas vezes",
+          messageType: "outgoing",
+          private: true,
+        }),
+        row({
+          id: 3,
+          content: "👍",
+          messageType: "outgoing",
+          private: true,
+          isReaction: true,
+        }),
+      ],
+      20,
+    );
+    expect(notes).toEqual(["cliente já pediu reembolso duas vezes"]);
+  });
+
+  test("the newest fit in the window, oldest first, and blank ones are dropped", () => {
+    const notes = notesFromRows(
+      [
+        row({ id: 1, content: "a", messageType: "outgoing", private: true }),
+        row({ id: 2, content: "   ", messageType: "outgoing", private: true }),
+        row({ id: 3, content: "b", messageType: "outgoing", private: true }),
+        row({ id: 4, content: "c", messageType: "outgoing", private: true }),
+      ],
+      2,
+    );
+    expect(notes).toEqual(["b", "c"]);
+  });
+
+  test("the turn text carries them in their own block, apart from the transcript", () => {
+    const text = observeTurnText(
+      [{ role: "customer", text: "quero cancelar" }],
+      ["cancelamento"],
+      ["já avisei o financeiro"],
+    );
+    expect(text).toContain("<notas-internas>");
+    expect(text).toContain("já avisei o financeiro");
+    // A note is not somebody talking, and the transcript block must not gain a speaker.
+    const transcript = text.slice(text.indexOf("<transcricao>"));
+    expect(transcript).not.toContain("já avisei o financeiro");
+  });
+
+  test("no notes says so, rather than leaving the block out", () => {
+    const text = observeTurnText([{ role: "customer", text: "oi" }], []);
+    expect(text).toContain("<notas-internas>(nenhuma)</notas-internas>");
   });
 });

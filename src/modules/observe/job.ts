@@ -412,19 +412,54 @@ function quotesResolved(
 export function observeTurnText(
   transcript: readonly TranscriptLine[],
   current: readonly string[],
+  notes: readonly string[] = [],
 ): string {
   return [
     "Turno de observação: você está acompanhando esta conversa e NÃO responde a ninguém.",
     "Não existe canal de resposta aqui: qualquer texto que você escrever não chega a lugar nenhum, nem ao cliente nem à equipe.",
     "O que você faz neste turno é agir sobre a conversa com as ferramentas que tem: etiquetar, anotar em nota privada, registrar atributo, mover o card, o que o seu papel pedir.",
+    "Cada turno começa do zero: o que você já fez nesta conversa está no que está registrado nela, não na sua memória.",
     "Se nada precisa mudar em relação ao que já está registrado, não chame ferramenta nenhuma.",
     "",
     `<etiquetas-atuais>${current.length ? current.join(", ") : "(nenhuma)"}</etiquetas-atuais>`,
+    "",
+    // THE NOTES THE CONVERSATION ALREADY CARRIES, and the reason they are here is the same as the
+    // labels'. A tick is stateless on purpose — its own thread, an in-memory checkpointer — so
+    // "don't write if nothing changed" is a question the model can only answer against what is
+    // WRITTEN on the conversation. A label it can see; a private note it wrote on the last burst it
+    // could not, because the transcript is public messages only, and it would file the same note
+    // again on every burst. Given as a separate block rather than folded into the transcript: a
+    // note is not somebody talking, and the window that counts messages must keep counting messages.
+    `<notas-internas>${
+      notes.length
+        ? `\n${notes.map((n) => `- ${n}`).join("\n")}\n`
+        : "(nenhuma)"
+    }</notas-internas>`,
     "",
     "<transcricao>",
     renderTranscript(transcript),
     "</transcricao>",
   ].join("\n");
+}
+
+// The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —
+// this watcher on an earlier tick, another watcher, the responder, a colleague — because the
+// question the block answers is "what does this conversation already say", and it is the same
+// question whoever wrote the answer.
+export function notesFromRows(
+  rows: ChatwootMessageRow[],
+  limit: number,
+): string[] {
+  return rows
+    .filter((m) => m.private && !m.isReaction && m.content.trim().length > 0)
+    .sort((a, b) => a.id - b.id)
+    .slice(-limit)
+    .map((m) =>
+      stripFences(m.content)
+        .trim()
+        .replace(/\s*\n\s*/g, " "),
+    )
+    .filter((t) => t.length > 0);
 }
 
 // The fence tags the renderers wrap machine-written text in (a transcription, an image
@@ -757,6 +792,9 @@ export async function runObserve(
       ? fetched
       : fetched.filter((r) => r.id > resetBoundary);
   const transcript = transcriptFromRows(rows, mon.window.messages);
+  // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
+  // the operator wiped is not part of this one either.
+  const notes = notesFromRows(rows, mon.window.messages);
   if (!transcript.some((l) => l.role === "customer")) {
     line("skipped", {
       skipped: "no_customer_message",
@@ -1039,7 +1077,11 @@ export async function runObserve(
   try {
     const result = await underSignal(
       graph.invoke(
-        { messages: [new HumanMessage(observeTurnText(transcript, current))] },
+        {
+          messages: [
+            new HumanMessage(observeTurnText(transcript, current, notes)),
+          ],
+        },
         {
           signal: deadline,
           configurable: { thread_id: graphThreadId },

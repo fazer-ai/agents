@@ -307,6 +307,87 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     expect(w?.params?.max).toBe(TOOL_INSTRUCTIONS_MAX);
   });
 
+  // A BUNDLE IS A FILE, and it can be exported today and imported in a year. The migration repairs
+  // the rows that exist when it runs; nothing repairs a backup, so restoring one taken before the
+  // rename would come back missing the tool — the one failure a backup exists to prevent. And the
+  // precondition is worse than the grant: the runtime matches by whatever name it finds, so it goes
+  // inert while the editor still shows it, and the write boundary then refuses the agent's next
+  // settings save because it checks the key against the native catalog.
+  test("a bundle carrying the pre-rename native name imports as the new one", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const imported = {
+      ...exp,
+      agent: {
+        ...exp.agent,
+        name: "Vendedora antiga",
+        settings: {
+          ...exp.agent.settings,
+          toolGuidance: { assign_label: "só clientes premium" },
+          toolPreconditions: {
+            assign_label: { kind: "attribute", scope: "contact", key: "cpf" },
+          },
+        },
+        tools: [
+          {
+            source: "NATIVE" as const,
+            enabledTools: ["assign_label", "handoff_to_human"],
+          },
+        ],
+      },
+    };
+    const { agent, warnings } = await importAgent(
+      ctx(),
+      imported as never,
+      appDb,
+    );
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const settings = row.settings as Record<string, Record<string, unknown>>;
+    expect(settings.toolGuidance).toEqual({
+      set_labels: "só clientes premium",
+    });
+    expect(settings.toolPreconditions).toEqual({
+      set_labels: { kind: "attribute", scope: "contact", key: "cpf" },
+    });
+    const native = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect(native.enabledTools).toEqual(["set_labels", "handoff_to_human"]);
+    // A rename is not an unknown name: nothing to warn about.
+    expect(
+      warnings.find((w) => w.code === "nativeToolUnknown"),
+    ).toBeUndefined();
+  });
+
+  test("a bundle naming BOTH the old and the new name grants it once", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const { agent } = await importAgent(
+      ctx(),
+      {
+        ...exp,
+        agent: {
+          ...exp.agent,
+          name: "Vendedora dupla",
+          tools: [
+            {
+              source: "NATIVE" as const,
+              enabledTools: ["assign_label", "set_labels"],
+            },
+          ],
+        },
+      } as never,
+      appDb,
+    );
+    const native = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect(native.enabledTools).toEqual(["set_labels"]);
+  });
+
   // THE HALF THAT DECIDES WHETHER `__proto__` IS A PROBLEM AT ALL, and it is measured here because
   // this is the only path that can carry the key that far. Import copies the settings bag verbatim
   // on purpose (a rule on a non-native tool name has to survive a transfer), and the bundle's

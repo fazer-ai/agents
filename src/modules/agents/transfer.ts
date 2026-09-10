@@ -17,7 +17,11 @@ import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { isNativeToolName, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import {
+  currentNativeToolName,
+  isNativeToolName,
+  NATIVE_TOOL_NAMES,
+} from "@/graph/tools/catalog";
 import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -1307,7 +1311,9 @@ export async function importAgent(
         systemPrompt: exp.systemPrompt,
         modelConfig: modelConfig as Prisma.InputJsonValue,
         settings: disarmFullDetail(
-          normalizeSettingsForStorage(settings) ?? settings,
+          renameNativeToolKeys(
+            normalizeSettingsForStorage(settings) ?? settings,
+          ),
         ) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
         businessHoursId,
@@ -2569,6 +2575,41 @@ async function createMissingComponents(
   return { httpTools: renamedHttpTools, codeTools: renamedCodeTools };
 }
 
+// The two settings maps keyed by native tool NAME, carried across a rename the same way the grant
+// is. Left alone, `toolGuidance.assign_label` is dropped by its reader (a note that vanishes) and
+// `toolPreconditions.assign_label` is worse: the runtime keeps whatever name it finds and matches
+// by name, so the operator's guard goes inert while the editor still shows it — and the write
+// boundary then refuses the agent's next settings save, because it checks the KEY against the
+// native catalog. Both are the migration's job for rows that exist; this is the same job for a
+// bundle, which can arrive at any time (issue #568, review r5).
+//
+// The new key WINS when both are present, for the same reason it does in the migration: it is the
+// operator's most recent word.
+function renameNativeToolKeys(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return settings;
+  const bag = settings as Record<string, unknown>;
+  let out = bag;
+  for (const key of ["toolGuidance", "toolPreconditions"] as const) {
+    const map = bag[key];
+    if (!map || typeof map !== "object" || Array.isArray(map)) continue;
+    const entries = map as Record<string, unknown>;
+    let touched = false;
+    // Null-prototype, like every other reader of these bags: `__proto__` as a key on a plain object
+    // mutates the prototype instead of storing a rule.
+    const next = Object.create(null) as Record<string, unknown>;
+    for (const [name, value] of Object.entries(entries)) {
+      const renamed = currentNativeToolName(name);
+      if (renamed !== name) touched = true;
+      // A key already carrying the new name is not overwritten by the old one's value.
+      if (renamed !== name && Object.hasOwn(entries, renamed)) continue;
+      next[renamed] = value;
+    }
+    if (touched) out = { ...out, [key]: next };
+  }
+  return out;
+}
+
 async function buildGrantRows(
   db: ScopedDb,
   tenantId: bigint,
@@ -2589,7 +2630,12 @@ async function buildGrantRows(
         // The row lands even when nothing survives the filter: an explicit empty allowlist means
         // NO natives, and no row at all would mean ALL of them.
         const known = new Set<string>(NATIVE_TOOL_NAMES);
-        for (const n of g.enabledTools) {
+        // A RENAMED native is carried across rather than dropped (`currentNativeToolName`). The
+        // migration repairs the rows that exist when it runs; a bundle is a file, and one exported
+        // before the rename can be imported long after — restoring a backup would otherwise come
+        // back missing the capability, which is the one thing a backup is for.
+        const mapped = g.enabledTools.map(currentNativeToolName);
+        for (const n of mapped) {
           if (!known.has(n)) {
             warnings.push({ code: "nativeToolUnknown", params: { name: n } });
           }
@@ -2598,7 +2644,9 @@ async function buildGrantRows(
           tenantId,
           agentId,
           source: "NATIVE",
-          enabledTools: g.enabledTools.filter((n) => known.has(n)),
+          // ...and de-duplicated, because a bundle can name BOTH (exported from an agent that
+          // carried the old grant beside a new one), and the allowlist must not list one twice.
+          enabledTools: [...new Set(mapped.filter((n) => known.has(n)))],
           knowledgeBaseIds: [],
         });
         break;

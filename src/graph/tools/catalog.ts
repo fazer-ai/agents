@@ -20,6 +20,30 @@ export const NATIVE_TOOL_NAMES = [
 ] as const;
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
 
+// NATIVES THAT WERE RENAMED, old name → new one. A migration repairs the rows that exist when it
+// runs; nothing repairs a BUNDLE, which is a file that can be exported today and imported in a year.
+// Read as an unknown native, the old name is dropped with a warning and the capability is simply
+// gone from the restored agent — the failure a backup exists to prevent (issue #568, review r5).
+//
+// A rename is not a removal, which is why this map exists and `run_code` is not in it: that name
+// stopped meaning anything (issue #363), so dropping it is the honest answer, while `assign_label`
+// still names a tool that is right there under another name.
+//
+// It is the IMPORT boundary that consults this, not the runtime: settings written through the API
+// are refused under the old name, and the catalog stays the one answer to "is this a native today".
+export const RENAMED_NATIVE_TOOLS: Readonly<Record<string, NativeToolName>> =
+  Object.freeze({
+    // issue #568: the tool stopped adding one label and started writing the whole set.
+    assign_label: "set_labels",
+  });
+
+// The new name for a legacy one, or the name itself when it was never renamed.
+export function currentNativeToolName(name: string): string {
+  return Object.hasOwn(RENAMED_NATIVE_TOOLS, name)
+    ? (RENAMED_NATIVE_TOOLS[name] as string)
+    : name;
+}
+
 // A name in the list above is RESERVED: the assembly drops any other tool that claims it, granted or
 // not (unique-names.ts, #457); the HTTP tool writers refuse it (tool-definitions/service.ts, which
 // REST, the console and MCP all reach); an import renames a bundled tool that carries it. None of

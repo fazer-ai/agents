@@ -477,7 +477,9 @@ const BARE_SLICES: Record<
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
-  "src/modules/observe/job.ts": [2, "array"],
+  // Three: the transcript window, the notes window and the page walk. Every one is a slice of an
+  // ARRAY of rows, so none can land inside a surrogate pair.
+  "src/modules/observe/job.ts": [3, "array"],
   "src/modules/playground/service.ts": [1, "array"],
   // Two, since the overflow merge carries the separators beside the chunks (issue #429): both are
   // slices of an ARRAY of already-split strings, so neither can land inside a surrogate pair.

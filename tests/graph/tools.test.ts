@@ -1765,6 +1765,11 @@ describe("the fence rule, over every native tool", () => {
     // operator acting inside the wait, which is the only window the boundary ask cannot cover.
     let waited = false;
     const stillWanted = async () => !waited;
+    // Handed out so the precondition battery below can stand for the operator acting INSIDE the
+    // state read, which is a wait this tracing client never sees.
+    const stillWantedFlip = () => {
+      waited = true;
+    };
     const client = new Proxy(
       {},
       {
@@ -1886,6 +1891,7 @@ describe("the fence rule, over every native tool", () => {
         );
       }) as unknown as typeof fetch,
       assertSafe: async () => {},
+      stillWantedFlip,
     };
     return { ctx, trace };
   }
@@ -1956,6 +1962,43 @@ describe("the fence rule, over every native tool", () => {
       [...NATIVE_TOOL_NAMES].sort(),
     );
   });
+
+  // THE SAME RULE THROUGH THE PRECONDITION WRAPPER, which is where round 24 found it broken. A
+  // configured precondition puts a database read between the graph's ask at dispatch and the call it
+  // authorises, so a handler whose FIRST act is a write — a private note, a status toggle — loses
+  // the cover that ask gave it. Here the fence is already withdrawn when the tool is invoked, so a
+  // correct wrapper lets NOTHING through: not even the first effect.
+  for (const c of CASES) {
+    const name = c.label ? `${c.tool} (${c.label})` : c.tool;
+    test(`${name}: a precondition read is a wait, and nothing runs after it`, async () => {
+      const { ctx, trace } = tracingCtx();
+      const tools = applyToolPreconditions(
+        buildNativeTools({ ...ctx, ...(c.ctx ?? {}) } as never),
+        {
+          [c.tool]: {
+            kind: "attribute" as const,
+            scope: "conversation" as const,
+            key: "vip",
+            equals: "sim",
+          },
+        },
+        async () => {
+          // The read itself is the wait: the operator acts inside it. The condition is MET, so what
+          // stops the call can only be the fence.
+          (ctx as { stillWantedFlip: () => void }).stillWantedFlip();
+          return {
+            conversationAttributes: { vip: "sim" },
+            contactAttributes: {},
+          };
+        },
+        undefined,
+        undefined,
+        ctx.stillWanted,
+      );
+      await byName(tools, c.tool).invoke(c.args as never);
+      expect(trace.filter((e) => e.startsWith("client:write"))).toEqual([]);
+    });
+  }
 
   for (const c of CASES) {
     const name = c.label ? `${c.tool} (${c.label})` : c.tool;

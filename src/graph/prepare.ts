@@ -1402,6 +1402,10 @@ export async function buildToolset(
         unmatched.join(", "),
       );
     },
+    // The same fence every handler that waits before writing asks: this wrapper puts a state read
+    // between the graph's ask and the call, so a tool whose first act is a write would otherwise
+    // lose the cover that ask gives it (issue #568, review round 24).
+    ctx.stillWanted,
   );
   if (dropped.length > 0) {
     // The operator is the only one who can fix this, and the symptom they would otherwise see is a

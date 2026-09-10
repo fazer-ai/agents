@@ -95,7 +95,13 @@ const NOTES_MAX_CHARS = 8_000;
 // ...and no single note may eat the whole budget, so one operator who pasted a log cannot hide every
 // note around it. `clipText` keeps the START, which for a note is where it says what it is about.
 const NOTE_MAX_CHARS = 2_000;
-const FENCE_TAG = /<\s*\/?\s*(transcricao|etiquetas-atuais)[^>]*>/gi;
+// NOTE: `notas-internas` joined the list when the notes block was added (issue #568, review round
+// 24), and it is the one whose content is WRITTEN BY PEOPLE — a colleague pasting a prompt they were
+// debugging, or a note that quoted a customer. A closing tag inside it ends the block early and
+// everything after it reads as if it were outside the notes, which is the same escape the transcript
+// closed on day one.
+const FENCE_TAG =
+  /<\s*\/?\s*(transcricao|etiquetas-atuais|notas-internas)[^>]*>/gi;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };

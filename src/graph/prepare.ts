@@ -849,6 +849,10 @@ export interface ToolsetCtx {
   // slow-tool ack, whose send is a wait the graph's own ask at the tool boundary sits before
   // (issue #209 review, round 10). Asked after that send, before the typing indicator and before
   // the tool runs; absent, both proceed.
+  // The caller's whole-turn deadline, when it has one (the observer's tick). Reaches the Chatwoot
+  // client as `expiresOn` and the HTTP tools as the same signal, so a handler that outlives the
+  // budget cannot still write. Absent on a reactive turn, which has no deadline.
+  expiresOn?: AbortSignal;
   stillWanted?: () => Promise<boolean>;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
@@ -940,6 +944,7 @@ export interface ToolBuildDeps {
         task?: string[];
       };
       protectedLabels?: string[];
+      expiresOn?: AbortSignal;
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
@@ -1298,6 +1303,7 @@ export async function buildToolset(
       ...buildHttpTools(cfg.httpToolDefs, {
         resolveCredential,
         emitAck,
+        expiresOn: ctx.expiresOn,
         // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
         // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.

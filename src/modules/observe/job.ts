@@ -851,6 +851,16 @@ export async function runObserve(
   // the tool's baseline, and the model repeating it to keep it then reads as an ADDITION — putting
   // back exactly what somebody removed in between. Handed to `buildToolset` for that reason.
   const current = await client.getConversationLabels(conversationId);
+  // THE PROMPT BLOCK HIDES THE GUARDED ONES TOO. `set_labels` filters them out of what it shows and
+  // out of what it accepts, and this block is the third model-facing place the same list reaches —
+  // leaving it raw would print `agente-off` under `<etiquetas-atuais>` while the tool's own
+  // description denies it exists, which is both a contradiction to reason from and the exact
+  // invitation the guard is there to withdraw. The unfiltered `current` still goes to `buildToolset`
+  // as the ONE read: what the tool does with it (seed `shownLabels`, minus the guard) is its rule to
+  // apply, and copying the subtraction here would make two places responsible for one decision.
+  const currentForPrompt = cfg.protectedLabels.length
+    ? current.filter((l) => !cfg.protectedLabels.includes(l))
+    : current;
 
   // THE TURN ITSELF, and from here on this is the ordinary graph (issue #568). What used to sit in
   // these lines was a classifier: one model call with a JSON schema built from the operator's label
@@ -1017,6 +1027,7 @@ export async function runObserve(
           client,
           conversationId,
           threadId,
+          expiresOn: deadline,
           stillWanted: () => fence(),
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
           conversationLabels: current,
@@ -1149,7 +1160,9 @@ export async function runObserve(
       graph.invoke(
         {
           messages: [
-            new HumanMessage(observeTurnText(transcript, current, notes)),
+            new HumanMessage(
+              observeTurnText(transcript, currentForPrompt, notes),
+            ),
           ],
         },
         {

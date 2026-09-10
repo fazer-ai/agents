@@ -1651,3 +1651,60 @@ describe("a list of unknown length renders through a block (#459)", () => {
     expect(notes[0]?.detail).toMatchObject({ missing: ["itens.1.preco"] });
   });
 });
+
+// ABORTING AN INVOKE STOPS THE CALLER WAITING, NOT THIS HANDLER WRITING. The observer's tick has a
+// whole-turn budget; when it runs out the tick is reported as a RETRYABLE failure, so anything the
+// handler still sends afterwards is sent again by the retry. The Chatwoot client refuses past its
+// deadline for that reason, and until this an external endpoint had none of that protection and
+// none of Chatwoot's idempotency either (issue #568 review, round 12).
+describe("the turn's deadline reaches an http tool", () => {
+  test("a budget that ran out while the credential resolved stops the request", async () => {
+    const captured: Captured = {};
+    const ctrl = new AbortController();
+    const tool = buildHttpTool(
+      def({
+        method: "POST",
+        credentialRef: "k",
+        credentialKind: "bearer_token",
+      }),
+      {
+        // The wait this exists to catch: the deadline expires DURING credential resolution, which
+        // is above the send and cannot itself be interrupted.
+        resolveCredential: async () => {
+          ctrl.abort();
+          return "segredo";
+        },
+        fetchImpl: stubFetch(captured),
+        expiresOn: ctrl.signal,
+      },
+    );
+    const out = await tool.invoke({});
+    expect(captured.url).toBeUndefined();
+    expect(String(out)).toContain("time budget");
+  });
+
+  test("a live deadline does not stop anything, and rides along to the fetch", async () => {
+    const captured: Captured = {};
+    const ctrl = new AbortController();
+    const tool = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(captured),
+      expiresOn: ctrl.signal,
+    });
+    await tool.invoke({});
+    expect(captured.url).toContain("/v1/thing");
+    // Relayed onto the bounded fetch's own controller, so a request in flight is cancelled when the
+    // budget ends instead of running to its own timeout past the end of the tick.
+    expect(captured.init?.signal).toBeDefined();
+  });
+
+  test("no deadline is the reactive turn, and it is unchanged", async () => {
+    const captured: Captured = {};
+    const tool = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(captured),
+    });
+    await tool.invoke({});
+    expect(captured.url).toContain("/v1/thing");
+  });
+});

@@ -36,6 +36,7 @@ import {
   assertPromptSize,
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
+  assertSettingsRetiredLabelKeys,
   assertSettingsTextSizes,
   assertSettingsToolPreconditions,
   getAgent,
@@ -698,6 +699,14 @@ export async function agentSettingsSet(
     // working guard with nothing. Measured on this branch: `key: " "` passes the schema, and the
     // rule the operator had was gone.
     assertSettingsToolPreconditions(patch, current.settings);
+    // SAME REASON, one door further: the retired taxonomy keys are refused on the REST write, and
+    // without this line MCP was the way past it. `mergeBehaviorSettings` normalizes each touched
+    // block through its reader, and the reader no longer knows these keys, so by the time
+    // `updateAgent` sees the bag the groups are gone — dry run and apply both answer ok for
+    // configuration that does nothing, which is the precise silence issue #568 set out to end.
+    // Asked about the PATCH, not the merged bag, because the patch is the only place the key still
+    // exists.
+    assertSettingsRetiredLabelKeys(patch);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

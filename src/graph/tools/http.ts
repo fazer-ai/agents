@@ -90,6 +90,13 @@ export interface HttpToolDeps {
   allowHttp?: boolean;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  // THE WHOLE-TURN DEADLINE, when the caller has one (the observer's tick). Aborting an invoke stops
+  // the CALLER waiting, not this handler writing: a tool that was resolving a credential when the
+  // budget ran out still reaches its POST, and the tick has already been reported as a retryable
+  // failure — so the retry sends it a second time. The Chatwoot client refuses past its deadline
+  // for exactly this reason (ChatwootClientConfig.expiresOn); an external endpoint is the same
+  // hazard with none of the idempotency. Absent ⇒ no deadline, which is every reactive turn.
+  expiresOn?: AbortSignal;
   maxResponseChars?: number;
   // Posts a "I'll look into that…" ack to the customer before a slow tool runs (best-effort). Wired
   // only on a real conversation; absent in the playground (no client / no conversation). An
@@ -843,9 +850,22 @@ export function buildHttpTool(
       // headers: `fetchBounded` reads the body under the same armed timer, because a provider that
       // answers at once and then stalls mid-body used to leave this line pending forever (#464).
       // It also caps what the read retains, which is the other half of the same defect.
+      // ASKED HERE, immediately before the send, and not at handler entry: everything above this
+      // line can wait (credential resolution is a DB read, the ack is a network write), and the
+      // point of the check is to catch a budget that ran out DURING that waiting. Refused rather
+      // than thrown so the model is told, and phrased as the tool not having run, because it did
+      // not.
+      if (deps.expiresOn?.aborted) {
+        return "Could not call the tool (the run's time budget ran out before the request was sent).";
+      }
       const { res, body: responseBody } = await fetchBounded(
         url.toString(),
-        { method, headers, body, redirect: "error" },
+        // The deadline rides in `init.signal`, which `bounded` already relays onto its own
+        // controller, so a request that DOES get sent is cancelled when the budget ends instead of
+        // running to its own timeout past the end of the tick. Through the existing relay rather
+        // than a new option: the timer there has to be able to cut the BODY read too, and two
+        // controllers racing for that is how the #464 defect came back.
+        { method, headers, body, redirect: "error", signal: deps.expiresOn },
         { timeoutMs, fetchImpl: doFetch },
       );
 

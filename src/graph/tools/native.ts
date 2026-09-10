@@ -858,7 +858,16 @@ function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
 }
 
 function setLabelsTool(ctx: ToolCtx) {
-  const labelsXml = existingLabelsXml(ctx.vocab?.labels ?? []);
+  // THE ACCOUNT'S VOCABULARY IS FILTERED TOO, and this is the half that hiding `shownLabels` does
+  // not cover: `<existing_labels>` advertises every label the account has as a value the model may
+  // pick, so a guarded one was being offered as a choice while the diff silently refused it. The
+  // guard promises the model never SEES these; a suggestion list is seeing. Filtered here, on the
+  // way into this description, and never on the shared vocab cache, which other tools and other
+  // agents read.
+  const guardedSet = new Set(ctx.protectedLabels ?? []);
+  const labelsXml = existingLabelsXml(
+    (ctx.vocab?.labels ?? []).filter((l) => !guardedSet.has(l)),
+  );
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
   const scopeSchema = taskScope

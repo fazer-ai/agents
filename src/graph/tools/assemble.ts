@@ -478,6 +478,9 @@ export interface HttpToolBuildDeps {
   appointmentBooked?: HttpToolDeps["appointmentBooked"];
   cancelAppointment?: HttpToolDeps["cancelAppointment"];
   onSideEffectError?: HttpToolDeps["onSideEffectError"];
+  // The caller's whole-turn deadline, forwarded so a handler that outlived the budget does not send
+  // its request. See HttpToolDeps.expiresOn.
+  expiresOn?: HttpToolDeps["expiresOn"];
 }
 
 // Builds StructuredTools from loaded ToolDefinition rows. Network (the actual HTTP call) happens

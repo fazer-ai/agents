@@ -1930,6 +1930,92 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(written).toContain("cancelamento");
   });
 
+  // THE GUARD HAS TO HOLD IN EVERY MODEL-FACING PLACE, not only in the tool's diff. `set_labels`
+  // filters guarded labels out of what it shows and out of what it accepts, but the observer's own
+  // prompt prints the conversation's labels in `<etiquetas-atuais>` from the SAME read — so without
+  // this the block advertised `agente-off` while the tool's description denied it existed, which is
+  // both a contradiction to reason from and the invitation the guard exists to withdraw (round 12).
+  test("a guarded label is absent from the prompt, and survives the write", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const client = stubClient([message(1, "quero cancelar")], [], log);
+    (client as { getConversationLabels: unknown }).getConversationLabels =
+      async () => ["agente-off", "compra-de-ingresso"];
+    let prompt = "";
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          setLabels: { protected: ["agente-off"] },
+        },
+      },
+    });
+    try {
+      // A local stub, because LabellingModel's `bindTools` returns an invoke that takes no
+      // arguments: what this test needs is exactly the two things it drops, the messages the model
+      // was handed and the tool descriptions it was bound to.
+      const seenTools: string[] = [];
+      const model = {
+        async invoke(): Promise<AIMessage> {
+          return new AIMessage("pronto");
+        },
+        bindTools(tools: { name?: string; description?: string }[]) {
+          for (const t of tools) seenTools.push(String(t.description ?? ""));
+          let n = 0;
+          return {
+            async invoke(msgs: unknown): Promise<AIMessage> {
+              prompt += JSON.stringify(msgs);
+              n++;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "set_labels",
+                        args: { labels: ["cancelamento"] },
+                        id: "call_labels",
+                      },
+                    ],
+                  })
+                : new AIMessage("pronto");
+            },
+          };
+        },
+      };
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () => client,
+          makeModel: () => model as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      // Neither the labels block in the prompt nor the tool's own description names it.
+      expect(prompt).toContain("compra-de-ingresso");
+      expect(prompt).not.toContain("agente-off");
+      const labelsTool = seenTools.find((d) => d.includes("current_labels"));
+      expect(labelsTool).toBeDefined();
+      expect(labelsTool).not.toContain("agente-off");
+      // And the model asking for `cancelamento` alone did not take it off the conversation.
+      const written = log.labelsWritten.at(-1);
+      expect(written).toContain("agente-off");
+      expect(written).toContain("cancelamento");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
   // DISCOVERY IS THE ONE CALL THAT CAN HANG FOREVER, and before this it was the one call the
   // deadline did not cover: it was created after `buildToolset`. An MCP server that opens its stream
   // and never emits an endpoint waits with no timeout of its own, and `startScheduler` skips every

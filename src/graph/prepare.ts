@@ -855,6 +855,9 @@ export interface ToolsetCtx {
   // budget cannot still write. Absent on a reactive turn, which has no deadline.
   expiresOn?: AbortSignal;
   stillWanted?: () => Promise<boolean>;
+  // Called by a handler that refused WITHOUT writing (effect-free.ts). Threaded to every source that
+  // has such an exit, so the caller counting committed effects hears about all of them.
+  onNoEffect?: () => void;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
@@ -957,6 +960,7 @@ export interface ToolBuildDeps {
       assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
+      onNoEffect?: () => void;
     },
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];
@@ -1100,6 +1104,7 @@ export async function buildToolset(
     // Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
     // four packs with four request helpers is four places to forget.
     stillWanted: ctx.stillWanted,
+    onNoEffect: ctx.onNoEffect,
     ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
@@ -1279,6 +1284,7 @@ export async function buildToolset(
       // The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,
+      onNoEffect: ctx.onNoEffect,
       kanban,
       sendImage: cfg.sendImageConfig,
       fetchImpl: ctx.imageDeps?.fetchImpl,
@@ -1335,6 +1341,7 @@ export async function buildToolset(
         // The same fence the native tools and the precondition wrapper ask, at the same point: past
         // every wait, immediately before the request leaves for somebody else's system.
         stillWanted: ctx.stillWanted,
+        onNoEffect: ctx.onNoEffect,
         ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
         // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
@@ -1412,6 +1419,7 @@ export async function buildToolset(
     // between the graph's ask and the call, so a tool whose first act is a write would otherwise
     // lose the cover that ask gives it (issue #568, review round 24).
     ctx.stillWanted,
+    ctx.onNoEffect,
   );
   if (dropped.length > 0) {
     // The operator is the only one who can fix this, and the symptom they would otherwise see is a

@@ -16,10 +16,7 @@ import { resetLandedAfter } from "@/graph/reset-episode";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { UTILITY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import {
-  isEffectFreeTool,
-  wasRefusedBeforeRun,
-} from "@/graph/tools/effect-free";
+import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -1103,6 +1100,9 @@ export async function runObserve(
           ...(p.atMessageId != null ? { messageId: p.atMessageId } : {}),
           ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
           stillWanted: () => fence(),
+          onNoEffect: () => {
+            noEffect++;
+          },
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
           // degradation if that fails too — one extra request on the failing path only.
@@ -1151,24 +1151,21 @@ export async function runObserve(
     SKIP_REPLY_TOOL,
   ]);
   let toolsRan = 0;
+  // Dispatches that answered without writing anything. `toolsRan - noEffect` is what committed.
+  let noEffect = 0;
   const fencedTools = tools.map((t) => {
     // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
     // permitted call reaches exactly the run it would have had.
     const seen = Object.create(t) as typeof t;
-    seen.invoke = (async (input: unknown, config?: unknown) => {
-      const counts = !effectFreeNames.has(t.name) && !isEffectFreeTool(t);
+    seen.invoke = ((input: unknown, config?: unknown) => {
       // BEFORE the call, because the count has to exist when the invoke THREW — a booking that
-      // reached its POST and then blew up is exactly the case this guards.
-      if (counts) toolsRan++;
-      const out = await (
-        t.invoke as (i: unknown, c?: unknown) => Promise<unknown>
-      )(input, config);
-      // ...AND TAKEN BACK when the call never reached the handler. A precondition that was not met
-      // (or could not be read), and the fence the same wrapper asks, refuse BEFORE dispatching: the
-      // tool is effect-bearing, this call is not. Read off the mark the refusal carries rather than
-      // off its text, so nothing that merely reads like a refusal counts as one (round 33).
-      if (counts && wasRefusedBeforeRun(out)) toolsRan--;
-      return out;
+      // reached its POST and then blew up is exactly the case this guards. What did NOT happen is
+      // reported by the handler itself, through `onNoEffect` below: a precondition that refused, a
+      // fence that answered inside a handler before its write, a toolpack request that threw
+      // instead of leaving. Counted apart rather than subtracted here, because one of those exits
+      // throws and never comes back through this wrapper (rounds 33 and 36).
+      if (!effectFreeNames.has(t.name) && !isEffectFreeTool(t)) toolsRan++;
+      return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
     }) as typeof t.invoke;
     return seen;
   });
@@ -1274,13 +1271,13 @@ export async function runObserve(
     // the tick stops, reported as a warn the operator reads, and the next burst re-asks the
     // classification. Nothing is lost that a retry could have recovered, because the retry would
     // re-run the very hops that committed.
-    if (toolsRan > 0) {
+    if (toolsRan - noEffect > 0) {
       line(
         "error",
         {
           failed: why,
           messagesRead: transcript.length,
-          toolCalls: toolsRan,
+          toolCalls: toolsRan - noEffect,
           retried: false,
         },
         "warn",
@@ -1371,7 +1368,7 @@ export async function runObserve(
     // re-asks; not counting a write costs the write, again, in somebody else's system. An
     // `on_resolve` agent has no next burst, and that is the price, declared in docs/chatwoot.md
     // rather than guessed away.
-    const committed = toolsRan > 0;
+    const committed = toolsRan - noEffect > 0;
     emitFlowEvent(flow, {
       stage: "observe",
       level: committed ? "warn" : "error",
@@ -1382,7 +1379,7 @@ export async function runObserve(
       detail: {
         reason,
         failed: "model_call",
-        toolCalls: toolsRan,
+        toolCalls: toolsRan - noEffect,
         ...(committed ? { retried: false } : {}),
       },
       errorMessage: msg,

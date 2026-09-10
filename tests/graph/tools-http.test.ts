@@ -1900,6 +1900,34 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
     expect(called).toBe(false);
   });
 
+  test("the throw says so first, because a throw has no result to say it on", async () => {
+    // The refusal that ends in `throw` is the one exit of this family the caller cannot read off a
+    // return value, and the observer's tick has to know that nothing left the process or it counts
+    // the dispatch as a write and stops retrying (review round 36).
+    let reported = 0;
+    const wrapped = fencedFetch(
+      (async () => new Response("{}")) as unknown as typeof fetch,
+      async () => false,
+      () => {
+        reported++;
+      },
+    );
+    await expect(wrapped("https://example.com/x")).rejects.toThrow(
+      "called off",
+    );
+    expect(reported).toBe(1);
+    // ...and a request that GOES does not report anything.
+    const ok = fencedFetch(
+      (async () => new Response("{}")) as unknown as typeof fetch,
+      async () => true,
+      () => {
+        reported++;
+      },
+    );
+    await ok("https://example.com/y");
+    expect(reported).toBe(1);
+  });
+
   test("a fence that says yes, and one that cannot answer, both pass through", async () => {
     const calls: string[] = [];
     const inner = (async (u: unknown) => {

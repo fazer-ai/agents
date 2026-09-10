@@ -478,6 +478,8 @@ export interface HttpToolBuildDeps {
   appointmentBooked?: HttpToolDeps["appointmentBooked"];
   cancelAppointment?: HttpToolDeps["cancelAppointment"];
   onSideEffectError?: HttpToolDeps["onSideEffectError"];
+  // Threaded like the fence: the tool reports a refusal that sent nothing (effect-free.ts).
+  onNoEffect?: HttpToolDeps["onNoEffect"];
   // The caller's whole-turn deadline, forwarded so a handler that outlived the budget does not send
   // its request. See HttpToolDeps.expiresOn.
   expiresOn?: HttpToolDeps["expiresOn"];

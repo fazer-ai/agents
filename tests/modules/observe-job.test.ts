@@ -1948,6 +1948,53 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.notes).toEqual(["cliente pediu cancelamento"]);
   });
 
+  test("a fence that failed INSIDE the handler leaves the tick retryable", async () => {
+    // The handler asks the fence again after its own read and before its own write. When that ask
+    // is the one that fails, the tool returns without writing — but the dispatch was already
+    // counted, so the tick read itself as committed and completed, dropping an observation a retry
+    // would have recovered for free (review round 36). The counters are separate for this: the
+    // handler reports what it did NOT do.
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let generating = false;
+    let asks = 0;
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            // The FIRST ask is the graph's, at dispatch, and it must pass: what this test is about
+            // is the second one, from inside the handler.
+            if (generating && sel?.resetAtMessageId === true && ++asks >= 2) {
+              throw new Error("conversation row unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const model = new LabellingModel(["cancelamento"], async () => {
+      generating = true;
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      unreadable,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    expect(res.outcome).toBe("fail");
+  });
+
   test("a failure BEFORE any tool ran still retries", async () => {
     // The control the case above needs: nothing committed, so the scheduler is still the right
     // answer — and this is the ordinary transient, which is most of them.

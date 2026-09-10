@@ -50,6 +50,9 @@ export interface ToolpackCtx {
   // detach landing while a pack resolves a credential leaves the budget alive and the run withdrawn
   // (issue #568, review round 28). Absent ⇒ no fence, which is every reactive turn's toolpack today.
   stillWanted?: () => Promise<boolean>;
+  // Called when the fence above refuses a request before it is sent: nothing left the process, so a
+  // counter outside can tell this apart from a call that ran (see graph/tools/effect-free.ts).
+  onNoEffect?: () => void;
   // Injectable for tests; default assertSafeOutboundUrl. The origin is a fixed trusted constant
   // here, so this is defense-in-depth (and lets tests stay hermetic without DNS).
   assertSafe?: (url: string, opts?: SafeUrlOptions) => Promise<unknown>;
@@ -219,11 +222,16 @@ export class ToolpackCalledOffError extends Error {
 export function fencedFetch(
   inner: typeof fetch,
   stillWanted: () => Promise<boolean>,
+  onNoEffect?: () => void,
 ): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
-    if (!(await stillWanted().catch(() => true)))
+    if (!(await stillWanted().catch(() => true))) {
+      // Said before throwing: the throw is the one exit of this family that has no result to carry
+      // the answer, which is why the channel is a callback and not a mark (review round 36).
+      onNoEffect?.();
       throw new ToolpackCalledOffError();
+    }
     return inner(input, init);
   }) as typeof fetch;
 }
@@ -233,7 +241,8 @@ export function buildToolpackTools(
   ctx: ToolpackCtx,
 ): StructuredToolInterface[] {
   let inner = ctx.fetchImpl ?? fetch;
-  if (ctx.stillWanted) inner = fencedFetch(inner, ctx.stillWanted);
+  if (ctx.stillWanted)
+    inner = fencedFetch(inner, ctx.stillWanted, ctx.onNoEffect);
   if (ctx.expiresOn) inner = deadlineFetch(inner, ctx.expiresOn);
   const bounded: ToolpackCtx =
     ctx.expiresOn || ctx.stillWanted ? { ...ctx, fetchImpl: inner } : ctx;

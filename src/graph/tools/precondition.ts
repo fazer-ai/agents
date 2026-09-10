@@ -14,7 +14,7 @@ import {
   unmetPreconditionMessage,
 } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
-import { markRefusedBeforeRun } from "./effect-free";
+import type { NoEffectReporter } from "./effect-free";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -55,6 +55,8 @@ export function guardedTool(
   // is what every caller with no fence to offer means; only an explicit `false` stops it, since a
   // fence that could not answer is not a withdrawal.
   stillWanted?: () => Promise<boolean>,
+  // Called when this wrapper refuses: the inner tool never ran, so nothing was committed.
+  onNoEffect?: NoEffectReporter,
 ): StructuredToolInterface {
   const refusal = unmetPreconditionMessage(inner.name, cond);
   // NOTE: DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
@@ -75,18 +77,12 @@ export function guardedTool(
         (input as { type?: string; id?: string } | null)?.type === "tool_call"
           ? (input as { id?: string }).id
           : config?.toolCall?.id;
-      // MARKED AS "never reached the handler", so a counter downstream can tell this apart from a
-      // call that ran (effect-free.ts). A bare string cannot carry the mark, and does not need to:
-      // that shape only happens on a direct invocation from a test, where nothing is counting.
+      // REPORTED as a call that went nowhere, so a counter downstream can tell this apart from a
+      // call that ran (effect-free.ts). Said on the way out rather than carried on the result: the
+      // sibling exits inside the handlers include one that THROWS, and one channel covers both.
+      onNoEffect?.();
       return id
-        ? markRefusedBeforeRun(
-            new ToolMessage({
-              content: text,
-              tool_call_id: id,
-              name: inner.name,
-              additional_kwargs: {},
-            }),
-          )
+        ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
         : text;
     };
     let met: boolean;
@@ -147,6 +143,8 @@ export function applyToolPreconditions(
   // Handed to every wrapper: see guardedTool's own note. A tool with no condition is not wrapped at
   // all, and its first effect stays covered by the graph's ask at dispatch.
   stillWanted?: () => Promise<boolean>,
+  // Passed straight through to each wrapper, for the counter the observer's tick keeps.
+  onNoEffect?: NoEffectReporter,
 ): StructuredToolInterface[] {
   const names = Object.keys(preconditions);
   if (names.length === 0) return tools;
@@ -162,7 +160,9 @@ export function applyToolPreconditions(
     const cond = Object.hasOwn(preconditions, t.name)
       ? preconditions[t.name]
       : undefined;
-    return cond ? guardedTool(t, cond, loadState, onRefused, stillWanted) : t;
+    return cond
+      ? guardedTool(t, cond, loadState, onRefused, stillWanted, onNoEffect)
+      : t;
   });
 }
 

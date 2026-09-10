@@ -70,6 +70,7 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 // (fail-closed: a tool not in the allowlist is never exposed to the model).
 
 import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./catalog";
+import type { NoEffectReporter } from "./effect-free";
 
 export {
   HANDOFF_DONE_PREFIX,
@@ -262,6 +263,12 @@ export interface ToolCtx {
   // `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
   // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
   onSideEffectError?: SideEffectErrorReporter;
+  // CALLED BY A HANDLER THAT REFUSED WITHOUT WRITING (review round 36). Every effect-bearing handler
+  // asks the caller's fence again inside itself — after its own read, before its own write — and the
+  // exits below return a sentence saying the run was called off. Nothing left the process on those,
+  // so a counter outside has to be told, or it reads them as writes that happened. NOT called where
+  // something already went out: `handoff_to_human` after its note was filed is not one of these.
+  onNoEffect?: NoEffectReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,
@@ -692,6 +699,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         // it. A contact attribute outlives the conversation it was written from, so a value written
         // after a `/reset` — or after the agent was switched off — is one nothing later corrects.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.();
           return "Could not set the contact attribute (the run was called off while this write waited).";
         }
         try {
@@ -704,7 +712,10 @@ function setCustomAttributeTool(ctx: ToolCtx) {
             { stillWanted: ctx.stillWanted },
           );
         } catch (e) {
-          if (e instanceof ChatwootCalledOffError) return CALLED_OFF_ATTRIBUTE;
+          if (e instanceof ChatwootCalledOffError) {
+            ctx.onNoEffect?.();
+            return CALLED_OFF_ATTRIBUTE;
+          }
           throw e;
         }
         await mirrorAttributeWrite(ctx, "contact", key, value);
@@ -720,7 +731,10 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           { stillWanted: ctx.stillWanted },
         );
       } catch (e) {
-        if (e instanceof ChatwootCalledOffError) return CALLED_OFF_ATTRIBUTE;
+        if (e instanceof ChatwootCalledOffError) {
+          ctx.onNoEffect?.();
+          return CALLED_OFF_ATTRIBUTE;
+        }
         throw e;
       }
       await mirrorAttributeWrite(ctx, "conversation", key, value);
@@ -1094,6 +1108,7 @@ function setLabelsTool(ctx: ToolCtx) {
         // waits before writing, and the same rule as the other three. The conversation scope asks
         // inside its queue; this scope has no queue, and the read above is just as much a wait.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.();
           return "Could not set the contact labels (the run was called off while this write waited).";
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
@@ -1129,6 +1144,7 @@ function setLabelsTool(ctx: ToolCtx) {
           // point, for the same reason. Only an explicit `false` stops the write: a fence that
           // could not answer is not a withdrawal.
           if (ctx.stillWanted && !(await ctx.stillWanted())) {
+            ctx.onNoEffect?.();
             return "Could not set the labels (the run was called off while this write waited its turn).";
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
@@ -1200,6 +1216,7 @@ function resolveConversationTool(ctx: ToolCtx) {
       // close, which nothing later undoes. Only an explicit `false` stops it: a fence that could not
       // answer is not a withdrawal (round 17).
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
+        ctx.onNoEffect?.();
         return "Did not resolve the conversation (the run was called off while this read was in flight).";
       }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
@@ -1494,6 +1511,7 @@ function reactToMessageTool(ctx: ToolCtx) {
         // customer's phone, so this is the same question every customer-facing send asks before it
         // goes out — and the lookup above is a wait after the graph's ask at dispatch.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.();
           return "Could not add the reaction (the run was called off while this write waited).";
         }
         await ctx.client.addMessageReaction(ctx.conversationId, latest.id, e);

@@ -23,6 +23,7 @@ import {
   projectToolResponse,
 } from "@/modules/tool-definitions/response-template";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
+import type { NoEffectReporter } from "./effect-free";
 import { normalizeToolName } from "./toolName";
 
 // Custom HTTP tools (from ToolDefinition rows). The agent calls them mid-turn; each is a thin,
@@ -150,6 +151,8 @@ export interface HttpToolDeps {
   // not render, or a response that was clipped with no template to render, is the other — there the
   // model got an answer with a hole in it, and #456 is the measurement of what a model does with a
   // hole. The only thing to do with either is put it where the operator reads it.
+  // Called when this tool refuses before sending anything: see effect-free.ts.
+  onNoEffect?: NoEffectReporter;
   onSideEffectError?: (e: {
     tool: string;
     phase: string;
@@ -869,6 +872,9 @@ export function buildHttpTool(
       // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
       // and immediately before the send. See `stillWanted` on the deps.
       if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+        // Nothing left the process here — the acknowledgement, when there is one, is the exit
+        // ABOVE, and that one is a message the customer already got (review round 36).
+        deps.onNoEffect?.();
         return "Could not call the tool (the run was called off before the request was sent).";
       }
       const { res, body: responseBody } = await fetchBounded(

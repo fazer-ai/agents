@@ -1840,6 +1840,48 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
+  // ONE READ FOR THE PROMPT AND FOR THE TOOL'S BASELINE. `set_labels` diffs the model's list against
+  // what the model was SHOWN, so two reads are two claims about the same turn: a label the prompt
+  // advertises but the baseline lacks comes back as an ADDITION when the model repeats it to keep
+  // it, which puts back what somebody removed in between — the exact harm the diff exists to avoid.
+  test("the labels in the prompt are the labels the tool compares against", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let reads = 0;
+    const base = stubClient([message(1, "quero cancelar")], [], log);
+    // First read (the prompt's) sees `vip`; a second read would see it gone. With one read there is
+    // no second, and the model repeating `vip` cannot resurrect it.
+    const drifting = {
+      ...base,
+      getConversationLabels: async () => {
+        reads++;
+        return reads === 1 ? ["vip"] : [];
+      },
+    } as unknown as typeof base;
+    const model = new LabellingModel(["vip", "cancelamento"]);
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => drifting,
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    // The write is computed against the read INSIDE the label queue (reads 2+), and `vip` was in
+    // the shown set, so repeating it is not a request to add it back.
+    const written = log.labelsWritten.at(-1);
+    expect(written).toBeDefined();
+    expect(written).not.toContain("vip");
+    expect(written).toContain("cancelamento");
+  });
+
   // DISCOVERY IS THE ONE CALL THAT CAN HANG FOREVER, and before this it was the one call the
   // deadline did not cover: it was created after `buildToolset`. An MCP server that opens its stream
   // and never emits an endpoint waits with no timeout of its own, and `startScheduler` skips every

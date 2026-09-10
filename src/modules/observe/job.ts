@@ -837,9 +837,12 @@ export async function runObserve(
     });
     return { outcome: "done" };
   }
+  // ONE READ, for the prompt block below AND for the tool's comparison baseline. `set_labels` diffs
+  // the model's list against what the model was SHOWN, so two reads a few hundred milliseconds apart
+  // are two different claims about the same turn: a label this block advertises can be missing from
+  // the tool's baseline, and the model repeating it to keep it then reads as an ADDITION — putting
+  // back exactly what somebody removed in between. Handed to `buildToolset` for that reason.
   const current = await client.getConversationLabels(conversationId);
-  // The set the VERDICT will have been computed against, kept for the write below.
-  const _promptLabels = current;
 
   // THE TURN ITSELF, and from here on this is the ordinary graph (issue #568). What used to sit in
   // these lines was a classifier: one model call with a JSON schema built from the operator's label
@@ -1003,6 +1006,7 @@ export async function runObserve(
           threadId,
           stillWanted: () => fence(),
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
+          conversationLabels: current,
         },
         { buildNativeTools, mcp: deps.mcp, flow },
       ),

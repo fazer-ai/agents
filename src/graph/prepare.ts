@@ -847,6 +847,14 @@ export interface ToolsetCtx {
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
   observed?: ObservedConversation;
+  // THE CONVERSATION'S LABELS, WHEN THE CALLER ALREADY READ THEM. `set_labels` diffs the model's
+  // list against what the model was SHOWN, so the set in the prompt and the set the tool compares
+  // against have to be one value: two reads a few hundred milliseconds apart let a label the prompt
+  // advertised be absent from the baseline, and the model repeating it to keep it then reads as an
+  // ADDITION, putting back exactly what somebody just removed. The observer builds its own prompt
+  // block and so has read them already; handing them over is what keeps the two from drifting
+  // (review r8). Absent ⇒ this module reads them itself, which is what the reactive turn does.
+  conversationLabels?: string[];
   // Chatwoot id of the message that triggered this turn, exposed to HTTP tools as {{message_id}}.
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
   // (the watermark), since the coalesced turn answers up to that message. 0/absent ⇒ not exposed.
@@ -1178,9 +1186,9 @@ export async function buildToolset(
   if (grantsLabels && ctx.conversationId > 0) {
     if (kanban) shownLabels.task = kanban.card.labels;
     try {
-      shownLabels.conversation = await ctx.client.getConversationLabels(
-        ctx.conversationId,
-      );
+      shownLabels.conversation =
+        ctx.conversationLabels ??
+        (await ctx.client.getConversationLabels(ctx.conversationId));
     } catch (e) {
       logger.warn(
         "conversation labels fetch failed (tenant=%s): %s",

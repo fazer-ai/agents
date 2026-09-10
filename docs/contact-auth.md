@@ -279,8 +279,17 @@ message is folded into the memory thread like any other unanswered one.
 - **denied** → the `denyMessage` (when set) goes to the customer under the same `stillOurs` fence and
   persona token every gate message uses; the conversation is opened for humans (+ team) when
   `handoffEnabled`; a pt-BR private note tells the operator, with the `reason` code when one came.
+  That note carries what is **not** on the operator's screen, so what it says about the customer's
+  copy depends on what the customer actually got: when the copy was delivered the note says nothing
+  about it (the message is one line above; it keeps the reason code, which is the invisible part),
+  and it speaks up in the three cases where nothing reached the customer — no `denyMessage`
+  configured, the notice cooldown withholding a repeat, or nothing arriving at all (the send failed,
+  or the ownership fence stood it down; the runtime sees one boolean for both, so the note reports
+  the result and never names a cause it does not know).
 - **error** → nothing to the customer, no handoff (transient by contract: the next message retries),
-  a private note + a `warn` flow line.
+  a private note + a `warn` flow line. This note and the **no_identity** one are unchanged by the
+  above: both outcomes are silent to the customer by design, so there is no copy to describe and
+  "o agente não respondeu automaticamente" is simply true there.
 - **no_identity** (no phone, email or identifier) → nothing to the customer (the deny copy would
   mislead an unidentified web visitor), but the conversation IS opened for humans when
   `handoffEnabled`: a contact the gate can never authorize would otherwise stay pending and

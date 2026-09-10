@@ -1846,15 +1846,30 @@ export async function flushDebounceJob(
   // Only when this job actually carried one: the claimed payload IS the row's payload at claim time,
   // and no other writer stamps this thread, so an absent field means there is nothing to clear. That
   // keeps the extra write off the path almost every flush takes.
-  if (readDeferringSince(job.payload) !== null) {
-    await clearDeferral({ tenantId, threadId, base });
-  }
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).
   // The error is also surfaced on the conversation (item 6) so the operator can re-engage; a
   // successful answer clears it.
   try {
+    // INSIDE the try, so the `finally` below releases the hold no matter how this ends. Sitting
+    // above it, a rejection here — a statement timeout on the cleanup write, say — left the hold
+    // marked and never released, and every later burst on this graph thread then waited out its
+    // five-minute ceiling until the process restarted (round 5 of the review).
+    //
+    // And best-effort on top of that, so a failed cleanup does not become a failed turn: a stale
+    // stamp costs an early ceiling later, which is smaller than refusing to answer the customer.
+    // The `.catch` also keeps it out of the turn-failure handler below, whose side effects (the
+    // observer hand-over, the conversation error banner) are about a turn that ran, not about this.
+    if (readDeferringSince(job.payload) !== null) {
+      await clearDeferral({ tenantId, threadId, base }).catch((e) =>
+        logger.warn(
+          "debounce flush: could not clear the deferral stamp on thread %s: %s",
+          graphThreadId,
+          err(e),
+        ),
+      );
+    }
     const outcome = await coalesceAndRunTurn(
       {
         tenantId,

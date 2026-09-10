@@ -7,6 +7,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
   clearTurnInFlight,
+  isFlushHeld,
   isTurnInFlight,
   markTurnInFlight,
 } from "@/graph/inflight";
@@ -61,6 +62,7 @@ const CONV_CORRIDA_B = 4247;
 const CONTACT_INBOX_CORRIDA = 778;
 const CONV_CARIMBO = 4249;
 const CONV_LIMPEZA = 4250;
+const CONV_VAZAMENTO = 4251;
 const CHATWOOT_INBOX_ID = 7;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -629,5 +631,36 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     const stamp = (row.payload as { deferringSince?: number }).deferringSince;
     console.log(`[limpeza] deferringSince apos rodar: ${stamp ?? "removido"}`);
     expect(stamp).toBeUndefined();
+  }, 30_000);
+
+  test("a turn that throws releases the hold instead of wedging the thread", async () => {
+    // A hold that leaks is worse than no hold: it survives the process, and every later burst on this
+    // graph thread then waits out its five-minute ceiling before anyone is answered. Round 5 of the
+    // review found one such path -- a cleanup write above the try/finally -- and this fences the
+    // class rather than that one line.
+    await seedConversation(CONV_VAZAMENTO);
+    const thread = threadOf(CONV_VAZAMENTO);
+    const explode = () =>
+      ({
+        bindTools() {
+          return explode();
+        },
+        invoke: async () => {
+          throw new Error("provedor caiu no meio do turno");
+        },
+      }) as unknown as ReturnType<typeof overlapModel>;
+
+    await expect(
+      flushDebounceJob({
+        job: jobFor(jobIdA, CONV_VAZAMENTO, Date.now()),
+        base: appDb,
+        deps: {
+          makeModel: explode,
+          makeClient: stub([]),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    ).rejects.toThrow();
+    expect(isFlushHeld(thread)).toBe(false);
   }, 30_000);
 });

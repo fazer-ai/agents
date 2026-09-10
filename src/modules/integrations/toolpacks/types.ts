@@ -44,6 +44,12 @@ export interface ToolpackCtx {
   // helpers is four places to forget, and a fifth added later would start out uncovered. Same shape
   // as the Chatwoot client's `mutedFetch`. Absent ⇒ no deadline, which is every reactive turn.
   expiresOn?: AbortSignal;
+  // THE CALLER'S WITHDRAWAL FENCE, enforced the same way the deadline is: by wrapping `fetchImpl` at
+  // the build seam, so every pack's own request helper asks it without any of them knowing. A
+  // deadline answers "is there still time"; this answers "is anyone still waiting" — a `/reset` or a
+  // detach landing while a pack resolves a credential leaves the budget alive and the run withdrawn
+  // (issue #568, review round 28). Absent ⇒ no fence, which is every reactive turn's toolpack today.
+  stillWanted?: () => Promise<boolean>;
   // Injectable for tests; default assertSafeOutboundUrl. The origin is a fixed trusted constant
   // here, so this is defense-in-depth (and lets tests stay hermetic without DNS).
   assertSafe?: (url: string, opts?: SafeUrlOptions) => Promise<unknown>;
@@ -196,16 +202,38 @@ export function deadlineFetch(
   }) as typeof fetch;
 }
 
+// Refuses a request whose run was called off, at the last moment before it leaves. Throws rather
+// than returning a shape: a pack's request helper reads a Response, and a synthetic one would have
+// to lie about a status. The packs already answer a thrown transport error as a tool failure, which
+// is the honest reading — the call did not happen.
+export class ToolpackCalledOffError extends Error {
+  constructor() {
+    super("the run was called off before the request was sent");
+    this.name = "ToolpackCalledOffError";
+  }
+}
+
+export function fencedFetch(
+  inner: typeof fetch,
+  stillWanted: () => Promise<boolean>,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
+    if (!(await stillWanted().catch(() => true)))
+      throw new ToolpackCalledOffError();
+    return inner(input, init);
+  }) as typeof fetch;
+}
+
 export function buildToolpackTools(
   selections: IntegrationSelection[],
   ctx: ToolpackCtx,
 ): StructuredToolInterface[] {
-  const bounded: ToolpackCtx = ctx.expiresOn
-    ? {
-        ...ctx,
-        fetchImpl: deadlineFetch(ctx.fetchImpl ?? fetch, ctx.expiresOn),
-      }
-    : ctx;
+  let inner = ctx.fetchImpl ?? fetch;
+  if (ctx.stillWanted) inner = fencedFetch(inner, ctx.stillWanted);
+  if (ctx.expiresOn) inner = deadlineFetch(inner, ctx.expiresOn);
+  const bounded: ToolpackCtx =
+    ctx.expiresOn || ctx.stillWanted ? { ...ctx, fetchImpl: inner } : ctx;
   // A MUTED CLIENT DECIDES WHAT THE TURN MAY BE OFFERED, here as in buildNativeTools: a tool whose
   // delivery this client refuses costs a model round and answers with a failure the operator reads
   // as a broken integration. Read off the client the ctx already carries, so the mute and the

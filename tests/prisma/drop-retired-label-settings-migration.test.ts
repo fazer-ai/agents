@@ -120,6 +120,26 @@ describe.if(dbUp)("drop retired label settings", () => {
         },
       }),
     );
+    // ...and the allowlist that the OLD classifier never needed: it applied labels itself and asked
+    // no grant, so a watcher could carry an explicit NATIVE allowlist without the label tool and
+    // classify anyway (review round 28).
+    await suDb.query(
+      `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, knowledge_base_ids, enabled_tools, created_at, updated_at)
+       VALUES ($1, $2, 'NATIVE', '{}', $3, NOW(), NOW())`,
+      [String(tenantId), String(ids.carried), ["private_note"]],
+    );
+    // A watcher with a taxonomy AND the tool already granted: nothing to add, and never twice.
+    ids.granted = await agent(
+      "ja-concedida",
+      JSON.stringify({
+        monitoring: { labelGroups: [{ name: "assunto", values: ["a"] }] },
+      }),
+    );
+    await suDb.query(
+      `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, knowledge_base_ids, enabled_tools, created_at, updated_at)
+       VALUES ($1, $2, 'NATIVE', '{}', $3, NOW(), NOW())`,
+      [String(tenantId), String(ids.granted), ["set_labels", "private_note"]],
+    );
     // A row with neither key: the migration must not touch it.
     ids.clean = await agent(
       "limpa",
@@ -134,6 +154,10 @@ describe.if(dbUp)("drop retired label settings", () => {
 
   afterAll(async () => {
     if (!dbUp) return;
+    await suDb.query(
+      'DELETE FROM "agent_tool_selections" WHERE tenant_id = $1',
+      [String(tenantId)],
+    );
     await suDb.query('DELETE FROM "agents" WHERE tenant_id = $1', [
       String(tenantId),
     ]);
@@ -157,6 +181,13 @@ describe.if(dbUp)("drop retired label settings", () => {
     const note = (s.toolGuidance as Record<string, string>).set_labels;
     // Names itself as migrated, because an operator who finds guidance they did not type has to be
     // able to tell where it came from — this migration writes no audit line.
+    // THE WHOLE SENTENCE, and not a set of fragments: the import boundary renders the same text in
+    // TypeScript (tests/modules/agent-transfer.test.ts asserts this exact string for this exact
+    // input), and asserting both against one literal is what keeps a SQL renderer and a TS one from
+    // drifting apart (round 28).
+    expect(note).toBe(
+      "Migrado da taxonomia anterior. Grupos de etiquetas desta conta: assunto (escolha no máximo uma): cancelamento, compra. sinal (escolha no máximo uma): urgente. extra (pode usar mais de uma): vip. solto (escolha no máximo uma): x.",
+    );
     expect(note).toContain("Migrado da taxonomia anterior");
     expect(note).toContain(
       "assunto (escolha no máximo uma): cancelamento, compra",
@@ -173,6 +204,33 @@ describe.if(dbUp)("drop retired label settings", () => {
     ).toBe(25);
     // Under the cap every reader clips at, so the agent's next save cannot fail on it.
     expect((note ?? "").length).toBeLessThanOrEqual(1500);
+  });
+
+  test("the watcher that was classifying keeps the tool that does it now", async () => {
+    const r = await suDb.query(
+      `SELECT enabled_tools FROM "agent_tool_selections"
+        WHERE agent_id = $1 AND source = 'NATIVE'`,
+      [String(id("carried"))],
+    );
+    expect(r.rows[0].enabled_tools).toEqual(["private_note", "set_labels"]);
+  });
+
+  test("an allowlist that already has it is not given it twice", async () => {
+    const r = await suDb.query(
+      `SELECT enabled_tools FROM "agent_tool_selections"
+        WHERE agent_id = $1 AND source = 'NATIVE'`,
+      [String(id("granted"))],
+    );
+    expect(r.rows[0].enabled_tools).toEqual(["set_labels", "private_note"]);
+  });
+
+  test("an agent with NO allowlist row is left without one", async () => {
+    // No row means every native is allowed already; writing one would NARROW what the agent can do.
+    const r = await suDb.query(
+      `SELECT count(*) AS n FROM "agent_tool_selections" WHERE agent_id = $1`,
+      [String(id("configured"))],
+    );
+    expect(Number(r.rows[0].n)).toBe(0);
   });
 
   test("a configured taxonomy is removed from both places", async () => {

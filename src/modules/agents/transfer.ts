@@ -44,7 +44,10 @@ import {
   remapCredRefAt,
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
-import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
+import {
+  clampOversizedTextInPlace,
+  TOOL_INSTRUCTIONS_MAX,
+} from "@/modules/agents/text-caps";
 import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import { auditMutation } from "@/modules/audit/service";
 import {
@@ -2667,11 +2670,70 @@ function clampProtectedLabelsInPlace(settings: unknown): number {
   return kept.length - PROTECTED_LABELS_MAX;
 }
 
+// THE CONFIGURED TAXONOMY, RENDERED AS THE SENTENCE IT BECAME. A bundle is a file, so one exported
+// before this release carries `monitoring.labelGroups` — the one thing in the retired keys that
+// somebody chose. The upgrade migration carries it into `toolGuidance.set_labels`; dropping it here
+// would mean a restore loses exactly what an upgrade keeps (issue #568, review round 28).
+//
+// THE TEXT MIRRORS THE MIGRATION'S, statement for statement, and the two tests assert the same
+// sentence for the same input — that pairing is the only thing keeping a SQL renderer and a TS one
+// from drifting apart. The reader's own default is what decides exclusivity: `bag.exclusive !==
+// false`, so a group that never wrote the field was exclusive, and a loose value (`"custom"`, an
+// object) reads the same way rather than being coerced.
+function taxonomySentence(groups: unknown): string | null {
+  if (!Array.isArray(groups) || groups.length === 0) return null;
+  const parts: string[] = [];
+  for (const raw of groups) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const grp = raw as Record<string, unknown>;
+    const name =
+      typeof grp.name === "string" && grp.name.trim()
+        ? grp.name.trim()
+        : "sem nome";
+    const rule =
+      grp.exclusive === false
+        ? " (pode usar mais de uma)"
+        : " (escolha no máximo uma)";
+    const values = Array.isArray(grp.values)
+      ? grp.values.filter((v): v is string => typeof v === "string")
+      : [];
+    parts.push(
+      `${name}${rule}: ${values.length ? values.join(", ") : "(sem valores)"}`,
+    );
+  }
+  if (parts.length === 0) return null;
+  return clipText(
+    `Migrado da taxonomia anterior. Grupos de etiquetas desta conta: ${parts.join(". ")}.`,
+    TOOL_INSTRUCTIONS_MAX,
+  );
+}
+
 function stripRetiredLabelKeys(settings: unknown): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
   const bag = { ...(settings as Record<string, unknown>) };
   delete bag.labels;
+  // CARRIED OVER BEFORE THE KEY GOES, and only where the operator has not written their own note:
+  // their words win over ours, the same rule the migration follows.
+  const monBag = bag.monitoring as Record<string, unknown> | undefined;
+  const sentence =
+    monBag && typeof monBag === "object" && !Array.isArray(monBag)
+      ? taxonomySentence(monBag.labelGroups)
+      : null;
+  const guidance = bag.toolGuidance;
+  const hasOwnNote =
+    !!guidance &&
+    typeof guidance === "object" &&
+    !Array.isArray(guidance) &&
+    (guidance as Record<string, unknown>).set_labels !== undefined;
+  if (sentence && !hasOwnNote) {
+    bag.toolGuidance = {
+      ...(guidance && typeof guidance === "object" && !Array.isArray(guidance)
+        ? (guidance as Record<string, unknown>)
+        : {}),
+      set_labels: sentence,
+    };
+  }
   const monitoring = bag.monitoring;
   const mon = monitoring as Record<string, unknown> | undefined;
   if (

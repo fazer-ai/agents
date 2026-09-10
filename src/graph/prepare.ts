@@ -1097,6 +1097,9 @@ export async function buildToolset(
   const toolpackTools = buildToolpackTools(cfg.integrationSelections, {
     tenantId: ctx.tenantId,
     expiresOn: ctx.expiresOn,
+    // Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
+    // four packs with four request helpers is four places to forget.
+    stillWanted: ctx.stillWanted,
     ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
@@ -1329,6 +1332,9 @@ export async function buildToolset(
         resolveCredential,
         emitAck,
         expiresOn: ctx.expiresOn,
+        // The same fence the native tools and the precondition wrapper ask, at the same point: past
+        // every wait, immediately before the request leaves for somebody else's system.
+        stillWanted: ctx.stillWanted,
         ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
         // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod

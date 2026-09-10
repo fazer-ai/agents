@@ -481,6 +481,9 @@ export interface HttpToolBuildDeps {
   // The caller's whole-turn deadline, forwarded so a handler that outlived the budget does not send
   // its request. See HttpToolDeps.expiresOn.
   expiresOn?: HttpToolDeps["expiresOn"];
+  // The caller's withdrawal fence, forwarded for the same reason and asked in the same place. See
+  // HttpToolDeps.stillWanted: a deadline says there is no time left, this says nobody is waiting.
+  stillWanted?: HttpToolDeps["stillWanted"];
 }
 
 // Builds StructuredTools from loaded ToolDefinition rows. Network (the actual HTTP call) happens

@@ -33,6 +33,7 @@
 BEGIN;
 
 ALTER TABLE "agents" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "agent_tool_selections" NO FORCE ROW LEVEL SECURITY;
 
 -- 1. The whole `labels` block. It held `groups` and `noteOnChange`, and neither has a reader.
 UPDATE "agents"
@@ -107,6 +108,23 @@ WHERE r.id = a.id
         false
       );
 
+-- 1c. THE GRANT THAT THE OLD CLASSIFIER NEVER NEEDED. It applied its labels itself and asked no
+--     allowlist, so a watcher could carry an explicit NATIVE allowlist WITHOUT the label tool and
+--     classify anyway. Under the new design the sentence above is worth nothing without the tool:
+--     the agent keeps running and spending a model call per burst while quietly no longer
+--     classifying. Only for the agents whose taxonomy was just carried over, and only where a row
+--     exists — an agent with NO native selection row is already allowed every native, so adding one
+--     would NARROW what it can do (review round 28).
+UPDATE "agent_tool_selections" s
+SET enabled_tools = array_append(s.enabled_tools, 'set_labels'),
+    updated_at = NOW()
+FROM "agents" a
+WHERE s.agent_id = a.id
+  AND s.source = 'NATIVE'
+  AND NOT ('set_labels' = ANY(s.enabled_tools))
+  AND jsonb_typeof(a."settings" -> 'monitoring' -> 'labelGroups') = 'array'
+  AND jsonb_array_length(a."settings" -> 'monitoring' -> 'labelGroups') > 0;
+
 -- 2. `monitoring.labelGroups` and `monitoring.noteOnChange`, the two retired keys inside a block
 --    that is otherwise live configuration (the burst window, `analysis`, the debounce), so the keys
 --    are cut out rather than the block dropped. `noteOnChange` is the one that actually shipped:
@@ -123,5 +141,6 @@ WHERE jsonb_typeof("settings" -> 'monitoring') = 'object'
        OR ("settings" -> 'monitoring') ? 'noteOnChange');
 
 ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "agent_tool_selections" FORCE ROW LEVEL SECURITY;
 
 COMMIT;

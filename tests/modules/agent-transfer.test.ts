@@ -1929,6 +1929,72 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
+  // A BUNDLE CARRIES THE TAXONOMY TOO, and dropping it here would mean a RESTORE loses exactly what
+  // an UPGRADE keeps (review round 28). The sentence is the migration's, word for word: the test
+  // over there asserts the same text for the same input, which is the only thing keeping a SQL
+  // renderer and a TS one from drifting apart.
+  test("a bundle's configured taxonomy becomes the tool's guidance, not nothing", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com taxonomia";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.monitoring = {
+      window: { messages: 25 },
+      labelGroups: [
+        {
+          name: "assunto",
+          values: ["cancelamento", "compra"],
+          exclusive: true,
+        },
+        { name: "sinal", values: ["urgente"] },
+        { name: "extra", values: ["vip"], exclusive: false },
+        { name: "solto", values: ["x"], exclusive: "custom" },
+      ],
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = row.settings as Record<string, Record<string, string>>;
+    expect(stored.toolGuidance?.set_labels).toBe(
+      "Migrado da taxonomia anterior. Grupos de etiquetas desta conta: assunto (escolha no máximo uma): cancelamento, compra. sinal (escolha no máximo uma): urgente. extra (pode usar mais de uma): vip. solto (escolha no máximo uma): x.",
+    );
+    // And the key it came from still goes, which is the whole point of the boundary.
+    expect(
+      (stored.monitoring as unknown as Record<string, unknown>).labelGroups,
+    ).toBeUndefined();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a bundle whose operator already wrote the note keeps THEIR words", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com nota propria";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.monitoring = {
+      labelGroups: [{ name: "assunto", values: ["a"] }],
+    };
+    settings.toolGuidance = {
+      ...((settings.toolGuidance as Record<string, unknown>) ?? {}),
+      set_labels: "a minha própria orientação",
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect(
+      (row.settings as Record<string, Record<string, string>>).toolGuidance
+        ?.set_labels,
+    ).toBe("a minha própria orientação");
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   // A BUNDLE OVER THE PROTECTED-LABEL CEILING IS CLAMPED, not refused and not stored whole: the
   // reader stops AT the ceiling, so a longer stored list would show the operator guards that guard
   // nothing, and the agent it produced would fail its own first save (issue #568, review round 23).

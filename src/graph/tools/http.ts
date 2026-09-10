@@ -97,6 +97,14 @@ export interface HttpToolDeps {
   // for exactly this reason (ChatwootClientConfig.expiresOn); an external endpoint is the same
   // hazard with none of the idempotency. Absent ⇒ no deadline, which is every reactive turn.
   expiresOn?: AbortSignal;
+  // THE CALLER'S WITHDRAWAL FENCE, asked in the same place the deadline is: immediately before the
+  // request goes out. A deadline answers "is there still time"; this answers "is anyone still
+  // waiting for it" — a `/reset`, a supersede or a detach that landed while this tool resolved a
+  // credential or a DNS name leaves the budget perfectly alive and the run withdrawn all the same,
+  // and the POST reaches somebody else's system anyway (issue #568, review round 28). Absent ⇒ the
+  // call proceeds, which is what every caller with no fence to offer means; only an explicit `false`
+  // stops it, since a fence that could not answer is not a withdrawal.
+  stillWanted?: () => Promise<boolean>;
   maxResponseChars?: number;
   // Posts a "I'll look into that…" ack to the customer before a slow tool runs (best-effort). Wired
   // only on a real conversation; absent in the playground (no client / no conversation). An
@@ -857,6 +865,11 @@ export function buildHttpTool(
       // not.
       if (deps.expiresOn?.aborted) {
         return "Could not call the tool (the run's time budget ran out before the request was sent).";
+      }
+      // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
+      // and immediately before the send. See `stillWanted` on the deps.
+      if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+        return "Could not call the tool (the run was called off before the request was sent).";
       }
       const { res, body: responseBody } = await fetchBounded(
         url.toString(),

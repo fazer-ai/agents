@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { tool } from "@langchain/core/tools";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
   type AgentConfig,
@@ -10,6 +12,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
+import { registerToolpack } from "@/modules/integrations/toolpacks";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 
 // The slow-tool ack is the one customer-facing write a tool makes on its own, and its send is a wait
@@ -134,6 +137,103 @@ describe.skipIf(!dbUp)(
       const r = await run(true);
       expect(r.calls).toEqual(["send:Só um momento!", "typing:true"]);
       expect(r.requests.length).toBe(1);
+    });
+
+    test("the fence reaches the HTTP tool itself, not only the ack", async () => {
+      // The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
+      // fence down. Without an ack there is nothing else that could stop the request, so a call
+      // that sends anyway is the toolset not forwarding it (review round 28).
+      const cfg = config() as unknown as Record<string, unknown>;
+      cfg.httpToolDefs = [
+        {
+          name: "consulta_direta",
+          description: "a lookup with no ack",
+          method: "POST",
+          urlTemplate: "https://8.8.8.8/v1/direct",
+          allowedHosts: ["8.8.8.8"],
+          headers: {},
+          inputSchema: {},
+          ackEnabled: false,
+          ackMessage: null,
+        },
+      ];
+      const tools = await buildToolset(
+        cfg as unknown as AgentConfig,
+        {
+          tenantId: 1n,
+          instanceId: 1n,
+          base: appDb,
+          client: {} as unknown as ChatwootClient,
+          conversationId: 77,
+          threadId: `t-http-${process.pid}`,
+          stillWanted: async () => false,
+        },
+        { buildNativeTools: () => [] },
+      );
+      const tool = tools.find((t) => t.name === "consulta_direta");
+      if (!tool) throw new Error("the HTTP tool was not built");
+      requests.length = 0;
+      const out = String(await tool.invoke({}));
+      expect(requests).toEqual([]);
+      expect(out).toContain("called off");
+    });
+
+    test("the fence reaches a toolpack's request, not only the native tools", async () => {
+      // The other half of the same wiring: `buildToolpackTools` wraps the fence onto the pack's
+      // fetch at the build seam, so what a unit test cannot see is whether `buildToolset` hands it
+      // over at all. A hermetic pack registered here asks exactly that (review round 28).
+      registerToolpack({
+        catalogType: "TEST_FENCE_PACK",
+        toolSpecs: [{ name: "pack_probe", schema: z.object({}) }],
+        build: (_sel, packCtx) => [
+          tool(
+            async () => {
+              await (packCtx.fetchImpl ?? fetch)("https://8.8.8.8/v1/pack");
+              return "sent";
+            },
+            {
+              name: "pack_probe",
+              description: "sends one request",
+              schema: z.object({}),
+            },
+          ),
+        ],
+      });
+      const cfg = config() as unknown as Record<string, unknown>;
+      cfg.httpToolDefs = [];
+      cfg.integrationSelections = [
+        {
+          instanceId: 1n,
+          catalogType: "TEST_FENCE_PACK",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["pack_probe"],
+        },
+      ];
+      const tools = await buildToolset(
+        cfg as unknown as AgentConfig,
+        {
+          tenantId: 1n,
+          instanceId: 1n,
+          base: appDb,
+          client: {} as unknown as ChatwootClient,
+          conversationId: 78,
+          threadId: `t-pack-${process.pid}`,
+          stillWanted: async () => false,
+        },
+        { buildNativeTools: () => [] },
+      );
+      const probe = tools.find((t) => t.name === "pack_probe");
+      if (!probe) throw new Error("the toolpack tool was not built");
+      requests.length = 0;
+      let out = "";
+      try {
+        out = String(await probe.invoke({}));
+      } catch (err) {
+        out = `threw:${(err as Error).name}`;
+      }
+      expect(requests).toEqual([]);
+      expect(out).toBe("threw:ToolpackCalledOffError");
     });
 
     test("a MUTED turn is not offered a document tool either", async () => {

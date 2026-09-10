@@ -10,6 +10,7 @@ import {
 import {
   buildToolpackTools,
   deadlineFetch,
+  fencedFetch,
   registerToolpack,
 } from "@/modules/integrations/toolpacks/types";
 
@@ -1714,6 +1715,55 @@ describe("the turn's deadline reaches an http tool", () => {
   });
 });
 
+// A DEADLINE SAYS THERE IS NO TIME LEFT; THE FENCE SAYS NOBODY IS WAITING. A `/reset`, a supersede
+// or a detach landing while a tool resolves a credential or a DNS name leaves the budget perfectly
+// alive and the run withdrawn all the same, and the POST reaches somebody else's system anyway
+// (issue #568 review, round 28).
+describe("the turn's withdrawal fence reaches an http tool", () => {
+  test("a run called off while the credential resolved stops the request", async () => {
+    const captured: Captured = {};
+    let wanted = true;
+    const tool = buildHttpTool(
+      def({
+        method: "POST",
+        credentialRef: "k",
+        credentialKind: "bearer_token",
+      }),
+      {
+        resolveCredential: async () => {
+          wanted = false;
+          return "segredo";
+        },
+        fetchImpl: stubFetch(captured),
+        stillWanted: async () => wanted,
+      },
+    );
+    const out = await tool.invoke({});
+    expect(captured.url).toBeUndefined();
+    expect(String(out)).toContain("called off");
+  });
+
+  test("a fence that says yes, and one that cannot answer, both send", async () => {
+    const yes: Captured = {};
+    await buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(yes),
+      stillWanted: async () => true,
+    }).invoke({});
+    expect(yes.url).toContain("/v1/thing");
+    // An unreadable fence is not the operator saying no, which is how every other fence here reads.
+    const broken: Captured = {};
+    await buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(broken),
+      stillWanted: async () => {
+        throw new Error("database blip");
+      },
+    }).invoke({});
+    expect(broken.url).toContain("/v1/thing");
+  });
+});
+
 // THE SAME DEADLINE, THE OTHER FAMILY OF TOOLS. Four toolpacks each have their own request helper,
 // so enforcing this at each of them is four places to forget and a fifth uncovered the day someone
 // adds a pack. It is applied by wrapping the ctx's `fetchImpl` at the build seam instead — the shape
@@ -1829,5 +1879,80 @@ describe("the turn's deadline reaches a toolpack", () => {
     await wrapped("https://example.com/x", { signal: own.signal });
     deadline.abort();
     expect(seen[0]?.aborted).toBe(true);
+  });
+});
+
+// THE FENCE, AT THE SAME SEAM AND FOR THE SAME REASON (round 28). A pack's helper never learns about
+// it; the wrap does, so a pack written next month is covered the day it is registered.
+describe("the turn's withdrawal fence reaches a toolpack", () => {
+  test("a run called off refuses the request before it leaves", async () => {
+    let called = false;
+    const wrapped = fencedFetch(
+      (async () => {
+        called = true;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      async () => false,
+    );
+    await expect(wrapped("https://example.com/x")).rejects.toThrow(
+      "called off",
+    );
+    expect(called).toBe(false);
+  });
+
+  test("a fence that says yes, and one that cannot answer, both pass through", async () => {
+    const calls: string[] = [];
+    const inner = (async (u: unknown) => {
+      calls.push(String(u));
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    await fencedFetch(inner, async () => true)("https://example.com/yes");
+    await fencedFetch(inner, async () => {
+      throw new Error("database blip");
+    })("https://example.com/broken");
+    expect(calls).toEqual([
+      "https://example.com/yes",
+      "https://example.com/broken",
+    ]);
+  });
+
+  test("the wrap is applied at the build seam, so no pack can miss it", async () => {
+    // The seam, not the helper: `fencedFetch` being right proves nothing if buildToolpackTools hands
+    // the pack the raw fetch.
+    let handed: typeof fetch | undefined;
+    registerToolpack({
+      catalogType: "__test_fence__",
+      toolSpecs: [{ name: "t", schema: z.object({}) }],
+      build(_sel, ctx) {
+        handed = ctx.fetchImpl;
+        return [];
+      },
+    });
+    let called = false;
+    buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "__test_fence__",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["t"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: undefined as never,
+        threadId: "1:1:1",
+        resolveCredential: async () => null,
+        fetchImpl: (async () => {
+          called = true;
+          return new Response("{}");
+        }) as unknown as typeof fetch,
+        stillWanted: async () => false,
+      },
+    );
+    if (!handed) throw new Error("the pack was handed no fetch");
+    await expect(handed("https://example.com/x")).rejects.toThrow("called off");
+    expect(called).toBe(false);
   });
 });

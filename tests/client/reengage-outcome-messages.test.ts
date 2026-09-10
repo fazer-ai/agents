@@ -19,10 +19,17 @@ const PT = "src/client/locales/pt-BR.json";
 // nomear. Os herdados de `RunAgentTurnOutcome` valem pelos ramos que já existem (`posted`,
 // `posted-partial`) e pelo `else` final, que é o lugar legítimo de "o turno rodou e não respondeu".
 function desfechosProprios(fonte: string): string[] {
-  const bloco = fonte.slice(
-    fonte.indexOf("export type ReengageOutcome"),
-    fonte.indexOf("export interface ReengageResult"),
-  );
+  // Âncoras conferidas antes do recorte. `indexOf` devolve -1 para o que sumiu, `slice(-1, -1)`
+  // devolve "" e um recorte vazio não declara desfecho nenhum: a cerca passaria justamente no
+  // commit que renomeou o tipo. Padrão que para de casar tem que reprovar, não silenciar.
+  const abre = fonte.indexOf("export type ReengageOutcome");
+  const fecha = fonte.indexOf("export interface ReengageResult");
+  if (abre < 0 || fecha <= abre) {
+    throw new Error(
+      `âncoras de ReengageOutcome não encontradas em ${REENGAGE} (abre=${abre}, fecha=${fecha})`,
+    );
+  }
+  const bloco = fonte.slice(abre, fecha);
   return [...bloco.matchAll(/\|\s*"([a-z-]+)"/g)].map((m) => m[1] as string);
 }
 

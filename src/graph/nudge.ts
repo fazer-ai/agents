@@ -52,7 +52,7 @@ import {
   resolveGraphThreadId,
   threadBelongsToTenant,
 } from "./checkpointer";
-import { lastAssistantText } from "./graph";
+import { lastAssistantText, recursionLimitFor } from "./graph";
 import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
@@ -1105,6 +1105,9 @@ export async function runAgentNudge(
     tools,
   });
   const invokeConfig = {
+    // LangGraph counts SUPER-STEPS and its default 25 runs out at about twelve tool rounds, so a
+    // budget the operator is allowed to set (1-50) would throw instead of ending at the budget.
+    recursionLimit: recursionLimitFor(cfg.maxToolCalls),
     configurable: { thread_id: graphThreadId },
     callbacks,
   };

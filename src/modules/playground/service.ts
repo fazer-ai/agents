@@ -6,7 +6,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { getCheckpointer } from "@/graph/checkpointer";
-import { lastAssistantText } from "@/graph/graph";
+import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
 import type { ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { type AgentNudge, renderNudge } from "@/graph/nudge";
@@ -753,6 +753,7 @@ export async function runPlaygroundTurn(
         graph.invoke(
           { messages: [human] },
           {
+            recursionLimit: recursionLimitFor(loaded.maxToolCalls),
             configurable: { thread_id: threadId },
             // ToolFlowLogger so playground tool calls land in the Logs page (item 3), same as a
             // real turn does in runLoadedTurn.
@@ -1134,6 +1135,7 @@ export async function runPlaygroundFollowup(
         ],
       },
       {
+        recursionLimit: recursionLimitFor(loadedConfig.maxToolCalls),
         configurable: { thread_id: threadId },
         callbacks: [
           ...callbacks,

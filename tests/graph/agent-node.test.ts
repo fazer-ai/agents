@@ -10,7 +10,11 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
-import { buildAgentGraph, lastAssistantText } from "@/graph/graph";
+import {
+  buildAgentGraph,
+  lastAssistantText,
+  recursionLimitFor,
+} from "@/graph/graph";
 import { CALLED_OFF_TOOL_RESULT } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
@@ -1880,5 +1884,27 @@ describe("the tool boundary refuses a turn that was called off", () => {
       { configurable: { thread_id: "cost-no-hop" } },
     );
     expect(asked).toBe(0);
+  });
+});
+
+// LANGGRAPH COUNTS SUPER-STEPS, NOT TOOL CALLS. One round of "the model calls a tool, the tool node
+// runs it" is two steps, so its default 25 runs out at about twelve rounds — and `maxToolCalls` is
+// an operator setting that goes to 50. A budget the graph cannot reach is a turn that dies with
+// `GraphRecursionError` after the tools it already ran have had their side effects, instead of
+// ending at the budget with a text answer.
+describe("the recursion limit tracks the tool budget", () => {
+  test("a budget of 20 gets the steps 20 rounds take", () => {
+    // 2 per round, +1 for the answer the model gives after the last one, +3 of graph overhead.
+    expect(recursionLimitFor(20)).toBe(44);
+  });
+
+  test("it never goes below LangGraph's own default", () => {
+    // A small budget keeps the room it has today: this raises ceilings, it never lowers one.
+    expect(recursionLimitFor(1)).toBe(25);
+    expect(recursionLimitFor(10)).toBe(25);
+  });
+
+  test("no budget means the default budget, not an unbounded graph", () => {
+    expect(recursionLimitFor(undefined)).toBe(recursionLimitFor(10));
   });
 });

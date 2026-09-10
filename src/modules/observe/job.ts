@@ -4,6 +4,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
+import { recursionLimitFor } from "@/graph/graph";
 import type { ResolvedModelConfig } from "@/graph/models";
 import {
   buildCallbacks,
@@ -72,7 +73,16 @@ import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 
 export type ObserveReason = "burst" | "resolved";
 
-export const OBSERVE_TIMEOUT_MS = 60_000;
+// THE WHOLE TICK'S BUDGET, not the model call's. It bounds tool discovery as well as the turn,
+// because `runSchedulerTick` awaits every handler and `startScheduler` skips the next tick while one
+// is running: an MCP server that opens a stream and never says anything else stops reminders and
+// every other tenant's scheduled work, and discovery happens before any model call.
+//
+// Raised from the 60s the single constrained verdict call used to get, because a turn is now as many
+// model calls as the model makes tool calls, and a deadline a legitimate turn cannot meet is a tick
+// that fails, retries and spends again. Kept well under the scheduler's own 5-minute stale window,
+// so a tick always finishes before the reaper would treat its claim as abandoned.
+export const OBSERVE_TIMEOUT_MS = 120_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
 const TRANSCRIPT_MAX_CHARS = 40_000;
 // The notes block gets its own budget, and it needs one for the same reason the transcript has one:
@@ -974,20 +984,35 @@ export async function runObserve(
     return true;
   };
 
-  const tools = await buildToolset(
-    cfg,
-    {
-      tenantId,
-      instanceId,
-      base,
-      client,
-      conversationId,
-      threadId,
-      stillWanted: () => fence(),
-      observed: conv ? { status: conv.status, statusAt: null } : undefined,
-    },
-    { buildNativeTools, mcp: deps.mcp, flow },
-  );
+  // STARTED BEFORE DISCOVERY, and that is the point: `buildToolset` contacts every MCP server the
+  // agent has, and an SSE server that opens the stream and never emits its endpoint waits with no
+  // timeout of its own. The deadline used to be created after this call, so the one call that can
+  // hang forever was the one call it did not cover.
+  const deadline = AbortSignal.timeout(deps.timeoutMs ?? OBSERVE_TIMEOUT_MS);
+  let tools: Awaited<ReturnType<typeof buildToolset>>;
+  try {
+    tools = await underSignal(
+      buildToolset(
+        cfg,
+        {
+          tenantId,
+          instanceId,
+          base,
+          client,
+          conversationId,
+          threadId,
+          stillWanted: () => fence(),
+          observed: conv ? { status: conv.status, statusAt: null } : undefined,
+        },
+        { buildNativeTools, mcp: deps.mcp, flow },
+      ),
+      deadline,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    line("error", { failed: "toolset_build" }, "error");
+    return { outcome: "fail", error: `observe: ${msg}` };
+  }
 
   let graph: Awaited<ReturnType<typeof buildModelAndGraph>>;
   try {
@@ -1098,7 +1123,6 @@ export async function runObserve(
   // client receives, so the provider request is actually cancelled rather than left in flight;
   // `underSignal` is what guarantees THIS function stops waiting, whatever a link in the chain does
   // with the signal it was handed. The scheduler's problem is the waiting, not the socket.
-  const deadline = AbortSignal.timeout(deps.timeoutMs ?? OBSERVE_TIMEOUT_MS);
   try {
     const result = await underSignal(
       graph.invoke(
@@ -1109,6 +1133,9 @@ export async function runObserve(
         },
         {
           signal: deadline,
+          // The budget the operator set is only reachable if the graph is allowed the steps it
+          // takes: LangGraph counts super-steps and its default runs out at about twelve rounds.
+          recursionLimit: recursionLimitFor(cfg.maxToolCalls),
           configurable: { thread_id: graphThreadId },
           // THE TOOL LOGGER TOO, exactly as the reactive runtime installs it. `buildCallbacks`
           // carries usage capture and the optional trace; the per-tool line is separate, and

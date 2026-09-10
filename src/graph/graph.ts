@@ -110,6 +110,19 @@ export interface BuildAgentGraphParams {
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
 
+// LANGGRAPH COUNTS SUPER-STEPS, NOT TOOL CALLS, and its default is 25 — so a budget the operator is
+// allowed to set (1-50) can be unreachable by the graph that is supposed to honour it. One round of
+// "the model calls a tool, the tool node runs it" is TWO steps, so the default runs out after about
+// twelve rounds and the turn dies with `GraphRecursionError` instead of ending at the budget with a
+// text answer, after the tools it already ran have had their side effects.
+//
+// Sized to the budget rather than raised to a round number: `2 * max` for the rounds, `+1` for the
+// final model call that produces the answer, `+3` of margin for the graph's own entry and exit. It
+// never goes BELOW LangGraph's default, so an agent with a small budget keeps the room it has today.
+export function recursionLimitFor(maxToolCalls?: number): number {
+  return Math.max(25, 2 * (maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS) + 4);
+}
+
 // Count tool executions since the last customer (Human) message: ToolMessages after the last
 // HumanMessage in the history. One per tool call the model issued and we ran this turn.
 function toolCallsSinceLastHuman(history: BaseMessage[]): number {

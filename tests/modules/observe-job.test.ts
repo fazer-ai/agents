@@ -1840,6 +1840,60 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
+  // DISCOVERY IS THE ONE CALL THAT CAN HANG FOREVER, and before this it was the one call the
+  // deadline did not cover: it was created after `buildToolset`. An MCP server that opens its stream
+  // and never emits an endpoint waits with no timeout of its own, and `startScheduler` skips every
+  // later tick while one is running — so one tenant's broken server stops everyone's reminders.
+  test("an MCP server that never answers gives the tick back instead of hanging discovery", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const conn = await suDb.mcpServerConnection.create({
+      data: {
+        tenantId,
+        name: `mudo-${process.pid}`,
+        transport: "streamableHttp",
+        url: "https://mudo.example.com/mcp",
+      },
+    });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "MCP",
+        mcpServerConnectionId: conn.id,
+        knowledgeBaseIds: [],
+        enabledTools: ["qualquer_uma"],
+      },
+    });
+    const started = Date.now();
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new SilentModel() as unknown as BaseChatModel,
+          // Opens and never says anything else, which is the SSE pathology in miniature.
+          mcp: { connect: (() => new Promise(() => {})) as never },
+          timeoutMs: 300,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+      await suDb.mcpServerConnection.delete({ where: { id: conn.id } });
+    }
+  });
+
   // THE TICK RUNS ON THE SHARED SCHEDULER, so a provider that never answers is not just this
   // observation lost: `runSchedulerTick` awaits every handler and `startScheduler` skips the next
   // tick while one is still running, so reminders and every other job queue up behind it. The

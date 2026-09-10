@@ -63,7 +63,7 @@ import {
   getCheckpointer,
   resolveGraphThreadId,
 } from "./checkpointer";
-import { lastAssistantText } from "./graph";
+import { lastAssistantText, recursionLimitFor } from "./graph";
 import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
@@ -1693,6 +1693,10 @@ async function runTurnBody(
             ],
           },
           {
+            // Same reason as everywhere else this graph is invoked: LangGraph counts SUPER-STEPS and
+            // its default 25 runs out at about twelve tool rounds, so a budget the operator is
+            // allowed to set (1-50) throws `GraphRecursionError` instead of ending at the budget.
+            recursionLimit: recursionLimitFor(loaded.maxToolCalls),
             configurable: { thread_id: graphThreadId },
             callbacks: [...callbacks, status, toolLogger],
           },

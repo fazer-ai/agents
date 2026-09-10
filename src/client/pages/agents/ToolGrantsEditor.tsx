@@ -597,14 +597,29 @@ export function ToolGrantsEditor({
       }
     })();
   }, [handoffEnabled, handoffData, agentId]);
-  // Pinned is available only when the agent serves exactly one account (0 ⇒ no inbox bound, ≥2 ⇒
-  // ambiguous). `pinnedHint` explains why it is disabled; `pinnedInstanceId` is stored with the target.
+  // PICKING a pinned target needs exactly one account (0 ⇒ no inbox bound, ≥2 ⇒ the listing comes
+  // back empty, because agent and team ids are account-scoped). `pinnedHint` explains why it is
+  // disabled; `pinnedInstanceId` is stored with the target.
   const handoffAccounts = handoffData?.accounts ?? [];
-  const pinnedAvailable = !!handoffData && handoffAccounts.length === 1;
+  const pinnedOfferable = !!handoffData && handoffAccounts.length === 1;
   const pinnedInstanceId =
-    pinnedAvailable && handoffAccounts[0]
+    pinnedOfferable && handoffAccounts[0]
       ? Number(handoffAccounts[0].instanceId)
       : null;
+  // KEEPING one is a different question, and the answer is the account recorded next to the target,
+  // which is what the runtime reads (`prepare.ts`: a pinned target falls back to agent_choice only in
+  // the accounts it does not belong to). Counting accounts is the fallback for a target stored before
+  // that field existed.
+  const storedPinnedAccount = handoffAccounts.find(
+    (a) => Number(a.instanceId) === handoff.targetInstanceId,
+  );
+  const pinnedStoredUsable =
+    handoff.targetInstanceId != null
+      ? !!storedPinnedAccount
+      : handoffAccounts.length === 1;
+  // A pinned target that stands even though this editor cannot offer the list: shown read-only.
+  const pinnedKept =
+    handoff.mode === "pinned" && pinnedStoredUsable && !!storedPinnedAccount;
   const pinnedHint = !handoffData
     ? t("common.loading", "Loading…")
     : handoffAccounts.length === 0
@@ -618,12 +633,23 @@ export function ToolGrantsEditor({
             "This agent serves inboxes in different Chatwoot accounts; use “Let the AI choose”.",
           )
         : undefined;
-  // Auto-switch a stale "pinned" target to "agent_choice" once the fetched data shows the agent is no
-  // longer a single-account agent (its bindings changed in the Channels tab, or its inboxes dropped).
-  // Keeps the SAVED config consistent with what the UI shows and the runtime does; marks the Tools
-  // section unsaved so the operator confirms the change. No loop: after the switch mode !== "pinned".
+  // Auto-switch a "pinned" target to "agent_choice" once the fetched data shows it can no longer be
+  // used ANYWHERE: the account it names is not among the agent's, or it is a legacy target with no
+  // account recorded on an agent that now serves several. Keeps the SAVED config consistent with what
+  // the UI shows and the runtime does; marks the Tools section unsaved so the operator confirms the
+  // change. No loop: after the switch mode !== "pinned".
+  //
+  // A target the runtime WOULD still use is left alone. Switching on account count alone dropped a
+  // valid pinned target — and lit the tab's unsaved dot — the moment a second account's inbox was
+  // bound, with nobody having touched the form. Only judged once accounts came back: zero of them
+  // means no inbox is bound yet, or the read failed, and neither is evidence about the target.
   useEffect(() => {
-    if (handoffData && !pinnedAvailable && handoff.mode === "pinned") {
+    if (
+      handoffData &&
+      handoffAccounts.length > 0 &&
+      !pinnedStoredUsable &&
+      handoff.mode === "pinned"
+    ) {
       setHandoff((h) => ({
         ...h,
         mode: "agent_choice",
@@ -631,7 +657,13 @@ export function ToolGrantsEditor({
         targetInstanceId: null,
       }));
     }
-  }, [handoffData, pinnedAvailable, handoff.mode, setHandoff]);
+  }, [
+    handoffData,
+    handoffAccounts.length,
+    pinnedStoredUsable,
+    handoff.mode,
+    setHandoff,
+  ]);
 
   // Apply the deferred auto-grant for a just-created integration once it appears in the refreshed
   // catalog (so we can enable its full tool set, like the manual toggle does).
@@ -1466,15 +1498,28 @@ export function ToolGrantsEditor({
                   "editor.handoffTarget",
                   "Who receives the handoff",
                 )}
-                onChange={(value) =>
+                onChange={(value) => {
+                  // Picking the mode already in force changes nothing, and must WRITE nothing.
+                  // `Dropdown` fires onChange for the current value like any other, and now that
+                  // `pinned` stays reachable while it is the mode in force, that click used to
+                  // rewrite `targetInstanceId` to `pinnedInstanceId` — null wherever the picker
+                  // cannot offer targets — which then failed the check that keeps the target and
+                  // erased the very setting the operator was looking at.
+                  if (value === handoff.mode) return;
                   setHandoff({
                     ...handoff,
                     mode: value,
                     target: value === "pinned" ? handoff.target : "",
+                    // Safe without a fallback to the recorded account precisely BECAUSE of the guard
+                    // above: reaching here with `pinned` means the mode was something else, and the
+                    // item is only selectable then when the agent serves exactly one account — which
+                    // is the case where `pinnedInstanceId` is filled. A `?? handoff.targetInstanceId`
+                    // here reads as prudence and is dead code: no test can tell it apart, and a line
+                    // no test can pin is a line nobody can maintain.
                     targetInstanceId:
                       value === "pinned" ? pinnedInstanceId : null,
-                  })
-                }
+                  });
+                }}
                 items={[
                   {
                     value: "route",
@@ -1489,7 +1534,10 @@ export function ToolGrantsEditor({
                       "editor.handoffPinned",
                       "A specific agent or team",
                     ),
-                    disabled: !pinnedAvailable,
+                    // Never disable the mode the config is ALREADY in and the runtime still honors:
+                    // a disabled current value reads as "this is broken, fix it" about a setting
+                    // that works.
+                    disabled: !pinnedOfferable && !pinnedKept,
                     disabledHint: pinnedHint,
                   },
                   {
@@ -1499,10 +1547,23 @@ export function ToolGrantsEditor({
                 ]}
               />
             </FormField>
-            {handoffData && !pinnedAvailable && (
+            {handoffData && !pinnedOfferable && !pinnedKept && (
               <p className="text-text-muted text-xs">{pinnedHint}</p>
             )}
-            {handoff.mode === "pinned" && pinnedAvailable && (
+            {pinnedKept && !pinnedOfferable && (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "editor.handoffPinnedKept",
+                  "This agent serves inboxes in more than one Chatwoot account, so targets cannot be listed here. The saved target belongs to {{account}} and is used only in that account; elsewhere the AI picks.",
+                  {
+                    account:
+                      storedPinnedAccount?.accountName ??
+                      `#${storedPinnedAccount?.accountId}`,
+                  },
+                )}
+              </p>
+            )}
+            {handoff.mode === "pinned" && pinnedOfferable && (
               <FormField
                 label={t("editor.handoffPick", "Agent or team")}
                 group

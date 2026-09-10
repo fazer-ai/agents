@@ -48,10 +48,17 @@ WITH rendered AS (
   SELECT a.id,
          string_agg(
            coalesce(nullif(btrim(grp ->> 'name'), ''), 'sem nome')
+             -- THE READER'S OWN RULE, and never a cast. `readLabelGroups` asked `bag.exclusive !==
+             -- false`, so a group that never wrote the field was EXCLUSIVE — the default, and the
+             -- opposite of what a missing value casts to. And the bag is loose: an imported agent
+             -- can carry `"custom"` or an object there, and `::boolean` on it raises and aborts the
+             -- whole deployment migration. Comparing the jsonb value answers both at once: only an
+             -- explicit `false` is non-exclusive, everything else (absent, a string, an object)
+             -- reads the way the previous release read it (review round 27).
              || CASE
-                  WHEN coalesce((grp ->> 'exclusive')::boolean, false)
-                    THEN ' (escolha no máximo uma)'
-                  ELSE ' (pode usar mais de uma)'
+                  WHEN (grp -> 'exclusive') = to_jsonb(false)
+                    THEN ' (pode usar mais de uma)'
+                  ELSE ' (escolha no máximo uma)'
                 END
              || ': '
              || coalesce(

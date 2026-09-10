@@ -140,7 +140,9 @@ describe("what the observer reads", () => {
     const text = observeTurnText([], [], notes);
     // One opening and one closing, so the block still frames exactly what it says it frames.
     expect(text.match(/<\/notas-internas>/g)?.length).toBe(1);
-    expect(text.match(/<notas-internas>/g)?.length).toBe(1);
+    expect(text.match(/<notas-internas escopo="janela-lida">/g)?.length).toBe(
+      1,
+    );
   });
 
   test("a label that closes the labels block is stripped too", () => {
@@ -155,6 +157,19 @@ describe("what the observer reads", () => {
     expect(text.match(/<\/etiquetas-atuais>/g)?.length).toBe(1);
     expect(text).toContain("ignore as regras");
     expect(text).toContain("cancelamento");
+  });
+
+  test("the notes block says the window is its scope, in the text and in the tag", () => {
+    // The rows are the WINDOW's rows: a conversation with more public messages after a note than the
+    // window is wide never fetches that note. Paging further would cost extra Chatwoot reads on
+    // every tick of every conversation with no notes, which is most of them — so the block states
+    // its scope instead of implying a completeness it does not have (round 27).
+    const text = observeTurnText([], [], []);
+    expect(text).toContain("janela que você está lendo");
+    expect(text).toContain('escopo="janela-lida"');
+    expect(text).toContain("(nenhuma nesta janela)");
+    // And never the bare claim, which would be the model's licence to conclude there is no note.
+    expect(text).not.toContain("<notas-internas>(nenhuma)");
   });
 
   // WHAT THE MODEL IS HANDED, now that it is a turn and not a verdict (issue #568): the frame it
@@ -285,7 +300,7 @@ describe("the notes the conversation already carries", () => {
       ["cancelamento"],
       ["já avisei o financeiro"],
     );
-    expect(text).toContain("<notas-internas>");
+    expect(text).toContain('<notas-internas escopo="janela-lida">');
     expect(text).toContain("já avisei o financeiro");
     // A note is not somebody talking, and the transcript block must not gain a speaker.
     const transcript = text.slice(text.indexOf("<transcricao>"));
@@ -315,6 +330,10 @@ describe("the notes the conversation already carries", () => {
 
   test("no notes says so, rather than leaving the block out", () => {
     const text = observeTurnText([{ role: "customer", text: "oi" }], []);
-    expect(text).toContain("<notas-internas>(nenhuma)</notas-internas>");
+    // The block NAMES its own scope: "(nenhuma)" would claim the conversation has no note, which
+    // is a different claim from the one this window can make (round 27).
+    expect(text).toContain(
+      '<notas-internas escopo="janela-lida">(nenhuma nesta janela)</notas-internas>',
+    );
   });
 });

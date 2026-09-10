@@ -108,7 +108,14 @@ describe.if(dbUp)("drop retired label settings", () => {
               values: ["cancelamento", "compra"],
               exclusive: true,
             },
+            // NO `exclusive` FIELD: the previous reader asked `!== false`, so this group was
+            // EXCLUSIVE — the default, and the opposite of what a missing value casts to.
             { name: "sinal", values: ["urgente"] },
+            // Explicitly not exclusive, the only spelling that means "more than one".
+            { name: "extra", values: ["vip"], exclusive: false },
+            // A LOOSE BAG: an imported agent can carry anything here, and a cast would raise and
+            // abort the deployment migration. Reads as exclusive, like every non-`false` value.
+            { name: "solto", values: ["x"], exclusive: "custom" },
           ],
         },
       }),
@@ -154,7 +161,9 @@ describe.if(dbUp)("drop retired label settings", () => {
     expect(note).toContain(
       "assunto (escolha no máximo uma): cancelamento, compra",
     );
-    expect(note).toContain("sinal (pode usar mais de uma): urgente");
+    expect(note).toContain("sinal (escolha no máximo uma): urgente");
+    expect(note).toContain("extra (pode usar mais de uma): vip");
+    expect(note).toContain("solto (escolha no máximo uma): x");
     // And the key it came from is gone all the same.
     expect(
       (s.monitoring as Record<string, unknown>).labelGroups,

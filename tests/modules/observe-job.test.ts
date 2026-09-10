@@ -1564,6 +1564,51 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(stopped.at(-1)?.level).toBe("warn");
   });
 
+  test("a failure after a READ-ONLY call still retries", async () => {
+    // A calculator and a knowledge search leave nothing behind, so there is nothing a retry would
+    // repeat — and refusing it there throws away the run for free, which for an `on_resolve`
+    // observer is its only chance (review round 27).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class CalculatesThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "calculator", args: { expression: "2+2" }, id: "c1" },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new CalculatesThenDies() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+  });
+
   test("a failure BEFORE any tool ran still retries", async () => {
     // The control the case above needs: nothing committed, so the scheduler is still the right
     // answer — and this is the ordinary transient, which is most of them.

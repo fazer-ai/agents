@@ -14,6 +14,7 @@ import {
 } from "@/graph/prepare";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
+import { UTILITY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -449,6 +450,7 @@ export function observeTurnText(
     "Não existe canal de resposta aqui: qualquer texto que você escrever não chega a lugar nenhum, nem ao cliente nem à equipe.",
     "O que você faz neste turno é agir sobre a conversa com as ferramentas que tem: etiquetar, anotar em nota privada, registrar atributo, mover o card, o que o seu papel pedir.",
     "Cada turno começa do zero: o que você já fez nesta conversa está no que está registrado nela, não na sua memória.",
+    "As notas abaixo são as que aparecem na janela que você está lendo; pode haver outras mais antigas que não estão aqui.",
     "Se nada precisa mudar em relação ao que já está registrado, não chame ferramenta nenhuma.",
     "",
     // STRIPPED like the notes and the transcript, and for the same reason: `set_labels` sends the
@@ -468,10 +470,17 @@ export function observeTurnText(
     // could not, because the transcript is public messages only, and it would file the same note
     // again on every burst. Given as a separate block rather than folded into the transcript: a
     // note is not somebody talking, and the window that counts messages must keep counting messages.
-    `<notas-internas>${
+    // NAMED FOR WHAT IT ACTUALLY HOLDS: the notes inside the window this turn read, not every note
+    // the conversation ever carried. The rows are the window's rows — a conversation with more
+    // public messages after a note than the window is wide does not fetch that note, and paging
+    // further for one would cost extra Chatwoot reads on every tick of every conversation that has
+    // no notes at all, which is most of them. So the block says its own scope instead of implying a
+    // completeness it does not have: "(nenhuma nesta janela)" is a different claim from "(nenhuma)",
+    // and it is the one that is true (review round 27).
+    `<notas-internas escopo="janela-lida">${
       notes.length
         ? `\n${notes.map((n) => `- ${n}`).join("\n")}\n`
-        : "(nenhuma)"
+        : "(nenhuma nesta janela)"
     }</notas-internas>`,
     "",
     "<transcricao>",
@@ -1079,13 +1088,26 @@ export async function runObserve(
   // at-least-once for a classification: the effects reach other systems and cannot be taken back,
   // while the classification is re-asked on the very next burst. Counted at the tool boundary rather
   // than from the model's reported calls, because the count has to exist when the invoke THREW.
+  //
+  // COUNTED ONLY FOR A TOOL THAT CAN LEAVE SOMETHING BEHIND. Two families cannot, by construction:
+  // the utility natives (a calculator, a clock) and the knowledge SEARCH. A tick whose only call was
+  // one of those has nothing to repeat, so refusing the retry there would throw away the run for
+  // free — and an `on_resolve` observer has no later burst to try again in.
+  //
+  // Everything else counts, including an HTTP GET that happens to be a read: nothing in a tool
+  // definition says so, and the two errors are not symmetric. Counting a read costs one lost
+  // observation; NOT counting a write costs the write, again, in somebody else's system.
+  const effectFree = new Set<string>([
+    ...UTILITY_NATIVE_TOOL_NAMES,
+    "search_knowledge",
+  ]);
   let toolsRan = 0;
   const fencedTools = tools.map((t) => {
     // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
     // permitted call reaches exactly the run it would have had.
     const seen = Object.create(t) as typeof t;
     seen.invoke = ((input: unknown, config?: unknown) => {
-      toolsRan++;
+      if (!effectFree.has(t.name)) toolsRan++;
       return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
     }) as typeof t.invoke;
     return seen;

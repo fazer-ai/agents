@@ -1,5 +1,6 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
+import config from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import {
@@ -81,7 +82,12 @@ export interface HttpToolDef {
 // How long a tool call waits before it is aborted, when the caller names nothing. EXPORTED
 // because a caller that is MORE patient than this reports a success the runtime would never
 // have: an endpoint answering in 12s reads as fine and then aborts on every turn.
-export const DEFAULT_HTTP_TOOL_TIMEOUT_MS = 10_000;
+//
+// OPERATOR-SET, because the right value belongs to the provider rather than to us. See
+// HTTP_TOOL_TIMEOUT_MS in ../../config.ts for what the number is FOR: it is one end of a chain, and
+// a deployment whose provider caps its own request at 30s has to raise this above that cap, or our
+// abort wins the race and the provider's own error never arrives.
+export const DEFAULT_HTTP_TOOL_TIMEOUT_MS = config.agent.httpToolTimeoutMs;
 
 export interface HttpToolDeps {
   // Resolves a vault secret by reference (a short scoped DB read; no network). Returns null when

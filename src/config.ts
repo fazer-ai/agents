@@ -51,6 +51,7 @@ const {
   HUB_UPDATES_TTL_MS,
   AGENT_MODEL_CONCURRENCY,
   AGENT_PROMPT_MAX_CHARS,
+  HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
 } = process.env;
 
@@ -301,6 +302,24 @@ const config = {
     // ceiling: prompts past tens of KB usually hold knowledge-base content and degrade instruction
     // adherence. Intentionally surfaced only as a save error — no UI affordance points here.
     promptMaxChars: agentPromptMaxChars,
+    // NOTE: How long ONE HTTP tool call may take, headers and body together, before it is aborted.
+    // Configurable because the right value belongs to the provider, not to us: this is one end of a
+    // chain, and each link has to be more patient than the one below it. A provider that caps its
+    // own request at 30s can only deliver ITS error if the gateway in front of it waits longer than
+    // 30s and this waits longer than that gateway; set equal, we abort first and the operator gets
+    // our generic failure instead of the provider's message, which is strictly less information.
+    // 30s is the default rather than the ceiling: it clears providers that cap at 15-20s without
+    // committing every deployment to waiting longer, and the deployment behind a 30s cap raises it.
+    // Nothing structural bounds it: there is no turn deadline, and the Chatwoot webhook acks in
+    // under 5s with the processing detached, so a slow tool holds nothing on the ingress side. What
+    // it does cost is a customer waiting, which is what a tool's ackMessage exists to cover.
+    httpToolTimeoutMs: parseIntSetting(
+      HTTP_TOOL_TIMEOUT_MS,
+      "HTTP_TOOL_TIMEOUT_MS",
+      30_000,
+      "It bounds every HTTP tool call: too low aborts providers that would have answered, too high leaves the customer waiting on one.",
+      MAX_DURATION_MS,
+    ),
   },
   // NOTE: Outbound webhook delivery worker. Single-replica by construction (a reentrancy
   // guard + interval; see docs/deploy.md "Single replica" for the leader pattern when scaling).

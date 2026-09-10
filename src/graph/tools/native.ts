@@ -1007,6 +1007,12 @@ function setLabelsTool(ctx: ToolCtx) {
           recordShown(ctx, "contact", visible);
           return labelWriteReport("contact", added, removed, visible);
         }
+        // ASKED AGAIN, after the GET and before the write — the fourth handler in this file that
+        // waits before writing, and the same rule as the other three. The conversation scope asks
+        // inside its queue; this scope has no queue, and the read above is just as much a wait.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Could not set the contact labels (the run was called off while this write waited).";
+        }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
         recordShown(ctx, "contact", visible);
         return labelWriteReport("contact", added, removed, visible);

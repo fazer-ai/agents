@@ -11,6 +11,7 @@ import { DATA_FENCE, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { recordAppointment } from "@/modules/appointments/record";
 import {
+  appointmentBooked,
   appointmentReminderHandler,
   authoritativeReminderStart,
   cancelAppointment,
@@ -1220,5 +1221,110 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     // The negative above is only worth something next to this: without it, a fence that suppressed
     // EVERY reminder would pass.
     expect(s.sent.map(([c]) => c)).toEqual([CONV_ID]);
+  });
+});
+
+describe("appointmentBooked, when a record-only reschedule cannot clean up", () => {
+  // The base answers the appointment lookup and the record write, and fails the scheduler write —
+  // the retire this path exists for. Nothing here touches Postgres: runScopedOn calls `$extends`
+  // and then `$transaction`, and both are stubs.
+  function fakeBase(seen: string[], storedStart: Date | null) {
+    const tx = {
+      $executeRaw: async () => 0,
+      appointment: {
+        findUnique: async () =>
+          storedStart ? { startAt: storedStart, cancelledAt: null } : null,
+        upsert: async () => {
+          seen.push("record");
+          return {};
+        },
+      },
+      schedulerJob: {
+        updateMany: async () => {
+          seen.push("retire");
+          throw new Error("scheduler unavailable");
+        },
+      },
+    };
+    return {
+      $extends: () => ({
+        $transaction: (fn: (t: unknown) => unknown) => fn(tx),
+      }),
+    } as unknown as PrismaClient;
+  }
+
+  const args = {
+    tenantId: 1n,
+    threadId: "1:2:3",
+    eventId: "ev_recordonly",
+    startISO: new Date(Date.now() + 72 * 3_600_000).toISOString(),
+    calendarId: "primary",
+    credentialRef: null,
+    reminders: null,
+    recordOnly: true,
+  };
+
+  test("the NEW start is NOT recorded, so a retry still sees the move", async () => {
+    // Writing it would destroy the evidence the retry needs: the next attempt would compare equal
+    // starts, decide nothing moved, and skip the retirement for good — leaving reminders that
+    // announce a time the appointment no longer has. Safe to skip only here, because this path
+    // exists BECAUSE the appointment is already recorded (round 21).
+    const seen: string[] = [];
+    let thrown: unknown;
+    try {
+      await appointmentBooked({
+        ...args,
+        base: fakeBase(seen, new Date(Date.now() + 48 * 3_600_000)),
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect((thrown as Error | undefined)?.message).toBe(
+      "scheduler unavailable",
+    );
+    expect(seen).toEqual(["retire"]);
+  });
+
+  test("a lookup that FAILS is not evidence the booking stayed put, and skips the record too", async () => {
+    // `movedUnderRecordOnly` starts at "this is a record-only call", not at false, so a failure
+    // BEFORE the question is answered reads the same as a move. Starting at false would let a
+    // failed lookup persist the new start, which is the same permanent skip by another door.
+    const seen: string[] = [];
+    const tx = {
+      $executeRaw: async () => 0,
+      appointment: {
+        findUnique: async () => {
+          throw new Error("appointments unavailable");
+        },
+        upsert: async () => {
+          seen.push("record");
+          return {};
+        },
+      },
+    };
+    const base = {
+      $extends: () => ({
+        $transaction: (fn: (t: unknown) => unknown) => fn(tx),
+      }),
+    } as unknown as PrismaClient;
+    let thrown: unknown;
+    try {
+      await appointmentBooked({ ...args, base });
+    } catch (e) {
+      thrown = e;
+    }
+    expect((thrown as Error | undefined)?.message).toBe(
+      "appointments unavailable",
+    );
+    expect(seen).toEqual([]);
+  });
+
+  test("a record-only booking that did NOT move still records on the error path", async () => {
+    // The rule this file is built on is unchanged everywhere else: forgetting the appointment is
+    // the defect this unit exists for, so the record is written even when the arming failed. With
+    // no stored booking there is nothing to retire, and nothing to protect.
+    const seen: string[] = [];
+    await appointmentBooked({ ...args, base: fakeBase(seen, null) });
+    expect(seen).toEqual(["record"]);
   });
 });

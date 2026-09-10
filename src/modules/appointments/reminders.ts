@@ -250,6 +250,9 @@ export async function appointmentBooked(
 ): Promise<AppointmentBookedResult> {
   let remindersArmed = 0;
   let armError: unknown;
+  // Set inside the try, read after it: the record below is skipped when a record-only RESCHEDULE
+  // failed to clean up, and "we never got far enough to know" has to read the same as "it moved".
+  let movedUnderRecordOnly = args.recordOnly === true;
   // The start is judged ONCE, before either half, because both answer to it. An unreadable start is
   // not a re-statement of the appointment: recordAppointment refuses to move the record on it (it
   // returns "unreadable-start" and writes nothing), so retiring here would strand the PREVIOUS
@@ -268,7 +271,7 @@ export async function appointmentBooked(
     // provider the handler reads that payload rather than the record — so a preserved reminder for a
     // rescheduled appointment announces the obsolete time, or fires after it already happened.
     // Retired, never re-armed: the observation still arms nothing (round 19).
-    const movedUnderRecordOnly =
+    movedUnderRecordOnly =
       args.recordOnly === true &&
       startReadable &&
       (await startMoved(args, startReadable));
@@ -323,6 +326,17 @@ export async function appointmentBooked(
   } catch (e) {
     armError = e;
   }
+  // THE RECORD IS SKIPPED ON EXACTLY ONE FAILURE, and it is the one where writing it destroys the
+  // evidence a retry needs. A record-only reschedule whose cleanup threw would otherwise persist the
+  // NEW start, and the next attempt would compare equal starts, decide nothing moved and skip the
+  // retirement for good — leaving reminders that announce a time the appointment no longer has.
+  //
+  // Safe to skip precisely here, and only here: this path exists because the appointment is ALREADY
+  // recorded (that is how `startMoved` answered true), so nothing is forgotten — the record simply
+  // stays at the start it had, which is also the start the surviving reminders still name. Every
+  // other path keeps the rule this file is built on: record anyway, even when arming failed, because
+  // forgetting the appointment is the defect this unit exists for.
+  if (armError !== undefined && movedUnderRecordOnly) throw armError;
   const record = await recordAppointment({
     tenantId: args.tenantId,
     threadId: args.threadId,

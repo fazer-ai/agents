@@ -36,6 +36,20 @@ function byName(tools: StructuredToolInterface[], name: string) {
   return t;
 }
 
+// A base whose only answer is the contact row the contact scope looks up: runScopedOn calls
+// `$extends` and then `$transaction`, and nothing here touches Postgres.
+function fakeContactDb(chatwootContactId: number): PrismaClient {
+  const tx = {
+    $executeRaw: async () => 0,
+    contact: { findUnique: async () => ({ chatwootContactId }) },
+  };
+  return {
+    $extends: () => ({
+      $transaction: (fn: (t: unknown) => unknown) => fn(tx),
+    }),
+  } as unknown as PrismaClient;
+}
+
 describe("native tools", () => {
   test("exposes all tools by default; the allowlist filters (fail-closed)", () => {
     const { client } = recordingClient();
@@ -943,6 +957,72 @@ describe("native tools", () => {
     );
     expect(setCount).toBe(0);
     expect(out.toLowerCase()).toContain("contact");
+  });
+
+  test("a /reset landing while the contact labels are read stops the contact write", async () => {
+    // The FOURTH handler that waits before writing: the GET above is a wait exactly like the queue
+    // the conversation scope waits on, and this scope has no queue to ask inside. A contact label
+    // outlives the conversation it was written from, so a write admitted at the tool boundary and
+    // landing after `/reset` is the one that survives longest (round 21).
+    let setCount = 0;
+    let asked = 0;
+    const client = {
+      getContactLabels: async () => ["vip"],
+      setContactLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      tenantId: 1n,
+      contactDbId: 3n,
+      base: fakeContactDb(55),
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        labels: ["lead"],
+        scope: "contact",
+      }),
+    );
+    expect(asked).toBe(1);
+    expect(setCount).toBe(0);
+    expect(out).toContain("called off");
+  });
+
+  test("a contact write with nothing to change never reaches the fence", async () => {
+    // The fence guards a WRITE. A call whose diff is empty writes nothing, so withdrawing the run
+    // must not turn it into a refusal — the model asked for the state that already stands.
+    let asked = 0;
+    const client = {
+      getContactLabels: async () => ["vip"],
+      setContactLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      tenantId: 1n,
+      contactDbId: 3n,
+      base: fakeContactDb(55),
+      shownLabels: { contact: ["vip"] },
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        labels: ["vip"],
+        scope: "contact",
+      }),
+    );
+    expect(asked).toBe(0);
+    expect(out).not.toContain("called off");
   });
 
   test("the description shows the labels standing now, and omits a scope it could not read", () => {

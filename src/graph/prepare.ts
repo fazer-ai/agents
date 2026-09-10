@@ -1041,8 +1041,13 @@ export async function buildToolset(
   // ask at the tool boundary, and a run called off inside it — the operator's flip to monitoring
   // (issue #209 review, round 10) — must show no typing indicator and make no request after it.
   // Only an explicit `false` stops the tool; a fence that could not answer is not a withdrawal.
+  //
+  // NOT WIRED ON A MUTED TURN: the ack is a message in front of the customer, which the muted
+  // transport refuses by design — an observation would log a failed ack before every slow tool and
+  // tell the operator an integration is broken. Same field the toolset reads to hide the tools a
+  // muted turn cannot complete.
   const emitAck =
-    ctx.conversationId > 0
+    ctx.conversationId > 0 && !ctx.client.muted
       ? async (message: string): Promise<boolean> => {
           try {
             await ctx.client.sendMessage(ctx.conversationId, message);

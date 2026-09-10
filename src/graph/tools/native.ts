@@ -659,6 +659,13 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         if (!contact?.chatwootContactId) {
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
         }
+        // ASKED AGAIN, after the lookup and before the write. See the fence rule at the top of this
+        // file: the graph's ask happens at DISPATCH, and this handler waits on a database read after
+        // it. A contact attribute outlives the conversation it was written from, so a value written
+        // after a `/reset` — or after the agent was switched off — is one nothing later corrects.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Could not set the contact attribute (the run was called off while this write waited).";
+        }
         await ctx.client.setContactCustomAttributes(contact.chatwootContactId, {
           [key]: value,
         });
@@ -1409,6 +1416,12 @@ function reactToMessageTool(ctx: ToolCtx) {
         if (latest.isReaction) {
           return "The customer's last message is a reaction (emoji), and you can't react to a reaction. Do not react now.";
         }
+        // ASKED AGAIN, after the lookup that found the message to react to. A reaction is on the
+        // customer's phone, so this is the same question every customer-facing send asks before it
+        // goes out — and the lookup above is a wait after the graph's ask at dispatch.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Could not add the reaction (the run was called off while this write waited).";
+        }
         await ctx.client.addMessageReaction(ctx.conversationId, latest.id, e);
         return `Reacted with ${e} to the customer's last message.`;
       } catch {
@@ -1676,6 +1689,18 @@ function getCurrentTimeTool(ctx: ToolCtx) {
   );
 }
 
+// THE TOOLS A MUTED TURN CANNOT COMPLETE, hidden from it. An observer now runs the ordinary toolset
+// (issue #568), and two of those tools are customer-facing in their entirety: a reaction lands on the
+// customer's phone — the muted transport refuses that POST, and reaching that refusal is a defect by
+// construction — and an image is delivered by the turn's own gates, which an observation does not
+// have, so it refuses every call. Offered anyway they cost a model round each and answer with a
+// failure an operator reads as a broken integration. Read off the client's own `muted`, the same
+// field `armReminders` asks, so the two cannot disagree about what this turn may do.
+//
+// A private note is NOT here, and that is the same isention the mute itself makes: it is the one
+// thing an observer legitimately writes where a person will read it.
+const MUTED_CANNOT_COMPLETE = new Set(["react_to_message", "send_image"]);
+
 // allowed = undefined → all native tools; otherwise only the named subset (fail-closed).
 // No native tool takes CODE from the model: computation the model must not redo (check digits,
 // date arithmetic, parsing) is an operator-authored code tool (tools/code.ts), whose body the
@@ -1699,9 +1724,11 @@ export function buildNativeTools(
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
   ];
-  if (!allowed) return all;
-  const allow = new Set(allowed);
-  return all.filter((t) => allow.has(t.name));
+  const granted = allowed
+    ? all.filter((t) => new Set(allowed).has(t.name))
+    : all;
+  if (!ctx.client?.muted) return granted;
+  return granted.filter((t) => !MUTED_CANNOT_COMPLETE.has(t.name));
 }
 
 // Replaces a tool's execution with a no-op that returns a synthetic success — keeps the model-facing

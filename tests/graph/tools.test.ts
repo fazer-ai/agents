@@ -1584,3 +1584,299 @@ describe("no native tool takes code from the model", () => {
     expect(NATIVE_TOOL_NAMES).not.toContain("run_code");
   });
 });
+
+// EVERY handler that waits before writing has to ask the fence again, and this battery is what says
+// so — three review rounds found three separate handlers breaking the rule one at a time (17, 21,
+// 22), which is what a rule kept by reading rather than by a test looks like.
+//
+// THE RULE, in the form the trace below can check: the graph asks `stillWanted` at DISPATCH, so the
+// first outward effect of a handler is covered by that ask. Everything after it happened AFTER a
+// wait, and a write there must be fenced. With a fence that says no from the first wait onward, a
+// correct handler makes at most one outward effect and it is never a write that came second.
+//
+// The client is a proxy over a classification rather than a stub: a method that is neither a read
+// nor a write is recorded as UNKNOWN and fails the battery, so a client call added to a handler
+// later cannot join the trace silently. Same for the tool table — it is asked to cover every name in
+// the catalog, so a tool added later arrives with an entry or the suite says which one is missing.
+describe("a muted turn is not offered what it cannot complete", () => {
+  // The observer runs the ordinary toolset now (issue #568), and two of those tools are entirely
+  // customer-facing: the reaction's POST is refused at the muted transport, and the image is
+  // delivered by a turn an observation does not have. Each costs a model round and answers with a
+  // failure the operator reads as a broken integration.
+  function clientWithMute(muted: boolean) {
+    return { muted } as unknown as ChatwootClient;
+  }
+
+  test("the reaction and the image are gone; everything else stands", () => {
+    const names = buildNativeTools({
+      client: clientWithMute(true),
+      conversationId: 7,
+    }).map((t) => t.name);
+    expect(names).not.toContain("react_to_message");
+    expect(names).not.toContain("send_image");
+    // The private note is the mute's own isention: it is the one thing an observer writes where a
+    // person reads it, so hiding it would take the watcher's voice away entirely.
+    expect(names).toContain("private_note");
+    expect(names).toContain("set_labels");
+    expect(names).toContain("resolve_conversation");
+  });
+
+  test("an ordinary turn keeps both", () => {
+    // The negative above is worth nothing without this: a filter that dropped them always would
+    // pass it and take the two tools away from every responder.
+    const names = buildNativeTools({
+      client: clientWithMute(false),
+      conversationId: 7,
+    }).map((t) => t.name);
+    expect(names).toContain("react_to_message");
+    expect(names).toContain("send_image");
+  });
+
+  test("the grant is still fail-closed under a mute", () => {
+    // The two filters compose in one direction only: a mute may take a granted tool away, and it
+    // may never hand back one the operator did not grant.
+    const names = buildNativeTools(
+      { client: clientWithMute(true), conversationId: 7 },
+      ["set_labels", "react_to_message"],
+    ).map((t) => t.name);
+    expect(names).toEqual(["set_labels"]);
+  });
+});
+
+describe("the fence rule, over every native tool", () => {
+  const CLIENT_READS = [
+    "getConversation",
+    "getConversationLabels",
+    "getContactLabels",
+    "getLatestIncomingMessage",
+  ];
+  const CLIENT_WRITES = [
+    "sendMessage",
+    "sendPrivateNote",
+    "toggleStatus",
+    "assignConversation",
+    "setConversationCustomAttributes",
+    "setContactCustomAttributes",
+    "setKanbanTaskCustomAttributes",
+    "setConversationLabels",
+    "setContactLabels",
+    "setKanbanTaskLabels",
+    "moveKanbanTask",
+    "updateKanbanTask",
+    "addMessageReaction",
+    "toggleTyping",
+    "markRead",
+  ];
+
+  function tracingCtx() {
+    const trace: string[] = [];
+    // The fence answers TRUE until something has been awaited, and false from then on: that is the
+    // operator acting inside the wait, which is the only window the boundary ask cannot cover.
+    let waited = false;
+    const stillWanted = async () => !waited;
+    const client = new Proxy(
+      {},
+      {
+        get(_t, prop: string) {
+          if (prop === "muted") return false;
+          if (typeof prop !== "string") return undefined;
+          const kind = CLIENT_READS.includes(prop)
+            ? "read"
+            : CLIENT_WRITES.includes(prop)
+              ? "write"
+              : "unknown";
+          return async (...args: unknown[]) => {
+            trace.push(`client:${kind}:${prop}`);
+            waited = true;
+            if (prop === "getLatestIncomingMessage")
+              return { id: 99, isReaction: false };
+            if (prop === "getConversation")
+              return { status: "open", meta: { assignee: null } };
+            if (prop === "getConversationLabels" || prop === "getContactLabels")
+              return ["ja-existente"];
+            return args.length >= 0 ? {} : {};
+          };
+        },
+      },
+    ) as unknown as ChatwootClient;
+    // The database is a wait like any other — `set_custom_attribute` and `set_labels` reach their
+    // contact scope through one, and it is the wait that round 22 found unfenced.
+    const tx = {
+      // The scoped transaction opens with a `set_config` of its own; it is plumbing every scoped
+      // access pays, not the handler awaiting something, so it neither counts as an effect nor
+      // starts the window. Any other raw statement is a real write.
+      $executeRaw: async (q: { raw?: string[] } | TemplateStringsArray) => {
+        const sql = Array.isArray((q as TemplateStringsArray).raw)
+          ? (q as TemplateStringsArray).raw.join("")
+          : String(q);
+        if (sql.includes("set_config")) {
+          trace.push("db:scope");
+          return 0;
+        }
+        trace.push("db:write");
+        waited = true;
+        return 0;
+      },
+      contact: {
+        findUnique: async () => {
+          trace.push("db:read");
+          waited = true;
+          return { chatwootContactId: 55 };
+        },
+        updateMany: async () => {
+          trace.push("db:write");
+          waited = true;
+          return { count: 1 };
+        },
+      },
+      outboundEvent: {
+        create: async () => {
+          trace.push("db:write");
+          waited = true;
+          return {};
+        },
+      },
+    };
+    const base = {
+      $extends: () => ({
+        $transaction: (fn: (t: unknown) => unknown) => fn(tx),
+      }),
+    } as unknown as PrismaClient;
+    const turnState = {
+      resolveRequested: false,
+      pendingAttachments: [],
+      imagesInFlight: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
+    };
+    const ctx = {
+      client,
+      conversationId: 7,
+      tenantId: 1n,
+      base,
+      contactDbId: 3n,
+      conversationDbId: 5n,
+      observed: { status: "open" as const, statusAt: null },
+      turnState,
+      stillWanted,
+      kanban: {
+        taskId: 11,
+        boardId: 2,
+        boardName: "Vendas",
+        currentStepId: 7,
+        currentStepName: "Novo",
+        steps: [
+          { id: 7, name: "Novo" },
+          { id: 22, name: "Ganho" },
+        ],
+        card: {
+          title: "Lead",
+          description: null,
+          priority: null,
+          status: "open",
+          value: null,
+          startDate: null,
+          dueDate: null,
+          attributes: {},
+          labels: [],
+        },
+      },
+      sendImage: { allowedHosts: ["imgs.example"], maxBytes: 1_000_000 },
+      fetchImpl: (async () => {
+        trace.push("fetch");
+        waited = true;
+        // A real PNG signature: the tool sniffs the bytes, and a body it rejects would make this
+        // case prove nothing about what happens AFTER the download.
+        return new Response(
+          new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]),
+          {
+            headers: { "content-type": "image/png" },
+          },
+        );
+      }) as unknown as typeof fetch,
+      assertSafe: async () => {},
+    };
+    return { ctx, trace };
+  }
+
+  // One entry per native tool, and where a tool takes a scope, one per scope: the arguments that
+  // make it actually try to write. A name missing here fails the coverage test below.
+  const CASES: Array<{
+    tool: string;
+    label: string;
+    args: object;
+    ctx?: Record<string, unknown>;
+  }> = [
+    { tool: "handoff_to_human", label: "com nota", args: { reason: "resumo" } },
+    { tool: "private_note", label: "", args: { content: "nota" } },
+    {
+      tool: "set_custom_attribute",
+      label: "conversa",
+      args: { key: "stage", value: "lead" },
+    },
+    {
+      tool: "set_custom_attribute",
+      label: "contato",
+      args: { key: "stage", value: "lead", scope: "contact" },
+    },
+    {
+      tool: "set_custom_attribute",
+      label: "card",
+      args: { key: "stage", value: "lead", scope: "task" },
+    },
+    { tool: "set_labels", label: "conversa", args: { labels: ["nova"] } },
+    {
+      tool: "set_labels",
+      label: "contato",
+      args: { labels: ["nova"], scope: "contact" },
+    },
+    {
+      tool: "set_labels",
+      label: "card",
+      args: { labels: ["nova"], scope: "task" },
+    },
+    {
+      tool: "resolve_conversation",
+      label: "imediato",
+      args: {},
+      // WITHOUT a turnState, which is the path that closes the conversation itself: with one the
+      // tool only records the intent and the runtime toggles after the reply, and the battery would
+      // be watching a handler that writes nothing.
+      ctx: { turnState: undefined },
+    },
+    { tool: "kanban_move_card", label: "", args: { targetStep: "Ganho" } },
+    { tool: "update_kanban_task", label: "", args: { title: "outro" } },
+    { tool: "set_voice_preference", label: "", args: { preference: "audio" } },
+    { tool: "react_to_message", label: "", args: { emoji: "👍" } },
+    {
+      tool: "send_image",
+      label: "",
+      args: { url: "https://imgs.example/x.png" },
+    },
+    { tool: "skip_reply", label: "", args: {} },
+    { tool: "calculator", label: "", args: { expression: "1+1" } },
+    { tool: "get_current_time", label: "", args: {} },
+  ];
+
+  test("the table covers every native tool", () => {
+    // The point of the battery is the rule, and a rule only holds over what it was asked about. A
+    // tool added to the catalog without an entry would otherwise pass by not being tested.
+    expect([...new Set(CASES.map((c) => c.tool))].sort()).toEqual(
+      [...NATIVE_TOOL_NAMES].sort(),
+    );
+  });
+
+  for (const c of CASES) {
+    const name = c.label ? `${c.tool} (${c.label})` : c.tool;
+    test(`${name}: no write lands after a wait once the run is called off`, async () => {
+      const { ctx, trace } = tracingCtx();
+      const tools = buildNativeTools({ ...ctx, ...(c.ctx ?? {}) } as never);
+      await byName(tools, c.tool).invoke(c.args as never);
+      const offenders = trace
+        .map((e, i) => ({ e, i }))
+        .filter(({ e, i }) => i > 0 && e.startsWith("client:write"));
+      expect({ trace, offenders }).toEqual({ trace, offenders: [] });
+      expect(trace.filter((e) => e.includes("unknown"))).toEqual([]);
+    });
+  }
+});

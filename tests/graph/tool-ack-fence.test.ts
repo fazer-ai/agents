@@ -90,9 +90,10 @@ describe.skipIf(!dbUp)(
       await app?.$disconnect();
     });
 
-    async function run(fenceAnswers: boolean) {
+    async function run(fenceAnswers: boolean, muted = false) {
       const calls: string[] = [];
       const client = {
+        muted,
         sendMessage: async (_id: number, text: string) => {
           calls.push(`send:${text}`);
           return {};
@@ -132,6 +133,16 @@ describe.skipIf(!dbUp)(
     test("control: a run still wanted types after the ack and makes the request", async () => {
       const r = await run(true);
       expect(r.calls).toEqual(["send:Só um momento!", "typing:true"]);
+      expect(r.requests.length).toBe(1);
+    });
+
+    test("a MUTED turn has no ack at all, and the tool runs", async () => {
+      // The ack is a message in front of the customer, and the muted transport refuses one by
+      // design — reaching that refusal is a defect, so an observation must not arm an ack it
+      // cannot deliver. Wiring it anyway logged a failed send before every slow tool and told the
+      // operator an integration was broken (issue #568, review round 22).
+      const r = await run(true, true);
+      expect(r.calls).toEqual([]);
       expect(r.requests.length).toBe(1);
     });
   },

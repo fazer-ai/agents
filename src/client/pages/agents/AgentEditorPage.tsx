@@ -402,6 +402,17 @@ function readBehaviorState(a: Agent) {
     kanbanInstructions: str(ka.instructions),
     customAttributeInstructions: str(tg.set_custom_attribute),
     labelInstructions: str(tg.set_labels),
+    // Stored as an ARRAY and edited as one line, so the field reads like the rule it is ("these are
+    // not yours to touch") instead of a list widget for two entries. Joined on the way in and split
+    // on the way out; the reader trims and de-duplicates, so a trailing comma is harmless.
+    protectedLabels: (Array.isArray(
+      (s.setLabels as Record<string, unknown> | undefined)?.protected,
+    )
+      ? ((s.setLabels as Record<string, unknown>).protected as unknown[])
+      : []
+    )
+      .filter((l): l is string => typeof l === "string")
+      .join(", "),
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -913,6 +924,7 @@ function AgentEditor() {
   const [customAttributeInstructions, setCustomAttributeInstructions] =
     useState("");
   const [labelInstructions, setLabelInstructions] = useState("");
+  const [protectedLabels, setProtectedLabels] = useState("");
   // Operator usage guidance for update_kanban_task (Tools-tab config). Persisted in
   // agent.settings.toolGuidance.update_kanban_task; synced only by syncToolConfig.
   // Per-tool preconditions (Tools tab, same lifecycle as the guidance above). Held as a LIST while
@@ -1378,6 +1390,7 @@ function AgentEditor() {
     setKanbanInstructions(b.kanbanInstructions);
     setCustomAttributeInstructions(b.customAttributeInstructions);
     setLabelInstructions(b.labelInstructions);
+    setProtectedLabels(b.protectedLabels);
     setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
     setToolPreconditions(b.toolPreconditions);
   }, []);
@@ -1826,6 +1839,7 @@ function AgentEditor() {
       kanbanInstructions,
       customAttributeInstructions,
       labelInstructions,
+      protectedLabels,
       updateKanbanTaskInstructions,
       toolPreconditions,
     }),
@@ -2923,12 +2937,25 @@ function AgentEditor() {
         toolPreconditions,
         syncedSettings.toolPreconditions,
       );
+      // The guard is stored under the tool's own block rather than beside the retired `labels` key,
+      // which the write boundary now refuses: what this list does is fence a tool, not describe a
+      // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
+      // field is a change the PATCH carries instead of a no-op the merge swallows.
+      const protectedList = protectedLabels
+        .split(",")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
+        string,
+        unknown
+      >;
       const toolsSettings = {
         ...syncedSettings,
         handoff: handoffJson,
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
         toolPreconditions: toolPreconditionsJson,
+        setLabels: { ...existingSetLabels, protected: protectedList },
       };
       // Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
@@ -2994,6 +3021,7 @@ function AgentEditor() {
         // the pre-save map, and the next Behavior save spreads it back over the rules that were just
         // stored — with the Tools tab still showing them as saved.
         toolPreconditions: toolPreconditionsJson,
+        setLabels: { ...existingSetLabels, protected: protectedList },
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
@@ -3684,6 +3712,8 @@ function AgentEditor() {
                 setCustomAttributeInstructions={setCustomAttributeInstructions}
                 labelInstructions={labelInstructions}
                 setLabelInstructions={setLabelInstructions}
+                protectedLabels={protectedLabels}
+                setProtectedLabels={setProtectedLabels}
                 updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                 toolPreconditions={toolPreconditions}
                 setToolPreconditions={setToolPreconditions}

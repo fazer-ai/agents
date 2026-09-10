@@ -1347,10 +1347,12 @@ export async function importAgent(
         systemPrompt: exp.systemPrompt,
         modelConfig: modelConfig as Prisma.InputJsonValue,
         settings: disarmFullDetail(
-          renameNativeToolKeys(
-            normalizeSettingsForStorage(settings) ?? settings,
-            renamed,
-            customToolNames,
+          stripRetiredLabelKeys(
+            renameNativeToolKeys(
+              normalizeSettingsForStorage(settings) ?? settings,
+              renamed,
+              customToolNames,
+            ),
           ),
         ) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
@@ -2602,6 +2604,35 @@ async function createMissingComponents(
 //
 // The new key WINS when both are present, for the same reason it does in the migration: it is the
 // operator's most recent word.
+// A RETIRED KEY IS DROPPED ON THE WAY IN, not carried and then refused (issue #568 review).
+//
+// The write boundary refuses `settings.labels` and `settings.monitoring.labelGroups` because they no
+// longer do anything, and that refusal is right for an operator editing an agent: it tells them
+// where the taxonomy went. It is wrong for an import. A bundle is a FILE — exported under the old
+// release, imported whenever someone gets around to it — and failing the whole import over a key
+// that means nothing would block a restore for a reason the operator cannot act on inside the
+// bundle. Same argument that put RENAMED_NATIVE_TOOLS on this boundary, with the opposite verdict:
+// there the old key had to be MOVED because its value still governs something, here it is dropped
+// because its value governs nothing.
+function stripRetiredLabelKeys(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return settings;
+  const bag = { ...(settings as Record<string, unknown>) };
+  delete bag.labels;
+  const monitoring = bag.monitoring;
+  if (
+    monitoring &&
+    typeof monitoring === "object" &&
+    !Array.isArray(monitoring) &&
+    (monitoring as Record<string, unknown>).labelGroups !== undefined
+  ) {
+    const next = { ...(monitoring as Record<string, unknown>) };
+    delete next.labelGroups;
+    bag.monitoring = next;
+  }
+  return bag;
+}
+
 function renameNativeToolKeys(
   settings: unknown,
   renamed: RenamedComponents,

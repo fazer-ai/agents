@@ -392,6 +392,7 @@ describe("native tools", () => {
         next: ["a", "b"],
         added: ["b"],
         removed: [],
+        visible: ["a", "b"],
       });
     });
 
@@ -401,6 +402,7 @@ describe("native tools", () => {
         next: ["a", "c"],
         added: [],
         removed: ["b"],
+        visible: ["a", "c"],
       });
     });
 
@@ -412,13 +414,19 @@ describe("native tools", () => {
         next: ["a"],
         added: [],
         removed: [],
+        visible: ["a"],
       });
     });
 
     test("blank and duplicate entries are dropped, and order is stable", () => {
       expect(
         applyLabelIntent([], ["  vip ", "vip", "", "   ", "lead"], []),
-      ).toEqual({ next: ["vip", "lead"], added: ["vip", "lead"], removed: [] });
+      ).toEqual({
+        next: ["vip", "lead"],
+        added: ["vip", "lead"],
+        removed: [],
+        visible: ["vip", "lead"],
+      });
     });
 
     test("repeating a shown label does NOT put it back after somebody removed it", () => {
@@ -430,6 +438,7 @@ describe("native tools", () => {
         next: ["lead"],
         added: ["lead"],
         removed: [],
+        visible: ["lead"],
       });
     });
 
@@ -438,6 +447,7 @@ describe("native tools", () => {
         next: ["vip", "lead"],
         added: ["lead"],
         removed: [],
+        visible: ["vip", "lead"],
       });
     });
 
@@ -448,6 +458,65 @@ describe("native tools", () => {
         next: ["a", "b"],
         added: [],
         removed: [],
+        visible: ["a", "b"],
+      });
+    });
+
+    test("a guarded label SHOWN and left out is not removed", () => {
+      // The defect this guard exists for, and it is not the concurrent-write one: `agente-off` was
+      // standing before the turn, so it WAS shown, and the model leaving it out reads as a request
+      // to remove it. Measured on a live fork: asked for `["compra-de-ingresso"]`, the tool answered
+      // `removed "cancelamento", "agente-off", "vip"`.
+      expect(
+        applyLabelIntent(
+          ["cancelamento", "agente-off"],
+          ["compra-de-ingresso"],
+          ["cancelamento", "agente-off"],
+          ["agente-off"],
+        ),
+      ).toEqual({
+        next: ["agente-off", "compra-de-ingresso"],
+        added: ["compra-de-ingresso"],
+        removed: ["cancelamento"],
+        visible: ["compra-de-ingresso"],
+      });
+    });
+
+    test("a guarded label the model ASKS FOR is not added either", () => {
+      // The other direction, and the one hiding it from the description does not cover: a model
+      // that learned the name from the operator's prompt could otherwise switch the agent off by
+      // naming the label, which is the same authority the guard is supposed to deny.
+      expect(
+        applyLabelIntent([], ["agente-off", "vip"], [], ["agente-off"]),
+      ).toEqual({
+        next: ["vip"],
+        added: ["vip"],
+        removed: [],
+        visible: ["vip"],
+      });
+    });
+
+    test("the guard reaches the report, so shown and told stay ONE list", () => {
+      // `visible` is what the report states and what recordShown stores. If the guarded label leaked
+      // into either, the next call in the turn would be handed a label it is not allowed to keep and
+      // would be told it kept it — the same two-views defect this file already carries.
+      const out = applyLabelIntent(
+        ["vip"],
+        ["vip", "lead"],
+        ["vip", "testando-agente"],
+        ["testando-agente"],
+      );
+      expect(out.next).toEqual(["vip", "testando-agente", "lead"]);
+      expect(out.visible).toEqual(["vip", "lead"]);
+      expect(out.removed).toEqual([]);
+    });
+
+    test("an empty guard list is the behaviour before the guard", () => {
+      expect(applyLabelIntent(["a", "b"], ["a"], ["a", "b"], [])).toEqual({
+        next: ["a"],
+        added: [],
+        removed: ["b"],
+        visible: ["a"],
       });
     });
   });
@@ -512,6 +581,31 @@ describe("native tools", () => {
     });
     await byName(tools, "set_labels").invoke({ labels: ["cancelamento"] });
     expect(setCalls).toEqual([[9, ["agente-off", "cancelamento"]]]);
+  });
+
+  test("set_labels cannot erase a guarded label it was shown", async () => {
+    // The concurrent-write case above only protects a label that landed mid-turn. This one was there
+    // before the turn started, so it is in `shownLabels`, and only the guard keeps it.
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["dúvidas-evento", "agente-off"],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["dúvidas-evento"] },
+      protectedLabels: ["agente-off"],
+    });
+    const out = await byName(tools, "set_labels").invoke({
+      labels: ["cancelamento"],
+    });
+    expect(setCalls).toEqual([[9, ["agente-off", "cancelamento"]]]);
+    // And the model is never told the label is there, so it cannot act on it next call.
+    expect(String(out)).not.toContain("agente-off");
   });
 
   test("set_labels with an empty list clears what was shown, and nothing else", async () => {

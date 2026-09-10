@@ -38,6 +38,8 @@ interface ToolsTabProps {
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
   setLabelInstructions: (v: string) => void;
+  protectedLabels: string;
+  setProtectedLabels: (v: string) => void;
   updateKanbanTaskInstructions: string;
   setUpdateKanbanTaskInstructions: (v: string) => void;
   // Per-tool preconditions (issue #101). Owned by AgentEditorPage like the guidance above, and saved
@@ -86,6 +88,8 @@ export function ToolsTab({
   setCustomAttributeInstructions,
   labelInstructions,
   setLabelInstructions,
+  protectedLabels,
+  setProtectedLabels,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   toolPreconditions,
@@ -176,6 +180,8 @@ export function ToolsTab({
             setCustomAttributeInstructions={setCustomAttributeInstructions}
             labelInstructions={labelInstructions}
             setLabelInstructions={setLabelInstructions}
+            protectedLabels={protectedLabels}
+            setProtectedLabels={setProtectedLabels}
             updateKanbanTaskInstructions={updateKanbanTaskInstructions}
             setUpdateKanbanTaskInstructions={setUpdateKanbanTaskInstructions}
             mcpTools={mcpTools}

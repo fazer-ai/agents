@@ -1,17 +1,18 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
-// itself — the rule the file's header states is type and choice, never size, because these are
-// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
-// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
-// copied here would be a second copy that drifts.
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
   TOOL_INSTRUCTIONS_MAX,
 } from "@/modules/agents/text-caps";
+// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
+// itself — the rule the file's header states is type and choice, never size, because these are
+// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
+// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
+// copied here would be a second copy that drifts.
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import {
   FULL_DETAIL_MAX_HOURS,
@@ -688,6 +689,23 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
+// The `set_labels` guard. A block of its own rather than a key beside the taxonomy, because
+// `settings.labels` is now REFUSED on the write (it was retired with the taxonomy, issue #568) and
+// because what this list does is fence a tool, not describe a vocabulary. Loose like its siblings,
+// so a field added to the reader later still reaches it.
+const setLabels = z
+  .looseObject({
+    protected: z
+      .array(z.string())
+      .describe(
+        `labels set_labels may neither add nor remove, and never sees — for the ones another system owns (a switch that keeps an agent off a conversation, a testing marker). Blank, duplicate and non-string entries are dropped by the reader, and the list is capped at ${PROTECTED_LABELS_MAX}. An empty array clears the guard.`,
+      )
+      .optional(),
+  })
+  .describe(
+    "per-agent configuration for the set_labels native tool that is not a note (the note lives in toolGuidance.set_labels)",
+  );
+
 const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
   `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
 );
@@ -779,6 +797,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   guardrails: guardrails.optional(),
   kanban: kanban.optional(),
   toolGuidance: toolGuidance.optional(),
+  setLabels: setLabels.optional(),
   toolPreconditions: toolPreconditions.optional(),
   monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;

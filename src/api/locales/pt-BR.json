@@ -182,6 +182,7 @@
     "providerModelsFailed": "{{provider}} recusou a requisição da lista (status {{status}}).",
     "rateLimitExceeded": "Limite de requisições excedido. Tente novamente mais tarde.",
     "reengageNoAgent": "Nenhum agente está vinculado à caixa de entrada desta conversa.",
+    "retiredLabelSetting": "`settings.{{key}}` foi aposentada: diga quais etiquetas existem e quais se excluem na orientação de uso do `set_labels`.",
     "returnAgentNoBot": "O respondedor desta caixa de entrada não tem bot neste Chatwoot; reconecte a instância.",
     "returnAgentNotAttached": "O respondedor desta caixa de entrada não está atracado no Chatwoot; reconecte a caixa.",
     "returnAgentNotRunnable": "O respondedor desta caixa de entrada não consegue rodar; confira a credencial do modelo.",

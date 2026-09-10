@@ -223,6 +223,11 @@ export interface ToolCtx {
     contact?: string[];
     task?: string[];
   };
+  // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE, and never sees (issue #568 review). Operator
+  // control labels live on the same conversation as the classifier's, and nothing but this list
+  // separates them: see applyLabelIntent for why the separation is a subtraction and not a branch.
+  // Comes from `settings.setLabels.protected`; empty or absent ⇒ the tool reaches everything.
+  protectedLabels?: string[];
   // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
   // graph already asks it at the tool boundary; waiting for that queue is a wait AFTER the ask, and
   // `/reset` clears the episode's labels in this very queue, so a write admitted at the boundary can
@@ -732,11 +737,35 @@ export function applyLabelIntent(
   shown: string[] | undefined,
   desired: string[],
   current: string[],
-): { next: string[]; added: string[]; removed: string[] } {
-  const want = [...new Set(desired.map((l) => l.trim()).filter(Boolean))];
+  guarded?: string[],
+): {
+  next: string[];
+  added: string[];
+  removed: string[];
+  visible: string[];
+} {
+  // LABELS THIS TOOL CANNOT REACH, in either direction. A conversation carries labels that belong to
+  // something other than a classifier: `agente-off` is what keeps an agent off a conversation, and a
+  // testing label is what keeps a rehearsal out of the metrics. Both are written by an operator or by
+  // another system and read back by it, and both were being erased here for a reason that is the
+  // contract working as designed — a label present before the turn is SHOWN, so leaving it out is a
+  // removal, and the model has to remember to repeat it or it is gone.
+  //
+  // The guard is applied by SUBTRACTION rather than by a new branch, so it inherits the two rules
+  // this function already proves instead of adding a third: taken out of `shown`, a guarded label
+  // cannot be "shown and left out", which is the same rule that already makes an unshown scope
+  // additive; taken out of `desired`, it cannot be "asked for and not shown", so a model that names
+  // one does not get to claim it either. What the model cannot see it cannot lose, and what it
+  // cannot ask for it cannot take.
+  const guard = new Set((guarded ?? []).map((l) => l.trim()).filter(Boolean));
+  const want = [
+    ...new Set(desired.map((l) => l.trim()).filter(Boolean)),
+  ].filter((l) => !guard.has(l));
   const wanted = new Set(want);
-  const seen = new Set(shown ?? []);
-  const dropped = new Set((shown ?? []).filter((l) => !wanted.has(l)));
+  const seen = new Set((shown ?? []).filter((l) => !guard.has(l)));
+  const dropped = new Set(
+    (shown ?? []).filter((l) => !guard.has(l) && !wanted.has(l)),
+  );
   const kept = current.filter((l) => !dropped.has(l));
   const fresh = want.filter((l) => !seen.has(l));
   const next = [...new Set([...kept, ...fresh])];
@@ -744,6 +773,11 @@ export function applyLabelIntent(
     next,
     added: next.filter((l) => !current.includes(l)),
     removed: current.filter((l) => !next.includes(l)),
+    // WHAT THE MODEL IS TOLD IT NOW HAS, and the same list `recordShown` stores. A guarded label
+    // standing on the conversation is deliberately missing from both: the report and the shown set
+    // have to be ONE list, or the next call in the turn diffs against something it was never handed
+    // — which is the defect this file already carries four comments about.
+    visible: next.filter((l) => !guard.has(l)),
   };
 }
 
@@ -907,22 +941,23 @@ function setLabelsTool(ctx: ToolCtx) {
         // loadKanbanContext makes. So a label somebody added to the card during the turn is erased
         // by this write, exactly as the append-only version erased it before; the scope is unchanged
         // by this tool's new power, and closing it means re-resolving the card before every write.
-        const { next, added, removed } = applyLabelIntent(
+        const { next, added, removed, visible } = applyLabelIntent(
           seenNow.task,
           desired,
           ctx.kanban.card.labels,
+          ctx.protectedLabels,
         );
         if (added.length === 0 && removed.length === 0) {
-          recordShown(ctx, "task", next);
-          return labelWriteReport("kanban card", added, removed, next);
+          recordShown(ctx, "task", visible);
+          return labelWriteReport("kanban card", added, removed, visible);
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
         // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
         // the same turn would otherwise diff against the set before this write and put back what it
         // just removed.
         ctx.kanban.card.labels = [...next];
-        recordShown(ctx, "task", next);
-        return labelWriteReport("kanban card", added, removed, next);
+        recordShown(ctx, "task", visible);
+        return labelWriteReport("kanban card", added, removed, visible);
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
@@ -942,18 +977,19 @@ function setLabelsTool(ctx: ToolCtx) {
         const current = await ctx.client.getContactLabels(
           contact.chatwootContactId,
         );
-        const { next, added, removed } = applyLabelIntent(
+        const { next, added, removed, visible } = applyLabelIntent(
           seenNow.contact,
           desired,
           current,
+          ctx.protectedLabels,
         );
         if (added.length === 0 && removed.length === 0) {
-          recordShown(ctx, "contact", next);
-          return labelWriteReport("contact", added, removed, next);
+          recordShown(ctx, "contact", visible);
+          return labelWriteReport("contact", added, removed, visible);
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
-        recordShown(ctx, "contact", next);
-        return labelWriteReport("contact", added, removed, next);
+        recordShown(ctx, "contact", visible);
+        return labelWriteReport("contact", added, removed, visible);
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
       // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
@@ -966,14 +1002,15 @@ function setLabelsTool(ctx: ToolCtx) {
           const current = await ctx.client.getConversationLabels(
             ctx.conversationId,
           );
-          const { next, added, removed } = applyLabelIntent(
+          const { next, added, removed, visible } = applyLabelIntent(
             seenNow.conversation,
             desired,
             current,
+            ctx.protectedLabels,
           );
           if (added.length === 0 && removed.length === 0) {
-            recordShown(ctx, "conversation", next);
-            return labelWriteReport("conversation", added, removed, next);
+            recordShown(ctx, "conversation", visible);
+            return labelWriteReport("conversation", added, removed, visible);
           }
           // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
           // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
@@ -986,8 +1023,8 @@ function setLabelsTool(ctx: ToolCtx) {
             return "Could not set the labels (the run was called off while this write waited its turn).";
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
-          recordShown(ctx, "conversation", next);
-          return labelWriteReport("conversation", added, removed, next);
+          recordShown(ctx, "conversation", visible);
+          return labelWriteReport("conversation", added, removed, visible);
         },
       );
     },

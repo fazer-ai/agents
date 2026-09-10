@@ -384,6 +384,49 @@ export function assertSettingsToolPreconditions(
   throw new InvalidToolPreconditionError(introduced);
 }
 
+// A KEY THAT NO LONGER MEANS ANYTHING IS REFUSED, not merged (issue #568 review).
+//
+// `settings` blocks are LOOSE objects on purpose (settings-schema.ts says why): an undeclared key
+// reaches the readers untouched, so a field added by someone who never opened the schema is not
+// silently dropped. The cost is the mirror case — a field REMOVED from every reader keeps being
+// accepted, stored and answered with 200, and the console shows a taxonomy that governs nothing.
+// The verifier hit all four faces of it: a value outside the group applied, two groups with one
+// name accepted where the previous release answered 400, `noteOnChange: true` inert, and the whole
+// block with no editor to show it.
+//
+// Refused OUTRIGHT rather than only when the write changes it, which is the rule its neighbours
+// use. That rule exists to keep an unrelated PATCH from making an operator fix a field they did not
+// come to edit — and it is the right rule when the stored value still does something. Here it does
+// nothing, so leaving it alone would preserve exactly the silence being fixed. Safe to be strict
+// because the population is empty: label groups were never configured anywhere (confirmed with the
+// operator before this shipped), so no stored bag carries one and no write is broken by refusing it.
+export class RetiredLabelSettingError extends AppError {
+  constructor(key: string) {
+    super(
+      `settings.${key} was retired: say which labels exist and which exclude each other in settings.toolGuidance.set_labels`,
+      400,
+      "errors.retiredLabelSetting",
+      { key },
+      key,
+    );
+  }
+}
+
+export function assertSettingsRetiredLabelKeys(settings: unknown): void {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return;
+  const bag = settings as Record<string, unknown>;
+  if (bag.labels !== undefined) throw new RetiredLabelSettingError("labels");
+  const monitoring = bag.monitoring;
+  if (
+    monitoring &&
+    typeof monitoring === "object" &&
+    !Array.isArray(monitoring) &&
+    (monitoring as Record<string, unknown>).labelGroups !== undefined
+  )
+    throw new RetiredLabelSettingError("monitoring.labelGroups");
+}
+
 // A TOMBSTONE FOR A RULE THAT IS ACTUALLY THERE, which the catalog restriction must not block.
 //
 // The restriction is about what may be CREATED: outside the native catalog the exposed tool name is
@@ -815,6 +858,7 @@ export async function updateAgent(
     assertSettingsDebugWindow(rest.settings, before?.settings);
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
     assertSettingsToolPreconditions(rest.settings, before?.settings);
+    assertSettingsRetiredLabelKeys(rest.settings);
     // NOTE: An OBSERVER of an inbox (issue #476) is a monitoring agent by construction — the route it
     // holds answers nothing whatever the mode says — so the mode is not this agent's to leave while
     // it observes. Refused rather than kept silently on the observer's path: an operator promoting a
@@ -1033,6 +1077,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsDebugWindow(input.settings, undefined);
   assertSettingsModelFallback(input.settings, undefined, "replace");
   assertSettingsToolPreconditions(input.settings, undefined);
+  assertSettingsRetiredLabelKeys(input.settings);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   // NOTE: the two schedule ids are parsed HERE and handed back, not left to the caller. They are a

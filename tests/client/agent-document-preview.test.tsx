@@ -128,6 +128,8 @@ function renderEditor() {
               customAttributeInstructions=""
               setCustomAttributeInstructions={noop}
               labelInstructions=""
+              protectedLabels=""
+              setProtectedLabels={noop}
               setLabelInstructions={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}

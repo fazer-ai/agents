@@ -5,6 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import type { TenantContext } from "@/lib/tenancy";
+import { assertSettingsRetiredLabelKeys } from "@/modules/agents/service";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
   type AgentExport,
@@ -1878,6 +1879,42 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.toolDefinition.deleteMany({
       where: { tenantId: dstTenant, name: "set_labels_2" },
     });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A BUNDLE IS A FILE, so it can arrive carrying a key the write boundary now refuses. Refusing the
+  // import would block a restore over a key that governs nothing and that the operator cannot edit
+  // out of a bundle; it is dropped instead. Same boundary as the rename above, opposite verdict,
+  // because there the old key's value still governs something (issue #568 review).
+  test("a bundle carrying the retired taxonomy imports, without it", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada do backup antigo";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.labels = {
+      groups: [{ name: "assunto", values: ["a", "b"], exclusive: true }],
+      noteOnChange: true,
+    };
+    settings.monitoring = { window: { messages: 20 }, labelGroups: [] };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = row.settings as Record<string, unknown>;
+    expect(stored.labels).toBeUndefined();
+    // The rest of the monitoring block survives: what is retired is the taxonomy, not the mode.
+    expect(
+      (stored.monitoring as Record<string, unknown> | undefined)?.labelGroups,
+    ).toBeUndefined();
+    expect(
+      (stored.monitoring as Record<string, Record<string, number>> | undefined)
+        ?.window?.messages,
+    ).toBe(20);
+    // And the agent it produced saves again, which is the whole point of dropping instead of storing.
+    expect(() => assertSettingsRetiredLabelKeys(stored)).not.toThrow();
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 

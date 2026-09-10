@@ -17,7 +17,10 @@ import { parseDbId } from "@/lib/db-id";
 import type { ScopedDb, TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
-import { readToolGuidance } from "@/modules/agents/tool-guidance";
+import {
+  readProtectedLabels,
+  readToolGuidance,
+} from "@/modules/agents/tool-guidance";
 import {
   readToolPreconditions,
   type ToolPrecondition,
@@ -240,6 +243,9 @@ export interface AgentConfig {
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
   // set_labels, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
   toolGuidance: Partial<Record<NativeToolName, string>>;
+  // Labels set_labels may neither add nor remove, and never sees (issue #568 review). See
+  // readProtectedLabels for why an operator control label is not the classifier's to touch.
+  protectedLabels: string[];
   // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
   toolPreconditions: Record<string, ToolPrecondition>;
@@ -798,6 +804,7 @@ export async function loadAgentConfig(
     sendImageConfig: readSendImageConfig(effSettings),
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
+    protectedLabels: readProtectedLabels(effSettings),
     toolPreconditions: readToolPreconditions(effSettings),
     httpToolContext: {
       ...(conv?.contact?.chatwootContactId != null
@@ -932,6 +939,7 @@ export interface ToolBuildDeps {
         contact?: string[];
         task?: string[];
       };
+      protectedLabels?: string[];
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
@@ -1183,12 +1191,22 @@ export async function buildToolset(
     contact?: string[];
     task?: string[];
   } = {};
+  // A GUARDED LABEL IS NOT SHOWN, which is the whole of its protection on this side: the diff at
+  // write time subtracts the same set, so hiding it here and refusing it there are one rule stated
+  // in the two places that have to agree. Filtered at the SEAM rather than at each reader, because a
+  // scope that leaked one into the description would offer the model a label it is not allowed to
+  // keep and would then be told it kept it anyway.
+  const hideGuarded = (labels: string[]): string[] =>
+    cfg.protectedLabels.length === 0
+      ? labels
+      : labels.filter((l) => !cfg.protectedLabels.includes(l));
   if (grantsLabels && ctx.conversationId > 0) {
-    if (kanban) shownLabels.task = kanban.card.labels;
+    if (kanban) shownLabels.task = hideGuarded(kanban.card.labels);
     try {
-      shownLabels.conversation =
+      shownLabels.conversation = hideGuarded(
         ctx.conversationLabels ??
-        (await ctx.client.getConversationLabels(ctx.conversationId));
+          (await ctx.client.getConversationLabels(ctx.conversationId)),
+      );
     } catch (e) {
       logger.warn(
         "conversation labels fetch failed (tenant=%s): %s",
@@ -1230,6 +1248,7 @@ export async function buildToolset(
       timezone: cfg.timezone,
       vocab,
       shownLabels,
+      protectedLabels: cfg.protectedLabels,
       // The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,

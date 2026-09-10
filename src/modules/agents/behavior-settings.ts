@@ -1,6 +1,9 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
-import { readToolGuidance } from "@/modules/agents/tool-guidance";
+import {
+  readProtectedLabels,
+  readToolGuidance,
+} from "@/modules/agents/tool-guidance";
 import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
@@ -83,6 +86,7 @@ export interface BehaviorSettings {
   // thing from outside.
   kanban: ReturnType<typeof readKanbanConfig>;
   toolGuidance: ReturnType<typeof readToolGuidance>;
+  setLabels: { protected: ReturnType<typeof readProtectedLabels> };
   toolPreconditions: ReturnType<typeof readToolPreconditions>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
 }
@@ -112,6 +116,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "modelFallback",
   "kanban",
   "toolGuidance",
+  "setLabels",
   "toolPreconditions",
   "monitoring",
 ] as const;
@@ -151,6 +156,7 @@ export function readBehaviorSettings(
     modelFallback: readModelFallbackConfig(settings),
     kanban: readKanbanConfig(settings),
     toolGuidance: readToolGuidance(settings),
+    setLabels: { protected: readProtectedLabels(settings) },
     toolPreconditions: readToolPreconditions(settings),
     monitoring: readMonitoringConfig(settings),
   };
@@ -181,6 +187,7 @@ export interface BehaviorSettingsPatch {
   modelFallback?: Record<string, unknown>;
   kanban?: Record<string, unknown>;
   toolGuidance?: Record<string, unknown>;
+  setLabels?: Record<string, unknown>;
   toolPreconditions?: Record<string, unknown>;
   monitoring?: Record<string, unknown>;
 }

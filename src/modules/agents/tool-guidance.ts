@@ -29,3 +29,41 @@ export function readToolGuidance(
   }
   return out;
 }
+
+// A guarded label is never CAPPED, only bounded in count: an operator label is a Chatwoot label, and
+// Chatwoot is the authority on how long one may be. What this reader throws away is what the tool
+// could not match anyway — a non-string, a blank, a duplicate — because a guard entry that never
+// equals a real label is a guard that silently protects nothing.
+export const PROTECTED_LABELS_MAX = 50;
+
+// LABELS `set_labels` MAY NEITHER ADD NOR REMOVE, and never sees (issue #568 review).
+//
+// The tool takes the complete list a scope should end up with, so a label standing on the
+// conversation before the turn is shown to the model and survives only if the model repeats it.
+// That is the contract working as designed, and it is fine for a classification. It is not fine for
+// a label that belongs to somebody else: `agente-off` is what keeps an agent off a conversation and
+// a testing label is what keeps a rehearsal out of the metrics, both written and read back by
+// something that is not this agent. Measured, not assumed: with `["compra-de-ingresso"]` asked for,
+// the tool answered `removed "cancelamento", "agente-off", "vip"`.
+//
+// Per agent rather than per instance because the console's tool panel is where an operator
+// configures this tool, and because two agents on one account can disagree about which labels are
+// theirs. Empty or absent ⇒ the tool reaches everything, which is the behaviour before this list.
+export function readProtectedLabels(settings: unknown): string[] {
+  const block =
+    settings && typeof settings === "object"
+      ? (settings as Record<string, unknown>).setLabels
+      : undefined;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return [];
+  const raw = (block as Record<string, unknown>).protected;
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const label = entry.trim();
+    if (!label || out.includes(label)) continue;
+    out.push(label);
+    if (out.length === PROTECTED_LABELS_MAX) break;
+  }
+  return out;
+}

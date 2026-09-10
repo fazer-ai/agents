@@ -74,6 +74,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
+// translate('errors.retiredLabelSetting', '`settings.{{key}}` was retired: say which labels exist and which exclude each other in the `set_labels` usage guidance.')
 // translate('errors.halfConfiguredFallback', 'The fallback provider is only half configured: {{missing}} is missing.')
 // translate('errors.sttCredentialMissing', 'The transcription credential was not found.')
 // translate('errors.sttFailed', 'Transcription failed: {{detail}}')

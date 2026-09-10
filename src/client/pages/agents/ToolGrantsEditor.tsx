@@ -20,6 +20,7 @@ import {
   Button,
   Dropdown,
   FormField,
+  Input,
   SelectableCard,
   SwitchField,
   Textarea,
@@ -126,6 +127,10 @@ interface Props {
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
   setLabelInstructions: (v: string) => void;
+  // Labels set_labels may neither add nor remove, comma-separated. Persisted as an array in
+  // agent.settings.setLabels.protected; see readProtectedLabels for why the guard exists.
+  protectedLabels: string;
+  setProtectedLabels: (v: string) => void;
   // Operator-authored guidance for update_kanban_task (when/how to edit the card's fields), appended to
   // its model-facing description. Persisted in agent.settings.toolGuidance.update_kanban_task.
   updateKanbanTaskInstructions: string;
@@ -463,6 +468,8 @@ export function ToolGrantsEditor({
   setCustomAttributeInstructions,
   labelInstructions,
   setLabelInstructions,
+  protectedLabels,
+  setProtectedLabels,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   mcpTools,
@@ -561,7 +568,8 @@ export function ToolGrantsEditor({
         !transferWithSummary)) ||
     (kanbanEnabled && kanbanInstructions.trim() !== "") ||
     (attrEnabled && customAttributeInstructions.trim() !== "") ||
-    (labelEnabled && labelInstructions.trim() !== "") ||
+    (labelEnabled &&
+      (labelInstructions.trim() !== "" || protectedLabels.trim() !== "")) ||
     (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "");
 
   // Agents/teams + the accounts the agent serves, for the "pinned" handoff target picker. Scoped to
@@ -1681,7 +1689,9 @@ export function ToolGrantsEditor({
             icon={nativeToolMeta(LABEL_TOOL, t).icon}
             title={nativeToolMeta(LABEL_TOOL, t).label}
             description={nativeToolMeta(LABEL_TOOL, t).description}
-            configured={labelInstructions.trim() !== ""}
+            configured={
+              labelInstructions.trim() !== "" || protectedLabels.trim() !== ""
+            }
           >
             <FormField
               label={t("editor.labelInstructions", "Usage guidance")}
@@ -1699,7 +1709,26 @@ export function ToolGrantsEditor({
                 maxLength={TOOL_INSTRUCTIONS_MAX}
                 placeholder={t(
                   "editor.labelInstructionsPlaceholder",
-                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": when you set one, leave the others out. Keep "vip" and "agente-off" wherever they already are.',
+                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": when you set one, leave the others out.',
+                )}
+              />
+            </FormField>
+            <FormField
+              label={t("editor.protectedLabels", "Labels off limits")}
+              group
+              description={t(
+                "editor.protectedLabelsHint",
+                "Optional, comma-separated. Labels this agent may neither add nor remove, and never sees. Use it for the ones another system owns — otherwise they last only while the AI remembers to repeat them.",
+              )}
+            >
+              <Input
+                value={protectedLabels}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setProtectedLabels(e.target.value)
+                }
+                placeholder={t(
+                  "editor.protectedLabelsPlaceholder",
+                  "e.g. agente-off, testando-agente",
                 )}
               />
             </FormField>

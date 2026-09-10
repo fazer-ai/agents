@@ -21,6 +21,7 @@ import {
   currentNativeToolName,
   isNativeToolName,
   NATIVE_TOOL_NAMES,
+  RENAMED_NATIVE_TOOLS,
 } from "@/graph/tools/catalog";
 import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
@@ -1355,11 +1356,21 @@ export async function importAgent(
     // Import DISABLED and in TEST mode — the operator reviews, re-links any missing references +
     // credentials, validates with /teste, then enables for production. Both are set explicitly: the
     // Agent.mode column defaults to "production", so an imported clone must never land live by default.
+    // The prompt's own mentions of a renamed native, moved before the row is written. See
+    // `renameNativeToolsInProse`: the keys move next to it, and prose left behind names a tool the
+    // catalog no longer has.
+    const prompt = renameNativeToolsInProse(exp.systemPrompt, customToolNames);
+    if (prompt.renamed > 0) {
+      warnings.push({
+        code: "promptToolRenamed",
+        params: { count: prompt.renamed, name: "set_labels" },
+      });
+    }
     const created = await db.agent.create({
       data: {
         tenantId,
         name: exp.name,
-        systemPrompt: exp.systemPrompt,
+        systemPrompt: prompt.text,
         modelConfig: modelConfig as Prisma.InputJsonValue,
         settings: disarmFullDetail(
           stripRetiredLabelKeys(
@@ -2675,6 +2686,34 @@ function stripRetiredLabelKeys(settings: unknown): unknown {
     bag.monitoring = next;
   }
   return bag;
+}
+
+// THE PROMPT NAMES TOOLS TOO, and a bundle is a file: one exported before the rename instructs the
+// model to call `assign_label`, which the catalog no longer has. The keys around it are moved by
+// `renameNativeToolKeys`; the prose was left verbatim, so the restored agent asked for a tool that
+// does not exist — and the sample this repo ships did exactly that (issue #568, review round 26).
+//
+// A WORD BOUNDARY, so only the identifier moves: `xassign_labelx` and `assign_labels` are somebody's
+// own vocabulary. And skipped entirely when the bundle grants a CUSTOM tool under the old name — the
+// same rule the key move follows, for the same reason: the prompt then means that tool.
+//
+// Returns the text and how many mentions moved, because an upgrade that edited an operator's prose
+// has to say so.
+function renameNativeToolsInProse(
+  text: string,
+  customToolNames: ReadonlySet<string>,
+): { text: string; renamed: number } {
+  let out = text;
+  let renamed = 0;
+  for (const [from, to] of Object.entries(RENAMED_NATIVE_TOOLS)) {
+    if (customToolNames.has(from)) continue;
+    const re = new RegExp(`\\b${from}\\b`, "g");
+    const hits = out.match(re);
+    if (!hits) continue;
+    renamed += hits.length;
+    out = out.replace(re, to);
+  }
+  return { text: out, renamed };
 }
 
 function renameNativeToolKeys(

@@ -204,6 +204,37 @@ BEGIN
   END LOOP;
 END $$;
 
+-- THE PROMPT THAT NAMES THE TOOL, which for the NATIVE rename is a different case from the HTTP one
+-- above. There the new name is a per-tenant `<name>_N` and the prompt could mean either tool, so the
+-- migration writes a line and leaves the prose to the operator. Here the mapping is the one this
+-- release states — `assign_label` became `set_labels`, and nothing else answers to the old name —
+-- so leaving it would mean shipping prompts that instruct the model to call a tool the catalog no
+-- longer has. The sample agent this repo ships did exactly that (round 26).
+--
+-- `\y` is a word boundary and `_` is a word character to it, so `xassign_labelx` is left alone. The
+-- audit line goes in under the SAME action the block above uses: what the operator needs from both
+-- is one list of the prompts an upgrade touched.
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT id, tenant_id FROM "agents" WHERE system_prompt ~ '\yassign_label\y'
+  LOOP
+    UPDATE "agents"
+       SET system_prompt = regexp_replace(system_prompt, '\yassign_label\y', 'set_labels', 'g'),
+           updated_at = NOW()
+     WHERE id = r.id;
+    INSERT INTO "audit_logs" (
+      tenant_id, actor_id, actor_type, action, target, "before", "after", created_at
+    ) VALUES (
+      r.tenant_id, NULL, 'system', 'agent.prompt_names_renamed_tool', 'agent:' || r.id,
+      NULL,
+      jsonb_build_object('tool', 'assign_label', 'renamed', 'set_labels', 'rewritten', true),
+      NOW()
+    );
+  END LOOP;
+END $$;
+
 -- The grant. array_replace would also work, but the guard against a row already carrying the new
 -- name is what keeps the allowlist from listing it twice.
 UPDATE "agent_tool_selections"

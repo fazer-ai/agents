@@ -2261,6 +2261,12 @@ function AgentEditor() {
           'The text in "{{field}}" was longer than {{max}} characters and was trimmed on import.',
           p,
         );
+      case "promptToolRenamed":
+        return t(
+          "editor.importWarning.promptToolRenamed",
+          'The prompt named a tool that was renamed, so {{count}} mentions now say "{{name}}". Worth a read.',
+          { ...p, count: importWarningCount(p) },
+        );
       case "protectedLabelsClipped":
         return t(
           "editor.importWarning.protectedLabelsClipped",

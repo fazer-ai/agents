@@ -95,6 +95,24 @@ describe.if(dbUp)("drop retired label settings", () => {
         toolGuidance: { set_labels: "exatamente uma" },
       }),
     );
+    // A CONFIGURED TAXONOMY WITH NOBODY'S GUIDANCE OVER IT: the one row where something an operator
+    // chose would otherwise be deleted with the key (review round 26).
+    ids.carried = await agent(
+      "carregada",
+      JSON.stringify({
+        monitoring: {
+          window: { messages: 25 },
+          labelGroups: [
+            {
+              name: "assunto",
+              values: ["cancelamento", "compra"],
+              exclusive: true,
+            },
+            { name: "sinal", values: ["urgente"] },
+          ],
+        },
+      }),
+    );
     // A row with neither key: the migration must not touch it.
     ids.clean = await agent(
       "limpa",
@@ -125,6 +143,27 @@ describe.if(dbUp)("drop retired label settings", () => {
     expect((mon.window as { messages: number }).messages).toBe(20);
     expect(mon.analysis).toBe("incremental");
     expect((s.debounce as { windowSeconds: number }).windowSeconds).toBe(20);
+  });
+
+  test("a configured taxonomy becomes the tool's guidance instead of disappearing", async () => {
+    const s = await settingsOf(id("carried"));
+    const note = (s.toolGuidance as Record<string, string>).set_labels;
+    // Names itself as migrated, because an operator who finds guidance they did not type has to be
+    // able to tell where it came from — this migration writes no audit line.
+    expect(note).toContain("Migrado da taxonomia anterior");
+    expect(note).toContain(
+      "assunto (escolha no máximo uma): cancelamento, compra",
+    );
+    expect(note).toContain("sinal (pode usar mais de uma): urgente");
+    // And the key it came from is gone all the same.
+    expect(
+      (s.monitoring as Record<string, unknown>).labelGroups,
+    ).toBeUndefined();
+    expect(
+      (s.monitoring as { window: { messages: number } }).window.messages,
+    ).toBe(25);
+    // Under the cap every reader clips at, so the agent's next save cannot fail on it.
+    expect((note ?? "").length).toBeLessThanOrEqual(1500);
   });
 
   test("a configured taxonomy is removed from both places", async () => {

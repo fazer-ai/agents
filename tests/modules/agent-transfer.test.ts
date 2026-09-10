@@ -1990,6 +1990,55 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
+  // A BUNDLE IS A FILE, and one exported before the rename instructs the model to call a tool the
+  // catalog no longer has. The keys around it already move; the prose did not (review round 26).
+  test("a bundle whose PROMPT names the old tool has it moved, and says so", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com prompt antigo";
+    bundle.agent.systemPrompt =
+      "Use `assign_label` para marcar etapas. Nunca chame assign_labels nem xassign_labelx.";
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { systemPrompt: true },
+    });
+    expect(row.systemPrompt).toContain("`set_labels` para marcar etapas");
+    // The word boundary: only the identifier moves, never somebody's own vocabulary.
+    expect(row.systemPrompt).toContain("assign_labels");
+    expect(row.systemPrompt).toContain("xassign_labelx");
+    const w = warnings.find((x) => x.code === "promptToolRenamed");
+    expect(w?.params).toEqual({ count: 1, name: "set_labels" });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("...unless the bundle grants a CUSTOM tool under the old name", async () => {
+    // Then the prompt means THAT tool, and moving the mention would point it at the native. Same
+    // rule the key move follows, for the same reason.
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com tool propria";
+    bundle.agent.systemPrompt = "Chame assign_label, que é a nossa própria.";
+    // The GRANT is what makes the old name mean the operator's own tool; the component behind it is
+    // the import's own business (an unknown one is dropped with its own warning).
+    bundle.agent.tools = [
+      ...bundle.agent.tools,
+      { source: "HTTP", tool: "assign_label", enabledTools: ["assign_label"] },
+    ] as typeof bundle.agent.tools;
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { systemPrompt: true },
+    });
+    expect(row.systemPrompt).toContain("assign_label");
+    expect(row.systemPrompt).not.toContain("set_labels");
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   // A LEGACY NAME IS ONLY LEGACY WHILE NOTHING ELSE ANSWERS TO IT. Once `assign_label` stopped being
   // native, an operator became free to create a tool under it — and a bundle from THAT agent means
   // its own tool by the key. Mapped blindly, the guard moves to `set_labels` while the custom tool,

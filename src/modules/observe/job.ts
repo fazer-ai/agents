@@ -451,7 +451,15 @@ export function observeTurnText(
     "Cada turno começa do zero: o que você já fez nesta conversa está no que está registrado nela, não na sua memória.",
     "Se nada precisa mudar em relação ao que já está registrado, não chame ferramenta nenhuma.",
     "",
-    `<etiquetas-atuais>${current.length ? current.join(", ") : "(nenhuma)"}</etiquetas-atuais>`,
+    // STRIPPED like the notes and the transcript, and for the same reason: `set_labels` sends the
+    // model's own strings to Chatwoot, and Chatwoot's tag list accepts what the account's label
+    // catalog would refuse — so a label can carry this block's own closing tag and end it early
+    // (review round 26). The tool's XML renderer escapes; this block is plain text, so it strips.
+    `<etiquetas-atuais>${
+      current.length
+        ? current.map((l) => stripFences(l).trim()).join(", ")
+        : "(nenhuma)"
+    }</etiquetas-atuais>`,
     "",
     // THE NOTES THE CONVERSATION ALREADY CARRIES, and the reason they are here is the same as the
     // labels'. A tick is stateless on purpose — its own thread, an in-memory checkpointer — so

@@ -202,6 +202,29 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       );
       return BigInt(r.rows[0].id);
     };
+    // A PROMPT THAT NAMES THE TOOL. The sample agent this repo ships did exactly this, so an
+    // operator who imported it has a stored prompt instructing the model to call a tool the catalog
+    // no longer has (review round 26). The second row is the control for the word boundary.
+    ids.prompt = await (async () => {
+      const r = await suDb.query(
+        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+         VALUES ($1, 'com prompt', $2, '{}'::jsonb, '{}'::jsonb, NOW(), NOW()) RETURNING id`,
+        [
+          String(tenantId),
+          "* `assign_label`: marcar etapas. Chame assign_label ao classificar.",
+        ],
+      );
+      return BigInt(r.rows[0].id);
+    })();
+    ids.promptWord = await (async () => {
+      const r = await suDb.query(
+        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+         VALUES ($1, 'palavra parecida', $2, '{}'::jsonb, '{}'::jsonb, NOW(), NOW()) RETURNING id`,
+        [String(tenantId), "nada aqui: xassign_labelx e assign_labels."],
+      );
+      return BigInt(r.rows[0].id);
+    })();
+
     const t2 = await suDb.query(
       "INSERT INTO tenants (name, slug, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id",
       ["SETLBL2", `setlbl2-${process.pid}`],
@@ -550,6 +573,42 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
     ).toEqual({
       set_labels: { kind: "attribute", scope: "conversation", key: "nativo" },
     });
+  });
+
+  test("a prompt that names the old tool is rewritten, and the operator is told", async () => {
+    await runMigration(sql);
+    const r = await suDb.query(
+      'SELECT system_prompt FROM "agents" WHERE id = $1',
+      [String(id("prompt"))],
+    );
+    const prompt = r.rows[0].system_prompt as string;
+    expect(prompt).not.toContain("assign_label");
+    expect(prompt).toContain("`set_labels`: marcar etapas");
+    expect(prompt).toContain("Chame set_labels ao classificar");
+    // The line is what turns an upgrade that edited somebody's prose into a record they can read.
+    const audit = await suDb.query(
+      `SELECT "after" FROM "audit_logs"
+        WHERE target = $1 AND action = 'agent.prompt_names_renamed_tool'`,
+      [`agent:${id("prompt")}`],
+    );
+    expect(audit.rows.length).toBeGreaterThan(0);
+    expect(audit.rows[0].after).toMatchObject({
+      tool: "assign_label",
+      renamed: "set_labels",
+    });
+  });
+
+  test("a word that merely CONTAINS the old name is left alone", async () => {
+    // `\y` is a word boundary and `_` is a word character to it, so only the identifier moves. The
+    // negative matters: a bare replace would rewrite an operator's own vocabulary.
+    await runMigration(sql);
+    const r = await suDb.query(
+      'SELECT system_prompt FROM "agents" WHERE id = $1',
+      [String(id("promptWord"))],
+    );
+    expect(r.rows[0].system_prompt).toBe(
+      "nada aqui: xassign_labelx e assign_labels.",
+    );
   });
 
   test("re-running it rewrites nothing", async () => {

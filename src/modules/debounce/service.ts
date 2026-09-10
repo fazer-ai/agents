@@ -71,6 +71,52 @@ export function readLastMessageId(payload: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
+//
+// UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the
+// reschedule. The patch rides `rescheduleJob`, whose compare-and-set requires the row to still be
+// CLAIMED — and the window it has to survive is exactly the one where that is false: a message
+// arriving while the first deferring flush runs re-arms the row to PENDING with a fresh payload, the
+// CAS then fails, and the stamp is discarded rather than merged. Repeated arrivals in that window
+// restarted the deadline every time, which is the customer-never-answered case the deadline exists
+// to prevent (found in review of #588, and the reason the first test of it was not enough: it only
+// re-armed a row that was already stamped).
+//
+// Taking `armDebounce`'s own lock makes the two orderings both work: the arm runs first and this
+// merges into what it wrote, or this runs first and the arm carries the stamp forward as a live row.
+//
+// Never overwrites: the deadline belongs to the FIRST deferral, and a later one that reset it would
+// be the same defect wearing a different hat.
+export async function stampDeferral(params: {
+  tenantId: bigint;
+  threadId: string;
+  since: number;
+  base?: PrismaClient;
+}): Promise<void> {
+  const base = params.base ?? basePrisma;
+  const dedupeKey = debounceDedupeKey(params.threadId);
+  await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
+      const row = await db.schedulerJob.findFirst({
+        where: { kind: "DEBOUNCE", dedupeKey },
+        select: { id: true, payload: true },
+      });
+      // No row means the flush that is deferring has already been completed or retired by somebody
+      // else; there is nothing whose deadline this would be.
+      if (!row || readDeferringSince(row.payload) !== null) return;
+      await db.schedulerJob.update({
+        where: { id: row.id },
+        data: {
+          payload: {
+            ...(row.payload as Prisma.InputJsonObject),
+            deferringSince: params.since,
+          },
+        },
+      });
+    }),
+  );
+}
+
 export interface ArmDebounceParams {
   tenantId: bigint;
   threadId: string;

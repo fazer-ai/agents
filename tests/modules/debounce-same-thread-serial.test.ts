@@ -5,7 +5,11 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { isTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { armDebounce, debounceDedupeKey } from "@/modules/debounce/service";
@@ -55,6 +59,7 @@ const CONTACT_INBOX = 777;
 const CONV_CORRIDA_A = 4246;
 const CONV_CORRIDA_B = 4247;
 const CONTACT_INBOX_CORRIDA = 778;
+const CONV_CARIMBO = 4249;
 const CHATWOOT_INBOX_ID = 7;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -504,5 +509,62 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     expect(p.burstStartedAt).toBeGreaterThan(stamp);
     // ...and the deadline does NOT restart with it.
     expect(p.deferringSince).toBe(stamp);
+  }, 30_000);
+
+  test("the first deferral's deadline lands even when the row was re-armed underneath it", async () => {
+    // The window review found on the third round: a message arriving while the FIRST deferring flush
+    // runs re-arms the row to PENDING with a fresh payload, and a `payloadPatch` on the reschedule is
+    // then discarded, because that CAS requires the row to still be CLAIMED. Every arrival in that
+    // window restarted the five-minute deadline, which is the customer-never-answered case the
+    // deadline exists to prevent.
+    //
+    // Driven by putting the row in the state the re-arm leaves it in (PENDING, no stamp) and holding
+    // the thread directly, rather than by racing two writers: the assertion is about which write
+    // mechanism survives that state, and a race would only reach it sometimes.
+    await seedConversation(CONV_CARIMBO);
+    const thread = threadOf(CONV_CARIMBO);
+    const key = debounceDedupeKey(thread);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND dedupe_key = '${key}'`,
+    );
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: key,
+        status: "PENDING",
+        runAt: new Date(),
+        payload: {
+          threadId: thread,
+          agentBotId: 9,
+          burstStartedAt: Date.now(),
+        },
+      },
+    });
+
+    markTurnInFlight(thread);
+    let out: Awaited<ReturnType<typeof flushDebounceJob>>;
+    try {
+      out = await flushDebounceJob({
+        job: jobFor(jobIdA, CONV_CARIMBO, Date.now()),
+        base: appDb,
+        deps: {
+          makeModel: () => overlapModel(10, { active: 0, max: 0 }, []),
+          makeClient: stub([]),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      clearTurnInFlight(thread);
+    }
+
+    expect(out.outcome).toBe("reschedule");
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+      select: { payload: true },
+    });
+    const stamp = (row.payload as { deferringSince?: number }).deferringSince;
+    console.log(`[carimbo] deferringSince gravado: ${stamp ?? "NENHUM"}`);
+    expect(typeof stamp).toBe("number");
   }, 30_000);
 });

@@ -80,6 +80,7 @@ import {
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
+  stampDeferral,
 } from "./service";
 import { readDebounceConfig } from "./settings";
 import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
@@ -1801,13 +1802,14 @@ export async function flushDebounceJob(
       // stamp `last_error` on the conversation and eventually dead-letter a burst whose only problem
       // is that it arrived at a busy moment.
       //
-      // MERGED rather than written whole (`payloadPatch`, not `payload`): the row may have been
-      // re-armed while this run was deciding, and a replacement built from the claim-time snapshot
-      // would erase the `burstStartedAt` and `lastMessageId` that arm just wrote.
+      // Stamped through its own write under the ARM lock rather than as a `payloadPatch` here: the
+      // patch rides `rescheduleJob`, whose CAS requires the row to still be CLAIMED, and the window
+      // the stamp has to survive is exactly the one where a message re-armed it to PENDING and the
+      // CAS fails. See `stampDeferral`.
+      await stampDeferral({ tenantId, threadId, since, base });
       return {
         outcome: "reschedule",
         runAt: new Date(now + DEFER_ON_TURN_MS),
-        payloadPatch: { deferringSince: since },
       };
     }
     // PAST THE DEADLINE WE RUN ANYWAY, which is a choice and not an oversight. A turn that never

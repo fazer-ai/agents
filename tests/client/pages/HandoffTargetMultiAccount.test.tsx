@@ -1,7 +1,13 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { useState } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components/Toast";
@@ -319,9 +325,13 @@ const CATALOG = {
   documentTemplates: [],
 };
 
-function renderPinned(targetInstanceId: number | null): { modes: string[] } {
+function renderPinned(targetInstanceId: number | null): {
+  modes: string[];
+  instanceIds: Array<number | null>;
+} {
   const noop = () => undefined;
   const modes: string[] = [];
+  const instanceIds: Array<number | null> = [];
   // Stateful for the same reason the contact-auth harness is: a discarded write leaves the editor
   // deciding again on the same stale props.
   function Harness() {
@@ -357,6 +367,7 @@ function renderPinned(targetInstanceId: number | null): { modes: string[] } {
                 ? (update as (h: typeof handoff) => typeof handoff)(handoff)
                 : (update as typeof handoff);
             modes.push(next.mode);
+            instanceIds.push(next.targetInstanceId);
             setHandoff(next);
           }) as never
         }
@@ -390,7 +401,7 @@ function renderPinned(targetInstanceId: number | null): { modes: string[] } {
       </ThemeProvider>
     </MemoryRouter>,
   );
-  return { modes };
+  return { modes, instanceIds };
 }
 
 describe("pinned handoff target, on an agent serving several accounts", () => {
@@ -427,5 +438,46 @@ describe("pinned handoff target, on an agent serving several accounts", () => {
     const { modes } = renderPinned(2);
     await settle();
     expect(modes.length).toBe(0);
+  });
+
+  // Keeping the target meant the mode menu stops being disabled while `pinned` is the mode in force
+  // — and a menu item you can reach is an item that can be CLICKED, including on the value already
+  // selected. `Dropdown` fires onChange for the current value like any other (no equality guard in
+  // `onSelect`), so the handler ran with `pinnedInstanceId`, which is null wherever the picker cannot
+  // offer targets. That null then failed the very check that keeps the target, and the config the
+  // operator was looking at was gone: a no-op click erasing the setting it named.
+  test("re-picking the mode already in force keeps the target", async () => {
+    stubAgentsTeams([ACCOUNT_ONE, ACCOUNT_TWO]);
+    const { modes, instanceIds } = renderPinned(2);
+    await settle();
+    // The handoff config is behind its card's Settings chevron, and it is the FIRST configurable
+    // native card on the page (kanban and the attribute/label ones follow it).
+    const gears = screen.getAllByLabelText(/^settings$|^configurações$/i);
+    fireEvent.click(gears[0] as HTMLElement);
+    // The label text belongs to both the FormField's <label> and the picker's own aria-label, so the
+    // button is what has to be clicked, not whichever one the query happens to return first.
+    const labelled = await screen.findAllByLabelText(
+      /who receives the handoff|quem recebe a transferência/i,
+    );
+    const trigger = labelled.find((el) => el.tagName === "BUTTON");
+    fireEvent.keyDown(trigger as HTMLElement, { key: "Enter" });
+    // The label also appears on the closed trigger (it IS the current value), so the one to click is
+    // the menu item.
+    const labels = await screen.findAllByText(
+      /^a specific agent or team$|^um agente ou time específico$/i,
+    );
+    const item = labels
+      .map((el) => el.closest('[role="menuitem"]'))
+      .find((el): el is HTMLElement => el !== null);
+    const menuOpened = item !== undefined;
+    if (item) fireEvent.click(item);
+    await settle();
+    // The click has to have REACHED the handler for the absence of damage to mean anything: an
+    // interaction that silently did nothing would satisfy both assertions below on the broken code.
+    // Radix opens its menu on keydown, not on a bare click, and the first version of this test
+    // passed against the defect precisely because nothing happened.
+    expect(menuOpened).toBe(true);
+    expect(modes.includes("agent_choice")).toBe(false);
+    expect(instanceIds.includes(null)).toBe(false);
   });
 });

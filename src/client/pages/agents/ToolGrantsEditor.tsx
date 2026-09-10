@@ -1498,15 +1498,28 @@ export function ToolGrantsEditor({
                   "editor.handoffTarget",
                   "Who receives the handoff",
                 )}
-                onChange={(value) =>
+                onChange={(value) => {
+                  // Picking the mode already in force changes nothing, and must WRITE nothing.
+                  // `Dropdown` fires onChange for the current value like any other, and now that
+                  // `pinned` stays reachable while it is the mode in force, that click used to
+                  // rewrite `targetInstanceId` to `pinnedInstanceId` — null wherever the picker
+                  // cannot offer targets — which then failed the check that keeps the target and
+                  // erased the very setting the operator was looking at.
+                  if (value === handoff.mode) return;
                   setHandoff({
                     ...handoff,
                     mode: value,
                     target: value === "pinned" ? handoff.target : "",
+                    // Safe without a fallback to the recorded account precisely BECAUSE of the guard
+                    // above: reaching here with `pinned` means the mode was something else, and the
+                    // item is only selectable then when the agent serves exactly one account — which
+                    // is the case where `pinnedInstanceId` is filled. A `?? handoff.targetInstanceId`
+                    // here reads as prudence and is dead code: no test can tell it apart, and a line
+                    // no test can pin is a line nobody can maintain.
                     targetInstanceId:
                       value === "pinned" ? pinnedInstanceId : null,
-                  })
-                }
+                  });
+                }}
                 items={[
                   {
                     value: "route",

@@ -459,6 +459,19 @@ function ConfigurableToolCard({
 
 // Controlled editor for NATIVE / HTTP / MCP / INTEGRATION grants. RAG lives in
 // the Knowledge tab; this component preserves any RAG grant untouched.
+// WHAT A PACK OFFERS *THIS* AGENT. A watcher's turn is assembled with a muted client, and
+// `buildToolpackTools` then drops every tool whose spec declares `deliversToCustomer`. Both places
+// this editor decides a pack's tool set — the auto-grant that runs when an integration is created
+// here, and the list the operator toggles — go through this one function, because filtering only one
+// of them persists a grant nobody saw: inert while the agent is muted, live the moment the mode is
+// flipped back (review round 31).
+export function offeredPackTools<T extends { deliversToCustomer?: boolean }>(
+  tools: T[],
+  observing: boolean | undefined,
+): T[] {
+  return observing ? tools.filter((t) => !t.deliversToCustomer) : tools;
+}
+
 export function ToolGrantsEditor({
   agentId,
   observing,
@@ -705,10 +718,15 @@ export function ToolGrantsEditor({
       {
         source: "INTEGRATION",
         integrationInstanceId: inst.id,
-        enabledTools: inst.tools.map((tool) => tool.name),
+        // THE SAME PREDICATE THE LIST BELOW USES. Filtering only the rendering would grant a watcher
+        // a delivery tool it never saw — inert while the agent is muted, and live the moment the
+        // mode is flipped back, with nobody having chosen it (review round 31).
+        enabledTools: offeredPackTools(inst.tools, observing).map(
+          (tool) => tool.name,
+        ),
       },
     ]);
-  }, [pendingIntegrationId, catalog, grants, onChange]);
+  }, [pendingIntegrationId, catalog, grants, onChange, observing]);
 
   function toggleNative(name: string) {
     const next = new Set(selectedNative);
@@ -1279,9 +1297,7 @@ export function ToolGrantsEditor({
             );
             // What this agent can actually be offered from the pack. A watcher does not get the
             // delivery tools, so granting the integration must not enable one either.
-            const offered = inst.tools.filter(
-              (tool) => !(observing && tool.deliversToCustomer),
-            );
+            const offered = offeredPackTools(inst.tools, observing);
             const allTools = offered.map((tool) => tool.name);
             const collapsed = integrationCollapsed[inst.id] ?? true;
             return (

@@ -12,7 +12,7 @@ import { MemoryRouter } from "react-router";
 // fire — the same class of dead configuration this issue refused at the API, arriving through the
 // editor instead. Grants already saved are left alone: flipping the mode back returns the agent.
 
-const { ToolGrantsEditor } = await import(
+const { ToolGrantsEditor, offeredPackTools } = await import(
   "@/client/pages/agents/ToolGrantsEditor"
 );
 const { ToastProvider } = await import("@/client/components/Toast");
@@ -163,6 +163,37 @@ test("an agent that only observes is not offered the tools its turn would refuse
   expect(screen.queryByText("Documents")).toBeNull();
   // The pack's own read-only tool is still there: the filter is about delivery, not about packs.
   expect(screen.queryAllByText("Find file").length).toBeGreaterThan(0);
+});
+
+test("both places a pack's tools are decided read one predicate", async () => {
+  // The auto-grant that fires when an integration is created inside this editor is not reachable
+  // from a test without driving the creation modal, and it is exactly the site that was filtering
+  // nothing. So the two sites share a function instead of a repeated expression, and this asks that
+  // function directly — a mutant would have to re-introduce the duplicate to get past it.
+  const tools = [
+    { name: "drive_find_file" },
+    { name: "drive_send_file", deliversToCustomer: true },
+  ];
+  expect(offeredPackTools(tools, true).map((x) => x.name)).toEqual([
+    "drive_find_file",
+  ]);
+  expect(offeredPackTools(tools, false).map((x) => x.name)).toEqual([
+    "drive_find_file",
+    "drive_send_file",
+  ]);
+  expect(offeredPackTools(tools, undefined)).toHaveLength(2);
+  // ...and the source of both call sites names it. Read from the file rather than deduced: this is
+  // the assertion that a second, hand-rolled filter cannot pass (review round 31).
+  const src = await Bun.file(
+    new URL(
+      "../../src/client/pages/agents/ToolGrantsEditor.tsx",
+      import.meta.url,
+    ).pathname,
+  ).text();
+  expect(src.match(/offeredPackTools\(inst\.tools, observing\)/g)).toHaveLength(
+    2,
+  );
+  expect(src.includes("deliversToCustomer)")).toBe(true);
 });
 
 test("...and an agent that answers is offered all of them", async () => {

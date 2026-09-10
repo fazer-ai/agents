@@ -3794,7 +3794,7 @@ function AgentEditor() {
                 saving={savingGrants}
                 onSave={() => saveTools()}
                 onDiscard={revertTools}
-                onOpenPlayground={openPlayground}
+                onOpenPlayground={watcher ? undefined : openPlayground}
               />
             )}
 
@@ -3808,7 +3808,7 @@ function AgentEditor() {
                 saving={savingGrants}
                 onSave={() => saveGrants()}
                 onDiscard={revertKnowledge}
-                onOpenPlayground={openPlayground}
+                onOpenPlayground={watcher ? undefined : openPlayground}
               />
             )}
 

@@ -1969,6 +1969,75 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
+  test("a restored classifier gets the label tool its guidance names", async () => {
+    // The old classifier applied labels itself and consulted no allowlist, so a bundle can carry an
+    // explicit NATIVE grant with no label tool in it and still have classified. Restoring it with
+    // the migrated sentence and without the tool leaves an agent that runs, spends a model call per
+    // burst, and classifies nothing. Step 1c of the migration does this for rows that exist when it
+    // runs; a bundle is a file (review round 31).
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Classificadora restaurada";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.monitoring = {
+      window: { messages: 25 },
+      labelGroups: [
+        { name: "assunto", values: ["cancelamento"], exclusive: true },
+      ],
+    };
+    bundle.agent.tools = [
+      {
+        source: "NATIVE",
+        enabledTools: ["private_note", "resolve_conversation"],
+      },
+    ] as never;
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect([...row.enabledTools].sort()).toEqual([
+      "private_note",
+      "resolve_conversation",
+      "set_labels",
+    ]);
+    await suDb.agentToolSelection.deleteMany({
+      where: { agentId: BigInt(agent.id) },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a bundle with NO taxonomy keeps the allowlist the operator exported", async () => {
+    // The control, and the reason the repair is conditional: adding the tool to an agent that never
+    // classified would grant a capability nobody chose.
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Sem taxonomia";
+    bundle.agent.tools = [
+      {
+        source: "NATIVE",
+        enabledTools: ["private_note", "resolve_conversation"],
+      },
+    ] as never;
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect([...row.enabledTools].sort()).toEqual([
+      "private_note",
+      "resolve_conversation",
+    ]);
+    await suDb.agentToolSelection.deleteMany({
+      where: { agentId: BigInt(agent.id) },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   test("a bundle whose operator already wrote the note keeps THEIR words", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,

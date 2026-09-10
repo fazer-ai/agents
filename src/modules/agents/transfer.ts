@@ -1418,6 +1418,9 @@ export async function importAgent(
       knownGrants,
       warnings,
       renamed,
+      // Asked of the settings as the bundle carried them: `stripRetiredLabelKeys` above has already
+      // deleted the key from what was stored.
+      carriesRetiredTaxonomy(settings),
     );
     if (grantRows.length > 0) {
       await db.agentToolSelection.createMany({ data: grantRows });
@@ -2708,6 +2711,22 @@ function taxonomySentence(groups: unknown): string | null {
   );
 }
 
+// WHETHER THIS BUNDLE CAME FROM THE CLASSIFIER, asked of the settings BEFORE they are stripped.
+// The old classifier applied its labels itself and consulted no allowlist, so a watcher could carry
+// an explicit NATIVE grant WITHOUT any label tool and classify anyway. Under the new design the
+// migrated sentence is worth nothing without the tool: the agent keeps running, keeps spending a
+// model call per burst, and quietly no longer classifies. Step 1c of
+// `20260910140000_drop_retired_label_settings` repairs the rows that exist when it runs; a bundle is
+// a FILE and can be restored long after, so the same repair has to happen here (review round 31).
+function carriesRetiredTaxonomy(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return false;
+  const mon = (settings as Record<string, unknown>).monitoring;
+  if (!mon || typeof mon !== "object" || Array.isArray(mon)) return false;
+  const groups = (mon as Record<string, unknown>).labelGroups;
+  return Array.isArray(groups) && groups.length > 0;
+}
+
 function stripRetiredLabelKeys(settings: unknown): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
@@ -2844,6 +2863,9 @@ async function buildGrantRows(
   warnings: ImportWarning[],
   // Bundle name → stored name, for a tool the import could not store under its own name.
   renamed: RenamedComponents,
+  // The bundle carried a taxonomy: an explicit NATIVE allowlist then has to gain `set_labels`, or
+  // the migrated guidance names a tool the restored agent does not have (`carriesRetiredTaxonomy`).
+  carriedTaxonomy = false,
 ): Promise<Prisma.AgentToolSelectionCreateManyInput[]> {
   const rows: Prisma.AgentToolSelectionCreateManyInput[] = [];
   for (const g of tools) {
@@ -2866,13 +2888,18 @@ async function buildGrantRows(
             warnings.push({ code: "nativeToolUnknown", params: { name: n } });
           }
         }
+        const enabled = new Set(mapped.filter((n) => known.has(n)));
+        // ...plus the label tool when the taxonomy came with the bundle, which is the migration's
+        // step 1c applied to a file. Only onto an EXPLICIT row: an agent with no native selection
+        // is already allowed every native, and adding a row would NARROW what it can do.
+        if (carriedTaxonomy) enabled.add("set_labels");
         rows.push({
           tenantId,
           agentId,
           source: "NATIVE",
           // ...and de-duplicated, because a bundle can name BOTH (exported from an agent that
           // carried the old grant beside a new one), and the allowlist must not list one twice.
-          enabledTools: [...new Set(mapped.filter((n) => known.has(n)))],
+          enabledTools: [...enabled],
           knowledgeBaseIds: [],
         });
         break;

@@ -46,6 +46,27 @@ describe("the editor of a monitoring agent", () => {
     );
   });
 
+  test("no tab a watcher draws offers the playground", () => {
+    // The playground loads the agent WITHOUT `ignoreMode`, so a monitoring agent cannot run there:
+    // an action that opens a panel whose every run fails as `agentNotRunnable` is worse than no
+    // action. General and Behavior already guarded it; Tools and Knowledge became watcher-visible in
+    // this issue and did not (review round 31). Read as source, the way the tab gates above are.
+    for (const tab of [
+      "GeneralTab",
+      "BehaviorTab",
+      "ToolsTab",
+      "KnowledgeTab",
+    ]) {
+      const at = EDITOR.indexOf(`<${tab}`);
+      expect(at).toBeGreaterThan(-1);
+      const prop = EDITOR.indexOf("onOpenPlayground=", at);
+      expect(prop).toBeGreaterThan(-1);
+      expect(EDITOR.slice(prop, prop + 60)).toContain(
+        "watcher ? undefined : openPlayground",
+      );
+    }
+  });
+
   test("the Behavior tab keeps the blocks that apply to a watcher and hides the rest", () => {
     expect([...MONITORING_SECTIONS].sort()).toEqual([
       // The prompt block built on every turn, this one included (issue #568).

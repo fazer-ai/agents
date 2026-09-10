@@ -71,7 +71,10 @@ interface ToolsTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
-  onOpenPlayground: () => void;
+  // Absent for a WATCHER: the playground loads the agent without `ignoreMode`, so a monitoring
+  // agent cannot run there and the action would open a panel whose every run fails
+  // (review round 31). Same shape General and Behavior already use.
+  onOpenPlayground?: () => void;
 }
 
 export function ToolsTab({

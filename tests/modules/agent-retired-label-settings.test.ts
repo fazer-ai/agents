@@ -3,6 +3,7 @@ import {
   assertSettingsProtectedLabels,
   assertSettingsRetiredLabelKeys,
   RetiredLabelSettingError,
+  stripRetiredNoteFlagInPlace,
   TooManyProtectedLabelsError,
 } from "@/modules/agents/service";
 import {
@@ -75,41 +76,50 @@ describe("retired label settings", () => {
     ).not.toThrow();
   });
 
-  test("monitoring.noteOnChange: true is refused, false is not", () => {
-    // The flag lived HERE, not under `labels`: readMonitoringConfig read it off the monitoring block
-    // and the previous editor wrote it for every agent, defaulting to true. `true` asks for a
-    // behaviour that is gone; `false` asks for what it already gets, and refusing it would teach
-    // nothing while breaking a save.
-    expect(() =>
-      assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: true } }),
-    ).toThrow(RetiredLabelSettingError);
-    expect(() =>
-      assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: false } }),
-    ).not.toThrow();
-    try {
-      assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: true } });
-    } catch (e) {
-      expect(String(e)).toContain("monitoring.noteOnChange");
-    }
-  });
-
-  test("every truthy spelling of the retired flag is refused, not just boolean true", () => {
-    // The bag is LOOSE, so REST and MCP can both put a string or a number under this key. Refusing
-    // only boolean `true` left `"true"`, `1` and `"sim"` stored, answered 200 and inert — and MCP's
-    // merge normalizing them away while reporting success (review round 25). The question asked is
-    // "is this the inert value", which needs no new line the next time a shape nobody listed
-    // arrives.
-    for (const value of ["true", "sim", 1, {}, [], "yes", 0.5]) {
-      expect(() =>
-        assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: value } }),
-      ).toThrow(RetiredLabelSettingError);
-    }
-    // And the inert spellings still pass, including the string a form post turns `false` into.
-    for (const value of [false, "false", "FALSE", " false ", null]) {
+  test("monitoring.noteOnChange is never refused, whatever it says", () => {
+    // Round 25 refused every value but `false`; round 33 measured the cost during a rolling deploy.
+    // The previous console does not ASK for the behaviour, it reconstructs the key: the reader
+    // defaults it to `true` when absent and the form writes it back on every Behavior save. So a
+    // refusal here answers 400 to saves that have nothing to do with labels, naming a field the
+    // operator cannot see from that screen.
+    for (const value of [true, "true", "sim", 1, {}, [], false, null]) {
       expect(() =>
         assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: value } }),
       ).not.toThrow();
     }
+  });
+
+  test("...it is taken out of the bag instead, whatever it says", () => {
+    // Stripped rather than stored: it governs a feature that no longer exists, and leaving it in
+    // would write straight back the key the migration just cleared.
+    for (const value of [true, "true", 1, false, null]) {
+      const bag = {
+        monitoring: { window: { messages: 25 }, noteOnChange: value },
+      };
+      expect(stripRetiredNoteFlagInPlace(bag)).toBe(true);
+      expect("noteOnChange" in bag.monitoring).toBe(false);
+      // ...and the rest of the block is left where it was: what is retired is the key, not the mode.
+      expect(bag.monitoring.window).toEqual({ messages: 25 });
+    }
+    // A bag without the key is not touched, and says so.
+    const clean = { monitoring: { window: { messages: 25 } } };
+    expect(stripRetiredNoteFlagInPlace(clean)).toBe(false);
+    expect(stripRetiredNoteFlagInPlace(undefined)).toBe(false);
+    expect(stripRetiredNoteFlagInPlace({ monitoring: null })).toBe(false);
+  });
+
+  test("a taxonomy is STILL refused, which is the half an operator can act on", () => {
+    // The difference between the two keys: a taxonomy is a decision the operator made and can move
+    // (the refusal names `toolGuidance.set_labels`, which is where it goes). The note flag is not a
+    // decision at all — it is what the old console writes for every agent.
+    expect(() =>
+      assertSettingsRetiredLabelKeys({
+        monitoring: {
+          labelGroups: [{ name: "assunto", values: ["a"] }],
+          noteOnChange: true,
+        },
+      }),
+    ).toThrow(RetiredLabelSettingError);
   });
 
   test("a settings bag without either key passes", () => {

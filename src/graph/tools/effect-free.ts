@@ -32,3 +32,28 @@ export function markEffectFree<T extends StructuredToolInterface>(t: T): T {
 export function isEffectFreeTool(t: { name: string }): boolean {
   return (t as unknown as Record<symbol, unknown>)[EFFECT_FREE_TOOL] === true;
 }
+
+// A CALL THAT WAS REFUSED BEFORE IT RAN, marked on the RESULT rather than on the tool: the tool is
+// effect-bearing, this particular call just never reached its handler (a precondition that was not
+// met or could not be read, a fence that answered no while the state was read). The observer's tick
+// counts an invocation as committed BEFORE dispatching, because the count has to exist when the
+// invoke THREW — so a refusal has to be able to take that count back, and it can only say so on the
+// way out (review round 33).
+//
+// In `additional_kwargs` for the reason `skip_reply` puts its own mark there: it is out of reach of
+// any text a tool or a model can produce, so nothing that merely reads like a refusal is one.
+export const REFUSED_BEFORE_RUN = "fazer_refused_before_run";
+
+export function markRefusedBeforeRun<T>(message: T): T {
+  const m = message as { additional_kwargs?: Record<string, unknown> };
+  if (m && typeof m === "object" && m.additional_kwargs)
+    m.additional_kwargs[REFUSED_BEFORE_RUN] = true;
+  return message;
+}
+
+export function wasRefusedBeforeRun(result: unknown): boolean {
+  const m = result as { additional_kwargs?: Record<string, unknown> } | null;
+  return m && typeof m === "object"
+    ? m.additional_kwargs?.[REFUSED_BEFORE_RUN] === true
+    : false;
+}

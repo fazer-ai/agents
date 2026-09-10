@@ -1814,6 +1814,140 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
+  test("a call the precondition refused is not a commit", async () => {
+    // The counter increments BEFORE dispatching, because it has to exist when the invoke threw. A
+    // guarded call that was refused never reached the handler, so counting it as committed throws
+    // away a retry that was free — and for an `on_resolve` observer that is its only pass
+    // (review round 33).
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          toolPreconditions: {
+            set_labels: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "liberado_para_etiquetar",
+            },
+          },
+        } as never,
+      },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class LabelsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"] },
+                    id: "l1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new LabelsThenDies() as unknown as BaseChatModel,
+        },
+      );
+      // The guard refused, so nothing was written and the tick is still worth retrying.
+      expect(log.labelsWritten).toEqual([]);
+      expect(res.outcome).toBe("fail");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings as never },
+      });
+    }
+  });
+
+  test("a labels read that fails does not take the tick with it", async () => {
+    // A watcher does not have to be a classifier. One that only writes a private note has nothing to
+    // do with labels, and an uncaught throw on this read ended its tick before the graph was ever
+    // invoked — retried whole, and eventually dead-lettered, over a read it never needed
+    // (review round 33).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const client = stubClient([message(1, "quero cancelar")], [], log);
+    (
+      client as unknown as { getConversationLabels: () => Promise<string[]> }
+    ).getConversationLabels = async () => {
+      throw new Error("labels endpoint 500");
+    };
+    class NotesOnly {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "private_note",
+                      args: { content: "cliente pediu cancelamento" },
+                      id: "n1",
+                    },
+                  ],
+                })
+              : new AIMessage("anotei.");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => client,
+        makeModel: () => new NotesOnly() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("done");
+    expect(log.notes).toEqual(["cliente pediu cancelamento"]);
+  });
+
   test("a failure BEFORE any tool ran still retries", async () => {
     // The control the case above needs: nothing committed, so the scheduler is still the right
     // answer — and this is the ordinary transient, which is most of them.

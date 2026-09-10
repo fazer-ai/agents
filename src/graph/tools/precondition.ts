@@ -14,6 +14,7 @@ import {
   unmetPreconditionMessage,
 } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
+import { markRefusedBeforeRun } from "./effect-free";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -74,8 +75,18 @@ export function guardedTool(
         (input as { type?: string; id?: string } | null)?.type === "tool_call"
           ? (input as { id?: string }).id
           : config?.toolCall?.id;
+      // MARKED AS "never reached the handler", so a counter downstream can tell this apart from a
+      // call that ran (effect-free.ts). A bare string cannot carry the mark, and does not need to:
+      // that shape only happens on a direct invocation from a test, where nothing is counting.
       return id
-        ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
+        ? markRefusedBeforeRun(
+            new ToolMessage({
+              content: text,
+              tool_call_id: id,
+              name: inner.name,
+              additional_kwargs: {},
+            }),
+          )
         : text;
     };
     let met: boolean;

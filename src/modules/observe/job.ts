@@ -16,7 +16,10 @@ import { resetLandedAfter } from "@/graph/reset-episode";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { UTILITY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import { isEffectFreeTool } from "@/graph/tools/effect-free";
+import {
+  isEffectFreeTool,
+  wasRefusedBeforeRun,
+} from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -444,7 +447,9 @@ function quotesResolved(
 // conversation where nothing changed should cost one model call and no writes.
 export function observeTurnText(
   transcript: readonly TranscriptLine[],
-  current: readonly string[],
+  // `null` is "we could not read them", which is NOT "there are none": the second is what makes a
+  // model clear a conversation it never saw the labels of (review round 33).
+  current: readonly string[] | null,
   notes: readonly string[] = [],
 ): string {
   return [
@@ -469,9 +474,11 @@ export function observeTurnText(
     // catalog would refuse — so a label can carry this block's own closing tag and end it early
     // (review round 26). The tool's XML renderer escapes; this block is plain text, so it strips.
     `<etiquetas-atuais>${
-      current.length
-        ? current.map((l) => stripFences(l).trim()).join(", ")
-        : "(nenhuma)"
+      current === null
+        ? "(não foi possível ler)"
+        : current.length
+          ? current.map((l) => stripFences(l).trim()).join(", ")
+          : "(nenhuma)"
     }</etiquetas-atuais>`,
     "",
     // THE NOTES THE CONVERSATION ALREADY CARRIES, and the reason they are here is the same as the
@@ -889,7 +896,27 @@ export async function runObserve(
   // are two different claims about the same turn: a label this block advertises can be missing from
   // the tool's baseline, and the model repeating it to keep it then reads as an ADDITION — putting
   // back exactly what somebody removed in between. Handed to `buildToolset` for that reason.
-  const current = await client.getConversationLabels(conversationId);
+  // TOLERATED WHEN IT FAILS, because this read is not what the tick is FOR (review round 33). A
+  // watcher does not have to be a classifier: one that only writes a private note, or calls an HTTP
+  // tool, has nothing to do with labels — and an uncaught throw here ended its tick before the graph
+  // was ever invoked, retried the whole thing, and eventually dead-lettered it over a read it never
+  // needed. `buildToolset` already degrades its own label read the same way (prepare.ts): the scope
+  // simply disappears, which is the safe degenerate, since a scope that was not shown produces no
+  // removal.
+  //
+  // `null`, not `[]`, and the prompt block says which: "no labels" and "could not read" are
+  // different claims, and the first is the one that makes a model clear everything.
+  let current: string[] | null = null;
+  try {
+    current = await client.getConversationLabels(conversationId);
+  } catch (e) {
+    logger.warn(
+      "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
+      String(tenantId),
+      String(conversationId),
+      e instanceof Error ? e.message : String(e),
+    );
+  }
   // THE PROMPT BLOCK HIDES THE GUARDED ONES TOO. `set_labels` filters them out of what it shows and
   // out of what it accepts, and this block is the third model-facing place the same list reaches —
   // leaving it raw would print `agente-off` under `<etiquetas-atuais>` while the tool's own
@@ -899,7 +926,8 @@ export async function runObserve(
   // apply, and copying the subtraction here would make two places responsible for one decision.
   // Through the same projection the tool renders: the guard subtracted AND the ceiling applied, so
   // this block cannot advertise a label the tool's own description leaves out (see label-view.ts).
-  const currentForPrompt = modelVisibleLabels(current, cfg.protectedLabels);
+  const currentForPrompt =
+    current === null ? null : modelVisibleLabels(current, cfg.protectedLabels);
 
   // THE TURN ITSELF, and from here on this is the ordinary graph (issue #568). What used to sit in
   // these lines was a classifier: one model call with a JSON schema built from the operator's label
@@ -1076,7 +1104,9 @@ export async function runObserve(
           ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
           stillWanted: () => fence(),
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
-          conversationLabels: current,
+          // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
+          // degradation if that fails too — one extra request on the failing path only.
+          ...(current === null ? {} : { conversationLabels: current }),
         },
         { buildNativeTools, mcp: deps.mcp, flow },
       ),
@@ -1125,9 +1155,20 @@ export async function runObserve(
     // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
     // permitted call reaches exactly the run it would have had.
     const seen = Object.create(t) as typeof t;
-    seen.invoke = ((input: unknown, config?: unknown) => {
-      if (!effectFreeNames.has(t.name) && !isEffectFreeTool(t)) toolsRan++;
-      return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
+    seen.invoke = (async (input: unknown, config?: unknown) => {
+      const counts = !effectFreeNames.has(t.name) && !isEffectFreeTool(t);
+      // BEFORE the call, because the count has to exist when the invoke THREW — a booking that
+      // reached its POST and then blew up is exactly the case this guards.
+      if (counts) toolsRan++;
+      const out = await (
+        t.invoke as (i: unknown, c?: unknown) => Promise<unknown>
+      )(input, config);
+      // ...AND TAKEN BACK when the call never reached the handler. A precondition that was not met
+      // (or could not be read), and the fence the same wrapper asks, refuse BEFORE dispatching: the
+      // tool is effect-bearing, this call is not. Read off the mark the refusal carries rather than
+      // off its text, so nothing that merely reads like a refusal counts as one (round 33).
+      if (counts && wasRefusedBeforeRun(out)) toolsRan--;
+      return out;
     }) as typeof t.invoke;
     return seen;
   });
@@ -1353,7 +1394,7 @@ export async function runObserve(
       acted: toolCalls > 0,
       toolCalls,
       messagesRead: transcript.length,
-      labelsBefore: current.length,
+      labelsBefore: current === null ? null : current.length,
     },
   });
   return { outcome: "done" };

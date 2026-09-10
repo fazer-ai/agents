@@ -483,12 +483,32 @@ export function assertSettingsProtectedLabels(
   throw new TooManyProtectedLabelsError(PROTECTED_LABELS_MAX);
 }
 
-// The one spelling of the retired note flag that asks for nothing: `false`, boolean or as the string
-// a form post turns it into. Everything else — `true`, `"true"`, `1`, `"sim"`, an object — asks for
-// a behaviour that is gone.
-function isInertNoteFlag(value: unknown): boolean {
-  if (value === false || value === null) return true;
-  return typeof value === "string" && value.trim().toLowerCase() === "false";
+// THE RETIRED NOTE FLAG, TAKEN OUT OF THE BAG ABOUT TO BE STORED, whatever it says.
+//
+// It governs a feature that no longer exists (the note is now something the operator writes in
+// `toolGuidance.set_labels`, like any other instruction), so no value of it is worth keeping — and
+// none of them is worth a 400 either, because the key is written by the previous release's console
+// without anybody choosing it (round 33). Dropped rather than refused is the same verdict the
+// import boundary reached for the same key, for the same reason: failing over a value that governs
+// nothing blocks work the operator cannot unblock from where they are.
+//
+// IN PLACE, on the object the caller is about to write, the way `clampProtectedLabelsInPlace` does:
+// these two asserts run on the settings the write stores, so removing the key here is what keeps a
+// value the migration just cleared from being written straight back by an old console.
+export function stripRetiredNoteFlagInPlace(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return false;
+  const monitoring = (settings as Record<string, unknown>).monitoring;
+  if (
+    !monitoring ||
+    typeof monitoring !== "object" ||
+    Array.isArray(monitoring)
+  )
+    return false;
+  const mon = monitoring as Record<string, unknown>;
+  if (!("noteOnChange" in mon)) return false;
+  delete mon.noteOnChange;
+  return true;
 }
 
 export function assertSettingsRetiredLabelKeys(settings: unknown): void {
@@ -507,22 +527,16 @@ export function assertSettingsRetiredLabelKeys(settings: unknown): void {
   const mon = monitoring as Record<string, unknown>;
   if (carriesConfiguration(mon.labelGroups))
     throw new RetiredLabelSettingError("monitoring.labelGroups");
-  // THE FLAG LIVED HERE, not under `labels` — `readMonitoringConfig` read `bag.noteOnChange` off the
-  // monitoring block, and the previous editor wrote it there for every agent. `false` is the one
-  // value that passes: it asks for what the agent already gets, so refusing it would teach nothing
-  // and break a save made by an editor from the previous release. Its default was `true`, so the
-  // migration and the import boundary clear the stored ones rather than leaving them to be refused
-  // (round 18).
-  //
-  // EVERY OTHER VALUE IS REFUSED, not only boolean `true` (round 25). The settings bag is loose, so
-  // REST and MCP can both put `"true"`, `1` or `"sim"` under this key: each asks for a behaviour
-  // that no longer exists (the note is now something the operator writes in
-  // `toolGuidance.set_labels`, like any other instruction), each would be stored and answered 200,
-  // and MCP's merge would then normalize it away while reporting success. Asking "is it the inert
-  // value" rather than "is it the one truthy value I thought of" is also what keeps this from
-  // needing a new line the next time somebody sends a shape nobody listed.
-  if (mon.noteOnChange !== undefined && !isInertNoteFlag(mon.noteOnChange))
-    throw new RetiredLabelSettingError("monitoring.noteOnChange");
+  // NOTE: `monitoring.noteOnChange` IS NOT REFUSED, it is stripped — see
+  // `stripRetiredNoteFlagInPlace`, called by the same writers. Round 25 refused every value but
+  // `false` on the argument that each asks for a behaviour that no longer exists; round 33 measured
+  // what that costs during a rolling deploy and it is the rollout itself. The previous console does
+  // not ask for the behaviour, it RECONSTRUCTS the key: `readMonitoringConfig` defaults it to
+  // `true` when absent, `observationToForm` puts it in the form, and `observationToStored` writes
+  // it back on every Behavior save. So the moment the migration clears the stored key, every save
+  // made from a console of the previous release answers 400 naming `toolGuidance.set_labels` — for
+  // a save that had nothing to do with labels, and with no control on that screen the operator can
+  // act on. A refusal an operator cannot act on is not a refusal, it is an outage.
 }
 
 // A TOMBSTONE FOR A RULE THAT IS ACTUALLY THERE, which the catalog restriction must not block.
@@ -957,6 +971,7 @@ export async function updateAgent(
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
+    stripRetiredNoteFlagInPlace(rest.settings);
     assertSettingsProtectedLabels(rest.settings, before?.settings);
     // NOTE: An OBSERVER of an inbox (issue #476) is a monitoring agent by construction — the route it
     // holds answers nothing whatever the mode says — so the mode is not this agent's to leave while
@@ -1177,6 +1192,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsModelFallback(input.settings, undefined, "replace");
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
+  stripRetiredNoteFlagInPlace(input.settings);
   assertSettingsProtectedLabels(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);

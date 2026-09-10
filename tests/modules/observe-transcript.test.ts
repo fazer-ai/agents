@@ -208,6 +208,15 @@ describe("what the observer reads", () => {
     expect(text).toContain("não repita a que já estiver registrada");
   });
 
+  test("labels that could not be read are said as such, never as none", () => {
+    // "(nenhuma)" is a claim about the conversation; a failed GET is a claim about US. The first is
+    // the one that invites a model to clear everything, which is why the block distinguishes them
+    // (review round 33).
+    expect(observeTurnText([{ role: "customer", text: "oi" }], null)).toContain(
+      "<etiquetas-atuais>(não foi possível ler)</etiquetas-atuais>",
+    );
+  });
+
   test("no label standing is said as such, never as an empty block", () => {
     expect(observeTurnText([{ role: "customer", text: "oi" }], [])).toContain(
       "<etiquetas-atuais>(nenhuma)</etiquetas-atuais>",

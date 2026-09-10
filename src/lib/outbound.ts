@@ -139,6 +139,22 @@ async function bounded<T>(
   }
 }
 
+// A REQUEST'S OWN SIGNAL AND THE TURN'S DEADLINE, COMBINED — never one chosen over the other.
+//
+// Both callers of this reach a wrapper that sits UNDER a layer which has already put its own
+// controller in `init.signal`: the Chatwoot client arms `AbortSignal.timeout` per request, and
+// `bounded` below replaces the signal with the controller whose timer also cuts the body read.
+// Preferring the caller's therefore drops the deadline on every real call, and preferring the
+// deadline disarms the timeout that keeps a stalled provider from holding the turn. Lives here, in
+// one place, because the two wrappers that need it are in different modules and a rule stated twice
+// is a rule that drifts (issue #568, review rounds 14 and 15 — the same defect found twice).
+export function withDeadline(
+  own: AbortSignal | null | undefined,
+  expiresOn: AbortSignal,
+): AbortSignal {
+  return own ? AbortSignal.any([own, expiresOn]) : expiresOn;
+}
+
 export async function fetchBounded(
   url: string,
   init: RequestInit,

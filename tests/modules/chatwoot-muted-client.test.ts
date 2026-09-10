@@ -191,6 +191,62 @@ describe("a muted Chatwoot client", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("a request already in flight is cut by the deadline, without losing its own timeout", async () => {
+    // The pre-dispatch check only stops a call that had not STARTED. One that did runs to the
+    // client's own `AbortSignal.timeout` and can land its effect after runObserve already reported
+    // the tick as failed — `recordResolutionOrigin` being the one that hurts (round 15).
+    const seen: (AbortSignal | null | undefined)[] = [];
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      seen.push(init.signal);
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const deadline = new AbortController();
+    const c = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "admin",
+        botToken: "bot",
+        expiresOn: deadline.signal,
+      },
+      fetchImpl,
+    );
+    await c.setConversationLabels(9, ["vip"]);
+    const combined = seen[0];
+    expect(combined).toBeDefined();
+    expect(combined?.aborted).toBe(false);
+    deadline.abort();
+    expect(combined?.aborted).toBe(true);
+  });
+
+  test("and the request's own timeout still fires when the deadline is live", async () => {
+    const seen: (AbortSignal | null | undefined)[] = [];
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      seen.push(init.signal);
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const c = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "admin",
+        botToken: "bot",
+        expiresOn: new AbortController().signal,
+      },
+      fetchImpl,
+    );
+    await c.setConversationLabels(9, ["vip"]);
+    // Combined, not replaced: the signal handed down is neither of the two originals.
+    expect(seen[0]).toBeDefined();
+    expect(seen[0]?.aborted).toBe(false);
+  });
+
   test("an unmuted client is byte-for-byte what it was", async () => {
     const { c, calls } = client(false);
     await c.sendMessage(9, "Olá!");

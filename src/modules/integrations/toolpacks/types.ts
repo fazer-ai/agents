@@ -1,6 +1,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { withDeadline } from "@/lib/outbound";
 import type { SafeUrlOptions } from "@/lib/ssrf";
 import type { Schedule } from "@/modules/business-hours/hours";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -181,14 +182,11 @@ export function deadlineFetch(
         "the run's time budget ran out before the request was sent",
       );
     }
-    // COMBINED, never chosen between. By the time this wrapper runs, `fetchBounded` has already
-    // replaced `init.signal` with its OWN controller — the one whose timer cuts the body read — so
-    // taking the caller's signal when present would drop the deadline on every real toolpack call,
-    // and taking ours would disarm the pack's timeout. `AbortSignal.any` keeps both: the request
-    // dies on whichever fires first.
-    const own = init?.signal ?? undefined;
-    const signal = own ? AbortSignal.any([own, expiresOn]) : expiresOn;
-    return inner(input, { ...(init ?? {}), signal });
+    // Combined, never chosen between: see withDeadline.
+    return inner(input, {
+      ...(init ?? {}),
+      signal: withDeadline(init?.signal, expiresOn),
+    });
   }) as typeof fetch;
 }
 

@@ -1,5 +1,6 @@
 import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
+import { withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { CHATWOOT_AUTH_HEADER, CHATWOOT_SEND_ID_KEY } from "./constants";
@@ -242,7 +243,14 @@ function mutedFetch(
     if (expiresOn?.aborted) {
       throw new ChatwootExpiredError(new URL(url).pathname);
     }
-    if (!mute) return inner(input, init);
+    // AND THE DEADLINE RIDES ALONG, not only gates the dispatch. Each request here arms its own
+    // `AbortSignal.timeout`, so without combining the two a call that STARTED inside the budget runs
+    // to that independent timeout and lands its effect after `runObserve` has already reported the
+    // tick as failed — `recordResolutionOrigin` being the one that hurts (round 15).
+    const withBudget: RequestInit | undefined = expiresOn
+      ? { ...(init ?? {}), signal: withDeadline(init?.signal, expiresOn) }
+      : init;
+    if (!mute) return inner(input, withBudget);
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
@@ -253,7 +261,7 @@ function mutedFetch(
         PRIVATE_CAPABLE_PATH.test(pathname) && isPrivateSend(init?.body);
       if (facing && !exempt) throw new ChatwootMutedError(`POST ${pathname}`);
     }
-    return inner(input, init);
+    return inner(input, withBudget);
   }) as typeof fetch;
 }
 

@@ -2196,6 +2196,83 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // The tool fence folded it into a permanent detach, which COMPLETES the job — and for an
   // `on_resolve` watcher that is the classification lost for good, because the resolve mark
   // suppresses every later delivery of the same resolution.
+  test("an unreadable fence AFTER a write stops instead of retrying", async () => {
+    // The retryable refusals exist because nothing re-arms the row on its own — but the fence is
+    // asked at EVERY hop, so an unreadable one can arrive after a write has already left. A retry
+    // then repeats it, and for an HTTP POST or a booking that is the second charge. At-most-once for
+    // the effects wins here exactly as it does for a model failure (review round 30).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    // Unreadable only ONCE THE FIRST WRITE LANDED, which is the whole point: the same read at load
+    // time, or before any tool ran, is the case the two tests above already cover.
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (
+              log.labelsWritten.length > 0 &&
+              sel?.resetAtMessageId === true
+            ) {
+              throw new Error("conversation row unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    class LabelsTwice {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n > 2) return new AIMessage("classifiquei a conversa.");
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "set_labels",
+                  args: {
+                    labels: n === 1 ? ["cancelamento"] : ["compra-de-ingresso"],
+                  },
+                  id: `call_${n}`,
+                },
+              ],
+            });
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      unreadable,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new LabelsTwice() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten.length).toBe(1);
+    expect(res.outcome).toBe("done");
+    const rows = await observeLines();
+    const last = rows.at(-1)?.detail as
+      | { failed?: string; retried?: boolean }
+      | undefined;
+    expect(last?.failed).toBe("conversation_unreadable");
+    expect(last?.retried).toBe(false);
+    expect(rows.at(-1)?.level).toBe("warn");
+  });
+
   test("a binding still attaching at the fence retries instead of completing", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const rows = await suDb.inboxObserver.findMany({

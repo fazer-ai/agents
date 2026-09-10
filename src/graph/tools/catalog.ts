@@ -87,6 +87,17 @@ export const CONVERSATION_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
   (n) => NATIVE_TOOL_CATEGORY[n] === "conversation",
 );
 
+// NATIVE TOOLS WHOSE WHOLE POINT IS TO PUT SOMETHING IN FRONT OF THE CUSTOMER. A muted turn — the
+// observer's (issue #568) — is not offered one: the reaction lands on the customer's phone and the
+// image is delivered by gates an observation does not have, so each would cost a model round and
+// answer with a failure an operator reads as a broken integration. Listed HERE, in the catalog, so
+// the runtime that strips them (buildNativeTools) and the editor that must not offer them read one
+// list instead of two that can drift (review round 30).
+export const CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES: readonly NativeToolName[] = [
+  "react_to_message",
+  "send_image",
+];
+
 export const RAG_TOOL_NAMES = ["search_knowledge", "suggest_kb_entry"] as const;
 export type RagToolName = (typeof RAG_TOOL_NAMES)[number];
 

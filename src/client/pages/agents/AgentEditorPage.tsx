@@ -3737,6 +3737,7 @@ function AgentEditor() {
             {tab === "tools" && (
               <ToolsTab
                 agentId={id}
+                observing={watcher}
                 catalog={catalog}
                 grants={grants}
                 onChange={setGrants}

@@ -1491,6 +1491,7 @@
       "noIntegrations": "No integrations activated yet.",
       "noMcp": "No MCP servers connected yet.",
       "noNativeSelected": "No native tools selected — the agent can only chat.",
+      "observingDelivery": "This agent only observes, so the tools that deliver something to the customer (reactions, images, documents) are not listed: its turn is built with a muted client and would refuse them.",
       "preconditions": "Preconditions",
       "selectAll": "Select all",
       "showConfig": "Settings"

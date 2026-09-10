@@ -103,6 +103,14 @@ const UPDATE_KANBAN_TOOL = "update_kanban_task";
 interface Props {
   // The agent being edited — scopes the handoff target picker to the accounts it serves.
   agentId: string;
+  // WHETHER THIS AGENT ONLY WATCHES. A monitoring turn builds its Chatwoot client MUTED, and the
+  // assembly then drops every tool whose whole point is to put something in front of the customer:
+  // the two natives flagged `deliversToCustomer`, the document tools, and a toolpack's delivery
+  // tools. Offering those grants here would be a control that cannot fire — the same class as the
+  // retired settings this issue refused, arriving through the editor instead of the API. Grants
+  // already saved are left ALONE, so flipping the mode back returns the agent as it was
+  // (review round 30).
+  observing?: boolean;
   catalog: ToolCatalog;
   grants: GrantState[];
   onChange: (grants: GrantState[]) => void;
@@ -453,6 +461,7 @@ function ConfigurableToolCard({
 // the Knowledge tab; this component preserves any RAG grant untouched.
 export function ToolGrantsEditor({
   agentId,
+  observing,
   catalog,
   grants,
   onChange,
@@ -1268,7 +1277,12 @@ export function ToolGrantsEditor({
                 g.source === "INTEGRATION" &&
                 g.integrationInstanceId === inst.id,
             );
-            const allTools = inst.tools.map((tool) => tool.name);
+            // What this agent can actually be offered from the pack. A watcher does not get the
+            // delivery tools, so granting the integration must not enable one either.
+            const offered = inst.tools.filter(
+              (tool) => !(observing && tool.deliversToCustomer),
+            );
+            const allTools = offered.map((tool) => tool.name);
             const collapsed = integrationCollapsed[inst.id] ?? true;
             return (
               <div key={inst.id} className="flex flex-col gap-2">
@@ -1288,7 +1302,7 @@ export function ToolGrantsEditor({
                     }
                   />
                 </EditableCard>
-                {grant && inst.tools.length > 0 && (
+                {grant && offered.length > 0 && (
                   <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
                     <button
                       type="button"
@@ -1326,7 +1340,7 @@ export function ToolGrantsEditor({
                       </span>
                     </button>
                     {!collapsed &&
-                      inst.tools.map((tool) => {
+                      offered.map((tool) => {
                         const meta = toolpackToolMeta(tool.name, t);
                         return (
                           <SelectableCard
@@ -1366,68 +1380,72 @@ export function ToolGrantsEditor({
         )}
       </Section>
 
-      <Section
-        id="tools-documents"
-        icon={FileText}
-        title={t("editor.tools.documents", "Documents")}
-        description={t(
-          "editor.tools.documentsDesc",
-          "Templates this agent may issue and attach to a reply. Each one becomes a tool of its own.",
-        )}
-      >
-        {catalog.documentTemplates.length === 0 ? (
-          <p className="text-text-muted text-xs">
-            {t(
-              "editor.tools.noDocuments",
-              "No document templates yet. Create one under Components.",
-            )}
-          </p>
-        ) : (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {catalog.documentTemplates.map((tpl) => (
-              <EditableCard
-                key={tpl.id}
-                editLabel={t(
-                  "editor.tools.documentPreview",
-                  "Preview and edit this template",
-                )}
-                onEdit={() => void openDocument(tpl.id)}
-                busy={openingDocument === tpl.id}
-              >
-                <SelectableCard
-                  selected={nonRag.some(
-                    (g) =>
-                      g.source === "DOCUMENT" &&
-                      g.documentTemplateId === tpl.id,
+      {/* A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so the muted assembly does not build one — the
+          tools this section grants would exist in the console and never in the turn. */}
+      {!observing && (
+        <Section
+          id="tools-documents"
+          icon={FileText}
+          title={t("editor.tools.documents", "Documents")}
+          description={t(
+            "editor.tools.documentsDesc",
+            "Templates this agent may issue and attach to a reply. Each one becomes a tool of its own.",
+          )}
+        >
+          {catalog.documentTemplates.length === 0 ? (
+            <p className="text-text-muted text-xs">
+              {t(
+                "editor.tools.noDocuments",
+                "No document templates yet. Create one under Components.",
+              )}
+            </p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {catalog.documentTemplates.map((tpl) => (
+                <EditableCard
+                  key={tpl.id}
+                  editLabel={t(
+                    "editor.tools.documentPreview",
+                    "Preview and edit this template",
                   )}
-                  onToggle={() => toggleDocument(tpl.id)}
-                  icon={FileText}
-                  title={tpl.name}
-                  badge={<Badge variant="secondary">{tpl.toolName}</Badge>}
-                  // AVAILABLE, not merely enabled. Assembly skips a template for two reasons, and an
-                  // operator who cannot see the second one grants a tool, saves, and gets no tool —
-                  // with the row saying nothing about why. The two are separate messages because the
-                  // remedies are: one is a switch on this template, the other is content this build
-                  // cannot read and has to be edited from the client that wrote it.
-                  description={
-                    tpl.available
-                      ? (tpl.description ?? undefined)
-                      : tpl.enabled
-                        ? t(
-                            "editor.tools.documentUnreadable",
-                            "Written by a newer version, so the agent will not see this tool until it is edited from there.",
-                          )
-                        : t(
-                            "editor.tools.documentDisabled",
-                            "Disabled: the agent will not see this tool.",
-                          )
-                  }
-                />
-              </EditableCard>
-            ))}
-          </div>
-        )}
-      </Section>
+                  onEdit={() => void openDocument(tpl.id)}
+                  busy={openingDocument === tpl.id}
+                >
+                  <SelectableCard
+                    selected={nonRag.some(
+                      (g) =>
+                        g.source === "DOCUMENT" &&
+                        g.documentTemplateId === tpl.id,
+                    )}
+                    onToggle={() => toggleDocument(tpl.id)}
+                    icon={FileText}
+                    title={tpl.name}
+                    badge={<Badge variant="secondary">{tpl.toolName}</Badge>}
+                    // AVAILABLE, not merely enabled. Assembly skips a template for two reasons, and an
+                    // operator who cannot see the second one grants a tool, saves, and gets no tool —
+                    // with the row saying nothing about why. The two are separate messages because the
+                    // remedies are: one is a switch on this template, the other is content this build
+                    // cannot read and has to be edited from the client that wrote it.
+                    description={
+                      tpl.available
+                        ? (tpl.description ?? undefined)
+                        : tpl.enabled
+                          ? t(
+                              "editor.tools.documentUnreadable",
+                              "Written by a newer version, so the agent will not see this tool until it is edited from there.",
+                            )
+                          : t(
+                              "editor.tools.documentDisabled",
+                              "Disabled: the agent will not see this tool.",
+                            )
+                    }
+                  />
+                </EditableCard>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
 
       <CollapsibleSection
         id="tools-native"
@@ -1451,8 +1469,17 @@ export function ToolGrantsEditor({
           </span>
         }
       >
+        {observing && (
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.tools.observingDelivery",
+              "This agent only observes, so the tools that deliver something to the customer (reactions, images, documents) are not listed: its turn is built with a muted client and would refuse them.",
+            )}
+          </p>
+        )}
         <div className="grid gap-2 sm:grid-cols-2">
           {catalog.native
+            .filter((n) => !(observing && n.deliversToCustomer))
             .filter(
               (n) =>
                 n.name !== HANDOFF_TOOL &&

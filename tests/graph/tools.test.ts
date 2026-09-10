@@ -66,6 +66,23 @@ describe("native tools", () => {
     expect(only.map((t) => t.name)).toEqual(["private_note"]);
   });
 
+  test("a ONE-SHOT allowlist grants what it names, not what the first candidate leaves", () => {
+    // The parameter is an `Iterable<string>`, and a generator is spent by whoever reads it first.
+    // Read once per candidate, it would be exhausted while testing a tool nobody granted, and the
+    // agent would come up with an empty toolset — silently, with every grant in place
+    // (review round 30).
+    const { client } = recordingClient();
+    function* granted(): Generator<string> {
+      yield "private_note";
+      yield "set_labels";
+    }
+    const tools = buildNativeTools(
+      { client, conversationId: 1 },
+      granted(),
+    ).map((t) => t.name);
+    expect(tools.sort()).toEqual(["private_note", "set_labels"]);
+  });
+
   test("react_to_message reacts to the customer's last message when it is not a reaction", async () => {
     const calls: Array<[string, unknown[]]> = [];
     const client = {

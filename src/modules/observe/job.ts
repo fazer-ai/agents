@@ -1217,6 +1217,26 @@ export async function runObserve(
       line("skipped", { skipped: why, messagesRead: transcript.length });
       return { outcome: "done" };
     }
+    // ...UNLESS SOMETHING ALREADY COMMITTED, which is the same rule the model-failure path below
+    // follows and for the same reason (review round 30). A fence is asked at EVERY tool hop, so an
+    // unreadable one can arrive after a booking, a charge or an HTTP POST has already left — and
+    // the retry would send it again. At-most-once for the effects wins over the retry here too:
+    // the tick stops, reported as a warn the operator reads, and the next burst re-asks the
+    // classification. Nothing is lost that a retry could have recovered, because the retry would
+    // re-run the very hops that committed.
+    if (toolsRan > 0) {
+      line(
+        "error",
+        {
+          failed: why,
+          messagesRead: transcript.length,
+          toolCalls: toolsRan,
+          retried: false,
+        },
+        "warn",
+      );
+      return { outcome: "done" };
+    }
     line("error", { failed: why, messagesRead: transcript.length }, "error");
     return {
       outcome: "fail",

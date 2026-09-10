@@ -1532,6 +1532,7 @@
       "noIntegrations": "Nenhuma integração ativada ainda.",
       "noMcp": "Nenhum servidor MCP conectado ainda.",
       "noNativeSelected": "Nenhuma ferramenta nativa selecionada — o agente só pode conversar.",
+      "observingDelivery": "Este agente só observa, então as ferramentas que entregam algo ao cliente (reações, imagens, documentos) não aparecem aqui: o turno dele é montado com um cliente mudo e recusaria todas.",
       "preconditions": "Precondições",
       "selectAll": "Selecionar tudo",
       "showConfig": "Configurações"

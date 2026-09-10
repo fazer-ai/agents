@@ -58,7 +58,11 @@ import {
   roundDownToMinutes,
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
-import { NATIVE_TOOL_CATEGORY, type NativeToolName } from "./catalog";
+import {
+  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+  NATIVE_TOOL_CATEGORY,
+  type NativeToolName,
+} from "./catalog";
 import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 
 // Native Chatwoot tools the agent can call mid-turn, all over the bot token. Each is bound to a
@@ -1735,7 +1739,9 @@ function getCurrentTimeTool(ctx: ToolCtx) {
 //
 // A private note is NOT here, and that is the same isention the mute itself makes: it is the one
 // thing an observer legitimately writes where a person will read it.
-const MUTED_CANNOT_COMPLETE = new Set(["react_to_message", "send_image"]);
+const MUTED_CANNOT_COMPLETE = new Set<string>(
+  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+);
 
 // allowed = undefined → all native tools; otherwise only the named subset (fail-closed).
 // No native tool takes CODE from the model: computation the model must not redo (check digits,
@@ -1760,9 +1766,12 @@ export function buildNativeTools(
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
   ];
-  const granted = allowed
-    ? all.filter((t) => new Set(allowed).has(t.name))
-    : all;
+  // MATERIALIZED ONCE, before the filter runs. `allowed` is an `Iterable<string>`, and a one-shot
+  // one (a generator, a `Set.values()`) is CONSUMED by the first candidate — every tool after it
+  // would then be tested against an empty set and the agent would come up with no tools at all
+  // (review round 30). Cheaper too: one Set instead of one per candidate.
+  const allowSet = allowed ? new Set(allowed) : null;
+  const granted = allowSet ? all.filter((t) => allowSet.has(t.name)) : all;
   if (!ctx.client?.muted) return granted;
   return granted.filter((t) => !MUTED_CANNOT_COMPLETE.has(t.name));
 }

@@ -167,6 +167,9 @@ export function argsFromZod(schema: z.ZodObject<z.ZodRawShape>): ToolArgSpec[] {
 export interface ToolView {
   name: string;
   args: ToolArgSpec[];
+  // Mirrored from the spec so the editor can answer the same question the muted assembly answers,
+  // off one declaration (review round 30).
+  deliversToCustomer?: boolean;
 }
 
 const REGISTRY = new Map<string, Toolpack>();
@@ -271,5 +274,6 @@ export function getToolpackToolViews(catalogType: string): ToolView[] {
   return pack.toolSpecs.map((s) => ({
     name: s.name,
     args: argsFromZod(s.schema),
+    ...(s.deliversToCustomer ? { deliversToCustomer: true } : {}),
   }));
 }

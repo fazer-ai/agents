@@ -5,7 +5,11 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
-import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
+import {
+  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+  NATIVE_TOOL_NAMES,
+  RAG_TOOL_NAMES,
+} from "@/graph/tools/catalog";
 import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
@@ -1457,10 +1461,16 @@ export interface ToolGrantDto {
   enabledTools: string[];
 }
 
+const DELIVERS_TO_CUSTOMER = new Set<string>(
+  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+);
+
 export interface ToolSelectionView {
   grants: ToolGrantDto[];
   catalog: {
-    native: { name: string }[];
+    // `deliversToCustomer` is what a MUTED turn will not be offered (the observer's): the editor
+    // reads it instead of keeping its own list of names.
+    native: { name: string; deliversToCustomer?: boolean }[];
     rag: { name: string }[];
     toolDefinitions: {
       id: string;
@@ -1478,6 +1488,8 @@ export interface ToolSelectionView {
       tools: {
         name: string;
         args: { name: string; description?: string; required: boolean }[];
+        // Same question the natives above answer, from the pack's own spec.
+        deliversToCustomer?: boolean;
       }[];
     }[];
     // Operator-authored code tools (issue #363); `name` is what the agent calls.
@@ -1903,7 +1915,10 @@ async function buildToolSelectionView(
     agentUpdatedAt: agent?.updatedAt ?? null,
     grants: grants.map(toGrantDto),
     catalog: {
-      native: NATIVE_TOOL_NAMES.map((n) => ({ name: n })),
+      native: NATIVE_TOOL_NAMES.map((n) => ({
+        name: n,
+        ...(DELIVERS_TO_CUSTOMER.has(n) ? { deliversToCustomer: true } : {}),
+      })),
       rag: RAG_TOOL_NAMES.map((n) => ({ name: n })),
       toolDefinitions: toolDefinitions.map((t) => ({
         id: String(t.id),

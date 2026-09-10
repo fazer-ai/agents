@@ -13,8 +13,10 @@ import {
   loadAgentConfig,
 } from "@/graph/prepare";
 import { resetLandedAfter } from "@/graph/reset-episode";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { UTILITY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -1089,17 +1091,25 @@ export async function runObserve(
   // while the classification is re-asked on the very next burst. Counted at the tool boundary rather
   // than from the model's reported calls, because the count has to exist when the invoke THREW.
   //
-  // COUNTED ONLY FOR A TOOL THAT CAN LEAVE SOMETHING BEHIND. Two families cannot, by construction:
-  // the utility natives (a calculator, a clock) and the knowledge SEARCH. A tick whose only call was
-  // one of those has nothing to repeat, so refusing the retry there would throw away the run for
-  // free — and an `on_resolve` observer has no later burst to try again in.
+  // COUNTED ONLY FOR A TOOL THAT CAN LEAVE SOMETHING BEHIND. Three cannot, by construction: the
+  // utility natives (a calculator, a clock), `skip_reply`, whose whole implementation is the
+  // sentence it returns, and the knowledge SEARCH. A tick whose only call was one of those has
+  // nothing to repeat, so refusing the retry there would throw away the run for free — and an
+  // `on_resolve` observer has no later burst to try again in.
+  //
+  // BY NAME FOR THE NATIVES, BY IDENTITY FOR THE SEARCH, and the asymmetry is the point (round 29).
+  // A native's name is reserved by the assembly whether the native was built or not (#457), so
+  // nothing else can answer under it. `search_knowledge` is a RAG built-in whose name is reserved
+  // nowhere, and RAG is assembled LAST, so a legacy tenant row carrying that name wins it — and
+  // exempting it by name would hand this exemption to whatever that row does, an HTTP POST
+  // included. The RAG tool is marked at its build seam instead (tools/effect-free.ts).
   //
   // Everything else counts, including an HTTP GET that happens to be a read: nothing in a tool
   // definition says so, and the two errors are not symmetric. Counting a read costs one lost
   // observation; NOT counting a write costs the write, again, in somebody else's system.
-  const effectFree = new Set<string>([
+  const effectFreeNames = new Set<string>([
     ...UTILITY_NATIVE_TOOL_NAMES,
-    "search_knowledge",
+    SKIP_REPLY_TOOL,
   ]);
   let toolsRan = 0;
   const fencedTools = tools.map((t) => {
@@ -1107,7 +1117,7 @@ export async function runObserve(
     // permitted call reaches exactly the run it would have had.
     const seen = Object.create(t) as typeof t;
     seen.invoke = ((input: unknown, config?: unknown) => {
-      if (!effectFree.has(t.name)) toolsRan++;
+      if (!effectFreeNames.has(t.name) && !isEffectFreeTool(t)) toolsRan++;
       return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
     }) as typeof t.invoke;
     return seen;

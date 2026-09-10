@@ -1609,6 +1609,211 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(res.outcome).toBe("fail");
   });
 
+  test("a tenant tool wearing the search_knowledge name counts as an effect", async () => {
+    // The exemption is for the RAG SEARCH, and `search_knowledge` is not a name the assembly
+    // reserves (only natives are, #457) — RAG is assembled LAST, so a legacy tenant row carrying it
+    // wins the name and reaches the model in its place. Exempting by name would hand the exemption
+    // to whatever that row does, an HTTP POST included, and the retry would send it twice
+    // (review round 29).
+    const td = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "search_knowledge",
+        label: "Busca antiga",
+        method: "POST",
+        urlTemplate: "https://8.8.8.8/v1/legacy",
+        allowedHosts: ["8.8.8.8"],
+      },
+    });
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "HTTP",
+        toolDefinitionId: td.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    const sent: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      sent.push(String(input));
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class PostsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "search_knowledge", args: {}, id: "s1" }],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new PostsThenDies() as unknown as BaseChatModel,
+        },
+      );
+      // The request left, so the tick is over: a retry would send it again.
+      expect(sent.length).toBe(1);
+      expect(res.outcome).toBe("done");
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+      await suDb.toolDefinition.delete({ where: { id: td.id } });
+    }
+  });
+
+  test("the knowledge search keeps the retry, and it is the RAG tool that says so", async () => {
+    // The other half of the case above: the exemption belongs to the tool the RAG builder made, and
+    // it travels on the OBJECT (tools/effect-free.ts), through the prototype both wrappers use. The
+    // search may well fail here — there is no embedding credential in a test tenant — and that
+    // changes nothing: the count is taken at the tool boundary, before the invoke, because it has
+    // to exist when the invoke threw.
+    const kb = await suDb.knowledgeBase.create({
+      data: { tenantId, name: "Base" },
+      select: { id: true },
+    });
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "RAG",
+        enabledTools: ["search_knowledge"],
+        knowledgeBaseIds: [kb.id],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("no egress in a test");
+    }) as unknown as typeof fetch;
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class SearchesThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "search_knowledge",
+                    args: { query: "cancelamento" },
+                    id: "k1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new SearchesThenDies() as unknown as BaseChatModel,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+      await suDb.knowledgeBase.delete({ where: { id: kb.id } });
+    }
+  });
+
+  test("skip_reply beside a read-only call does not burn the retry", async () => {
+    // `skip_reply` performs nothing: its RETURN is the whole tool. Alone it ends the turn, so the
+    // case only exists beside a companion — and then the turn goes on to another model round, which
+    // is where the transient lands. Counting the decision as an effect would discard the run for
+    // free (review round 29).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class SkipsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "calculator", args: { expression: "2+2" }, id: "c1" },
+                  { name: "skip_reply", args: {}, id: "s1" },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new SkipsThenDies() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+    expect(log.labelsWritten).toEqual([]);
+  });
+
   test("a failure BEFORE any tool ran still retries", async () => {
     // The control the case above needs: nothing committed, so the scheduler is still the right
     // answer — and this is the ordinary transient, which is most of them.

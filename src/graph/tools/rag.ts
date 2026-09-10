@@ -5,6 +5,7 @@ import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import { sysCtx } from "@/modules/rag/documents";
 import { createSuggestion, searchKnowledge } from "@/modules/rag/service";
+import { markEffectFree } from "./effect-free";
 
 // RAG tools the agent can call mid-turn. search_knowledge retrieves from the tenant's knowledge
 // bases (RLS-scoped); suggest_kb_entry proposes a new entry that a human must approve before it is
@@ -302,6 +303,9 @@ export function buildRagTools(
 ): StructuredToolInterface[] {
   if (!allowed) return [];
   const set = new Set(allowed);
-  const all = [searchTool(ctx), suggestTool(ctx)];
+  // The SEARCH reads and returns; the SUGGESTION writes a row a human then reviews. Marked here,
+  // where the identity of the tool is known, because its name is not reserved and a tenant row can
+  // hold it (effect-free.ts).
+  const all = [markEffectFree(searchTool(ctx)), suggestTool(ctx)];
   return all.filter((t) => set.has(t.name));
 }

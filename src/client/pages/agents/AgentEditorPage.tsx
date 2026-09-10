@@ -88,6 +88,7 @@ import {
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
@@ -2225,6 +2226,30 @@ function AgentEditor() {
     );
   }
 
+  // The same shape as settingsTextError and for the same reason, on the one list this tab sends that
+  // has a ceiling: the grants PUT goes first, so a PATCH refused for an over-ceiling guard would
+  // leave `set_labels` ENABLED with the protection the operator typed not stored. Counted the way
+  // the reader counts it, and compared against the stored list so a legacy over-ceiling value does
+  // not block a save that never touched it (round 20).
+  function protectedLabelsError(
+    next: string[],
+    stored: unknown,
+  ): string | null {
+    if (new Set(next).size <= PROTECTED_LABELS_MAX) return null;
+    const before = (stored as Record<string, Record<string, unknown>> | null)
+      ?.setLabels?.protected;
+    if (
+      Array.isArray(before) &&
+      JSON.stringify(before) === JSON.stringify(next)
+    )
+      return null;
+    return t(
+      "editor.protectedLabelsTooMany",
+      "Labels off limits takes at most {{max}} labels.",
+      { max: PROTECTED_LABELS_MAX },
+    );
+  }
+
   // Localized text for a structured import warning. Static keys (one per code) keep it extract-safe;
   // params interpolate the names/counts. New codes added in transfer.ts must get a case here.
   function importWarningMessage(w: ImportWarning): string {
@@ -2972,7 +2997,9 @@ function AgentEditor() {
         ? ((await api.api.v1.agents({ id }).get()).data?.agent.settings ??
           syncedSettings)
         : syncedSettings;
-      const toolsText = settingsTextError(toolsSettings, storedSettings);
+      const toolsText =
+        settingsTextError(toolsSettings, storedSettings) ??
+        protectedLabelsError(protectedList, storedSettings);
       if (toolsText) {
         showToast(toolsText, "error");
         return;

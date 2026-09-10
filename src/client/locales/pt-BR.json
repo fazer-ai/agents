@@ -1390,6 +1390,7 @@
     "protectedLabels": "Etiquetas fora do alcance",
     "protectedLabelsHint": "Opcional, separadas por vírgula. Etiquetas que este agente não pode acrescentar nem remover, e que nunca vê. Use para as que são de outro sistema: sem isso, só duram enquanto a IA lembra de repetir.",
     "protectedLabelsPlaceholder": "ex.: agente-off, testando-agente",
+    "protectedLabelsTooMany": "Etiquetas fora do alcance aceita no máximo {{max}} etiquetas.",
     "provider": "Provedor",
     "providerOpenAiCompatible": "Compatível com OpenAI",
     "reasoningEffort": "Esforço de raciocínio",

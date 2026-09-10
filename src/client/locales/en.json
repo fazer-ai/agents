@@ -1357,6 +1357,7 @@
     "protectedLabels": "Labels off limits",
     "protectedLabelsHint": "Optional, comma-separated. Labels this agent may neither add nor remove, and never sees. Use it for the ones another system owns — otherwise they last only while the AI remembers to repeat them.",
     "protectedLabelsPlaceholder": "e.g. agente-off, testando-agente",
+    "protectedLabelsTooMany": "Labels off limits takes at most {{max}} labels.",
     "provider": "Provider",
     "providerOpenAiCompatible": "OpenAI-compatible",
     "reasoningEffort": "Reasoning effort",

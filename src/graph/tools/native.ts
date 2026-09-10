@@ -1094,6 +1094,16 @@ function resolveConversationTool(ctx: ToolCtx) {
             ctx.observed ?? { status: "resolved", statusAt: null },
           )
         : { status: "resolved", statusAt: null };
+      // ASKED AGAIN HERE, after that read and before the toggle, for the same reason `set_labels`
+      // asks again inside its queue: the read above is a WAIT, and the graph's ask at the tool
+      // boundary happened before it. A `/reset` peels the episode off in that window, and an
+      // observation holds no thread claim to stop one (`runObserve` takes none), so without this the
+      // close lands on a conversation the operator has just been told was cleared — and it is a
+      // close, which nothing later undoes. Only an explicit `false` stops it: a fence that could not
+      // answer is not a withdrawal (round 17).
+      if (ctx.stillWanted && !(await ctx.stillWanted())) {
+        return "Did not resolve the conversation (the run was called off while this read was in flight).";
+      }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
       // NOTE: Same origin as the deferred path in runtime.ts: the agent judged the request handled.
       if (recordable) {

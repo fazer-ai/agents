@@ -188,14 +188,19 @@ describe("appointment side effects: what the report names", () => {
 describe("appointment side effects: who may arm a reminder", () => {
   const REMINDERS = { offsetsHours: [24, 2], askConfirmationOnLast: true };
 
-  test("an observation records the booking and arms nothing", async () => {
+  test("an observation records the booking, arming nothing and cancelling nothing", async () => {
     const h = harness({ armReminders: false });
     await h.fx.booked({ ...NOTICE, reminders: REMINDERS });
     // The record is still made: it is not the reminder, and an observer that books deserves to be
     // remembered as much as one that labels.
     expect(h.bookCalls).toHaveLength(1);
     expect(h.bookCalls[0]?.eventId).toBe("ap_1");
-    expect(h.bookCalls[0]?.reminders).toBeNull();
+    // NOT `reminders: null`: that is the "policy switched off" re-statement, and it RETIRES what is
+    // already armed — so an observation restating the responder's appointment would cancel the
+    // responder's reminders. The policy is passed through untouched and the write is told to leave
+    // reminders alone entirely.
+    expect(h.bookCalls[0]?.reminders).toEqual(REMINDERS);
+    expect(h.bookCalls[0]?.recordOnly).toBe(true);
     expect(h.reports).toEqual([]);
   });
 
@@ -204,6 +209,7 @@ describe("appointment side effects: who may arm a reminder", () => {
       const h = harness(over);
       await h.fx.booked({ ...NOTICE, reminders: REMINDERS });
       expect(h.bookCalls[0]?.reminders).toEqual(REMINDERS);
+      expect(h.bookCalls[0]?.recordOnly).toBeUndefined();
     }
   });
 });

@@ -178,6 +178,14 @@ export interface AppointmentBookedArgs {
     offsetsHours: number[];
     askConfirmationOnLast: boolean;
   } | null;
+  // RECORD ONLY: keep the appointment, and touch NO reminder — neither retire nor arm. A third
+  // answer, because `reminders: null` already means something else here: it is a RE-STATEMENT with
+  // the policy switched off, so it retires what was armed before (see the retire below). An
+  // OBSERVER restating an appointment the responder booked must not cancel the responder's
+  // reminders, and it must not arm its own either, because a reminder outlives the muted turn that
+  // armed it (issue #568, review rounds 16 and 17 — round 16 reached for `reminders: null` and got
+  // the cancelling half by accident).
+  recordOnly?: boolean;
   base?: PrismaClient;
   now?: Date;
 }
@@ -236,7 +244,9 @@ export async function appointmentBooked(
     // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
     // integration whose reminders were switched off between two bookings of the same appointment
     // must not leave the first booking's reminders firing.
-    if (startReadable) {
+    // `recordOnly` skips BOTH halves: the retire below is what makes `reminders: null` a cancel, and
+    // an observation has no business cancelling what the responder armed.
+    if (startReadable && !args.recordOnly) {
       await retireReminderJobs(
         args.tenantId,
         args.provider ?? GOOGLE_CALENDAR_PROVIDER,

@@ -368,6 +368,44 @@ describe("native tools", () => {
     ]);
   });
 
+  test("a /reset landing while resolve_conversation reads does NOT close the conversation", async () => {
+    // The close reads the live status first (a WAIT), and the graph's ask at the tool boundary
+    // happened before it. An observation holds no thread claim, so `/reset` can land in that window
+    // — and a close is not something a later turn undoes. Same rule set_labels applies inside its
+    // queue, asked in the one other place that waits before writing (round 17).
+    const { client, calls } = recordingClient();
+    let asked = 0;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      tenantId: 1n,
+      conversationDbId: 5n,
+      observed: { status: "open", statusAt: null },
+      // Wanted when the graph asked; withdrawn by the time the read came back.
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(await byName(tools, "resolve_conversation").invoke({}));
+    expect(asked).toBe(1);
+    expect(out).toContain("called off");
+    expect(calls.map((c) => c[0])).not.toContain("toggleStatus");
+  });
+
+  test("a fence that cannot answer is not a withdrawal, and the close proceeds", async () => {
+    // Only an explicit `false` stops it: an unreadable fence is not the operator saying no, and
+    // treating it as one would throw away a turn already paid for.
+    const { client, calls } = recordingClient();
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      stillWanted: async () => true,
+    });
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls.map((c) => c[0])).toContain("toggleStatus");
+  });
+
   test("resolve_conversation with turnState defers (no client call, flags the state)", async () => {
     const { client, calls } = recordingClient();
     const turnState = {

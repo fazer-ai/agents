@@ -172,6 +172,51 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("calendar_update_event");
   });
 
+  test("a record-only booking keeps the appointment AND the reminders already armed", async () => {
+    // Round 16 made an observation pass `reminders: null`, which in this unit is not "arm nothing":
+    // the retire runs unconditionally before that check, so it means "the policy was switched off,
+    // cancel what is armed". An observer restating the responder's appointment would have taken the
+    // responder's reminders down with it. `recordOnly` is the third answer: touch no reminder.
+    await seedConversation(120);
+    const args = {
+      tenantId,
+      threadId: threadOf(120),
+      eventId: "ev_obs",
+      calendarId: "primary",
+      credentialRef: null,
+      startISO: inHours(48),
+      summary: "Consulta",
+      calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
+    };
+    const armed = await appointmentBooked(args);
+    expect(armed.remindersArmed).toBeGreaterThan(0);
+    const jobsBefore = await suDb.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND status = 'PENDING'`,
+    );
+
+    // The observer restates the same booking.
+    const again = await appointmentBooked({ ...args, recordOnly: true });
+    expect(again.remindersArmed).toBe(0);
+    const jobsAfter = await suDb.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND status = 'PENDING'`,
+    );
+    // Nothing armed, and nothing retired: the responder's reminders are exactly where they were.
+    expect(String(jobsAfter[0]?.n)).toBe(String(jobsBefore[0]?.n));
+    // And the appointment is still known to the turn, which is the whole point of recording it.
+    const ctx = await runScopedOn(appDb, sysCtx(), (db) =>
+      loadAppointmentContext(db, tenantId, threadOf(120)),
+    );
+    expect(ctx.map((e) => e.eventId)).toContain("ev_obs");
+    // The tenant is shared with the cases below, and the jobs this one deliberately LEAVES armed
+    // would be counted by them. Cleaning up here keeps each case's expectation a property of that
+    // case rather than of the order the file happens to run in.
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+  });
+
   test("a conversation without appointments gets no block", async () => {
     await seedConversation(102);
     const prompt = await promptFor(102);

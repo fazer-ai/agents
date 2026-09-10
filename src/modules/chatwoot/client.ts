@@ -367,6 +367,15 @@ export class ChatwootClient {
     this.accountBase = `${root}/api/v1/accounts/${config.accountId}`;
   }
 
+  // WHETHER ANYTHING THIS CLIENT DOES CAN REACH THE CUSTOMER. Asked by callers that arm an effect
+  // the transport cannot see — a scheduled reminder is the one that matters: it runs later, through
+  // the inbox's RESPONDER and a client of its own, so a mute here does not reach it (issue #568,
+  // review round 16). Derived from the same field the wrapper reads, rather than passed alongside
+  // it, so the two cannot disagree about the same client.
+  get muted(): boolean {
+    return this.config.mute === true;
+  }
+
   // A client can legitimately be built with only the admin token (callers that never act as the
   // persona). Sending the empty one anyway is what issue #79 was: Chatwoot answers 401 and a
   // best-effort catch reports it as if the remote had rejected a real credential. Refusing here names

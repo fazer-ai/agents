@@ -1021,6 +1021,13 @@ export async function buildToolset(
         threadId: apptThreadId,
         base: ctx.base,
         report: onSideEffectError,
+        // A MUTED CLIENT DOES NOT REACH A JOB THAT RUNS LATER. The transport can refuse what this
+        // turn sends; a reminder is armed now and delivered on its own tick, resolving the inbox's
+        // RESPONDER and building a client of its own — so an observation could put a message in
+        // front of the customer through a door the mute never sees (round 16). The booking itself
+        // is still recorded: the record is not the reminder, and an observer that books has as much
+        // right to be remembered as one that labels.
+        armReminders: !ctx.client.muted,
       })
     : undefined;
   const appointmentBookedFn = apptSideEffects?.booked;

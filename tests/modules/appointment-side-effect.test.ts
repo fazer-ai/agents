@@ -32,6 +32,7 @@ function harness(
   over: {
     book?: () => Promise<{ record: string; remindersArmed: number }>;
     cancel?: () => Promise<void>;
+    armReminders?: boolean;
   } = {},
 ) {
   const reports: Report[] = [];
@@ -57,6 +58,9 @@ function harness(
       cancelCalls.push(args);
       if (over.cancel) await over.cancel();
     }) as never,
+    ...(over.armReminders === undefined
+      ? {}
+      : { armReminders: over.armReminders }),
   });
   return { fx, reports, bookCalls, cancelCalls };
 }
@@ -174,5 +178,32 @@ describe("appointment side effects: what the report names", () => {
     });
     await expect(silent.booked(NOTICE)).resolves.toBeUndefined();
     await expect(silent.cancel("ap_1")).resolves.toBeUndefined();
+  });
+});
+
+// A MUTED TURN MUST NOT ARM AN ALARM THAT RINGS LATER. The observer's transport refuses anything the
+// customer would perceive, but a reminder is not sent by that turn: it is a job that runs on its own
+// tick, resolves the inbox's RESPONDER and builds a client of its own, so the mute never reaches it
+// and an observation would have spoken to the customer after all (issue #568, review round 16).
+describe("appointment side effects: who may arm a reminder", () => {
+  const REMINDERS = { offsetsHours: [24, 2], askConfirmationOnLast: true };
+
+  test("an observation records the booking and arms nothing", async () => {
+    const h = harness({ armReminders: false });
+    await h.fx.booked({ ...NOTICE, reminders: REMINDERS });
+    // The record is still made: it is not the reminder, and an observer that books deserves to be
+    // remembered as much as one that labels.
+    expect(h.bookCalls).toHaveLength(1);
+    expect(h.bookCalls[0]?.eventId).toBe("ap_1");
+    expect(h.bookCalls[0]?.reminders).toBeNull();
+    expect(h.reports).toEqual([]);
+  });
+
+  test("an ordinary turn arms them, which is every caller that does not say otherwise", async () => {
+    for (const over of [{}, { armReminders: true }]) {
+      const h = harness(over);
+      await h.fx.booked({ ...NOTICE, reminders: REMINDERS });
+      expect(h.bookCalls[0]?.reminders).toEqual(REMINDERS);
+    }
   });
 });

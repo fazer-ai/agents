@@ -247,6 +247,25 @@ describe("a muted Chatwoot client", () => {
     expect(seen[0]?.aborted).toBe(false);
   });
 
+  test("the client says whether it is muted, for effects the transport cannot see", async () => {
+    // A scheduled reminder is armed now and delivered later, by the inbox's responder and a client
+    // of its own, so the mute here never reaches it. Callers that arm such an effect ask this
+    // instead of being handed a second flag that could disagree with the wrapper (round 16).
+    const mk = (mute: boolean) =>
+      new ChatwootClient(
+        {
+          baseUrl: "https://chat.example.com",
+          accountId: 5,
+          adminToken: "admin",
+          botToken: "bot",
+          ...(mute ? { mute: true } : {}),
+        },
+        (async () => new Response("{}")) as unknown as typeof fetch,
+      );
+    expect(mk(true).muted).toBe(true);
+    expect(mk(false).muted).toBe(false);
+  });
+
   test("an unmuted client is byte-for-byte what it was", async () => {
     const { c, calls } = client(false);
     await c.sendMessage(9, "Olá!");

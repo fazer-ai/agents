@@ -54,6 +54,13 @@ export interface AppointmentSideEffectDeps {
   // write fails cannot make a real write fail without a broken database.
   book?: typeof appointmentBooked;
   cancel?: typeof cancelAppointment;
+  // WHETHER A BOOKING MADE ON THIS TURN MAY ARM CUSTOMER REMINDERS. Default true, which is every
+  // reactive turn. False for an OBSERVATION: its transport is muted, but a reminder is not sent by
+  // this turn — it is a job that runs later, resolves the inbox's responder and builds a client of
+  // its own, so the mute never reaches it and the observation would have spoken to the customer
+  // after all (issue #568, review round 16). The record is kept either way; only the alarm is not
+  // set, because the record is not the reminder.
+  armReminders?: boolean;
 }
 
 export interface AppointmentSideEffects {
@@ -89,7 +96,7 @@ export function appointmentSideEffects(
           calendarId: a.calendarId,
           calendarLabel: a.calendarLabel,
           credentialRef: a.credentialRef,
-          reminders: a.reminders,
+          reminders: deps.armReminders === false ? null : a.reminders,
           base: deps.base,
         });
         // NOTE: The booking exists in the owning system and the platform cannot judge its start, so

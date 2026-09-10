@@ -1377,14 +1377,10 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("busy");
     expect(sent).toEqual([]);
-    // E A RECUSA É BARATA. A checagem adjacente ao invoke, sozinha, só recusaria depois do preview
-    // do Chatwoot, do teto de gasto e (com o portão ligado) de uma chamada ao endpoint de
-    // autorização de outra pessoa. Medido rodando o console de verdade: sem a checagem cedo, este
-    // caminho batia em `preview.getMessages` e devolvia 500 antes de chegar na recusa.
-    //
-    // Zero leituras é a asserção porque é a primeira coisa que a função faria: uma recusa que
-    // custa uma ida ao Chatwoot passa por todo o resto também.
-    expect(leituras).toBe(0);
+    // A ocupação aqui é só da LINHA, e a checagem cedo não vai ao banco de propósito: quem pega
+    // este caso é a adjacente ao invoke, depois do caminho inteiro. Uma leitura a mais no caminho
+    // limpo custaria uma consulta a todo clique, e o s3 dos cenários proíbe isso.
+    expect(leituras).toBeGreaterThan(0);
   });
 
   // MATA A MUTAÇÃO que troca `markFlushHold` pelo registro do TURNO. O que o botão segura antes de
@@ -1428,5 +1424,83 @@ describe.skipIf(!dbUp)("reengage", () => {
     expect(vistoComoTurno[1]).toBe(false);
     // E a thread volta livre no fim, pelo caminho que respondeu.
     expect(isTurnInFlight(graphThreadId)).toBe(false);
+  });
+  // A RECUSA É BARATA quando o turno está NESTE processo, que é a topologia no ar. A checagem cedo
+  // corta antes do teto de gasto e da chamada ao endpoint de autorização de outra pessoa; o que ela
+  // não corta é o portão de cauda vazia, que é uma leitura de mensagens e que este arquivo declara
+  // não ser um gasto. Uma leitura, então, e não zero.
+  //
+  // Medido rodando o console de verdade: sem a checagem cedo, este caminho batia em
+  // `preview.getMessages` contra um Chatwoot inalcançável e devolvia 500 antes de chegar na recusa.
+  test("a recusa de um turno deste processo não paga o caminho inteiro", async () => {
+    const CONV = 9597;
+    const CI = 597;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    let leituras = 0;
+    markTurnInFlight(graphThreadId);
+    try {
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "resposta antiga", type: 1 },
+              { id: 3, content: "e aí?", type: 0 },
+            ]),
+            sent,
+            onGetMessages: () => {
+              leituras += 1;
+            },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("busy");
+      expect(sent).toEqual([]);
+      expect(leituras).toBe(1);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+  });
+
+  // NADA A RESPONDER ⇒ NADA A RECUSAR, que é a regra que este arquivo já enuncia para o teto de
+  // gasto. Numa thread ocupada, um clique sem cauda nenhuma não é "ocupado": é "não há o que
+  // responder". Dizer `busy` ali mandaria o operador clicar de novo para nada.
+  test("sem cauda, uma thread ocupada ainda responde `empty`", async () => {
+    const CONV = 9598;
+    const CI = 598;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    markTurnInFlight(graphThreadId);
+    try {
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          // A última mensagem é nossa: não há cauda sem resposta.
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "já respondi", type: 1 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("empty");
+      expect(sent).toEqual([]);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
   });
 });

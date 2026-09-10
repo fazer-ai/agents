@@ -239,15 +239,6 @@ export async function reengageConversation(
   );
   if (!gateOpen) return { outcome: "gate-closed" };
 
-  // A MESMA PERGUNTA, CEDO, pelo motivo que o portão de assignee logo acima já dá: recusar aqui
-  // evita gastar o que vem depois. Sem ela a recusa só acontece adiante, e o clique num contato que
-  // já está sendo respondido custa uma ida ao Chatwoot, o teto de gasto e, com o portão ligado, uma
-  // chamada ao endpoint de autorização de outra pessoa. Medido rodando o console de verdade: sem
-  // esta linha o caminho batia em `preview.getMessages` e devolvia 500 antes de chegar na recusa.
-  //
-  // Esta é a barata e otimista; a que DECIDE é a adjacente ao invoke, lá embaixo. Uma leitura só
-  // aqui teria a janela larga que a #588 fechou; uma leitura só lá gasta o caminho inteiro para
-  // recusar. As duas, exatamente como o portão de assignee é perguntado duas vezes.
   const graphThreadId = resolveGraphThreadId(
     tenantId,
     resolved.instanceId,
@@ -268,7 +259,6 @@ export async function reengageConversation(
       ))) ||
     isTurnInFlight(graphThreadId) ||
     isFlushHeld(graphThreadId);
-  if (await threadTomada()) return { outcome: "busy" };
 
   // WHAT THIS CLICK WOULD ANSWER, computed once and used twice: here, to decide whether there is a
   // turn at all, and inside `coalesceAndRunTurn`, to build it. One expression rather than two,
@@ -331,6 +321,25 @@ export async function reengageConversation(
     parseChatwootMessages(await preview.getMessages(resolved.conversationId)),
   );
   if (previewTail.length === 0) return { outcome: "empty" };
+
+  // A MESMA PERGUNTA, CEDO, pelo motivo que o portão de assignee logo acima já dá para si mesmo:
+  // recusar aqui evita gastar o que vem depois. Sem ela o clique num contato que já está sendo
+  // respondido ainda paga o teto de gasto e, com o portão ligado, uma chamada ao endpoint de
+  // autorização de outra pessoa, para no fim dizer "ocupado". Medido rodando o console de verdade.
+  //
+  // DEPOIS do portão de cauda vazia, não antes, pela regra que este arquivo já enuncia: nada a
+  // responder ⇒ nada a recusar. Um clique sem cauda nenhuma numa thread ocupada não é "ocupado", é
+  // "não há o que responder", e mandar o operador tentar de novo o faz clicar para nada. O preço é
+  // a leitura de mensagens que aquele portão faz de qualquer jeito, e que o próprio arquivo diz não
+  // ser um gasto.
+  //
+  // SÓ O PROCESSO, sem ir ao banco: a leitura durável custa uma consulta e o caminho limpo não pode
+  // pagar duas. Quem decide é a checagem adjacente ao invoke, lá embaixo, que pergunta as duas
+  // metades. Aqui é a barata e otimista, e na topologia no ar (réplica única) ela já pega tudo que
+  // importa; a metade entre réplicas é a #593.
+  if (isTurnInFlight(graphThreadId) || isFlushHeld(graphThreadId)) {
+    return { outcome: "busy" };
+  }
 
   // The spend ceiling, asked here for the reason every other turn seam asks it: this is a billed
   // call, and nothing above it is. An operator re-engaging a conversation by hand is spending the

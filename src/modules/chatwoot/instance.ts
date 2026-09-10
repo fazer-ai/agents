@@ -26,6 +26,8 @@ export interface LoadChatwootClientDeps {
   // gets one, so every tool it holds keeps working while a customer-visible send throws. See
   // ChatwootClientConfig.mute — the refusal is at the transport, not on a list of methods.
   mute?: boolean;
+  // See ChatwootClientConfig.expiresOn: the whole client stops answering past this.
+  expiresOn?: AbortSignal;
 }
 
 export async function loadChatwootClient(
@@ -52,6 +54,7 @@ export async function loadChatwootClient(
     adminToken: decryptJson<string>(instance.deployment.adminToken),
     botToken: deps.botToken ?? "",
     ...(deps.mute ? { mute: true } : {}),
+    ...(deps.expiresOn ? { expiresOn: deps.expiresOn } : {}),
   });
 }
 

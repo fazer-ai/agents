@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { ChatwootClient, ChatwootMutedError } from "@/modules/chatwoot/client";
+import {
+  ChatwootClient,
+  ChatwootExpiredError,
+  ChatwootMutedError,
+} from "@/modules/chatwoot/client";
 
 // A monitoring agent runs the ordinary graph with the ordinary tools, and the ONE thing it must
 // never do is put something in front of the customer (issue #568). The refusal is at the transport
@@ -133,6 +137,58 @@ describe("a muted Chatwoot client", () => {
     await c.getConversationLabels(9);
     await c.toggleStatus(9, "resolved");
     expect(calls.map((x) => x.method)).toEqual(["POST", "GET", "POST"]);
+  });
+
+  // ABORTING THE TURN STOPS THE CALLER WAITING, NOT THE HANDLER ALREADY RUNNING. A tool in the
+  // middle of its own sequence of writes keeps going, and each request carries an independent
+  // deadline of its own — so the tick could report a retryable failure while the turn it walked
+  // away from kept mutating the conversation, and the retry then ran beside it.
+  test("past its deadline the client answers nothing, writes and reads alike", async () => {
+    const calls: Call[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: init?.body,
+      });
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const expired = AbortSignal.abort();
+    const c = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "admin",
+        botToken: "bot",
+        mute: true,
+        expiresOn: expired,
+      },
+      fetchImpl,
+    );
+    // The write a handler would make AFTER its first one came back — the case a fence at the tool
+    // boundary cannot reach, because it is inside one handler.
+    await expect(c.toggleStatus(9, "resolved")).rejects.toBeInstanceOf(
+      ChatwootExpiredError,
+    );
+    await expect(c.setConversationLabels(9, ["vip"])).rejects.toBeInstanceOf(
+      ChatwootExpiredError,
+    );
+    // Reads too: past the deadline there is nobody left to answer.
+    await expect(c.getConversationLabels(9)).rejects.toBeInstanceOf(
+      ChatwootExpiredError,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("a live deadline leaves the client exactly as it was", async () => {
+    const { c, calls } = client(false);
+    (c as unknown as { config: { expiresOn?: AbortSignal } }).config.expiresOn =
+      new AbortController().signal;
+    await c.setConversationLabels(9, ["vip"]);
+    expect(calls).toHaveLength(1);
   });
 
   test("an unmuted client is byte-for-byte what it was", async () => {

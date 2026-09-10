@@ -792,6 +792,13 @@ export async function runObserve(
   // config with `ignoreMode` and gets a client that cannot post to the customer instead, so the
   // ordinary graph — the agent's tools, its MCP, its knowledge — can run for a watcher exactly as it
   // does for a responder, minus the one thing a watcher must not do.
+  // THE TICK'S DEADLINE, created here so it covers everything after it: the transcript read, tool
+  // discovery, the turn, and — through `expiresOn` on the client below — any write a tool handler
+  // is still in the middle of when it fires. Aborting the invoke stops the caller waiting; it does
+  // not stop a handler already inside its own sequence of writes, and this client gives each
+  // request an independent deadline of its own, so without this the tick could report a retryable
+  // failure while the turn it walked away from kept mutating the conversation (review r10).
+  const deadline = AbortSignal.timeout(deps.timeoutMs ?? OBSERVE_TIMEOUT_MS);
   const client: ChatwootClient = await loadChatwootClient(
     tenantId,
     instanceId,
@@ -800,6 +807,7 @@ export async function runObserve(
       botToken: bot?.accessToken,
       makeClient: deps.makeClient,
       mute: true,
+      expiresOn: deadline,
     },
   );
   const fetched = await readWindowRows(
@@ -977,21 +985,26 @@ export async function runObserve(
         base,
       );
       if (onInbox !== "yes") {
+        // A ROW THAT HAS NOT LANDED IS NOT A DETACH, and the load-time check already says so — this
+        // one folded it into a permanent detach, which COMPLETES the job. A detach and a reattach
+        // that straddle the model call leave `attachedAt` null for a moment, and for an
+        // `on_resolve` watcher that moment is the whole classification: the resolve mark suppresses
+        // every later delivery of the same resolution, so it is never observed at all (review r10).
         refusal =
           onInbox === "unreadable"
             ? "binding_unreadable"
-            : "agent_no_longer_on_inbox";
+            : onInbox === "attaching"
+              ? "binding_attaching"
+              : "agent_no_longer_on_inbox";
         return false;
       }
     }
     return true;
   };
 
-  // STARTED BEFORE DISCOVERY, and that is the point: `buildToolset` contacts every MCP server the
-  // agent has, and an SSE server that opens the stream and never emits its endpoint waits with no
-  // timeout of its own. The deadline used to be created after this call, so the one call that can
-  // hang forever was the one call it did not cover.
-  const deadline = AbortSignal.timeout(deps.timeoutMs ?? OBSERVE_TIMEOUT_MS);
+  // ...AND IT COVERS DISCOVERY, which is the one call that can hang forever: `buildToolset` contacts
+  // every MCP server the agent has, and an SSE server that opens the stream and never emits its
+  // endpoint waits with no timeout of its own.
   let tools: Awaited<ReturnType<typeof buildToolset>>;
   try {
     tools = await underSignal(
@@ -1094,17 +1107,21 @@ export async function runObserve(
     return { outcome: "done" };
   }
 
-  // The four `*_unreadable` reasons, by name rather than by suffix: a refusal that is added later
-  // and happens to end in the word is a decision about retries, and it should be made here on
-  // purpose instead of inherited from how it was spelled.
-  const UNREADABLE_REFUSALS = new Set([
+  // THE REFUSALS THAT ARE NOT ANSWERS, listed by name rather than matched by suffix: a refusal
+  // added later that happens to end in the same word is a decision about retries, and it should be
+  // made here on purpose rather than inherited from how it was spelled.
+  //
+  // Four are reads that failed. The fifth is a binding that has not landed yet — not a failed read,
+  // but the same shape of answer: the world has not settled, so nothing it says is evidence.
+  const RETRYABLE_REFUSALS = new Set([
     "agent_state_unreadable",
     "settings_unreadable",
     "conversation_unreadable",
     "binding_unreadable",
+    "binding_attaching",
   ]);
   const endOnRefusal = (why: string): JobResult => {
-    if (!UNREADABLE_REFUSALS.has(why)) {
+    if (!RETRYABLE_REFUSALS.has(why)) {
       line("skipped", { skipped: why, messagesRead: transcript.length });
       return { outcome: "done" };
     }

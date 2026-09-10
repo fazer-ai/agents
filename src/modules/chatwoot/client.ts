@@ -144,6 +144,28 @@ export interface ChatwootClientConfig {
   // It is a BACKSTOP, not the mechanism: the observe path simply never delivers a reply. Reaching
   // this refusal means something tried to, which is a defect and throws rather than passing quietly.
   mute?: boolean;
+  // A DEADLINE FOR THE WHOLE CLIENT. Aborting a turn stops the caller waiting on it; it does NOT
+  // stop a tool handler that is already inside its own sequence of writes, and this client gives
+  // each request an independent deadline of its own. So a watcher's tick could return a retryable
+  // failure while the turn it walked away from kept mutating the conversation — and the retry then
+  // ran beside it (review r10).
+  //
+  // Enforced in the same wrapper as the mute, and for the same reason it lives there: a per-method
+  // guard is a list, and the write added next week is not on it. Once this fires the client is
+  // DONE, reads included, because there is nobody left to answer.
+  expiresOn?: AbortSignal;
+}
+
+// Thrown when a client whose deadline has passed is asked for anything. Its own class, not folded
+// into the muted one: the two say different things to whoever reads the trail — "this agent never
+// speaks to customers" against "this turn's time was up".
+export class ChatwootExpiredError extends Error {
+  constructor(endpoint: string) {
+    super(
+      `Chatwoot ${endpoint} refused: this turn's deadline passed, so nothing more is written for it.`,
+    );
+    this.name = "ChatwootExpiredError";
+  }
 }
 
 // Thrown by a muted client when something tries to post a customer-visible message. Named so a
@@ -204,7 +226,11 @@ function isPrivateSend(body: BodyInit | null | undefined): boolean {
 
 // The mute itself: one wrapper around the client's own fetch, so `request` and the multipart senders
 // that build their own call are both covered without either of them knowing about it.
-function mutedFetch(inner: typeof fetch): typeof fetch {
+function mutedFetch(
+  inner: typeof fetch,
+  mute: boolean,
+  expiresOn?: AbortSignal,
+): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string"
@@ -212,6 +238,11 @@ function mutedFetch(inner: typeof fetch): typeof fetch {
         : input instanceof URL
           ? input.href
           : input.url;
+    // FIRST, and before the method is even looked at: past the deadline this client answers nothing.
+    if (expiresOn?.aborted) {
+      throw new ChatwootExpiredError(new URL(url).pathname);
+    }
+    if (!mute) return inner(input, init);
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
@@ -320,7 +351,10 @@ export class ChatwootClient {
     private readonly config: ChatwootClientConfig,
     fetchImpl: typeof fetch,
   ) {
-    this.fetchImpl = config.mute ? mutedFetch(fetchImpl) : fetchImpl;
+    this.fetchImpl =
+      config.mute || config.expiresOn
+        ? mutedFetch(fetchImpl, config.mute === true, config.expiresOn)
+        : fetchImpl;
     const root = config.baseUrl.replace(/\/+$/, "");
     this.accountBase = `${root}/api/v1/accounts/${config.accountId}`;
   }

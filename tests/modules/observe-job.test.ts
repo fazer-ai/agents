@@ -1840,6 +1840,54 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
+  // A BINDING THAT HAS NOT LANDED IS NOT A DETACH, and the load-time check has said so since #540.
+  // The tool fence folded it into a permanent detach, which COMPLETES the job — and for an
+  // `on_resolve` watcher that is the classification lost for good, because the resolve mark
+  // suppresses every later delivery of the same resolution.
+  test("a binding still attaching at the fence retries instead of completing", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const rows = await suDb.inboxObserver.findMany({
+      where: { tenantId, agentId },
+      select: { id: true },
+    });
+    // Unstamped only after the model call starts, so the LOAD-time check passes and the FENCE is
+    // the one that sees the pending row — which is exactly the detach/reattach straddle. Driven as
+    // a burst rather than a resolve so the fence's own reopened check (which legitimately completes
+    // a resolve tick on an open conversation) cannot answer first; the binding question, and
+    // whether its answer is retryable, is the same either way.
+    const model = new LabellingModel(["cancelamento"], async () => {
+      await suDb.inboxObserver.updateMany({
+        where: { id: { in: rows.map((r) => r.id) } },
+        data: { attachedAt: null },
+      });
+    });
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => model as unknown as BaseChatModel,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      await suDb.inboxObserver.updateMany({
+        where: { id: { in: rows.map((r) => r.id) } },
+        data: { attachedAt: new Date() },
+      });
+    }
+  });
+
   // ONE READ FOR THE PROMPT AND FOR THE TOOL'S BASELINE. `set_labels` diffs the model's list against
   // what the model was SHOWN, so two reads are two claims about the same turn: a label the prompt
   // advertises but the baseline lacks comes back as an ADDITION when the model repeats it to keep

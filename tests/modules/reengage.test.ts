@@ -4,7 +4,11 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
@@ -59,10 +63,14 @@ function makeStub(opts: {
   page?: unknown;
   pages?: unknown[];
   sent: Array<[number, string]>;
+  // Roda a cada leitura de mensagens, que é o único momento em que o hold do botão e a marca do
+  // turno podem ser distinguidos de fora: o coalesce lê ANTES de o turno se marcar.
+  onGetMessages?: () => void;
 }) {
   let i = 0;
   const client = {
     getMessages: async () => {
+      opts.onGetMessages?.();
       if (!opts.pages) return opts.page;
       const p = opts.pages[Math.min(i, opts.pages.length - 1)];
       i += 1;
@@ -1328,5 +1336,85 @@ describe.skipIf(!dbUp)("reengage", () => {
         clearTurnInFlight(graphThreadId);
       }
     });
+  });
+  // MATA A MUTAÇÃO que troca `turnOwnsThread` por só o `Map` do processo. A ocupação aqui é escrita
+  // DIRETO na linha, com o cliente de superusuário, porque é isso que a outra réplica teria deixado
+  // lá; nenhuma chamada a `markTurnOwning` acontece, senão o Map deste processo passaria a saber e o
+  // teste mediria o Map de novo em vez da linha.
+  test("um turno registrado só na linha também segura o botão", async () => {
+    const CONV = 9595;
+    const CI = 595;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const sent: Array<[number, string]> = [];
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO agent_threads
+         (tenant_id, chatwoot_instance_id, contact_inbox_id, thread_id,
+          turn_holders, turn_epoch, turn_held_until, created_at, updated_at)
+       VALUES (${tenantId}, ${instanceId}, ${CI},
+               '${tenantId}:${instanceId}:ci:${CI}', 1, 1,
+               now() + interval '5 minutes', now(), now())`,
+    );
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "resposta antiga", type: 1 },
+            { id: 3, content: "e aí?", type: 0 },
+          ]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("busy");
+    expect(sent).toEqual([]);
+  });
+
+  // MATA A MUTAÇÃO que troca `markFlushHold` pelo registro do TURNO. O que o botão segura antes de
+  // invocar tem que ser invisível para quem pergunta por turnos: ingestão, compactação e rollback
+  // decidem por essa pergunta, e um "ocupado" a mais faz `drainPendingIngest` alcançar nada e todo
+  // rollback pular, com a suíte inteira verde. Foi o defeito que o review da #588 pegou uma vez.
+  //
+  // O momento em que dá para separar os dois é o `getMessages` do coalesce: ele roda DEPOIS de o
+  // botão segurar e ANTES de o turno se marcar. Só a primeira leitura vale; da segunda em diante o
+  // turno já se marcou legitimamente.
+  test("o que o botão segura antes de invocar não conta como turno", async () => {
+    const CONV = 9596;
+    const CI = 596;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    const vistoComoTurno: boolean[] = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "resposta antiga", type: 1 },
+            { id: 3, content: "e aí?", type: 0 },
+          ]),
+          sent,
+          onGetMessages: () =>
+            vistoComoTurno.push(isTurnInFlight(graphThreadId)),
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    // O `getMessages` do preview roda antes até do hold; o do coalesce roda com o hold ativo. Nenhum
+    // dos dois pode ver "turno em voo", porque nenhum turno começou ainda.
+    expect(vistoComoTurno[0]).toBe(false);
+    expect(vistoComoTurno[1]).toBe(false);
+    // E a thread volta livre no fim, pelo caminho que respondeu.
+    expect(isTurnInFlight(graphThreadId)).toBe(false);
   });
 });

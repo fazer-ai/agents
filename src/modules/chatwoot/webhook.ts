@@ -2294,7 +2294,8 @@ export type ContactAuthCopyOutcome =
   | "none"
   // Configured, but the notice cooldown had already spoken inside the window.
   | "suppressed"
-  // Configured and attempted, but the send did not land.
+  // Configured and attempted, but nothing reached the customer: the send failed, or the
+  // ownership fence stood it down.
   | "failed";
 
 export function contactAuthNoteText(
@@ -2335,7 +2336,12 @@ export function contactAuthNoteText(
       none: " Nenhum aviso foi enviado ao contato: não há mensagem de recusa configurada.",
       suppressed:
         " O aviso de recusa não foi repetido ao contato por causa da carência entre avisos.",
-      failed: " O envio do aviso de recusa ao contato NÃO foi concluído.",
+      // Says the RESULT, not a cause. This branch is reached both by a send that failed and by the
+      // ownership fence standing the copy down (a human took the conversation, or the agent was
+      // switched off, between the mode read and the refusal): `postPublicMessage` returns the same
+      // false for both, and naming "delivery failure" here would send the operator chasing a
+      // problem that does not exist on the second one.
+      failed: " O aviso de recusa NÃO chegou ao contato.",
     }[copy];
     return `🔒 Contato não autorizado pela verificação externa.${reason}${copyLine}${handoffLine}`;
   }

@@ -979,9 +979,48 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // is a delivery problem to chase, not a decision someone made.
     const notes = cw.notesOn(convId);
     expect(notes).toHaveLength(1);
-    expect(notes[0]?.content).toContain("NÃO foi concluído");
+    expect(notes[0]?.content).toContain("NÃO chegou ao contato");
     expect(notes[0]?.content).not.toContain("carência");
     expect(notes[0]?.content).not.toContain("Nenhum aviso");
+  });
+
+  // The SAME false from postPublicMessage, for a completely different reason: the copy was stood
+  // down by the ownership fence because a human took the conversation inside the authorization
+  // round-trip. Nothing failed to deliver here, so a note that named a delivery failure would send
+  // the operator chasing one.
+  test("a copy the fence stood down reads as the copy not arriving, not as a broken send", async () => {
+    const convId = 9317;
+    await seedConversation(convId, inboxFullDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(async () => {
+      await suDb.conversation.updateMany({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+        },
+        data: { assigneeType: "User", assigneeId: 44, status: "open" },
+      });
+      return denied();
+    });
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 818,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    // The conversation is the human's: nothing is said to the customer and nothing is toggled.
+    expect(cw.publicOn(convId)).toEqual([]);
+    expect(cw.statusToggles).toEqual([]);
+    // The note still goes out (it has no fence: it is FOR the human who just took over), and it is
+    // true for them — it reports the result, and claims neither a delivery failure nor a handoff.
+    const notes = cw.notesOn(convId);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.content).toContain("NÃO chegou ao contato");
+    expect(notes[0]?.content).not.toContain("atendimento humano");
+    expect(notes[0]?.content).not.toContain("carência");
   });
 
   test("a repeat withheld by the cooldown is named as the cooldown, not as a failure", async () => {

@@ -34,10 +34,30 @@ describe("contactAuthNoteText: só diz o que não está na tela", () => {
     expect(nota).toContain("não foi repetido");
   });
 
-  test("send failed: named as a delivery problem, not as a decision", () => {
+  // `failed` covers two different causes — the send threw, and the ownership fence stood the copy
+  // down because a human took the conversation — and the call site sees the same `false` for both.
+  // So the note says what is TRUE of both, the result, and never names a delivery failure that the
+  // takeover case would not have.
+  test("nothing reached the contact: the note says the result, not a cause", () => {
     const nota = contactAuthNoteText(denied, true, "failed");
-    expect(nota).toContain("NÃO foi concluído");
+    expect(nota).toContain("NÃO chegou ao contato");
     expect(nota).not.toContain("carência");
+    expect(nota).not.toContain("envio");
+    expect(nota).not.toContain("falh");
+  });
+
+  // The strongest criterion here, and the one that does not depend on the words chosen: with the
+  // SAME reason code and the same handoff, the four states must read as four different notes.
+  // Before the fix they were byte-for-byte identical, which is what made the note unreadable.
+  test("the four outcomes are four distinct notes, and none of them leaks the contact", () => {
+    const notas = (["sent", "none", "suppressed", "failed"] as const).map((c) =>
+      contactAuthNoteText(denied, true, c),
+    );
+    expect(new Set(notas).size).toBe(4);
+    for (const nota of notas) {
+      expect(nota).toContain("not_customer");
+      expect(nota).not.toContain("+55");
+    }
   });
 
   test("default is `none`, so an omitted argument never overclaims", () => {

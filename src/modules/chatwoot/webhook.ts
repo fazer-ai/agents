@@ -2292,7 +2292,7 @@ export type ContactAuthCopyOutcome =
   | "sent"
   // No `denyMessage` configured: the customer got nothing, on purpose.
   | "none"
-  // Configured, but the notice cooldown had already spoken inside the window.
+  // Configured, but another refusal on this conversation holds the notice window.
   | "suppressed"
   // Configured and attempted, but nothing reached the customer: the send failed, or the
   // ownership fence stood it down.
@@ -2334,8 +2334,13 @@ export function contactAuthNoteText(
     const copyLine = {
       sent: "",
       none: " Nenhum aviso foi enviado ao contato: não há mensagem de recusa configurada.",
+      // Says the window was TAKEN, not that a copy landed. A concurrent refusal on the same
+      // conversation claims the copy window BEFORE it sends, so a claim that fails means "another
+      // refusal holds it" — which covers both the one that already spoke and the one still in
+      // flight, and that one may yet fail and give the window back. Whether a copy is on screen is
+      // the operator's to see; what they cannot see is that THIS message produced none, and why.
       suppressed:
-        " O aviso de recusa não foi repetido ao contato por causa da carência entre avisos.",
+        " O aviso de recusa não saiu nesta mensagem: a carência entre avisos já estava tomada por outra recusa.",
       // Says the RESULT, not a cause. This branch is reached both by a send that failed and by the
       // ownership fence standing the copy down (a human took the conversation, or the agent was
       // switched off, between the mode read and the refusal): `postPublicMessage` returns the same

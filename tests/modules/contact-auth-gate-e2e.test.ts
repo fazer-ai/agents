@@ -90,7 +90,13 @@ interface Sent {
 // withholding a repeat (reachable when an earlier note failed and freed its own window while the
 // copy's stayed spent).
 function stubChatwoot(
-  fail: { publicSend?: boolean; firstNote?: boolean } = {},
+  fail: {
+    publicSend?: boolean;
+    firstNote?: boolean;
+    // Holds the first public send open until the latch is released, so a second delivery can run to
+    // completion while the first is still awaiting Chatwoot.
+    holdFirstSend?: { entered: () => void; wait: Promise<"ok" | "throw"> };
+  } = {},
 ) {
   const sent: Sent[] = [];
   const statusToggles: Array<[number, string]> = [];
@@ -100,6 +106,14 @@ function stubChatwoot(
   const client = {
     sendMessage: async (c: number, content: string) => {
       if (fail.publicSend) throw new Error("chatwoot down: send refused");
+      const hold = fail.holdFirstSend;
+      if (hold) {
+        fail.holdFirstSend = undefined;
+        hold.entered();
+        if ((await hold.wait) === "throw") {
+          throw new Error("chatwoot down: send refused");
+        }
+      }
       sent.push({
         conversationId: c,
         content,
@@ -984,6 +998,58 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(notes[0]?.content).not.toContain("Nenhum aviso");
   });
 
+  // Two refusals racing on ONE conversation. Single-flight is keyed by contact AND request, so two
+  // different messages are two questions and two deliveries in flight at once. The loser of the copy
+  // claim writes its note while the winner is still awaiting Chatwoot — and the winner may yet fail
+  // and hand the window back. So the note that survives must not claim a copy landed: all it can
+  // say is that the window was taken.
+  test("a refusal that lost the copy window never claims the other one was delivered", async () => {
+    const convId = 9318;
+    await seedConversation(convId, inboxFullDbId);
+    let entrou = () => {};
+    const entered = new Promise<void>((r) => {
+      entrou = r;
+    });
+    let liberar: (v: "ok" | "throw") => void = () => {};
+    const wait = new Promise<"ok" | "throw">((r) => {
+      liberar = r;
+    });
+    const cw = stubChatwoot({ holdFirstSend: { entered: entrou, wait } });
+    const auth = authDouble(
+      () => denied(),
+      () => denied(),
+    );
+    const primeira = deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 819,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    // The first delivery is now parked inside Chatwoot's send, holding the copy window.
+    await entered;
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 819,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    // ...and only now does it fail, so NOTHING ever reached the customer on either message.
+    liberar("throw");
+    await primeira;
+    expect(cw.publicOn(convId)).toEqual([]);
+    // The second delivery took the note window, so its note is the only one the operator gets.
+    const notes = cw.notesOn(convId);
+    expect(notes).toHaveLength(1);
+    // It may say the window was taken. It may NOT say a notice was delivered or repeated: the copy
+    // it lost the race to never landed, and the conversation above it shows that.
+    expect(notes[0]?.content).toContain("não saiu nesta mensagem");
+    expect(notes[0]?.content).not.toContain("repetido");
+  });
+
   // The SAME false from postPublicMessage, for a completely different reason: the copy was stood
   // down by the ownership fence because a human took the conversation inside the authorization
   // round-trip. Nothing failed to deliver here, so a note that named a delivery failure would send
@@ -1049,8 +1115,8 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     const notes = cw.notesOn(convId);
     expect(notes).toHaveLength(1);
     expect(notes[0]?.content).toContain("carência entre avisos");
-    expect(notes[0]?.content).toContain("não foi repetido");
-    expect(notes[0]?.content).not.toContain("NÃO foi concluído");
+    expect(notes[0]?.content).toContain("não saiu nesta mensagem");
+    expect(notes[0]?.content).not.toContain("NÃO chegou ao contato");
   });
 
   // A Chatwoot team id belongs to ONE account. The editor cannot warn about an agent MOVED to

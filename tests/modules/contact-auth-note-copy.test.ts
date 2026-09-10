@@ -27,11 +27,15 @@ describe("contactAuthNoteText: só diz o que não está na tela", () => {
     expect(nota).not.toContain("atendimento humano");
   });
 
-  test("cooldown: the operator learns the notice was withheld, not missing", () => {
-    // Without this the second refusal inside the window looks like a bug in the copy.
+  test("cooldown: the note says the window was taken, never that a copy landed", () => {
+    // Without this the second refusal inside the window looks like a bug in the copy. But it must
+    // not claim delivery either: a concurrent refusal claims the copy window BEFORE it sends, so
+    // the one that lost the claim cannot know whether the other's send landed — and that one may
+    // still fail and hand the window back.
     const nota = contactAuthNoteText(denied, true, "suppressed");
     expect(nota).toContain("carência entre avisos");
-    expect(nota).toContain("não foi repetido");
+    expect(nota).toContain("não saiu nesta mensagem");
+    expect(nota).not.toContain("repetido");
   });
 
   // `failed` covers two different causes — the send threw, and the ownership fence stood the copy

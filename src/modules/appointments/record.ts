@@ -87,6 +87,28 @@ export async function recordAppointment(
   return "recorded";
 }
 
+// THE START THIS APPOINTMENT IS CURRENTLY RECORDED AT, or null when nothing is recorded. Read by
+// the record-only path: preserving the reminders already armed is right for a re-statement of the
+// SAME booking and wrong for one that moved, because a reminder carries the time it was armed for
+// and would announce the obsolete one (issue #568, review round 19).
+export async function storedAppointmentStart(
+  tenantId: bigint,
+  externalId: string,
+  base: PrismaClient = basePrisma,
+  provider: string = GOOGLE_CALENDAR_PROVIDER,
+): Promise<Date | null> {
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.appointment.findUnique({
+      where: {
+        tenantId_provider_externalId: { tenantId, provider, externalId },
+      },
+      select: { startAt: true, cancelledAt: true },
+    }),
+  );
+  // A cancelled record has no reminders left to protect, so it reads as nothing recorded.
+  return row && !row.cancelledAt ? row.startAt : null;
+}
+
 // The appointment stopped standing. Never a delete: a cancelled appointment has to stay
 // distinguishable from one that never existed, and the reminder handler still has rows pointing at
 // it. Silent when there is no record — the caller cancels reminders whether or not one was written.

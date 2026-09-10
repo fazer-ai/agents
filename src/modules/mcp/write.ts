@@ -36,6 +36,7 @@ import {
   assertPromptSize,
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
+  assertSettingsProtectedLabels,
   assertSettingsRetiredLabelKeys,
   assertSettingsTextSizes,
   assertSettingsToolPreconditions,
@@ -707,6 +708,7 @@ export async function agentSettingsSet(
     // Asked about the PATCH, not the merged bag, because the patch is the only place the key still
     // exists.
     assertSettingsRetiredLabelKeys(patch);
+    assertSettingsProtectedLabels(patch, current.settings);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

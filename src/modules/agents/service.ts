@@ -21,6 +21,7 @@ import {
 } from "@/modules/agents/audit-projection";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import {
   invalidToolPreconditions,
   parseToolPrecondition,
@@ -424,6 +425,58 @@ function carriesConfiguration(value: unknown): boolean {
       carriesConfiguration,
     );
   return value !== false;
+}
+
+// A GUARD THAT LOOKS ACTIVE AND IS NOT is worse than no guard, which is the same argument
+// `assertSettingsToolPreconditions` makes about a fence the console shows and the runtime ignores.
+// `readProtectedLabels` keeps the first PROTECTED_LABELS_MAX entries and drops the rest — invisible
+// truncation is fine for a list nobody reads back, and this one IS read back: the editor reloads
+// what was stored, so the operator sees sixty labels presented as off limits while ten of them are
+// there for `set_labels` to remove. Refused instead, and only when the write CHANGES the list, so an
+// unrelated PATCH is not the moment to make somebody fix a field they did not come to edit — the
+// rule this file's other size check uses (round 19).
+export class TooManyProtectedLabelsError extends AppError {
+  constructor(max: number) {
+    super(
+      `settings.setLabels.protected takes at most ${max} labels`,
+      400,
+      "errors.tooManyProtectedLabels",
+      { max },
+      "setLabels.protected",
+    );
+  }
+}
+
+function rawProtectedList(settings: unknown): unknown[] | null {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return null;
+  const block = (settings as Record<string, unknown>).setLabels;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+  const raw = (block as Record<string, unknown>).protected;
+  return Array.isArray(raw) ? raw : null;
+}
+
+export function assertSettingsProtectedLabels(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const next = rawProtectedList(settings);
+  if (next === null) return;
+  // Counted the way the READER counts, or the refusal and the truncation would disagree about the
+  // same list: blanks, non-strings and duplicates never became guards in the first place. Counted
+  // HERE rather than by calling the reader, because the reader stops AT the ceiling — asking it how
+  // many there are can never answer more than the ceiling, which is the whole question.
+  const kept = new Set<string>();
+  for (const entry of next) {
+    if (typeof entry !== "string") continue;
+    const label = entry.trim();
+    if (label) kept.add(label);
+  }
+  if (kept.size <= PROTECTED_LABELS_MAX) return;
+  const before = rawProtectedList(stored);
+  if (before !== null && JSON.stringify(before) === JSON.stringify(next))
+    return;
+  throw new TooManyProtectedLabelsError(PROTECTED_LABELS_MAX);
 }
 
 export function assertSettingsRetiredLabelKeys(settings: unknown): void {
@@ -885,6 +938,7 @@ export async function updateAgent(
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
+    assertSettingsProtectedLabels(rest.settings, before?.settings);
     // NOTE: An OBSERVER of an inbox (issue #476) is a monitoring agent by construction — the route it
     // holds answers nothing whatever the mode says — so the mode is not this agent's to leave while
     // it observes. Refused rather than kept silently on the observer's path: an operator promoting a
@@ -1104,6 +1158,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsModelFallback(input.settings, undefined, "replace");
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
+  assertSettingsProtectedLabels(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   // NOTE: the two schedule ids are parsed HERE and handed back, not left to the caller. They are a

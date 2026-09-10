@@ -217,6 +217,43 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     );
   });
 
+  test("a record-only booking that MOVED retires the stale reminders, and arms none", async () => {
+    // Preserving is right for a re-statement of the same booking and wrong for one that moved: a
+    // reminder carries the time it was armed for, and for a non-Google provider the handler reads
+    // that payload rather than the record — so a preserved one announces the obsolete time.
+    await seedConversation(121);
+    const args = {
+      tenantId,
+      threadId: threadOf(121),
+      eventId: "ev_moved",
+      calendarId: "primary",
+      credentialRef: null,
+      startISO: inHours(48),
+      summary: "Consulta",
+      calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
+    };
+    const armed = await appointmentBooked(args);
+    expect(armed.remindersArmed).toBeGreaterThan(0);
+
+    // The observer re-states the SAME event at a different time.
+    const again = await appointmentBooked({
+      ...args,
+      startISO: inHours(72),
+      recordOnly: true,
+    });
+    expect(again.remindersArmed).toBe(0);
+    const pending = await suDb.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND status = 'PENDING'`,
+    );
+    // Nothing armed AND nothing left announcing the old time.
+    expect(String(pending[0]?.n)).toBe("0");
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+  });
+
   test("a conversation without appointments gets no block", async () => {
     await seedConversation(102);
     const prompt = await promptFor(102);

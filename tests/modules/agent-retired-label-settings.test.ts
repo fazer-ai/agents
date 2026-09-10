@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assertSettingsProtectedLabels,
   assertSettingsRetiredLabelKeys,
   RetiredLabelSettingError,
+  TooManyProtectedLabelsError,
 } from "@/modules/agents/service";
 import {
   PROTECTED_LABELS_MAX,
@@ -100,6 +102,60 @@ describe("retired label settings", () => {
     ).not.toThrow();
     for (const value of [undefined, null, "x", 3, []])
       expect(() => assertSettingsRetiredLabelKeys(value)).not.toThrow();
+  });
+});
+
+describe("the protected-label ceiling is refused, not truncated", () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `l${i}`);
+
+  test("a list past the ceiling is refused, naming the ceiling", () => {
+    // The reader keeps the first PROTECTED_LABELS_MAX, so without this the console reloads sixty
+    // labels as configured while ten of them are there for set_labels to remove — a guard that
+    // looks active and is not.
+    expect(() =>
+      assertSettingsProtectedLabels(
+        { setLabels: { protected: many(PROTECTED_LABELS_MAX + 1) } },
+        undefined,
+      ),
+    ).toThrow(TooManyProtectedLabelsError);
+    try {
+      assertSettingsProtectedLabels(
+        { setLabels: { protected: many(PROTECTED_LABELS_MAX + 1) } },
+        undefined,
+      );
+    } catch (e) {
+      expect(String(e)).toContain(String(PROTECTED_LABELS_MAX));
+    }
+  });
+
+  test("counted the way the reader counts it", () => {
+    // Blanks, non-strings and duplicates never became guards, so they must not push a legal list
+    // over the edge either — the refusal and the truncation have to be about the same list.
+    const padded = [...many(PROTECTED_LABELS_MAX), "", "  ", 3, "l0", null];
+    expect(() =>
+      assertSettingsProtectedLabels(
+        { setLabels: { protected: padded } },
+        undefined,
+      ),
+    ).not.toThrow();
+  });
+
+  test("a stored over-ceiling list is not refused when the write leaves it alone", () => {
+    // The rule its neighbours use: an unrelated PATCH is not the moment to make an operator fix a
+    // field they did not come to edit.
+    const over = { setLabels: { protected: many(PROTECTED_LABELS_MAX + 5) } };
+    expect(() => assertSettingsProtectedLabels(over, over)).not.toThrow();
+    expect(() =>
+      assertSettingsProtectedLabels(
+        { setLabels: { protected: many(PROTECTED_LABELS_MAX + 6) } },
+        over,
+      ),
+    ).toThrow(TooManyProtectedLabelsError);
+  });
+
+  test("a bag with no list at all is not this check's business", () => {
+    for (const bag of [undefined, {}, { setLabels: {} }, { setLabels: [] }])
+      expect(() => assertSettingsProtectedLabels(bag, undefined)).not.toThrow();
   });
 });
 

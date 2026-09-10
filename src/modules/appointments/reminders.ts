@@ -19,6 +19,7 @@ import {
   cancelThreadAppointmentRecords,
   type RecordAppointmentResult,
   recordAppointment,
+  storedAppointmentStart,
 } from "@/modules/appointments/record";
 import {
   type ClaimedJob,
@@ -224,6 +225,23 @@ export interface AppointmentBookedResult {
 // it, because the record's upsert clears the tombstone exactly as `enqueueJob`'s upsert revives a
 // retired row, so both halves come back live together — which is what the base already did with the
 // reminder rows alone.
+// Whether the stored booking stands at a DIFFERENT time from the one being re-stated. Absent record
+// ⇒ false: there is nothing armed to go stale.
+async function startMoved(
+  args: AppointmentBookedArgs,
+  startReadable: boolean,
+): Promise<boolean> {
+  if (!startReadable) return false;
+  const previous = await storedAppointmentStart(
+    args.tenantId,
+    args.eventId,
+    args.base ?? basePrisma,
+    args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+  );
+  if (!previous) return false;
+  return previous.getTime() !== parseStartMs(args.startISO);
+}
+
 export async function appointmentBooked(
   args: AppointmentBookedArgs,
   // Injectable for the same reason enqueueAppointmentReminders takes it: a hermetic test of what
@@ -244,8 +262,26 @@ export async function appointmentBooked(
     // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
     // integration whose reminders were switched off between two bookings of the same appointment
     // must not leave the first booking's reminders firing.
-    // `recordOnly` skips BOTH halves: the retire below is what makes `reminders: null` a cancel, and
-    // an observation has no business cancelling what the responder armed.
+    // `recordOnly` normally skips BOTH halves: the retire below is what makes `reminders: null` a
+    // cancel, and an observation has no business cancelling what the responder armed. The exception
+    // is a booking that MOVED. A reminder carries the time it was armed for, and for a non-Google
+    // provider the handler reads that payload rather than the record — so a preserved reminder for a
+    // rescheduled appointment announces the obsolete time, or fires after it already happened.
+    // Retired, never re-armed: the observation still arms nothing (round 19).
+    const movedUnderRecordOnly =
+      args.recordOnly === true &&
+      startReadable &&
+      (await startMoved(args, startReadable));
+    if (movedUnderRecordOnly) {
+      await retireReminderJobs(
+        args.tenantId,
+        args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+        args.eventId,
+        args.base ?? basePrisma,
+        // No arm follows, so the tombstone stands alone — the same shape `cancelAppointment` uses.
+        false,
+      );
+    }
     if (startReadable && !args.recordOnly) {
       await retireReminderJobs(
         args.tenantId,

@@ -1995,6 +1995,133 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(res.outcome).toBe("fail");
   });
 
+  test("a refused EFFECT-FREE tool does not cancel out a real write", async () => {
+    // The counter does not count an effect-free dispatch, so a report from one must not subtract:
+    // otherwise a guarded `calculator` refusing in the same turn as a real `set_labels` write reads
+    // as nothing committed, and the retry writes again (review round 37).
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          toolPreconditions: {
+            calculator: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "pode_calcular",
+            },
+          },
+        } as never,
+      },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class WritesAndIsRefused {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "calculator", args: { expression: "2+2" }, id: "c1" },
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"] },
+                    id: "l1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new WritesAndIsRefused() as unknown as BaseChatModel,
+        },
+      );
+      // The label write happened, so the tick is over: a retry would write it again.
+      expect(log.labelsWritten).toEqual([["cancelamento"]]);
+      expect(res.outcome).toBe("done");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings as never },
+      });
+    }
+  });
+
+  test("a label call that changed nothing leaves the tick retryable", async () => {
+    // No label moved, so no POST left: the dispatch was counted on the way in and the tick may
+    // safely run again (review round 37).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class SameLabelsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["ja-estava"] },
+                    id: "l1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], ["ja-estava"], log),
+        makeModel: () => new SameLabelsThenDies() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    expect(res.outcome).toBe("fail");
+  });
+
   test("a failure BEFORE any tool ran still retries", async () => {
     // The control the case above needs: nothing committed, so the scheduler is still the right
     // answer — and this is the ordinary transient, which is most of them.

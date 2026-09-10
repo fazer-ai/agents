@@ -48,4 +48,11 @@ export function isEffectFreeTool(t: { name: string }): boolean {
 // WHAT MUST NOT CALL IT: an exit where something already left. `handoff_to_human` refusing after its
 // private note was filed, and an HTTP tool refusing after its acknowledgement was sent, are both
 // calls that did something — the retry would do it again.
-export type NoEffectReporter = () => void;
+// TAKES THE TOOL'S OWN NAME, because the counter on the other end does not count every dispatch:
+// an effect-free tool (a calculator, the knowledge search, a code tool) is never counted, so a
+// report from one of THOSE would subtract something that was never added — and a real write by a
+// sibling tool in the same turn would then read as nothing committed, which is the retry that
+// duplicates it (review round 37). The name is what both ends can agree on: the assembly makes it
+// unique across every source (`dropDuplicateToolNames`), and the counter applies to the report the
+// same test it applied at dispatch.
+export type NoEffectReporter = (toolName: string) => void;

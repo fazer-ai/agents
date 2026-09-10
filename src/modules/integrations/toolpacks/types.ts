@@ -50,9 +50,10 @@ export interface ToolpackCtx {
   // detach landing while a pack resolves a credential leaves the budget alive and the run withdrawn
   // (issue #568, review round 28). Absent ⇒ no fence, which is every reactive turn's toolpack today.
   stillWanted?: () => Promise<boolean>;
-  // Called when the fence above refuses a request before it is sent: nothing left the process, so a
-  // counter outside can tell this apart from a call that ran (see graph/tools/effect-free.ts).
-  onNoEffect?: () => void;
+  // Called when a call refuses without sending anything, with the TOOL's name: nothing left the
+  // process, and the counter on the other end applies to the report the same test it applied at
+  // dispatch (see graph/tools/effect-free.ts).
+  onNoEffect?: (toolName: string) => void;
   // Injectable for tests; default assertSafeOutboundUrl. The origin is a fixed trusted constant
   // here, so this is defense-in-depth (and lets tests stay hermetic without DNS).
   assertSafe?: (url: string, opts?: SafeUrlOptions) => Promise<unknown>;
@@ -222,16 +223,11 @@ export class ToolpackCalledOffError extends Error {
 export function fencedFetch(
   inner: typeof fetch,
   stillWanted: () => Promise<boolean>,
-  onNoEffect?: () => void,
 ): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
-    if (!(await stillWanted().catch(() => true))) {
-      // Said before throwing: the throw is the one exit of this family that has no result to carry
-      // the answer, which is why the channel is a callback and not a mark (review round 36).
-      onNoEffect?.();
+    if (!(await stillWanted().catch(() => true)))
       throw new ToolpackCalledOffError();
-    }
     return inner(input, init);
   }) as typeof fetch;
 }
@@ -241,8 +237,7 @@ export function buildToolpackTools(
   ctx: ToolpackCtx,
 ): StructuredToolInterface[] {
   let inner = ctx.fetchImpl ?? fetch;
-  if (ctx.stillWanted)
-    inner = fencedFetch(inner, ctx.stillWanted, ctx.onNoEffect);
+  if (ctx.stillWanted) inner = fencedFetch(inner, ctx.stillWanted);
   if (ctx.expiresOn) inner = deadlineFetch(inner, ctx.expiresOn);
   const bounded: ToolpackCtx =
     ctx.expiresOn || ctx.stillWanted ? { ...ctx, fetchImpl: inner } : ctx;
@@ -256,7 +251,25 @@ export function buildToolpackTools(
     if (sel.enabledTools.length === 0) continue;
     const pack = getToolpack(sel.catalogType);
     if (!pack) continue;
-    const built = pack.build(sel, bounded);
+    // REPORTED PER TOOL, at the build seam, and not from inside `fencedFetch`: the fetch wrapper is
+    // shared by the whole pack, so it knows no tool name and a pack that makes two requests in one
+    // call would report twice for one dispatch. Here the error escapes ONE tool's invoke exactly
+    // once, and it carries that tool's name (review round 37).
+    const built = pack.build(sel, bounded).map((t) => {
+      if (!ctx.onNoEffect) return t;
+      const seen = Object.create(t) as typeof t;
+      seen.invoke = (async (input: unknown, config?: unknown) => {
+        try {
+          return await (
+            t.invoke as (i: unknown, c?: unknown) => Promise<unknown>
+          )(input, config);
+        } catch (e) {
+          if (e instanceof ToolpackCalledOffError) ctx.onNoEffect?.(t.name);
+          throw e;
+        }
+      }) as typeof t.invoke;
+      return seen;
+    });
     if (!muted) {
       out.push(...built);
       continue;

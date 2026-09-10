@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import {
   buildHttpTool,
@@ -1900,32 +1901,57 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
     expect(called).toBe(false);
   });
 
-  test("the throw says so first, because a throw has no result to say it on", async () => {
-    // The refusal that ends in `throw` is the one exit of this family the caller cannot read off a
-    // return value, and the observer's tick has to know that nothing left the process or it counts
-    // the dispatch as a write and stops retrying (review round 36).
-    let reported = 0;
-    const wrapped = fencedFetch(
-      (async () => new Response("{}")) as unknown as typeof fetch,
-      async () => false,
-      () => {
-        reported++;
+  test("a refusal that THREW is reported once, with the tool's own name", async () => {
+    // The refusal that ends in `throw` has no result to carry the answer, and the observer's tick
+    // has to know that nothing left the process or it counts the dispatch as a write and stops
+    // retrying. Reported at the BUILD seam rather than inside the fetch wrapper: that wrapper is
+    // shared by the whole pack, so it knows no tool name and a pack making two requests in one call
+    // would report twice for one dispatch (review round 37).
+    const reported: string[] = [];
+    registerToolpack({
+      catalogType: "TEST_NOEFFECT_PACK",
+      toolSpecs: [{ name: "probe_twice", schema: z.object({}) }],
+      build: (_sel, packCtx) => [
+        tool(
+          async () => {
+            const f = packCtx.fetchImpl ?? fetch;
+            await f("https://8.8.8.8/a");
+            await f("https://8.8.8.8/b");
+            return "sent";
+          },
+          {
+            name: "probe_twice",
+            description: "two requests",
+            schema: z.object({}),
+          },
+        ),
+      ],
+    });
+    const [built] = buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "TEST_NOEFFECT_PACK",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["probe_twice"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: {} as never,
+        threadId: "t",
+        resolveCredential: async () => null,
+        fetchImpl: (async () => new Response("{}")) as unknown as typeof fetch,
+        stillWanted: async () => false,
+        onNoEffect: (name: string) => {
+          reported.push(name);
+        },
       },
     );
-    await expect(wrapped("https://example.com/x")).rejects.toThrow(
-      "called off",
-    );
-    expect(reported).toBe(1);
-    // ...and a request that GOES does not report anything.
-    const ok = fencedFetch(
-      (async () => new Response("{}")) as unknown as typeof fetch,
-      async () => true,
-      () => {
-        reported++;
-      },
-    );
-    await ok("https://example.com/y");
-    expect(reported).toBe(1);
+    if (!built) throw new Error("the pack tool was not built");
+    await expect(built.invoke({})).rejects.toThrow("called off");
+    expect(reported).toEqual(["probe_twice"]);
   });
 
   test("a fence that says yes, and one that cannot answer, both pass through", async () => {

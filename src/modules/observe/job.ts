@@ -1100,8 +1100,8 @@ export async function runObserve(
           ...(p.atMessageId != null ? { messageId: p.atMessageId } : {}),
           ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
           stillWanted: () => fence(),
-          onNoEffect: () => {
-            noEffect++;
+          onNoEffect: (toolName: string) => {
+            if (counted.has(toolName)) noEffect++;
           },
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
@@ -1153,6 +1153,12 @@ export async function runObserve(
   let toolsRan = 0;
   // Dispatches that answered without writing anything. `toolsRan - noEffect` is what committed.
   let noEffect = 0;
+  // ...AND ONLY FOR A TOOL THIS COUNTER COUNTS. An effect-free tool never incremented `toolsRan`, so
+  // a report from one — a guarded `calculator` refused by a precondition — would subtract something
+  // that was never added, and a real write by a sibling tool in the same turn would then read as
+  // nothing committed: the retry that repeats it (review round 37). The name is the key both ends
+  // can agree on, because the assembly makes it unique across every source.
+  const counted = new Set<string>();
   const fencedTools = tools.map((t) => {
     // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
     // permitted call reaches exactly the run it would have had.
@@ -1164,7 +1170,10 @@ export async function runObserve(
       // fence that answered inside a handler before its write, a toolpack request that threw
       // instead of leaving. Counted apart rather than subtracted here, because one of those exits
       // throws and never comes back through this wrapper (rounds 33 and 36).
-      if (!effectFreeNames.has(t.name) && !isEffectFreeTool(t)) toolsRan++;
+      if (!effectFreeNames.has(t.name) && !isEffectFreeTool(t)) {
+        counted.add(t.name);
+        toolsRan++;
+      }
       return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
     }) as typeof t.invoke;
     return seen;

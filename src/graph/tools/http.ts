@@ -874,7 +874,7 @@ export function buildHttpTool(
       if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
         // Nothing left the process here — the acknowledgement, when there is one, is the exit
         // ABOVE, and that one is a message the customer already got (review round 36).
-        deps.onNoEffect?.();
+        deps.onNoEffect?.(def.name);
         return "Could not call the tool (the run was called off before the request was sent).";
       }
       const { res, body: responseBody } = await fetchBounded(

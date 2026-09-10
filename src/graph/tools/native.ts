@@ -699,7 +699,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         // it. A contact attribute outlives the conversation it was written from, so a value written
         // after a `/reset` — or after the agent was switched off — is one nothing later corrects.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.();
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (the run was called off while this write waited).";
         }
         try {
@@ -713,7 +713,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           );
         } catch (e) {
           if (e instanceof ChatwootCalledOffError) {
-            ctx.onNoEffect?.();
+            ctx.onNoEffect?.("set_custom_attribute");
             return CALLED_OFF_ATTRIBUTE;
           }
           throw e;
@@ -732,7 +732,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         );
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
-          ctx.onNoEffect?.();
+          ctx.onNoEffect?.("set_custom_attribute");
           return CALLED_OFF_ATTRIBUTE;
         }
         throw e;
@@ -1065,6 +1065,10 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.protectedLabels,
         );
         if (added.length === 0 && removed.length === 0) {
+          // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
+          // The dispatch was counted as an effect on the way in, and a call that changed no label
+          // is a call the tick may safely run again.
+          ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "task", visible);
           return labelWriteReport("kanban card", added, removed, visible);
         }
@@ -1101,6 +1105,10 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.protectedLabels,
         );
         if (added.length === 0 && removed.length === 0) {
+          // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
+          // The dispatch was counted as an effect on the way in, and a call that changed no label
+          // is a call the tick may safely run again.
+          ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "contact", visible);
           return labelWriteReport("contact", added, removed, visible);
         }
@@ -1108,7 +1116,7 @@ function setLabelsTool(ctx: ToolCtx) {
         // waits before writing, and the same rule as the other three. The conversation scope asks
         // inside its queue; this scope has no queue, and the read above is just as much a wait.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.();
+          ctx.onNoEffect?.("set_labels");
           return "Could not set the contact labels (the run was called off while this write waited).";
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
@@ -1133,6 +1141,8 @@ function setLabelsTool(ctx: ToolCtx) {
             ctx.protectedLabels,
           );
           if (added.length === 0 && removed.length === 0) {
+            // Nothing moved: see the sibling scopes above.
+            ctx.onNoEffect?.("set_labels");
             recordShown(ctx, "conversation", visible);
             return labelWriteReport("conversation", added, removed, visible);
           }
@@ -1144,7 +1154,7 @@ function setLabelsTool(ctx: ToolCtx) {
           // point, for the same reason. Only an explicit `false` stops the write: a fence that
           // could not answer is not a withdrawal.
           if (ctx.stillWanted && !(await ctx.stillWanted())) {
-            ctx.onNoEffect?.();
+            ctx.onNoEffect?.("set_labels");
             return "Could not set the labels (the run was called off while this write waited its turn).";
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
@@ -1216,7 +1226,7 @@ function resolveConversationTool(ctx: ToolCtx) {
       // close, which nothing later undoes. Only an explicit `false` stops it: a fence that could not
       // answer is not a withdrawal (round 17).
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
-        ctx.onNoEffect?.();
+        ctx.onNoEffect?.("resolve_conversation");
         return "Did not resolve the conversation (the run was called off while this read was in flight).";
       }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
@@ -1511,7 +1521,7 @@ function reactToMessageTool(ctx: ToolCtx) {
         // customer's phone, so this is the same question every customer-facing send asks before it
         // goes out — and the lookup above is a wait after the graph's ask at dispatch.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.();
+          ctx.onNoEffect?.("react_to_message");
           return "Could not add the reaction (the run was called off while this write waited).";
         }
         await ctx.client.addMessageReaction(ctx.conversationId, latest.id, e);

@@ -855,9 +855,10 @@ export interface ToolsetCtx {
   // budget cannot still write. Absent on a reactive turn, which has no deadline.
   expiresOn?: AbortSignal;
   stillWanted?: () => Promise<boolean>;
-  // Called by a handler that refused WITHOUT writing (effect-free.ts). Threaded to every source that
-  // has such an exit, so the caller counting committed effects hears about all of them.
-  onNoEffect?: () => void;
+  // Called by a handler that refused WITHOUT writing, with that tool's own name (effect-free.ts).
+  // Threaded to every source that has such an exit, so the caller counting committed effects hears
+  // about all of them — and can apply to each report the same test it applied at dispatch.
+  onNoEffect?: (toolName: string) => void;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
@@ -960,7 +961,7 @@ export interface ToolBuildDeps {
       assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
-      onNoEffect?: () => void;
+      onNoEffect?: (toolName: string) => void;
     },
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];

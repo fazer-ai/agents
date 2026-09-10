@@ -181,9 +181,14 @@ export function deadlineFetch(
         "the run's time budget ran out before the request was sent",
       );
     }
-    // Relayed as well, so a request already in flight is cancelled at the deadline instead of
-    // running to the pack's own timeout past the end of the tick.
-    return inner(input, { ...(init ?? {}), signal: init?.signal ?? expiresOn });
+    // COMBINED, never chosen between. By the time this wrapper runs, `fetchBounded` has already
+    // replaced `init.signal` with its OWN controller — the one whose timer cuts the body read — so
+    // taking the caller's signal when present would drop the deadline on every real toolpack call,
+    // and taking ours would disarm the pack's timeout. `AbortSignal.any` keeps both: the request
+    // dies on whichever fires first.
+    const own = init?.signal ?? undefined;
+    const signal = own ? AbortSignal.any([own, expiresOn]) : expiresOn;
+    return inner(input, { ...(init ?? {}), signal });
   }) as typeof fetch;
 }
 

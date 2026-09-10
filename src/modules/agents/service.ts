@@ -394,12 +394,10 @@ export function assertSettingsToolPreconditions(
 // name accepted where the previous release answered 400, `noteOnChange: true` inert, and the whole
 // block with no editor to show it.
 //
-// Refused OUTRIGHT rather than only when the write changes it, which is the rule its neighbours
-// use. That rule exists to keep an unrelated PATCH from making an operator fix a field they did not
-// come to edit — and it is the right rule when the stored value still does something. Here it does
-// nothing, so leaving it alone would preserve exactly the silence being fixed. Safe to be strict
-// because the population is empty: label groups were never configured anywhere (confirmed with the
-// operator before this shipped), so no stored bag carries one and no write is broken by refusing it.
+// Refused whenever the key CARRIES CONFIGURATION, rather than only when the write changes it (the
+// rule its neighbours use, right for a stored value that still does something) and rather than on
+// mere presence (which round 14 showed breaks ordinary saves — see carriesConfiguration below).
+// `20260910140000_drop_retired_label_settings` clears what is already stored.
 export class RetiredLabelSettingError extends AppError {
   constructor(key: string) {
     super(
@@ -412,17 +410,34 @@ export class RetiredLabelSettingError extends AppError {
   }
 }
 
+// AN EMPTY TOMBSTONE IS NOT A REFUSAL, and the difference is the whole of what makes this shippable.
+// The previous Behavior editor wrote `monitoring.labelGroups` unconditionally, so an agent that never
+// had a taxonomy still carries `[]`; the migration clears what is stored, but during a rolling deploy
+// the OLD console keeps writing it back, and a hard refusal would then fail every save on the new one
+// for a key the operator cannot see or act on. Refusing what carries CONFIGURATION and ignoring what
+// carries none teaches the operator exactly where a real taxonomy went, and is inert for the rest.
+function carriesConfiguration(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object")
+    return Object.values(value as Record<string, unknown>).some(
+      carriesConfiguration,
+    );
+  return value !== false;
+}
+
 export function assertSettingsRetiredLabelKeys(settings: unknown): void {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return;
   const bag = settings as Record<string, unknown>;
-  if (bag.labels !== undefined) throw new RetiredLabelSettingError("labels");
+  if (carriesConfiguration(bag.labels))
+    throw new RetiredLabelSettingError("labels");
   const monitoring = bag.monitoring;
   if (
     monitoring &&
     typeof monitoring === "object" &&
     !Array.isArray(monitoring) &&
-    (monitoring as Record<string, unknown>).labelGroups !== undefined
+    carriesConfiguration((monitoring as Record<string, unknown>).labelGroups)
   )
     throw new RetiredLabelSettingError("monitoring.labelGroups");
 }

@@ -1790,20 +1790,44 @@ describe("the turn's deadline reaches a toolpack", () => {
     ).rejects.toThrow("time budget");
   });
 
-  test("a caller's own signal is not replaced by the deadline", async () => {
-    // A pack that already cancels its own request keeps that control; the deadline only fills the
-    // gap, which is what `init?.signal ?? expiresOn` says.
-    const ctrl = new AbortController();
+  test("both signals survive: the pack's timeout AND the deadline", async () => {
+    // The half a `??` gets wrong, and it is the common case rather than the edge one: by the time
+    // this wrapper runs, fetchBounded has already put its OWN controller in `init.signal`, so
+    // preferring the caller's would drop the deadline on every real toolpack call, and preferring
+    // ours would disarm the pack's timeout.
+    const deadline = new AbortController();
     const own = new AbortController();
-    let seen: RequestInit | undefined;
+    const seen: (AbortSignal | null | undefined)[] = [];
     const wrapped = deadlineFetch(
       (async (_u: unknown, init: RequestInit) => {
-        seen = init;
+        seen.push(init.signal);
         return new Response("{}");
       }) as unknown as typeof fetch,
-      ctrl.signal,
+      deadline.signal,
     );
     await wrapped("https://example.com/x", { signal: own.signal });
-    expect(seen?.signal).toBe(own.signal);
+    const combined = seen[0];
+    expect(combined).toBeDefined();
+    expect(combined).not.toBe(own.signal);
+    expect(combined?.aborted).toBe(false);
+    // The pack's own timeout still cuts it.
+    own.abort();
+    expect(combined?.aborted).toBe(true);
+  });
+
+  test("and the deadline alone also cuts a request the pack did not arm", async () => {
+    const deadline = new AbortController();
+    const own = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    const wrapped = deadlineFetch(
+      (async (_u: unknown, init: RequestInit) => {
+        seen.push(init.signal);
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      deadline.signal,
+    );
+    await wrapped("https://example.com/x", { signal: own.signal });
+    deadline.abort();
+    expect(seen[0]?.aborted).toBe(true);
   });
 });

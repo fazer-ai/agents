@@ -25,19 +25,46 @@ describe("retired label settings", () => {
     }
   });
 
-  test("an empty or falsy block is still a block, and still refused", () => {
-    // `labels: {}` is what a console round-trip of an agent that once had groups sends back. Read as
-    // "nothing to see", it is the exact write that keeps the dead key alive.
-    for (const value of [{}, [], null, ""]) {
-      expect(() => assertSettingsRetiredLabelKeys({ labels: value })).toThrow(
-        RetiredLabelSettingError,
-      );
+  test("an empty tombstone passes, because refusing it breaks ordinary saves", () => {
+    // The previous Behavior editor wrote `monitoring.labelGroups` unconditionally, so an agent that
+    // never had a taxonomy still carries `[]` — and both surviving writers spread what they read.
+    // A refusal on mere presence would fail every later save for a key the operator cannot see.
+    // The migration clears the stored ones; this keeps the rolling-deploy window from hard-failing.
+    for (const value of [
+      {},
+      [],
+      null,
+      "",
+      { groups: [] },
+      { groups: [], noteOnChange: false },
+    ]) {
+      expect(() =>
+        assertSettingsRetiredLabelKeys({ labels: value }),
+      ).not.toThrow();
     }
+    expect(() =>
+      assertSettingsRetiredLabelKeys({ monitoring: { labelGroups: [] } }),
+    ).not.toThrow();
+  });
+
+  test("but a tombstone that carries configuration is refused", () => {
+    // `noteOnChange: true` is a setting somebody chose and that nothing honours any more, so it gets
+    // the same answer a group does.
+    expect(() =>
+      assertSettingsRetiredLabelKeys({ labels: { noteOnChange: true } }),
+    ).toThrow(RetiredLabelSettingError);
+    expect(() =>
+      assertSettingsRetiredLabelKeys({
+        labels: { groups: [{ name: "assunto", values: ["a"] }] },
+      }),
+    ).toThrow(RetiredLabelSettingError);
   });
 
   test("monitoring.labelGroups is refused without refusing the rest of the block", () => {
     expect(() =>
-      assertSettingsRetiredLabelKeys({ monitoring: { labelGroups: [] } }),
+      assertSettingsRetiredLabelKeys({
+        monitoring: { labelGroups: [{ name: "assunto", values: ["a"] }] },
+      }),
     ).toThrow(RetiredLabelSettingError);
     expect(() =>
       assertSettingsRetiredLabelKeys({

@@ -2,9 +2,10 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
 import {
-  clearTurnReserved,
+  clearFlushHold,
+  isFlushHeld,
   isTurnInFlight,
-  markTurnReserved,
+  markFlushHold,
 } from "@/graph/inflight";
 import { armIngest } from "@/graph/ingest-job";
 import { parseThreadId } from "@/graph/nudge";
@@ -1770,7 +1771,7 @@ export async function flushDebounceJob(
     conversationId,
     ctx.contactInboxId,
   );
-  if (isTurnInFlight(graphThreadId)) {
+  if (isTurnInFlight(graphThreadId) || isFlushHeld(graphThreadId)) {
     const now = Date.now();
     // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
     // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and
@@ -1826,11 +1827,13 @@ export async function flushDebounceJob(
   // The window is reachable: two conversations of one contact are two scheduler rows, claimed in the
   // same tick and started concurrently by `runDebounceTick`, and they share this key.
   //
-  // The same hold `../chatwoot/recover-delivery.ts` takes for the same stretch, and the reason the
-  // `reserved` map is separate from the invoke map: `markTurnOwning` asks `isTurnRunning`, which
-  // does not count reservations, so holding one here cannot make the turn stand down on account of
-  // its own caller.
-  markTurnReserved(graphThreadId);
+  // ITS OWN REGISTRY, not `markTurnReserved`, and review is what showed why. `reserved` is counted
+  // by `isTurnInFlight`, which two subsystems ask before doing their own work on this thread:
+  // `undoRefusedTurn` refuses to roll back a superseded answer while it reads true, and
+  // `claimIngestWrite` answers busy so `drainPendingIngest` reaches nothing. A hold across the whole
+  // turn therefore made every debounce rollback skip and every queued message miss its own reply.
+  // `markFlushHold` is read by this line and by nothing else.
+  markFlushHold(graphThreadId);
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).
@@ -1930,7 +1933,7 @@ export async function flushDebounceJob(
     // writer this flush is about to undo, and an unbalanced hold wedges the conversation until the
     // process restarts. The turn takes its own claim inside `runLoadedTurn`; this one only covers
     // the stretch before it.
-    clearTurnReserved(graphThreadId);
+    clearFlushHold(graphThreadId);
   }
 }
 

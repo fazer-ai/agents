@@ -5,6 +5,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { isTurnInFlight } from "@/graph/inflight";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { armDebounce, debounceDedupeKey } from "@/modules/debounce/service";
@@ -98,19 +99,29 @@ function overlapModel(
   return model as unknown as BaseChatModel;
 }
 
-function stub(sent: Array<[number, string]>) {
+function stub(sent: Array<[number, string]>, probe?: () => void) {
   const client = {
-    getMessages: async () => ({
-      payload: [
-        { id: 100, content: "quanto custa?", message_type: 0, private: false },
-        {
-          id: 101,
-          content: "e tem desconto?",
-          message_type: 0,
-          private: false,
-        },
-      ],
-    }),
+    getMessages: async () => {
+      // Called BEFORE the turn takes its own claim, which makes it the one moment where the flush's
+      // hold and a turn's mark can be told apart from the outside.
+      probe?.();
+      return {
+        payload: [
+          {
+            id: 100,
+            content: "quanto custa?",
+            message_type: 0,
+            private: false,
+          },
+          {
+            id: 101,
+            content: "e tem desconto?",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      };
+    },
     sendMessage: async (conversationId: number, content: string) => {
       sent.push([conversationId, content]);
       return {};
@@ -240,6 +251,8 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   // flight, and the worker claims it again on a later tick.
   async function twoFlushes(convId: number, burstStartedAt: number) {
     await seedConversation(convId);
+    // O que `isTurnInFlight` responde ENQUANTO o flush segura a thread e antes de o turno se marcar.
+    const vistoAntesDoTurno: boolean[] = [];
     const meter = { active: 0, max: 0 };
     const seen: string[][] = [];
     const sent: Array<[number, string]> = [];
@@ -252,7 +265,9 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
 
     const deps = {
       makeModel: () => overlapModel(400, meter, seen, entered),
-      makeClient: stub(sent),
+      makeClient: stub(sent, () =>
+        vistoAntesDoTurno.push(isTurnInFlight(threadOf(convId))),
+      ),
       checkpointer,
     };
     const a = flushDebounceJob({
@@ -285,11 +300,14 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
         break;
       }
     }
-    return { meter, seen, sent, b, canal };
+    return { meter, seen, sent, b, canal, vistoAntesDoTurno };
   }
 
   test("the second flush waits instead of running a turn on top of the first", async () => {
-    const { meter, seen, b, canal } = await twoFlushes(CONV_DEFER, Date.now());
+    const { meter, seen, b, canal, vistoAntesDoTurno } = await twoFlushes(
+      CONV_DEFER,
+      Date.now(),
+    );
 
     console.log(
       `[same-thread] pico simultâneo: ${meter.max}; invokes: ${seen.length}; desfecho do 2º flush: ${b.outcome}`,
@@ -314,6 +332,16 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
       String(m.content).includes("quanto custa?"),
     );
     expect(bursts.length).toBe(1);
+    // AND the hold is invisible to everyone but the flush. The first version of this fix used
+    // `markTurnReserved`, which `isTurnInFlight` counts, and two subsystems ask exactly that before
+    // doing their own work: `undoRefusedTurn` refuses to roll back a superseded answer while it is
+    // true, and `claimIngestWrite` answers busy so `drainPendingIngest` reaches nothing. The message
+    // fetch runs while this flush holds the thread and before its turn has marked itself, so it is
+    // the one moment from which the two can be told apart.
+    // The FIRST reading only: the flush fetches twice by design, and the second one runs after the
+    // turn has marked itself, where `true` is the correct answer and says nothing about this.
+    expect(vistoAntesDoTurno.length).toBeGreaterThan(0);
+    expect(vistoAntesDoTurno[0]).toBe(false);
   }, 30_000);
 
   test("past the ceiling it answers anyway rather than deferring forever", async () => {

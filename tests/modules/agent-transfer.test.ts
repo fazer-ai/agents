@@ -1881,6 +1881,45 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
+  // A LEGACY NAME IS ONLY LEGACY WHILE NOTHING ELSE ANSWERS TO IT. Once `assign_label` stopped being
+  // native, an operator became free to create a tool under it — and a bundle from THAT agent means
+  // its own tool by the key. Mapped blindly, the guard moves to `set_labels` while the custom tool,
+  // which keeps its name, runs unguarded.
+  test("a rule for a CUSTOM tool named assign_label stays on it", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "assign_label";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "assign_label";
+    bundle.agent.name = "Vendedora com tool propria";
+    (bundle.agent.settings as Record<string, unknown>).toolPreconditions = {
+      assign_label: { kind: "attribute", scope: "contact", key: "da_custom" },
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const conds =
+      (row.settings as Record<string, Record<string, { key?: string }>>)
+        .toolPreconditions ?? {};
+    // `assign_label` is a legal custom name now, so the tool is NOT renamed and neither is its rule.
+    expect(conds.assign_label?.key).toBe("da_custom");
+    expect(conds.set_labels).toBeUndefined();
+    await suDb.toolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: "assign_label" },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   // Round 15 of PR #485: a bundle authored before a native took the name. The assembly reserves
   // every native name (#457), so a tool imported under one would exist in the console and never
   // reach the model, and this path writes straight to the DB, past the service's refusal. Renamed

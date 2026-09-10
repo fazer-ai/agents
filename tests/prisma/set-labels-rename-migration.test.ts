@@ -236,6 +236,44 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
        VALUES ($1, $2, 'CODE', $3, '{}', '{}', NOW(), NOW())`,
       [String(tenant2Id), String(ids.importer), String(ids.code)],
     );
+    // ...and one whose DESTINATION key is already taken (a leftover `set_labels_2` rule from an
+    // earlier import). The value has nowhere to go, but the old key still has to leave: left
+    // behind, the native move below reads it as the winning native rule and deletes the real one.
+    ids.occupied = await (async () => {
+      const r = await suDb.query(
+        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+         VALUES ($1, 'occupied', 'p', '{}'::jsonb, $2::jsonb, NOW(), NOW()) RETURNING id`,
+        [
+          String(tenant2Id),
+          JSON.stringify({
+            toolPreconditions: {
+              set_labels: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "da_custom",
+              },
+              set_labels_3: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "ja_estava",
+              },
+              assign_label: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "do_nativo",
+              },
+            },
+          }),
+        ],
+      );
+      return BigInt(r.rows[0].id);
+    })();
+    await suDb.query(
+      `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, code_tool_definition_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
+       VALUES ($1, $2, 'CODE', $3, '{}', '{}', NOW(), NOW())`,
+      [String(tenant2Id), String(ids.occupied), String(ids.code)],
+    );
+
     // ...and one that does NOT grant it. For this agent `set_labels` means the native tool the
     // moment this ships, so its rule is already about the right thing and must not move.
     ids.bystander = await (async () => {
@@ -436,6 +474,16 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       toolPreconditions: 7,
       maxToolCalls: 5,
     });
+  });
+
+  test("the custom tool's old key leaves even when its destination is taken", async () => {
+    const conds = await preconditionsOf(id("occupied"));
+    // The destination keeps the value it already had: it is the operator's most recent word.
+    expect((conds.set_labels_3 as { key?: string })?.key).toBe("ja_estava");
+    // And `set_labels` now holds the NATIVE's rule, because the custom tool's key left first. Left
+    // behind, it would have been read as the winning native rule and the real one deleted.
+    expect((conds.set_labels as { key?: string })?.key).toBe("do_nativo");
+    expect(conds.assign_label).toBeUndefined();
   });
 
   test("no agent is left holding the old key under either name", async () => {

@@ -148,9 +148,15 @@ BEGIN
       WHERE a.tenant_id = r.tenant_id
       ORDER BY a.id
     LOOP
+      -- MOVE WHEN THE DESTINATION IS FREE, and REMOVE THE OLD KEY EITHER WAY. The two halves are
+      -- separate statements on purpose: skipping the whole thing when the destination is already
+      -- taken (a leftover `set_labels_2` rule from an earlier import) leaves the custom tool's rule
+      -- sitting on `set_labels` — and the native move below then reads it as the winning native
+      -- rule and deletes the real one. A key that named a tool which no longer answers to it has to
+      -- go whether or not its value found a new home.
       UPDATE "agents"
       SET settings = jsonb_set(
-            settings #- ARRAY['toolPreconditions', r.name],
+            settings,
             ARRAY['toolPreconditions', candidate],
             settings #> ARRAY['toolPreconditions', r.name]
           ),
@@ -160,8 +166,14 @@ BEGIN
         AND jsonb_exists(settings -> 'toolPreconditions', r.name)
         AND NOT jsonb_exists(settings -> 'toolPreconditions', candidate);
       UPDATE "agents"
+      SET settings = settings #- ARRAY['toolPreconditions', r.name],
+          updated_at = NOW()
+      WHERE id = ag.id
+        AND jsonb_typeof(settings -> 'toolPreconditions') = 'object'
+        AND jsonb_exists(settings -> 'toolPreconditions', r.name);
+      UPDATE "agents"
       SET settings = jsonb_set(
-            settings #- ARRAY['toolGuidance', r.name],
+            settings,
             ARRAY['toolGuidance', candidate],
             settings #> ARRAY['toolGuidance', r.name]
           ),
@@ -170,6 +182,12 @@ BEGIN
         AND jsonb_typeof(settings -> 'toolGuidance') = 'object'
         AND jsonb_exists(settings -> 'toolGuidance', r.name)
         AND NOT jsonb_exists(settings -> 'toolGuidance', candidate);
+      UPDATE "agents"
+      SET settings = settings #- ARRAY['toolGuidance', r.name],
+          updated_at = NOW()
+      WHERE id = ag.id
+        AND jsonb_typeof(settings -> 'toolGuidance') = 'object'
+        AND jsonb_exists(settings -> 'toolGuidance', r.name);
     END LOOP;
     -- strpos, not LIKE: the underscore in the name is a LIKE wildcard.
     FOR ag IN

@@ -1301,6 +1301,16 @@ export async function importAgent(
       });
     }
 
+    // The names this bundle grants as its OWN tools, HTTP or code. Read straight off the parsed
+    // bundle (no database), because it decides what a settings key MEANS: a rule keyed
+    // `assign_label` on an agent that grants a custom tool of that name is about that tool, not
+    // about the native that used to hold the name before this release.
+    const customToolNames = new Set(
+      exp.tools.flatMap((g) =>
+        g && (g.source === "HTTP" || g.source === "CODE") ? [g.tool] : [],
+      ),
+    );
+
     // Create any bundled components that don't already exist on the target tenant, BEFORE resolving
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
@@ -1340,6 +1350,7 @@ export async function importAgent(
           renameNativeToolKeys(
             normalizeSettingsForStorage(settings) ?? settings,
             renamed,
+            customToolNames,
           ),
         ) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
@@ -2594,6 +2605,12 @@ async function createMissingComponents(
 function renameNativeToolKeys(
   settings: unknown,
   renamed: RenamedComponents,
+  // The names the bundle grants as HTTP or CODE tools. A legacy native name is only legacy while
+  // nothing else answers to it: once `assign_label` stopped being native an operator became free to
+  // create a tool under it, and a bundle from THAT agent means its own tool by the key, not the
+  // native that used to hold the name. Without this the guard is moved to `set_labels` and the
+  // custom tool, which keeps its name, runs unguarded (review r9).
+  customToolNames: ReadonlySet<string>,
 ): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
@@ -2612,7 +2629,7 @@ function renameNativeToolKeys(
     for (const [from, to] of m) if (from !== to) stored.set(from, to);
   const moves: ((name: string) => string)[] = [
     (name) => stored.get(name) ?? name,
-    currentNativeToolName,
+    (name) => (customToolNames.has(name) ? name : currentNativeToolName(name)),
   ];
   let out = bag;
   for (const key of ["toolGuidance", "toolPreconditions"] as const) {

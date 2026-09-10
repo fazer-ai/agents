@@ -1503,4 +1503,52 @@ describe.skipIf(!dbUp)("reengage", () => {
       clearTurnInFlight(graphThreadId);
     }
   });
+  // O RASTRO. Uma recusa muda o estado de nada, então sem uma linha ela é indistinguível, de fora,
+  // de um clique que nunca chegou. E as duas mandam o operador investigar coisas diferentes. Este
+  // arquivo já aplica a regra na recusa de autorização, com o motivo escrito lá.
+  //
+  // Medido no flowlog, não no logger: é o que o operador abre no console.
+  test("uma recusa deixa rastro no flowlog", async () => {
+    const CONV = 9599;
+    const CI = 599;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    markTurnInFlight(graphThreadId);
+    try {
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "resposta antiga", type: 1 },
+              { id: 3, content: "e aí?", type: 0 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("busy");
+      await settleFlowEvents();
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:${CONV}`,
+          stage: "debounce",
+        },
+        select: { status: true, detail: true },
+      });
+      expect(rows.length).toBe(1);
+      expect(rows[0]?.status).toBe("skipped");
+      // `skipped` e não `error`: nada falhou, um turno estava rodando e o clique cedeu a vez.
+      expect((rows[0]?.detail as { outcome?: string })?.outcome).toBe("busy");
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+  });
 });

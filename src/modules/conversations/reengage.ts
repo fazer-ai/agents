@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { resolveGraphThreadId } from "@/graph/checkpointer";
 import {
@@ -246,6 +247,49 @@ export async function reengageConversation(
     resolved.contactInboxId,
   );
   const contactInboxId = resolved.contactInboxId;
+  // UMA RECUSA QUE NÃO DEIXA RASTRO LÊ COMO UM CLIQUE QUE NUNCA ACONTECEU, e este arquivo já diz
+  // isso em voz alta na recusa de autorização, poucas linhas abaixo: "It is logged, though — a
+  // refused re-engage that left no trace would read in the flowlog as if the click never happened."
+  // Vale igual aqui, e com um motivo a mais: o operador que apertou o botão e não viu nada mudar vai
+  // procurar no log, e "recusei porque a thread estava tomada" e "o clique não chegou" mandam
+  // investigar coisas completamente diferentes.
+  //
+  // `skipped`, e não `error`: nada falhou. Um turno estava rodando e este clique cedeu a vez, que é
+  // o desfecho correto e não um incidente.
+  const recusaOcupada = (onde: "cedo" | "adjacente"): ReengageResult => {
+    logger.info(
+      "reengage refused: a turn already owns thread=%s (conv=%s, check=%s)",
+      graphThreadId,
+      String(resolved.conversationId),
+      onde,
+    );
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: resolved.convDbId,
+        agentId: resolved.loaded.agentId,
+        inboxId: resolved.loaded.inboxDbId,
+        threadId: resolved.threadId,
+        base,
+      },
+      {
+        stage: "debounce",
+        level: "info",
+        status: "skipped",
+        detail: {
+          outcome: "busy",
+          label: "reengage",
+          // Qual das duas checagens recusou, porque a resposta muda o que se investiga: a barata
+          // diz "turno neste processo"; a adjacente pode ser de outra réplica.
+          check: onde,
+        },
+      },
+    );
+    return { outcome: "busy" };
+  };
+
   const threadTomada = async () =>
     (contactInboxId !== null &&
       (await turnOwnsThread(
@@ -338,7 +382,7 @@ export async function reengageConversation(
   // metades. Aqui é a barata e otimista, e na topologia no ar (réplica única) ela já pega tudo que
   // importa; a metade entre réplicas é a #593.
   if (isTurnInFlight(graphThreadId) || isFlushHeld(graphThreadId)) {
-    return { outcome: "busy" };
+    return recusaOcupada("cedo");
   }
 
   // The spend ceiling, asked here for the reason every other turn seam asks it: this is a billed
@@ -464,7 +508,7 @@ export async function reengageConversation(
   //
   // Sem `contact_inbox_id` não há claim durável a consultar (a linha é chaveada por ele), e a thread
   // de grafo cai para a da conversa: sobra o registro do processo, que é o que existe hoje.
-  if (await threadTomada()) return { outcome: "busy" };
+  if (await threadTomada()) return recusaOcupada("adjacente");
   // O MESMO REGISTRO QUE O FLUSH USA, pelo que ele já é: invisível para quem pergunta por TURNOS
   // (ingestão, compactação, rollback) e visível para o flush, que é quem precisa adiar diante deste
   // botão. Reusar o registro do turno aqui faria `drainPendingIngest` alcançar nada e todo rollback

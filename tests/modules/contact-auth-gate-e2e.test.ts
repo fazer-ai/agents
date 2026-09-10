@@ -91,7 +91,9 @@ interface Sent {
 // copy's stayed spent).
 function stubChatwoot(
   fail: {
-    publicSend?: boolean;
+    // Only the FIRST send/note fails: the delivery after it has to be able to speak, which is what
+    // proves the claimed window was handed back.
+    firstSend?: boolean;
     firstNote?: boolean;
     // Holds the first public send open until the latch is released, so a second delivery can run to
     // completion while the first is still awaiting Chatwoot.
@@ -102,10 +104,14 @@ function stubChatwoot(
   const statusToggles: Array<[number, string]> = [];
   const teamAssignments: Array<[number, number]> = [];
   let token = "";
+  let sends = 0;
   let notes = 0;
   const client = {
     sendMessage: async (c: number, content: string) => {
-      if (fail.publicSend) throw new Error("chatwoot down: send refused");
+      sends += 1;
+      if (fail.firstSend && sends === 1) {
+        throw new Error("chatwoot down: send refused");
+      }
       const hold = fail.holdFirstSend;
       if (hold) {
         fail.holdFirstSend = undefined;
@@ -978,8 +984,11 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
   test("a deny copy that does not land is named in the note as a delivery failure", async () => {
     const convId = 9315;
     await seedConversation(convId, inboxFullDbId);
-    const cw = stubChatwoot({ publicSend: true });
-    const auth = authDouble(() => denied());
+    const cw = stubChatwoot({ firstSend: true });
+    const auth = authDouble(
+      () => denied("not_customer"),
+      () => denied("not_customer"),
+    );
     await deliverCustomerMessage({
       convId,
       chatwootInboxId: INBOX_FULL,
@@ -994,8 +1003,30 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     const notes = cw.notesOn(convId);
     expect(notes).toHaveLength(1);
     expect(notes[0]?.content).toContain("NÃO chegou ao contato");
+    expect(notes[0]?.content).toContain("not_customer");
+    expect(notes[0]?.content).not.toContain(PHONE);
     expect(notes[0]?.content).not.toContain("carência");
     expect(notes[0]?.content).not.toContain("Nenhum aviso");
+    // And the window came back with it. A send that did not land must not silence the next refusal
+    // for the whole window over a message the customer never received, so the second delivery — well
+    // inside the 300s — speaks. This is what `releaseContactAuthNotice(copyClaim)` buys, and nothing
+    // else in the suite exercises it end to end.
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 815,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    expect(cw.publicOn(convId)).toEqual([
+      {
+        conversationId: convId,
+        content: DENY_COPY,
+        private: false,
+        token: BOT_TOKEN,
+      },
+    ]);
   });
 
   // Two refusals racing on ONE conversation. Single-flight is keyed by contact AND request, so two
@@ -1097,8 +1128,8 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // write about a copy it did not send.
     const cw = stubChatwoot({ firstNote: true });
     const auth = authDouble(
-      () => denied(),
-      () => denied(),
+      () => denied("not_customer"),
+      () => denied("not_customer"),
     );
     for (const senderId of [816, 817]) {
       await deliverCustomerMessage({
@@ -1110,12 +1141,22 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
         makeClient: cw.makeClient,
       });
     }
-    // One copy for the two refusals: the second was inside the window.
-    expect(cw.publicOn(convId)).toHaveLength(1);
+    // One copy for the two refusals: the second was inside the window. Checked by content and token
+    // too — it has to be the deny copy, sent as the persona, not just "some message".
+    expect(cw.publicOn(convId)).toEqual([
+      {
+        conversationId: convId,
+        content: DENY_COPY,
+        private: false,
+        token: BOT_TOKEN,
+      },
+    ]);
     const notes = cw.notesOn(convId);
     expect(notes).toHaveLength(1);
     expect(notes[0]?.content).toContain("carência entre avisos");
     expect(notes[0]?.content).toContain("não saiu nesta mensagem");
+    expect(notes[0]?.content).toContain("not_customer");
+    expect(notes[0]?.content).not.toContain(PHONE);
     expect(notes[0]?.content).not.toContain("NÃO chegou ao contato");
   });
 

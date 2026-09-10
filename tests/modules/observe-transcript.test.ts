@@ -194,6 +194,20 @@ describe("what the observer reads", () => {
     expect(text).toContain("Atendente: vou verificar");
   });
 
+  test("the frame says an external effect leaves no trace here, and asks for the note", () => {
+    // A tick is stateless by design: its own thread, an in-memory checkpointer, a transcript rebuilt
+    // from Chatwoot. Labels and notes ARE on the conversation, so "what did I already do" is
+    // answerable for them. An action whose effect lands elsewhere — an HTTP call, a booking, a
+    // charge — leaves nothing here, and the next burst reads an overlapping window with the same
+    // evidence. The note channel is the trace this design has, so the frame asks for it in both
+    // directions: write one, and do not repeat what one already records (review round 32).
+    const text = observeTurnText([{ role: "customer", text: "oi" }], []);
+    expect(text).toContain("Cada turno começa do zero");
+    expect(text).toContain("efeito FORA desta conversa");
+    expect(text).toContain("registre em nota privada");
+    expect(text).toContain("não repita a que já estiver registrada");
+  });
+
   test("no label standing is said as such, never as an empty block", () => {
     expect(observeTurnText([{ role: "customer", text: "oi" }], [])).toContain(
       "<etiquetas-atuais>(nenhuma)</etiquetas-atuais>",

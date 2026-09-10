@@ -452,6 +452,15 @@ export function observeTurnText(
     "Não existe canal de resposta aqui: qualquer texto que você escrever não chega a lugar nenhum, nem ao cliente nem à equipe.",
     "O que você faz neste turno é agir sobre a conversa com as ferramentas que tem: etiquetar, anotar em nota privada, registrar atributo, mover o card, o que o seu papel pedir.",
     "Cada turno começa do zero: o que você já fez nesta conversa está no que está registrado nela, não na sua memória.",
+    // ...AND THE HALF THAT DOES NOT REGISTER ITSELF (review round 32). A label and a note are on the
+    // conversation, so the two lines above are enough for them. An action whose effect lands
+    // somewhere else — an HTTP call, a booking, a charge — leaves NOTHING here, and the next burst
+    // reads an overlapping window with the same evidence, which is an invitation to do it again.
+    // The note channel is the trace this design already has, so the frame asks for it and asks the
+    // model to read it back. A mitigation, not a guarantee: the residual risk is declared in the PR
+    // and in docs/chatwoot.md, because a model that ignores the instruction, or an effect older than
+    // the window, is still a repeat nobody can see from here.
+    "Uma ação com efeito FORA desta conversa (chamada a sistema externo, agendamento, cobrança) não deixa rastro aqui: ao fazer uma, registre em nota privada o que foi feito, e não repita a que já estiver registrada.",
     "As notas abaixo são as que aparecem na janela que você está lendo; pode haver outras mais antigas que não estão aqui.",
     "Se nada precisa mudar em relação ao que já está registrado, não chame ferramenta nenhuma.",
     "",

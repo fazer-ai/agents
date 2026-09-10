@@ -1354,6 +1354,7 @@ describe.skipIf(!dbUp)("reengage", () => {
                '${tenantId}:${instanceId}:ci:${CI}', 1, 1,
                now() + interval '5 minutes', now(), now())`,
     );
+    let leituras = 0;
     const res = await reengageConversation(
       ctx(),
       id,
@@ -1366,6 +1367,9 @@ describe.skipIf(!dbUp)("reengage", () => {
             { id: 3, content: "e aí?", type: 0 },
           ]),
           sent,
+          onGetMessages: () => {
+            leituras += 1;
+          },
         }),
         checkpointer: new MemorySaver(),
       },
@@ -1373,6 +1377,14 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("busy");
     expect(sent).toEqual([]);
+    // E A RECUSA É BARATA. A checagem adjacente ao invoke, sozinha, só recusaria depois do preview
+    // do Chatwoot, do teto de gasto e (com o portão ligado) de uma chamada ao endpoint de
+    // autorização de outra pessoa. Medido rodando o console de verdade: sem a checagem cedo, este
+    // caminho batia em `preview.getMessages` e devolvia 500 antes de chegar na recusa.
+    //
+    // Zero leituras é a asserção porque é a primeira coisa que a função faria: uma recusa que
+    // custa uma ida ao Chatwoot passa por todo o resto também.
+    expect(leituras).toBe(0);
   });
 
   // MATA A MUTAÇÃO que troca `markFlushHold` pelo registro do TURNO. O que o botão segura antes de

@@ -239,6 +239,37 @@ export async function reengageConversation(
   );
   if (!gateOpen) return { outcome: "gate-closed" };
 
+  // A MESMA PERGUNTA, CEDO, pelo motivo que o portão de assignee logo acima já dá: recusar aqui
+  // evita gastar o que vem depois. Sem ela a recusa só acontece adiante, e o clique num contato que
+  // já está sendo respondido custa uma ida ao Chatwoot, o teto de gasto e, com o portão ligado, uma
+  // chamada ao endpoint de autorização de outra pessoa. Medido rodando o console de verdade: sem
+  // esta linha o caminho batia em `preview.getMessages` e devolvia 500 antes de chegar na recusa.
+  //
+  // Esta é a barata e otimista; a que DECIDE é a adjacente ao invoke, lá embaixo. Uma leitura só
+  // aqui teria a janela larga que a #588 fechou; uma leitura só lá gasta o caminho inteiro para
+  // recusar. As duas, exatamente como o portão de assignee é perguntado duas vezes.
+  const graphThreadId = resolveGraphThreadId(
+    tenantId,
+    resolved.instanceId,
+    resolved.conversationId,
+    resolved.contactInboxId,
+  );
+  const contactInboxId = resolved.contactInboxId;
+  const threadTomada = async () =>
+    (contactInboxId !== null &&
+      (await turnOwnsThread(
+        {
+          tenantId,
+          instanceId: resolved.instanceId,
+          contactInboxId,
+          graphThreadId,
+        },
+        base,
+      ))) ||
+    isTurnInFlight(graphThreadId) ||
+    isFlushHeld(graphThreadId);
+  if (await threadTomada()) return { outcome: "busy" };
+
   // WHAT THIS CLICK WOULD ANSWER, computed once and used twice: here, to decide whether there is a
   // turn at all, and inside `coalesceAndRunTurn`, to build it. One expression rather than two,
   // because the pre-check and the turn disagreeing is how a gate ends up refusing work that was
@@ -424,31 +455,7 @@ export async function reengageConversation(
   //
   // Sem `contact_inbox_id` não há claim durável a consultar (a linha é chaveada por ele), e a thread
   // de grafo cai para a da conversa: sobra o registro do processo, que é o que existe hoje.
-  const graphThreadId = resolveGraphThreadId(
-    tenantId,
-    resolved.instanceId,
-    resolved.conversationId,
-    resolved.contactInboxId,
-  );
-  const contactInboxId = resolved.contactInboxId;
-  const donoDurável =
-    contactInboxId !== null &&
-    (await turnOwnsThread(
-      {
-        tenantId,
-        instanceId: resolved.instanceId,
-        contactInboxId,
-        graphThreadId,
-      },
-      base,
-    ));
-  if (
-    donoDurável ||
-    isTurnInFlight(graphThreadId) ||
-    isFlushHeld(graphThreadId)
-  ) {
-    return { outcome: "busy" };
-  }
+  if (await threadTomada()) return { outcome: "busy" };
   // O MESMO REGISTRO QUE O FLUSH USA, pelo que ele já é: invisível para quem pergunta por TURNOS
   // (ingestão, compactação, rollback) e visível para o flush, que é quem precisa adiar diante deste
   // botão. Reusar o registro do turno aqui faria `drainPendingIngest` alcançar nada e todo rollback

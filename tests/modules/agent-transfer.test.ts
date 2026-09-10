@@ -1897,7 +1897,11 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       groups: [{ name: "assunto", values: ["a", "b"], exclusive: true }],
       noteOnChange: true,
     };
-    settings.monitoring = { window: { messages: 20 }, labelGroups: [] };
+    settings.monitoring = {
+      window: { messages: 20 },
+      labelGroups: [],
+      noteOnChange: true,
+    };
     const { agent } = await importAgent(dstCtx(), bundle, appDb);
     const row = await suDb.agent.findFirstOrThrow({
       where: { id: BigInt(agent.id) },
@@ -1908,6 +1912,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // The rest of the monitoring block survives: what is retired is the taxonomy, not the mode.
     expect(
       (stored.monitoring as Record<string, unknown> | undefined)?.labelGroups,
+    ).toBeUndefined();
+    expect(
+      (stored.monitoring as Record<string, unknown> | undefined)?.noteOnChange,
     ).toBeUndefined();
     expect(
       (stored.monitoring as Record<string, Record<string, number>> | undefined)

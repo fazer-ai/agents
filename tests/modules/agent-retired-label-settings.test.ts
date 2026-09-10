@@ -73,6 +73,24 @@ describe("retired label settings", () => {
     ).not.toThrow();
   });
 
+  test("monitoring.noteOnChange: true is refused, false is not", () => {
+    // The flag lived HERE, not under `labels`: readMonitoringConfig read it off the monitoring block
+    // and the previous editor wrote it for every agent, defaulting to true. `true` asks for a
+    // behaviour that is gone; `false` asks for what it already gets, and refusing it would teach
+    // nothing while breaking a save.
+    expect(() =>
+      assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: true } }),
+    ).toThrow(RetiredLabelSettingError);
+    expect(() =>
+      assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: false } }),
+    ).not.toThrow();
+    try {
+      assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: true } });
+    } catch (e) {
+      expect(String(e)).toContain("monitoring.noteOnChange");
+    }
+  });
+
   test("a settings bag without either key passes", () => {
     expect(() =>
       assertSettingsRetiredLabelKeys({

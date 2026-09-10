@@ -2620,14 +2620,16 @@ function stripRetiredLabelKeys(settings: unknown): unknown {
   const bag = { ...(settings as Record<string, unknown>) };
   delete bag.labels;
   const monitoring = bag.monitoring;
+  const mon = monitoring as Record<string, unknown> | undefined;
   if (
     monitoring &&
     typeof monitoring === "object" &&
     !Array.isArray(monitoring) &&
-    (monitoring as Record<string, unknown>).labelGroups !== undefined
+    (mon?.labelGroups !== undefined || mon?.noteOnChange !== undefined)
   ) {
     const next = { ...(monitoring as Record<string, unknown>) };
     delete next.labelGroups;
+    delete next.noteOnChange;
     bag.monitoring = next;
   }
   return bag;

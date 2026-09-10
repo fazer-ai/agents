@@ -335,6 +335,17 @@ function handoffTool(ctx: ToolCtx) {
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
         await ctx.client.sendPrivateNote(ctx.conversationId, reason);
+        // ASKED AGAIN, between the note and the status change, and only when the note was actually
+        // sent — the third handler in this file that WAITS before writing, and the rule is the same
+        // one `set_labels` applies inside its queue and `resolve_conversation` after its read: the
+        // graph's ask at the tool boundary happened before this wait, and an observation holds no
+        // thread claim to keep a `/reset` or a detach out of it. The note is already filed and stays
+        // filed; what this stops is the pair below, which takes the conversation out of `pending`
+        // and assigns it — a routing change on an episode the operator was just told was cleared
+        // (round 18).
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
+        }
       }
       // Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
       // bot and the human queue picks it up.

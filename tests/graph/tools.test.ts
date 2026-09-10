@@ -393,6 +393,37 @@ describe("native tools", () => {
     expect(calls.map((c) => c[0])).not.toContain("toggleStatus");
   });
 
+  test("a /reset landing while the handoff note is in flight stops the routing change", async () => {
+    // The third handler in this file that waits before writing. The note is already filed and stays
+    // filed; what the fence stops is the pair after it — the status change out of `pending` and the
+    // assignment — which is a routing change on an episode the operator was just told was cleared.
+    const { client, calls } = recordingClient();
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      stillWanted: async () => false,
+    });
+    const out = String(
+      await byName(tools, "handoff_to_human").invoke({ reason: "resumo" }),
+    );
+    expect(calls.map((c) => c[0])).toEqual(["sendPrivateNote"]);
+    expect(out).toContain("called off");
+    expect(out).toContain("already filed");
+  });
+
+  test("without a note there is no wait, so the handoff is unchanged", async () => {
+    // The fence is asked only where a wait happened. A handoff with no summary writes straight
+    // through, exactly as before.
+    const { client, calls } = recordingClient();
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      stillWanted: async () => false,
+    });
+    await byName(tools, "handoff_to_human").invoke({});
+    expect(calls.map((c) => c[0])).toContain("toggleStatus");
+  });
+
   test("a fence that cannot answer is not a withdrawal, and the close proceeds", async () => {
     // Only an explicit `false` stops it: an unreadable fence is not the operator saying no, and
     // treating it as one would throw away a turn already paid for.

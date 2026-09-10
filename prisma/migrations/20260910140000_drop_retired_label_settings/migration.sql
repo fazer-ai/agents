@@ -29,16 +29,20 @@ UPDATE "agents"
 SET "settings" = "settings" #- '{labels}'
 WHERE "settings" ? 'labels';
 
--- 2. `monitoring.labelGroups` only. The rest of the block is live configuration (the burst window,
---    `analysis`, the debounce), so the key is cut out rather than the block dropped.
+-- 2. `monitoring.labelGroups` and `monitoring.noteOnChange`, the two retired keys inside a block
+--    that is otherwise live configuration (the burst window, `analysis`, the debounce), so the keys
+--    are cut out rather than the block dropped. `noteOnChange` is the one that actually shipped:
+--    `readMonitoringConfig` read it off THIS block, and the previous editor wrote it for every
+--    agent, defaulting to true.
 UPDATE "agents"
 SET "settings" = jsonb_set(
       "settings",
       '{monitoring}',
-      ("settings" -> 'monitoring') #- '{labelGroups}'
+      ("settings" -> 'monitoring') #- '{labelGroups}' #- '{noteOnChange}'
     )
 WHERE jsonb_typeof("settings" -> 'monitoring') = 'object'
-  AND ("settings" -> 'monitoring') ? 'labelGroups';
+  AND (("settings" -> 'monitoring') ? 'labelGroups'
+       OR ("settings" -> 'monitoring') ? 'noteOnChange');
 
 ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
 

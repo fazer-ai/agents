@@ -74,6 +74,8 @@ describe.if(dbUp)("drop retired label settings", () => {
           window: { messages: 20 },
           analysis: "incremental",
           labelGroups: [],
+          // The key that actually shipped: written for every agent, defaulting to true.
+          noteOnChange: true,
         },
         debounce: { windowSeconds: 20 },
       }),
@@ -118,6 +120,7 @@ describe.if(dbUp)("drop retired label settings", () => {
     const s = await settingsOf(id("tombstone"));
     const mon = s.monitoring as Record<string, unknown>;
     expect(mon.labelGroups).toBeUndefined();
+    expect(mon.noteOnChange).toBeUndefined();
     // The rest of the block is live configuration; cutting the key must not drop the block.
     expect((mon.window as { messages: number }).messages).toBe(20);
     expect(mon.analysis).toBe("incremental");

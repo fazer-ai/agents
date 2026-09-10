@@ -434,12 +434,23 @@ export function assertSettingsRetiredLabelKeys(settings: unknown): void {
     throw new RetiredLabelSettingError("labels");
   const monitoring = bag.monitoring;
   if (
-    monitoring &&
-    typeof monitoring === "object" &&
-    !Array.isArray(monitoring) &&
-    carriesConfiguration((monitoring as Record<string, unknown>).labelGroups)
+    !monitoring ||
+    typeof monitoring !== "object" ||
+    Array.isArray(monitoring)
   )
+    return;
+  const mon = monitoring as Record<string, unknown>;
+  if (carriesConfiguration(mon.labelGroups))
     throw new RetiredLabelSettingError("monitoring.labelGroups");
+  // THE FLAG LIVED HERE, not under `labels` — `readMonitoringConfig` read `bag.noteOnChange` off the
+  // monitoring block, and the previous editor wrote it there for every agent. Only `true` is refused:
+  // it asks for a behaviour that no longer exists (the note is now something the operator asks for in
+  // `toolGuidance.set_labels`, like any other instruction), while `false` asks for what it already
+  // gets and refusing it would teach nothing and break a save. Its default was `true`, so the
+  // migration and the import boundary clear the stored ones rather than leaving them to be refused
+  // (round 18).
+  if (mon.noteOnChange === true)
+    throw new RetiredLabelSettingError("monitoring.noteOnChange");
 }
 
 // A TOMBSTONE FOR A RULE THAT IS ACTUALLY THERE, which the catalog restriction must not block.

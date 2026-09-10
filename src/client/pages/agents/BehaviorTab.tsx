@@ -697,10 +697,14 @@ function AttributeContextPickers({
 function ContactAuthTeamSelect({
   agentId,
   value,
+  instanceId: storedInstanceId,
   onChange,
 }: {
   agentId: string;
   value: string;
+  // The account the stored team was picked in, as recorded next to it. Empty for a value written
+  // before the field existed, or through REST/MCP without it.
+  instanceId: string;
   // The team AND the account it came from: stored together, because the id alone means nothing
   // outside it.
   onChange: (teamId: string, instanceId: string) => void;
@@ -708,9 +712,12 @@ function ContactAuthTeamSelect({
   const { t } = useTranslation();
   const [data, setData] = useState<{
     teams: Array<{ id: number; name: string }>;
-    accountCount: number;
-    // Our ChatwootInstance id of the single account, when there is exactly one.
-    instanceId: string;
+    // Every account the agent serves, so a stored target can be checked against the one it names.
+    accounts: Array<{
+      instanceId: string;
+      accountId: number;
+      accountName: string | null;
+    }>;
   } | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -722,16 +729,12 @@ function ContactAuthTeamSelect({
         if (!cancelled) {
           setData(
             d
-              ? {
-                  teams: d.teams,
-                  accountCount: d.accounts.length,
-                  instanceId: d.accounts[0]?.instanceId ?? "",
-                }
-              : { teams: [], accountCount: 0, instanceId: "" },
+              ? { teams: d.teams, accounts: d.accounts }
+              : { teams: [], accounts: [] },
           );
         }
       } catch {
-        if (!cancelled) setData({ teams: [], accountCount: 0, instanceId: "" });
+        if (!cancelled) setData({ teams: [], accounts: [] });
       }
     })();
     return () => {
@@ -739,20 +742,32 @@ function ContactAuthTeamSelect({
     };
   }, [agentId]);
   const teams = data?.teams ?? [];
+  const accounts = data?.accounts ?? [];
   const listed = teams.some((tm) => String(tm.id) === value);
   // Populated only when the agent serves exactly one account, which is the only case the picker
   // offers teams in.
-  const instanceId = data?.accountCount === 1 ? data.instanceId : "";
-  // A Chatwoot team id means something inside ONE account. When the agent serves several, the
-  // listing deliberately comes back empty, and keeping the stored id as a "(not listed)" option
-  // re-saved a target that the runtime then applies through EVERY account's client: in the other
-  // accounts that number is a different team or none, so refused contacts are routed nowhere.
-  // Cleared here rather than at save time, so the operator sees the field empty and the warning
-  // saying why, and still has to press save.
-  const multiAccount = data !== null && data.accountCount > 1;
+  const instanceId =
+    accounts.length === 1 ? (accounts[0]?.instanceId ?? "") : "";
+  // A Chatwoot team id means something inside ONE account, so what makes a stored target usable is
+  // the ACCOUNT RECORDED NEXT TO IT — the same rule the runtime applies per conversation
+  // (`teamTargetUsable` in modules/chatwoot/webhook.ts): the recorded account decides, and counting
+  // accounts is only the fallback for a value stored before that field existed. Judging by the count
+  // alone, as this did, threw away a target the runtime would have used: an agent bound to one inbox
+  // per account (a test inbox beside the live one) had its team wiped just by opening this tab, and
+  // the write marked the tab unsaved on top of it.
+  const storedAccount = accounts.find((a) => a.instanceId === storedInstanceId);
+  const storedUsable = storedInstanceId
+    ? !!storedAccount
+    : accounts.length === 1;
+  // Only judge once the listing came back with accounts. Zero means no inbox is bound yet (or the
+  // read failed), which says nothing about the target and must not cost the operator their choice.
+  const judged = accounts.length > 0;
+  const drop = judged && !!value && !storedUsable;
   useEffect(() => {
-    if (multiAccount && value) onChange("", "");
-  }, [multiAccount, value, onChange]);
+    if (drop) onChange("", "");
+  }, [drop, onChange]);
+  const keptElsewhere =
+    judged && !!value && storedUsable && accounts.length > 1;
   return (
     <FormField
       label={t("editor.contactAuthTeam", "Assign to team")}
@@ -771,7 +786,7 @@ function ContactAuthTeamSelect({
           <option value="">
             {t("editor.contactAuthNoTeam", "No team (inbox routing)")}
           </option>
-          {!listed && value && !multiAccount && (
+          {!listed && value && !drop && (
             <option value={value}>
               {t("editor.contactAuthTeamStored", "Team #{{id}} (not listed)", {
                 id: value,
@@ -784,17 +799,27 @@ function ContactAuthTeamSelect({
             </option>
           ))}
         </Select>
-        {data && data.accountCount !== 1 && (
+        {data && accounts.length !== 1 && (
           <span className="text-text-muted text-xs">
-            {data.accountCount === 0
+            {accounts.length === 0
               ? t(
                   "editor.handoffPinnedNoInbox",
                   "Bind at least one inbox in the Channels tab first.",
                 )
-              : t(
-                  "editor.contactAuthTeamMultiAccount",
-                  "This agent serves more than one Chatwoot account. A team id belongs to one account, so no team can be targeted here — Chatwoot's inbox routing decides who takes a refused conversation.",
-                )}
+              : keptElsewhere
+                ? t(
+                    "editor.contactAuthTeamKept",
+                    "This agent serves more than one Chatwoot account, so teams cannot be listed here. The saved team belongs to {{account}} and is applied only to conversations in that account; elsewhere Chatwoot's inbox routing decides.",
+                    {
+                      account:
+                        storedAccount?.accountName ??
+                        `#${storedAccount?.accountId}`,
+                    },
+                  )
+                : t(
+                    "editor.contactAuthTeamMultiAccount",
+                    "This agent serves more than one Chatwoot account. A team id belongs to one account, so no team can be targeted here — Chatwoot's inbox routing decides who takes a refused conversation.",
+                  )}
           </span>
         )}
       </div>
@@ -2640,6 +2665,7 @@ export function BehaviorTab({
                   <ContactAuthTeamSelect
                     agentId={agentId}
                     value={contactAuth.handoffTeamId}
+                    instanceId={contactAuth.handoffTeamInstanceId}
                     onChange={(v, instanceId) =>
                       setContactAuth({
                         ...contactAuth,

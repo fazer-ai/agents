@@ -2285,6 +2285,18 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
 // anything the customer wrote. This is also the ONE place the endpoint's own reason surfaces: the
 // note sits in the operator's Chatwoot, on the conversation it is about, unlike the execution log
 // that alert channels read.
+// What the CUSTOMER got on this refusal, which the note has to describe correctly. Only a `denied`
+// verdict can send a copy at all: `no_identity` and `error` are silent to the customer by design.
+export type ContactAuthCopyOutcome =
+  // The refusal notice reached the customer.
+  | "sent"
+  // No `denyMessage` configured: the customer got nothing, on purpose.
+  | "none"
+  // Configured, but the notice cooldown had already spoken inside the window.
+  | "suppressed"
+  // Configured and attempted, but the send did not land.
+  | "failed";
+
 export function contactAuthNoteText(
   verdict: {
     outcome: ContactAuthOutcome;
@@ -2293,6 +2305,8 @@ export function contactAuthNoteText(
     endpointReason?: string;
   },
   handedOff: boolean,
+  // Defaults to `none` so the sentence stays true for a caller that sends no copy.
+  copy: ContactAuthCopyOutcome = "none",
 ): string {
   const handoffLine = handedOff
     ? " A conversa foi aberta para atendimento humano."
@@ -2306,7 +2320,24 @@ export function contactAuthNoteText(
   if (verdict.outcome === "denied") {
     const motivo = verdict.endpointReason ?? verdict.reason;
     const reason = motivo ? ` Motivo: ${motivo}.` : "";
-    return `🔒 Contato não autorizado pela verificação externa.${reason} O agente não respondeu automaticamente.${handoffLine}`;
+    // The note used to say "O agente não respondeu automaticamente" on every refusal, including the
+    // ones where the deny message HAD just been posted to the customer — a sentence the operator
+    // reads directly below that very message, which makes the note look broken and hides that the
+    // customer already knows.
+    //
+    // The note earns its space by carrying what is NOT on screen. When the copy went out, the
+    // operator can see it: saying so adds nothing, so the note stays quiet about it and keeps only
+    // the reason code, which is the part no one can see. The three cases where NOTHING reached the
+    // customer are the invisible ones, and each is a different thing for the operator to do: nobody
+    // configured a copy, the cooldown withheld it, or the send failed and should be chased.
+    const copyLine = {
+      sent: "",
+      none: " Nenhum aviso foi enviado ao contato: não há mensagem de recusa configurada.",
+      suppressed:
+        " O aviso de recusa não foi repetido ao contato por causa da carência entre avisos.",
+      failed: " O envio do aviso de recusa ao contato NÃO foi concluído.",
+    }[copy];
+    return `🔒 Contato não autorizado pela verificação externa.${reason}${copyLine}${handoffLine}`;
   }
   const cause =
     verdict.status !== undefined
@@ -4072,11 +4103,20 @@ async function maybeConsumeCommandOrGate(params: {
           const denyMessage =
             verdict.outcome === "denied" ? authCfg.denyMessage : null;
           const copyClaim = denyMessage ? claim("copy") : false;
+          // Tracked so the operator note can say what the CUSTOMER actually got, instead of
+          // claiming silence on top of a refusal that was just delivered.
+          let copyOutcome: ContactAuthCopyOutcome = denyMessage
+            ? copyClaim
+              ? "failed"
+              : "suppressed"
+            : "none";
           if (denyMessage && copyClaim) {
             // The window is claimed before the send, because two settled deliveries racing must not
             // both speak — so a send that does not land has to give it back. Kept, it would silence
             // the next refusal for the whole window over a message the customer never received.
-            if (!(await postPublicMessage(denyMessage))) {
+            if (await postPublicMessage(denyMessage)) {
+              copyOutcome = "sent";
+            } else {
               releaseContactAuthNotice(copyClaim);
             }
           }
@@ -4090,7 +4130,9 @@ async function maybeConsumeCommandOrGate(params: {
           const noteClaim = claim("note");
           if (noteClaim) {
             if (
-              !(await postPrivateNote(contactAuthNoteText(verdict, handedOff)))
+              !(await postPrivateNote(
+                contactAuthNoteText(verdict, handedOff, copyOutcome),
+              ))
             ) {
               releaseContactAuthNotice(noteClaim);
             }

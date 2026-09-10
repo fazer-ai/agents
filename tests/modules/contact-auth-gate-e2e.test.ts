@@ -85,13 +85,21 @@ interface Sent {
 // Recording Chatwoot double, injected via deps.makeClient so neither the gate nor the turn ever
 // reaches a socket. The factory captures the bot token each client was built with: the deny copy
 // must leave as the PERSONA, not as a token-less client that a real Chatwoot would 401.
-function stubChatwoot() {
+// `fail` injects delivery failures, which is the only way to reach two of the four things the
+// operator note can say about the customer's copy: a send that did not land, and the cooldown
+// withholding a repeat (reachable when an earlier note failed and freed its own window while the
+// copy's stayed spent).
+function stubChatwoot(
+  fail: { publicSend?: boolean; firstNote?: boolean } = {},
+) {
   const sent: Sent[] = [];
   const statusToggles: Array<[number, string]> = [];
   const teamAssignments: Array<[number, number]> = [];
   let token = "";
+  let notes = 0;
   const client = {
     sendMessage: async (c: number, content: string) => {
+      if (fail.publicSend) throw new Error("chatwoot down: send refused");
       sent.push({
         conversationId: c,
         content,
@@ -101,6 +109,10 @@ function stubChatwoot() {
       return {};
     },
     sendPrivateNote: async (c: number, content: string) => {
+      notes += 1;
+      if (fail.firstNote && notes === 1) {
+        throw new Error("chatwoot down: note refused");
+      }
       sent.push({ conversationId: c, content, private: true, token });
       return {};
     },
@@ -567,6 +579,12 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(notes[0]?.content).toContain("não autorizado");
     expect(notes[0]?.content).toContain("not_customer");
     expect(notes[0]?.content).not.toContain(PHONE);
+    // The copy went out in this very conversation, one line above. The note used to claim "o agente
+    // não respondeu automaticamente" here, contradicting the screen; announcing that the contact WAS
+    // warned would be just as useless, because the operator can see the message. So the note carries
+    // only what is not on screen — the reason code above — and says nothing about the copy.
+    expect(notes[0]?.content).not.toContain("não respondeu automaticamente");
+    expect(notes[0]?.content).not.toContain("aviso");
     // The message is consumed: the watermark advanced so no later flush re-answers it.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
@@ -933,7 +951,67 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(cw.statusToggles).toEqual([[convId, "open"]]);
     // No team configured: open only, Chatwoot routes.
     expect(cw.teamAssignments).toEqual([]);
-    expect(cw.notesOn(convId)).toHaveLength(1);
+    // The note is the ONLY place this is visible: there is no message on screen to infer it from,
+    // so it names both the silence and its cause.
+    const notes = cw.notesOn(convId);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.content).toContain("Nenhum aviso foi enviado ao contato");
+    expect(notes[0]?.content).toContain(
+      "não há mensagem de recusa configurada",
+    );
+  });
+
+  test("a deny copy that does not land is named in the note as a delivery failure", async () => {
+    const convId = 9315;
+    await seedConversation(convId, inboxFullDbId);
+    const cw = stubChatwoot({ publicSend: true });
+    const auth = authDouble(() => denied());
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 815,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    expect(cw.publicOn(convId)).toEqual([]);
+    // Nothing on screen says the send failed, and the difference matters to the operator: this one
+    // is a delivery problem to chase, not a decision someone made.
+    const notes = cw.notesOn(convId);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.content).toContain("NÃO foi concluído");
+    expect(notes[0]?.content).not.toContain("carência");
+    expect(notes[0]?.content).not.toContain("Nenhum aviso");
+  });
+
+  test("a repeat withheld by the cooldown is named as the cooldown, not as a failure", async () => {
+    const convId = 9316;
+    await seedConversation(convId, inboxFullDbId);
+    // The first note fails, so it gives ITS window back while the copy's stays spent. That is what
+    // separates the two windows, and it is the state in which the second refusal has a note to
+    // write about a copy it did not send.
+    const cw = stubChatwoot({ firstNote: true });
+    const auth = authDouble(
+      () => denied(),
+      () => denied(),
+    );
+    for (const senderId of [816, 817]) {
+      await deliverCustomerMessage({
+        convId,
+        chatwootInboxId: INBOX_FULL,
+        senderId,
+        phone: PHONE,
+        fetchImpl: auth.fetchImpl,
+        makeClient: cw.makeClient,
+      });
+    }
+    // One copy for the two refusals: the second was inside the window.
+    expect(cw.publicOn(convId)).toHaveLength(1);
+    const notes = cw.notesOn(convId);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.content).toContain("carência entre avisos");
+    expect(notes[0]?.content).toContain("não foi repetido");
+    expect(notes[0]?.content).not.toContain("NÃO foi concluído");
   });
 
   // A Chatwoot team id belongs to ONE account. The editor cannot warn about an agent MOVED to

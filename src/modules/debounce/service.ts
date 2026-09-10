@@ -49,7 +49,9 @@ export async function resolveDebounceConfig(
   return cfg;
 }
 
-function readBurstStart(payload: unknown): number | null {
+// EXPORTED because the flush reads it too: it is the only anchor a deferral ceiling can use that a
+// re-arm does not erase (see the ceiling in ./handler.ts).
+export function readBurstStart(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).burstStartedAt;
   return typeof v === "number" && Number.isFinite(v) ? v : null;

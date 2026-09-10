@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
+import { isTurnInFlight } from "@/graph/inflight";
 import { armIngest } from "@/graph/ingest-job";
 import { parseThreadId } from "@/graph/nudge";
 import { type AgentConfig, loadAgentConfig } from "@/graph/prepare";
@@ -70,9 +71,22 @@ import {
   SPEND_CEILING_BURST_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
-import { readLastMessageId } from "./service";
+import { readBurstStart, readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
 import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
+
+// How long a flush waits before asking again whether the thread is free. Matched to the debounce
+// worker's own tick (DEBOUNCE_WORKER_INTERVAL_MS, 2500ms by default) rather than to the minute
+// continuous ingestion uses: nothing is gained by coming back sooner than the next tick, and unlike
+// an ingestion nobody is waiting on, there is a customer at the other end of this one.
+const DEFER_ON_TURN_MS = 2_000;
+
+// The total a burst may spend waiting for a busy thread, measured from when the burst opened. Past
+// it the flush answers anyway: an unanswered customer is worse than a duplicated line in memory.
+// Five minutes is past any legitimate turn — model, tools at their own bound, and a split delivery
+// paying out its balloons — and short enough that a thread wedged by a dead process does not swallow
+// the conversation.
+const DEFER_CEILING_MS = 5 * 60_000;
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -1716,6 +1730,73 @@ export async function flushDebounceJob(
       }
       return { outcome: "done" };
     }
+  }
+
+  // A TURN ALREADY RUNNING ON THIS THREAD is the one thing between here and the invoke that no gate
+  // above asks about (issue #588), and the arm side decided it deliberately: `armDebounce` treats a
+  // claim in flight as "the previous flush is finished business", so a customer writing mid-turn
+  // opens a NEW burst and its flush fires a window later, while the first turn is still in the
+  // model, in a tool, or paying out its split balloons.
+  //
+  // MEASURED rather than reasoned about, on 4b35f318: two flushes on one conversation gave a peak of
+  // two concurrent model calls, both handed a history without the other's answer, and a checkpoint
+  // whose channel held the customer's burst TWICE — each invoke is a read-modify-write of the whole
+  // channel, so each appended what it had loaded. The duplicate is permanent memory the summarizer
+  // reads. What did NOT happen is a second reply: the watermark CAS already dedups the post, which
+  // is why this defers the TURN and not the answer.
+  //
+  // HERE AND NOT INSIDE `coalesceAndRunTurn`, which the operator's re-engage button calls too
+  // (../conversations/reengage.ts): an exclusion in there would turn a deliberate human action into
+  // a silent no-op. The flush is the caller that has somewhere to defer TO.
+  //
+  // THE GRAPH THREAD is the key, not the conversation's: the channel is per contact-inbox, so two
+  // conversations of the same contact corrupt the same memory and have to take turns on it. The
+  // narrower key would leave that case exactly as it is today.
+  //
+  // Same shape as continuous ingestion, which had this hazard first and answered it the same way
+  // (../../graph/ingest-job.ts): put the work down and come back, rather than append into a channel
+  // somebody else is about to overwrite.
+  const graphThreadId = resolveGraphThreadId(
+    tenantId,
+    instanceId,
+    conversationId,
+    ctx.contactInboxId,
+  );
+  if (isTurnInFlight(graphThreadId)) {
+    // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
+    // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and
+    // a deferral loop never reaches DEAD. A counter carried in the payload is worse: `armDebounce`
+    // re-arms with a full payload and `upsertJobRow` treats a present payload as authoritative, so
+    // the next message the customer types ERASES it — the counter would vanish in exactly the case
+    // it exists for, a customer who keeps writing at a thread that is stuck.
+    //
+    // `burstStartedAt` survives because `armDebounce` reads it back off the row and rewrites it
+    // while the burst continues, which is the same anchor its own anti-starvation cap uses.
+    const burstStartedAt = readBurstStart(job.payload);
+    const deadline = (burstStartedAt ?? Date.now()) + DEFER_CEILING_MS;
+    if (Date.now() < deadline) {
+      logger.info(
+        "debounce flush: a turn is in flight (thread=%s), deferring the burst on conversation %s",
+        graphThreadId,
+        String(conversationId),
+      );
+      // NOT a failure, and the distinction is load-bearing: a `fail` here would spend an attempt,
+      // stamp `last_error` on the conversation and eventually dead-letter a burst whose only problem
+      // is that it arrived at a busy moment.
+      return {
+        outcome: "reschedule",
+        runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
+      };
+    }
+    // PAST THE DEADLINE WE RUN ANYWAY, which is a choice and not an oversight. A turn that never
+    // releases the thread would otherwise leave the customer unanswered forever, and an unanswered
+    // customer is worse than a duplicated line in the agent's memory. Loud, because a thread that
+    // reaches this has something wrong with it that no other line would report.
+    logger.warn(
+      "debounce flush: a turn has held thread %s past the deferral ceiling; answering conversation %s anyway",
+      graphThreadId,
+      String(conversationId),
+    );
   }
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to

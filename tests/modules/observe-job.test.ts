@@ -2449,6 +2449,74 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
+  // THE PAIR THAT COULD DISAGREE. `agentObservesNow` reads the switch and the mode; the read beside
+  // it reads the settings, a query later. An operator who turns the agent off in between leaves the
+  // second read looking straight at the new row — and it used to select `settings` alone, so it saw
+  // the change and said nothing, and the fence went on answering from the old pair (review round
+  // 38). The switch here is flipped for real, immediately before the query that observes it.
+  test("an agent switched off between the fence's two reads acts on nothing", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let generating = false;
+    let flipped = false;
+    // ON THE LAST FENCE CALL, and that is the whole difficulty of writing this test. The fence is
+    // asked TWICE before a native tool writes — once by the graph's tool node, once by the tool's
+    // own precondition — so a switch flipped during the first call's settings read is caught by the
+    // second call's `agentObservesNow`, and the hole never shows. It is the LAST call, the one with
+    // no re-ask after it, whose torn pair reaches the write.
+    let settingsReads = 0;
+    const racing = appDb.$extends({
+      query: {
+        agent: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (generating && sel?.settings === true) {
+              settingsReads++;
+              if (settingsReads === 2 && !flipped) {
+                flipped = true;
+                await suDb.agent.update({
+                  where: { id: agentId },
+                  data: { enabled: false },
+                });
+              }
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const model = new LabellingModel(["cancelamento"], async () => {
+      generating = true;
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      racing,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: true },
+    });
+    expect(flipped).toBe(true);
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    const rows = await observeLines();
+    expect(rows.at(-1)?.status).toBe("skipped");
+    expect((rows.at(-1)?.detail as { skipped?: string })?.skipped).toBe(
+      "agent_no_longer_observes",
+    );
+  });
+
   // A WITHDRAWAL COMPLETES THE TICK; A FENCE THAT COULD NOT BE READ RETRIES IT. The two answers are
   // kept apart everywhere else in this module for the same reason they have to end differently
   // here: nothing re-arms this row on its own, an `on_resolve` agent has no later burst and a

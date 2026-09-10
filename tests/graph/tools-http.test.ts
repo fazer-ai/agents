@@ -1901,12 +1901,14 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
     expect(called).toBe(false);
   });
 
-  test("a refusal that THREW is reported once, with the tool's own name", async () => {
+  test("a refusal the pack SWALLOWED is still reported once, with the tool's own name", async () => {
     // The refusal that ends in `throw` has no result to carry the answer, and the observer's tick
     // has to know that nothing left the process or it counts the dispatch as a write and stops
-    // retrying. Reported at the BUILD seam rather than inside the fetch wrapper: that wrapper is
-    // shared by the whole pack, so it knows no tool name and a pack making two requests in one call
-    // would report twice for one dispatch (review round 37).
+    // retrying. The pack here does what every real pack does with a transport error — catches it and
+    // answers a tool failure (asaas.ts, google-drive.ts, google-calendar.ts all wrap their request
+    // helper in that catch) — so nothing escapes the invoke and a report waiting outside it never
+    // fires (review round 38). Two requests, one report: the dedupe that moving the report out was
+    // meant to buy is kept by the per-dispatch frame.
     const reported: string[] = [];
     registerToolpack({
       catalogType: "TEST_NOEFFECT_PACK",
@@ -1915,9 +1917,16 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
         tool(
           async () => {
             const f = packCtx.fetchImpl ?? fetch;
-            await f("https://8.8.8.8/a");
-            await f("https://8.8.8.8/b");
-            return "sent";
+            const out: string[] = [];
+            for (const u of ["https://8.8.8.8/a", "https://8.8.8.8/b"]) {
+              try {
+                await f(u);
+                out.push("sent");
+              } catch {
+                out.push("failed to reach the provider");
+              }
+            }
+            return out.join(",");
           },
           {
             name: "probe_twice",
@@ -1950,7 +1959,9 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
       },
     );
     if (!built) throw new Error("the pack tool was not built");
-    await expect(built.invoke({})).rejects.toThrow("called off");
+    expect(await built.invoke({})).toBe(
+      "failed to reach the provider,failed to reach the provider",
+    );
     expect(reported).toEqual(["probe_twice"]);
   });
 

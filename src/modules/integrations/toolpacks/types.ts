@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -220,14 +221,36 @@ export class ToolpackCalledOffError extends Error {
   }
 }
 
+// WHICH DISPATCH A REFUSAL BELONGS TO. The two halves of that answer live in different places and
+// neither can reach the other on its own: `fencedFetch` is shared by every pack of the turn, so the
+// throw it raises knows no tool name, and the build seam that knows the name never sees the throw,
+// because every pack answers a transport error with a tool failure (`asaas.ts`, `google-drive.ts`
+// and `google-calendar.ts` each wrap their request helper in exactly that catch) and the exception
+// dies inside the handler. Reporting from the seam, as round 37 did, was therefore dead code for
+// every real pack — the observer's counter never heard that nothing left the process and read the
+// dispatch as a write (review round 38).
+//
+// So the seam opens a frame per dispatch and the throw reads it. The flag keeps a pack that makes
+// two requests in one call from reporting twice for one dispatch, which is the reason the report
+// left `fencedFetch` in the first place.
+type CalledOffFrame = { tool: string; reported: boolean };
+const calledOffFrame = new AsyncLocalStorage<CalledOffFrame>();
+
 export function fencedFetch(
   inner: typeof fetch,
   stillWanted: () => Promise<boolean>,
+  onNoEffect?: (toolName: string) => void,
 ): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
-    if (!(await stillWanted().catch(() => true)))
+    if (!(await stillWanted().catch(() => true))) {
+      const frame = calledOffFrame.getStore();
+      if (frame && !frame.reported) {
+        frame.reported = true;
+        onNoEffect?.(frame.tool);
+      }
       throw new ToolpackCalledOffError();
+    }
     return inner(input, init);
   }) as typeof fetch;
 }
@@ -237,7 +260,8 @@ export function buildToolpackTools(
   ctx: ToolpackCtx,
 ): StructuredToolInterface[] {
   let inner = ctx.fetchImpl ?? fetch;
-  if (ctx.stillWanted) inner = fencedFetch(inner, ctx.stillWanted);
+  if (ctx.stillWanted)
+    inner = fencedFetch(inner, ctx.stillWanted, ctx.onNoEffect);
   if (ctx.expiresOn) inner = deadlineFetch(inner, ctx.expiresOn);
   const bounded: ToolpackCtx =
     ctx.expiresOn || ctx.stillWanted ? { ...ctx, fetchImpl: inner } : ctx;
@@ -251,23 +275,19 @@ export function buildToolpackTools(
     if (sel.enabledTools.length === 0) continue;
     const pack = getToolpack(sel.catalogType);
     if (!pack) continue;
-    // REPORTED PER TOOL, at the build seam, and not from inside `fencedFetch`: the fetch wrapper is
-    // shared by the whole pack, so it knows no tool name and a pack that makes two requests in one
-    // call would report twice for one dispatch. Here the error escapes ONE tool's invoke exactly
-    // once, and it carries that tool's name (review round 37).
+    // THE NAME, HANDED TO THE THROW. Opening the frame is all this wrapper does: the report itself
+    // happens where the refusal is raised, which is the only place the pack's own catch cannot
+    // swallow it (see `calledOffFrame` above).
     const built = pack.build(sel, bounded).map((t) => {
-      if (!ctx.onNoEffect) return t;
+      if (!ctx.onNoEffect || !ctx.stillWanted) return t;
       const seen = Object.create(t) as typeof t;
-      seen.invoke = (async (input: unknown, config?: unknown) => {
-        try {
-          return await (
-            t.invoke as (i: unknown, c?: unknown) => Promise<unknown>
-          )(input, config);
-        } catch (e) {
-          if (e instanceof ToolpackCalledOffError) ctx.onNoEffect?.(t.name);
-          throw e;
-        }
-      }) as typeof t.invoke;
+      seen.invoke = ((input: unknown, config?: unknown) =>
+        calledOffFrame.run({ tool: t.name, reported: false }, () =>
+          (t.invoke as (i: unknown, c?: unknown) => Promise<unknown>)(
+            input,
+            config,
+          ),
+        )) as typeof t.invoke;
       return seen;
     });
     if (!muted) {

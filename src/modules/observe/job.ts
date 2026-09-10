@@ -974,16 +974,31 @@ export async function runObserve(
           : "agent_no_longer_observes";
       return false;
     }
+    // ONE ROW ANSWERS BOTH QUESTIONS, and this read is the later of the two: the switch and the mode
+    // were read a query ago, and an operator who turned the agent off in between leaves this read
+    // observing the new row while the fence goes on acting on the old pair. Re-asking them here is
+    // two more columns of a query already being made, and it closes the case a `settings`-only
+    // select could not even see — a row that is GONE, the agent deleted mid-turn, which read as "no
+    // monitoring config" and passed (review round 38). It narrows the window to this read and the
+    // work; nothing closes it, as with every other fence in this file.
     const monNow = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.agent.findUnique({
         where: { id: agentId },
-        select: { settings: true },
+        select: { enabled: true, mode: true, settings: true },
       }),
     )
-      .then((row) => (row ? readMonitoringConfig(row.settings) : null))
+      .then((row) =>
+        !row?.enabled || !isMonitoring(row.mode)
+          ? ("gone" as const)
+          : readMonitoringConfig(row.settings),
+      )
       .catch(() => "unreadable" as const);
     if (monNow === "unreadable") {
       refusal = "settings_unreadable";
+      return false;
+    }
+    if (monNow === "gone") {
+      refusal = "agent_no_longer_observes";
       return false;
     }
     // The arm's own second question, asked again: an operator switching to `on_resolve` while the

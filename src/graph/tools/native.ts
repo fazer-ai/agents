@@ -326,7 +326,16 @@ function handoffTool(ctx: ToolCtx) {
       : "Escalate the conversation to a human agent. Optionally include a short summary (posted as a private note) and `assignTo` — the name of the agent or team to route to (use one of the names from your instructions); omit it to fall back to default routing."
     : "Escalate the conversation to a human agent. Optionally include a short summary that is posted as a private note before the handoff. Use when the customer needs human help or asks for it.";
   // Always nudge a customer-facing reply before the handoff so the persona does not go silent on them.
-  const baseDescription = `${coreDescription} Before transferring, set \`customerMessage\` to a brief reply to the customer (e.g. that a human will continue) so they are not left without an answer.`;
+  //
+  // ...EXCEPT ON A MUTED TURN, where the promise would be false (review round 35). The line is
+  // RECORDED on `handoffState` for the caller to deliver, and an observation has no `handoffState`
+  // and throws its final output away — so the transfer happens, the customer hears nothing, and the
+  // model was told they were answered. A watcher escalating to a human is legitimate; telling it to
+  // write a message that goes nowhere is not, and the argument goes with the sentence.
+  const speaks = !ctx.client?.muted;
+  const baseDescription = speaks
+    ? `${coreDescription} Before transferring, set \`customerMessage\` to a brief reply to the customer (e.g. that a human will continue) so they are not left without an answer.`
+    : `${coreDescription} This turn does NOT answer the customer, so the transfer is silent to them: there is no message to write and none is sent.`;
   return tool(
     async ({
       reason,
@@ -452,12 +461,16 @@ function handoffTool(ctx: ToolCtx) {
               .describe(
                 "Short private-note summary for the human taking over.",
               ),
-            customerMessage: z
-              .string()
-              .optional()
-              .describe(
-                "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
-              ),
+            ...(speaks
+              ? {
+                  customerMessage: z
+                    .string()
+                    .optional()
+                    .describe(
+                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
+                    ),
+                }
+              : {}),
             assignTo: z
               .string()
               .optional()
@@ -472,12 +485,16 @@ function handoffTool(ctx: ToolCtx) {
               .describe(
                 "Short private-note summary for the human taking over.",
               ),
-            customerMessage: z
-              .string()
-              .optional()
-              .describe(
-                "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
-              ),
+            ...(speaks
+              ? {
+                  customerMessage: z
+                    .string()
+                    .optional()
+                    .describe(
+                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
+                    ),
+                }
+              : {}),
           }),
     },
   );
@@ -915,6 +932,25 @@ function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
   return `<current_labels>\n${els.join("\n")}\n</current_labels>`;
 }
 
+// The same reading `currentLabelsXml` renders, as one sentence for the ARGUMENT's own description.
+// One function for both, because they are two model-facing statements about one fact and a second
+// reader written by hand is how they end up describing different turns (review round 35): the
+// argument used to name the CONVERSATION's labels whatever scope the call chose, so a `contact` call
+// was shown the wrong list — an invitation to copy conversation labels onto a contact.
+//
+// A scope that is absent is left OUT rather than reported empty, exactly as the block does: "there
+// are none" and "we did not read it" are different claims, and only the first belongs to a list.
+function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
+  if (!shown) return "";
+  const parts: string[] = [];
+  for (const scope of ["conversation", "contact", "task"] as const) {
+    const list = shown[scope];
+    if (!list) continue;
+    parts.push(`${scope}: ${list.length ? list.join(", ") : "(none)"}`);
+  }
+  return parts.length ? ` Currently set — ${parts.join("; ")}.` : "";
+}
+
 function setLabelsTool(ctx: ToolCtx) {
   // THE ACCOUNT'S VOCABULARY IS FILTERED TOO, and this is the half that hiding `shownLabels` does
   // not cover: `<existing_labels>` advertises every label the account has as a value the model may
@@ -1115,11 +1151,9 @@ function setLabelsTool(ctx: ToolCtx) {
           // above: this is the field the model fills, and the failure this tool can cause that
           // the old add-only one could not is a model treating it as "the label to add" and
           // silently dropping the rest.
-          `The COMPLETE list of labels this scope should have after the call, e.g. ['vip', 'orçamento']. Labels currently set and left out of this list are REMOVED, so repeat the ones that should stay. An empty list clears them all.${
-            ctx.shownLabels?.conversation
-              ? ` The conversation currently has: ${ctx.shownLabels.conversation.length ? ctx.shownLabels.conversation.join(", ") : "(none)"}.`
-              : ""
-          }`,
+          `The COMPLETE list of labels the scope you choose should have after the call, e.g. ['vip', 'orçamento']. Labels currently set on THAT scope and left out of this list are REMOVED, so repeat the ones that should stay. An empty list clears them all.${shownLabelsSentence(
+            ctx.shownLabels,
+          )}`,
         ),
         scope: scopeSchema
           .optional()

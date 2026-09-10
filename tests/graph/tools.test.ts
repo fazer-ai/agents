@@ -66,6 +66,57 @@ describe("native tools", () => {
     expect(only.map((t) => t.name)).toEqual(["private_note"]);
   });
 
+  test("a MUTED turn is not told to write a message the transfer will not send", () => {
+    // The line is RECORDED on `handoffState` for the caller to deliver, and an observation has no
+    // `handoffState` and throws its final output away: the transfer happens and the customer hears
+    // nothing. Promising otherwise makes the model hand over believing they were answered
+    // (review round 35).
+    const { client } = recordingClient();
+    const speaking = byName(
+      buildNativeTools({ client, conversationId: 1 }),
+      "handoff_to_human",
+    );
+    expect(speaking.description).toContain("customerMessage");
+    expect(Object.keys((speaking.schema as { shape: object }).shape)).toContain(
+      "customerMessage",
+    );
+    const muted = byName(
+      buildNativeTools({
+        client: { ...client, muted: true } as unknown as ChatwootClient,
+        conversationId: 1,
+      }),
+      "handoff_to_human",
+    );
+    expect(muted.description).not.toContain("customerMessage");
+    expect(muted.description).toContain("silent to them");
+    expect(
+      Object.keys((muted.schema as { shape: object }).shape),
+    ).not.toContain("customerMessage");
+  });
+
+  test("the labels argument names the scope's own labels, not the conversation's", () => {
+    // The value replaces the SCOPE the call chooses, so an argument that always names the
+    // conversation's labels shows a `contact` call the wrong list — and copying them onto the
+    // contact is the move that description invites (review round 35).
+    const { client } = recordingClient();
+    const tool = byName(
+      buildNativeTools({
+        client,
+        conversationId: 1,
+        shownLabels: { conversation: ["vip"], contact: [] },
+      }),
+      "set_labels",
+    );
+    const field = (
+      tool.schema as { shape: { labels: { description?: string } } }
+    ).shape.labels;
+    expect(field.description).toContain("conversation: vip");
+    expect(field.description).toContain("contact: (none)");
+    // The scope that was never read is not reported as empty: absent is not none.
+    expect(field.description).not.toContain("task");
+    expect(field.description).toContain("the scope you choose");
+  });
+
   test("a ONE-SHOT allowlist grants what it names, not what the first candidate leaves", () => {
     // The parameter is an `Iterable<string>`, and a generator is spent by whoever reads it first.
     // Read once per candidate, it would be exhausted while testing a tool nobody granted, and the

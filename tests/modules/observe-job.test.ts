@@ -1498,6 +1498,108 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // THE PER-TOOL LINE, which `buildCallbacks` does not carry. Without it a watcher whose tool fails
   // finishes the graph normally and the tick reports `ok` with `acted: true`: a tool error with no
   // line and no alert, and no second copy anywhere, since the observer's checkpoint is discarded.
+  // A SCHEDULER JOB THAT FAILS IS RETRIED, and this tick is stateless on purpose — its own thread,
+  // an in-memory checkpointer — so the retry re-runs the WHOLE turn from the top. Harmless while the
+  // tick was a classifier with one deterministic write; with the ordinary toolset a booking, an
+  // outbound POST or a charge can already have committed (review round 25).
+  test("a failure AFTER a tool ran ends the tick instead of arming a retry", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    // Calls the tool on the first hop, then dies on the second — the shape of a provider blip, a
+    // timeout, or the tick's own deadline landing between two rounds.
+    class DiesAfterTheTool {
+      calls = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.calls++;
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"] },
+                    id: "call_labels",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const model = new DiesAfterTheTool();
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    // DONE, not fail: the label is written, and a retry would run the whole turn again — with
+    // whatever else the model chose to call the first time.
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten.length).toBeGreaterThan(0);
+    // And it is not silent: the operator still learns the observation did not finish.
+    const lines = await stageLines("observe");
+    const stopped = lines.filter(
+      (l) => (l.detail as { retried?: boolean } | null)?.retried === false,
+    );
+    expect(stopped.length).toBeGreaterThan(0);
+    expect(stopped.at(-1)?.level).toBe("warn");
+  });
+
+  test("a failure BEFORE any tool ran still retries", async () => {
+    // The control the case above needs: nothing committed, so the scheduler is still the right
+    // answer — and this is the ordinary transient, which is most of them.
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class DiesFirst {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        return {
+          async invoke(): Promise<AIMessage> {
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new DiesFirst() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+    expect(log.labelsWritten).toEqual([]);
+  });
+
   test("a tool call writes its own flow line under the tick", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const model = new LabellingModel(["cancelamento"]);

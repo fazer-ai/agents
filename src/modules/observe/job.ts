@@ -1060,9 +1060,32 @@ export async function runObserve(
     return { outcome: "fail", error: `observe: ${msg}` };
   }
 
+  // WHETHER ANYTHING IRREVERSIBLE HAS ALREADY HAPPENED THIS TICK. A scheduler job that fails is
+  // retried, and this tick is stateless by design — its own thread, an in-memory checkpointer — so a
+  // retry re-runs the WHOLE turn from the top. That was harmless while the tick was a classifier
+  // with one deterministic write; with the ordinary toolset it is not: a booking, an outbound POST,
+  // a charge, a hand-off can all have committed before the failure, and the retry does them again
+  // (issue #568, review round 25).
+  //
+  // So a tick that has already invoked a tool does not retry. At-most-once for the effects beats
+  // at-least-once for a classification: the effects reach other systems and cannot be taken back,
+  // while the classification is re-asked on the very next burst. Counted at the tool boundary rather
+  // than from the model's reported calls, because the count has to exist when the invoke THREW.
+  let toolsRan = 0;
+  const fencedTools = tools.map((t) => {
+    // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
+    // permitted call reaches exactly the run it would have had.
+    const seen = Object.create(t) as typeof t;
+    seen.invoke = ((input: unknown, config?: unknown) => {
+      toolsRan++;
+      return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
+    }) as typeof t.invoke;
+    return seen;
+  });
+
   let graph: Awaited<ReturnType<typeof buildModelAndGraph>>;
   try {
-    graph = await buildModelAndGraph(cfg, tools, {
+    graph = await buildModelAndGraph(cfg, fencedTools, {
       makeModel: deps.makeModel,
       checkpointer,
       stillWanted: () => fence(),
@@ -1225,16 +1248,27 @@ export async function runObserve(
     // node, and whatever that surfaces as, the exception is not what went wrong — the world moved.
     // Whether the tick is DONE or retried is the fence's own answer, not this catch's.
     if (refusal !== null) return endOnRefusal(refusal);
+    // A FAILURE AFTER A TOOL RAN ENDS THE TICK, and the level says which of the two it was: an
+    // `error` the scheduler will retry, or a `warn` that stops here because a retry would repeat
+    // whatever already committed. Reported either way — the operator needs to know the observation
+    // did not finish, and that nothing will pick it up before the next burst.
+    const committed = toolsRan > 0;
     emitFlowEvent(flow, {
       stage: "observe",
-      level: "error",
+      level: committed ? "warn" : "error",
       status: "error",
       provider: cfg.mc.provider,
       model: cfg.mc.model,
       durationMs: Date.now() - startedAt,
-      detail: { reason, failed: "model_call" },
+      detail: {
+        reason,
+        failed: "model_call",
+        toolCalls: toolsRan,
+        ...(committed ? { retried: false } : {}),
+      },
       errorMessage: msg,
     });
+    if (committed) return { outcome: "done" };
     return { outcome: "fail", error: `observe: ${msg}` };
   }
   if (refusal !== null) return endOnRefusal(refusal);

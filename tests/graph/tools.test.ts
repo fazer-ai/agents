@@ -378,7 +378,12 @@ describe("native tools", () => {
     await byName(tools, "resolve_conversation").invoke({});
     expect(calls).toEqual([
       ["sendPrivateNote", [7, "nota interna"]],
-      ["setConversationCustomAttributes", [7, { stage: "lead" }]],
+      // The third argument carries the fence the client asks INSIDE its queue (round 25); this ctx
+      // has none to offer, so it arrives undefined and the write proceeds.
+      [
+        "setConversationCustomAttributes",
+        [7, { stage: "lead" }, { stillWanted: undefined }],
+      ],
       ["toggleStatus", [7, "resolved"]],
     ]);
   });

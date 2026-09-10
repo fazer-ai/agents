@@ -16,9 +16,10 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
-import type {
-  ChatwootClient,
-  CustomAttributeDef,
+import {
+  ChatwootCalledOffError,
+  type ChatwootClient,
+  type CustomAttributeDef,
 } from "@/modules/chatwoot/client";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
@@ -610,6 +611,11 @@ async function mirrorAttributeWrite(
 // each scope are enumerated in the description from the account's definitions (ctx.vocab), so the
 // model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
 // from our mirror and merges (the client read-merge-writes so other contact attributes are kept).
+// What the model is told when the client refused a queued write because the run was called off. A
+// sentence, not a tool failure: nothing is broken, the world moved.
+const CALLED_OFF_ATTRIBUTE =
+  "Could not set the attribute (the run was called off while this write waited its turn).";
+
 function setCustomAttributeTool(ctx: ToolCtx) {
   const convDefs = attributesForModel(ctx.vocab, "conversation_attribute");
   const contactDefs = attributesForModel(ctx.vocab, "contact_attribute");
@@ -667,15 +673,35 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           return "Could not set the contact attribute (the run was called off while this write waited).";
         }
-        await ctx.client.setContactCustomAttributes(contact.chatwootContactId, {
-          [key]: value,
-        });
+        try {
+          await ctx.client.setContactCustomAttributes(
+            contact.chatwootContactId,
+            { [key]: value },
+            // ASKED ONCE MORE, from inside the client's queue this time. The ask above happens
+            // before the call; the write itself waits for a keyed queue and re-reads the bag, and
+            // that wait is as much a wait as this handler's own (round 25).
+            { stillWanted: ctx.stillWanted },
+          );
+        } catch (e) {
+          if (e instanceof ChatwootCalledOffError) return CALLED_OFF_ATTRIBUTE;
+          throw e;
+        }
         await mirrorAttributeWrite(ctx, "contact", key, value);
         return `Contact attribute ${key} set.`;
       }
-      await ctx.client.setConversationCustomAttributes(ctx.conversationId, {
-        [key]: value,
-      });
+      try {
+        await ctx.client.setConversationCustomAttributes(
+          ctx.conversationId,
+          { [key]: value },
+          // The conversation branch has no wait of its own before the call, so this is the ONLY
+          // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
+          // inside exactly the window the queue and the re-read open.
+          { stillWanted: ctx.stillWanted },
+        );
+      } catch (e) {
+        if (e instanceof ChatwootCalledOffError) return CALLED_OFF_ATTRIBUTE;
+        throw e;
+      }
       await mirrorAttributeWrite(ctx, "conversation", key, value);
       return `Conversation attribute ${key} set.`;
     },

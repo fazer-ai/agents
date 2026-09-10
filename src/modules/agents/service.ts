@@ -479,6 +479,14 @@ export function assertSettingsProtectedLabels(
   throw new TooManyProtectedLabelsError(PROTECTED_LABELS_MAX);
 }
 
+// The one spelling of the retired note flag that asks for nothing: `false`, boolean or as the string
+// a form post turns it into. Everything else — `true`, `"true"`, `1`, `"sim"`, an object — asks for
+// a behaviour that is gone.
+function isInertNoteFlag(value: unknown): boolean {
+  if (value === false || value === null) return true;
+  return typeof value === "string" && value.trim().toLowerCase() === "false";
+}
+
 export function assertSettingsRetiredLabelKeys(settings: unknown): void {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return;
@@ -496,13 +504,20 @@ export function assertSettingsRetiredLabelKeys(settings: unknown): void {
   if (carriesConfiguration(mon.labelGroups))
     throw new RetiredLabelSettingError("monitoring.labelGroups");
   // THE FLAG LIVED HERE, not under `labels` — `readMonitoringConfig` read `bag.noteOnChange` off the
-  // monitoring block, and the previous editor wrote it there for every agent. Only `true` is refused:
-  // it asks for a behaviour that no longer exists (the note is now something the operator asks for in
-  // `toolGuidance.set_labels`, like any other instruction), while `false` asks for what it already
-  // gets and refusing it would teach nothing and break a save. Its default was `true`, so the
+  // monitoring block, and the previous editor wrote it there for every agent. `false` is the one
+  // value that passes: it asks for what the agent already gets, so refusing it would teach nothing
+  // and break a save made by an editor from the previous release. Its default was `true`, so the
   // migration and the import boundary clear the stored ones rather than leaving them to be refused
   // (round 18).
-  if (mon.noteOnChange === true)
+  //
+  // EVERY OTHER VALUE IS REFUSED, not only boolean `true` (round 25). The settings bag is loose, so
+  // REST and MCP can both put `"true"`, `1` or `"sim"` under this key: each asks for a behaviour
+  // that no longer exists (the note is now something the operator writes in
+  // `toolGuidance.set_labels`, like any other instruction), each would be stored and answered 200,
+  // and MCP's merge would then normalize it away while reporting success. Asking "is it the inert
+  // value" rather than "is it the one truthy value I thought of" is also what keeps this from
+  // needing a new line the next time somebody sends a shape nobody listed.
+  if (mon.noteOnChange !== undefined && !isInertNoteFlag(mon.noteOnChange))
     throw new RetiredLabelSettingError("monitoring.noteOnChange");
 }
 

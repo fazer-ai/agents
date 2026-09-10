@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ChatwootCalledOffError,
   ChatwootClient,
   ChatwootExpiredError,
   ChatwootMutedError,
@@ -274,5 +275,90 @@ describe("a muted Chatwoot client", () => {
       content: "Olá!",
       private: false,
     });
+  });
+});
+
+describe("a queued attribute write asks the fence at the last moment", () => {
+  // The tool asks before it calls; between that ask and the PUT sit the keyed queue's wait and the
+  // client's own re-read of the bag — and `/reset` CLEARS a conversation's attributes in exactly
+  // that window, so a call admitted earlier would put the old episode's values back (round 25).
+  function flakyClient(): { c: ChatwootClient; calls: Call[] } {
+    const calls: Call[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        body: init?.body,
+      });
+      return new Response('{"custom_attributes":{"stage":"velho"}}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const c = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "admin",
+        botToken: "bot",
+      },
+      fetchImpl,
+    );
+    return { c, calls };
+  }
+
+  test("a run called off during the read never reaches the write", async () => {
+    const { c, calls } = flakyClient();
+    // Wanted when the tool asked; withdrawn by the time the queue and the GET were done.
+    await expect(
+      c.setConversationCustomAttributes(
+        9,
+        { stage: "novo" },
+        { stillWanted: async () => false },
+      ),
+    ).rejects.toBeInstanceOf(ChatwootCalledOffError);
+    // The GET happened (it is what the fence is asked after); the POST did not.
+    expect(calls.map((k) => k.method)).toEqual(["GET"]);
+  });
+
+  test("the contact scope answers the same way", async () => {
+    const { c, calls } = flakyClient();
+    await expect(
+      c.setContactCustomAttributes(
+        3,
+        { plano: "gold" },
+        { stillWanted: async () => false },
+      ),
+    ).rejects.toBeInstanceOf(ChatwootCalledOffError);
+    expect(calls.map((k) => k.method)).toEqual(["GET"]);
+  });
+
+  test("a fence that says yes, and one that cannot answer, both write", async () => {
+    // The control the negatives need, and the second half is the rule every other fence follows: an
+    // unreadable fence is not the operator saying no.
+    const yes = flakyClient();
+    await yes.c.setConversationCustomAttributes(
+      9,
+      { stage: "novo" },
+      { stillWanted: async () => true },
+    );
+    expect(yes.calls.map((k) => k.method)).toEqual(["GET", "POST"]);
+    const broken = flakyClient();
+    await broken.c.setConversationCustomAttributes(
+      9,
+      { stage: "novo" },
+      {
+        stillWanted: async () => {
+          throw new Error("database blip");
+        },
+      },
+    );
+    expect(broken.calls.map((k) => k.method)).toEqual(["GET", "POST"]);
+  });
+
+  test("with no fence offered, nothing changes for every other caller", async () => {
+    const { c, calls } = flakyClient();
+    await c.setConversationCustomAttributes(9, { stage: "novo" });
+    expect(calls.map((k) => k.method)).toEqual(["GET", "POST"]);
   });
 });

@@ -180,6 +180,18 @@ export class ChatwootMutedError extends Error {
   }
 }
 
+// Thrown by a queued write whose caller withdrew the run while the write waited its turn. Named so
+// the tool can answer the model with a sentence instead of an integration failure: nothing left this
+// process, and nothing is wrong with Chatwoot.
+export class ChatwootCalledOffError extends Error {
+  constructor(endpoint: string) {
+    super(
+      `Chatwoot ${endpoint} was not sent: the run was called off while this write waited its turn.`,
+    );
+    this.name = "ChatwootCalledOffError";
+  }
+}
+
 // EVERYTHING THE CUSTOMER PERCEIVES, which is a bigger set than "everything that sends a message".
 // Each entry was checked against the fork rather than assumed:
 //
@@ -372,6 +384,18 @@ export class ChatwootClient {
   // the inbox's RESPONDER and a client of its own, so a mute here does not reach it (issue #568,
   // review round 16). Derived from the same field the wrapper reads, rather than passed alongside
   // it, so the two cannot disagree about the same client.
+  // Asked by a queued write at the last moment before it sends. Absent ⇒ the write proceeds, which
+  // is what every caller with no fence to offer means. A fence that THROWS is not a withdrawal
+  // either: the write goes out, exactly as every other fence in this codebase decides.
+  private async assertStillWanted(
+    stillWanted: (() => Promise<boolean>) | undefined,
+    endpoint: string,
+  ): Promise<void> {
+    if (!stillWanted) return;
+    const wanted = await stillWanted().catch(() => true);
+    if (!wanted) throw new ChatwootCalledOffError(endpoint);
+  }
+
   get muted(): boolean {
     return this.config.mute === true;
   }
@@ -646,6 +670,8 @@ export class ChatwootClient {
   setConversationCustomAttributes(
     conversationId: number,
     attributes: Record<string, unknown>,
+    // The caller's fence, asked INSIDE the queue right before the write. See the note at the call.
+    opts: { stillWanted?: () => Promise<boolean> } = {},
   ): Promise<unknown> {
     return withKeyedQueue(
       this.targetKey("conversation", conversationId),
@@ -661,6 +687,13 @@ export class ChatwootClient {
           "GET",
           `/conversations/${conversationId}`,
         )) as { custom_attributes?: unknown } | null;
+        // THE LAST MOMENT BEFORE THE WRITE, and it is inside the critical section on purpose. The
+        // caller asked its fence before calling this method; between that ask and this line sit the
+        // queue's wait and the GET above, and `/reset` CLEARS a conversation's attributes in that
+        // window — so a call admitted before it would put the old episode's values back (issue #568,
+        // review round 25). Only an explicit `false` stops the write: a fence that could not answer
+        // is not a withdrawal.
+        await this.assertStillWanted(opts.stillWanted, "custom_attributes");
         return this.request(
           this.config.botToken,
           "POST",
@@ -937,6 +970,8 @@ export class ChatwootClient {
   setContactCustomAttributes(
     contactId: number,
     attributes: Record<string, unknown>,
+    // Same fence, same position, same reason as the conversation scope above.
+    opts: { stillWanted?: () => Promise<boolean> } = {},
   ): Promise<unknown> {
     return withKeyedQueue(this.targetKey("contact", contactId), async () => {
       const existing = (await this.request(
@@ -944,6 +979,7 @@ export class ChatwootClient {
         "GET",
         `/contacts/${contactId}`,
       )) as { payload?: { custom_attributes?: unknown } } | null;
+      await this.assertStillWanted(opts.stillWanted, `contacts/${contactId}`);
       return this.request(
         this.config.adminToken,
         "PUT",

@@ -93,6 +93,25 @@ describe("retired label settings", () => {
     }
   });
 
+  test("every truthy spelling of the retired flag is refused, not just boolean true", () => {
+    // The bag is LOOSE, so REST and MCP can both put a string or a number under this key. Refusing
+    // only boolean `true` left `"true"`, `1` and `"sim"` stored, answered 200 and inert — and MCP's
+    // merge normalizing them away while reporting success (review round 25). The question asked is
+    // "is this the inert value", which needs no new line the next time a shape nobody listed
+    // arrives.
+    for (const value of ["true", "sim", 1, {}, [], "yes", 0.5]) {
+      expect(() =>
+        assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: value } }),
+      ).toThrow(RetiredLabelSettingError);
+    }
+    // And the inert spellings still pass, including the string a form post turns `false` into.
+    for (const value of [false, "false", "FALSE", " false ", null]) {
+      expect(() =>
+        assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: value } }),
+      ).not.toThrow();
+    }
+  });
+
   test("a settings bag without either key passes", () => {
     expect(() =>
       assertSettingsRetiredLabelKeys({

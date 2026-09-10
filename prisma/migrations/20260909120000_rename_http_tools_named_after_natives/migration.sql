@@ -86,11 +86,24 @@ DECLARE
   new_label TEXT;
   n INTEGER;
 BEGIN
+  -- HTTP FIRST, because that is the order the ASSEMBLY resolves a duplicate in (prepare.ts: native,
+  -- document, http, code, mcp, toolpack, rag — first wins, `dropDuplicateToolNames`). The two
+  -- tables are one namespace and each service refuses a name the other holds, but the pre-lock race
+  -- under READ COMMITTED and an old bundle can both land two rows under one name (namespace.ts) —
+  -- and for an agent granting both, the rule the operator wrote guarded the HTTP tool, because that
+  -- is the one that reached the model. Walking CODE first moved the rule onto the loser and deleted
+  -- the key, leaving the winner unguarded: a guard silently gone, which is the exact failure this
+  -- whole block exists to prevent (review round 34).
+  --
+  -- Ordered in a SUBQUERY: a UNION's own ORDER BY takes output column names, not an expression over
+  -- them, and the version that did aborted the deploy transaction rather than failing one statement.
   FOR r IN
-    SELECT 'http' AS src, id, tenant_id, name, label FROM "tool_definitions" WHERE name IN ('set_labels')
-    UNION ALL
-    SELECT 'code' AS src, id, tenant_id, name, label FROM "code_tool_definitions" WHERE name IN ('set_labels')
-    ORDER BY src, id
+    SELECT * FROM (
+      SELECT 'http' AS src, id, tenant_id, name, label FROM "tool_definitions" WHERE name IN ('set_labels')
+      UNION ALL
+      SELECT 'code' AS src, id, tenant_id, name, label FROM "code_tool_definitions" WHERE name IN ('set_labels')
+    ) dup
+    ORDER BY CASE WHEN src = 'http' THEN 0 ELSE 1 END, id
   LOOP
     n := 2;
     LOOP

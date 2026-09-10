@@ -43,6 +43,7 @@ const suDb = su as Client;
 
 let tenantId = 0n;
 let tenant2Id = 0n;
+let tenant3Id = 0n;
 const ids: Record<string, bigint> = {};
 
 // The keys are filled in beforeAll; reading one before then is a bug in this file, not a case.
@@ -392,6 +393,53 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       "fenced_junk",
       JSON.stringify({ toolPreconditions: 7, maxToolCalls: 5 }),
     );
+
+    // BOTH TABLES UNDER ONE NAME, in a tenant of its own. Each service refuses a name the other
+    // holds, but the pre-lock race under READ COMMITTED and an old bundle can both land this pair
+    // (namespace.ts says so in as many words). The assembly resolves it by ORDER — native,
+    // document, HTTP, code — so the HTTP tool is the one that reached the model, and the operator's
+    // rule is about THAT tool (review round 34).
+    const t3 = await suDb.query(
+      "INSERT INTO tenants (name, slug, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id",
+      ["SETLBL3", `setlbl3-${process.pid}`],
+    );
+    tenant3Id = BigInt(t3.rows[0].id);
+    const r3http = await suDb.query(
+      `INSERT INTO "tool_definitions" (tenant_id, name, label, url_template, allowed_hosts, created_at, updated_at)
+       VALUES ($1, 'set_labels', 'HTTP vencedor', 'https://api.example.com/x', '{api.example.com}', NOW(), NOW()) RETURNING id`,
+      [String(tenant3Id)],
+    );
+    ids.dup_http = BigInt(r3http.rows[0].id);
+    ids.dup_code = await mkCode(tenant3Id, "set_labels", "Code perdedor");
+    ids.dup_agent = await (async () => {
+      const r = await suDb.query(
+        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+         VALUES ($1, 'concede os dois', 'p', '{}'::jsonb, $2::jsonb, NOW(), NOW()) RETURNING id`,
+        [
+          String(tenant3Id),
+          JSON.stringify({
+            toolPreconditions: {
+              set_labels: {
+                kind: "attribute",
+                scope: "conversation",
+                key: "do_http",
+              },
+            },
+          }),
+        ],
+      );
+      return BigInt(r.rows[0].id);
+    })();
+    await suDb.query(
+      `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, tool_definition_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
+       VALUES ($1, $2, 'HTTP', $3, '{}', '{}', NOW(), NOW())`,
+      [String(tenant3Id), String(ids.dup_agent), String(ids.dup_http)],
+    );
+    await suDb.query(
+      `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, code_tool_definition_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
+       VALUES ($1, $2, 'CODE', $3, '{}', '{}', NOW(), NOW())`,
+      [String(tenant3Id), String(ids.dup_agent), String(ids.dup_code)],
+    );
   });
 
   afterAll(async () => {
@@ -412,8 +460,25 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       'DELETE FROM "code_tool_definitions" WHERE tenant_id = $1',
       [String(tenant2Id)],
     );
+    await suDb.query(
+      'DELETE FROM "agent_tool_selections" WHERE tenant_id = $1',
+      [String(tenant3Id)],
+    );
+    await suDb.query('DELETE FROM "audit_logs" WHERE tenant_id = $1', [
+      String(tenant3Id),
+    ]);
+    await suDb.query('DELETE FROM "agents" WHERE tenant_id = $1', [
+      String(tenant3Id),
+    ]);
+    await suDb.query('DELETE FROM "tool_definitions" WHERE tenant_id = $1', [
+      String(tenant3Id),
+    ]);
+    await suDb.query(
+      'DELETE FROM "code_tool_definitions" WHERE tenant_id = $1',
+      [String(tenant3Id)],
+    );
     await suDb.query("DELETE FROM tenants WHERE id = ANY($1)", [
-      [String(tenantId), String(tenant2Id)],
+      [String(tenantId), String(tenant2Id), String(tenant3Id)],
     ]);
     await suDb.end();
   });
@@ -544,6 +609,34 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
     expect(audit.rows.map((x) => x.target)).toEqual([
       `code_tool:${id("code")}`,
     ]);
+  });
+
+  test("with two tools under one name, the rule follows the one that ANSWERS", async () => {
+    // The assembly resolves the duplicate by order (native, document, HTTP, code — first wins), so
+    // the HTTP tool is the one the operator's rule was guarding. Walking CODE first moved the rule
+    // onto the loser and deleted the key, leaving the winner unguarded after the upgrade: a guard
+    // silently gone, which is what this whole block exists to prevent (review round 34).
+    const http = await suDb.query(
+      'SELECT name FROM "tool_definitions" WHERE id = $1',
+      [String(ids.dup_http)],
+    );
+    const code = await suDb.query(
+      'SELECT name FROM "code_tool_definitions" WHERE id = $1',
+      [String(ids.dup_code)],
+    );
+    // Both moved off the reserved name, into the first free slot each, HTTP first.
+    expect(http.rows[0].name).toBe("set_labels_2");
+    expect(code.rows[0].name).toBe("set_labels_3");
+    const ag = await suDb.query('SELECT settings FROM "agents" WHERE id = $1', [
+      String(ids.dup_agent),
+    ]);
+    const pre = (ag.rows[0].settings as Record<string, Record<string, unknown>>)
+      .toolPreconditions as Record<string, unknown>;
+    // The rule is on the HTTP tool's new name...
+    expect(pre.set_labels_2).toMatchObject({ key: "do_http" });
+    // ...and nowhere else: not on the code tool, and not left on the reserved name.
+    expect(pre.set_labels_3).toBeUndefined();
+    expect(pre.set_labels).toBeUndefined();
   });
 
   test("an imported rule follows the custom tool it was written for", async () => {

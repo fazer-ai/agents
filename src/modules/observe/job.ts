@@ -1362,6 +1362,15 @@ export async function runObserve(
     // `error` the scheduler will retry, or a `warn` that stops here because a retry would repeat
     // whatever already committed. Reported either way — the operator needs to know the observation
     // did not finish, and that nothing will pick it up before the next burst.
+    // ...AND A DISPATCH THAT NEVER SETTLED COUNTS, which is the deadline's case and is deliberate
+    // (review round 34). When the tick's budget fires, `underSignal` rejects the whole invoke: a
+    // tool still running does not report back, so from here "it was resolving a credential" and
+    // "its POST landed and the response never arrived" are the same picture. The mark above can
+    // only speak for a call that RETURNED. Unknown therefore reads as committed, because the two
+    // errors are not symmetric: counting a no-op costs one observation, which the next burst
+    // re-asks; not counting a write costs the write, again, in somebody else's system. An
+    // `on_resolve` agent has no next burst, and that is the price, declared in docs/chatwoot.md
+    // rather than guessed away.
     const committed = toolsRan > 0;
     emitFlowEvent(flow, {
       stage: "observe",

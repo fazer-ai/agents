@@ -256,6 +256,27 @@ describe("the notes the conversation already carries", () => {
     expect(transcript).not.toContain("já avisei o financeiro");
   });
 
+  test("a text budget bounds the block, and whole notes are dropped from the oldest", () => {
+    // `window.messages` caps a COUNT, and a count is not a size: twenty notes of twenty thousand
+    // characters is a prompt that overruns the model's context beside a three-line transcript, and
+    // the same tick then fails forever. Whole notes go, rather than one cut through the block: a
+    // fragment reads as a complete note.
+    const big = (n: number, ch: string) =>
+      row({
+        id: n,
+        content: ch.repeat(20_000),
+        messageType: "outgoing",
+        private: true,
+      });
+    const notes = notesFromRows([big(1, "a"), big(2, "b"), big(3, "c")], 20);
+    const total = notes.join("").length;
+    expect(total).toBeLessThanOrEqual(8_000);
+    // Every kept note is whole (each clipped to its own 2k cap, none cut by the block budget).
+    for (const n of notes) expect(n.length).toBe(2_000);
+    // The newest survive: it is the newest note a duplicate would duplicate.
+    expect(notes.at(-1)?.[0]).toBe("c");
+  });
+
   test("no notes says so, rather than leaving the block out", () => {
     const text = observeTurnText([{ role: "customer", text: "oi" }], []);
     expect(text).toContain("<notas-internas>(nenhuma)</notas-internas>");

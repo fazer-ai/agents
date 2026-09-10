@@ -1301,32 +1301,14 @@ export async function importAgent(
       });
     }
 
-    // Import DISABLED and in TEST mode — the operator reviews, re-links any missing references +
-    // credentials, validates with /teste, then enables for production. Both are set explicitly: the
-    // Agent.mode column defaults to "production", so an imported clone must never land live by default.
-    const created = await db.agent.create({
-      data: {
-        tenantId,
-        name: exp.name,
-        systemPrompt: exp.systemPrompt,
-        modelConfig: modelConfig as Prisma.InputJsonValue,
-        settings: disarmFullDetail(
-          renameNativeToolKeys(
-            normalizeSettingsForStorage(settings) ?? settings,
-          ),
-        ) as Prisma.InputJsonValue,
-        transferWithSummary: exp.transferWithSummary,
-        businessHoursId,
-        followUpHoursId,
-        enabled: false,
-        mode: "test",
-      },
-      select: AGENT_SELECT,
-    });
-
     // Create any bundled components that don't already exist on the target tenant, BEFORE resolving
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
+    //
+    // ...AND BEFORE THE AGENT ROW, which is not where this used to sit. The settings bag carries the
+    // operator's rules keyed by tool NAME, and a bundled tool that had to be stored under another
+    // name takes its rules with it — so the rename map has to exist before the bag is written. The
+    // migration settles the same two moves in the same order, for the same reason (review r6).
     let renamed: RenamedComponents = {
       httpTools: new Map(),
       codeTools: new Map(),
@@ -1344,6 +1326,30 @@ export async function importAgent(
         warnings,
       );
     }
+
+    // Import DISABLED and in TEST mode — the operator reviews, re-links any missing references +
+    // credentials, validates with /teste, then enables for production. Both are set explicitly: the
+    // Agent.mode column defaults to "production", so an imported clone must never land live by default.
+    const created = await db.agent.create({
+      data: {
+        tenantId,
+        name: exp.name,
+        systemPrompt: exp.systemPrompt,
+        modelConfig: modelConfig as Prisma.InputJsonValue,
+        settings: disarmFullDetail(
+          renameNativeToolKeys(
+            normalizeSettingsForStorage(settings) ?? settings,
+            renamed,
+          ),
+        ) as Prisma.InputJsonValue,
+        transferWithSummary: exp.transferWithSummary,
+        businessHoursId,
+        followUpHoursId,
+        enabled: false,
+        mode: "test",
+      },
+      select: AGENT_SELECT,
+    });
 
     // Grants of a source this build does not know arrive as null (see importedGrantSchema) and are
     // dropped here, with a warning naming how many — the bundle imports, and the operator learns
@@ -2585,27 +2591,54 @@ async function createMissingComponents(
 //
 // The new key WINS when both are present, for the same reason it does in the migration: it is the
 // operator's most recent word.
-function renameNativeToolKeys(settings: unknown): unknown {
+function renameNativeToolKeys(
+  settings: unknown,
+  renamed: RenamedComponents,
+): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
   const bag = settings as Record<string, unknown>;
+  // TWO MOVES, AND THE ORDER IS THE WHOLE THING. A bundle can carry BOTH a custom tool named
+  // `set_labels` and the native under its old name, each with its own rule. Done in one pass, the
+  // native's rule finds `set_labels` already taken and is discarded, and the custom tool's rule
+  // stays on a key that now names the NATIVE — the operator's guard moved onto a different tool and
+  // the custom tool left open. Settling the custom rename first empties the key the native needs.
+  //
+  // The bundle's own name is the key here, which is what `RenamedComponents` maps: it was written
+  // when the tool was called that, and the tool is only called something else because THIS import
+  // could not store it under its own name.
+  const stored = new Map<string, string>();
+  for (const m of [renamed.httpTools, renamed.codeTools])
+    for (const [from, to] of m) if (from !== to) stored.set(from, to);
+  const moves: ((name: string) => string)[] = [
+    (name) => stored.get(name) ?? name,
+    currentNativeToolName,
+  ];
   let out = bag;
   for (const key of ["toolGuidance", "toolPreconditions"] as const) {
     const map = bag[key];
     if (!map || typeof map !== "object" || Array.isArray(map)) continue;
-    const entries = map as Record<string, unknown>;
+    let entries = map as Record<string, unknown>;
     let touched = false;
-    // Null-prototype, like every other reader of these bags: `__proto__` as a key on a plain object
-    // mutates the prototype instead of storing a rule.
-    const next = Object.create(null) as Record<string, unknown>;
-    for (const [name, value] of Object.entries(entries)) {
-      const renamed = currentNativeToolName(name);
-      if (renamed !== name) touched = true;
-      // A key already carrying the new name is not overwritten by the old one's value.
-      if (renamed !== name && Object.hasOwn(entries, renamed)) continue;
-      next[renamed] = value;
+    for (const move of moves) {
+      // Null-prototype, like every other reader of these bags: `__proto__` as a key on a plain
+      // object mutates the prototype instead of storing a rule.
+      const next = Object.create(null) as Record<string, unknown>;
+      let movedHere = false;
+      for (const [name, value] of Object.entries(entries)) {
+        const to = move(name);
+        if (to !== name) movedHere = true;
+        // A key already carrying the destination name is not overwritten by the source's value:
+        // it is the operator's most recent word, the same rule the migration applies.
+        if (to !== name && Object.hasOwn(entries, to)) continue;
+        next[to] = value;
+      }
+      if (movedHere) {
+        entries = next;
+        touched = true;
+      }
     }
-    if (touched) out = { ...out, [key]: next };
+    if (touched) out = { ...out, [key]: entries };
   }
   return out;
 }

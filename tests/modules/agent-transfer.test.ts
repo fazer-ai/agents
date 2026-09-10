@@ -1835,6 +1835,52 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ).toBe(true);
   });
 
+  // THE ORDER OF THE TWO MOVES, and it is a defect in one pass rather than two. A bundle can carry a
+  // custom tool named `set_labels` AND the native under its old name, each with its own rule. Moved
+  // in one pass, the native's rule finds the key already taken and is discarded, while the custom
+  // tool's rule stays on a key that now names the NATIVE: the operator's guard lands on a different
+  // tool and the custom tool is left open. The custom rename has to settle first.
+  test("a bundle carrying BOTH a custom set_labels and the old native keeps each rule on its own tool", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "set_labels";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "set_labels";
+    bundle.agent.name = "Vendedora dos dois";
+    (bundle.agent.settings as Record<string, unknown>).toolPreconditions = {
+      set_labels: { kind: "attribute", scope: "contact", key: "da_custom" },
+      assign_label: { kind: "attribute", scope: "contact", key: "do_nativo" },
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const conds =
+      (row.settings as Record<string, Record<string, { key?: string }>>)
+        .toolPreconditions ?? {};
+    // The custom tool was stored as `set_labels_2`; its rule went with it, and the native's rule
+    // took the key the custom tool vacated. Neither was dropped, and neither guards the other.
+    expect(conds.set_labels_2?.key).toBe("da_custom");
+    expect(conds.set_labels?.key).toBe("do_nativo");
+    expect(conds.assign_label).toBeUndefined();
+    // The tenant is shared with the tests below, and the row this import created would make the
+    // next walk for a free `set_labels_N` land on `_3`. Cleaning up keeps each case's expected
+    // name a property of that case rather than of the order the file happens to run in.
+    await suDb.toolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: "set_labels_2" },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   // Round 15 of PR #485: a bundle authored before a native took the name. The assembly reserves
   // every native name (#457), so a tool imported under one would exist in the console and never
   // reach the model, and this path writes straight to the DB, past the service's refusal. Renamed

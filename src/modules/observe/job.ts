@@ -18,7 +18,7 @@ import { buildNativeTools } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { clipTextEnd } from "@/lib/text";
+import { clipText, clipTextEnd } from "@/lib/text";
 import { isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow } from "@/modules/agents/speaks";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
@@ -75,6 +75,15 @@ export type ObserveReason = "burst" | "resolved";
 export const OBSERVE_TIMEOUT_MS = 60_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
 const TRANSCRIPT_MAX_CHARS = 40_000;
+// The notes block gets its own budget, and it needs one for the same reason the transcript has one:
+// `window.messages` caps a COUNT, and a count is not a size. Twenty notes of twenty thousand
+// characters is a four-hundred-thousand-character prompt beside a three-line transcript, which
+// overruns the model's context and fails the same tick forever. Smaller than the transcript's,
+// because the notes are context ABOUT the conversation and the conversation is the subject.
+const NOTES_MAX_CHARS = 8_000;
+// ...and no single note may eat the whole budget, so one operator who pasted a log cannot hide every
+// note around it. `clipText` keeps the START, which for a note is where it says what it is about.
+const NOTE_MAX_CHARS = 2_000;
 const FENCE_TAG = /<\s*\/?\s*(transcricao|etiquetas-atuais)[^>]*>/gi;
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -450,16 +459,32 @@ export function notesFromRows(
   rows: ChatwootMessageRow[],
   limit: number,
 ): string[] {
-  return rows
+  const all = rows
     .filter((m) => m.private && !m.isReaction && m.content.trim().length > 0)
     .sort((a, b) => a.id - b.id)
     .slice(-limit)
     .map((m) =>
-      stripFences(m.content)
-        .trim()
-        .replace(/\s*\n\s*/g, " "),
+      clipText(
+        stripFences(m.content)
+          .trim()
+          .replace(/\s*\n\s*/g, " "),
+        NOTE_MAX_CHARS,
+      ),
     )
     .filter((t) => t.length > 0);
+  // WHOLE NOTES, DROPPED FROM THE OLDEST, rather than one cut through the middle of the block. A cut
+  // leaves a fragment that reads as a complete note, which is the failure the label block avoids by
+  // saying "(nenhuma)" instead of nothing: half a fact presented as a whole one. Walked newest
+  // first, because the newest is the one a duplicate would duplicate; put back in order after.
+  const kept: string[] = [];
+  let budget = NOTES_MAX_CHARS;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const note = all[i] as string;
+    if (note.length > budget) break;
+    budget -= note.length;
+    kept.push(note);
+  }
+  return kept.reverse();
 }
 
 // The fence tags the renderers wrap machine-written text in (a transcription, an image

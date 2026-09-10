@@ -51,6 +51,12 @@ export async function resolveDebounceConfig(
 
 // EXPORTED because the flush reads it too: it is the only anchor a deferral ceiling can use that a
 // re-arm does not erase (see the ceiling in ./handler.ts).
+export function readDeferringSince(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).deferringSince;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export function readBurstStart(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).burstStartedAt;
@@ -94,6 +100,22 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { status: true, payload: true },
       });
+      // The flush's deferral deadline, carried across re-arms of a row that is still LIVE — PENDING
+      // (a deferred flush waiting for its next try) or CLAIMED (one running right now). It is kept
+      // separately from `burstStartedAt` and on a wider set of statuses on purpose: the deadline
+      // answers "how long has this burst been waiting for a busy thread", which a customer typing
+      // again does not restart, while `burstStartedAt` answers "when did this burst open", which a
+      // claim in flight deliberately does. Tying the deadline to the latter let every message that
+      // arrived during the CLAIMED window push it forward, so a customer who kept writing at a
+      // wedged thread was never answered at all (found in review of #588).
+      //
+      // A DONE or DEAD row carries nothing forward: the flush that was deferring has finished, and
+      // a stale stamp would make the next burst on this thread start out already past its deadline.
+      const stillLive =
+        existing?.status === "PENDING" || existing?.status === "CLAIMED";
+      const deferringSince = stillLive
+        ? readDeferringSince(existing.payload)
+        : null;
       // NOTE: A live PENDING row is the burst this message joins; anything else (no row, DONE,
       // DEAD, or a claim in flight) means the previous flush is finished business and this message
       // opens a new burst. Every question below reads that one fact, so they cannot answer it
@@ -118,6 +140,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         agentBotId,
         burstStartedAt,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
+        ...(deferringSince !== null ? { deferringSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {
         tenantId,

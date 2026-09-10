@@ -1,7 +1,11 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
-import { isTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnReserved,
+  isTurnInFlight,
+  markTurnReserved,
+} from "@/graph/inflight";
 import { armIngest } from "@/graph/ingest-job";
 import { parseThreadId } from "@/graph/nudge";
 import { type AgentConfig, loadAgentConfig } from "@/graph/prepare";
@@ -71,7 +75,11 @@ import {
   SPEND_CEILING_BURST_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
-import { readBurstStart, readLastMessageId } from "./service";
+import {
+  readBurstStart,
+  readDeferringSince,
+  readLastMessageId,
+} from "./service";
 import { readDebounceConfig } from "./settings";
 import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
 
@@ -1763,6 +1771,7 @@ export async function flushDebounceJob(
     ctx.contactInboxId,
   );
   if (isTurnInFlight(graphThreadId)) {
+    const now = Date.now();
     // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
     // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and
     // a deferral loop never reaches DEAD. A counter carried in the payload is worse: `armDebounce`
@@ -1772,9 +1781,16 @@ export async function flushDebounceJob(
     //
     // `burstStartedAt` survives because `armDebounce` reads it back off the row and rewrites it
     // while the burst continues, which is the same anchor its own anti-starvation cap uses.
-    const burstStartedAt = readBurstStart(job.payload);
-    const deadline = (burstStartedAt ?? Date.now()) + DEFER_CEILING_MS;
-    if (Date.now() < deadline) {
+    //
+    // `deferringSince` is stamped on the FIRST deferral and carried by `armDebounce` across every
+    // re-arm of a live row. `burstStartedAt` alone was not enough and review of this change is what
+    // showed it: a message arriving while the flush is CLAIMED opens a new burst by design, taking a
+    // fresh `burstStartedAt` with it, so a customer who kept typing at a wedged thread pushed the
+    // deadline forward on every arrival and was never answered. It falls back to `burstStartedAt`
+    // for the first pass, before any stamp exists.
+    const since =
+      readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? now;
+    if (now < since + DEFER_CEILING_MS) {
       logger.info(
         "debounce flush: a turn is in flight (thread=%s), deferring the burst on conversation %s",
         graphThreadId,
@@ -1783,9 +1799,14 @@ export async function flushDebounceJob(
       // NOT a failure, and the distinction is load-bearing: a `fail` here would spend an attempt,
       // stamp `last_error` on the conversation and eventually dead-letter a burst whose only problem
       // is that it arrived at a busy moment.
+      //
+      // MERGED rather than written whole (`payloadPatch`, not `payload`): the row may have been
+      // re-armed while this run was deciding, and a replacement built from the claim-time snapshot
+      // would erase the `burstStartedAt` and `lastMessageId` that arm just wrote.
       return {
         outcome: "reschedule",
-        runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
+        runAt: new Date(now + DEFER_ON_TURN_MS),
+        payloadPatch: { deferringSince: since },
       };
     }
     // PAST THE DEADLINE WE RUN ANYWAY, which is a choice and not an oversight. A turn that never
@@ -1798,6 +1819,18 @@ export async function flushDebounceJob(
       String(conversationId),
     );
   }
+  // RESERVED IN THE SAME TURN OF THE EVENT LOOP as the check above, with no await between them, and
+  // that adjacency is the whole point. A turn marks itself deep inside `runLoadedTurn`, several
+  // awaits past here — a message fetch, the burst selection, the authorization gate — so between the
+  // check and the mark there is a window in which a SECOND flush reads an unheld thread and passes.
+  // The window is reachable: two conversations of one contact are two scheduler rows, claimed in the
+  // same tick and started concurrently by `runDebounceTick`, and they share this key.
+  //
+  // The same hold `../chatwoot/recover-delivery.ts` takes for the same stretch, and the reason the
+  // `reserved` map is separate from the invoke map: `markTurnOwning` asks `isTurnRunning`, which
+  // does not count reservations, so holding one here cannot make the turn stand down on account of
+  // its own caller.
+  markTurnReserved(graphThreadId);
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).
@@ -1892,6 +1925,12 @@ export async function flushDebounceJob(
       });
     }
     throw e;
+  } finally {
+    // Balanced, on every exit including the throw: an unbalanced release hands the thread to a
+    // writer this flush is about to undo, and an unbalanced hold wedges the conversation until the
+    // process restarts. The turn takes its own claim inside `runLoadedTurn`; this one only covers
+    // the stretch before it.
+    clearTurnReserved(graphThreadId);
   }
 }
 

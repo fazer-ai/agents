@@ -7,6 +7,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
+import { armDebounce, debounceDedupeKey } from "@/modules/debounce/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
@@ -50,6 +51,9 @@ const CONV_CEILING = 4243;
 const CONV_IRMA_A = 4244;
 const CONV_IRMA_B = 4245;
 const CONTACT_INBOX = 777;
+const CONV_CORRIDA_A = 4246;
+const CONV_CORRIDA_B = 4247;
+const CONTACT_INBOX_CORRIDA = 778;
 const CHATWOOT_INBOX_ID = 7;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -376,5 +380,101 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     );
     expect(meter.max).toBe(1);
     expect(b.outcome).toBe("reschedule");
+  }, 30_000);
+
+  test("two flushes claimed in the same tick cannot both pass the check", async () => {
+    // The window the reservation exists for, and the one the sequenced tests above cannot see: a
+    // turn marks itself several awaits past the check (message fetch, burst selection, the
+    // authorization gate), so two flushes STARTED TOGETHER can both read an unheld thread. Two
+    // conversations of one contact are two scheduler rows, claimed in the same tick and started
+    // concurrently by the worker, and they share the graph key.
+    await seedConversation(CONV_CORRIDA_A, CONTACT_INBOX_CORRIDA);
+    await seedConversation(CONV_CORRIDA_B, CONTACT_INBOX_CORRIDA);
+    const meter = { active: 0, max: 0 };
+    const seen: string[][] = [];
+    const sent: Array<[number, string]> = [];
+    const deps = {
+      makeModel: () => overlapModel(400, meter, seen),
+      makeClient: stub(sent),
+      checkpointer: new MemorySaver(),
+    };
+    // No rendezvous on purpose: both are launched in the same turn of the event loop, which is what
+    // `runDebounceTick`'s Promise.allSettled does.
+    const [ra, rb] = await Promise.all([
+      flushDebounceJob({
+        job: jobFor(jobIdA, CONV_CORRIDA_A, Date.now()),
+        base: appDb,
+        deps,
+      }),
+      flushDebounceJob({
+        job: jobFor(jobIdB, CONV_CORRIDA_B, Date.now()),
+        base: appDb,
+        deps,
+      }),
+    ]);
+
+    console.log(
+      `[mesma-tick] pico simultâneo: ${meter.max}; invokes: ${seen.length}; desfechos: ${ra.outcome}/${rb.outcome}`,
+    );
+    expect(meter.max).toBe(1);
+    // Exactly one ran and exactly one stood down: neither "both deferred" (nobody answers) nor
+    // "both ran" (the defect) passes.
+    expect(seen.length).toBe(1);
+    expect(
+      [ra.outcome, rb.outcome].filter((o) => o === "reschedule"),
+    ).toHaveLength(1);
+  }, 30_000);
+
+  test("the deferral deadline survives a re-arm while the flush is claimed", async () => {
+    // Found in review: a message arriving while the flush is CLAIMED opens a new burst by design and
+    // takes a fresh `burstStartedAt` with it, so a deadline anchored there was pushed forward by
+    // every arrival — a customer who kept typing at a wedged thread was never answered at all.
+    const thread = threadOf(4248);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    const stamp = Date.now() - 120_000;
+    const key = debounceDedupeKey(thread);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND dedupe_key = '${key}'`,
+    );
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: key,
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: {
+          threadId: thread,
+          agentBotId: 9,
+          burstStartedAt: stamp,
+          deferringSince: stamp,
+        },
+      },
+    });
+
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+    });
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+      select: { payload: true },
+    });
+    const p = row.payload as {
+      burstStartedAt?: number;
+      deferringSince?: number;
+    };
+    // The new burst legitimately restarts burstStartedAt, which is what a claim in flight means...
+    expect(p.burstStartedAt).toBeGreaterThan(stamp);
+    // ...and the deadline does NOT restart with it.
+    expect(p.deferringSince).toBe(stamp);
   }, 30_000);
 });

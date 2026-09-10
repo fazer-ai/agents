@@ -290,20 +290,6 @@ export async function reengageConversation(
     return { outcome: "busy" };
   };
 
-  const threadTomada = async () =>
-    (contactInboxId !== null &&
-      (await turnOwnsThread(
-        {
-          tenantId,
-          instanceId: resolved.instanceId,
-          contactInboxId,
-          graphThreadId,
-        },
-        base,
-      ))) ||
-    isTurnInFlight(graphThreadId) ||
-    isFlushHeld(graphThreadId);
-
   // WHAT THIS CLICK WOULD ANSWER, computed once and used twice: here, to decide whether there is a
   // turn at all, and inside `coalesceAndRunTurn`, to build it. One expression rather than two,
   // because the pre-check and the turn disagreeing is how a gate ends up refusing work that was
@@ -508,7 +494,32 @@ export async function reengageConversation(
   //
   // Sem `contact_inbox_id` não há claim durável a consultar (a linha é chaveada por ele), e a thread
   // de grafo cai para a da conversa: sobra o registro do processo, que é o que existe hoje.
-  if (await threadTomada()) return recusaOcupada("adjacente");
+  // A LEITURA DURÁVEL PRIMEIRO, E DEPOIS NADA DE `await` ATÉ A MARCA. Esta ordem é a correção
+  // inteira, e eu já a quebrei uma vez: extrair as duas metades para um predicado `async` põe um
+  // `await` ENTRE a checagem local e o `markFlushHold`, e duas chamadas concorrentes cedem o event
+  // loop no mesmo ponto, leem "livre" as duas e marcam as duas. O clique duplo passava mesmo assim,
+  // por sorte de escalonamento, e é isso que o teste da barreira abaixo tira da jogada.
+  //
+  // Por isso o predicado NÃO é compartilhado com a checagem antecipada: aquela é local e síncrona
+  // porque não pode custar consulta; esta é durável e tem que terminar em marca no mesmo tick.
+  const donoDuravel =
+    contactInboxId !== null &&
+    (await turnOwnsThread(
+      {
+        tenantId,
+        instanceId: resolved.instanceId,
+        contactInboxId,
+        graphThreadId,
+      },
+      base,
+    ));
+  if (
+    donoDuravel ||
+    isTurnInFlight(graphThreadId) ||
+    isFlushHeld(graphThreadId)
+  ) {
+    return recusaOcupada("adjacente");
+  }
   // O MESMO REGISTRO QUE O FLUSH USA, pelo que ele já é: invisível para quem pergunta por TURNOS
   // (ingestão, compactação, rollback) e visível para o flush, que é quem precisa adiar diante deste
   // botão. Reusar o registro do turno aqui faria `drainPendingIngest` alcançar nada e todo rollback

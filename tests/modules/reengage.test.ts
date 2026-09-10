@@ -66,11 +66,15 @@ function makeStub(opts: {
   // Roda a cada leitura de mensagens, que é o único momento em que o hold do botão e a marca do
   // turno podem ser distinguidos de fora: o coalesce lê ANTES de o turno se marcar.
   onGetMessages?: () => void;
+  // A versão que pode ESPERAR, para uma barreira de largada sincronizar duas chamadas no mesmo
+  // ponto. `onGetMessages` é síncrono de propósito (é sonda); esta serve para segurar.
+  onGetMessagesAsync?: () => Promise<void>;
 }) {
   let i = 0;
   const client = {
     getMessages: async () => {
       opts.onGetMessages?.();
+      if (opts.onGetMessagesAsync) await opts.onGetMessagesAsync();
       if (!opts.pages) return opts.page;
       const p = opts.pages[Math.min(i, opts.pages.length - 1)];
       i += 1;
@@ -1593,5 +1597,56 @@ describe.skipIf(!dbUp)("reengage", () => {
     } finally {
       clearTurnInFlight(graphThreadId);
     }
+  });
+  // A CORRIDA, POR CONSTRUÇÃO E NÃO POR SORTE. O teste de clique duplo mais acima passava mesmo com
+  // um `await` entre a checagem e o `markFlushHold`, porque as duas chamadas não chegavam ao portão
+  // no mesmo tick: era escalonamento, não exclusão. O review da rodada 4 apontou isso, e a asserção
+  // sozinha não pegava.
+  //
+  // Aqui as duas são SEGURADAS na leitura de mensagens até as duas terem chegado, e só então
+  // liberadas juntas. A partir daí, se houver qualquer `await` entre ler os registros e marcar o
+  // hold, as duas leem "livre" e as duas seguem.
+  //
+  // Duas conversas do MESMO contato, porque a thread de grafo é a do contato-inbox: é a mesma
+  // memória, que é o que a exclusão protege.
+  test("dois cliques que chegam juntos não viram dois turnos", async () => {
+    const CI = 601;
+    const idA = await seedConversation(9601, { contactInboxId: CI });
+    const idB = await seedConversation(9602, { contactInboxId: CI });
+    const sent: Array<[number, string]> = [];
+    let chegaram = 0;
+    let liberar: () => void = () => {};
+    const largada = new Promise<void>((r) => {
+      liberar = r;
+    });
+    const barreira = async () => {
+      chegaram += 1;
+      if (chegaram >= 2) liberar();
+      await largada;
+    };
+    const deps = () => ({
+      makeModel: fakeModel,
+      makeClient: makeStub({
+        page: page([
+          { id: 1, content: "oi", type: 0 },
+          { id: 2, content: "resposta antiga", type: 1 },
+          { id: 3, content: "e aí?", type: 0 },
+        ]),
+        sent,
+        onGetMessagesAsync: barreira,
+      }),
+      checkpointer: new MemorySaver(),
+    });
+    const [a, b] = await Promise.all([
+      reengageConversation(ctx(), idA, deps(), appDb),
+      reengageConversation(ctx(), idB, deps(), appDb),
+    ]);
+    const desfechos = [a.outcome, b.outcome].sort();
+    console.log(
+      `[corrida] desfechos=${JSON.stringify(desfechos)} envios=${sent.length}`,
+    );
+    // Um responde, o outro cede. Nunca os dois.
+    expect(desfechos).toEqual(["busy", "posted"]);
+    expect(sent.length).toBe(1);
   });
 });

@@ -490,6 +490,49 @@ describe.skipIf(!dbUp)("reengage", () => {
       }) as unknown as typeof fetch;
     }
 
+    // MATA A MUTAÇÃO que tira a checagem cedo. O que ela economiza não é leitura do Chatwoot (o
+    // portão de cauda vazia faz uma de qualquer jeito): é o teto de gasto e, sobretudo, uma chamada
+    // ao endpoint de autorização DE OUTRA PESSOA. Gastar a infra de um terceiro para no fim dizer
+    // "ocupado" é o custo que a checagem cedo existe para não pagar.
+    //
+    // A asserção é sobre `calls.n`, e não sobre latência, porque é o que se pode medir sem relógio:
+    // sem a checagem cedo este caminho chama o endpoint uma vez.
+    test("uma thread tomada não gasta o endpoint de autorização", async () => {
+      const id = await seedConversation(9600, {
+        contactId: await seedContact(94),
+        contactInboxId: 600,
+      });
+      const graphThreadId = `${tenantId}:${instanceId}:ci:600`;
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      markTurnInFlight(graphThreadId);
+      try {
+        const res = await reengageConversation(
+          ctx(),
+          id,
+          {
+            makeModel: fakeModel,
+            makeClient: makeStub({
+              page: page([
+                { id: 1, content: "oi", type: 0 },
+                { id: 2, content: "resposta antiga", type: 1 },
+                { id: 3, content: "e aí?", type: 0 },
+              ]),
+              sent,
+            }),
+            checkpointer: new MemorySaver(),
+            contactAuthFetch: answering(true, calls),
+          },
+          appDb,
+        );
+        expect(res.outcome).toBe("busy");
+        expect(calls.n).toBe(0);
+        expect(sent).toEqual([]);
+      } finally {
+        clearTurnInFlight(graphThreadId);
+      }
+    });
+
     test("a refused contact is not re-engaged (no model, no post)", async () => {
       const id = await seedConversation(903, {
         contactId: await seedContact(41),

@@ -1536,6 +1536,17 @@ export function ConversationDetailPage() {
           ),
           "warning",
         );
+      } else if (data.outcome === "busy") {
+        // Braço próprio, e não o `noReply` do fim: "a IA não produziu resposta" mandaria o operador
+        // esperar por nada, quando o que ele precisa saber é que já tem um turno rodando e que o
+        // clique dele não foi perdido, é só repetir daqui a pouco.
+        showToast(
+          t(
+            "conversation.reengage.busy",
+            "The AI is already answering this conversation. Wait a moment and try again.",
+          ),
+          "info",
+        );
       } else if (data.outcome === "empty") {
         showToast(
           t("conversation.reengage.empty", "Nothing new to answer."),

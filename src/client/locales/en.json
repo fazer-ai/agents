@@ -589,6 +589,7 @@
     "quotedCustomer": "Customer",
     "reengage": {
       "action": "Re-engage",
+      "busy": "The AI is already answering this conversation. Wait a moment and try again.",
       "empty": "Nothing new to answer.",
       "error": "Re-engage failed.",
       "failedTitle": "The AI couldn't finish its last turn",

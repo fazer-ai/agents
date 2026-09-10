@@ -4,6 +4,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
@@ -102,6 +103,7 @@ async function seedConversation(
     lastError?: string | null;
     contactId?: bigint;
     lastHandledMessageId?: number;
+    contactInboxId?: number;
   } = {},
 ): Promise<bigint> {
   const c = await suDb.conversation.create({
@@ -119,6 +121,9 @@ async function seedConversation(
       lastError: over.lastError ?? null,
       lastErrorAt: over.lastError ? new Date() : null,
       lastHandledMessageId: over.lastHandledMessageId ?? null,
+      ...(over.contactInboxId !== undefined
+        ? { contactInboxId: over.contactInboxId }
+        : {}),
     },
   });
   return c.id;
@@ -803,7 +808,17 @@ describe.skipIf(!dbUp)("reengage", () => {
         reengageConversation(ctx(), id, deps(), appDb),
       ]);
       expect(sent.length).toBe(1);
-      expect([a.outcome, b.outcome].sort()).toEqual(["posted", "superseded"]);
+      // MUDOU COM A #594, e a metade que importa não mudou: uma resposta só. O perdedor agora é
+      // recusado ANTES de gastar um turno, e não depois de o claim de resposta tirá-lo do caminho,
+      // então ele lê `busy` em vez de `superseded`. É a resposta mais verdadeira no instante em que
+      // é dada, e economiza uma chamada ao modelo por clique duplo.
+      //
+      // `superseded` continua existindo para o caso em que a cauda é consumida ENQUANTO o modelo
+      // roda (o teste do skip logo abaixo): lá o turno chegou a acontecer.
+      //
+      // Determinístico, não corrida: a checagem e o `markFlushHold` são um bloco síncrono só, então
+      // as duas chamadas não podem passar as duas pela checagem.
+      expect([a.outcome, b.outcome].sort()).toEqual(["busy", "posted"]);
     });
 
     // THE CEILING IS THE MARK THIS CLICK READ ON THE WAY IN, not "no ceiling" (issue #452). What was
@@ -1263,5 +1278,55 @@ describe.skipIf(!dbUp)("reengage", () => {
       }),
     ).toBe(1);
     expect(capture.systemPrompts.join("\n")).toContain("VARIANT PROMPT");
+  });
+  // Issue #594. Um turno já rodando na MESMA thread de grafo, e o operador aperta re-engage. Hoje o
+  // re-engage abre um segundo turno concorrente, posta, e devolve `posted` atrás de um 200: o canal do
+  // checkpoint fica exposto ao read-modify-write que a #588 fechou, só que pela porta do operador.
+  //
+  // A ocupação é marcada no registro do PROCESSO de propósito: é assim que o defeito acontece hoje em
+  // réplica única, que é a topologia no ar. A metade entre réplicas é a #593.
+  //
+  // A conversa nasce com `contact_inbox_id`, e isso não é detalhe: a thread de grafo de um contato com
+  // duas conversas é a do contato-inbox, e `resolveReengage` hoje nem seleciona esse campo. Uma
+  // correção que se apoie no `threadId` da conversa passa num teste sem ele e erra calada o caso real.
+  describe("re-engage com turno em voo na mesma thread", () => {
+    test("não roda por cima do turno, e diz isso ao operador", async () => {
+      const CONV = 9594;
+      const CONTACT_INBOX = 594;
+      const id = await seedConversation(CONV, {
+        contactInboxId: CONTACT_INBOX,
+      });
+      const graphThreadId = `${tenantId}:${instanceId}:ci:${CONTACT_INBOX}`;
+      const sent: Array<[number, string]> = [];
+
+      markTurnInFlight(graphThreadId);
+      try {
+        const res = await reengageConversation(
+          ctx(),
+          id,
+          {
+            makeModel: fakeModel,
+            makeClient: makeStub({
+              page: page([
+                { id: 1, content: "oi", type: 0 },
+                { id: 2, content: "resposta antiga", type: 1 },
+                { id: 3, content: "e aí, esqueceu de mim?", type: 0 },
+              ]),
+              sent,
+            }),
+            checkpointer: new MemorySaver(),
+          },
+          appDb,
+        );
+        console.log(
+          `[594] desfecho=${res.outcome} envios=${sent.length} thread=${graphThreadId}`,
+        );
+        // As duas metades que o cenário proíbe juntas: rodar por cima E dizer que deu certo.
+        expect(sent).toEqual([]);
+        expect(res.outcome).not.toBe("posted");
+      } finally {
+        clearTurnInFlight(graphThreadId);
+      }
+    });
   });
 });

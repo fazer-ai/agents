@@ -35,6 +35,14 @@ export interface ToolpackCtx {
   resolveCredential: (ref: string) => Promise<string | null>;
   // Injectable for tests; default real fetch.
   fetchImpl?: typeof fetch;
+  // THE CALLER'S WHOLE-TURN DEADLINE, when it has one (the observer's tick). Aborting an invoke
+  // stops the caller waiting, not a handler writing: a pack that was resolving a credential when
+  // the budget ran out still reaches its DELETE, and the tick has already been reported as a
+  // RETRYABLE failure, so the retry sends it again. Enforced by WRAPPING `fetchImpl` in
+  // buildToolpackTools rather than at each pack's own request helper — four packs with their own
+  // helpers is four places to forget, and a fifth added later would start out uncovered. Same shape
+  // as the Chatwoot client's `mutedFetch`. Absent ⇒ no deadline, which is every reactive turn.
+  expiresOn?: AbortSignal;
   // Injectable for tests; default assertSafeOutboundUrl. The origin is a fixed trusted constant
   // here, so this is defense-in-depth (and lets tests stay hermetic without DNS).
   assertSafe?: (url: string, opts?: SafeUrlOptions) => Promise<unknown>;
@@ -160,16 +168,41 @@ export function getToolpack(catalogType: string): Toolpack | undefined {
 
 // Builds the outbound tools for a set of integration selections. Fail-closed: a selection with
 // an empty allowlist or a catalogType without a toolpack (NATIVE/MCP) contributes nothing.
+export function deadlineFetch(
+  inner: typeof fetch,
+  expiresOn: AbortSignal,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // Before the request is built, so a pack that spent the budget on a credential read is stopped
+    // rather than sending. Thrown rather than returned: a toolpack's helper reads a Response, and
+    // handing it a synthetic one would be a failure the pack reports as the provider's.
+    if (expiresOn.aborted) {
+      throw new Error(
+        "the run's time budget ran out before the request was sent",
+      );
+    }
+    // Relayed as well, so a request already in flight is cancelled at the deadline instead of
+    // running to the pack's own timeout past the end of the tick.
+    return inner(input, { ...(init ?? {}), signal: init?.signal ?? expiresOn });
+  }) as typeof fetch;
+}
+
 export function buildToolpackTools(
   selections: IntegrationSelection[],
   ctx: ToolpackCtx,
 ): StructuredToolInterface[] {
+  const bounded: ToolpackCtx = ctx.expiresOn
+    ? {
+        ...ctx,
+        fetchImpl: deadlineFetch(ctx.fetchImpl ?? fetch, ctx.expiresOn),
+      }
+    : ctx;
   const out: StructuredToolInterface[] = [];
   for (const sel of selections) {
     if (sel.enabledTools.length === 0) continue;
     const pack = getToolpack(sel.catalogType);
     if (!pack) continue;
-    out.push(...pack.build(sel, ctx));
+    out.push(...pack.build(sel, bounded));
   }
   return out;
 }

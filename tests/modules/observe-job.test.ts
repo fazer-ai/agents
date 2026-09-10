@@ -2016,6 +2016,86 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
+  // THE OBSERVER RUNS THE ORDINARY TOOLSET NOW, so a tool whose URL carries `{{message_id}}` is as
+  // legal on a tick as on a reactive turn — and the tick was the only caller that never supplied it,
+  // so such a tool failed with a missing-placeholder error on EVERY observation. The burst knows the
+  // id (`atMessageId`); it just was not being passed (round 13).
+  test("a burst hands its triggering message id to the tools", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const client = stubClient([message(1, "e o pedido?")], [], log);
+    let calledUrl = "";
+    const def = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: `eco_${process.pid}`,
+        label: "Eco",
+        method: "GET",
+        // A public IP literal: the SSRF guard treats it as an IP and makes no DNS lookup, and the
+        // injected fetch means nothing leaves this process.
+        urlTemplate: "https://8.8.8.8/eco/{{message_id}}",
+        allowedHosts: ["8.8.8.8"],
+      },
+    });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "HTTP",
+        toolDefinitionId: def.id,
+        knowledgeBaseIds: [],
+        enabledTools: [def.name],
+      },
+    });
+    try {
+      const model = {
+        async invoke(): Promise<AIMessage> {
+          return new AIMessage("pronto");
+        },
+        bindTools() {
+          let n = 0;
+          return {
+            async invoke(): Promise<AIMessage> {
+              n++;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [{ name: def.name, args: {}, id: "call_eco" }],
+                  })
+                : new AIMessage("pronto");
+            },
+          };
+        },
+      };
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: 4242,
+        },
+        appDb,
+        {
+          makeClient: async () => client,
+          makeModel: () => model as unknown as BaseChatModel,
+          outboundFetch: (async (url: string) => {
+            calledUrl = String(url);
+            return new Response('{"ok":true}', {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }) as unknown as typeof fetch,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      expect(calledUrl).toContain("/eco/4242");
+    } finally {
+      await suDb.agentToolSelection.deleteMany({ where: { id: sel.id } });
+      await suDb.toolDefinition.deleteMany({ where: { id: def.id } });
+    }
+  });
+
   // DISCOVERY IS THE ONE CALL THAT CAN HANG FOREVER, and before this it was the one call the
   // deadline did not cover: it was created after `buildToolset`. An MCP server that opens its stream
   // and never emits an endpoint waits with no timeout of its own, and `startScheduler` skips every

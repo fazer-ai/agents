@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   buildHttpTool,
   type HttpToolDef,
   parseToolInputSchema,
   sanitizeToolName,
 } from "@/graph/tools/http";
+import {
+  buildToolpackTools,
+  deadlineFetch,
+  registerToolpack,
+} from "@/modules/integrations/toolpacks/types";
 
 // 8.8.8.8 is a public IP literal: the SSRF guard treats it as an IP (no DNS lookup) and does not
 // block it, so these tests never touch the network.
@@ -1706,5 +1711,99 @@ describe("the turn's deadline reaches an http tool", () => {
     });
     await tool.invoke({});
     expect(captured.url).toContain("/v1/thing");
+  });
+});
+
+// THE SAME DEADLINE, THE OTHER FAMILY OF TOOLS. Four toolpacks each have their own request helper,
+// so enforcing this at each of them is four places to forget and a fifth uncovered the day someone
+// adds a pack. It is applied by wrapping the ctx's `fetchImpl` at the build seam instead — the shape
+// the Chatwoot client's mutedFetch already uses (issue #568 review, round 13).
+describe("the turn's deadline reaches a toolpack", () => {
+  test("a budget already spent stops the request before it is sent", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let called = false;
+    const wrapped = deadlineFetch(
+      (async () => {
+        called = true;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      ctrl.signal,
+    );
+    await expect(wrapped("https://example.com/x")).rejects.toThrow(
+      "time budget",
+    );
+    expect(called).toBe(false);
+  });
+
+  test("a live budget passes through and rides along as the request's signal", async () => {
+    const ctrl = new AbortController();
+    let seen: RequestInit | undefined;
+    const wrapped = deadlineFetch(
+      (async (_u: unknown, init: RequestInit) => {
+        seen = init;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      ctrl.signal,
+    );
+    await wrapped("https://example.com/x", { method: "DELETE" });
+    expect(seen?.method).toBe("DELETE");
+    expect(seen?.signal).toBe(ctrl.signal);
+  });
+
+  test("the wrap is applied at the build seam, so no pack can miss it", async () => {
+    // The seam, not the helper: `deadlineFetch` being right proves nothing if buildToolpackTools
+    // hands the pack the raw fetch. Registered under a private catalogType so the real registry is
+    // untouched.
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let handed: typeof fetch | undefined;
+    registerToolpack({
+      catalogType: "__test_deadline__",
+      toolSpecs: [{ name: "t", schema: z.object({}) }],
+      build(_sel, ctx) {
+        handed = ctx.fetchImpl;
+        return [];
+      },
+    });
+    buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "__test_deadline__",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["t"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: {} as never,
+        threadId: "t",
+        resolveCredential: async () => null,
+        expiresOn: ctrl.signal,
+      },
+    );
+    expect(handed).toBeDefined();
+    await expect(
+      (handed as typeof fetch)("https://example.com/x"),
+    ).rejects.toThrow("time budget");
+  });
+
+  test("a caller's own signal is not replaced by the deadline", async () => {
+    // A pack that already cancels its own request keeps that control; the deadline only fills the
+    // gap, which is what `init?.signal ?? expiresOn` says.
+    const ctrl = new AbortController();
+    const own = new AbortController();
+    let seen: RequestInit | undefined;
+    const wrapped = deadlineFetch(
+      (async (_u: unknown, init: RequestInit) => {
+        seen = init;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      ctrl.signal,
+    );
+    await wrapped("https://example.com/x", { signal: own.signal });
+    expect(seen?.signal).toBe(own.signal);
   });
 });

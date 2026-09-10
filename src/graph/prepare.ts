@@ -870,6 +870,10 @@ export interface ToolsetCtx {
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
   // (the watermark), since the coalesced turn answers up to that message. 0/absent ⇒ not exposed.
   messageId?: number;
+  // The fetch the OUTBOUND tools use (HTTP tools and toolpacks). Injectable so a caller's tool path
+  // can be exercised without the network; production leaves it absent and every builder falls back
+  // to the global fetch. Named apart from `imageDeps.fetchImpl`, which is the inbound image fetch.
+  outboundFetch?: typeof fetch;
   // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
   // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
   // TurnState in tools/native.ts — this module deliberately does not import that file).
@@ -1079,6 +1083,8 @@ export async function buildToolset(
   });
   const toolpackTools = buildToolpackTools(cfg.integrationSelections, {
     tenantId: ctx.tenantId,
+    expiresOn: ctx.expiresOn,
+    ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
     // The current customer, so a toolpack can isolate per-contact data (e.g. Calendar appointments).
@@ -1304,6 +1310,7 @@ export async function buildToolset(
         resolveCredential,
         emitAck,
         expiresOn: ctx.expiresOn,
+        ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
         // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
         // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.

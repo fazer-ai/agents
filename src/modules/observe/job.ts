@@ -338,6 +338,10 @@ export interface ObserveDeps {
   // The turn's deadline, injectable so a test can assert the tick gives up without waiting a
   // minute for it. Production never passes it.
   timeoutMs?: number;
+  // The fetch the outbound tools use, injectable for the same reason as makeClient and makeModel:
+  // the observer runs the ordinary toolset, and until this there was no way to exercise that path
+  // without the network. Production never passes it.
+  outboundFetch?: typeof fetch;
 }
 
 // A ROW THE TRANSCRIPT CAN USE. Factored out of `transcriptFromRows` so the paging below counts the
@@ -1028,6 +1032,13 @@ export async function runObserve(
           conversationId,
           threadId,
           expiresOn: deadline,
+          // The burst's triggering message, exposed to HTTP and code tools as {{message_id}}. The
+          // observer runs the ORDINARY toolset now, so a tool whose URL carries that placeholder is
+          // as legal here as on a reactive turn — and without this it failed with a missing
+          // placeholder on every observation. Null on an `on_resolve` tick, which has no triggering
+          // message: the placeholder is then absent, which is the same answer a nudge gives.
+          ...(p.atMessageId != null ? { messageId: p.atMessageId } : {}),
+          ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
           stillWanted: () => fence(),
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
           conversationLabels: current,

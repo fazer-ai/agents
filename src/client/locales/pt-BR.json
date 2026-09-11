@@ -605,6 +605,7 @@
     "quotedCustomer": "Cliente",
     "reengage": {
       "action": "Reengajar",
+      "busy": "A IA já está respondendo esta conversa. Espere um instante e tente de novo.",
       "empty": "Nada novo para responder.",
       "error": "Falha ao reengajar.",
       "failedTitle": "A IA não conseguiu concluir o último turno",

@@ -49,7 +49,15 @@ export async function resolveDebounceConfig(
   return cfg;
 }
 
-function readBurstStart(payload: unknown): number | null {
+// EXPORTED because the flush reads it too: it is the only anchor a deferral ceiling can use that a
+// re-arm does not erase (see the ceiling in ./handler.ts).
+export function readDeferringSince(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).deferringSince;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+export function readBurstStart(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).burstStartedAt;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -61,6 +69,88 @@ export function readLastMessageId(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).lastMessageId;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+// Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
+//
+// UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the
+// reschedule. The patch rides `rescheduleJob`, whose compare-and-set requires the row to still be
+// CLAIMED — and the window it has to survive is exactly the one where that is false: a message
+// arriving while the first deferring flush runs re-arms the row to PENDING with a fresh payload, the
+// CAS then fails, and the stamp is discarded rather than merged. Repeated arrivals in that window
+// restarted the deadline every time, which is the customer-never-answered case the deadline exists
+// to prevent (found in review of #588, and the reason the first test of it was not enough: it only
+// re-armed a row that was already stamped).
+//
+// Taking `armDebounce`'s own lock makes the two orderings both work: the arm runs first and this
+// merges into what it wrote, or this runs first and the arm carries the stamp forward as a live row.
+//
+// Never overwrites: the deadline belongs to the FIRST deferral, and a later one that reset it would
+// be the same defect wearing a different hat.
+export async function stampDeferral(params: {
+  tenantId: bigint;
+  threadId: string;
+  since: number;
+  base?: PrismaClient;
+}): Promise<void> {
+  const base = params.base ?? basePrisma;
+  const dedupeKey = debounceDedupeKey(params.threadId);
+  await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
+      const row = await db.schedulerJob.findFirst({
+        where: { kind: "DEBOUNCE", dedupeKey },
+        select: { id: true, payload: true },
+      });
+      // No row means the flush that is deferring has already been completed or retired by somebody
+      // else; there is nothing whose deadline this would be.
+      if (!row || readDeferringSince(row.payload) !== null) return;
+      await db.schedulerJob.update({
+        where: { id: row.id },
+        data: {
+          payload: {
+            ...(row.payload as Prisma.InputJsonObject),
+            deferringSince: params.since,
+          },
+        },
+      });
+    }),
+  );
+}
+
+// Drops the deferral stamp, because the waiting it measured is over.
+//
+// Without this the deadline outlives the burst it belonged to, and the protection turns ITSELF off:
+// a deferred flush eventually runs, a message arriving during its delivery re-arms the row and
+// carries the stamp into the NEW burst, and the flush cannot clear it on completion because that
+// compare-and-set needs a row that is still CLAIMED. Once the carried stamp is older than the
+// ceiling, every later flush skips the busy-thread check outright, even against a turn that just
+// started. Found in review of #588, one round after the bug it mirrors.
+//
+// Under the arm lock, like the stamp, so a re-arm racing this cannot resurrect what it removed.
+export async function clearDeferral(params: {
+  tenantId: bigint;
+  threadId: string;
+  base?: PrismaClient;
+}): Promise<void> {
+  const base = params.base ?? basePrisma;
+  const dedupeKey = debounceDedupeKey(params.threadId);
+  await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    withEntityLock(db, `debounce-arm:${params.threadId}`, async () => {
+      const row = await db.schedulerJob.findFirst({
+        where: { kind: "DEBOUNCE", dedupeKey },
+        select: { id: true, payload: true },
+      });
+      if (!row || readDeferringSince(row.payload) === null) return;
+      const { deferringSince: _dropped, ...rest } = row.payload as Record<
+        string,
+        unknown
+      >;
+      await db.schedulerJob.update({
+        where: { id: row.id },
+        data: { payload: rest as Prisma.InputJsonObject },
+      });
+    }),
+  );
 }
 
 export interface ArmDebounceParams {
@@ -92,6 +182,22 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { status: true, payload: true },
       });
+      // The flush's deferral deadline, carried across re-arms of a row that is still LIVE — PENDING
+      // (a deferred flush waiting for its next try) or CLAIMED (one running right now). It is kept
+      // separately from `burstStartedAt` and on a wider set of statuses on purpose: the deadline
+      // answers "how long has this burst been waiting for a busy thread", which a customer typing
+      // again does not restart, while `burstStartedAt` answers "when did this burst open", which a
+      // claim in flight deliberately does. Tying the deadline to the latter let every message that
+      // arrived during the CLAIMED window push it forward, so a customer who kept writing at a
+      // wedged thread was never answered at all (found in review of #588).
+      //
+      // A DONE or DEAD row carries nothing forward: the flush that was deferring has finished, and
+      // a stale stamp would make the next burst on this thread start out already past its deadline.
+      const stillLive =
+        existing?.status === "PENDING" || existing?.status === "CLAIMED";
+      const deferringSince = stillLive
+        ? readDeferringSince(existing.payload)
+        : null;
       // NOTE: A live PENDING row is the burst this message joins; anything else (no row, DONE,
       // DEAD, or a claim in flight) means the previous flush is finished business and this message
       // opens a new burst. Every question below reads that one fact, so they cannot answer it
@@ -116,6 +222,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         agentBotId,
         burstStartedAt,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
+        ...(deferringSince !== null ? { deferringSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {
         tenantId,

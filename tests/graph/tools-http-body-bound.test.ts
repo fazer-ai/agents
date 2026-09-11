@@ -243,14 +243,15 @@ test("a body far larger than memory allows is never retained whole", async () =>
   // whole assertion lives over there, so a probe that stops printing has to be a failure that says
   // so, naming the exit code and whatever the process managed to say.
   const line = out.trim().split("\n").at(-1) ?? "";
-  let got: {
+  type Medida = {
     grew: number;
     extra: number;
     control: number;
     len: number;
-  } | null = null;
+  };
+  let got: Medida | null = null;
   try {
-    got = JSON.parse(line) as typeof got;
+    got = JSON.parse(line) as Medida;
   } catch {
     got = null;
   }

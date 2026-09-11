@@ -57,6 +57,7 @@ import {
   buildPromptVars,
   interpolatePromptVars,
   PROMPT_CONTEXT_VARS,
+  type PromptRenderOpts,
 } from "@/graph/prompt";
 import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
@@ -212,7 +213,7 @@ interface SplitState {
 // would be plumbing in exchange for nothing, because what this box is for is the SHAPE: where the
 // signature sits and what separates it. The same choice the prompt editor's format help makes with
 // its fixed reference instant.
-const SIGNATURE_PREVIEW_VARS: Record<string, string> = buildPromptVars({
+export const SIGNATURE_PREVIEW_VARS: Record<string, string> = buildPromptVars({
   agentName: "Gi",
   companyName: "Guichê Web",
   contactName: "Ana Souza",
@@ -221,10 +222,21 @@ const SIGNATURE_PREVIEW_VARS: Record<string, string> = buildPromptVars({
   inboxName: "WhatsApp",
 });
 
-function signaturePreviewParts(
+// THE OPTIONS, not only the variables, because `interpolatePromptVars` answers a schedule name from
+// `opts.availability` and a time name from `opts.now`/`opts.timezone`. Passing the map alone left
+// `{{horario_atendimento}}` literal in the preview while production rendered the real hours — the
+// third finding in this family, after the map itself was completed and after the live path got its
+// options. `tests/client/signature-preview-vars.test.ts` now fences the whole set rather than the
+// name that happened to be reported.
+//
+// The schedule is the operator's OWN, looked up from the Availability the agent is on, so the
+// preview shows the hours they configured instead of a plausible fake. No Availability means
+// `schedule: null`, which is what production passes and what the gate reads as always on.
+export function signaturePreviewParts(
   sig: SignatureState,
   t: (k: string, d: string) => string,
   vars: Record<string, string>,
+  opts: PromptRenderOpts = {},
 ): string[] {
   // Interpolated like the signature itself, so the example name in the body and the one a
   // `{{nome_contato}}` in the signature resolves to are the SAME person. A preview that greets Ana
@@ -235,11 +247,12 @@ function signaturePreviewParts(
       "Hi {{primeiro_nome}}, your order is confirmed and the tickets are already in your e-mail. Anything else, just tell me here.",
     ),
     vars,
+    opts,
   );
   // Through the RUNTIME's own interpolation, not a second copy of it: what the preview shows and
   // what the customer receives have to be the same function, including the rule that an unknown
   // placeholder is left standing instead of blanked, which is how a typo stays visible here.
-  const text = interpolatePromptVars(sig.text.trim(), vars);
+  const text = interpolatePromptVars(sig.text.trim(), vars, opts);
   if (!text) return [body];
   return sig.position === "top" ? [text, body] : [body, text];
 }
@@ -1232,6 +1245,20 @@ export function BehaviorTab({
   // on screen connects the two. Found in review of #599.
   const signatureRoom =
     SIGNATURE_MAX - signature.text.length + signatureSelected;
+  // The agent's own Availability, so a `{{horario_atendimento}}` in the signature previews the hours
+  // the operator configured rather than a plausible fake. `null` when none is picked, which is what
+  // production passes and what the gate reads as always on.
+  const signaturePreviewSchedule =
+    hours.find((h) => String(h.id) === businessHoursId) ?? null;
+  const signaturePreviewOpts: PromptRenderOpts = {
+    availability: {
+      schedule: signaturePreviewSchedule
+        ? (toScheduleOption(signaturePreviewSchedule) as unknown as NonNullable<
+            NonNullable<PromptRenderOpts["availability"]>["schedule"]
+          >)
+        : null,
+    },
+  };
   const signatureVarsBlocked = PROMPT_CONTEXT_VARS.some(
     (v) => `{{${v}}}`.length > signatureRoom,
   );
@@ -2679,6 +2706,7 @@ export function BehaviorTab({
                   signature,
                   t,
                   SIGNATURE_PREVIEW_VARS,
+                  signaturePreviewOpts,
                 ).map((part, i) => (
                   <div key={part}>
                     {i > 0 &&

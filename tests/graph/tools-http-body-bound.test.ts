@@ -162,12 +162,33 @@ describe("what the operator is told when the body itself was cut", () => {
 // Measured on `main` against a local server: 1,438 MiB of resident memory from a single call, three
 // seconds in and still climbing.
 //
-// IN A SUBPROCESS, and measuring RSS rather than `heapUsed`. The decoded body lives in native
-// memory: the same probe that showed 1.4 GiB of RSS showed the JS heap growing by 0.5 MiB, so a
-// heap-based threshold would be green with the defect fully present.
+// IN A SUBPROCESS, because the question is about a whole process's memory.
+//
+// TWO QUANTITIES, and the pair is the point. This test used to assert on RSS alone against a 50 MB
+// ceiling, and that ceiling sat INSIDE the noise: fourteen isolated runs on one machine spread from
+// 40.5 MB to 57.2 MB, seven of ten over the line, three of four over it under parallel load (#590).
+// A red pre-commit on unrelated work is worse than a slow test, because it teaches everyone to pass
+// `--no-verify` and the next real failure in this file gets the same shrug.
+//
+// The header here used to say a heap threshold "would be green with the defect fully present",
+// citing a probe that showed 1.4 GiB of RSS against 0.5 MiB of JS heap. That observation is
+// reproducible and its conclusion was wrong by one line: `heapUsed` and `heapStats()` report the
+// LAST COLLECTION's accounting, and the 300 MB string is external to it until one runs. Read
+// without forcing a collection, the defect grows the heap by exactly zero. Force it first and the
+// same defect grows `extraMemorySize` by 314.9 MB. Measured both ways, five runs each side:
+//
+//   quantity (after Bun.gc(true))   cap in place            cap removed       ratio   max/min green
+//   rss                             40.40 - 51.31 MB        631.1 - 631.6 MB   12.3x   1.27
+//   heapStats().heapSize             1.493 -  1.502 MB      315.014 MB        210x    1.0058
+//   heapStats().extraMemorySize      1.36205 - 1.36210 MB   314.876 MB        231x    1.00003
+//
+// So RSS stays, with a ceiling that clears the noise by a factor of three, because it is the
+// quantity that matches the harm (the process dies); and `extraMemorySize` is added with a tight
+// one, because it is the quantity that separates. A defect has to beat both.
 test("a body far larger than memory allows is never retained whole", async () => {
   const script = `
     import { buildHttpTool } from "@/graph/tools/http";
+    import { heapStats } from "bun:jsc";
     const MB = 1024 * 1024;
     // ONE buffer, enqueued many times: the producer allocates 1 MB and the consumer decodes each
     // chunk transiently, so the only thing that could hold 300 MB is the accumulator under test.
@@ -184,9 +205,16 @@ test("a body far larger than memory allows is never retained whole", async () =>
     );
     Bun.gc(true);
     const before = process.memoryUsage().rss;
+    const heapBefore = heapStats().extraMemorySize;
     const out = String(await tool.invoke({}));
+    // THE COLLECTION BEFORE THE READING, not only before the baseline. Both numbers report the last
+    // collection's accounting, and the body this test is about is external to it until one runs:
+    // without this line the defect reads as zero growth, which is how the heap quantity got written
+    // off the first time round.
+    Bun.gc(true);
     const grew = process.memoryUsage().rss - before;
-    console.log(JSON.stringify({ grew, len: out.length }));
+    const extra = heapStats().extraMemorySize - heapBefore;
+    console.log(JSON.stringify({ grew, extra, len: out.length }));
   `;
   const proc = Bun.spawn(["bun", "-e", script], {
     cwd: process.cwd(),
@@ -194,10 +222,32 @@ test("a body far larger than memory allows is never retained whole", async () =>
     stderr: "pipe",
   });
   const out = await new Response(proc.stdout).text();
-  const line = out.trim().split("\n").at(-1) as string;
-  const got = JSON.parse(line) as { grew: number; len: number };
+  const err = await new Response(proc.stderr).text();
+  const code = await proc.exited;
+  // A SUBPROCESS THAT DIED MEASURED NOTHING, and the difference matters: `JSON.parse("")` throws
+  // "Unexpected end of JSON input", which reads as a broken test rather than as an unrun one. The
+  // whole assertion lives over there, so a probe that stops printing has to be a failure that says
+  // so, naming the exit code and whatever the process managed to say.
+  const line = out.trim().split("\n").at(-1) ?? "";
+  let got: { grew: number; extra: number; len: number } | null = null;
+  try {
+    got = JSON.parse(line) as typeof got;
+  } catch {
+    got = null;
+  }
+  if (!got || typeof got.grew !== "number" || typeof got.extra !== "number") {
+    throw new Error(
+      `the memory probe printed no measurement (exit ${code}); stdout: ${out.slice(-400) || "(empty)"}; stderr: ${err.slice(-400) || "(empty)"}`,
+    );
+  }
   // The model still gets its clipped view — the cap is on what is read, not on what is answered.
   expect(got.len).toBeLessThan(5_000);
-  // Retaining 300 MB shows up as hundreds of MB of RSS; the cap keeps it in the low tens.
-  expect(got.grew).toBeLessThan(50 * 1024 * 1024);
+  // THE QUANTITY THAT SEPARATES. Retaining the body puts 314.9 MB here against 1.36 MB with the cap,
+  // and that 1.36 MB moved by 47 bytes across five runs. 20 MB is fourteen times the measured green
+  // and fifteen times under the measured defect.
+  expect(got.extra).toBeLessThan(20 * 1024 * 1024);
+  // THE QUANTITY THAT MATCHES THE HARM. Ambient by nature — it carries whatever the runtime had
+  // resident — so the ceiling clears the worst green ever measured here (57.2 MB, under parallel
+  // load) by a factor of three, and still sits four times under the defect's 631 MB.
+  expect(got.grew).toBeLessThan(180 * 1024 * 1024);
 }, 180_000);

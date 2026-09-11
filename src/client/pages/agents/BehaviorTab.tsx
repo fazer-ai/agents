@@ -57,6 +57,9 @@ import {
   buildPromptVars,
   interpolatePromptVars,
   PROMPT_CONTEXT_VARS,
+  PROMPT_PREVIEW_AGENT,
+  PROMPT_PREVIEW_COMPANY,
+  PROMPT_PREVIEW_CONTACT,
   type PromptRenderOpts,
 } from "@/graph/prompt";
 import { clipText } from "@/lib/text";
@@ -212,14 +215,12 @@ interface SplitState {
 // name, and the company name lives in the tenant's branding — threading both through for a preview
 // would be plumbing in exchange for nothing, because what this box is for is the SHAPE: where the
 // signature sits and what separates it. The same choice the prompt editor's format help makes with
-// its fixed reference instant.
+// its fixed reference instant. The person is the SHARED example, so the two previews on this agent
+// speak to the same customer.
 export const SIGNATURE_PREVIEW_VARS: Record<string, string> = buildPromptVars({
-  agentName: "Gi",
-  companyName: "Guichê Web",
-  contactName: "Ana Souza",
-  contactEmail: "ana.souza@exemplo.com",
-  contactPhone: "+55 37 99999-0000",
-  inboxName: "WhatsApp",
+  agentName: PROMPT_PREVIEW_AGENT,
+  companyName: PROMPT_PREVIEW_COMPANY,
+  ...PROMPT_PREVIEW_CONTACT,
 });
 
 // THE OPTIONS, not only the variables, because `interpolatePromptVars` answers a schedule name from
@@ -244,7 +245,7 @@ export function signaturePreviewParts(
   const body = interpolatePromptVars(
     t(
       "editor.signaturePreviewBody",
-      "Hi {{primeiro_nome}}, your order is confirmed and the tickets are already in your e-mail. Anything else, just tell me here.",
+      "Hi {{primeiro_nome}}, all set here. Any questions, just ask.",
     ),
     vars,
     opts,

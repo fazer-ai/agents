@@ -1397,7 +1397,7 @@
     "signaturePosition": "Position",
     "signaturePositionHint": "Where it goes in the message.",
     "signaturePreview": "Preview",
-    "signaturePreviewBody": "Hi {{primeiro_nome}}, your order is confirmed and the tickets are already in your e-mail. Anything else, just tell me here.",
+    "signaturePreviewBody": "Hi {{primeiro_nome}}, all set here. Any questions, just ask.",
     "signaturePreviewHint": "One message, with example values for the variables. The gap or the -- below is what the separator puts between the two.",
     "signatureSeparator": "Separator",
     "signatureSeparatorHint": "What sits between the message and the signature.",

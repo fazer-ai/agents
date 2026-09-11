@@ -107,14 +107,14 @@ function interpolate(
 //
 // A TAIL CHECK, NOT CONTAINMENT, which is Chatwoot's own rule (`findSignatureInBody` is
 // `trimmedBody.endsWith(cleanedSignature)`). Containment reads a short signature that merely appears
-// in the prose — "Gi" in a sentence about Gi — as one already written, and silently drops it.
+// in the prose, "Alex" in a sentence about Alex, as one already written, and silently drops it.
 //
 // ASKED ACROSS THE WHOLE REPLY, the text as it arose rather than any view of it, and BOTH ends
 // rather than only the configured one.
 //
 // THE WHOLE REPLY, not the chunks, because the split is LOSSY for this question and twice over.
 // A signature containing a blank line is cut by the same paragraph rule, so neither edge chunk holds
-// all of it: `Resposta.\n\n— Gi\n\nGuichê Web` against `— Gi\n\nGuichê Web` matched nothing and the
+// all of it: `Resposta.\n\nAlex\n\nMinha Empresa` against `Alex\n\nMinha Empresa` matched nothing and the
 // customer read two closings. Reassembling from `seps` fixed that one and not the second, which
 // review found next: `splitReplyParts` TRIMS each paragraph, so a signature with an indented line
 // comes back without the indentation and the comparison fails again. The caller that splits has the

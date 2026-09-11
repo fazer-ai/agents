@@ -5,6 +5,7 @@ import {
 } from "@/client/pages/agents/BehaviorTab";
 import {
   PROMPT_CONTEXT_VARS,
+  PROMPT_PREVIEW_CONTACT,
   PROMPT_SCHEDULE_VARS_DISPLAY,
   type PromptRenderOpts,
 } from "@/graph/prompt";
@@ -24,6 +25,9 @@ import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 const t = (_k: string, d: string) => d;
 
 const SOURCE = await Bun.file("src/client/pages/agents/BehaviorTab.tsx").text();
+const PROMPT_SOURCE = await Bun.file(
+  "src/client/pages/agents/PromptPanel.tsx",
+).text();
 
 const OPTS: PromptRenderOpts = {
   availability: {
@@ -92,5 +96,44 @@ describe("the tab passes the render options to its preview", () => {
     const at = SOURCE.indexOf("const signaturePreviewOpts");
     expect(at).toBeGreaterThan(-1);
     expect(SOURCE.slice(at, at + 400)).toContain("availability");
+  });
+});
+
+// ONE EXAMPLE PERSON FOR THE WHOLE EDITOR, AND NOBODY REAL IN IT.
+//
+// The signature preview shipped with a second sample contact, a second sample company and a second
+// sample agent, invented beside the ones the prompt editor two clicks away already used — and the
+// company and agent were a live customer of one deployment, in a product that ships to every
+// deployment. Both are the same defect seen from two sides: sample data written where it is needed
+// rather than read from where it already exists. The fence is the shared constant, because a
+// hand-written literal is what drifts.
+describe("the editor's previews speak to one example person", () => {
+  test("both preview call sites read the shared example contact", () => {
+    expect(SOURCE).toContain("PROMPT_PREVIEW_CONTACT");
+    expect(PROMPT_SOURCE).toContain("PROMPT_PREVIEW_CONTACT");
+  });
+
+  test("the signature preview resolves the shared contact, not one of its own", () => {
+    expect(preview("{{nome_contato}}")).toContain(
+      PROMPT_PREVIEW_CONTACT.contactName,
+    );
+    expect(preview("{{email_contato}}")).toContain(
+      PROMPT_PREVIEW_CONTACT.contactEmail,
+    );
+  });
+
+  // A sample contact hard-coded next to the call site is how the two previews drifted apart the
+  // first time. Asked of both files, so neither editor can grow a private one back.
+  test("neither editor hard-codes a sample contact beside its preview", () => {
+    // Booleans, not the file: a failed `expect(src).not.toContain(...)` prints the whole tab.
+    const files: Array<[string, string]> = [
+      ["BehaviorTab.tsx", SOURCE],
+      ["PromptPanel.tsx", PROMPT_SOURCE],
+    ];
+    const offenders = files.flatMap(([name, src]) => [
+      ...(src.includes("@exemplo.com") ? [`${name}: sample e-mail`] : []),
+      ...(/contactName: "/.test(src) ? [`${name}: sample name`] : []),
+    ]);
+    expect(offenders).toEqual([]);
   });
 });

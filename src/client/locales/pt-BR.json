@@ -1434,7 +1434,7 @@
     "signaturePosition": "Posição",
     "signaturePositionHint": "Onde ela entra na mensagem.",
     "signaturePreview": "Prévia",
-    "signaturePreviewBody": "Oi, {{primeiro_nome}}! Seu pedido está confirmado e os ingressos já estão no seu e-mail. Qualquer coisa, é só falar por aqui.",
+    "signaturePreviewBody": "Oi, {{primeiro_nome}}! Tudo certo por aqui. Qualquer dúvida, é só chamar.",
     "signaturePreviewHint": "Uma mensagem, com valores de exemplo nas variáveis. O espaço ou o -- abaixo é o que o separador põe entre as duas partes.",
     "signatureSeparator": "Separador",
     "signatureSeparatorHint": "O que fica entre a mensagem e a assinatura.",

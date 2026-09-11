@@ -1,6 +1,6 @@
 # Signature (the operator's, never the model's)
 
-A closing line the operator configures once and the agent never writes: `— Gi, Guichê Web` on every reply, on every channel the agent answers on. Per agent, **off by default** (`text: ""`), configured in the Behavior tab.
+A closing line the operator configures once and the agent never writes: `Alex, Minha Empresa` on every reply, on every channel the agent answers on. Per agent, **off by default** (`text: ""`), configured in the Behavior tab.
 
 It exists because asking the model for it does not work. Measured over three rounds of the same twelve real customer emails, `gpt-5.6-luna` with a prompt asking for a fixed two-line closing:
 
@@ -71,11 +71,11 @@ Not signed, each for a reason:
 - **the slow-tool acknowledgement** (`src/graph/prepare.ts`) — mid-turn, so signing it would put two signatures in one turn;
 - **the input-guardrail template, the spend-ceiling refusal, the channel-redirect texts and the API-driven send** — all the operator's own configured sentences, where whoever wrote the sentence already controls its closing;
 - **the private note** — never customer-facing;
-- **an audio reply.** A spoken "— Gi, Guichê Web" is noise, and the voice note's `transcribedText` should be the words that were actually said. The TTS branch in `deliverText` returns before the text one, so this falls out of the structure rather than needing a check.
+- **an audio reply.** A spoken "Alex, Minha Empresa" is noise, and the voice note's `transcribedText` should be the words that were actually said. The TTS branch in `deliverText` returns before the text one, so this falls out of the structure rather than needing a check.
 
 ## Idempotency, and what it does not catch
 
-The guard is Chatwoot's own rule: `findSignatureInBody` asks `trimmedBody.endsWith(cleanedSignature)`. A **tail check, not containment** — containment reads a short signature that merely appears in the prose ("Gi" in a sentence about Gi) as one already written, and silently drops it.
+The guard is Chatwoot's own rule: `findSignatureInBody` asks `trimmedBody.endsWith(cleanedSignature)`. A **tail check, not containment** — containment reads a short signature that merely appears in the prose ("Alex" in a sentence about Alex) as one already written, and silently drops it.
 
 It is asked **across the whole reply and at both ends**, not inside the one chunk about to be touched. With `position: "top"` the signature goes on the first chunk, and a model that signed itself at the end put its copy on the last one: a check scoped to chunk zero finds nothing, prepends, and the customer reads two closings. Asking both ends leaves **one** signature, at the end the model chose — so `position` is where *we* place a signature, not a promise about where one the model wrote ends up. One in the wrong place beats two in the right one.
 

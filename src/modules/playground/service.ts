@@ -932,7 +932,7 @@ export async function runPlaygroundTurn(
   // SIGNED ONLY HERE, on the way to the operator's screen (issue #599). Not in the thread above,
   // because production's checkpointer holds the model's own reply and the signature is attached at
   // delivery; and NOT in the TTS text, for the reason production's audio branch is unsigned — the
-  // operator would hear a spoken "— Gi, Guichê Web" that no customer ever hears, which is the one
+  // operator would hear a spoken "Alex, Minha Empresa" that no customer ever hears, which is the one
   // divergence the playground exists to avoid.
   //
   // Same function production calls, because the question is the same one: the signature is a single

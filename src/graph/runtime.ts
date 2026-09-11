@@ -1143,7 +1143,7 @@ async function runTurnBody(
       // THE OPERATOR'S SIGNATURE, resolved here and attached inside `deliverReply` — after the cut,
       // because both separators are what the splitter cuts on. This is the reply and the handoff's
       // closing line, the two texts this funnel delivers, so both carry it and carry it identically.
-      // The audio branch above returned before this line: a spoken "— Gi, Guichê Web" is noise, and
+      // The audio branch above returned before this line: a spoken "Alex, Minha Empresa" is noise, and
       // the voice note's `transcribedText` is the words that were actually said.
       signed,
     );

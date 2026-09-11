@@ -13,6 +13,11 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import {
+  attachSignature,
+  type SignaturePosition,
+  type SignatureSeparator,
+} from "@/modules/signature/service";
 
 // Humanized delivery: split the agent's reply into several balloons and pace them with a typing
 // indicator + a proportional delay, instead of dumping one wall of text (the n8n "Quebrar e enviar
@@ -234,6 +239,18 @@ export async function deliverReply(
   // arrives. It costs no read, unlike the pre-send `readBoundary` this replaces: the caller already
   // holds the id.
   anchor: number | null = null,
+  // THE OPERATOR'S SIGNATURE, attached AFTER the cut and never before it (issue #599). Both of its
+  // separators contain "\n\n", which is what `splitReplyParts` cuts on: concatenated onto the reply
+  // upstream, `blank` gives the signature a balloon of its own and `--` gives the customer a balloon
+  // whose entire body is `--`, while at the `maxChunks` ceiling it is merged into the last paragraph
+  // instead — one configuration rendering two ways depending on how long the reply was. Null when
+  // the channel is not one the operator chose, when there is no signature, or on an audio reply,
+  // which the caller answers before reaching here.
+  signature: {
+    text: string;
+    position: SignaturePosition;
+    separator: SignatureSeparator;
+  } | null = null,
 ): Promise<ReplyDelivery> {
   return withFlowStage(
     flow,
@@ -248,8 +265,18 @@ export async function deliverReply(
     async () => {
       if (!cfg.enabled) {
         const sendId = crypto.randomUUID();
+        // Through the SAME function the split branch uses, on a one-element array. Split off is not
+        // a second rule about signatures, it is one chunk.
+        const [single = reply] = signature
+          ? attachSignature(
+              [reply],
+              signature.text,
+              signature.position,
+              signature.separator,
+            )
+          : [reply];
         try {
-          await client.sendMessage(conversationId, reply, { sendId });
+          await client.sendMessage(conversationId, single, { sendId });
           return { delivered: 1, failed: false, unproven: false };
         } catch (e) {
           // ASKED HERE TOO. There is no remainder to salvage on this path, so nothing is ever
@@ -273,7 +300,18 @@ export async function deliverReply(
           return { delivered: 0, failed: true, unproven: !verdict.known };
         }
       }
-      const { chunks, seps } = splitReplyParts(reply, cfg);
+      const { chunks: rawChunks, seps } = splitReplyParts(reply, cfg);
+      // Attached here, to the chunk that will actually carry it, and `seps` stays aligned because
+      // the count never changes. A reply that trimmed to zero chunks is a turn that said nothing,
+      // and nothing is what it gets signed with.
+      const chunks = signature
+        ? attachSignature(
+            rawChunks,
+            signature.text,
+            signature.position,
+            signature.separator,
+          )
+        : rawChunks;
       let delivered = 0;
       let failed = false;
       let unproven = false;

@@ -103,6 +103,12 @@ function renderWithProvider(
       maxDelayMs: "0",
     },
     setSplit: noop,
+    signature: {
+      text: "",
+      position: "top" as const,
+      separator: "blank" as const,
+    },
+    setSignature: () => {},
     vision: {
       enabled: true,
       provider,

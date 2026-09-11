@@ -50,6 +50,7 @@ import {
 } from "@/modules/guardrails/gate";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
+import { signatureFor } from "@/modules/signature/service";
 import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
@@ -1111,6 +1112,14 @@ async function runTurnBody(
         );
       }
     }
+    const sig = signatureFor(loaded.signatureConfig, loaded.promptVars);
+    const signed = sig
+      ? {
+          text: sig,
+          position: loaded.signatureConfig.position,
+          separator: loaded.signatureConfig.separator,
+        }
+      : null;
     // And again for the text path, which is reached either directly or after the whole TTS attempt
     // above has failed and fallen through — the longest wait of the two.
     if (await writeCalledOff()) return "stale";
@@ -1127,6 +1136,12 @@ async function runTurnBody(
       // It is what the read-back stops at when the FIRST send is the one that fails, and it costs
       // nothing: the claim already named it (issue #499).
       params.claimReply?.toMessageId ?? null,
+      // THE OPERATOR'S SIGNATURE, resolved here and attached inside `deliverReply` — after the cut,
+      // because both separators are what the splitter cuts on. This is the reply and the handoff's
+      // closing line, the two texts this funnel delivers, so both carry it and carry it identically.
+      // The audio branch above returned before this line: a spoken "— Gi, Guichê Web" is noise, and
+      // the voice note's `transcribedText` is the words that were actually said.
+      signed,
     );
     logger.info(
       "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d partial=%s",

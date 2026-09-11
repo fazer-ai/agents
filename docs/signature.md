@@ -1,0 +1,103 @@
+# Signature (the operator's, never the model's)
+
+A closing line the operator configures once and the agent never writes: `— Gi, Guichê Web` on every reply, on every channel the agent answers on. Per agent, **off by default** (`text: ""`), configured in the Behavior tab.
+
+It exists because asking the model for it does not work. Measured over three rounds of the same twelve real customer emails, `gpt-5.6-luna` with a prompt asking for a fixed two-line closing:
+
+- **Glued to the last sentence** in 2 of 10 replies in the first round and 1 of 9 in the third. A prompt rewrite moved the failure without removing it.
+- **Absent from every handoff**, 3 of 3. `handoff_to_human`'s schema asks for "a brief reply to the customer", and the schema wins over the system prompt. That is the worst case rather than a cosmetic one: the model's own final text is blanked when a handoff ran (#158), so the tool's `customerMessage` **is** the message the customer receives.
+
+A signature is also the kind of text that has to be identical every time, and anything the model writes varies.
+
+## The vocabulary is Chatwoot's, and so are the bytes
+
+The fork already stores per-inbox signatures — `inbox_signatures` (our own PR #226), with `message_signature`, `signature_position` and `signature_separator` — and applies them in the reply box with `appendSignature`. An operator who configures both should meet the same words and the same bytes in both places, so the field names, the values and the delimiters here are copied from it.
+
+**None of that logic could be reused, and the reasons are worth writing down** so nobody re-opens the question:
+
+- `inbox_signatures` is `belongs_to :user` with `UNIQUE (user_id, inbox_id)`. An agent bot is not a User, so it could not be stored there without a migration.
+- The application is **frontend-only**: `appendSignature()` lives in `app/javascript/dashboard/helper/editorHelper.js` and runs in the reply box at send time. Rails never appends on the message-create path — the only backend reference outside storage is Captain's reply-suggestion service, which passes the signature to the LLM as context. A bot posting through the API goes nowhere near it, so doing it there would be a **port from JS to Ruby**, in a repo we rebase onto upstream.
+- **And it could not be correct there.** A split reply is N balloons, which is N independent message-create calls. Chatwoot cannot know which one is the last of a turn, so it would sign every balloon. "Once per turn, on the last message" is knowledge only this runtime has.
+
+The defaults match too, `top` included.
+
+## Settings
+
+| field | values | default |
+| --- | --- | --- |
+| `text` | any text, multi-line | `""` — both the default and the off switch |
+| `position` | `top` \| `bottom` | `top` |
+| `separator` | `blank` (`\n\n`) \| `--` (`\n\n--\n\n`) | `blank` |
+
+## There is no per-channel switch, and the shape of the next version is why
+
+The first design had a `channels` allowlist: "sign these channel classes". It was dropped before it shipped, because it answers only half of the operator's question. The other half is that **a closing written for e-mail is not the closing they want on WhatsApp** — a link and a two-line block on one, a short line on the other. The version that answers both is a signature **per channel**, which is exactly what the Chatwoot fork already does per inbox.
+
+An allowlist is not a step toward that. It is a different field with a different meaning that would have to be migrated away, and in the meantime it lets an operator turn the feature on and see nothing, with an empty list as the second off switch next to the empty text. So the first version is **one text, on every channel**, with `text: ""` as the only off switch. If per-channel signatures are ever needed, they arrive as `signature.channels: { "Channel::Whatsapp": { text, position, separator } }` with this block as the default, and nothing configured today has to change.
+
+## Module (`src/modules/signature/service.ts`)
+
+- `readSignatureConfig(settings)` — the block, defaults applied, values of another shape dropped rather than carried (the bag is operator-editable through the REST API as well as the UI).
+- `signatureFor(cfg, vars?)` — the signature for this turn, or null when `text` is empty, with the placeholders resolved. The playground calls the same function, because it is asking the same question.
+- `attachSignature(chunks, signature, position, separator)` — pure, and the single spelling of the rule. Takes the **already-split** array and returns it with the signature on the last chunk (or the first, with `top`).
+
+## It attaches to a CHUNK, never to the text
+
+This is the whole design, and it is not a detail. `splitReplyParts` cuts on `/\n{2,}/`, and **both separators contain `\n\n`**. A signature concatenated onto the reply before the cut therefore:
+
+- with `blank`, becomes a **balloon of its own** — its own typing indicator, its own pacing delay, its own `deliveredBalloons`;
+- with `--`, gives the customer a balloon whose **entire body is `--`**;
+- at the `maxChunks` ceiling, is instead merged into the last paragraph, so **one configuration renders two different ways** depending on how long the reply happened to be;
+- on an email inbox with split on, where each balloon is an email, produces **an email whose whole body is the signature**.
+
+It also answers the silent turn for free. A reply of only whitespace is truthy, so it passes the runtime's `if (!reply)` gate, and the splitter trims it to **zero** chunks — nothing is sent today. Attaching to a chunk that does not exist attaches nothing, where appending to the text would have made the signature a lone message in a turn where the agent said nothing.
+
+## Which messages are signed
+
+The rule is **the message that closes a turn**, not "every outgoing message". There are thirteen sends in this runtime; four are signed:
+
+| signed | where |
+| --- | --- |
+| the reply | `deliverText` → `deliverReply` (`src/graph/runtime.ts`) |
+| the handoff's closing line, reactive path | `deliverText` (same funnel, so byte-identical to the reply) |
+| the handoff's closing line, proactive path | `src/graph/nudge.ts` |
+| the proactive message (follow-up / nudge) | `src/graph/nudge.ts` |
+
+The farewell is the same sentence from the same agent to the same customer on both paths, and signing it on one and not the other is the inconsistency an operator reports as a bug.
+
+Not signed, each for a reason:
+
+- **the slow-tool acknowledgement** (`src/graph/prepare.ts`) — mid-turn, so signing it would put two signatures in one turn;
+- **the input-guardrail template, the spend-ceiling refusal, the channel-redirect texts and the API-driven send** — all the operator's own configured sentences, where whoever wrote the sentence already controls its closing;
+- **the private note** — never customer-facing;
+- **an audio reply.** A spoken "— Gi, Guichê Web" is noise, and the voice note's `transcribedText` should be the words that were actually said. The TTS branch in `deliverText` returns before the text one, so this falls out of the structure rather than needing a check.
+
+## Idempotency, and what it does not catch
+
+The guard is Chatwoot's own rule: `findSignatureInBody` asks `trimmedBody.endsWith(cleanedSignature)`. A **tail check, not containment** — containment reads a short signature that merely appears in the prose ("Gi" in a sentence about Gi) as one already written, and silently drops it.
+
+It is asked **across the whole reply and at both ends**, not inside the one chunk about to be touched. With `position: "top"` the signature goes on the first chunk, and a model that signed itself at the end put its copy on the last one: a check scoped to chunk zero finds nothing, prepends, and the customer reads two closings. Asking both ends leaves **one** signature, at the end the model chose — so `position` is where *we* place a signature, not a promise about where one the model wrote ends up. One in the wrong place beats two in the right one.
+
+**What it does not catch is a paraphrase.** A model that writes its own variant of the closing still produces two, and the fix for that is emptying the prompt, which is what this feature is for. Chatwoot has the same limit.
+
+## Markdown is delivered as written
+
+The signature is **not** converted per channel. Chatwoot strips markdown the target channel cannot render (`stripUnsupportedMarkdown` against the `FORMATTING` table: email takes `**bold**`, `_italic_`, `code`, links and lists; WhatsApp takes bold, italic, code and strike but **not** links; SMS and Twitter take none), and this runtime does that for nothing it sends — the model's reply already goes out raw.
+
+So a signature written with a link for email reaches WhatsApp with its brackets showing. That is a real limit rather than an oversight, and it is sharper for a signature than for the body: the body is written per turn by a model that knows the channel, while the signature is a frozen string that goes to every channel and repeats on every message, and a signature is exactly the kind of text that wants a link. There is no upstream that can adapt it.
+
+Converting only the signature would have left the larger half broken while making the problem look handled, so the conversion is its own issue, scoped to the whole outgoing message: **[#603](https://github.com/fazer-ai/agents/issues/603)**. Until it lands, write a signature in plain text when the agent answers on more than one kind of channel.
+
+This is what the **preview** in the Behavior tab is for. The field is a plain textarea rather than a rich editor, so `**Gi**` is what the operator types, and the preview is the only place that answers whether it lands as bold or as four asterisks. It renders through the same `<Markdown>` the conversation view and the playground use, which is what a channel that understands Markdown does with it, and it resolves the variables against example values so the shape is visible before anything is sent.
+
+## The variables are the prompt's
+
+`{{nome_agente}}`, `{{nome_empresa}}`, `{{nome_contato}}` and the rest, through `interpolatePromptVars` itself rather than a second copy of it. An operator who has learned the prompt's `{{var}}` has learned this one, the editor highlights a real name against a typo with the prompt's own known-token set, and a variable added to the prompt reaches here without anyone remembering to.
+
+The "insert a variable" chips under the field offer the **context** vars only, not the prompt's whole list. The time and schedule names interpolate here too, because it is the same function, but a closing line that announces the current minute is not a signature, and offering it invites one that changes on every message, which is the property this feature exists to remove.
+
+An unknown placeholder is **left standing**, not blanked. That is `interpolatePromptVars`'s own rule, and it is what makes a typo visible on the customer's screen instead of silently deleting the operator's text.
+
+## The prompt's job is the opposite one
+
+Once this is configured, the prompt should say **nothing** about signing. A prompt that still asks for a closing produces the paraphrase the guard above cannot catch, which is two closings on the customer's screen.

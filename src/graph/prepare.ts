@@ -89,6 +89,10 @@ import {
   readServiceWindowConfig,
   type ServiceWindowConfig,
 } from "@/modules/service-window/service";
+import {
+  readSignatureConfig,
+  type SignatureConfig,
+} from "@/modules/signature/service";
 import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
@@ -230,6 +234,11 @@ export interface AgentConfig {
   contactVoiceReply: boolean | null;
   // Humanized text delivery (split into balloons + typing delay).
   splitConfig: SplitConfig;
+  signatureConfig: SignatureConfig;
+  // The same placeholder values the system prompt was rendered with, carried so the OPERATOR's own
+  // texts can use them too (issue #599: the signature). Built once per turn and reused rather than
+  // rebuilt, so `{{nome_agente}}` in a signature and in the prompt can never disagree.
+  promptVars: Record<string, string>;
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
@@ -770,6 +779,7 @@ export async function loadAgentConfig(
     systemPrompt: promptSections.length
       ? `${systemPrompt}\n\n${promptSections.join("\n\n")}`
       : systemPrompt,
+    promptVars,
     systemPromptAudit: buildPromptAudit({
       template: promptTemplate,
       vars: promptVars,
@@ -799,6 +809,7 @@ export async function loadAgentConfig(
     modelFallbackCredentialBaseUrl,
     contactVoiceReply: conv?.contact?.voiceReply ?? null,
     splitConfig: readSplitConfig(effSettings),
+    signatureConfig: readSignatureConfig(effSettings),
     serviceWindowConfig: readServiceWindowConfig(effSettings),
     handoffConfig: readHandoffConfig(effSettings),
     contactAuthConfig: readContactAuthConfig(effSettings),

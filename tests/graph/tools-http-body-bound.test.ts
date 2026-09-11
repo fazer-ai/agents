@@ -203,18 +203,32 @@ test("a body far larger than memory allows is never retained whole", async () =>
         }), { status: 200 }),
       },
     );
-    Bun.gc(true);
-    const before = process.memoryUsage().rss;
-    const heapBefore = heapStats().extraMemorySize;
+    // ONE SPELLING OF THE COLLECTION, and that is what makes the control below able to guard it.
+    // Both numbers report the LAST COLLECTION's accounting, and the body this test is about is
+    // external to it until one runs: read without forcing one, the defect grows them by exactly
+    // zero, which is how the heap quantity got written off the first time round. Written as a
+    // helper so the collection cannot be dropped for one reading and kept for another - remove it
+    // here and every reading goes stale at once, which is exactly what the control catches.
+    const medir = () => {
+      Bun.gc(true);
+      return { rss: process.memoryUsage().rss, extra: heapStats().extraMemorySize };
+    };
+    const a = medir();
     const out = String(await tool.invoke({}));
-    // THE COLLECTION BEFORE THE READING, not only before the baseline. Both numbers report the last
-    // collection's accounting, and the body this test is about is external to it until one runs:
-    // without this line the defect reads as zero growth, which is how the heap quantity got written
-    // off the first time round.
-    Bun.gc(true);
-    const grew = process.memoryUsage().rss - before;
-    const extra = heapStats().extraMemorySize - heapBefore;
-    console.log(JSON.stringify({ grew, extra, len: out.length }));
+    const b = medir();
+    // POSITIVE CONTROL, in the same process and through the same helper: a body we ARE holding.
+    // Every assertion in this test is an upper bound, and an instrument that stopped measuring
+    // satisfies all of them. This is the one lower bound, and it is what tells "the cap worked"
+    // from "the number stopped moving".
+    const retido = "y".repeat(40 * MB);
+    const c = medir();
+    console.log(JSON.stringify({
+      grew: b.rss - a.rss,
+      extra: b.extra - a.extra,
+      control: c.extra - b.extra,
+      len: out.length,
+      held: retido.length,
+    }));
   `;
   const proc = Bun.spawn(["bun", "-e", script], {
     cwd: process.cwd(),
@@ -229,13 +243,23 @@ test("a body far larger than memory allows is never retained whole", async () =>
   // whole assertion lives over there, so a probe that stops printing has to be a failure that says
   // so, naming the exit code and whatever the process managed to say.
   const line = out.trim().split("\n").at(-1) ?? "";
-  let got: { grew: number; extra: number; len: number } | null = null;
+  let got: {
+    grew: number;
+    extra: number;
+    control: number;
+    len: number;
+  } | null = null;
   try {
     got = JSON.parse(line) as typeof got;
   } catch {
     got = null;
   }
-  if (!got || typeof got.grew !== "number" || typeof got.extra !== "number") {
+  if (
+    !got ||
+    typeof got.grew !== "number" ||
+    typeof got.extra !== "number" ||
+    typeof got.control !== "number"
+  ) {
     throw new Error(
       `the memory probe printed no measurement (exit ${code}); stdout: ${out.slice(-400) || "(empty)"}; stderr: ${err.slice(-400) || "(empty)"}`,
     );
@@ -250,4 +274,8 @@ test("a body far larger than memory allows is never retained whole", async () =>
   // resident — so the ceiling clears the worst green ever measured here (57.2 MB, under parallel
   // load) by a factor of three, and still sits four times under the defect's 631 MB.
   expect(got.grew).toBeLessThan(180 * 1024 * 1024);
+  // THE INSTRUMENT IS LIVE. Every other assertion here is an upper bound, and a measurement that
+  // stopped moving satisfies all of them; 40 MB deliberately held is the one lower bound, and it is
+  // what tells "the cap worked" from "the number stopped working".
+  expect(got.control).toBeGreaterThan(30 * 1024 * 1024);
 }, 180_000);

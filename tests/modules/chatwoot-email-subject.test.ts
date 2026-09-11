@@ -11,6 +11,7 @@ import {
   normalizeChatwootEvent,
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
+import { transcriptFromRows } from "@/modules/observe/job";
 
 // Issue #598. On an email inbox the request is frequently in the subject line and nowhere else: the
 // body is empty, or a client footer like "Enviado do meu iPhone". Everything the agent reads is
@@ -275,6 +276,59 @@ describe("a subject-only email is a message everywhere, not just in the renderer
       expect(`${name}: supersede=${supersedes}`).toBe(
         `${name}: supersede=${renders}`,
       );
+    }
+  });
+});
+
+describe("every reader of a Chatwoot message asks the SAME mapping", () => {
+  test("the observer's transcript carries the subject too", () => {
+    // The observer classifies the conversation by label without answering anybody. Reading a
+    // subject-only email as a blank line, it classified a conversation in which the customer had
+    // said nothing.
+    const lines = transcriptFromRows(
+      [row({ id: 7020, emailSubject: "Cancelar ingresso" })],
+      10,
+    );
+    expect(lines).toEqual([
+      { role: "customer", text: "<assunto>Cancelar ingresso</assunto>" },
+    ]);
+  });
+
+  test("and it still drops what really is blank", () => {
+    expect(transcriptFromRows([row({ id: 7021 })], 10)).toEqual([]);
+  });
+
+  test("FENCE: no call site builds the renderable by hand", async () => {
+    // Four readers build what the agent reads, from two sources — a delivered event
+    // (`incomingRenderable`) and a fetched row (`toRenderable`) — and each hand-written copy of
+    // those shapes is a place the NEXT marker will not reach. The email subject is what proved it:
+    // spelled out by hand, the memory fold and the observer went on dropping a message the renderer,
+    // the burst and the ceiling gate had already learned to read. Asserted on the source because
+    // that is where the mistake is made; a behavioural test only catches the copy that exists today.
+    //
+    // `src/modules/playground/service.ts` is deliberately out: its input is a playground user's own
+    // typing, which never came from Chatwoot and has no `content_attributes` to read.
+    for (const path of [
+      "src/modules/chatwoot/webhook.ts",
+      "src/modules/observe/job.ts",
+      "src/modules/debounce/handler.ts",
+      "src/graph/runtime.ts",
+    ]) {
+      const src = (
+        await Bun.file(new URL(`../../${path}`, import.meta.url)).text()
+      )
+        // Comments out first: a `//` line between the call and its argument is prose, not a shape,
+        // and reading it as one would make this fence trip on its own explanation.
+        .replace(/^\s*\/\/.*$/gm, "");
+      const calls = [
+        ...src.matchAll(/renderInboundMessage\(\s*([\s\S]{0,24})/g),
+      ]
+        .map((m) => m[1]?.trimStart() ?? "")
+        .filter(
+          (arg) =>
+            !/^(incomingRenderable\(|toRenderable\(|renderable\b)/.test(arg),
+        );
+      expect(`${path}: ${calls.join(" | ")}`).toBe(`${path}: `);
     }
   });
 });

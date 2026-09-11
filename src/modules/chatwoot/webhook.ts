@@ -151,7 +151,6 @@ import {
   controlCommand,
   effectiveAssignee,
   firstAudioAttachment,
-  firstLocationAttachment,
   firstVisualAttachment,
   type HumanReplyRoute,
   heldByAnotherParty,
@@ -2128,17 +2127,14 @@ async function ingestUnhandledMessage(args: {
             .map((a) => a.fileType)
             .filter((t): t is string => t !== null),
         })
-      : renderInboundMessage({
-          text: n.message.content ?? "",
-          transcribedText: n.message.transcribedText,
-          imageDescription: n.message.imageDescription,
-          extractedText: n.message.extractedText,
-          attachmentTypes: (n.message.attachments ?? [])
-            .map((a) => a.fileType)
-            .filter((t): t is string => t !== null),
-          location: firstLocationAttachment(n.message.attachments),
-          inReplyTo: n.message.inReplyTo,
-        });
+      : // ASKED OF `incomingRenderable`, not spelled here (issue #598). This was a second copy of
+        // the shape, and the email subject is what proved the copies drift: the renderer, the burst
+        // and the ceiling gate all learned to read a subject-only email while THIS reader, the one
+        // that folds in the message no turn ever covered, went on dropping it — so the customer who
+        // wrote outside business hours, or to a conversation a colleague had taken, vanished from
+        // the thread and the agent answered in the morning as if nobody had asked anything. One
+        // mapping from a normalized event to what the agent would read, and three callers of it.
+        renderInboundMessage(incomingRenderable(n));
   if (!text.trim()) return "nothing";
   // QUEUED, not appended. The append itself has to be able to say "not now" — a turn owning the
   // channel erases anything written beside it — and an ack we must return in under five seconds is

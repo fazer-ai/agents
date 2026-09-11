@@ -126,54 +126,66 @@ export const HighlightedTemplateField = forwardRef<
     const showCount =
       maxLength !== undefined && value.length >= maxLength * COUNTER_FROM;
     return (
+      // TWO WRAPPERS, and the inner one is load-bearing. The backdrop is `absolute inset-0` over its
+      // positioned parent, so anything else inside that parent grows it and the backdrop stops
+      // matching the control: at ~400 characters the counter made the highlighted layer taller than
+      // the textarea, spilling text below the field and giving the two layers different maximum
+      // scroll offsets, so the caret drifted from the text it sat in. Found in review of #599.
+      // The counter and the over-limit line therefore sit OUTSIDE the positioned box.
       <div
-        className={cn("relative min-w-0", fill && "min-h-0 flex-1", className)}
-      >
-        <div
-          ref={backdropRef}
-          aria-hidden="true"
-          className={cn(
-            sharedText,
-            "pointer-events-none absolute inset-0 overflow-hidden border-transparent text-text-primary",
-          )}
-        >
-          {renderHighlighted(value, patternSource, isKnownToken)}
-        </div>
-        {multiline ? (
-          <textarea
-            ref={ref as Ref<HTMLTextAreaElement>}
-            rows={rows}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            onScroll={(e) => mirror(e.currentTarget)}
-            spellCheck={false}
-            placeholder={placeholder}
-            aria-label={ariaLabel}
-            maxLength={maxLength}
-            className={cn(
-              sharedText,
-              "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
-              fill ? "h-full resize-none" : "resize-y",
-              invalid ? "border-error" : "border-border",
-            )}
-          />
-        ) : (
-          <input
-            ref={ref as Ref<HTMLInputElement>}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            onScroll={(e) => mirror(e.currentTarget)}
-            spellCheck={false}
-            placeholder={placeholder}
-            aria-label={ariaLabel}
-            maxLength={maxLength}
-            className={cn(
-              sharedText,
-              "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
-              invalid ? "border-error" : "border-border",
-            )}
-          />
+        className={cn(
+          "min-w-0",
+          fill && "flex min-h-0 flex-1 flex-col",
+          className,
         )}
+      >
+        <div className={cn("relative min-w-0", fill && "min-h-0 flex-1")}>
+          <div
+            ref={backdropRef}
+            aria-hidden="true"
+            className={cn(
+              sharedText,
+              "pointer-events-none absolute inset-0 overflow-hidden border-transparent text-text-primary",
+            )}
+          >
+            {renderHighlighted(value, patternSource, isKnownToken)}
+          </div>
+          {multiline ? (
+            <textarea
+              ref={ref as Ref<HTMLTextAreaElement>}
+              rows={rows}
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              onScroll={(e) => mirror(e.currentTarget)}
+              spellCheck={false}
+              placeholder={placeholder}
+              aria-label={ariaLabel}
+              maxLength={maxLength}
+              className={cn(
+                sharedText,
+                "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
+                fill ? "h-full resize-none" : "resize-y",
+                invalid ? "border-error" : "border-border",
+              )}
+            />
+          ) : (
+            <input
+              ref={ref as Ref<HTMLInputElement>}
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              onScroll={(e) => mirror(e.currentTarget)}
+              spellCheck={false}
+              placeholder={placeholder}
+              aria-label={ariaLabel}
+              maxLength={maxLength}
+              className={cn(
+                sharedText,
+                "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
+                invalid ? "border-error" : "border-border",
+              )}
+            />
+          )}
+        </div>
         {showCount && (
           <span
             className={cn(

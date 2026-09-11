@@ -2528,6 +2528,7 @@ export function BehaviorTab({
               <HighlightedPromptEditor
                 ref={signatureRef}
                 rows={3}
+                maxLength={SIGNATURE_MAX}
                 value={signature.text}
                 onChange={(v) =>
                   setSignature({

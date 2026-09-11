@@ -1,4 +1,5 @@
 import { forwardRef, type ReactNode, type Ref, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 
 // Generic template field with inline {{token}} highlighting, via the classic transparent-control-
@@ -49,6 +50,11 @@ function renderHighlighted(
 // `block` is load-bearing: without it the control is inline-block and its line-box adds a baseline
 // descender gap, so the wrapper grows taller than the control and the absolute backdrop shows below
 // the border as a thin band. `block` makes wrapper height == control height so the two layers align.
+// Below this fraction of the cap the counter is noise: the value is nowhere near the wall and the
+// field should look like any other. At it, the operator gets warning before the wall, not at it.
+// Same number `Textarea` uses, because it is the same affordance on a different control.
+const COUNTER_FROM = 0.8;
+
 const FIELD_BASE =
   "block w-full rounded-lg border bg-bg-tertiary py-2 focus:border-border-focus focus:outline-none";
 
@@ -70,6 +76,12 @@ export const HighlightedTemplateField = forwardRef<
     className?: string;
     // Applied to BOTH layers; controls font-family/size/leading. Defaults to "text-sm".
     textClassName?: string;
+    // DECLARES the cap, the way `Textarea` does and for the same reason: a field whose reader clamps
+    // silently must say so on screen, or the operator pastes a long value, sees it whole, and the
+    // customer reads a truncated one. Pass it only where the stored value is clamped or refused at
+    // the same number. Below `COUNTER_FROM` of it the counter stays hidden, so an ordinary value
+    // looks like any other field.
+    maxLength?: number;
     "aria-label"?: string;
   }
 >(
@@ -86,10 +98,12 @@ export const HighlightedTemplateField = forwardRef<
       fill = false,
       className,
       textClassName = "text-sm",
+      maxLength,
       "aria-label": ariaLabel,
     },
     ref,
   ) => {
+    const { t } = useTranslation();
     const backdropRef = useRef<HTMLDivElement>(null);
     const pad = multiline ? "px-3" : "px-4";
     // The backdrop wraps like the textarea (multiline) or stays a single non-wrapping line that
@@ -104,6 +118,13 @@ export const HighlightedTemplateField = forwardRef<
       b.scrollLeft = el.scrollLeft;
     };
     const sharedText = cn(FIELD_BASE, pad, textClassName, wrapCls);
+    // Raw length, the same thing the browser enforces `maxLength` against and the same thing the
+    // reader clamps. `maxLength` stops new typing at the wall; what it cannot show is a value
+    // ALREADY past it — pasted before the cap existed, imported, or written through the API — which
+    // is exactly the case where the text looks whole here and reaches the customer cut short.
+    const over = maxLength !== undefined && value.length > maxLength;
+    const showCount =
+      maxLength !== undefined && value.length >= maxLength * COUNTER_FROM;
     return (
       <div
         className={cn("relative min-w-0", fill && "min-h-0 flex-1", className)}
@@ -128,6 +149,7 @@ export const HighlightedTemplateField = forwardRef<
             spellCheck={false}
             placeholder={placeholder}
             aria-label={ariaLabel}
+            maxLength={maxLength}
             className={cn(
               sharedText,
               "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
@@ -144,12 +166,32 @@ export const HighlightedTemplateField = forwardRef<
             spellCheck={false}
             placeholder={placeholder}
             aria-label={ariaLabel}
+            maxLength={maxLength}
             className={cn(
               sharedText,
               "relative bg-transparent text-transparent placeholder-text-placeholder caret-text-primary",
               invalid ? "border-error" : "border-border",
             )}
           />
+        )}
+        {showCount && (
+          <span
+            className={cn(
+              "mt-1 block text-right text-xs",
+              over ? "text-error" : "text-text-muted",
+            )}
+          >
+            {`${value.length}/${maxLength}`}
+          </span>
+        )}
+        {over && (
+          <span className="mt-1 block text-error text-xs">
+            {t(
+              "common.charOverLimit",
+              "{{over}} characters over the limit. The agent only receives the first {{max}}; shorten it to save a change to this field.",
+              { over: value.length - (maxLength ?? 0), max: maxLength },
+            )}
+          </span>
         )}
       </div>
     );

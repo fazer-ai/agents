@@ -25,7 +25,7 @@ The defaults match too, `top` included.
 
 | field | values | default |
 | --- | --- | --- |
-| `text` | any text, multi-line | `""` — both the default and the off switch |
+| `text` | any text, multi-line, capped at 500 | `""` — both the default and the off switch |
 | `position` | `top` \| `bottom` | `top` |
 | `separator` | `blank` (`\n\n`) \| `--` (`\n\n--\n\n`) | `blank` |
 
@@ -104,6 +104,12 @@ Email and the web widget get HTML, Telegram gets its own HTML, Instagram/Faceboo
 The remaining limit is the link. `[fazer.ai](https://fazer.ai)` keeps its label on e-mail and loses it on WhatsApp, where only the URL survives. That is upstream's decision rather than something this feature can fix, so a signature that carries a link is best written with the URL bare when the agent answers on WhatsApp.
 
 This is what the **preview** in the Behavior tab is for. The field is a plain textarea rather than a rich editor, so `**Gi**` is what the operator types, and the preview is the only place that answers whether that lands as bold. It renders through the same `<Markdown>` the conversation view and the playground use, which is what a channel with a renderer does with it, and it resolves the variables against example values so the shape is visible before anything is sent.
+
+## The cap is declared on the control
+
+500 characters, `SIGNATURE_MAX`. Smaller than the other operator-prose caps on purpose: a signature repeats on every message the agent sends, where a template or a guidance note is written once and read once.
+
+The reader clamps (`clipText`, so a cut never lands between the two halves of an astral character), and the **field says so** — `maxLength` on the control, a counter from 80% of the cap, and the over-limit sentence past it, which is the pattern `docs/ui.md` holds up as the app's best answer to a cap. It shipped without any of that, clamping in silence: `clipText` in the `onChange` dropped whatever was pasted past 500 and nothing on the page mentioned a limit. A holdout scenario found it, not the text-caps fence, because that fence only knew `<Textarea>`. It reads both controls now, and asks the highlighted one the narrower question that needs no waiver: if the block clamps, it must declare.
 
 ## The variables are the prompt's
 

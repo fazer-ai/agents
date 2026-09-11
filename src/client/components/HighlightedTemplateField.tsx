@@ -82,6 +82,10 @@ export const HighlightedTemplateField = forwardRef<
     // the same number. Below `COUNTER_FROM` of it the counter stays hidden, so an ordinary value
     // looks like any other field.
     maxLength?: number;
+    // Fired on every caret/selection change, so a caller whose affordances depend on what is
+    // selected can re-render. The signature field's variable chips use it: a chip that does not fit
+    // in the remaining room DOES fit when it replaces a selection.
+    onSelect?: () => void;
     "aria-label"?: string;
   }
 >(
@@ -99,6 +103,7 @@ export const HighlightedTemplateField = forwardRef<
       className,
       textClassName = "text-sm",
       maxLength,
+      onSelect,
       "aria-label": ariaLabel,
     },
     ref,
@@ -157,6 +162,7 @@ export const HighlightedTemplateField = forwardRef<
               value={value}
               onChange={(e) => onChange(e.target.value)}
               onScroll={(e) => mirror(e.currentTarget)}
+              onSelect={onSelect}
               spellCheck={false}
               placeholder={placeholder}
               aria-label={ariaLabel}
@@ -174,6 +180,7 @@ export const HighlightedTemplateField = forwardRef<
               value={value}
               onChange={(e) => onChange(e.target.value)}
               onScroll={(e) => mirror(e.currentTarget)}
+              onSelect={onSelect}
               spellCheck={false}
               placeholder={placeholder}
               aria-label={ariaLabel}

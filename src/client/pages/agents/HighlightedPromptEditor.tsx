@@ -16,11 +16,20 @@ export const HighlightedPromptEditor = forwardRef<
     // Declares a cap on the control (counter + over-limit line). The system prompt is deliberately
     // uncapped and passes nothing; the signature field passes SIGNATURE_MAX.
     maxLength?: number;
+    onSelect?: () => void;
     "aria-label"?: string;
   }
 >(
   (
-    { value, onChange, rows = 10, fill, maxLength, "aria-label": ariaLabel },
+    {
+      value,
+      onChange,
+      rows = 10,
+      fill,
+      maxLength,
+      onSelect,
+      "aria-label": ariaLabel,
+    },
     ref,
   ) => (
     <HighlightedTemplateField
@@ -33,6 +42,7 @@ export const HighlightedPromptEditor = forwardRef<
       rows={rows}
       fill={fill}
       maxLength={maxLength}
+      onSelect={onSelect}
       aria-label={ariaLabel}
     />
   ),

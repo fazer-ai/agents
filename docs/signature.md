@@ -115,7 +115,11 @@ The reader clamps (`clipText`, so a cut never lands between the two halves of an
 
 `{{nome_agente}}`, `{{nome_empresa}}`, `{{nome_contato}}` and the rest, through `interpolatePromptVars` itself rather than a second copy of it, **with the render options the system prompt was built with** (`AgentConfig.promptOpts`): the map alone answers the context names and leaves every schedule and time name literal, which review of #599 caught reaching the customer that way. An operator who has learned the prompt's `{{var}}` has learned this one, the editor highlights a real name against a typo with the prompt's own known-token set, and a variable added to the prompt reaches here without anyone remembering to.
 
+The preview's example values come from `buildPromptVars` itself rather than a hand-written map, so the context it renders cannot fall behind what the chips offer: written by hand it omitted `{{email_contato}}`, `{{telefone_contato}}` and `{{canal}}`, and the preview then showed three supported variables as literal text, which reads as "these do not work".
+
 The "insert a variable" chips under the field offer the **context** vars only, not the prompt's whole list. The time and schedule names interpolate here too, because it is the same function, but a closing line that announces the current minute is not a signature, and offering it invites one that changes on every message, which is the property this feature exists to remove.
+
+A chip whose token does not fit in what is left before the cap is **disabled**, with the reason on hover, and the insert refuses the same case on its own. Clipping an insert is not the same defect as clipping a paste: the caret is at the front and the loss is at the back, so the operator watches a variable appear where they asked while a URL loses its tail where they are not looking. A selection counts as free room, because the insert replaces it.
 
 An unknown placeholder is **left standing**, not blanked. That is `interpolatePromptVars`'s own rule, and it is what makes a typo visible on the customer's screen instead of silently deleting the operator's text.
 

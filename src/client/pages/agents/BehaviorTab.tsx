@@ -53,7 +53,11 @@ import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
-import { interpolatePromptVars, PROMPT_CONTEXT_VARS } from "@/graph/prompt";
+import {
+  buildPromptVars,
+  interpolatePromptVars,
+  PROMPT_CONTEXT_VARS,
+} from "@/graph/prompt";
 import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
@@ -196,21 +200,26 @@ interface SplitState {
 // answers whether it lands as bold or as four asterisks. It renders through the same <Markdown> the
 // conversation view and the playground use, which is what a channel that understands Markdown does
 // with it — on one that does not, the characters go out as typed (#603, and the field's own hint).
+// THROUGH `buildPromptVars`, not a hand-written map, so the example context cannot fall behind the
+// chips: it was written by hand first and omitted `{{email_contato}}`, `{{telefone_contato}}` and
+// `{{canal}}`, which the chips offer — so the preview rendered three supported variables as literal
+// text and taught the operator they do not work. Review of #599. The names come from the same
+// function production builds them with, so a variable added there appears here without anyone
+// remembering to.
+//
 // EXAMPLE values, not live ones, and the preview says so. The tab knows the agent's id and not its
 // name, and the company name lives in the tenant's branding — threading both through for a preview
 // would be plumbing in exchange for nothing, because what this box is for is the SHAPE: where the
 // signature sits and what separates it. The same choice the prompt editor's format help makes with
 // its fixed reference instant.
-const SIGNATURE_PREVIEW_VARS: Record<string, string> = {
-  nome_agente: "Gi",
-  agent_name: "Gi",
-  nome_empresa: "Guichê Web",
-  company_name: "Guichê Web",
-  nome_contato: "Ana Souza",
-  contact_name: "Ana Souza",
-  primeiro_nome: "Ana",
-  contact_first_name: "Ana",
-};
+const SIGNATURE_PREVIEW_VARS: Record<string, string> = buildPromptVars({
+  agentName: "Gi",
+  companyName: "Guichê Web",
+  contactName: "Ana Souza",
+  contactEmail: "ana.souza@exemplo.com",
+  contactPhone: "+55 37 99999-0000",
+  inboxName: "WhatsApp",
+});
 
 function signaturePreviewParts(
   sig: SignatureState,
@@ -1206,15 +1215,33 @@ export function BehaviorTab({
   // signature, and offering it invites a signature that changes on every message — which is the one
   // property this feature exists to remove.
   const signatureRef = useRef<HTMLTextAreaElement>(null);
+  // How much a SELECTION would free, since an insert REPLACES it. Tracked in state because the
+  // chips' disabled state is decided at render and a selection change does not otherwise cause one:
+  // without it a chip stays greyed out while the very text it would overwrite sits highlighted.
+  const [signatureSelected, setSignatureSelected] = useState(0);
+  const readSignatureSelection = useCallback(() => {
+    const el = signatureRef.current;
+    if (!el) return;
+    setSignatureSelected(
+      Math.max(0, (el.selectionEnd ?? 0) - (el.selectionStart ?? 0)),
+    );
+  }, []);
   // What is left before the cap. A chip whose token does not fit is DISABLED rather than clipped:
   // clipping an insert cuts the TAIL of what the operator already wrote, which is the one thing a
   // helper button must never do — the caret is at the front, the loss is at the back, and nothing
   // on screen connects the two. Found in review of #599.
-  const signatureRoom = SIGNATURE_MAX - signature.text.length;
+  const signatureRoom =
+    SIGNATURE_MAX - signature.text.length + signatureSelected;
   function insertSignatureVar(name: string) {
     const token = `{{${name}}}`;
-    // Asked here too, not only on the button: the same guard has to hold whatever reaches this.
-    if (token.length > signatureRoom) return;
+    // Asked here too, not only on the button, and against the LIVE selection rather than the tracked
+    // one: the guard has to hold whatever reaches this, including a selection the render has not
+    // seen yet.
+    const el0 = signatureRef.current;
+    const selected = el0
+      ? Math.max(0, (el0.selectionEnd ?? 0) - (el0.selectionStart ?? 0))
+      : signatureSelected;
+    if (token.length > SIGNATURE_MAX - signature.text.length + selected) return;
     const el = signatureRef.current;
     if (!el) {
       setSignature((sg) => ({
@@ -1231,6 +1258,7 @@ export function BehaviorTab({
     const next =
       signature.text.slice(0, start) + token + signature.text.slice(end);
     setSignature({ ...signature, text: clipText(next, SIGNATURE_MAX) });
+    setSignatureSelected(0);
     requestAnimationFrame(() => {
       el.focus();
       const pos = start + token.length;
@@ -2536,6 +2564,7 @@ export function BehaviorTab({
                 ref={signatureRef}
                 rows={3}
                 maxLength={SIGNATURE_MAX}
+                onSelect={readSignatureSelection}
                 value={signature.text}
                 onChange={(v) =>
                   setSignature({

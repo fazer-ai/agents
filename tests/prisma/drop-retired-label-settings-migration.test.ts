@@ -197,6 +197,21 @@ describe.if(dbUp)("drop retired label settings", () => {
     expect(obj.toolGuidance).toBeUndefined();
   });
 
+  // THE WINDOW THIS FILE CANNOT SURVIVE IS PROSE, so the prose is what is pinned (review round 41).
+  // `migrate deploy` runs in the new container with the old one still serving, and there
+  // `observationEnabled` is `labelGroups.length > 0`: with the key cut, that process arms nothing.
+  // A reader who takes this migration for an ordinary rolling one loses observations for good.
+  test("the rollout note names this migration and says to stop the old process", async () => {
+    const deploy = await Bun.file("docs/deploy.md").text();
+    const at = deploy.indexOf("20260910140000_drop_retired_label_settings");
+    expect(at).toBeGreaterThan(-1);
+    const note = deploy.slice(at, at + 1400);
+    expect(note).toContain("stop the old process");
+    expect(note).toContain("observationEnabled");
+    const sqlHead = sql.slice(0, 600);
+    expect(sqlHead).toContain("STOP-MIGRATE-START");
+  });
+
   test("the empty tombstone is gone and the live monitoring config is not", async () => {
     const s = await settingsOf(id("tombstone"));
     const mon = s.monitoring as Record<string, unknown>;

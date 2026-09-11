@@ -1965,6 +1965,74 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
     expect(reported).toEqual(["probe_twice"]);
   });
 
+  test("a fence that turns false AFTER a request left reports nothing", async () => {
+    // A pack tool is not one request. `asaas_create_pix_charge` POSTs the charge and then GETs its
+    // QR code: a withdrawal between the two is a refusal with the charge already made, and saying
+    // "no effect" there hands the scheduler a retry that charges twice (review round 41).
+    const reported: string[] = [];
+    const sent: string[] = [];
+    let allow = true;
+    registerToolpack({
+      catalogType: "TEST_SPENT_PACK",
+      toolSpecs: [{ name: "charge_then_qr", schema: z.object({}) }],
+      build: (_sel, packCtx) => [
+        tool(
+          async () => {
+            const f = packCtx.fetchImpl ?? fetch;
+            const out: string[] = [];
+            for (const u of ["https://8.8.8.8/charge", "https://8.8.8.8/qr"]) {
+              try {
+                await f(u);
+                out.push("sent");
+              } catch {
+                out.push("failed");
+              }
+            }
+            return out.join(",");
+          },
+          {
+            name: "charge_then_qr",
+            description: "a write and then a read",
+            schema: z.object({}),
+          },
+        ),
+      ],
+    });
+    const [built] = buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "TEST_SPENT_PACK",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["charge_then_qr"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: {} as never,
+        threadId: "t",
+        resolveCredential: async () => null,
+        fetchImpl: (async (u: unknown) => {
+          sent.push(String(u));
+          // The charge lands, and the world moves while its response is read.
+          allow = false;
+          return new Response("{}");
+        }) as unknown as typeof fetch,
+        stillWanted: async () => allow,
+        onNoEffect: (name: string) => {
+          reported.push(name);
+        },
+      },
+    );
+    if (!built) throw new Error("the pack tool was not built");
+    expect(await built.invoke({})).toBe("sent,failed");
+    expect(sent).toEqual(["https://8.8.8.8/charge"]);
+    // The dispatch is NOT reported: something already left, so the counter must keep reading it as
+    // a write and the tick must not be retried.
+    expect(reported).toEqual([]);
+  });
+
   test("a fence that says yes, and one that cannot answer, both pass through", async () => {
     const calls: string[] = [];
     const inner = (async (u: unknown) => {

@@ -40,6 +40,13 @@
 --    next save outright (`isGuardableToolName` checks the KEY against the native catalog), so an
 --    unmoved key also bricks settings saves for that agent. Same two-step as the guidance.
 --
+-- STOP-MIGRATE-START, and it is not optional here (review round 41). The boot order in
+-- docs/deploy.md runs `migrate deploy` in the NEW container with the old one still serving, and the
+-- old one reads all four places below under the old name only. The costliest of the four is the
+-- PRECONDITION: the rule stops matching while `assign_label` is still exposed, so the tool the
+-- operator fenced runs unfenced until that process exits. The note in docs/deploy.md carries the
+-- window and the repair.
+--
 -- FORCE ROW LEVEL SECURITY binds the table owner too, so an UPDATE here would reach zero rows and
 -- report success. Lifted on the four tables for the file and put back (.claude/rules/prisma.md).
 --

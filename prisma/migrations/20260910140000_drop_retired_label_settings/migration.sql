@@ -1,3 +1,9 @@
+-- STOP-MIGRATE-START (review round 41). Under the boot order in docs/deploy.md the previous release
+-- is still serving while this runs, and there `observationEnabled(cfg)` is `cfg.labelGroups.length >
+-- 0`: with the key cut, that process arms no observation and answers a queued row `observation_off`.
+-- An `on_resolve` observation has no later event to recover it, so the window's losses are
+-- permanent. The note in docs/deploy.md carries it.
+--
 -- The taxonomy keys were retired with the classifier (issue #568): `settings.labels` (groups and
 -- `noteOnChange`) and `settings.monitoring.labelGroups` are read by nothing, and the write boundary
 -- now refuses a non-empty one so an operator is told where the taxonomy went instead of saving

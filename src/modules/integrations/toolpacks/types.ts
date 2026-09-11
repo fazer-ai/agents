@@ -233,7 +233,7 @@ export class ToolpackCalledOffError extends Error {
 // So the seam opens a frame per dispatch and the throw reads it. The flag keeps a pack that makes
 // two requests in one call from reporting twice for one dispatch, which is the reason the report
 // left `fencedFetch` in the first place.
-type CalledOffFrame = { tool: string; reported: boolean };
+type CalledOffFrame = { tool: string; reported: boolean; spent: boolean };
 const calledOffFrame = new AsyncLocalStorage<CalledOffFrame>();
 
 export function fencedFetch(
@@ -244,13 +244,24 @@ export function fencedFetch(
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
     if (!(await stillWanted().catch(() => true))) {
+      // ...AND ONLY WHILE THE DISPATCH IS STILL EMPTY (review round 41). A pack tool is not one
+      // request: `asaas_create_pix_charge` POSTs the charge and then GETs its QR code, so a fence
+      // that turns false between the two is a refusal AFTER the charge exists. Reporting there
+      // subtracts the whole dispatch, the tick reads nothing as committed, and the scheduler's
+      // retry charges the customer twice — the exact trade docs/chatwoot.md settles the other way:
+      // at-most-once for the effects beats at-least-once for a classification.
       const frame = calledOffFrame.getStore();
-      if (frame && !frame.reported) {
+      if (frame && !frame.reported && !frame.spent) {
         frame.reported = true;
         onNoEffect?.(frame.tool);
       }
       throw new ToolpackCalledOffError();
     }
+    // A request that LEFT, whatever it was. No pack tells this wrapper which of its calls writes,
+    // and the two errors are not symmetric: treating a read as an effect costs one observation,
+    // treating a write as none costs the write again in somebody else's system.
+    const frame = calledOffFrame.getStore();
+    if (frame) frame.spent = true;
     return inner(input, init);
   }) as typeof fetch;
 }
@@ -282,11 +293,13 @@ export function buildToolpackTools(
       if (!ctx.onNoEffect || !ctx.stillWanted) return t;
       const seen = Object.create(t) as typeof t;
       seen.invoke = ((input: unknown, config?: unknown) =>
-        calledOffFrame.run({ tool: t.name, reported: false }, () =>
-          (t.invoke as (i: unknown, c?: unknown) => Promise<unknown>)(
-            input,
-            config,
-          ),
+        calledOffFrame.run(
+          { tool: t.name, reported: false, spent: false },
+          () =>
+            (t.invoke as (i: unknown, c?: unknown) => Promise<unknown>)(
+              input,
+              config,
+            ),
         )) as typeof t.invoke;
       return seen;
     });

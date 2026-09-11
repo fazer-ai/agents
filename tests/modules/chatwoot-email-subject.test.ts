@@ -12,6 +12,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { transcriptFromRows } from "@/modules/observe/job";
+import { codeOnly } from "@/tests/utils/source-text";
 
 // Issue #598. On an email inbox the request is frequently in the subject line and nowhere else: the
 // body is empty, or a client footer like "Enviado do meu iPhone". Everything the agent reads is
@@ -387,12 +388,13 @@ describe("every reader of a Chatwoot message asks the SAME mapping", () => {
       "src/modules/debounce/handler.ts",
       "src/graph/runtime.ts",
     ]) {
-      const src = (
-        await Bun.file(new URL(`../../${path}`, import.meta.url)).text()
-      )
-        // Comments out first: a `//` line between the call and its argument is prose, not a shape,
-        // and reading it as one would make this fence trip on its own explanation.
-        .replace(/^\s*\/\/.*$/gm, "");
+      // Comments and literals out through the shared scanner, not a regex of my own: the shape being
+      // counted is CODE, so a `//` line between the call and its argument is prose and would make
+      // this fence trip on its own explanation, and a `//` inside a string is not a comment at all.
+      // `tests/utils/source-text.ts` is where that lesson already lives.
+      const src = codeOnly(
+        await Bun.file(new URL(`../../${path}`, import.meta.url)).text(),
+      );
       const calls = [
         ...src.matchAll(/renderInboundMessage\(\s*([\s\S]{0,24})/g),
       ]

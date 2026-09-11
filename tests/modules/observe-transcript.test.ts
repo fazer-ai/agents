@@ -30,6 +30,7 @@ function row(
     location: null,
     inReplyTo: null,
     isReaction: false,
+    emailSubject: null,
     // Required on `ChatwootMessageRow` since this branch was cut; defaulted here for the same
     // reason every other field is.
     sendId: null,

@@ -2449,6 +2449,119 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
+  // WHAT "COMMITTED" MAY NOT INCLUDE. The count is taken at dispatch and is deliberately blind — a
+  // call that threw may have thrown after its write — but two exits are provably before the write,
+  // and counting them costs the retry: the tick completes, and for an `on_resolve` watcher the
+  // observation is never made (review round 39).
+  test("a dispatch its own schema rejected does not count as a write", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class BadArgsThenDown {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                // `labels` is an array in the schema. The parse fails inside `invoke`, before any
+                // handler code, so no handler is there to say nothing was written.
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: "cancelamento" },
+                    id: "call_bad",
+                  },
+                ],
+              });
+            throw new Error("the model went down");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new BadArgsThenDown() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    // Nothing committed, so the model failure is a RETRY and not a finished job.
+    expect(res.outcome).toBe("fail");
+    const detail = (await observeLines()).at(-1)?.detail as {
+      toolCalls?: number;
+      retried?: boolean;
+    };
+    expect(detail.toolCalls).toBe(0);
+    expect(detail.retried).toBeUndefined();
+  });
+
+  test("a scope the conversation does not have does not count as a write", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class ContactScopeThenDown {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                // The watcher's toolset carries no contact, so this exits with a sentence and
+                // writes nothing — a refusal the counter cannot tell from a write by reading it.
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"], scope: "contact" },
+                    id: "call_contact",
+                  },
+                ],
+              });
+            throw new Error("the model went down");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new ContactScopeThenDown() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    expect(res.outcome).toBe("fail");
+    const last = (await observeLines()).at(-1)?.detail as {
+      toolCalls?: number;
+    };
+    expect(last.toolCalls).toBe(0);
+  });
+
   // THE PAIR THAT COULD DISAGREE. `agentObservesNow` reads the switch and the mode; the read beside
   // it reads the settings, a query later. An operator who turns the agent off in between leaves the
   // second read looking straight at the new row — and it used to select `settings` alone, so it saw

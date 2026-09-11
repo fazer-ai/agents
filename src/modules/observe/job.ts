@@ -1,5 +1,6 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
+import { ToolInputParsingException } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
@@ -1178,18 +1179,34 @@ export async function runObserve(
     // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
     // permitted call reaches exactly the run it would have had.
     const seen = Object.create(t) as typeof t;
-    seen.invoke = ((input: unknown, config?: unknown) => {
+    seen.invoke = (async (input: unknown, config?: unknown) => {
       // BEFORE the call, because the count has to exist when the invoke THREW — a booking that
       // reached its POST and then blew up is exactly the case this guards. What did NOT happen is
       // reported by the handler itself, through `onNoEffect` below: a precondition that refused, a
       // fence that answered inside a handler before its write, a toolpack request that threw
       // instead of leaving. Counted apart rather than subtracted here, because one of those exits
       // throws and never comes back through this wrapper (rounds 33 and 36).
-      if (!effectFreeNames.has(t.name) && !isEffectFreeTool(t)) {
+      const countsHere = !effectFreeNames.has(t.name) && !isEffectFreeTool(t);
+      if (countsHere) {
         counted.add(t.name);
         toolsRan++;
       }
-      return (t.invoke as (i: unknown, c?: unknown) => unknown)(input, config);
+      try {
+        return await (t.invoke as (i: unknown, c?: unknown) => unknown)(
+          input,
+          config,
+        );
+      } catch (e) {
+        // ARGUMENTS THE TOOL NEVER ACCEPTED. The count above is deliberately blind — an invoke that
+        // threw may have thrown after its write — but ONE throw is provably before it: the schema
+        // parse, which happens in `invoke` and never reaches the handler, so no handler is there to
+        // report (review round 39). The model is handed the error and usually retries; what must
+        // not survive is a dispatch counted as committed on the strength of arguments that were
+        // rejected, because it turns the next failure into a completed job and the observation is
+        // never made.
+        if (countsHere && e instanceof ToolInputParsingException) noEffect++;
+        throw e;
+      }
     }) as typeof t.invoke;
     return seen;
   });

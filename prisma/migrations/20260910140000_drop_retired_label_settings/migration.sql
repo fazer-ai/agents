@@ -74,12 +74,22 @@ WITH rendered AS (
            --       literal one here would cut this statement in half where nobody would look.
            '. ' ORDER BY ord
          ) AS txt
+    -- THE GUARD GOES IN THE ARGUMENT, NOT IN THE WHERE (review round 39, measured on this Postgres).
+    -- A lateral set-returning function is evaluated for every row BEFORE the WHERE of its own query
+    -- level, and AND does not order its operands either, so `jsonb_typeof(...) = 'array'` beside
+    -- the call protects nothing: an agent carrying a string or an object under `labelGroups`, which
+    -- an import can, raises "cannot extract elements from a scalar" (and "cannot get array length
+    -- of a scalar" at 1c below) and aborts the WHOLE deployment migration. Substituting `[]` is the
+    -- same filter by another route: the row then produces no elements and drops out of the join,
+    -- exactly as the two discarded predicates intended. Same shape as the `exclusive` cast of round
+    -- 27, a few lines up.
     FROM "agents" a,
-         LATERAL jsonb_array_elements("settings" -> 'monitoring' -> 'labelGroups')
-                 WITH ORDINALITY AS t(grp, ord)
-   WHERE jsonb_typeof("settings" -> 'monitoring' -> 'labelGroups') = 'array'
-     AND jsonb_array_length("settings" -> 'monitoring' -> 'labelGroups') > 0
-     AND jsonb_typeof(grp) = 'object'
+         LATERAL jsonb_array_elements(
+                   CASE WHEN jsonb_typeof("settings" -> 'monitoring' -> 'labelGroups') = 'array'
+                        THEN "settings" -> 'monitoring' -> 'labelGroups'
+                        ELSE '[]'::jsonb END
+                 ) WITH ORDINALITY AS t(grp, ord)
+   WHERE jsonb_typeof(grp) = 'object'
    GROUP BY a.id
 )
 UPDATE "agents" a
@@ -122,8 +132,11 @@ FROM "agents" a
 WHERE s.agent_id = a.id
   AND s.source = 'NATIVE'
   AND NOT ('set_labels' = ANY(s.enabled_tools))
-  AND jsonb_typeof(a."settings" -> 'monitoring' -> 'labelGroups') = 'array'
-  AND jsonb_array_length(a."settings" -> 'monitoring' -> 'labelGroups') > 0;
+  AND jsonb_array_length(
+        CASE WHEN jsonb_typeof(a."settings" -> 'monitoring' -> 'labelGroups') = 'array'
+             THEN a."settings" -> 'monitoring' -> 'labelGroups'
+             ELSE '[]'::jsonb END
+      ) > 0;
 
 -- 2. `monitoring.labelGroups` and `monitoring.noteOnChange`, the two retired keys inside a block
 --    that is otherwise live configuration (the burst window, `analysis`, the debounce), so the keys

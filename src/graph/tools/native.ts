@@ -268,6 +268,13 @@ export interface ToolCtx {
   // exits below return a sentence saying the run was called off. Nothing left the process on those,
   // so a counter outside has to be told, or it reads them as writes that happened. NOT called where
   // something already went out: `handoff_to_human` after its note was filed is not one of these.
+  //
+  // ...AND BY EVERY OTHER EXIT THAT RETURNS BEFORE THE WRITE (review round 39), which is the same
+  // fact arriving through a different door: a scope the conversation does not have (no kanban card,
+  // no contact mirrored into Chatwoot), a funnel step that does not exist, a card already in the
+  // step asked for, an update with no fields. The counter cannot tell those from a write by reading
+  // the returned sentence, and reading them as writes costs the retry that the observer's tick
+  // needs — for an `on_resolve` watcher, the only pass it will ever get.
   onNoEffect?: NoEffectReporter;
 }
 
@@ -671,6 +678,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
     }) => {
       if (scope === "task") {
         if (!ctx.kanban) {
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the task attribute (this conversation has no linked card).";
         }
         await ctx.client.setKanbanTaskCustomAttributes(ctx.kanban.taskId, {
@@ -681,6 +689,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
@@ -692,6 +701,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           }),
         );
         if (!contact?.chatwootContactId) {
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
         }
         // ASKED AGAIN, after the lookup and before the write. See the fence rule at the top of this
@@ -1051,6 +1061,7 @@ function setLabelsTool(ctx: ToolCtx) {
       const seenNow = baselineFor(config);
       if (scope === "task") {
         if (!ctx.kanban) {
+          ctx.onNoEffect?.("set_labels");
           return "Could not set the labels (this conversation has no linked card).";
         }
         // The card's set is the TURN-PREP SNAPSHOT on both sides — it is what the model was shown
@@ -1082,6 +1093,7 @@ function setLabelsTool(ctx: ToolCtx) {
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+          ctx.onNoEffect?.("set_labels");
           return "Could not set the contact labels (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
@@ -1093,6 +1105,7 @@ function setLabelsTool(ctx: ToolCtx) {
           }),
         );
         if (!contact?.chatwootContactId) {
+          ctx.onNoEffect?.("set_labels");
           return "Could not set the contact labels (contact not linked to Chatwoot).";
         }
         const current = await ctx.client.getContactLabels(
@@ -1319,15 +1332,18 @@ function kanbanMoveTool(ctx: ToolCtx) {
   return tool(
     async ({ targetStep }: { targetStep: string }) => {
       if (!ctx.kanban) {
+        ctx.onNoEffect?.("kanban_move_card");
         return "This conversation has no linked kanban card, so there is nothing to move.";
       }
       const step = matchKanbanStep(ctx.kanban.steps, targetStep);
       if (!step) {
+        ctx.onNoEffect?.("kanban_move_card");
         return `Unknown funnel step "${targetStep}". Available: ${ctx.kanban.steps
           .map((s) => s.name)
           .join(", ")}.`;
       }
       if (step.id === ctx.kanban.currentStepId) {
+        ctx.onNoEffect?.("kanban_move_card");
         return `The card is already in "${step.name}".`;
       }
       const taskId = ctx.kanban.taskId;
@@ -1395,6 +1411,7 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
       startDate?: string;
     }) => {
       if (!ctx.kanban) {
+        ctx.onNoEffect?.("update_kanban_task");
         return "This conversation has no linked kanban card, so there is nothing to update.";
       }
       const fields: {
@@ -1411,6 +1428,7 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
       if (input.startDate !== undefined) fields.startDate = input.startDate;
       if (input.dueDate !== undefined) fields.dueDate = input.dueDate;
       if (Object.keys(fields).length === 0) {
+        ctx.onNoEffect?.("update_kanban_task");
         return "No fields provided. Set at least one of title, description, priority, dueDate or startDate.";
       }
       await ctx.client.updateKanbanTask(ctx.kanban.taskId, fields);
@@ -1459,6 +1477,7 @@ function setVoicePreferenceTool(ctx: ToolCtx) {
   return tool(
     async ({ preference }: { preference: "audio" | "text" | "default" }) => {
       if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+        ctx.onNoEffect?.("set_voice_preference");
         return "Could not record the preference (no contact in scope).";
       }
       const contactId = ctx.contactDbId;

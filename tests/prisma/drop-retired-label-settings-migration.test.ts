@@ -148,6 +148,21 @@ describe.if(dbUp)("drop retired label settings", () => {
     // A row whose `monitoring` is not an object. The jsonb_set would raise on it if the WHERE did
     // not ask, and the failure would be a migration that aborts on somebody else's bad data.
     ids.odd = await agent("estranha", JSON.stringify({ monitoring: "nao" }));
+    // ...AND ONE WHOSE `labelGroups` IS NOT AN ARRAY, which is the shape that aborts the whole
+    // deployment (review round 39): the lateral runs before the WHERE that was supposed to filter
+    // it out, and `jsonb_array_elements` on a scalar raises. An import writes `settings` wholesale,
+    // so nothing upstream guarantees the type. Two spellings, because the object reaches a
+    // different branch of the same error than the string.
+    ids.scalarGroups = await agent(
+      "grupos-texto",
+      JSON.stringify({
+        monitoring: { window: { messages: 10 }, labelGroups: "assunto" },
+      }),
+    );
+    ids.objectGroups = await agent(
+      "grupos-objeto",
+      JSON.stringify({ monitoring: { labelGroups: { assunto: ["a"] } } }),
+    );
 
     for (const statement of statementsOf(sql)) await suDb.query(statement);
   });
@@ -163,6 +178,23 @@ describe.if(dbUp)("drop retired label settings", () => {
     ]);
     await suDb.query("DELETE FROM tenants WHERE id = $1", [String(tenantId)]);
     await suDb.end();
+  });
+
+  // The migration RAN, which is most of this test: `beforeAll` executes every statement, so a row
+  // that aborts one takes the whole file down with it and every test here fails at once. What is
+  // left to assert is that the odd rows were carried through rather than skipped.
+  test("a labelGroups that is not an array neither aborts the migration nor survives it", async () => {
+    const scalar = await settingsOf(id("scalarGroups"));
+    const mon = scalar.monitoring as Record<string, unknown>;
+    expect(mon.labelGroups).toBeUndefined();
+    expect((mon.window as { messages: number }).messages).toBe(10);
+    // Nothing to render, so no guidance is invented from a shape that names no groups.
+    expect(scalar.toolGuidance).toBeUndefined();
+    const obj = await settingsOf(id("objectGroups"));
+    expect(
+      (obj.monitoring as Record<string, unknown>).labelGroups,
+    ).toBeUndefined();
+    expect(obj.toolGuidance).toBeUndefined();
   });
 
   test("the empty tombstone is gone and the live monitoring config is not", async () => {

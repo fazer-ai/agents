@@ -185,6 +185,17 @@ describe("what the operator is told when the body itself was cut", () => {
 // So RSS stays, with a ceiling that clears the noise by a factor of three, because it is the
 // quantity that matches the harm (the process dies); and `extraMemorySize` is added with a tight
 // one, because it is the quantity that separates. A defect has to beat both.
+//
+// NEITHER IS REDUNDANT, and this is the part to read before deleting one of them. The tight
+// quantity measures what is still HELD when the collection runs, not what was allocated on the way
+// there. A mutation that buffers the whole body and then materialises the prefix, so the big string
+// is collectable by the time anything is read, puts `extraMemorySize` back at 1.01 MB — green — and
+// 632 MB in RSS. The process still dies; only RSS sees it.
+//
+// And the reason the literal defect IS caught by the tight one is a runtime detail, not a law:
+// `clipText` ends in `value.slice(0, max)`, and a JSC substring retains its parent buffer. The day
+// that slice materialises, `extraMemorySize` goes green with the #464 defect fully present and RSS
+// is what is left. The precise assertion is the one that leans on someone else's implementation.
 test("a body far larger than memory allows is never retained whole", async () => {
   const script = `
     import { buildHttpTool } from "@/graph/tools/http";

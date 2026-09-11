@@ -1232,6 +1232,9 @@ export function BehaviorTab({
   // on screen connects the two. Found in review of #599.
   const signatureRoom =
     SIGNATURE_MAX - signature.text.length + signatureSelected;
+  const signatureVarsBlocked = PROMPT_CONTEXT_VARS.some(
+    (v) => `{{${v}}}`.length > signatureRoom,
+  );
   function insertSignatureVar(name: string) {
     const token = `{{${name}}}`;
     // Asked here too, not only on the button, and against the LIVE selection rather than the tracked
@@ -2577,6 +2580,19 @@ export function BehaviorTab({
               <div className="mt-1.5 flex flex-col gap-1.5">
                 <span className="text-text-muted text-xs">
                   {t("editor.signatureVarsHint", "Insert a variable:")}
+                  {/* INLINE, not a tooltip on the disabled button. A native `title` is unreachable
+                      by keyboard (a disabled button takes no focus) and by touch, so the one state
+                      that needs explaining would explain itself only to a mouse. This is outcome 2
+                      in docs/ui.md: the app can tell the limit now applies, so it says so, at that
+                      moment, and goes away again on its own. */}
+                  {signatureVarsBlocked && (
+                    <span className="ml-1 text-warning">
+                      {t(
+                        "editor.signatureVarNoRoom",
+                        "Not enough room left before the limit.",
+                      )}
+                    </span>
+                  )}
                 </span>
                 <div className="flex flex-wrap gap-1.5">
                   {PROMPT_CONTEXT_VARS.map((v) => {
@@ -2586,14 +2602,6 @@ export function BehaviorTab({
                         key={v}
                         type="button"
                         disabled={!fits}
-                        title={
-                          fits
-                            ? undefined
-                            : t(
-                                "editor.signatureVarNoRoom",
-                                "Not enough room left before the limit.",
-                              )
-                        }
                         onClick={() => insertSignatureVar(v)}
                         className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary"
                       >

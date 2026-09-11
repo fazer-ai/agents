@@ -50,6 +50,15 @@ export interface RenderableMessage {
 // collapsed to a single space (a folded header must not become two lines) and `<`/`>` become `‹`/`›`,
 // so no closing tag and no marker of ours can be forged out of what a sender typed. Exported for the
 // tests that state the contract; there is exactly one caller.
+//
+// WHAT THIS DOES NOT PROMISE, and the line matters more than the function: it guarantees that THE
+// SUBJECT does not leave its own marker. It does NOT guarantee that an `<assunto>` block in what the
+// model reads came from an envelope. The body of the same email is passed through verbatim — it IS
+// the message, and sanitising it would damage legitimate text — so a sender can write the tags in the
+// body and produce a second, forged `<assunto>` in the same message. The same is true of every other
+// verbatim channel already here: the quoted snippet, a file name, a location title, text extracted
+// from a PDF. So never build a deterministic rule that reads a marker as proof of where its content
+// came from; the markers are there to help the model read, not to authenticate.
 export function defangMarkerText(raw: string | null | undefined): string {
   return (raw ?? "")
     .replace(/\s+/g, " ")

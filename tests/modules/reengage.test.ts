@@ -4,6 +4,11 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
@@ -58,10 +63,18 @@ function makeStub(opts: {
   page?: unknown;
   pages?: unknown[];
   sent: Array<[number, string]>;
+  // Roda a cada leitura de mensagens, que é o único momento em que o hold do botão e a marca do
+  // turno podem ser distinguidos de fora: o coalesce lê ANTES de o turno se marcar.
+  onGetMessages?: () => void;
+  // A versão que pode ESPERAR, para uma barreira de largada sincronizar duas chamadas no mesmo
+  // ponto. `onGetMessages` é síncrono de propósito (é sonda); esta serve para segurar.
+  onGetMessagesAsync?: () => Promise<void>;
 }) {
   let i = 0;
   const client = {
     getMessages: async () => {
+      opts.onGetMessages?.();
+      if (opts.onGetMessagesAsync) await opts.onGetMessagesAsync();
       if (!opts.pages) return opts.page;
       const p = opts.pages[Math.min(i, opts.pages.length - 1)];
       i += 1;
@@ -102,6 +115,7 @@ async function seedConversation(
     lastError?: string | null;
     contactId?: bigint;
     lastHandledMessageId?: number;
+    contactInboxId?: number;
   } = {},
 ): Promise<bigint> {
   const c = await suDb.conversation.create({
@@ -119,6 +133,9 @@ async function seedConversation(
       lastError: over.lastError ?? null,
       lastErrorAt: over.lastError ? new Date() : null,
       lastHandledMessageId: over.lastHandledMessageId ?? null,
+      ...(over.contactInboxId !== undefined
+        ? { contactInboxId: over.contactInboxId }
+        : {}),
     },
   });
   return c.id;
@@ -477,6 +494,111 @@ describe.skipIf(!dbUp)("reengage", () => {
       }) as unknown as typeof fetch;
     }
 
+    // MATA A MUTAÇÃO que tira a checagem cedo. O que ela economiza não é leitura do Chatwoot (o
+    // portão de cauda vazia faz uma de qualquer jeito): é o teto de gasto e, sobretudo, uma chamada
+    // ao endpoint de autorização DE OUTRA PESSOA. Gastar a infra de um terceiro para no fim dizer
+    // "ocupado" é o custo que a checagem cedo existe para não pagar.
+    //
+    // A asserção é sobre `calls.n`, e não sobre latência, porque é o que se pode medir sem relógio:
+    // sem a checagem cedo este caminho chama o endpoint uma vez.
+    test("uma thread tomada não gasta o endpoint de autorização", async () => {
+      const id = await seedConversation(9600, {
+        contactId: await seedContact(94),
+        contactInboxId: 600,
+      });
+      const graphThreadId = `${tenantId}:${instanceId}:ci:600`;
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      markTurnInFlight(graphThreadId);
+      try {
+        const res = await reengageConversation(
+          ctx(),
+          id,
+          {
+            makeModel: fakeModel,
+            makeClient: makeStub({
+              page: page([
+                { id: 1, content: "oi", type: 0 },
+                { id: 2, content: "resposta antiga", type: 1 },
+                { id: 3, content: "e aí?", type: 0 },
+              ]),
+              sent,
+            }),
+            checkpointer: new MemorySaver(),
+            contactAuthFetch: answering(true, calls),
+          },
+          appDb,
+        );
+        expect(res.outcome).toBe("busy");
+        expect(calls.n).toBe(0);
+        expect(sent).toEqual([]);
+      } finally {
+        clearTurnInFlight(graphThreadId);
+      }
+    });
+
+    // A CORRIDA, POR CONSTRUÇÃO E NÃO POR SORTE. O teste de clique duplo passava mesmo com um
+    // `await` entre ler os registros e marcar o hold: as duas chamadas nunca chegavam ao portão no
+    // mesmo tick, então era escalonamento, não exclusão. O review da rodada 4 achou a janela e a
+    // primeira tentativa de teste que escrevi para ela também não pegava, porque a barreira ficava
+    // na leitura de mensagens e sobrava caminho demais até o portão.
+    //
+    // A barreira fica no ÚLTIMO ponto injetável antes dele, o endpoint de autorização: as duas são
+    // seguradas ali e liberadas juntas. Com um `await` entre a checagem e a marca, as duas leem
+    // "livre" e as duas seguem; sem ele, uma marca e a outra encontra a marca.
+    //
+    // Duas conversas do MESMO contato, porque a thread de grafo é a do contato-inbox: é a mesma
+    // memória, que é o que a exclusão protege.
+    test("dois cliques que chegam juntos ao portão não viram dois turnos", async () => {
+      const CI = 601;
+      const idA = await seedConversation(9601, {
+        contactId: await seedContact(95),
+        contactInboxId: CI,
+      });
+      const idB = await seedConversation(9602, {
+        contactId: await seedContact(96),
+        contactInboxId: CI,
+      });
+      const sent: Array<[number, string]> = [];
+      let chegaram = 0;
+      let liberar: () => void = () => {};
+      const largada = new Promise<void>((r) => {
+        liberar = r;
+      });
+      const naLargada = (async () => {
+        chegaram += 1;
+        if (chegaram >= 2) liberar();
+        await largada;
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const deps = () => ({
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "resposta antiga", type: 1 },
+            { id: 3, content: "e aí?", type: 0 },
+          ]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+        contactAuthFetch: naLargada,
+      });
+      const [a, b] = await Promise.all([
+        reengageConversation(ctx(), idA, deps(), appDb),
+        reengageConversation(ctx(), idB, deps(), appDb),
+      ]);
+      const desfechos = [a.outcome, b.outcome].sort();
+      console.log(
+        `[corrida] desfechos=${JSON.stringify(desfechos)} envios=${sent.length}`,
+      );
+      // Um responde, o outro cede. Nunca os dois.
+      expect(desfechos).toEqual(["busy", "posted"]);
+      expect(sent.length).toBe(1);
+    });
+
     test("a refused contact is not re-engaged (no model, no post)", async () => {
       const id = await seedConversation(903, {
         contactId: await seedContact(41),
@@ -803,7 +925,17 @@ describe.skipIf(!dbUp)("reengage", () => {
         reengageConversation(ctx(), id, deps(), appDb),
       ]);
       expect(sent.length).toBe(1);
-      expect([a.outcome, b.outcome].sort()).toEqual(["posted", "superseded"]);
+      // MUDOU COM A #594, e a metade que importa não mudou: uma resposta só. O perdedor agora é
+      // recusado ANTES de gastar um turno, e não depois de o claim de resposta tirá-lo do caminho,
+      // então ele lê `busy` em vez de `superseded`. É a resposta mais verdadeira no instante em que
+      // é dada, e economiza uma chamada ao modelo por clique duplo.
+      //
+      // `superseded` continua existindo para o caso em que a cauda é consumida ENQUANTO o modelo
+      // roda (o teste do skip logo abaixo): lá o turno chegou a acontecer.
+      //
+      // Determinístico, não corrida: a checagem e o `markFlushHold` são um bloco síncrono só, então
+      // as duas chamadas não podem passar as duas pela checagem.
+      expect([a.outcome, b.outcome].sort()).toEqual(["busy", "posted"]);
     });
 
     // THE CEILING IS THE MARK THIS CLICK READ ON THE WAY IN, not "no ceiling" (issue #452). What was
@@ -1263,5 +1395,269 @@ describe.skipIf(!dbUp)("reengage", () => {
       }),
     ).toBe(1);
     expect(capture.systemPrompts.join("\n")).toContain("VARIANT PROMPT");
+  });
+  // Issue #594. Um turno já rodando na MESMA thread de grafo, e o operador aperta re-engage. Hoje o
+  // re-engage abre um segundo turno concorrente, posta, e devolve `posted` atrás de um 200: o canal do
+  // checkpoint fica exposto ao read-modify-write que a #588 fechou, só que pela porta do operador.
+  //
+  // A ocupação é marcada no registro do PROCESSO de propósito: é assim que o defeito acontece hoje em
+  // réplica única, que é a topologia no ar. A metade entre réplicas é a #593.
+  //
+  // A conversa nasce com `contact_inbox_id`, e isso não é detalhe: a thread de grafo de um contato com
+  // duas conversas é a do contato-inbox, e `resolveReengage` hoje nem seleciona esse campo. Uma
+  // correção que se apoie no `threadId` da conversa passa num teste sem ele e erra calada o caso real.
+  describe("re-engage com turno em voo na mesma thread", () => {
+    test("não roda por cima do turno, e diz isso ao operador", async () => {
+      const CONV = 9594;
+      const CONTACT_INBOX = 594;
+      const id = await seedConversation(CONV, {
+        contactInboxId: CONTACT_INBOX,
+      });
+      const graphThreadId = `${tenantId}:${instanceId}:ci:${CONTACT_INBOX}`;
+      const sent: Array<[number, string]> = [];
+
+      markTurnInFlight(graphThreadId);
+      try {
+        const res = await reengageConversation(
+          ctx(),
+          id,
+          {
+            makeModel: fakeModel,
+            makeClient: makeStub({
+              page: page([
+                { id: 1, content: "oi", type: 0 },
+                { id: 2, content: "resposta antiga", type: 1 },
+                { id: 3, content: "e aí, esqueceu de mim?", type: 0 },
+              ]),
+              sent,
+            }),
+            checkpointer: new MemorySaver(),
+          },
+          appDb,
+        );
+        console.log(
+          `[594] desfecho=${res.outcome} envios=${sent.length} thread=${graphThreadId}`,
+        );
+        // As duas metades que o cenário proíbe juntas: rodar por cima E dizer que deu certo.
+        expect(sent).toEqual([]);
+        expect(res.outcome).not.toBe("posted");
+      } finally {
+        clearTurnInFlight(graphThreadId);
+      }
+    });
+  });
+  // MATA A MUTAÇÃO que troca `turnOwnsThread` por só o `Map` do processo. A ocupação aqui é escrita
+  // DIRETO na linha, com o cliente de superusuário, porque é isso que a outra réplica teria deixado
+  // lá; nenhuma chamada a `markTurnOwning` acontece, senão o Map deste processo passaria a saber e o
+  // teste mediria o Map de novo em vez da linha.
+  test("um turno registrado só na linha também segura o botão", async () => {
+    const CONV = 9595;
+    const CI = 595;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const sent: Array<[number, string]> = [];
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO agent_threads
+         (tenant_id, chatwoot_instance_id, contact_inbox_id, thread_id,
+          turn_holders, turn_epoch, turn_held_until, created_at, updated_at)
+       VALUES (${tenantId}, ${instanceId}, ${CI},
+               '${tenantId}:${instanceId}:ci:${CI}', 1, 1,
+               now() + interval '5 minutes', now(), now())`,
+    );
+    let leituras = 0;
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "resposta antiga", type: 1 },
+            { id: 3, content: "e aí?", type: 0 },
+          ]),
+          sent,
+          onGetMessages: () => {
+            leituras += 1;
+          },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("busy");
+    expect(sent).toEqual([]);
+    // A ocupação aqui é só da LINHA, e a checagem cedo não vai ao banco de propósito: quem pega
+    // este caso é a adjacente ao invoke, depois do caminho inteiro. Uma leitura a mais no caminho
+    // limpo custaria uma consulta a todo clique, e o s3 dos cenários proíbe isso.
+    expect(leituras).toBeGreaterThan(0);
+  });
+
+  // MATA A MUTAÇÃO que troca `markFlushHold` pelo registro do TURNO. O que o botão segura antes de
+  // invocar tem que ser invisível para quem pergunta por turnos: ingestão, compactação e rollback
+  // decidem por essa pergunta, e um "ocupado" a mais faz `drainPendingIngest` alcançar nada e todo
+  // rollback pular, com a suíte inteira verde. Foi o defeito que o review da #588 pegou uma vez.
+  //
+  // O momento em que dá para separar os dois é o `getMessages` do coalesce: ele roda DEPOIS de o
+  // botão segurar e ANTES de o turno se marcar. Só a primeira leitura vale; da segunda em diante o
+  // turno já se marcou legitimamente.
+  test("o que o botão segura antes de invocar não conta como turno", async () => {
+    const CONV = 9596;
+    const CI = 596;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    const vistoComoTurno: boolean[] = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "resposta antiga", type: 1 },
+            { id: 3, content: "e aí?", type: 0 },
+          ]),
+          sent,
+          onGetMessages: () =>
+            vistoComoTurno.push(isTurnInFlight(graphThreadId)),
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    // O `getMessages` do preview roda antes até do hold; o do coalesce roda com o hold ativo. Nenhum
+    // dos dois pode ver "turno em voo", porque nenhum turno começou ainda.
+    expect(vistoComoTurno[0]).toBe(false);
+    expect(vistoComoTurno[1]).toBe(false);
+    // E a thread volta livre no fim, pelo caminho que respondeu.
+    expect(isTurnInFlight(graphThreadId)).toBe(false);
+  });
+  // A RECUSA É BARATA quando o turno está NESTE processo, que é a topologia no ar. A checagem cedo
+  // corta antes do teto de gasto e da chamada ao endpoint de autorização de outra pessoa; o que ela
+  // não corta é o portão de cauda vazia, que é uma leitura de mensagens e que este arquivo declara
+  // não ser um gasto. Uma leitura, então, e não zero.
+  //
+  // Medido rodando o console de verdade: sem a checagem cedo, este caminho batia em
+  // `preview.getMessages` contra um Chatwoot inalcançável e devolvia 500 antes de chegar na recusa.
+  test("a recusa de um turno deste processo não paga o caminho inteiro", async () => {
+    const CONV = 9597;
+    const CI = 597;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    let leituras = 0;
+    markTurnInFlight(graphThreadId);
+    try {
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "resposta antiga", type: 1 },
+              { id: 3, content: "e aí?", type: 0 },
+            ]),
+            sent,
+            onGetMessages: () => {
+              leituras += 1;
+            },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("busy");
+      expect(sent).toEqual([]);
+      expect(leituras).toBe(1);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+  });
+
+  // NADA A RESPONDER ⇒ NADA A RECUSAR, que é a regra que este arquivo já enuncia para o teto de
+  // gasto. Numa thread ocupada, um clique sem cauda nenhuma não é "ocupado": é "não há o que
+  // responder". Dizer `busy` ali mandaria o operador clicar de novo para nada.
+  test("sem cauda, uma thread ocupada ainda responde `empty`", async () => {
+    const CONV = 9598;
+    const CI = 598;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    markTurnInFlight(graphThreadId);
+    try {
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          // A última mensagem é nossa: não há cauda sem resposta.
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "já respondi", type: 1 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("empty");
+      expect(sent).toEqual([]);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+  });
+  // O RASTRO. Uma recusa muda o estado de nada, então sem uma linha ela é indistinguível, de fora,
+  // de um clique que nunca chegou. E as duas mandam o operador investigar coisas diferentes. Este
+  // arquivo já aplica a regra na recusa de autorização, com o motivo escrito lá.
+  //
+  // Medido no flowlog, não no logger: é o que o operador abre no console.
+  test("uma recusa deixa rastro no flowlog", async () => {
+    const CONV = 9599;
+    const CI = 599;
+    const id = await seedConversation(CONV, { contactInboxId: CI });
+    const graphThreadId = `${tenantId}:${instanceId}:ci:${CI}`;
+    const sent: Array<[number, string]> = [];
+    markTurnInFlight(graphThreadId);
+    try {
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "resposta antiga", type: 1 },
+              { id: 3, content: "e aí?", type: 0 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("busy");
+      await settleFlowEvents();
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:${CONV}`,
+          stage: "debounce",
+        },
+        select: { status: true, detail: true },
+      });
+      expect(rows.length).toBe(1);
+      expect(rows[0]?.status).toBe("skipped");
+      // `skipped` e não `error`: nada falhou, um turno estava rodando e o clique cedeu a vez.
+      expect((rows[0]?.detail as { outcome?: string })?.outcome).toBe("busy");
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
   });
 });

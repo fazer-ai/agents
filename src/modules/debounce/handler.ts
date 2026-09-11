@@ -1128,10 +1128,10 @@ export async function flushDebounceJob(
       const now = await db.agent.findUnique({
         where: { id: inbox.agentId },
         // ...AND THE SETTINGS FROM THE SAME READ (issue #477 review, round 15). `agentRow` predates
-        // the flip this branch just detected, and the edit that flips the mode is usually the edit
-        // that adds the label groups — so arming off it answers `off`, while the burst is ingested
-        // and marked handled, leaving it permanently unclassified. Same defect the receiver had on
-        // its own hand-over path (round 12); this is the flush's copy of it.
+        // the flip this branch just detected, and the same edit usually carries the `analysis`
+        // setting the arm asks about — so arming off it can answer `off`, while the burst is
+        // ingested and marked handled, leaving it permanently unobserved. Same defect the receiver
+        // had on its own hand-over path (round 12); this is the flush's copy of it.
         select: { enabled: true, mode: true, settings: true },
       });
       if (now?.enabled && isMonitoring(now.mode)) {

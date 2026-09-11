@@ -126,6 +126,32 @@ describe.skipIf(!dbUp)("agents service", () => {
     expect(a.enabled).toBe(false);
   });
 
+  // A ROLLING DEPLOY IS A SAVE FROM A CONSOLE THAT HAS NOT RELOADED (review round 33). The previous
+  // release's Behavior screen reconstructs `monitoring.noteOnChange` from a reader that defaults it
+  // to `true` and writes it back on every save, so refusing it answered 400 to saves that had
+  // nothing to do with labels. Asked through `updateAgent` rather than of the boundary function,
+  // because what the round found was the WIRING: a strip nobody calls is a strip that does nothing.
+  test("a Behavior save from the previous console lands, without the retired flag", async () => {
+    const a = await updateAgent(
+      ctx(tenantA),
+      agentAId,
+      {
+        settings: {
+          monitoring: {
+            window: { messages: 25 },
+            labelGroups: [],
+            noteOnChange: true,
+          },
+        },
+      },
+      appDb,
+    );
+    const mon = (a.settings as Record<string, Record<string, unknown>>)
+      .monitoring as Record<string, unknown>;
+    expect(mon.window).toEqual({ messages: 25 });
+    expect("noteOnChange" in mon).toBe(false);
+  });
+
   // The editor tells the operator to paste a full URL and promises only the host is kept, and
   // `readSendImageConfig` does that — at READ time. What lands in the row is whatever was typed, so
   // a pasted presigned link stored its signature in `agent.settings` and handed it back to the
@@ -935,7 +961,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
       { kanban: { instructions: "k".repeat(TOOL_INSTRUCTIONS_MAX + 1) } },
       {
         toolGuidance: {
-          assign_label: "l".repeat(TOOL_INSTRUCTIONS_MAX + 1),
+          set_labels: "l".repeat(TOOL_INSTRUCTIONS_MAX + 1),
         },
       },
       { guardrails: { customPolicy: "p".repeat(CUSTOM_POLICY_MAX + 1) } },

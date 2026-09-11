@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { withDeadline } from "@/lib/outbound";
 import type { SafeUrlOptions } from "@/lib/ssrf";
 import type { Schedule } from "@/modules/business-hours/hours";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -35,6 +37,24 @@ export interface ToolpackCtx {
   resolveCredential: (ref: string) => Promise<string | null>;
   // Injectable for tests; default real fetch.
   fetchImpl?: typeof fetch;
+  // THE CALLER'S WHOLE-TURN DEADLINE, when it has one (the observer's tick). Aborting an invoke
+  // stops the caller waiting, not a handler writing: a pack that was resolving a credential when
+  // the budget ran out still reaches its DELETE, and the tick has already been reported as a
+  // RETRYABLE failure, so the retry sends it again. Enforced by WRAPPING `fetchImpl` in
+  // buildToolpackTools rather than at each pack's own request helper — four packs with their own
+  // helpers is four places to forget, and a fifth added later would start out uncovered. Same shape
+  // as the Chatwoot client's `mutedFetch`. Absent ⇒ no deadline, which is every reactive turn.
+  expiresOn?: AbortSignal;
+  // THE CALLER'S WITHDRAWAL FENCE, enforced the same way the deadline is: by wrapping `fetchImpl` at
+  // the build seam, so every pack's own request helper asks it without any of them knowing. A
+  // deadline answers "is there still time"; this answers "is anyone still waiting" — a `/reset` or a
+  // detach landing while a pack resolves a credential leaves the budget alive and the run withdrawn
+  // (issue #568, review round 28). Absent ⇒ no fence, which is every reactive turn's toolpack today.
+  stillWanted?: () => Promise<boolean>;
+  // Called when a call refuses without sending anything, with the TOOL's name: nothing left the
+  // process, and the counter on the other end applies to the report the same test it applied at
+  // dispatch (see graph/tools/effect-free.ts).
+  onNoEffect?: (toolName: string) => void;
   // Injectable for tests; default assertSafeOutboundUrl. The origin is a fixed trusted constant
   // here, so this is defense-in-depth (and lets tests stay hermetic without DNS).
   assertSafe?: (url: string, opts?: SafeUrlOptions) => Promise<unknown>;
@@ -115,6 +135,12 @@ export interface ToolArgSpec {
 export interface ToolSpec {
   name: string;
   schema: z.ZodObject<z.ZodRawShape>;
+  // WHETHER THIS TOOL'S WHOLE POINT IS TO PUT SOMETHING IN FRONT OF THE CUSTOMER. A muted turn (the
+  // observer's, issue #568) is not offered one: the send is refused at that client's transport, and
+  // the tool would have done its expensive half — Drive downloads the file first — before finding
+  // out. Declared on the SPEC rather than guessed from the name, so a pack added later states it
+  // where its tools are already listed.
+  deliversToCustomer?: boolean;
 }
 
 // One integration's outbound tools. Pure builder: returns StructuredTools filtered to the
@@ -146,6 +172,9 @@ export function argsFromZod(schema: z.ZodObject<z.ZodRawShape>): ToolArgSpec[] {
 export interface ToolView {
   name: string;
   args: ToolArgSpec[];
+  // Mirrored from the spec so the editor can answer the same question the muted assembly answers,
+  // off one declaration (review round 30).
+  deliversToCustomer?: boolean;
 }
 
 const REGISTRY = new Map<string, Toolpack>();
@@ -160,16 +189,128 @@ export function getToolpack(catalogType: string): Toolpack | undefined {
 
 // Builds the outbound tools for a set of integration selections. Fail-closed: a selection with
 // an empty allowlist or a catalogType without a toolpack (NATIVE/MCP) contributes nothing.
+export function deadlineFetch(
+  inner: typeof fetch,
+  expiresOn: AbortSignal,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // Before the request is built, so a pack that spent the budget on a credential read is stopped
+    // rather than sending. Thrown rather than returned: a toolpack's helper reads a Response, and
+    // handing it a synthetic one would be a failure the pack reports as the provider's.
+    if (expiresOn.aborted) {
+      throw new Error(
+        "the run's time budget ran out before the request was sent",
+      );
+    }
+    // Combined, never chosen between: see withDeadline.
+    return inner(input, {
+      ...(init ?? {}),
+      signal: withDeadline(init?.signal, expiresOn),
+    });
+  }) as typeof fetch;
+}
+
+// Refuses a request whose run was called off, at the last moment before it leaves. Throws rather
+// than returning a shape: a pack's request helper reads a Response, and a synthetic one would have
+// to lie about a status. The packs already answer a thrown transport error as a tool failure, which
+// is the honest reading — the call did not happen.
+export class ToolpackCalledOffError extends Error {
+  constructor() {
+    super("the run was called off before the request was sent");
+    this.name = "ToolpackCalledOffError";
+  }
+}
+
+// WHICH DISPATCH A REFUSAL BELONGS TO. The two halves of that answer live in different places and
+// neither can reach the other on its own: `fencedFetch` is shared by every pack of the turn, so the
+// throw it raises knows no tool name, and the build seam that knows the name never sees the throw,
+// because every pack answers a transport error with a tool failure (`asaas.ts`, `google-drive.ts`
+// and `google-calendar.ts` each wrap their request helper in exactly that catch) and the exception
+// dies inside the handler. Reporting from the seam, as round 37 did, was therefore dead code for
+// every real pack — the observer's counter never heard that nothing left the process and read the
+// dispatch as a write (review round 38).
+//
+// So the seam opens a frame per dispatch and the throw reads it. The flag keeps a pack that makes
+// two requests in one call from reporting twice for one dispatch, which is the reason the report
+// left `fencedFetch` in the first place.
+type CalledOffFrame = { tool: string; reported: boolean; spent: boolean };
+const calledOffFrame = new AsyncLocalStorage<CalledOffFrame>();
+
+export function fencedFetch(
+  inner: typeof fetch,
+  stillWanted: () => Promise<boolean>,
+  onNoEffect?: (toolName: string) => void,
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
+    if (!(await stillWanted().catch(() => true))) {
+      // ...AND ONLY WHILE THE DISPATCH IS STILL EMPTY (review round 41). A pack tool is not one
+      // request: `asaas_create_pix_charge` POSTs the charge and then GETs its QR code, so a fence
+      // that turns false between the two is a refusal AFTER the charge exists. Reporting there
+      // subtracts the whole dispatch, the tick reads nothing as committed, and the scheduler's
+      // retry charges the customer twice — the exact trade docs/chatwoot.md settles the other way:
+      // at-most-once for the effects beats at-least-once for a classification.
+      const frame = calledOffFrame.getStore();
+      if (frame && !frame.reported && !frame.spent) {
+        frame.reported = true;
+        onNoEffect?.(frame.tool);
+      }
+      throw new ToolpackCalledOffError();
+    }
+    // A request that LEFT, whatever it was. No pack tells this wrapper which of its calls writes,
+    // and the two errors are not symmetric: treating a read as an effect costs one observation,
+    // treating a write as none costs the write again in somebody else's system.
+    const frame = calledOffFrame.getStore();
+    if (frame) frame.spent = true;
+    return inner(input, init);
+  }) as typeof fetch;
+}
+
 export function buildToolpackTools(
   selections: IntegrationSelection[],
   ctx: ToolpackCtx,
 ): StructuredToolInterface[] {
+  let inner = ctx.fetchImpl ?? fetch;
+  if (ctx.stillWanted)
+    inner = fencedFetch(inner, ctx.stillWanted, ctx.onNoEffect);
+  if (ctx.expiresOn) inner = deadlineFetch(inner, ctx.expiresOn);
+  const bounded: ToolpackCtx =
+    ctx.expiresOn || ctx.stillWanted ? { ...ctx, fetchImpl: inner } : ctx;
+  // A MUTED CLIENT DECIDES WHAT THE TURN MAY BE OFFERED, here as in buildNativeTools: a tool whose
+  // delivery this client refuses costs a model round and answers with a failure the operator reads
+  // as a broken integration. Read off the client the ctx already carries, so the mute and the
+  // toolset cannot disagree.
+  const muted = ctx.chatwoot?.client?.muted === true;
   const out: StructuredToolInterface[] = [];
   for (const sel of selections) {
     if (sel.enabledTools.length === 0) continue;
     const pack = getToolpack(sel.catalogType);
     if (!pack) continue;
-    out.push(...pack.build(sel, ctx));
+    // THE NAME, HANDED TO THE THROW. Opening the frame is all this wrapper does: the report itself
+    // happens where the refusal is raised, which is the only place the pack's own catch cannot
+    // swallow it (see `calledOffFrame` above).
+    const built = pack.build(sel, bounded).map((t) => {
+      if (!ctx.onNoEffect || !ctx.stillWanted) return t;
+      const seen = Object.create(t) as typeof t;
+      seen.invoke = ((input: unknown, config?: unknown) =>
+        calledOffFrame.run(
+          { tool: t.name, reported: false, spent: false },
+          () =>
+            (t.invoke as (i: unknown, c?: unknown) => Promise<unknown>)(
+              input,
+              config,
+            ),
+        )) as typeof t.invoke;
+      return seen;
+    });
+    if (!muted) {
+      out.push(...built);
+      continue;
+    }
+    const delivers = new Set(
+      pack.toolSpecs.filter((t) => t.deliversToCustomer).map((t) => t.name),
+    );
+    out.push(...built.filter((t) => !delivers.has(t.name)));
   }
   return out;
 }
@@ -188,5 +329,6 @@ export function getToolpackToolViews(catalogType: string): ToolView[] {
   return pack.toolSpecs.map((s) => ({
     name: s.name,
     args: argsFromZod(s.schema),
+    ...(s.deliversToCustomer ? { deliversToCustomer: true } : {}),
   }));
 }

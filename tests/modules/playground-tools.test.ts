@@ -30,10 +30,10 @@ describe("buildSimulatedNativeTools (P4)", () => {
   test("conversation tools are simulated (no client call); utility tools run for real", async () => {
     const tools = buildSimulatedNativeTools(
       { client: explodingClient, conversationId: 0 },
-      ["handoff_to_human", "assign_label", "calculator"],
+      ["handoff_to_human", "set_labels", "calculator"],
     );
     const handoff = tools.find((t) => t.name === "handoff_to_human");
-    const label = tools.find((t) => t.name === "assign_label");
+    const label = tools.find((t) => t.name === "set_labels");
     const calc = tools.find((t) => t.name === "calculator");
     expect(handoff).toBeDefined();
     expect(label).toBeDefined();
@@ -45,8 +45,8 @@ describe("buildSimulatedNativeTools (P4)", () => {
     );
     expect(out.toLowerCase()).toContain("simulated");
 
-    // assign_label is conversation-scoped too → simulated (read/write labels never hit the client).
-    const labelOut = String(await label?.invoke({ label: "vip" }));
+    // set_labels is conversation-scoped too → simulated (read/write labels never hit the client).
+    const labelOut = String(await label?.invoke({ labels: ["vip"] }));
     expect(labelOut.toLowerCase()).toContain("simulated");
 
     // The utility tool still computes for real.

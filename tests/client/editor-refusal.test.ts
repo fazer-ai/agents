@@ -175,10 +175,10 @@ describe("hasNoConsoleControl", () => {
 
   test("never for a value the console draws, mapped or not", () => {
     for (const f of [
-      "toolGuidance.assign_label",
+      "toolGuidance.set_labels",
       "settings.modelFallback.model",
       "observability.fullDetailUntil",
-      "toolPreconditions.assign_label",
+      "toolPreconditions.set_labels",
       "guardrails.customPolicy",
       "name",
     ]) {
@@ -194,7 +194,7 @@ describe("hasNoConsoleControl", () => {
     for (const [field, sectionId] of [
       ["settings.modelFallback.model", "modelFallback"],
       ["observability.fullDetailUntil", "observability"],
-      ["toolPreconditions.assign_label", "tools-preconditions"],
+      ["toolPreconditions.set_labels", "tools-preconditions"],
     ] as const) {
       expect(editorTargetFor(field)?.sectionId, field).toBe(sectionId);
       expect(owned, field).not.toContain(field);

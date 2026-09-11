@@ -4,7 +4,7 @@ import type {
 } from "@/modules/chatwoot/client";
 
 // The account's "vocabulary" the agent should write FROM, not guess: existing label titles + custom
-// attribute definitions (per model). Surfaced in the assign_label / set_custom_attribute tool
+// attribute definitions (per model). Surfaced in the set_labels / set_custom_attribute tool
 // descriptions so the model picks known values instead of inventing them.
 export interface ChatwootVocab {
   labels: string[];

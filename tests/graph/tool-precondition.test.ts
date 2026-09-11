@@ -3,6 +3,7 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { z } from "zod";
+import { isEffectFreeTool, markEffectFree } from "@/graph/tools/effect-free";
 import {
   applyToolPreconditions,
   guardedTool,
@@ -368,5 +369,32 @@ describe("unmatchedPreconditionEvent", () => {
       phase: "precondition_unmatched",
       tools: ["gone"],
     });
+  });
+});
+
+describe("the effect-free mark and the guard", () => {
+  test("a guarded tool is still the tool it wraps, mark included", async () => {
+    // An imported settings bag can carry a precondition on a NON-native name, and the runtime guards
+    // whatever tool still answers to it (tool-preconditions.ts) — `search_knowledge` included. The
+    // guard delegates by prototype, so the mark the RAG builder put on the tool is inherited; a
+    // wrapper that ever stops delegating would drop it, and the observer's tick would start counting
+    // a read as an effect and lose its retry (issue #568, review round 29).
+    const inner = markEffectFree(
+      tool(async () => "nada", {
+        name: "search_knowledge",
+        description: "reads",
+        schema: z.object({}),
+      }),
+    );
+    expect(isEffectFreeTool(inner)).toBe(true);
+    const guarded = guardedTool(inner, COND, async () => ({
+      conversationAttributes: { article_url: "https://x" },
+      contactAttributes: {},
+    }));
+    expect(isEffectFreeTool(guarded)).toBe(true);
+    // And the same read through the tick's own wrapper, which is the second `Object.create` on the
+    // way to the model.
+    const counted = Object.create(guarded) as StructuredToolInterface;
+    expect(isEffectFreeTool(counted)).toBe(true);
   });
 });

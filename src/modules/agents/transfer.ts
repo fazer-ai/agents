@@ -17,7 +17,12 @@ import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { isNativeToolName, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import {
+  currentNativeToolName,
+  isNativeToolName,
+  NATIVE_TOOL_NAMES,
+  RENAMED_NATIVE_TOOLS,
+} from "@/graph/tools/catalog";
 import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -39,7 +44,11 @@ import {
   remapCredRefAt,
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
-import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
+import {
+  clampOversizedTextInPlace,
+  TOOL_INSTRUCTIONS_MAX,
+} from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import { auditMutation } from "@/modules/audit/service";
 import {
   MAX_SCHEDULE_EXCEPTIONS,
@@ -1297,30 +1306,38 @@ export async function importAgent(
       });
     }
 
-    // Import DISABLED and in TEST mode — the operator reviews, re-links any missing references +
-    // credentials, validates with /teste, then enables for production. Both are set explicitly: the
-    // Agent.mode column defaults to "production", so an imported clone must never land live by default.
-    const created = await db.agent.create({
-      data: {
-        tenantId,
-        name: exp.name,
-        systemPrompt: exp.systemPrompt,
-        modelConfig: modelConfig as Prisma.InputJsonValue,
-        settings: disarmFullDetail(
-          normalizeSettingsForStorage(settings) ?? settings,
-        ) as Prisma.InputJsonValue,
-        transferWithSummary: exp.transferWithSummary,
-        businessHoursId,
-        followUpHoursId,
-        enabled: false,
-        mode: "test",
-      },
-      select: AGENT_SELECT,
-    });
+    // The protected-label list over its ceiling is clamped for exactly the reasons above, and one
+    // more that is specific to it: `readProtectedLabels` stops AT the ceiling, so a longer stored
+    // list shows the operator guards that guard nothing — the console reloads what was stored, and
+    // the tool honours only the first ones. The direct writes refuse (the person is at the keyboard);
+    // a bundle authored elsewhere is clamped, warned about, and lands disabled and in test mode for
+    // the operator to review (issue #568, review round 23).
+    const dropped = clampProtectedLabelsInPlace(settings);
+    if (dropped > 0) {
+      warnings.push({
+        code: "protectedLabelsClipped",
+        params: { count: dropped, max: PROTECTED_LABELS_MAX },
+      });
+    }
+
+    // The names this bundle grants as its OWN tools, HTTP or code. Read straight off the parsed
+    // bundle (no database), because it decides what a settings key MEANS: a rule keyed
+    // `assign_label` on an agent that grants a custom tool of that name is about that tool, not
+    // about the native that used to hold the name before this release.
+    const customToolNames = new Set(
+      exp.tools.flatMap((g) =>
+        g && (g.source === "HTTP" || g.source === "CODE") ? [g.tool] : [],
+      ),
+    );
 
     // Create any bundled components that don't already exist on the target tenant, BEFORE resolving
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
+    //
+    // ...AND BEFORE THE AGENT ROW, which is not where this used to sit. The settings bag carries the
+    // operator's rules keyed by tool NAME, and a bundled tool that had to be stored under another
+    // name takes its rules with it — so the rename map has to exist before the bag is written. The
+    // migration settles the same two moves in the same order, for the same reason (review r6).
     let renamed: RenamedComponents = {
       httpTools: new Map(),
       codeTools: new Map(),
@@ -1338,6 +1355,43 @@ export async function importAgent(
         warnings,
       );
     }
+
+    // Import DISABLED and in TEST mode — the operator reviews, re-links any missing references +
+    // credentials, validates with /teste, then enables for production. Both are set explicitly: the
+    // Agent.mode column defaults to "production", so an imported clone must never land live by default.
+    // The prompt's own mentions of a renamed native, moved before the row is written. See
+    // `renameNativeToolsInProse`: the keys move next to it, and prose left behind names a tool the
+    // catalog no longer has.
+    const prompt = renameNativeToolsInProse(exp.systemPrompt, customToolNames);
+    if (prompt.renamed > 0) {
+      warnings.push({
+        code: "promptToolRenamed",
+        params: { count: prompt.renamed, name: "set_labels" },
+      });
+    }
+    const created = await db.agent.create({
+      data: {
+        tenantId,
+        name: exp.name,
+        systemPrompt: prompt.text,
+        modelConfig: modelConfig as Prisma.InputJsonValue,
+        settings: disarmFullDetail(
+          stripRetiredLabelKeys(
+            renameNativeToolKeys(
+              normalizeSettingsForStorage(settings) ?? settings,
+              renamed,
+              customToolNames,
+            ),
+          ),
+        ) as Prisma.InputJsonValue,
+        transferWithSummary: exp.transferWithSummary,
+        businessHoursId,
+        followUpHoursId,
+        enabled: false,
+        mode: "test",
+      },
+      select: AGENT_SELECT,
+    });
 
     // Grants of a source this build does not know arrive as null (see importedGrantSchema) and are
     // dropped here, with a warning naming how many — the bundle imports, and the operator learns
@@ -1364,6 +1418,9 @@ export async function importAgent(
       knownGrants,
       warnings,
       renamed,
+      // Asked of the settings as the bundle carried them: `stripRetiredLabelKeys` above has already
+      // deleted the key from what was stored.
+      carriesRetiredTaxonomy(settings),
     );
     if (grantRows.length > 0) {
       await db.agentToolSelection.createMany({ data: grantRows });
@@ -2569,6 +2626,235 @@ async function createMissingComponents(
   return { httpTools: renamedHttpTools, codeTools: renamedCodeTools };
 }
 
+// The two settings maps keyed by native tool NAME, carried across a rename the same way the grant
+// is. Left alone, `toolGuidance.assign_label` is dropped by its reader (a note that vanishes) and
+// `toolPreconditions.assign_label` is worse: the runtime keeps whatever name it finds and matches
+// by name, so the operator's guard goes inert while the editor still shows it — and the write
+// boundary then refuses the agent's next settings save, because it checks the KEY against the
+// native catalog. Both are the migration's job for rows that exist; this is the same job for a
+// bundle, which can arrive at any time (issue #568, review r5).
+//
+// The new key WINS when both are present, for the same reason it does in the migration: it is the
+// operator's most recent word.
+// A RETIRED KEY IS DROPPED ON THE WAY IN, not carried and then refused (issue #568 review).
+//
+// The write boundary refuses `settings.labels` and `settings.monitoring.labelGroups` because they no
+// longer do anything, and that refusal is right for an operator editing an agent: it tells them
+// where the taxonomy went. It is wrong for an import. A bundle is a FILE — exported under the old
+// release, imported whenever someone gets around to it — and failing the whole import over a key
+// that means nothing would block a restore for a reason the operator cannot act on inside the
+// bundle. Same argument that put RENAMED_NATIVE_TOOLS on this boundary, with the opposite verdict:
+// there the old key had to be MOVED because its value still governs something, here it is dropped
+// because its value governs nothing.
+// Cuts `settings.setLabels.protected` down to the ceiling, IN PLACE, and answers how many entries
+// it dropped. Counted the way the reader counts (blanks, non-strings and duplicates never became
+// guards), so the number in the warning is the number of guards the operator loses.
+function clampProtectedLabelsInPlace(settings: unknown): number {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return 0;
+  const block = (settings as Record<string, unknown>).setLabels;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return 0;
+  const raw = (block as Record<string, unknown>).protected;
+  if (!Array.isArray(raw)) return 0;
+  const kept: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const label = entry.trim();
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    kept.push(label);
+  }
+  if (kept.length <= PROTECTED_LABELS_MAX) return 0;
+  (block as Record<string, unknown>).protected = kept.slice(
+    0,
+    PROTECTED_LABELS_MAX,
+  );
+  return kept.length - PROTECTED_LABELS_MAX;
+}
+
+// THE CONFIGURED TAXONOMY, RENDERED AS THE SENTENCE IT BECAME. A bundle is a file, so one exported
+// before this release carries `monitoring.labelGroups` — the one thing in the retired keys that
+// somebody chose. The upgrade migration carries it into `toolGuidance.set_labels`; dropping it here
+// would mean a restore loses exactly what an upgrade keeps (issue #568, review round 28).
+//
+// THE TEXT MIRRORS THE MIGRATION'S, statement for statement, and the two tests assert the same
+// sentence for the same input — that pairing is the only thing keeping a SQL renderer and a TS one
+// from drifting apart. The reader's own default is what decides exclusivity: `bag.exclusive !==
+// false`, so a group that never wrote the field was exclusive, and a loose value (`"custom"`, an
+// object) reads the same way rather than being coerced.
+function taxonomySentence(groups: unknown): string | null {
+  if (!Array.isArray(groups) || groups.length === 0) return null;
+  const parts: string[] = [];
+  for (const raw of groups) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const grp = raw as Record<string, unknown>;
+    const name =
+      typeof grp.name === "string" && grp.name.trim()
+        ? grp.name.trim()
+        : "sem nome";
+    const rule =
+      grp.exclusive === false
+        ? " (pode usar mais de uma)"
+        : " (escolha no máximo uma)";
+    const values = Array.isArray(grp.values)
+      ? grp.values.filter((v): v is string => typeof v === "string")
+      : [];
+    parts.push(
+      `${name}${rule}: ${values.length ? values.join(", ") : "(sem valores)"}`,
+    );
+  }
+  if (parts.length === 0) return null;
+  return clipText(
+    `Migrado da taxonomia anterior. Grupos de etiquetas desta conta: ${parts.join(". ")}.`,
+    TOOL_INSTRUCTIONS_MAX,
+  );
+}
+
+// WHETHER THIS BUNDLE CAME FROM THE CLASSIFIER, asked of the settings BEFORE they are stripped.
+// The old classifier applied its labels itself and consulted no allowlist, so a watcher could carry
+// an explicit NATIVE grant WITHOUT any label tool and classify anyway. Under the new design the
+// migrated sentence is worth nothing without the tool: the agent keeps running, keeps spending a
+// model call per burst, and quietly no longer classifies. Step 1c of
+// `20260910140000_drop_retired_label_settings` repairs the rows that exist when it runs; a bundle is
+// a FILE and can be restored long after, so the same repair has to happen here (review round 31).
+function carriesRetiredTaxonomy(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return false;
+  const mon = (settings as Record<string, unknown>).monitoring;
+  if (!mon || typeof mon !== "object" || Array.isArray(mon)) return false;
+  const groups = (mon as Record<string, unknown>).labelGroups;
+  return Array.isArray(groups) && groups.length > 0;
+}
+
+function stripRetiredLabelKeys(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return settings;
+  const bag = { ...(settings as Record<string, unknown>) };
+  delete bag.labels;
+  // CARRIED OVER BEFORE THE KEY GOES, and only where the operator has not written their own note:
+  // their words win over ours, the same rule the migration follows.
+  const monBag = bag.monitoring as Record<string, unknown> | undefined;
+  const sentence =
+    monBag && typeof monBag === "object" && !Array.isArray(monBag)
+      ? taxonomySentence(monBag.labelGroups)
+      : null;
+  const guidance = bag.toolGuidance;
+  const hasOwnNote =
+    !!guidance &&
+    typeof guidance === "object" &&
+    !Array.isArray(guidance) &&
+    (guidance as Record<string, unknown>).set_labels !== undefined;
+  if (sentence && !hasOwnNote) {
+    bag.toolGuidance = {
+      ...(guidance && typeof guidance === "object" && !Array.isArray(guidance)
+        ? (guidance as Record<string, unknown>)
+        : {}),
+      set_labels: sentence,
+    };
+  }
+  const monitoring = bag.monitoring;
+  const mon = monitoring as Record<string, unknown> | undefined;
+  if (
+    monitoring &&
+    typeof monitoring === "object" &&
+    !Array.isArray(monitoring) &&
+    (mon?.labelGroups !== undefined || mon?.noteOnChange !== undefined)
+  ) {
+    const next = { ...(monitoring as Record<string, unknown>) };
+    delete next.labelGroups;
+    delete next.noteOnChange;
+    bag.monitoring = next;
+  }
+  return bag;
+}
+
+// THE PROMPT NAMES TOOLS TOO, and a bundle is a file: one exported before the rename instructs the
+// model to call `assign_label`, which the catalog no longer has. The keys around it are moved by
+// `renameNativeToolKeys`; the prose was left verbatim, so the restored agent asked for a tool that
+// does not exist — and the sample this repo ships did exactly that (issue #568, review round 26).
+//
+// A WORD BOUNDARY, so only the identifier moves: `xassign_labelx` and `assign_labels` are somebody's
+// own vocabulary. And skipped entirely when the bundle grants a CUSTOM tool under the old name — the
+// same rule the key move follows, for the same reason: the prompt then means that tool.
+//
+// Returns the text and how many mentions moved, because an upgrade that edited an operator's prose
+// has to say so.
+function renameNativeToolsInProse(
+  text: string,
+  customToolNames: ReadonlySet<string>,
+): { text: string; renamed: number } {
+  let out = text;
+  let renamed = 0;
+  for (const [from, to] of Object.entries(RENAMED_NATIVE_TOOLS)) {
+    if (customToolNames.has(from)) continue;
+    const re = new RegExp(`\\b${from}\\b`, "g");
+    const hits = out.match(re);
+    if (!hits) continue;
+    renamed += hits.length;
+    out = out.replace(re, to);
+  }
+  return { text: out, renamed };
+}
+
+function renameNativeToolKeys(
+  settings: unknown,
+  renamed: RenamedComponents,
+  // The names the bundle grants as HTTP or CODE tools. A legacy native name is only legacy while
+  // nothing else answers to it: once `assign_label` stopped being native an operator became free to
+  // create a tool under it, and a bundle from THAT agent means its own tool by the key, not the
+  // native that used to hold the name. Without this the guard is moved to `set_labels` and the
+  // custom tool, which keeps its name, runs unguarded (review r9).
+  customToolNames: ReadonlySet<string>,
+): unknown {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings))
+    return settings;
+  const bag = settings as Record<string, unknown>;
+  // TWO MOVES, AND THE ORDER IS THE WHOLE THING. A bundle can carry BOTH a custom tool named
+  // `set_labels` and the native under its old name, each with its own rule. Done in one pass, the
+  // native's rule finds `set_labels` already taken and is discarded, and the custom tool's rule
+  // stays on a key that now names the NATIVE — the operator's guard moved onto a different tool and
+  // the custom tool left open. Settling the custom rename first empties the key the native needs.
+  //
+  // The bundle's own name is the key here, which is what `RenamedComponents` maps: it was written
+  // when the tool was called that, and the tool is only called something else because THIS import
+  // could not store it under its own name.
+  const stored = new Map<string, string>();
+  for (const m of [renamed.httpTools, renamed.codeTools])
+    for (const [from, to] of m) if (from !== to) stored.set(from, to);
+  const moves: ((name: string) => string)[] = [
+    (name) => stored.get(name) ?? name,
+    (name) => (customToolNames.has(name) ? name : currentNativeToolName(name)),
+  ];
+  let out = bag;
+  for (const key of ["toolGuidance", "toolPreconditions"] as const) {
+    const map = bag[key];
+    if (!map || typeof map !== "object" || Array.isArray(map)) continue;
+    let entries = map as Record<string, unknown>;
+    let touched = false;
+    for (const move of moves) {
+      // Null-prototype, like every other reader of these bags: `__proto__` as a key on a plain
+      // object mutates the prototype instead of storing a rule.
+      const next = Object.create(null) as Record<string, unknown>;
+      let movedHere = false;
+      for (const [name, value] of Object.entries(entries)) {
+        const to = move(name);
+        if (to !== name) movedHere = true;
+        // A key already carrying the destination name is not overwritten by the source's value:
+        // it is the operator's most recent word, the same rule the migration applies.
+        if (to !== name && Object.hasOwn(entries, to)) continue;
+        next[to] = value;
+      }
+      if (movedHere) {
+        entries = next;
+        touched = true;
+      }
+    }
+    if (touched) out = { ...out, [key]: entries };
+  }
+  return out;
+}
+
 async function buildGrantRows(
   db: ScopedDb,
   tenantId: bigint,
@@ -2577,6 +2863,9 @@ async function buildGrantRows(
   warnings: ImportWarning[],
   // Bundle name → stored name, for a tool the import could not store under its own name.
   renamed: RenamedComponents,
+  // The bundle carried a taxonomy: an explicit NATIVE allowlist then has to gain `set_labels`, or
+  // the migrated guidance names a tool the restored agent does not have (`carriesRetiredTaxonomy`).
+  carriedTaxonomy = false,
 ): Promise<Prisma.AgentToolSelectionCreateManyInput[]> {
   const rows: Prisma.AgentToolSelectionCreateManyInput[] = [];
   for (const g of tools) {
@@ -2589,16 +2878,28 @@ async function buildGrantRows(
         // The row lands even when nothing survives the filter: an explicit empty allowlist means
         // NO natives, and no row at all would mean ALL of them.
         const known = new Set<string>(NATIVE_TOOL_NAMES);
-        for (const n of g.enabledTools) {
+        // A RENAMED native is carried across rather than dropped (`currentNativeToolName`). The
+        // migration repairs the rows that exist when it runs; a bundle is a file, and one exported
+        // before the rename can be imported long after — restoring a backup would otherwise come
+        // back missing the capability, which is the one thing a backup is for.
+        const mapped = g.enabledTools.map(currentNativeToolName);
+        for (const n of mapped) {
           if (!known.has(n)) {
             warnings.push({ code: "nativeToolUnknown", params: { name: n } });
           }
         }
+        const enabled = new Set(mapped.filter((n) => known.has(n)));
+        // ...plus the label tool when the taxonomy came with the bundle, which is the migration's
+        // step 1c applied to a file. Only onto an EXPLICIT row: an agent with no native selection
+        // is already allowed every native, and adding a row would NARROW what it can do.
+        if (carriedTaxonomy) enabled.add("set_labels");
         rows.push({
           tenantId,
           agentId,
           source: "NATIVE",
-          enabledTools: g.enabledTools.filter((n) => known.has(n)),
+          // ...and de-duplicated, because a bundle can name BOTH (exported from an agent that
+          // carried the old grant beside a new one), and the allowlist must not list one twice.
+          enabledTools: [...enabled],
           knowledgeBaseIds: [],
         });
         break;

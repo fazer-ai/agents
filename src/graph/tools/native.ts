@@ -16,9 +16,10 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
-import type {
-  ChatwootClient,
-  CustomAttributeDef,
+import {
+  ChatwootCalledOffError,
+  type ChatwootClient,
+  type CustomAttributeDef,
 } from "@/modules/chatwoot/client";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
@@ -57,13 +58,19 @@ import {
   roundDownToMinutes,
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
-import { NATIVE_TOOL_CATEGORY, type NativeToolName } from "./catalog";
+import {
+  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+  NATIVE_TOOL_CATEGORY,
+  type NativeToolName,
+} from "./catalog";
+import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 
 // Native Chatwoot tools the agent can call mid-turn, all over the bot token. Each is bound to a
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
 // (fail-closed: a tool not in the allowlist is never exposed to the model).
 
 import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./catalog";
+import type { NoEffectReporter } from "./effect-free";
 
 export {
   HANDOFF_DONE_PREFIX,
@@ -209,9 +216,31 @@ export interface ToolCtx {
   // falling back to DEFAULT_TIMEZONE).
   timezone?: string;
   // The account's labels + custom-attribute definitions (resolved at turn prep, best-effort), so
-  // assign_label / set_custom_attribute enumerate KNOWN values in their descriptions instead of
+  // set_labels / set_custom_attribute enumerate KNOWN values in their descriptions instead of
   // letting the model guess. Absent ⇒ the tools fall back to generic descriptions.
   vocab?: ChatwootVocab;
+  // WHAT THE MODEL WAS SHOWN, per scope, and the only thing that gives `set_labels` the right to
+  // REMOVE (issue #568). The tool takes the complete list a scope should end up with, so the labels
+  // the model left out are the ones it wants gone — but "left out" is only meaningful against a
+  // list it actually saw. A scope missing here was never shown, so a call naming it can add and
+  // never subtract, which is what keeps a failed context read from wiping a conversation clean.
+  // Read at turn prep alongside the vocab; the card's set comes free with the kanban snapshot.
+  shownLabels?: {
+    conversation?: string[];
+    contact?: string[];
+    task?: string[];
+  };
+  // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE, and never sees (issue #568 review). Operator
+  // control labels live on the same conversation as the classifier's, and nothing but this list
+  // separates them: see applyLabelIntent for why the separation is a subtraction and not a branch.
+  // Comes from `settings.setLabels.protected`; empty or absent ⇒ the tool reaches everything.
+  protectedLabels?: string[];
+  // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
+  // graph already asks it at the tool boundary; waiting for that queue is a wait AFTER the ask, and
+  // `/reset` clears the episode's labels in this very queue, so a write admitted at the boundary can
+  // still land on a conversation the operator has just been told was cleared. Absent ⇒ the write
+  // proceeds, which is what every caller that has no fence to offer means.
+  stillWanted?: () => Promise<boolean>;
   // This conversation's kanban card context (board + current step + available steps + card snapshot),
   // resolved at turn prep when kanban_move_card is granted. Lets kanban_move_card take a STEP NAME (the
   // model can't know ids), surface the funnel state, and set_custom_attribute target the task. Absent ⇒
@@ -234,6 +263,19 @@ export interface ToolCtx {
   // `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
   // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
   onSideEffectError?: SideEffectErrorReporter;
+  // CALLED BY A HANDLER THAT REFUSED WITHOUT WRITING (review round 36). Every effect-bearing handler
+  // asks the caller's fence again inside itself — after its own read, before its own write — and the
+  // exits below return a sentence saying the run was called off. Nothing left the process on those,
+  // so a counter outside has to be told, or it reads them as writes that happened. NOT called where
+  // something already went out: `handoff_to_human` after its note was filed is not one of these.
+  //
+  // ...AND BY EVERY OTHER EXIT THAT RETURNS BEFORE THE WRITE (review round 39), which is the same
+  // fact arriving through a different door: a scope the conversation does not have (no kanban card,
+  // no contact mirrored into Chatwoot), a funnel step that does not exist, a card already in the
+  // step asked for, an update with no fields. The counter cannot tell those from a write by reading
+  // the returned sentence, and reading them as writes costs the retry that the observer's tick
+  // needs — for an `on_resolve` watcher, the only pass it will ever get.
+  onNoEffect?: NoEffectReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,
@@ -298,7 +340,16 @@ function handoffTool(ctx: ToolCtx) {
       : "Escalate the conversation to a human agent. Optionally include a short summary (posted as a private note) and `assignTo` — the name of the agent or team to route to (use one of the names from your instructions); omit it to fall back to default routing."
     : "Escalate the conversation to a human agent. Optionally include a short summary that is posted as a private note before the handoff. Use when the customer needs human help or asks for it.";
   // Always nudge a customer-facing reply before the handoff so the persona does not go silent on them.
-  const baseDescription = `${coreDescription} Before transferring, set \`customerMessage\` to a brief reply to the customer (e.g. that a human will continue) so they are not left without an answer.`;
+  //
+  // ...EXCEPT ON A MUTED TURN, where the promise would be false (review round 35). The line is
+  // RECORDED on `handoffState` for the caller to deliver, and an observation has no `handoffState`
+  // and throws its final output away — so the transfer happens, the customer hears nothing, and the
+  // model was told they were answered. A watcher escalating to a human is legitimate; telling it to
+  // write a message that goes nowhere is not, and the argument goes with the sentence.
+  const speaks = !ctx.client?.muted;
+  const baseDescription = speaks
+    ? `${coreDescription} Before transferring, set \`customerMessage\` to a brief reply to the customer (e.g. that a human will continue) so they are not left without an answer.`
+    : `${coreDescription} This turn does NOT answer the customer, so the transfer is silent to them: there is no message to write and none is sent.`;
   return tool(
     async ({
       reason,
@@ -313,6 +364,17 @@ function handoffTool(ctx: ToolCtx) {
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
         await ctx.client.sendPrivateNote(ctx.conversationId, reason);
+        // ASKED AGAIN, between the note and the status change, and only when the note was actually
+        // sent — the third handler in this file that WAITS before writing, and the rule is the same
+        // one `set_labels` applies inside its queue and `resolve_conversation` after its read: the
+        // graph's ask at the tool boundary happened before this wait, and an observation holds no
+        // thread claim to keep a `/reset` or a detach out of it. The note is already filed and stays
+        // filed; what this stops is the pair below, which takes the conversation out of `pending`
+        // and assigns it — a routing change on an episode the operator was just told was cleared
+        // (round 18).
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
+        }
       }
       // Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
       // bot and the human queue picks it up.
@@ -413,12 +475,16 @@ function handoffTool(ctx: ToolCtx) {
               .describe(
                 "Short private-note summary for the human taking over.",
               ),
-            customerMessage: z
-              .string()
-              .optional()
-              .describe(
-                "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
-              ),
+            ...(speaks
+              ? {
+                  customerMessage: z
+                    .string()
+                    .optional()
+                    .describe(
+                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
+                    ),
+                }
+              : {}),
             assignTo: z
               .string()
               .optional()
@@ -433,12 +499,16 @@ function handoffTool(ctx: ToolCtx) {
               .describe(
                 "Short private-note summary for the human taking over.",
               ),
-            customerMessage: z
-              .string()
-              .optional()
-              .describe(
-                "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
-              ),
+            ...(speaks
+              ? {
+                  customerMessage: z
+                    .string()
+                    .optional()
+                    .describe(
+                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
+                    ),
+                }
+              : {}),
           }),
     },
   );
@@ -576,6 +646,11 @@ async function mirrorAttributeWrite(
 // each scope are enumerated in the description from the account's definitions (ctx.vocab), so the
 // model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
 // from our mirror and merges (the client read-merge-writes so other contact attributes are kept).
+// What the model is told when the client refused a queued write because the run was called off. A
+// sentence, not a tool failure: nothing is broken, the world moved.
+const CALLED_OFF_ATTRIBUTE =
+  "Could not set the attribute (the run was called off while this write waited its turn).";
+
 function setCustomAttributeTool(ctx: ToolCtx) {
   const convDefs = attributesForModel(ctx.vocab, "conversation_attribute");
   const contactDefs = attributesForModel(ctx.vocab, "contact_attribute");
@@ -603,6 +678,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
     }) => {
       if (scope === "task") {
         if (!ctx.kanban) {
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the task attribute (this conversation has no linked card).";
         }
         await ctx.client.setKanbanTaskCustomAttributes(ctx.kanban.taskId, {
@@ -613,6 +689,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
@@ -624,17 +701,52 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           }),
         );
         if (!contact?.chatwootContactId) {
+          ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
         }
-        await ctx.client.setContactCustomAttributes(contact.chatwootContactId, {
-          [key]: value,
-        });
+        // ASKED AGAIN, after the lookup and before the write. See the fence rule at the top of this
+        // file: the graph's ask happens at DISPATCH, and this handler waits on a database read after
+        // it. A contact attribute outlives the conversation it was written from, so a value written
+        // after a `/reset` — or after the agent was switched off — is one nothing later corrects.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.("set_custom_attribute");
+          return "Could not set the contact attribute (the run was called off while this write waited).";
+        }
+        try {
+          await ctx.client.setContactCustomAttributes(
+            contact.chatwootContactId,
+            { [key]: value },
+            // ASKED ONCE MORE, from inside the client's queue this time. The ask above happens
+            // before the call; the write itself waits for a keyed queue and re-reads the bag, and
+            // that wait is as much a wait as this handler's own (round 25).
+            { stillWanted: ctx.stillWanted },
+          );
+        } catch (e) {
+          if (e instanceof ChatwootCalledOffError) {
+            ctx.onNoEffect?.("set_custom_attribute");
+            return CALLED_OFF_ATTRIBUTE;
+          }
+          throw e;
+        }
         await mirrorAttributeWrite(ctx, "contact", key, value);
         return `Contact attribute ${key} set.`;
       }
-      await ctx.client.setConversationCustomAttributes(ctx.conversationId, {
-        [key]: value,
-      });
+      try {
+        await ctx.client.setConversationCustomAttributes(
+          ctx.conversationId,
+          { [key]: value },
+          // The conversation branch has no wait of its own before the call, so this is the ONLY
+          // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
+          // inside exactly the window the queue and the re-read open.
+          { stillWanted: ctx.stillWanted },
+        );
+      } catch (e) {
+        if (e instanceof ChatwootCalledOffError) {
+          ctx.onNoEffect?.("set_custom_attribute");
+          return CALLED_OFF_ATTRIBUTE;
+        }
+        throw e;
+      }
       await mirrorAttributeWrite(ctx, "conversation", key, value);
       return `Conversation attribute ${key} set.`;
     },
@@ -671,49 +783,318 @@ function existingLabelsXml(labels: string[]): string {
   return `<existing_labels>\n${els.join("\n")}\n</existing_labels>`;
 }
 
-// Adds a label (tag) to the conversation, the contact, or this conversation's kanban card (scope,
-// default 'conversation'). Labels are admin-token only and every backing endpoint REPLACES the whole
-// set, so we read the current labels and append (idempotent — a label already present is a no-op).
+// Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card
+// (scope, default 'conversation'). Every backing endpoint REPLACES the whole set, and this tool
+// exposes that shape instead of hiding it: the model passes the complete list the scope should
+// have, so adding, removing and swapping are one gesture with one write, and a swap never leaves
+// the conversation holding both values or neither.
+//
+// What it does NOT do is send that list to Chatwoot verbatim. See applyLabelIntent below.
+//
 // Shapes confirmed against the chatwoot-pro fork: conversation + contact labels GET → { payload: [] },
 // POST /{conversations|contacts}/{id}/labels { labels } replaces (LabelConcern); task labels via PATCH
 // /kanban/tasks/{id} { task: { labels } } (update_labels), with the current set read from the card
 // snapshot. NOTE: the enumerated labels are the account's Label titles; task tags may use a separate
 // taggable namespace on the fork — confirm live before relying on the suggestion for task scope.
-function assignLabelTool(ctx: ToolCtx) {
-  const labelsXml = existingLabelsXml(ctx.vocab?.labels ?? []);
+
+// THE MODEL'S LIST IS AN INTENT, NOT A WRITE. Between the read that produced `shown` (turn prep)
+// and this call, another writer — an operator, an automation rule, the observer, n8n — can have
+// added a label the model never saw. Sending `desired` as-is would erase it, which is the same
+// class of bug as the unqueued read-then-POST that issue #477 closed, just with a wider window: a
+// whole turn instead of two calls.
+//
+// So the intent is read as a DIFF against what the model saw, applied to what is standing now, and
+// it is a diff in BOTH directions:
+//
+//   shown and left out  -> a removal;
+//   asked for, not shown -> an addition;
+//   shown AND asked for  -> the model said nothing about it, so neither.
+//
+// The third line is the one that is easy to get wrong, because the model writes those labels out
+// again on every call — the tool asks it to, since leaving one out would delete it. Repeating a
+// label is therefore NOT a request to have it; it is the absence of a request to lose it. Treating
+// it as an addition puts back exactly what a concurrent writer has just removed: an operator peels
+// `vip` off while the model generates, the model repeats `vip` merely to keep the rest, and the
+// tool undoes the operator. That is the same class as erasing a concurrent ADD, which is what the
+// removal half exists to prevent; both halves are the same rule, applied in the two directions.
+//
+// An unshown scope yields no removals at all and every label as an addition — the safe degenerate,
+// because a model that cannot see what is there cannot mean "and nothing else".
+//
+// `added` and `removed` are then read off `next` rather than off the intent: they are what this
+// write DID, and the intent and the write differ exactly in the unchanged-label case above.
+export function applyLabelIntent(
+  shown: string[] | undefined,
+  desired: string[],
+  current: string[],
+  guarded?: string[],
+): {
+  next: string[];
+  added: string[];
+  removed: string[];
+  visible: string[];
+} {
+  // LABELS THIS TOOL CANNOT REACH, in either direction. A conversation carries labels that belong to
+  // something other than a classifier: `agente-off` is what keeps an agent off a conversation, and a
+  // testing label is what keeps a rehearsal out of the metrics. Both are written by an operator or by
+  // another system and read back by it, and both were being erased here for a reason that is the
+  // contract working as designed — a label present before the turn is SHOWN, so leaving it out is a
+  // removal, and the model has to remember to repeat it or it is gone.
+  //
+  // The guard is applied by SUBTRACTION rather than by a new branch, so it inherits the two rules
+  // this function already proves instead of adding a third: taken out of `shown`, a guarded label
+  // cannot be "shown and left out", which is the same rule that already makes an unshown scope
+  // additive; taken out of `desired`, it cannot be "asked for and not shown", so a model that names
+  // one does not get to claim it either. What the model cannot see it cannot lose, and what it
+  // cannot ask for it cannot take.
+  const guard = new Set((guarded ?? []).map((l) => l.trim()).filter(Boolean));
+  const want = [
+    ...new Set(desired.map((l) => l.trim()).filter(Boolean)),
+  ].filter((l) => !guard.has(l));
+  const wanted = new Set(want);
+  const seen = new Set((shown ?? []).filter((l) => !guard.has(l)));
+  const dropped = new Set(
+    (shown ?? []).filter((l) => !guard.has(l) && !wanted.has(l)),
+  );
+  const kept = current.filter((l) => !dropped.has(l));
+  const fresh = want.filter((l) => !seen.has(l));
+  const next = [...new Set([...kept, ...fresh])];
+  return {
+    next,
+    added: next.filter((l) => !current.includes(l)),
+    removed: current.filter((l) => !next.includes(l)),
+    // WHAT THE MODEL IS TOLD IT NOW HAS, and the same list `recordShown` stores. A guarded label
+    // standing on the conversation is deliberately missing from both: the report and the shown set
+    // have to be ONE list, or the next call in the turn diffs against something it was never handed
+    // — which is the defect this file already carries four comments about.
+    visible: next.filter((l) => !guard.has(l)),
+  };
+}
+
+// What a write DID, in the model's own terms, and what the scope holds AFTERWARDS. Reports against
+// what was standing rather than against what the model asked for: "already as requested" is the
+// answer a second identical call has to get, or a model reading its own transcript concludes the
+// write did not land and tries again.
+//
+// THE RESULTING SET IS STATED because this line is the model's only way to learn it. The
+// `<current_labels>` block in the description is built once, at turn prep, so from the second call
+// onward it describes the past — including the model's own first write. Without this, a model that
+// added `pending` and then wanted the scope empty would pass `[]`, have it diffed against a
+// snapshot that never held `pending`, and be told nothing changed.
+//
+// Saying it is also what LICENCES the next call to act on it: `recordShown` stores exactly this
+// list as what the model was shown, so a label a concurrent writer added mid-turn becomes removable
+// only after the model has actually been handed it. "Shown" has to keep meaning shown.
+function labelWriteReport(
+  where: string,
+  added: string[],
+  removed: string[],
+  next: string[],
+): string {
+  // The report is the THIRD statement about the same list, so it is capped like the other two —
+  // and it says how many it left out rather than presenting a partial set as the whole truth.
+  const head = next.slice(0, SHOWN_LABELS_MAX);
+  const rest = next.length - head.length;
+  const now = next.length
+    ? `${head.map((l) => `"${l}"`).join(", ")}${rest > 0 ? ` (+${rest} more)` : ""}`
+    : "(none)";
+  const parts: string[] = [];
+  if (added.length)
+    parts.push(`added ${added.map((l) => `"${l}"`).join(", ")}`);
+  if (removed.length)
+    parts.push(`removed ${removed.map((l) => `"${l}"`).join(", ")}`);
+  if (parts.length === 0)
+    return `Labels on the ${where} were already as requested. Now set: ${now}.`;
+  return `Labels on the ${where}: ${parts.join("; ")}. Now set: ${now}.`;
+}
+
+// THE MODEL-VISIBLE SET, kept current for the rest of the turn. A turn has as many label writes as
+// the model has tool calls, and every one of them is diffed against what the model saw; leaving
+// that at the turn-prep snapshot means the second call is answered as if the first had not
+// happened — `set_labels(['pending'])` then `set_labels([])` leaves `pending` standing and reports
+// that nothing changed.
+//
+// What gets stored is the list the report just handed the model, not some private view of the
+// world: the two have to be the same list, for the same reason the description block and the diff
+// read one value. It also promotes a scope that could not be read at prep — the contact's, which is
+// deliberately never read there — into a known one, since the tool's own GET answered it.
+function recordShown(
+  ctx: ToolCtx,
+  scope: "conversation" | "contact" | "task",
+  next: string[],
+): void {
+  if (!ctx.shownLabels) ctx.shownLabels = {};
+  // Through the same projection the description renders, so a second call in this turn diffs
+  // against exactly what the model was handed — including the ceiling. A label past it is unseen,
+  // and unseen is never a removal.
+  ctx.shownLabels[scope] = modelVisibleLabels(next, ctx.protectedLabels);
+}
+
+// WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the diff
+// in applyLabelIntent read the SAME `ctx.shownLabels`, on purpose: "shown" has to mean the list the
+// model was actually handed, or a removal is computed against something it never read. Rendered in
+// the tool description rather than in the system prompt for that reason — one value, one place, no
+// way for the two to describe different turns.
+//
+// A scope absent here is a scope whose read failed or was never made, and it renders no element at
+// all rather than an empty one: `<conversation/>` would tell the model the conversation has no
+// labels, which is a different claim from "we could not find out", and it is the claim that makes a
+// model confidently drop everything.
+function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
+  if (!shown) return "";
+  const els: string[] = [];
+  for (const scope of ["conversation", "contact", "task"] as const) {
+    const list = shown[scope];
+    if (!list) continue;
+    els.push(
+      list.length === 0
+        ? `  <${scope} empty="true"/>`
+        : `  <${scope}>${list.map((l) => xmlEscape(l)).join(", ")}</${scope}>`,
+    );
+  }
+  if (els.length === 0) return "";
+  return `<current_labels>\n${els.join("\n")}\n</current_labels>`;
+}
+
+// The same reading `currentLabelsXml` renders, as one sentence for the ARGUMENT's own description.
+// One function for both, because they are two model-facing statements about one fact and a second
+// reader written by hand is how they end up describing different turns (review round 35): the
+// argument used to name the CONVERSATION's labels whatever scope the call chose, so a `contact` call
+// was shown the wrong list — an invitation to copy conversation labels onto a contact.
+//
+// A scope that is absent is left OUT rather than reported empty, exactly as the block does: "there
+// are none" and "we did not read it" are different claims, and only the first belongs to a list.
+function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
+  if (!shown) return "";
+  const parts: string[] = [];
+  for (const scope of ["conversation", "contact", "task"] as const) {
+    const list = shown[scope];
+    if (!list) continue;
+    parts.push(`${scope}: ${list.length ? list.join(", ") : "(none)"}`);
+  }
+  return parts.length ? ` Currently set — ${parts.join("; ")}.` : "";
+}
+
+function setLabelsTool(ctx: ToolCtx) {
+  // THE ACCOUNT'S VOCABULARY IS FILTERED TOO, and this is the half that hiding `shownLabels` does
+  // not cover: `<existing_labels>` advertises every label the account has as a value the model may
+  // pick, so a guarded one was being offered as a choice while the diff silently refused it. The
+  // guard promises the model never SEES these; a suggestion list is seeing. Filtered here, on the
+  // way into this description, and never on the shared vocab cache, which other tools and other
+  // agents read.
+  const guardedSet = new Set(ctx.protectedLabels ?? []);
+  const labelsXml = existingLabelsXml(
+    (ctx.vocab?.labels ?? []).filter((l) => !guardedSet.has(l)),
+  );
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
   const scopeSchema = taskScope
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
-  const baseDescription = `Add a label (tag) to categorize the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation'). Existing labels are kept.${labelsXml ? " Prefer an EXISTING label from `<existing_labels>` below." : ""}`;
+  // READ AT CALL TIME, not captured here: `recordShown` moves this set forward as the turn writes,
+  // and a value closed over at build time would freeze it at the turn-prep snapshot. The XML block
+  // below is the opposite on purpose — a description is serialised once, so it can only ever be the
+  // snapshot, which is why the report states the resulting set.
+  //
+  // ONE BASELINE PER MODEL BATCH, and the batch is the unit because that is what the model saw.
+  // LangGraph runs every tool call of one AIMessage concurrently and returns to the model only when
+  // the whole batch is done, so two `set_labels` side by side were both written from the SAME
+  // snapshot and neither could have read the other's result. A baseline taken per CALL lets the
+  // second one see the first one's write recorded as "shown" and take it for a label it saw and
+  // left out: `["a"]` and `["b"]` end as `b` alone.
+  //
+  // "Synchronously at the top of the handler" is not enough, and that is the whole reason this is
+  // keyed rather than timed: `applyToolPreconditions` wraps the tool and AWAITS the state read
+  // before this handler is entered, so with a precondition configured the second call can arrive
+  // after the first has already written. Timing cannot separate the two cases; the batch key can.
+  //
+  // The key is LangGraph's own, measured rather than assumed: `langgraph_step` is identical for
+  // every call of one batch and differs between batches (2, 2, 4 for two batches of a probe run),
+  // and the namespace and thread go with it so a subgraph cannot collide with its parent. When
+  // there is no config at all — a direct invocation in a test, the playground — there is no batch
+  // to share and each call reads the live set, which is right because those calls ARE sequential.
+  let batch: {
+    key: string;
+    shown: NonNullable<ToolCtx["shownLabels"]>;
+  } | null = null;
+  const batchKey = (config?: ToolRunnableConfig): string | null => {
+    const md = config?.metadata as Record<string, unknown> | undefined;
+    const step = md?.langgraph_step;
+    if (typeof step !== "number") return null;
+    return `${String(md?.thread_id ?? "")}|${String(md?.langgraph_checkpoint_ns ?? "")}|${step}`;
+  };
+  const baselineFor = (
+    config?: ToolRunnableConfig,
+  ): NonNullable<ToolCtx["shownLabels"]> => {
+    const key = batchKey(config);
+    if (key === null) return { ...(ctx.shownLabels ?? {}) };
+    if (batch?.key !== key)
+      batch = { key, shown: { ...(ctx.shownLabels ?? {}) } };
+    return batch.shown;
+  };
+  const currentXml = currentLabelsXml(ctx.shownLabels);
+  const baseDescription = [
+    `Set the labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
+    "Pass the COMPLETE list that scope should have afterwards: keep the labels that still apply, leave out the ones that no longer do, and add the new ones.",
+    "Leaving out a label REMOVES it, so to add one without touching the rest, repeat the labels that are already there.",
+    currentXml &&
+      "What is set right now is in `<current_labels>` below; a scope not listed there could not be read, and a call naming it can only add.",
+    labelsXml &&
+      "Prefer an EXISTING label from `<existing_labels>` below; a label that is not listed is created.",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return tool(
-    async ({
-      label,
-      scope,
-    }: {
-      label: string;
-      scope?: "conversation" | "contact" | "task";
-    }) => {
-      const clean = label.trim();
-      if (!clean) return "No label provided.";
+    async (
+      {
+        labels,
+        scope,
+      }: {
+        labels: string[];
+        scope?: "conversation" | "contact" | "task";
+      },
+      config?: ToolRunnableConfig,
+    ) => {
+      // Trimming and de-duplicating is applyLabelIntent's job, so the three scopes cannot drift.
+      const desired = labels;
+      // The batch's shared view of the world, which has to stay the view the model wrote against.
+      const seenNow = baselineFor(config);
       if (scope === "task") {
         if (!ctx.kanban) {
-          return "Could not add the label (this conversation has no linked card).";
+          ctx.onNoEffect?.("set_labels");
+          return "Could not set the labels (this conversation has no linked card).";
         }
-        const current = ctx.kanban.card.labels;
-        if (current.includes(clean)) {
-          return `Label "${clean}" was already on the card.`;
+        // The card's set is the TURN-PREP SNAPSHOT on both sides — it is what the model was shown
+        // and the only reading we have, since resolving the card again costs the two or three calls
+        // loadKanbanContext makes. So a label somebody added to the card during the turn is erased
+        // by this write, exactly as the append-only version erased it before; the scope is unchanged
+        // by this tool's new power, and closing it means re-resolving the card before every write.
+        const { next, added, removed, visible } = applyLabelIntent(
+          seenNow.task,
+          desired,
+          ctx.kanban.card.labels,
+          ctx.protectedLabels,
+        );
+        if (added.length === 0 && removed.length === 0) {
+          // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
+          // The dispatch was counted as an effect on the way in, and a call that changed no label
+          // is a call the tick may safely run again.
+          ctx.onNoEffect?.("set_labels");
+          recordShown(ctx, "task", visible);
+          return labelWriteReport("kanban card", added, removed, visible);
         }
-        await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, [
-          ...current,
-          clean,
-        ]);
-        return `Label "${clean}" added to the kanban card.`;
+        await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
+        // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
+        // the same turn would otherwise diff against the set before this write and put back what it
+        // just removed.
+        ctx.kanban.card.labels = [...next];
+        recordShown(ctx, "task", visible);
+        return labelWriteReport("kanban card", added, removed, visible);
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
-          return "Could not add the contact label (no contact in scope).";
+          ctx.onNoEffect?.("set_labels");
+          return "Could not set the contact labels (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
@@ -724,23 +1105,41 @@ function assignLabelTool(ctx: ToolCtx) {
           }),
         );
         if (!contact?.chatwootContactId) {
-          return "Could not add the contact label (contact not linked to Chatwoot).";
+          ctx.onNoEffect?.("set_labels");
+          return "Could not set the contact labels (contact not linked to Chatwoot).";
         }
         const current = await ctx.client.getContactLabels(
           contact.chatwootContactId,
         );
-        if (current.includes(clean)) {
-          return `Label "${clean}" was already on the contact.`;
+        const { next, added, removed, visible } = applyLabelIntent(
+          seenNow.contact,
+          desired,
+          current,
+          ctx.protectedLabels,
+        );
+        if (added.length === 0 && removed.length === 0) {
+          // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
+          // The dispatch was counted as an effect on the way in, and a call that changed no label
+          // is a call the tick may safely run again.
+          ctx.onNoEffect?.("set_labels");
+          recordShown(ctx, "contact", visible);
+          return labelWriteReport("contact", added, removed, visible);
         }
-        await ctx.client.setContactLabels(contact.chatwootContactId, [
-          ...current,
-          clean,
-        ]);
-        return `Label "${clean}" added to the contact.`;
+        // ASKED AGAIN, after the GET and before the write — the fourth handler in this file that
+        // waits before writing, and the same rule as the other three. The conversation scope asks
+        // inside its queue; this scope has no queue, and the read above is just as much a wait.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.("set_labels");
+          return "Could not set the contact labels (the run was called off while this write waited).";
+        }
+        await ctx.client.setContactLabels(contact.chatwootContactId, next);
+        recordShown(ctx, "contact", visible);
+        return labelWriteReport("contact", added, removed, visible);
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
       // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
-      // another writer added between the two (issue #477 review, round 3).
+      // another writer added between the two (issue #477 review, round 3). The queue serialises OUR
+      // writers; the diff above is what survives the ones it does not reach.
       return withConversationLabels(
         ctx.tenantId,
         ctx.conversationId,
@@ -748,33 +1147,57 @@ function assignLabelTool(ctx: ToolCtx) {
           const current = await ctx.client.getConversationLabels(
             ctx.conversationId,
           );
-          if (current.includes(clean))
-            return `Label "${clean}" was already set.`;
-          await ctx.client.setConversationLabels(ctx.conversationId, [
-            ...current,
-            clean,
-          ]);
-          return `Label "${clean}" added to the conversation.`;
+          const { next, added, removed, visible } = applyLabelIntent(
+            seenNow.conversation,
+            desired,
+            current,
+            ctx.protectedLabels,
+          );
+          if (added.length === 0 && removed.length === 0) {
+            // Nothing moved: see the sibling scopes above.
+            ctx.onNoEffect?.("set_labels");
+            recordShown(ctx, "conversation", visible);
+            return labelWriteReport("conversation", added, removed, visible);
+          }
+          // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
+          // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
+          // peels the episode's labels off in this very queue (webhook.ts), so a call that was
+          // wanted when it entered can land on a conversation the operator has just been told was
+          // cleared — and it would put the old episode's labels back. The nudge asks at the same
+          // point, for the same reason. Only an explicit `false` stops the write: a fence that
+          // could not answer is not a withdrawal.
+          if (ctx.stillWanted && !(await ctx.stillWanted())) {
+            ctx.onNoEffect?.("set_labels");
+            return "Could not set the labels (the run was called off while this write waited its turn).";
+          }
+          await ctx.client.setConversationLabels(ctx.conversationId, next);
+          recordShown(ctx, "conversation", visible);
+          return labelWriteReport("conversation", added, removed, visible);
         },
       );
     },
     {
-      name: "assign_label",
+      name: "set_labels",
       description: withOperatorNote(
         baseDescription,
         ctx,
-        "assign_label",
-        labelsXml,
+        "set_labels",
+        [currentXml, labelsXml].filter(Boolean).join("\n"),
       ),
       schema: z.object({
-        label: z
-          .string()
-          .min(1)
-          .describe("The label/tag to add, e.g. 'vip' or 'orçamento'."),
+        labels: z.array(z.string()).describe(
+          // The current set is repeated HERE, on the argument, and not only in the description
+          // above: this is the field the model fills, and the failure this tool can cause that
+          // the old add-only one could not is a model treating it as "the label to add" and
+          // silently dropping the rest.
+          `The COMPLETE list of labels the scope you choose should have after the call, e.g. ['vip', 'orçamento']. Labels currently set on THAT scope and left out of this list are REMOVED, so repeat the ones that should stay. An empty list clears them all.${shownLabelsSentence(
+            ctx.shownLabels,
+          )}`,
+        ),
         scope: scopeSchema
           .optional()
           .describe(
-            `Where to add it: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
+            `Which labels to set: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
           ),
       }),
     },
@@ -808,6 +1231,17 @@ function resolveConversationTool(ctx: ToolCtx) {
             ctx.observed ?? { status: "resolved", statusAt: null },
           )
         : { status: "resolved", statusAt: null };
+      // ASKED AGAIN HERE, after that read and before the toggle, for the same reason `set_labels`
+      // asks again inside its queue: the read above is a WAIT, and the graph's ask at the tool
+      // boundary happened before it. A `/reset` peels the episode off in that window, and an
+      // observation holds no thread claim to stop one (`runObserve` takes none), so without this the
+      // close lands on a conversation the operator has just been told was cleared — and it is a
+      // close, which nothing later undoes. Only an explicit `false` stops it: a fence that could not
+      // answer is not a withdrawal (round 17).
+      if (ctx.stillWanted && !(await ctx.stillWanted())) {
+        ctx.onNoEffect?.("resolve_conversation");
+        return "Did not resolve the conversation (the run was called off while this read was in flight).";
+      }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
       // NOTE: Same origin as the deferred path in runtime.ts: the agent judged the request handled.
       if (recordable) {
@@ -898,15 +1332,18 @@ function kanbanMoveTool(ctx: ToolCtx) {
   return tool(
     async ({ targetStep }: { targetStep: string }) => {
       if (!ctx.kanban) {
+        ctx.onNoEffect?.("kanban_move_card");
         return "This conversation has no linked kanban card, so there is nothing to move.";
       }
       const step = matchKanbanStep(ctx.kanban.steps, targetStep);
       if (!step) {
+        ctx.onNoEffect?.("kanban_move_card");
         return `Unknown funnel step "${targetStep}". Available: ${ctx.kanban.steps
           .map((s) => s.name)
           .join(", ")}.`;
       }
       if (step.id === ctx.kanban.currentStepId) {
+        ctx.onNoEffect?.("kanban_move_card");
         return `The card is already in "${step.name}".`;
       }
       const taskId = ctx.kanban.taskId;
@@ -974,6 +1411,7 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
       startDate?: string;
     }) => {
       if (!ctx.kanban) {
+        ctx.onNoEffect?.("update_kanban_task");
         return "This conversation has no linked kanban card, so there is nothing to update.";
       }
       const fields: {
@@ -990,6 +1428,7 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
       if (input.startDate !== undefined) fields.startDate = input.startDate;
       if (input.dueDate !== undefined) fields.dueDate = input.dueDate;
       if (Object.keys(fields).length === 0) {
+        ctx.onNoEffect?.("update_kanban_task");
         return "No fields provided. Set at least one of title, description, priority, dueDate or startDate.";
       }
       await ctx.client.updateKanbanTask(ctx.kanban.taskId, fields);
@@ -1038,6 +1477,7 @@ function setVoicePreferenceTool(ctx: ToolCtx) {
   return tool(
     async ({ preference }: { preference: "audio" | "text" | "default" }) => {
       if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
+        ctx.onNoEffect?.("set_voice_preference");
         return "Could not record the preference (no contact in scope).";
       }
       const contactId = ctx.contactDbId;
@@ -1095,6 +1535,13 @@ function reactToMessageTool(ctx: ToolCtx) {
         // reacting would target the wrong (penultimate) message. Refuse without calling the API.
         if (latest.isReaction) {
           return "The customer's last message is a reaction (emoji), and you can't react to a reaction. Do not react now.";
+        }
+        // ASKED AGAIN, after the lookup that found the message to react to. A reaction is on the
+        // customer's phone, so this is the same question every customer-facing send asks before it
+        // goes out — and the lookup above is a wait after the graph's ask at dispatch.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.("react_to_message");
+          return "Could not add the reaction (the run was called off while this write waited).";
         }
         await ctx.client.addMessageReaction(ctx.conversationId, latest.id, e);
         return `Reacted with ${e} to the customer's last message.`;
@@ -1363,6 +1810,20 @@ function getCurrentTimeTool(ctx: ToolCtx) {
   );
 }
 
+// THE TOOLS A MUTED TURN CANNOT COMPLETE, hidden from it. An observer now runs the ordinary toolset
+// (issue #568), and two of those tools are customer-facing in their entirety: a reaction lands on the
+// customer's phone — the muted transport refuses that POST, and reaching that refusal is a defect by
+// construction — and an image is delivered by the turn's own gates, which an observation does not
+// have, so it refuses every call. Offered anyway they cost a model round each and answer with a
+// failure an operator reads as a broken integration. Read off the client's own `muted`, the same
+// field `armReminders` asks, so the two cannot disagree about what this turn may do.
+//
+// A private note is NOT here, and that is the same isention the mute itself makes: it is the one
+// thing an observer legitimately writes where a person will read it.
+const MUTED_CANNOT_COMPLETE = new Set<string>(
+  CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
+);
+
 // allowed = undefined → all native tools; otherwise only the named subset (fail-closed).
 // No native tool takes CODE from the model: computation the model must not redo (check digits,
 // date arithmetic, parsing) is an operator-authored code tool (tools/code.ts), whose body the
@@ -1375,7 +1836,7 @@ export function buildNativeTools(
     handoffTool(ctx),
     privateNoteTool(ctx),
     setCustomAttributeTool(ctx),
-    assignLabelTool(ctx),
+    setLabelsTool(ctx),
     resolveConversationTool(ctx),
     kanbanMoveTool(ctx),
     updateKanbanTaskTool(ctx),
@@ -1386,9 +1847,14 @@ export function buildNativeTools(
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
   ];
-  if (!allowed) return all;
-  const allow = new Set(allowed);
-  return all.filter((t) => allow.has(t.name));
+  // MATERIALIZED ONCE, before the filter runs. `allowed` is an `Iterable<string>`, and a one-shot
+  // one (a generator, a `Set.values()`) is CONSUMED by the first candidate — every tool after it
+  // would then be tested against an empty set and the agent would come up with no tools at all
+  // (review round 30). Cheaper too: one Set instead of one per candidate.
+  const allowSet = allowed ? new Set(allowed) : null;
+  const granted = allowSet ? all.filter((t) => allowSet.has(t.name)) : all;
+  if (!ctx.client?.muted) return granted;
+  return granted.filter((t) => !MUTED_CANNOT_COMPLETE.has(t.name));
 }
 
 // Replaces a tool's execution with a no-op that returns a synthetic success — keeps the model-facing

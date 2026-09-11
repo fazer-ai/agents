@@ -22,6 +22,12 @@ export interface LoadChatwootClientDeps {
   // The persona bot token to act AS (bot-token endpoints: send/toggle/assign). Default "" =
   // admin-only client (the bot identity now lives per-persona on ChatwootAgentBot, not the instance).
   botToken?: string;
+  // A client for an agent that must never post to the customer (issue #568): the monitoring turn
+  // gets one, so every tool it holds keeps working while a customer-visible send throws. See
+  // ChatwootClientConfig.mute — the refusal is at the transport, not on a list of methods.
+  mute?: boolean;
+  // See ChatwootClientConfig.expiresOn: the whole client stops answering past this.
+  expiresOn?: AbortSignal;
 }
 
 export async function loadChatwootClient(
@@ -47,6 +53,8 @@ export async function loadChatwootClient(
     accountId: instance.accountId,
     adminToken: decryptJson<string>(instance.deployment.adminToken),
     botToken: deps.botToken ?? "",
+    ...(deps.mute ? { mute: true } : {}),
+    ...(deps.expiresOn ? { expiresOn: deps.expiresOn } : {}),
   });
 }
 

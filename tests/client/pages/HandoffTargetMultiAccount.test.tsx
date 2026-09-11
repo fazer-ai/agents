@@ -376,6 +376,8 @@ function renderPinned(targetInstanceId: number | null): {
         customAttributeInstructions=""
         setCustomAttributeInstructions={noop}
         labelInstructions=""
+        protectedLabels=""
+        setProtectedLabels={noop}
         setLabelInstructions={noop}
         updateKanbanTaskInstructions=""
         setUpdateKanbanTaskInstructions={noop}

@@ -1,17 +1,18 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
-// itself — the rule the file's header states is type and choice, never size, because these are
-// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
-// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
-// copied here would be a second copy that drifts.
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
   TOOL_INSTRUCTIONS_MAX,
 } from "@/modules/agents/text-caps";
+// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
+// itself — the rule the file's header states is type and choice, never size, because these are
+// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
+// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
+// copied here would be a second copy that drifts.
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import {
   FULL_DETAIL_MAX_HOURS,
@@ -20,12 +21,6 @@ import {
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { GUARDRAIL_ACTIONS } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
-import {
-  firstLabelGroupConflict,
-  LABEL_GROUP_NAME_MAX,
-  LABEL_VALUE_MAX,
-  RESERVED_GROUP_NAMES,
-} from "@/modules/observe/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
@@ -694,6 +689,23 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
+// The `set_labels` guard. A block of its own rather than a key beside the taxonomy, because
+// `settings.labels` is now REFUSED on the write (it was retired with the taxonomy, issue #568) and
+// because what this list does is fence a tool, not describe a vocabulary. Loose like its siblings,
+// so a field added to the reader later still reaches it.
+const setLabels = z
+  .looseObject({
+    protected: z
+      .array(z.string())
+      .describe(
+        `labels set_labels may neither add nor remove, and never sees — for the ones another system owns (a switch that keeps an agent off a conversation, a testing marker). Blank, duplicate and non-string entries are dropped by the reader, and the list is capped at ${PROTECTED_LABELS_MAX}. An empty array clears the guard.`,
+      )
+      .optional(),
+  })
+  .describe(
+    "per-agent configuration for the set_labels native tool that is not a note (the note lives in toolGuidance.set_labels)",
+  );
+
 const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
   `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
 );
@@ -737,40 +749,8 @@ const toolPreconditions = nativeToolKeys(
 
 // What a monitoring agent does with what it reads (issue #477). Descriptions kept to the bone: the
 // MCP schema ceiling (tests/modules/mcp-tool-descriptions.test.ts) is a ratchet, and the reader has
-// docs/chatwoot.md for the rest.
-const monitoringLabelGroup = z.looseObject({
-  // REFUSED HERE, not dropped later (issue #477 review, round 8). `readLabelGroups` removes a group
-  // whose name collides with the verdict's own metadata fields or with a prototype key, silently and
-  // by design — a stored setting has to normalize to something usable. A CALLER, though, gets told
-  // its patch succeeded while the group it just wrote is gone, and if it was the only group,
-  // observation is off. The schema is where a caller can be answered.
-  // A LENGTH IS A RULE ABOUT THE ENTRY ALONE (issue #477 review, round 23), so it is asked per field
-  // like the reserved name beside it, not over the retained slice the two conflict rules walk: both
-  // of those are about a RELATIONSHIP between entries, and only a retained entry can be in one.
-  // These strings go verbatim into the system prompt and the verdict schema's enum, so unbounded
-  // they make every OBSERVE call fail on the provider's request limit.
-  name: nonBlank("must not be blank")
-    .max(LABEL_GROUP_NAME_MAX, `at most ${LABEL_GROUP_NAME_MAX} characters`)
-    .refine((v) => !RESERVED_GROUP_NAMES.has(v.trim().toLowerCase()), {
-      message: `reserved; pick another name (${[...RESERVED_GROUP_NAMES].join(", ")})`,
-    })
-    .describe("group name, also the verdict's key"),
-  exclusive: z
-    .boolean()
-    .optional()
-    .describe("one value at a time; default true"),
-  values: z
-    .array(
-      nonBlank("must not be blank").max(
-        LABEL_VALUE_MAX,
-        `at most ${LABEL_VALUE_MAX} characters`,
-      ),
-    )
-    .describe(
-      "label titles the verdict may pick; others are refused. Up to 40, truncated; a group with none is dropped",
-    ),
-});
-
+// docs/chatwoot.md for the rest. The label groups that used to live here are gone with the
+// classifier (issue #568): a watcher labels with `set_labels` like any other agent.
 const monitoring = z.looseObject({
   analysis: oneOf(["incremental", "on_resolve"] as const)
     .optional()
@@ -792,40 +772,6 @@ const monitoring = z.looseObject({
     .describe(
       "burst window; 3-600s, rounded and clamped, default 20s with a 60s ceiling from the START of the burst",
     ),
-  labelGroups: z
-    .array(monitoringLabelGroup)
-    // A value belongs to ONE group (issue #477 review, round 9): a label is one row in a flat set,
-    // and an exclusive group and an additive one claiming the same value cannot both be honoured.
-    // Refused here so the caller is told which value collides; the reader gives the value to the
-    // first group that lists it, for settings stored before this existed.
-    // A GROUP NAME IS UNIQUE, compared the way the reader compares it — trimmed (issue #477 review,
-    // round 10). `readLabelGroups` keeps the first of two same-named groups and drops the second, so
-    // without this a patch reports success while an entire classification axis is gone.
-    // Both asked of `firstLabelGroupConflict`, which walks the array exactly as `readLabelGroups`
-    // does and answers only about the entries that would be RETAINED (issue #477 review, round 21).
-    // Read over the whole submission, these refused a sixth group for duplicating a retained name
-    // and a forty-first value for being owned elsewhere — entries the caps in the descriptions above
-    // promise to truncate and the reader never stores, so the 400 was about nothing.
-    .refine(
-      (groups) => firstLabelGroupConflict(groups)?.kind !== "duplicate-name",
-      {
-        message: "two groups may not share a name",
-      },
-    )
-    .refine(
-      (groups) => firstLabelGroupConflict(groups)?.kind !== "shared-value",
-      {
-        message: "a label value may appear in only one group",
-      },
-    )
-    .optional()
-    .describe(
-      "replaced as a unit; observation is on while one exists. Up to 5, truncated",
-    ),
-  noteOnChange: z
-    .boolean()
-    .optional()
-    .describe("private note when a verdict moves a label; default true"),
 });
 
 export const BEHAVIOR_PATCH_SHAPE = {
@@ -851,6 +797,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   guardrails: guardrails.optional(),
   kanban: kanban.optional(),
   toolGuidance: toolGuidance.optional(),
+  setLabels: setLabels.optional(),
   toolPreconditions: toolPreconditions.optional(),
   monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;

@@ -19,6 +19,7 @@ import {
   cancelThreadAppointmentRecords,
   type RecordAppointmentResult,
   recordAppointment,
+  storedAppointmentStart,
 } from "@/modules/appointments/record";
 import {
   type ClaimedJob,
@@ -178,6 +179,14 @@ export interface AppointmentBookedArgs {
     offsetsHours: number[];
     askConfirmationOnLast: boolean;
   } | null;
+  // RECORD ONLY: keep the appointment, and touch NO reminder — neither retire nor arm. A third
+  // answer, because `reminders: null` already means something else here: it is a RE-STATEMENT with
+  // the policy switched off, so it retires what was armed before (see the retire below). An
+  // OBSERVER restating an appointment the responder booked must not cancel the responder's
+  // reminders, and it must not arm its own either, because a reminder outlives the muted turn that
+  // armed it (issue #568, review rounds 16 and 17 — round 16 reached for `reminders: null` and got
+  // the cancelling half by accident).
+  recordOnly?: boolean;
   base?: PrismaClient;
   now?: Date;
 }
@@ -216,6 +225,23 @@ export interface AppointmentBookedResult {
 // it, because the record's upsert clears the tombstone exactly as `enqueueJob`'s upsert revives a
 // retired row, so both halves come back live together — which is what the base already did with the
 // reminder rows alone.
+// Whether the stored booking stands at a DIFFERENT time from the one being re-stated. Absent record
+// ⇒ false: there is nothing armed to go stale.
+async function startMoved(
+  args: AppointmentBookedArgs,
+  startReadable: boolean,
+): Promise<boolean> {
+  if (!startReadable) return false;
+  const previous = await storedAppointmentStart(
+    args.tenantId,
+    args.eventId,
+    args.base ?? basePrisma,
+    args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+  );
+  if (!previous) return false;
+  return previous.getTime() !== parseStartMs(args.startISO);
+}
+
 export async function appointmentBooked(
   args: AppointmentBookedArgs,
   // Injectable for the same reason enqueueAppointmentReminders takes it: a hermetic test of what
@@ -224,6 +250,9 @@ export async function appointmentBooked(
 ): Promise<AppointmentBookedResult> {
   let remindersArmed = 0;
   let armError: unknown;
+  // Set inside the try, read after it: the record below is skipped when a record-only RESCHEDULE
+  // failed to clean up, and "we never got far enough to know" has to read the same as "it moved".
+  let movedUnderRecordOnly = args.recordOnly === true;
   // The start is judged ONCE, before either half, because both answer to it. An unreadable start is
   // not a re-statement of the appointment: recordAppointment refuses to move the record on it (it
   // returns "unreadable-start" and writes nothing), so retiring here would strand the PREVIOUS
@@ -236,7 +265,27 @@ export async function appointmentBooked(
     // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
     // integration whose reminders were switched off between two bookings of the same appointment
     // must not leave the first booking's reminders firing.
-    if (startReadable) {
+    // `recordOnly` normally skips BOTH halves: the retire below is what makes `reminders: null` a
+    // cancel, and an observation has no business cancelling what the responder armed. The exception
+    // is a booking that MOVED. A reminder carries the time it was armed for, and for a non-Google
+    // provider the handler reads that payload rather than the record — so a preserved reminder for a
+    // rescheduled appointment announces the obsolete time, or fires after it already happened.
+    // Retired, never re-armed: the observation still arms nothing (round 19).
+    movedUnderRecordOnly =
+      args.recordOnly === true &&
+      startReadable &&
+      (await startMoved(args, startReadable));
+    if (movedUnderRecordOnly) {
+      await retireReminderJobs(
+        args.tenantId,
+        args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+        args.eventId,
+        args.base ?? basePrisma,
+        // No arm follows, so the tombstone stands alone — the same shape `cancelAppointment` uses.
+        false,
+      );
+    }
+    if (startReadable && !args.recordOnly) {
       await retireReminderJobs(
         args.tenantId,
         args.provider ?? GOOGLE_CALENDAR_PROVIDER,
@@ -277,6 +326,17 @@ export async function appointmentBooked(
   } catch (e) {
     armError = e;
   }
+  // THE RECORD IS SKIPPED ON EXACTLY ONE FAILURE, and it is the one where writing it destroys the
+  // evidence a retry needs. A record-only reschedule whose cleanup threw would otherwise persist the
+  // NEW start, and the next attempt would compare equal starts, decide nothing moved and skip the
+  // retirement for good — leaving reminders that announce a time the appointment no longer has.
+  //
+  // Safe to skip precisely here, and only here: this path exists because the appointment is ALREADY
+  // recorded (that is how `startMoved` answered true), so nothing is forgotten — the record simply
+  // stays at the start it had, which is also the start the surviving reminders still name. Every
+  // other path keeps the rule this file is built on: record anyway, even when arming failed, because
+  // forgetting the appointment is the defect this unit exists for.
+  if (armError !== undefined && movedUnderRecordOnly) throw armError;
   const record = await recordAppointment({
     tenantId: args.tenantId,
     threadId: args.threadId,

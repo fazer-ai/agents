@@ -12,7 +12,8 @@ interface KnowledgeTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
-  onOpenPlayground: () => void;
+  // Absent for a WATCHER, for the reason ToolsTab states.
+  onOpenPlayground?: () => void;
 }
 
 export function KnowledgeTab({

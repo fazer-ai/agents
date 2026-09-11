@@ -7,6 +7,7 @@ import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
+import { modelVisibleLabels } from "@/graph/tools/label-view";
 import {
   applyToolPreconditions,
   preconditionFlowEvent,
@@ -17,7 +18,10 @@ import { parseDbId } from "@/lib/db-id";
 import type { ScopedDb, TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
-import { readToolGuidance } from "@/modules/agents/tool-guidance";
+import {
+  readProtectedLabels,
+  readToolGuidance,
+} from "@/modules/agents/tool-guidance";
 import {
   readToolPreconditions,
   type ToolPrecondition,
@@ -238,8 +242,11 @@ export interface AgentConfig {
   // Per-agent kanban guidance (operator funnel note), surfaced in the kanban_move_card description.
   kanbanConfig: KanbanConfig;
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
-  // assign_label, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
+  // set_labels, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
   toolGuidance: Partial<Record<NativeToolName, string>>;
+  // Labels set_labels may neither add nor remove, and never sees (issue #568 review). See
+  // readProtectedLabels for why an operator control label is not the classifier's to touch.
+  protectedLabels: string[];
   // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
   toolPreconditions: Record<string, ToolPrecondition>;
@@ -798,6 +805,7 @@ export async function loadAgentConfig(
     sendImageConfig: readSendImageConfig(effSettings),
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
+    protectedLabels: readProtectedLabels(effSettings),
     toolPreconditions: readToolPreconditions(effSettings),
     httpToolContext: {
       ...(conv?.contact?.chatwootContactId != null
@@ -842,15 +850,35 @@ export interface ToolsetCtx {
   // slow-tool ack, whose send is a wait the graph's own ask at the tool boundary sits before
   // (issue #209 review, round 10). Asked after that send, before the typing indicator and before
   // the tool runs; absent, both proceed.
+  // The caller's whole-turn deadline, when it has one (the observer's tick). Reaches the Chatwoot
+  // client as `expiresOn` and the HTTP tools as the same signal, so a handler that outlives the
+  // budget cannot still write. Absent on a reactive turn, which has no deadline.
+  expiresOn?: AbortSignal;
   stillWanted?: () => Promise<boolean>;
+  // Called by a handler that refused WITHOUT writing, with that tool's own name (effect-free.ts).
+  // Threaded to every source that has such an exit, so the caller counting committed effects hears
+  // about all of them — and can apply to each report the same test it applied at dispatch.
+  onNoEffect?: (toolName: string) => void;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
   observed?: ObservedConversation;
+  // THE CONVERSATION'S LABELS, WHEN THE CALLER ALREADY READ THEM. `set_labels` diffs the model's
+  // list against what the model was SHOWN, so the set in the prompt and the set the tool compares
+  // against have to be one value: two reads a few hundred milliseconds apart let a label the prompt
+  // advertised be absent from the baseline, and the model repeating it to keep it then reads as an
+  // ADDITION, putting back exactly what somebody just removed. The observer builds its own prompt
+  // block and so has read them already; handing them over is what keeps the two from drifting
+  // (review r8). Absent ⇒ this module reads them itself, which is what the reactive turn does.
+  conversationLabels?: string[];
   // Chatwoot id of the message that triggered this turn, exposed to HTTP tools as {{message_id}}.
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
   // (the watermark), since the coalesced turn answers up to that message. 0/absent ⇒ not exposed.
   messageId?: number;
+  // The fetch the OUTBOUND tools use (HTTP tools and toolpacks). Injectable so a caller's tool path
+  // can be exercised without the network; production leaves it absent and every builder falls back
+  // to the global fetch. Named apart from `imageDeps.fetchImpl`, which is the inbound image fetch.
+  outboundFetch?: typeof fetch;
   // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
   // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
   // TurnState in tools/native.ts — this module deliberately does not import that file).
@@ -919,12 +947,21 @@ export interface ToolBuildDeps {
       contactVoiceReply?: boolean | null;
       timezone?: string;
       vocab?: ChatwootVocab;
+      shownLabels?: {
+        conversation?: string[];
+        contact?: string[];
+        task?: string[];
+      };
+      protectedLabels?: string[];
+      expiresOn?: AbortSignal;
+      stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
       fetchImpl?: typeof fetch;
       assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
+      onNoEffect?: (toolName: string) => void;
     },
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];
@@ -990,6 +1027,13 @@ export async function buildToolset(
         threadId: apptThreadId,
         base: ctx.base,
         report: onSideEffectError,
+        // A MUTED CLIENT DOES NOT REACH A JOB THAT RUNS LATER. The transport can refuse what this
+        // turn sends; a reminder is armed now and delivered on its own tick, resolving the inbox's
+        // RESPONDER and building a client of its own — so an observation could put a message in
+        // front of the customer through a door the mute never sees (round 16). The booking itself
+        // is still recorded: the record is not the reminder, and an observer that books has as much
+        // right to be remembered as one that labels.
+        armReminders: !ctx.client.muted,
       })
     : undefined;
   const appointmentBookedFn = apptSideEffects?.booked;
@@ -1003,8 +1047,13 @@ export async function buildToolset(
   // ask at the tool boundary, and a run called off inside it — the operator's flip to monitoring
   // (issue #209 review, round 10) — must show no typing indicator and make no request after it.
   // Only an explicit `false` stops the tool; a fence that could not answer is not a withdrawal.
+  //
+  // NOT WIRED ON A MUTED TURN: the ack is a message in front of the customer, which the muted
+  // transport refuses by design — an observation would log a failed ack before every slow tool and
+  // tell the operator an integration is broken. Same field the toolset reads to hide the tools a
+  // muted turn cannot complete.
   const emitAck =
-    ctx.conversationId > 0
+    ctx.conversationId > 0 && !ctx.client.muted
       ? async (message: string): Promise<boolean> => {
           try {
             await ctx.client.sendMessage(ctx.conversationId, message);
@@ -1052,6 +1101,12 @@ export async function buildToolset(
   });
   const toolpackTools = buildToolpackTools(cfg.integrationSelections, {
     tenantId: ctx.tenantId,
+    expiresOn: ctx.expiresOn,
+    // Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
+    // four packs with four request helpers is four places to forget.
+    stillWanted: ctx.stillWanted,
+    onNoEffect: ctx.onNoEffect,
+    ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
     // The current customer, so a toolpack can isolate per-contact data (e.g. Calendar appointments).
@@ -1101,11 +1156,11 @@ export async function buildToolset(
       );
     }
   }
-  // Ground assign_label / set_custom_attribute with the account's real labels + attribute
+  // Ground set_labels / set_custom_attribute with the account's real labels + attribute
   // definitions (network, outside the tx; cached per instance). Only on a real conversation and only
   // when one of those tools is actually granted (undefined allowlist ⇒ all). Best-effort: a failure
   // leaves the tools with generic descriptions.
-  const vocabTools = ["assign_label", "set_custom_attribute"];
+  const vocabTools = ["set_labels", "set_custom_attribute"];
   const needsVocab =
     !cfg.nativeToolsAllow ||
     cfg.nativeToolsAllow.some((n) => vocabTools.includes(n));
@@ -1146,6 +1201,53 @@ export async function buildToolset(
       );
     }
   }
+  // WHAT THE LABELS ARE RIGHT NOW, read fresh, and the reason set_labels is allowed to remove
+  // anything: the tool takes the complete list a scope should end up with, so the labels left out
+  // of that list are removals — a claim only meaningful against a list the model actually saw. Read
+  // HERE, once, and handed to the tool as `shownLabels`, so the block in the description and the
+  // diff at write time are the same value and cannot describe different turns.
+  //
+  // A scope that fails to read is simply ABSENT, never `[]`: an empty list says "this conversation
+  // has no labels", which a model would honour by removing everything, while absent says "we do not
+  // know" and makes the call additive. This is best-effort like the vocab above, and the failure
+  // mode of getting it wrong is deleting a customer's classification, so it fails to the safe side.
+  //
+  // The conversation's set is one GET, spent only when the tool is granted and only on a real
+  // conversation. The card's comes free with the kanban snapshot. The CONTACT's is deliberately not
+  // read: it would be a scoped DB lookup plus a second GET on every turn, for a scope whose labels
+  // are durable traits (`vip`, `inadimplente`) that a turn rarely needs to retract — so contact
+  // scope stays additive, by the same "absent means we do not know" rule, and the description says so.
+  const grantsLabels =
+    !cfg.nativeToolsAllow || cfg.nativeToolsAllow.includes("set_labels");
+  const shownLabels: {
+    conversation?: string[];
+    contact?: string[];
+    task?: string[];
+  } = {};
+  // A GUARDED LABEL IS NOT SHOWN, which is the whole of its protection on this side: the diff at
+  // write time subtracts the same set, so hiding it here and refusing it there are one rule stated
+  // in the two places that have to agree. Filtered at the SEAM rather than at each reader, because a
+  // scope that leaked one into the description would offer the model a label it is not allowed to
+  // keep and would then be told it kept it anyway.
+  // Guarded ones subtracted AND the ceiling applied, through the tool's own projection: this seam
+  // and the tool's description have to answer the same question with the same function.
+  const hideGuarded = (labels: string[]): string[] =>
+    modelVisibleLabels(labels, cfg.protectedLabels);
+  if (grantsLabels && ctx.conversationId > 0) {
+    if (kanban) shownLabels.task = hideGuarded(kanban.card.labels);
+    try {
+      shownLabels.conversation = hideGuarded(
+        ctx.conversationLabels ??
+          (await ctx.client.getConversationLabels(ctx.conversationId)),
+      );
+    } catch (e) {
+      logger.warn(
+        "conversation labels fetch failed (tenant=%s): %s",
+        String(ctx.tenantId),
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
   // Operator-authored per-tool guidance (handoff transfer logic / funnel notes), appended to the
   // respective native tool descriptions. Only keys with text are set.
   const toolInstructions: Partial<Record<NativeToolName, string>> = {
@@ -1178,6 +1280,12 @@ export async function buildToolset(
       contactVoiceReply: cfg.contactVoiceReply,
       timezone: cfg.timezone,
       vocab,
+      shownLabels,
+      protectedLabels: cfg.protectedLabels,
+      // The same fence the ack above asks, handed on to set_labels: its write waits for a queue
+      // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
+      stillWanted: ctx.stillWanted,
+      onNoEffect: ctx.onNoEffect,
       kanban,
       sendImage: cfg.sendImageConfig,
       fetchImpl: ctx.imageDeps?.fetchImpl,
@@ -1205,25 +1313,37 @@ export async function buildToolset(
   const { tools, dropped } = dropDuplicateToolNames(
     [
       ...nativeTools,
-      ...buildDocumentTools(cfg.documentSelections, {
-        tenantId: ctx.tenantId,
-        turnState: ctx.turnState,
-        // The document is bound to the conversation by its THREAD key, never by the conversation id
-        // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
-        // have several. Absent off a real conversation, and the document is then issued unbound.
-        threadId: apptThreadId ?? undefined,
-        chatwootInstanceId: ctx.conversationId > 0 ? ctx.instanceId : null,
-        conversationDbId: cfg.conversationDbId,
-        base: ctx.base,
-        storageDir: ctx.documentsStorageDir,
-        // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
-        // cannot disagree by a day.
-        timezone: cfg.timezone,
-        simulate: deps.simulateDocuments,
-      }),
+      // A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so a muted turn is not offered one: without a
+      // turnState to queue into it refuses every call anyway, and with one it would deliver through
+      // the very send this client exists to refuse. Same reading `buildNativeTools` and the
+      // toolpacks make (issue #568, review round 23).
+      ...(ctx.client.muted
+        ? []
+        : buildDocumentTools(cfg.documentSelections, {
+            tenantId: ctx.tenantId,
+            turnState: ctx.turnState,
+            // The document is bound to the conversation by its THREAD key, never by the conversation id
+            // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
+            // have several. Absent off a real conversation, and the document is then issued unbound.
+            threadId: apptThreadId ?? undefined,
+            chatwootInstanceId: ctx.conversationId > 0 ? ctx.instanceId : null,
+            conversationDbId: cfg.conversationDbId,
+            base: ctx.base,
+            storageDir: ctx.documentsStorageDir,
+            // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
+            // cannot disagree by a day.
+            timezone: cfg.timezone,
+            simulate: deps.simulateDocuments,
+          })),
       ...buildHttpTools(cfg.httpToolDefs, {
         resolveCredential,
         emitAck,
+        expiresOn: ctx.expiresOn,
+        // The same fence the native tools and the precondition wrapper ask, at the same point: past
+        // every wait, immediately before the request leaves for somebody else's system.
+        stillWanted: ctx.stillWanted,
+        onNoEffect: ctx.onNoEffect,
+        ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
         // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
         // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.
@@ -1296,6 +1416,11 @@ export async function buildToolset(
         unmatched.join(", "),
       );
     },
+    // The same fence every handler that waits before writing asks: this wrapper puts a state read
+    // between the graph's ask and the call, so a tool whose first act is a write would otherwise
+    // lose the cover that ask gives it (issue #568, review round 24).
+    ctx.stillWanted,
+    ctx.onNoEffect,
   );
   if (dropped.length > 0) {
     // The operator is the only one who can fix this, and the symptom they would otherwise see is a

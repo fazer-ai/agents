@@ -1653,7 +1653,7 @@ describe("computeConfigIssues — text stored over its cap", () => {
         guardrails: { output: { generationPrompt: "g".repeat(2001) } },
       }),
     ).toBe("guardrails/gr-output");
-    expect(target({ toolGuidance: { assign_label: "l".repeat(1501) } })).toBe(
+    expect(target({ toolGuidance: { set_labels: "l".repeat(1501) } })).toBe(
       "tools/tools-native",
     );
     expect(target({ vision: { extractionPrompt: "v".repeat(4001) } })).toBe(

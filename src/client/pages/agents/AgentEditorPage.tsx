@@ -88,6 +88,7 @@ import {
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
@@ -210,14 +211,21 @@ const TAB_KEYS: TabKey[] = [
   "playground",
 ];
 
-// A watcher's editor (issue #494): the tabs that configure how the agent ANSWERS — tools,
-// knowledge, guardrails, the redirect, the playground — are not drawn for an agent in monitoring
-// mode, which never does; drawn for one, they read as if it could. A URL that still names one
-// lands on General. Nothing is deleted: flip the mode back and the tabs return as they were.
+// A watcher's editor. TOOLS and KNOWLEDGE are drawn now (issue #568): a monitoring agent runs the
+// ordinary graph, so its tool grants and its knowledge bases are the whole of what it can do, and
+// hiding them was what made the mode need a classifier screen of its own.
+//
+// What stays hidden is what only makes sense for an agent that speaks: GUARDRAILS screen a reply
+// before it goes out, the CHANNEL REDIRECT moves a conversation by messaging the customer on
+// another channel, and the PLAYGROUND is a conversation with the agent — none of which a watcher
+// has. A URL that still names one lands on General. Nothing is deleted: flip the mode back and the
+// tabs return as they were.
 const MONITORING_TABS: ReadonlySet<string> = new Set<TabKey>([
   "general",
   "channels",
   "behavior",
+  "tools",
+  "knowledge",
 ]);
 // Whether a configuration warning has a CONTROL BEHIND IT in a watcher's editor. Asked of the
 // issue's own deep-link target rather than of a list of keys (issue #494 review, round 3): every
@@ -234,13 +242,11 @@ function watcherCanActOn(issue: {
   tab?: string;
   sectionId?: string;
 }): boolean {
-  // RAG has no tab for a watcher and no use either. Both of these come through with no `tab` — the
-  // knowledge one opens the Knowledge tab's documents modal, the embedding one points at the
-  // tenant's credential — so the target rule below would keep them, and a watcher never invokes
-  // retrieval (issue #494 review, round 4). Sent to configure the embedding credential, the operator
-  // fixes it and is answered with a `knowledge` issue that IS filtered, which is the shape of
-  // busywork a warning panel must not create.
-  if (issue.key === "knowledge" || issue.key === "embedding") return false;
+  // RAG ISSUES ARE KEPT NOW (issue #568). They were dropped here because a watcher had no Knowledge
+  // tab and never invoked retrieval; it runs the ordinary graph today, so a knowledge base it was
+  // granted is one it actually searches, and a broken embedding credential is a real fault with a
+  // real screen behind it.
+  //
   // An issue with no target at all points nowhere for any agent, so it is kept rather than singled
   // out here.
   if (issue.tab === undefined) return true;
@@ -396,7 +402,18 @@ function readBehaviorState(a: Agent) {
     transferWithSummary: a.transferWithSummary,
     kanbanInstructions: str(ka.instructions),
     customAttributeInstructions: str(tg.set_custom_attribute),
-    labelInstructions: str(tg.assign_label),
+    labelInstructions: str(tg.set_labels),
+    // Stored as an ARRAY and edited as one line, so the field reads like the rule it is ("these are
+    // not yours to touch") instead of a list widget for two entries. Joined on the way in and split
+    // on the way out; the reader trims and de-duplicates, so a trailing comma is harmless.
+    protectedLabels: (Array.isArray(
+      (s.setLabels as Record<string, unknown> | undefined)?.protected,
+    )
+      ? ((s.setLabels as Record<string, unknown>).protected as unknown[])
+      : []
+    )
+      .filter((l): l is string => typeof l === "string")
+      .join(", "),
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -903,11 +920,12 @@ function AgentEditor() {
   // Operator funnel guidance for kanban_move_card (Tools-tab config, like handoff). Synced only by
   // syncToolConfig (NOT applyAgent), so a Behavior save never wipes an unsaved edit here.
   const [kanbanInstructions, setKanbanInstructions] = useState("");
-  // Operator usage guidance for set_custom_attribute + assign_label (Tools-tab config, like kanban).
+  // Operator usage guidance for set_custom_attribute + set_labels (Tools-tab config, like kanban).
   // Persisted in agent.settings.toolGuidance; synced only by syncToolConfig.
   const [customAttributeInstructions, setCustomAttributeInstructions] =
     useState("");
   const [labelInstructions, setLabelInstructions] = useState("");
+  const [protectedLabels, setProtectedLabels] = useState("");
   // Operator usage guidance for update_kanban_task (Tools-tab config). Persisted in
   // agent.settings.toolGuidance.update_kanban_task; synced only by syncToolConfig.
   // Per-tool preconditions (Tools tab, same lifecycle as the guidance above). Held as a LIST while
@@ -1129,7 +1147,7 @@ function AgentEditor() {
     "handoff.instructions": serializeHandoff(handoff).instructions,
     "kanban.instructions": kanbanInstructions.trim() || null,
     "toolGuidance.set_custom_attribute": customAttributeInstructions.trim(),
-    "toolGuidance.assign_label": labelInstructions.trim(),
+    "toolGuidance.set_labels": labelInstructions.trim(),
     "toolGuidance.update_kanban_task": updateKanbanTaskInstructions.trim(),
     // Through the writer itself: `followUpToStored` trims each note, and a second spelling of that
     // here is the drift this whole block is against.
@@ -1373,6 +1391,7 @@ function AgentEditor() {
     setKanbanInstructions(b.kanbanInstructions);
     setCustomAttributeInstructions(b.customAttributeInstructions);
     setLabelInstructions(b.labelInstructions);
+    setProtectedLabels(b.protectedLabels);
     setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
     setToolPreconditions(b.toolPreconditions);
   }, []);
@@ -1821,6 +1840,7 @@ function AgentEditor() {
       kanbanInstructions,
       customAttributeInstructions,
       labelInstructions,
+      protectedLabels,
       updateKanbanTaskInstructions,
       toolPreconditions,
     }),
@@ -2206,6 +2226,30 @@ function AgentEditor() {
     );
   }
 
+  // The same shape as settingsTextError and for the same reason, on the one list this tab sends that
+  // has a ceiling: the grants PUT goes first, so a PATCH refused for an over-ceiling guard would
+  // leave `set_labels` ENABLED with the protection the operator typed not stored. Counted the way
+  // the reader counts it, and compared against the stored list so a legacy over-ceiling value does
+  // not block a save that never touched it (round 20).
+  function protectedLabelsError(
+    next: string[],
+    stored: unknown,
+  ): string | null {
+    if (new Set(next).size <= PROTECTED_LABELS_MAX) return null;
+    const before = (stored as Record<string, Record<string, unknown>> | null)
+      ?.setLabels?.protected;
+    if (
+      Array.isArray(before) &&
+      JSON.stringify(before) === JSON.stringify(next)
+    )
+      return null;
+    return t(
+      "editor.protectedLabelsTooMany",
+      "Labels off limits takes at most {{max}} labels.",
+      { max: PROTECTED_LABELS_MAX },
+    );
+  }
+
   // Localized text for a structured import warning. Static keys (one per code) keep it extract-safe;
   // params interpolate the names/counts. New codes added in transfer.ts must get a case here.
   function importWarningMessage(w: ImportWarning): string {
@@ -2216,6 +2260,18 @@ function AgentEditor() {
           "editor.importWarning.guidanceClipped",
           'The text in "{{field}}" was longer than {{max}} characters and was trimmed on import.',
           p,
+        );
+      case "promptToolRenamed":
+        return t(
+          "editor.importWarning.promptToolRenamed",
+          'The prompt named a tool that was renamed, so {{count}} mentions now say "{{name}}". Worth a read.',
+          { ...p, count: importWarningCount(p) },
+        );
+      case "protectedLabelsClipped":
+        return t(
+          "editor.importWarning.protectedLabelsClipped",
+          "The bundle carried more than {{max}} labels out of reach, so {{count}} of them were dropped on import.",
+          { ...p, count: importWarningCount(p) },
         );
       case "credentialNotFound":
         return t(
@@ -2909,8 +2965,8 @@ function AgentEditor() {
       const updateKanbanNote = updateKanbanTaskInstructions.trim();
       if (attrNote) toolGuidanceJson.set_custom_attribute = attrNote;
       else delete toolGuidanceJson.set_custom_attribute;
-      if (labelNote) toolGuidanceJson.assign_label = labelNote;
-      else delete toolGuidanceJson.assign_label;
+      if (labelNote) toolGuidanceJson.set_labels = labelNote;
+      else delete toolGuidanceJson.set_labels;
       if (updateKanbanNote)
         toolGuidanceJson.update_kanban_task = updateKanbanNote;
       else delete toolGuidanceJson.update_kanban_task;
@@ -2918,12 +2974,25 @@ function AgentEditor() {
         toolPreconditions,
         syncedSettings.toolPreconditions,
       );
+      // The guard is stored under the tool's own block rather than beside the retired `labels` key,
+      // which the write boundary now refuses: what this list does is fence a tool, not describe a
+      // taxonomy. An empty list is written as an empty array rather than dropped, so clearing the
+      // field is a change the PATCH carries instead of a no-op the merge swallows.
+      const protectedList = protectedLabels
+        .split(",")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
+        string,
+        unknown
+      >;
       const toolsSettings = {
         ...syncedSettings,
         handoff: handoffJson,
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
         toolPreconditions: toolPreconditionsJson,
+        setLabels: { ...existingSetLabels, protected: protectedList },
       };
       // Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
@@ -2940,7 +3009,9 @@ function AgentEditor() {
         ? ((await api.api.v1.agents({ id }).get()).data?.agent.settings ??
           syncedSettings)
         : syncedSettings;
-      const toolsText = settingsTextError(toolsSettings, storedSettings);
+      const toolsText =
+        settingsTextError(toolsSettings, storedSettings) ??
+        protectedLabelsError(protectedList, storedSettings);
       if (toolsText) {
         showToast(toolsText, "error");
         return;
@@ -2989,6 +3060,7 @@ function AgentEditor() {
         // the pre-save map, and the next Behavior save spreads it back over the rules that were just
         // stored — with the Tools tab still showing them as saved.
         toolPreconditions: toolPreconditionsJson,
+        setLabels: { ...existingSetLabels, protected: protectedList },
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
@@ -3665,6 +3737,7 @@ function AgentEditor() {
             {tab === "tools" && (
               <ToolsTab
                 agentId={id}
+                observing={watcher}
                 catalog={catalog}
                 grants={grants}
                 onChange={setGrants}
@@ -3679,6 +3752,8 @@ function AgentEditor() {
                 setCustomAttributeInstructions={setCustomAttributeInstructions}
                 labelInstructions={labelInstructions}
                 setLabelInstructions={setLabelInstructions}
+                protectedLabels={protectedLabels}
+                setProtectedLabels={setProtectedLabels}
                 updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                 toolPreconditions={toolPreconditions}
                 setToolPreconditions={setToolPreconditions}
@@ -3707,8 +3782,8 @@ function AgentEditor() {
                     currentRef.current["toolGuidance.set_custom_attribute"],
                   ),
                   labelInstructions: refusal.at(
-                    "toolGuidance.assign_label",
-                    currentRef.current["toolGuidance.assign_label"],
+                    "toolGuidance.set_labels",
+                    currentRef.current["toolGuidance.set_labels"],
                   ),
                   updateKanbanInstructions: refusal.at(
                     "toolGuidance.update_kanban_task",
@@ -3719,7 +3794,7 @@ function AgentEditor() {
                 saving={savingGrants}
                 onSave={() => saveTools()}
                 onDiscard={revertTools}
-                onOpenPlayground={openPlayground}
+                onOpenPlayground={watcher ? undefined : openPlayground}
               />
             )}
 
@@ -3733,7 +3808,7 @@ function AgentEditor() {
                 saving={savingGrants}
                 onSave={() => saveGrants()}
                 onDiscard={revertKnowledge}
-                onOpenPlayground={openPlayground}
+                onOpenPlayground={watcher ? undefined : openPlayground}
               />
             )}
 

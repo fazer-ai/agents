@@ -129,11 +129,9 @@ describe("parseToolPreconditionRows", () => {
     expect(
       parseToolPreconditionRows({
         handoff_to_human: { kind: "somethingElse", host: "x.com" },
-        assign_label: { kind: "attribute", scope: "contact", key: "k" },
+        set_labels: { kind: "attribute", scope: "contact", key: "k" },
       }),
-    ).toEqual([
-      { tool: "assign_label", scope: "contact", key: "k", equals: "" },
-    ]);
+    ).toEqual([{ tool: "set_labels", scope: "contact", key: "k", equals: "" }]);
   });
 });
 
@@ -169,13 +167,13 @@ describe("round 1: the editor renders exactly, or not at all", () => {
     // The passthrough above must not resurrect a rule that was rendered and then deleted.
     const stored = {
       handoff_to_human: { kind: "attribute", scope: "contact", key: "k" },
-      assign_label: { kind: "attribute", scope: "contact", key: "j" },
+      set_labels: { kind: "attribute", scope: "contact", key: "j" },
     };
     const out = serializeToolPreconditions(
-      [{ tool: "assign_label", scope: "contact", key: "j", equals: "" }],
+      [{ tool: "set_labels", scope: "contact", key: "j", equals: "" }],
       stored,
     );
-    expect(Object.keys(out)).toEqual(["assign_label"]);
+    expect(Object.keys(out)).toEqual(["set_labels"]);
   });
 
   test("a malformed entry is NOT rewritten into a working rule by a save", () => {

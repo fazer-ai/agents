@@ -401,9 +401,6 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
-  // The taxonomy cut to the counts the reader keeps (issue #494 review, round 2): the groups array
-  // and each group's values array. Both are arrays of whole strings — no cut lands inside one.
-  "src/client/pages/agents/observationFormState.ts": [2, "array"],
   // Two since #563: the token insert splices at a SELECTION, which the browser never puts inside a
   // surrogate pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of
   // it. Neither is a cap.
@@ -413,7 +410,11 @@ const BARE_SLICES: Record<
   "src/graph/tools/mcp.ts": [5, "ascii"],
   // The spend ceiling's project key is the head of a hex digest (#426).
   "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
-  "src/graph/tools/native.ts": [4, "array"],
+  // Five since #568: the fifth is the ceiling on what the model is SHOWN of a scope's labels,
+  // applied to the write report. An array of label titles, so the cut cannot land inside one.
+  "src/graph/tools/native.ts": [5, "array"],
+  // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
+  "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],
   "src/lib/redact.ts": [1, "array"],
@@ -427,7 +428,9 @@ const BARE_SLICES: Record<
   // so the `_2` suffix fits inside the 64 the provider allows: the value went through
   // `normalizeToolName` first, so it is `[a-z0-9_-]` and has nothing to split. (The label and the
   // description that loop clips are text, and go through `clipText` like every other.)
-  "src/modules/agents/transfer.ts": [2, "array"],
+  // Three since #568: the third clamps an imported protected-label list to its ceiling — an array
+  // of titles, never characters.
+  "src/modules/agents/transfer.ts": [3, "array"],
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],
@@ -480,7 +483,9 @@ const BARE_SLICES: Record<
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
-  "src/modules/observe/job.ts": [2, "array"],
+  // Three: the transcript window, the notes window and the page walk. Every one is a slice of an
+  // ARRAY of rows, so none can land inside a surrogate pair.
+  "src/modules/observe/job.ts": [3, "array"],
   "src/modules/playground/service.ts": [1, "array"],
   // Two, since the overflow merge carries the separators beside the chunks (issue #429): both are
   // slices of an ARRAY of already-split strings, so neither can land inside a surrogate pair.

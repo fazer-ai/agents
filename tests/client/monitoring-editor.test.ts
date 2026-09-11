@@ -21,16 +21,20 @@ describe("the editor of a monitoring agent", () => {
     const def = EDITOR.indexOf("const MONITORING_TABS");
     expect(def).toBeGreaterThan(-1);
     const body = EDITOR.slice(def, EDITOR.indexOf("]);", def));
-    for (const key of ["general", "channels", "behavior"]) {
-      expect(body).toContain(`"${key}"`);
-    }
+    // TOOLS AND KNOWLEDGE ARE DRAWN (issue #568): a watcher runs the ordinary graph, so its grants
+    // and its knowledge bases are the whole of what it can do.
     for (const key of [
+      "general",
+      "channels",
+      "behavior",
       "tools",
       "knowledge",
-      "guardrails",
-      "channelRedirect",
-      "playground",
     ]) {
+      expect(body).toContain(`"${key}"`);
+    }
+    // What stays out is what only an agent that SPEAKS has: a reply to screen, a redirect that
+    // messages the customer on another channel, a conversation to hold in the playground.
+    for (const key of ["guardrails", "channelRedirect", "playground"]) {
       expect(body).not.toContain(`"${key}"`);
     }
     // And the list the Tabs control draws is the filtered one, keyed on the mode.
@@ -42,12 +46,34 @@ describe("the editor of a monitoring agent", () => {
     );
   });
 
+  test("no tab a watcher draws offers the playground", () => {
+    // The playground loads the agent WITHOUT `ignoreMode`, so a monitoring agent cannot run there:
+    // an action that opens a panel whose every run fails as `agentNotRunnable` is worse than no
+    // action. General and Behavior already guarded it; Tools and Knowledge became watcher-visible in
+    // this issue and did not (review round 31). Read as source, the way the tab gates above are.
+    for (const tab of [
+      "GeneralTab",
+      "BehaviorTab",
+      "ToolsTab",
+      "KnowledgeTab",
+    ]) {
+      const at = EDITOR.indexOf(`<${tab}`);
+      expect(at).toBeGreaterThan(-1);
+      const prop = EDITOR.indexOf("onOpenPlayground=", at);
+      expect(prop).toBeGreaterThan(-1);
+      expect(EDITOR.slice(prop, prop + 60)).toContain(
+        "watcher ? undefined : openPlayground",
+      );
+    }
+  });
+
   test("the Behavior tab keeps the blocks that apply to a watcher and hides the rest", () => {
     expect([...MONITORING_SECTIONS].sort()).toEqual([
+      // The prompt block built on every turn, this one included (issue #568).
+      "attributeContext",
+      // ...and the ceiling on the tool calls a watcher now actually makes.
+      "limits",
       "memory",
-      // Back in the set with the runtime that made it mean something (issue #567): `runObserve`
-      // passes the agent's own `modelFallback` now, so the section configures a second provider
-      // that does protect a verdict. It was out for the round-5 review of #494, when it did not.
       "modelFallback",
       "observability",
       "observation",
@@ -76,10 +102,9 @@ describe("the editor of a monitoring agent", () => {
     // one the watcher's editor draws, so a new issue kind that targets a visible section is kept
     // without anybody remembering to add it.
     expect(EDITOR).toContain("function watcherCanActOn(");
-    // ...with RAG dropped by key, since both of its issues arrive with no tab and a watcher never
-    // invokes retrieval: kept, they send the operator to configure a feature nothing here uses
-    // (issue #494 review, round 4).
-    expect(EDITOR.replace(/\s+/g, " ")).toContain(
+    // ...and RAG issues are no longer dropped by key: a watcher searches the knowledge bases it was
+    // granted, so a broken embedding credential is a real fault with a real screen behind it.
+    expect(EDITOR.replace(/\s+/g, " ")).not.toContain(
       'issue.key === "knowledge" || issue.key === "embedding"',
     );
     expect(EDITOR).toContain("MONITORING_SECTIONS.has(sectionId)");
@@ -289,6 +314,25 @@ describe("the Channels tab of a watcher", () => {
     expect(EDITOR.replace(/\s+/g, " ")).toContain(
       'if (agentMode === "monitoring") setPlaygroundOpen(false);',
     );
+  });
+
+  // THE CEILING ACTS ON A WATCHER, BUT NOT WHERE THE HELP SAID IT DID (review round 40). An
+  // observation carries no contact history: the tick rebuilds the conversation into one message and
+  // the window always keeps the current turn, so nothing is ever trimmed off a tick. It is not inert
+  // either — `runCompaction` loads a watcher's config with `ignoreMode` and hands this same ceiling
+  // to the summariser — so the control stays and the prose is the thing that changes.
+  test("the history ceiling tells a watcher what it actually bounds", () => {
+    const at = BEHAVIOR.indexOf("editor.limitsMaxHistoryTokensHelpObserving");
+    expect(at).toBeGreaterThan(-1);
+    const before = BEHAVIOR.slice(Math.max(0, at - 300), at).replace(
+      /\s+/g,
+      " ",
+    );
+    expect(before).toContain("help={ watcher ?");
+    // ...and the setting itself is still offered: hiding it would take away a control that bounds
+    // what the watcher's own memory summarises.
+    expect(BEHAVIOR).toContain("editor.limitsMaxHistoryTokens");
+    expect(MONITORING_SECTIONS.has("limits")).toBe(true);
   });
 
   test("routes a new binding by the SAVED mode", () => {

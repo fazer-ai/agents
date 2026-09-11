@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
-import { ToolGrantsEditor } from "./ToolGrantsEditor";
+import { offeredPackTools, ToolGrantsEditor } from "./ToolGrantsEditor";
 import { ToolPreconditionsEditor } from "./ToolPreconditionsEditor";
 import type {
   GrantState,
@@ -23,6 +23,9 @@ import type {
 
 interface ToolsTabProps {
   agentId: string;
+  // Passed straight through: a watcher's toolset is assembled MUTED, so the editor must not offer
+  // the tools that assembly drops (review round 30).
+  observing?: boolean;
   catalog: ToolCatalog;
   grants: GrantState[];
   onChange: React.Dispatch<React.SetStateAction<GrantState[]>>;
@@ -38,6 +41,8 @@ interface ToolsTabProps {
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
   setLabelInstructions: (v: string) => void;
+  protectedLabels: string;
+  setProtectedLabels: (v: string) => void;
   updateKanbanTaskInstructions: string;
   setUpdateKanbanTaskInstructions: (v: string) => void;
   // Per-tool preconditions (issue #101). Owned by AgentEditorPage like the guidance above, and saved
@@ -66,11 +71,15 @@ interface ToolsTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
-  onOpenPlayground: () => void;
+  // Absent for a WATCHER: the playground loads the agent without `ignoreMode`, so a monitoring
+  // agent cannot run there and the action would open a panel whose every run fails
+  // (review round 31). Same shape General and Behavior already use.
+  onOpenPlayground?: () => void;
 }
 
 export function ToolsTab({
   agentId,
+  observing,
   catalog,
   grants,
   onChange,
@@ -86,6 +95,8 @@ export function ToolsTab({
   setCustomAttributeInstructions,
   labelInstructions,
   setLabelInstructions,
+  protectedLabels,
+  setProtectedLabels,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   toolPreconditions,
@@ -109,10 +120,22 @@ export function ToolsTab({
   // explicit NATIVE row means all of them (the permissive default), an explicit row means exactly
   // its allowlist. Offering a name the agent was not granted would let an operator write a rule that
   // is inert, which reads as protection and is not.
+  // ...AND FOR A WATCHER, WITHOUT WHAT ITS TURN STRIPS (review round 40). The same predicate the
+  // grant cards above are drawn with: a precondition on `send_image` guards a tool the muted
+  // assembly removes before it can fire, which is the very "protection that is not there" this
+  // block's rule is about — arriving through the other half of the screen. The two branches are
+  // filtered alike, because the permissive default and an explicit row that still names a delivery
+  // tool (saved before the mode flipped) both reach here. A row already saved keeps its own tool in
+  // the select whatever this list says — `optionsFor` puts it back — so nothing becomes invisible.
   const nativeGrant = grants.find((g) => g.source === "NATIVE");
-  const grantedNativeTools = nativeGrant
-    ? (nativeGrant.enabledTools ?? [])
-    : catalog.native.map((n) => n.name);
+  const offeredNative = new Set(
+    offeredPackTools(catalog.native, observing).map((n) => n.name),
+  );
+  const grantedNativeTools = (
+    nativeGrant
+      ? (nativeGrant.enabledTools ?? [])
+      : catalog.native.map((n) => n.name)
+  ).filter((n) => offeredNative.has(n));
 
   // Section index for the Tools tab (item 9): mirrors the section ids set on ToolGrantsEditor's
   // blocks + the capability map below.
@@ -137,11 +160,18 @@ export function ToolsTab({
       icon: Puzzle,
       label: t("editor.tools.integrations", "Integrations"),
     },
-    {
-      id: "tools-documents",
-      icon: FileText,
-      label: t("editor.tools.documents", "Documents"),
-    },
+    // The index has to agree with what the editor DRAWS: a watcher has no Documents block (its
+    // tools deliver to the customer), and a nav entry whose target does not exist is a link that
+    // scrolls nowhere (review round 40).
+    ...(observing
+      ? []
+      : [
+          {
+            id: "tools-documents",
+            icon: FileText,
+            label: t("editor.tools.documents", "Documents"),
+          },
+        ]),
     {
       id: "tools-native",
       icon: Wrench,
@@ -161,6 +191,7 @@ export function ToolsTab({
         <div className="flex min-w-0 grow flex-col gap-4">
           <ToolGrantsEditor
             agentId={agentId}
+            observing={observing}
             catalog={catalog}
             grants={grants}
             onChange={onChange}
@@ -176,6 +207,8 @@ export function ToolsTab({
             setCustomAttributeInstructions={setCustomAttributeInstructions}
             labelInstructions={labelInstructions}
             setLabelInstructions={setLabelInstructions}
+            protectedLabels={protectedLabels}
+            setProtectedLabels={setProtectedLabels}
             updateKanbanTaskInstructions={updateKanbanTaskInstructions}
             setUpdateKanbanTaskInstructions={setUpdateKanbanTaskInstructions}
             mcpTools={mcpTools}

@@ -380,7 +380,7 @@ describe.skipIf(!dbUp)("runAgentNudge: an agent that cannot author", () => {
           const message = new AIMessage({
             content: "",
             tool_calls: [
-              { name: "assign_label", args: { label: "sumiu" }, id: "call-1" },
+              { name: "set_labels", args: { label: "sumiu" }, id: "call-1" },
             ],
           });
           return { generations: [{ text: "", message }] };

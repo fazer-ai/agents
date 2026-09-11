@@ -478,6 +478,14 @@ export interface HttpToolBuildDeps {
   appointmentBooked?: HttpToolDeps["appointmentBooked"];
   cancelAppointment?: HttpToolDeps["cancelAppointment"];
   onSideEffectError?: HttpToolDeps["onSideEffectError"];
+  // Threaded like the fence: the tool reports a refusal that sent nothing (effect-free.ts).
+  onNoEffect?: HttpToolDeps["onNoEffect"];
+  // The caller's whole-turn deadline, forwarded so a handler that outlived the budget does not send
+  // its request. See HttpToolDeps.expiresOn.
+  expiresOn?: HttpToolDeps["expiresOn"];
+  // The caller's withdrawal fence, forwarded for the same reason and asked in the same place. See
+  // HttpToolDeps.stillWanted: a deadline says there is no time left, this says nobody is waiting.
+  stillWanted?: HttpToolDeps["stillWanted"];
 }
 
 // Builds StructuredTools from loaded ToolDefinition rows. Network (the actual HTTP call) happens

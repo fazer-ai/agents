@@ -3,21 +3,11 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import {
-  AppError,
-  ClassifierOverlapError,
-  ConflictError,
-  NotFoundError,
-} from "@/lib/errors";
-import { withEntityLock } from "@/lib/locks";
+import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
-import {
-  assertNoClassifierOverlap,
-  classifierTaxonomyLock,
-} from "@/modules/agents/service";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
 import {
@@ -2143,18 +2133,6 @@ export async function assertInboxBindable(
           "errors.agentAlreadyObserves",
         );
       }
-      // ...AND IF IT CLASSIFIES, ITS TAXONOMY MUST NOT COLLIDE WITH THE OBSERVER'S beside it (issue
-      // #477 review, round 16). A monitoring responder and an observer both classify every
-      // conversation on this inbox, into ONE flat label set; a value both claim flaps between them
-      // on every burst. Same rule as `observeInbox`'s, asked from the other side of the pairing.
-      await assertNoClassifierOverlap(
-        db,
-        agentId,
-        { settings: agent.settings, enabled: agent.enabled, mode: agent.mode },
-        inboxId,
-        // This bind REPLACES whatever responder the inbox has, so that agent is not a peer.
-        true,
-      );
       name = agent.name;
     }
     return { inbox: row, agentName: name };
@@ -2261,58 +2239,6 @@ export async function bindInbox(
         line,
         "chatwoot: the bot was attached in Chatwoot and the binding was not saved — retry the bind",
       );
-    }
-    // ...EXCEPT WHEN THE RETRY CANNOT REPAIR IT (issue #477 review, round 24). The note above rests
-    // on a retry of this same request putting the two back in step, and for the taxonomy collision
-    // that is false: this transaction is the only place that can see it, but the PREFLIGHT sees it
-    // too on the way back in, so the retry is refused before Chatwoot is called and the mismatch
-    // stands — an inbox routing to a bot the mirror does not name, handled by a persona nobody
-    // bound. So this one rejection is compensated: the remote binding is put back where it was,
-    // which is the previous agent's bot, or none if the inbox had no responder.
-    //
-    // Best-effort and reported either way, for the reason the note gives — a compensating call is
-    // another request into somebody else's system on an error path. A failure here leaves exactly
-    // what the uncompensated case left, and the log names it.
-    if (
-      err instanceof ClassifierOverlapError &&
-      agentId !== null &&
-      agentId !== inbox.agentId
-    ) {
-      const previous = inbox.agentId;
-      try {
-        const client = await loadChatwootClient(
-          tenantId,
-          inbox.chatwootInstanceId,
-          { base, makeClient: deps.makeClient },
-        );
-        const back =
-          previous === null
-            ? null
-            : ((
-                await runScopedOn(base, ctx, (db) =>
-                  db.chatwootAgentBot.findUnique({
-                    where: {
-                      tenantId_chatwootInstanceId_agentId: {
-                        tenantId,
-                        chatwootInstanceId: inbox.chatwootInstanceId,
-                        agentId: previous,
-                      },
-                    },
-                    select: { chatwootAgentBotId: true },
-                  }),
-                )
-              )?.chatwootAgentBotId ?? null);
-        await client.setInboxAgentBot(inbox.chatwootInboxId, back);
-      } catch (undoErr) {
-        logger.error(
-          {
-            err: undoErr,
-            tenantId: String(tenantId),
-            inboxId: String(inboxId),
-          },
-          "chatwoot: the taxonomy collision was refused and the previous bot could not be restored — the inbox is attached to a bot this workspace does not bind",
-        );
-      }
     }
     throw err;
   }
@@ -2479,24 +2405,6 @@ export async function bindInbox(
       // lapsed: re-stamping it would age it forward and make an observer ingest messages the
       // responder is already remembering. An unbind clears it, so the next bind starts its own
       // clock rather than inheriting the previous agent's.
-      // THE TAXONOMY COLLISION, re-asked under this transaction (issue #477 review, round 17): the
-      // preflight predates the Chatwoot calls, and the inbox's observer can adopt one of this
-      // responder's values inside that window. Under the taxonomy lock, which also serializes it
-      // against a concurrent settings write on either agent. Only when there IS a responder to
-      // check — an unbind (`agentId === null`) creates no pairing.
-      if (agentId !== null) {
-        // READ INSIDE THE LOCK (issue #477 review, round 19): a settings write committing between
-        // the read and the lock hands this check a bag that is already stale, which is the race the
-        // lock exists to close.
-        const bound = agentId;
-        await withEntityLock(db, classifierTaxonomyLock(tenantId), async () => {
-          const mine = await db.agent.findUniqueOrThrow({
-            where: { id: bound },
-            select: { settings: true, enabled: true, mode: true },
-          });
-          await assertNoClassifierOverlap(db, bound, mine, inboxId, true);
-        });
-      }
       const boundTo = beforeWrite?.agent_id ?? null;
       // WHO ROUTES THIS INBOX MOVED (issue #540), and the counter that says so is NOT stepped here.
       // It is a database trigger, on the reasoning the review of this change made plain: a counter
@@ -2639,17 +2547,6 @@ export async function readObserveTarget(
         "errors.inboxAlreadyObserved",
       );
     }
-    // ...AND ITS TAXONOMY MUST NOT COLLIDE WITH THE RESPONDER'S (issue #477 review, round 16). Both
-    // classify every conversation on this inbox, into ONE flat Chatwoot label set: a value both
-    // claim is written by one and cleared by the other, every burst, with whatever the label
-    // triggers firing on each flip. Asked here because the PAIRING is what creates it — neither
-    // taxonomy is wrong alone — and again on the settings write, which can reintroduce it.
-    await assertNoClassifierOverlap(
-      db,
-      agentId,
-      { settings: agent.settings, enabled: agent.enabled, mode: agent.mode },
-      inboxId,
-    );
     return {
       inbox: row,
       agentName: agent.name,
@@ -3127,20 +3024,6 @@ export async function observeInbox(
           "errors.inboxAlreadyObserved",
         );
       }
-      // ...AND THE TAXONOMY COLLISION, re-asked here for the same reason as the cap above (issue
-      // #477 review, round 17): the preflight predates the Chatwoot calls, and the responder can
-      // adopt one of this observer's values inside that window. Under the taxonomy lock, so it also
-      // serializes against a concurrent settings write on either agent.
-      // READ INSIDE THE LOCK, for the same reason as `bindInbox`'s (round 19).
-      await withEntityLock(db, classifierTaxonomyLock(tenantId), async () => {
-        // `findUnique` for the same reason as `bindInbox`'s.
-        const mine = await db.agent.findUnique({
-          where: { id: agentId },
-          select: { settings: true, enabled: true, mode: true },
-        });
-        if (mine !== null)
-          await assertNoClassifierOverlap(db, agentId, mine, inboxId);
-      });
       // ALREADY OBSERVING MEANS A CONFIRMED ROW, not merely a row (issue #540, window 5). This call
       // wrote its own pending row before the fork was asked, and `before` now includes it — read
       // literally, every first-time observe would look like a repeat and neither the audit line nor

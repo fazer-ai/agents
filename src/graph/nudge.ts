@@ -52,7 +52,7 @@ import {
   resolveGraphThreadId,
   threadBelongsToTenant,
 } from "./checkpointer";
-import { lastAssistantText } from "./graph";
+import { lastAssistantText, recursionLimitFor } from "./graph";
 import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
@@ -830,7 +830,7 @@ export async function runAgentNudge(
     const labels = actions.assignLabels?.filter((l) => l.trim());
     if (labels && labels.length > 0) {
       try {
-        // Inside the conversation's label queue, with `assign_label` and the observer's verdict:
+        // Inside the conversation's label queue, with `set_labels` and the observer's verdict:
         // the endpoint replaces the whole set (issue #477 review, round 3).
         const stale = await withConversationLabels(
           tenantId,
@@ -1012,7 +1012,7 @@ export async function runAgentNudge(
     // THE SAME SEAM THE REACTIVE TURN HANDS DOWN (issue #449), and this path needs it for the same
     // reason it needs the other fifteen asks: a nudge runs from a scheduler job, `/reset` retires
     // that job, and every ask above and below sits BETWEEN two steps. A tool call happens inside
-    // one, so a retirement landing while the model call is in flight left `assign_label` and
+    // one, so a retirement landing while the model call is in flight left `set_labels` and
     // `set_custom_attribute` free to write to the conversation the operator just cleared.
     //
     // Always present (issue #209 review, round 5): the local helper also reads the switch and the
@@ -1105,6 +1105,9 @@ export async function runAgentNudge(
     tools,
   });
   const invokeConfig = {
+    // LangGraph counts SUPER-STEPS and its default 25 runs out at about twelve tool rounds, so a
+    // budget the operator is allowed to set (1-50) would throw instead of ending at the budget.
+    recursionLimit: recursionLimitFor(cfg.maxToolCalls),
     configurable: { thread_id: graphThreadId },
     callbacks,
   };

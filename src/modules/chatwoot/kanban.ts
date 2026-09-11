@@ -30,7 +30,7 @@ export interface KanbanCard {
   startDate: string | null;
   dueDate: string | null;
   attributes: Record<string, unknown>;
-  // Current labels on the card (from `task.labels` = cached_label_list_array). Read by assign_label
+  // Current labels on the card (from `task.labels` = cached_label_list_array). Read by set_labels
   // (scope 'task') to append idempotently. Empty when the fork build predates task labels.
   labels: string[];
 }

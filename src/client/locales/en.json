@@ -1262,6 +1262,10 @@
       "mcpReused": "MCP server \"{{name}}\" already existed and was reused; check it is right.",
       "mcpUnsafeStdio": "MCP server \"{{name}}\" has an unsupported command and was skipped.",
       "nativeToolUnknown": "Built-in tool \"{{name}}\" is not one this version has, so it was left out of the agent.",
+      "promptToolRenamed_one": "The prompt named a tool that was renamed, so {{count}} mention now says \"{{name}}\". Worth a read.",
+      "promptToolRenamed_other": "The prompt named a tool that was renamed, so {{count}} mentions now say \"{{name}}\". Worth a read.",
+      "protectedLabelsClipped_one": "The bundle carried more than {{max}} labels out of reach, so {{count}} of them was dropped on import.",
+      "protectedLabelsClipped_other": "The bundle carried more than {{max}} labels out of reach, so {{count}} of them were dropped on import.",
       "toolSchemaAdjusted": "Tool \"{{name}}\": the imported input schema was adjusted — {{reason}}. Check the arguments the agent may send.",
       "unknownGrantSourceSkipped_one": "{{count}} tool grant came from a newer version and was skipped.",
       "unknownGrantSourceSkipped_other": "{{count}} tool grants came from a newer version and were skipped."
@@ -1283,12 +1287,13 @@
       "suggestEnable": "Let the agent suggest new entries"
     },
     "labelInstructions": "Usage guidance",
-    "labelInstructionsHint": "Optional. Explains which label to add to the conversation, the contact, or the kanban card, and when. The AI already sees the existing labels; this adds your rules. Appended to the tool description.",
-    "labelInstructionsPlaceholder": "e.g. Add \"vip\" to the contact for premium customers; tag the conversation \"urgent\" when the customer is upset.",
+    "labelInstructionsHint": "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
+    "labelInstructionsPlaceholder": "e.g. The conversation carries exactly one of \"cancelamento\", \"compra-de-ingresso\" or \"outros\": when you set one, leave the others out. Keep \"vip\" and \"agente-off\" wherever they already are.",
     "limits": "Execution limits",
     "limitsHint": "Cap how much work the agent does in a single turn before it must answer.",
     "limitsMaxHistoryTokens": "History ceiling",
     "limitsMaxHistoryTokensHelp": "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
+    "limitsMaxHistoryTokensHelpObserving": "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions.",
     "limitsMaxHistoryTokensHint": "Empty means no ceiling. Between 2,000 and 1,000,000.",
     "limitsMaxToolCalls": "Max tool calls / turn",
     "limitsMaxToolCallsHint": "After this many tool uses the agent is forced to reply with what it has (no error). 1-50.",
@@ -1333,7 +1338,6 @@
     "observabilityOnLangfuse": "content sent to Langfuse",
     "observabilityOnToolValues": "tool values",
     "observation": "Observation",
-    "observationAddGroup": "Add group",
     "observationAnalysis": "When to classify",
     "observationAnalysisHint": "Per burst also runs a final pass when the conversation is resolved.",
     "observationAnalysisIncremental": "After each burst of customer messages",
@@ -1342,20 +1346,8 @@
     "observationBurstHint": "Customer messages closer than this are judged together. {{min}}-{{max}}.",
     "observationBurstMax": "Burst ceiling (seconds)",
     "observationBurstMaxHint": "A customer who keeps writing is judged at the latest this long after the first message.",
-    "observationGroupExclusive": "One at a time",
-    "observationGroupExclusiveHelp": "On: the verdict replaces the group's current label. Off: labels accumulate.",
-    "observationGroupIncomplete": "A group needs a name and at least one label; this one is not saved until it has both.",
-    "observationGroupName": "Group name",
-    "observationGroupNameHint": "Also the key of the verdict in the logs.",
-    "observationGroups": "Label groups",
-    "observationGroupsHint": "Each group is one question the agent answers with one of its labels. The labels must exist on the Chatwoot account. Up to {{max}} groups.",
-    "observationGroupValues": "Labels",
-    "observationGroupValuesHint": "One per line, as titled on Chatwoot. Up to {{max}}.",
-    "observationHelp": "A monitoring agent reads every message of the inboxes it observes and answers none. This block is what it does with what it reads.\n\nWith at least one label group, it classifies the conversation after each burst of customer messages (or only on resolve) and writes the verdict as Chatwoot labels: an exclusive group keeps one value at a time, an additive one accumulates. A changed label gets a private note saying why.\n\nWith no group, observation is off and the agent costs nothing. The labels must already exist on the Chatwoot account; a verdict outside the list is refused.",
-    "observationHint": "What this agent does with what it reads: a verdict per group of labels, written on the conversation as it happens.",
-    "observationNote": "Leave a private note when a verdict changes a label",
-    "observationOff": "No group yet: this agent reads and remembers, and classifies nothing.",
-    "observationRemoveGroup": "Remove group {{name}}",
+    "observationHelp": "A monitoring agent reads every message of the inboxes it observes and answers none of them. It is the ordinary agent, with its prompt, its tools, its knowledge and its MCP servers, minus the one thing it cannot do: post something the customer sees.\n\nSo what it DOES is configured where every agent's behaviour is: the prompt says what to watch for, and the Tools tab says what it may act with. Labelling the conversation, leaving a private note, setting an attribute and moving a card are all tools it can be given.\n\nThis block is only about when it looks. It runs after each burst of customer messages, or only when the conversation is resolved. To switch it off, disable the agent or take it off the inbox.",
+    "observationHint": "When this agent looks at the conversation, and how much of it it reads.",
     "observationWindow": "Messages read",
     "observationWindowHint": "The newest messages the model reads on each pass. {{min}}-{{max}}.",
     "openPlayground": "Test in playground",
@@ -1370,6 +1362,10 @@
     "promptPreviewNote": "Time is the current value; contact details are examples.",
     "promptVarsHint": "Insert a variable (dates also accept a :format suffix):",
     "promptViewToggle": "Editor or preview",
+    "protectedLabels": "Labels off limits",
+    "protectedLabelsHint": "Optional, comma-separated. Labels this agent may neither add nor remove, and never sees. Use it for the ones another system owns — otherwise they last only while the AI remembers to repeat them.",
+    "protectedLabelsPlaceholder": "e.g. agente-off, testando-agente",
+    "protectedLabelsTooMany": "Labels off limits takes at most {{max}} labels.",
     "provider": "Provider",
     "providerOpenAiCompatible": "OpenAI-compatible",
     "reasoningEffort": "Reasoning effort",
@@ -1497,6 +1493,7 @@
       "noIntegrations": "No integrations activated yet.",
       "noMcp": "No MCP servers connected yet.",
       "noNativeSelected": "No native tools selected — the agent can only chat.",
+      "observingDelivery": "This agent only observes, so the tools that deliver something to the customer (reactions, images, documents) are not listed: its turn is built with a muted client and would refuse them.",
       "preconditions": "Preconditions",
       "selectAll": "Select all",
       "showConfig": "Settings"
@@ -2049,10 +2046,6 @@
     }
   },
   "nativeTools": {
-    "assign_label": {
-      "desc": "Add a label (tag) to the conversation, the contact, or the kanban card to categorize it (vip, urgent, lead…).",
-      "label": "Add label"
-    },
     "calculator": {
       "desc": "Evaluate arithmetic expressions exactly (+ - * / % ^ and parentheses).",
       "label": "Calculator"
@@ -2088,6 +2081,10 @@
     "set_custom_attribute": {
       "desc": "Set a custom attribute on the conversation, the contact, or the kanban card (e.g. lead stage, qualification flag).",
       "label": "Set attribute"
+    },
+    "set_labels": {
+      "desc": "Set which labels (tags) the conversation, the contact or the kanban card carries, adding and removing in one write (vip, urgent, lead…).",
+      "label": "Set labels"
     },
     "set_voice_preference": {
       "desc": "Record whether the customer prefers audio or text replies.",

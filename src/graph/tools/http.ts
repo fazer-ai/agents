@@ -24,6 +24,7 @@ import {
   projectToolResponse,
 } from "@/modules/tool-definitions/response-template";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
+import type { NoEffectReporter } from "./effect-free";
 import { normalizeToolName } from "./toolName";
 
 // Custom HTTP tools (from ToolDefinition rows). The agent calls them mid-turn; each is a thin,
@@ -96,6 +97,21 @@ export interface HttpToolDeps {
   allowHttp?: boolean;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  // THE WHOLE-TURN DEADLINE, when the caller has one (the observer's tick). Aborting an invoke stops
+  // the CALLER waiting, not this handler writing: a tool that was resolving a credential when the
+  // budget ran out still reaches its POST, and the tick has already been reported as a retryable
+  // failure — so the retry sends it a second time. The Chatwoot client refuses past its deadline
+  // for exactly this reason (ChatwootClientConfig.expiresOn); an external endpoint is the same
+  // hazard with none of the idempotency. Absent ⇒ no deadline, which is every reactive turn.
+  expiresOn?: AbortSignal;
+  // THE CALLER'S WITHDRAWAL FENCE, asked in the same place the deadline is: immediately before the
+  // request goes out. A deadline answers "is there still time"; this answers "is anyone still
+  // waiting for it" — a `/reset`, a supersede or a detach that landed while this tool resolved a
+  // credential or a DNS name leaves the budget perfectly alive and the run withdrawn all the same,
+  // and the POST reaches somebody else's system anyway (issue #568, review round 28). Absent ⇒ the
+  // call proceeds, which is what every caller with no fence to offer means; only an explicit `false`
+  // stops it, since a fence that could not answer is not a withdrawal.
+  stillWanted?: () => Promise<boolean>;
   maxResponseChars?: number;
   // Posts a "I'll look into that…" ack to the customer before a slow tool runs (best-effort). Wired
   // only on a real conversation; absent in the playground (no client / no conversation). An
@@ -141,6 +157,8 @@ export interface HttpToolDeps {
   // not render, or a response that was clipped with no template to render, is the other — there the
   // model got an answer with a hole in it, and #456 is the measurement of what a model does with a
   // hole. The only thing to do with either is put it where the operator reads it.
+  // Called when this tool refuses before sending anything: see effect-free.ts.
+  onNoEffect?: NoEffectReporter;
   onSideEffectError?: (e: {
     tool: string;
     phase: string;
@@ -849,9 +867,30 @@ export function buildHttpTool(
       // headers: `fetchBounded` reads the body under the same armed timer, because a provider that
       // answers at once and then stalls mid-body used to leave this line pending forever (#464).
       // It also caps what the read retains, which is the other half of the same defect.
+      // ASKED HERE, immediately before the send, and not at handler entry: everything above this
+      // line can wait (credential resolution is a DB read, the ack is a network write), and the
+      // point of the check is to catch a budget that ran out DURING that waiting. Refused rather
+      // than thrown so the model is told, and phrased as the tool not having run, because it did
+      // not.
+      if (deps.expiresOn?.aborted) {
+        return "Could not call the tool (the run's time budget ran out before the request was sent).";
+      }
+      // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
+      // and immediately before the send. See `stillWanted` on the deps.
+      if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+        // Nothing left the process here — the acknowledgement, when there is one, is the exit
+        // ABOVE, and that one is a message the customer already got (review round 36).
+        deps.onNoEffect?.(def.name);
+        return "Could not call the tool (the run was called off before the request was sent).";
+      }
       const { res, body: responseBody } = await fetchBounded(
         url.toString(),
-        { method, headers, body, redirect: "error" },
+        // The deadline rides in `init.signal`, which `bounded` already relays onto its own
+        // controller, so a request that DOES get sent is cancelled when the budget ends instead of
+        // running to its own timeout past the end of the tick. Through the existing relay rather
+        // than a new option: the timer there has to be able to cut the BODY read too, and two
+        // controllers racing for that is how the #464 defect came back.
+        { method, headers, body, redirect: "error", signal: deps.expiresOn },
         { timeoutMs, fetchImpl: doFetch },
       );
 

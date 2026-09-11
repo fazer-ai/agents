@@ -9,6 +9,7 @@ import {
   runSandboxedCode,
   type SandboxOutcome,
 } from "./code-sandbox";
+import { markEffectFree } from "./effect-free";
 import { failableTool, toolFailure } from "./failure";
 import { parseToolInputSchema, sanitizeToolName } from "./http";
 
@@ -178,5 +179,10 @@ export function buildCodeTools(
   defs: LoadedCodeToolDef[],
   deps: CodeToolDeps = {},
 ): StructuredToolInterface[] {
-  return defs.map((d) => buildCodeTool(d, deps));
+  // EFFECT-FREE BY CONSTRUCTION, and marked so the observer's tick can tell (review round 33). The
+  // body runs in a fresh QuickJS interpreter with no fetch, no process, no require, no timers and
+  // no reach into this thread's globals (code-sandbox.ts): it computes and RETURNS, and there is
+  // nothing for a second run to duplicate. Marked on the object rather than by name, for the reason
+  // effect-free.ts gives: an operator names these tools, so the name is not identity.
+  return defs.map((d) => markEffectFree(buildCodeTool(d, deps)));
 }

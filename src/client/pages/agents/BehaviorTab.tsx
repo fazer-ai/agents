@@ -1029,25 +1029,31 @@ function FollowUpStepsEditor({
   );
 }
 
-// What a WATCHER's Behavior tab shows (issue #494): the block that runs for an agent in
-// monitoring mode, and the three that apply to any agent whatever it does with a message. The
-// rest — availability, grouping, audio, split, data in context, images, authorization, takeover,
-// execution limits, the proactive ladder — decide how the agent ANSWERS, and a monitoring agent
-// never does; drawn for one, they read as if it could. Hidden, not unmounted (`Section.hidden`):
-// the form keeps its state, and flipping the mode back shows it again untouched.
+// What a WATCHER's Behavior tab shows. It used to be a short list, because a monitoring agent ran
+// one model call and wrote labels: everything about ANSWERING was hidden, and so was everything a
+// classifier had no use for. A watcher now runs the ordinary graph (issue #568), so the rule is a
+// different one — hide what is about SPEAKING TO THE CUSTOMER, show everything else, because
+// everything else runs.
+//
+// Hidden, therefore: availability and the away message (when it answers), grouping (the responder's
+// debounce; a watcher has its own burst window on Observation), audio, splitting, images,
+// contact authorization, takeover and the proactive ladder. Each of those either decides how a reply
+// goes out or gates one, and a watcher has no reply.
+//
+// Shown, and new here: DATA IN CONTEXT, which builds a prompt block on every turn including this
+// one, and EXECUTION LIMITS, which bound the tool calls a watcher now actually makes.
+//
+// Hidden, not unmounted (`Section.hidden`): the form keeps its state, and flipping the mode back
+// shows it again untouched.
 export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observation",
   "memory",
   "observability",
-  // THE FALLBACK IS BACK, because the runtime changed under it (issue #567). It was removed in the
-  // round-5 review of #494 for a true reason — `runObserve` called `runModelCall` bare, so a second
-  // model configured here protected no verdict, and drawing the section made a promise the runtime
-  // did not keep. `runObserve` now passes the agent's own `modelFallback`, so the section is
-  // configuring something again.
   "modelFallback",
-  //
+  "attributeContext",
+  "limits",
   // NOTE: STT AND VISION RUN FOR A WATCHER (issue #494 review, round 2), so their controls have to
-  // reachable. The receiver's `watcherReads` path runs `runEagerMedia` under the OBSERVER's own
+  // be reachable. The receiver's `watcherReads` path runs `runEagerMedia` under the OBSERVER's own
   // settings whenever that route is the one that will remember the message — an observer on an inbox
   // with no responder is exactly that — and a watcher that remembers an audio as an attachment
   // marker instead of its transcription remembers nothing of it. Hidden here, together with their
@@ -2393,7 +2399,6 @@ export function BehaviorTab({
 
           <Section
             id="attributeContext"
-            hidden={watcher}
             icon={ListChecks}
             title={t("editor.attributeContext", "Data in context")}
             help={t(
@@ -2698,7 +2703,6 @@ export function BehaviorTab({
 
           <Section
             id="limits"
-            hidden={watcher}
             icon={Gauge}
             title={t("editor.limits", "Execution limits")}
             description={t(
@@ -2730,10 +2734,25 @@ export function BehaviorTab({
                   "editor.limitsMaxHistoryTokensHint",
                   "Empty means no ceiling. Between 2,000 and 1,000,000.",
                 )}
-                help={t(
-                  "editor.limitsMaxHistoryTokensHelp",
-                  "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
-                )}
+                // WHAT IT DOES IS NOT THE SAME FOR A WATCHER (review round 40). An observation does
+                // not travel with the contact's history at all: the tick rebuilds the conversation
+                // from Chatwoot into a single message and keeps its own thread, and the window
+                // always keeps the current turn, so nothing is ever trimmed off a tick. The setting
+                // is NOT inert for it, though, which is why it stays on screen: `runCompaction`
+                // loads a watcher's config with `ignoreMode` and hands this same ceiling to the
+                // summariser, so it bounds the transcript the watcher's memory reads when an
+                // attendance closes. The help says which of the two the operator is buying.
+                help={
+                  watcher
+                    ? t(
+                        "editor.limitsMaxHistoryTokensHelpObserving",
+                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions.",
+                      )
+                    : t(
+                        "editor.limitsMaxHistoryTokensHelp",
+                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
+                      )
+                }
               >
                 <Input
                   type="number"

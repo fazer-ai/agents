@@ -14,6 +14,7 @@ import {
   unmetPreconditionMessage,
 } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
+import type { NoEffectReporter } from "./effect-free";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -46,6 +47,16 @@ export function guardedTool(
     reason: RefusalReason;
     err?: unknown;
   }) => void,
+  // THE CALLER'S FENCE, asked between the state read and the call it authorises. The graph asks it
+  // at DISPATCH, which covers a handler's first outward effect — and this wrapper puts a database
+  // read in between, so a tool whose first act is a WRITE (a private note, a status toggle) loses
+  // that cover the moment a precondition is configured on it. `/reset`, a supersede or a detach
+  // landing inside the read would then be answered by the write. Absent ⇒ the call proceeds, which
+  // is what every caller with no fence to offer means; only an explicit `false` stops it, since a
+  // fence that could not answer is not a withdrawal.
+  stillWanted?: () => Promise<boolean>,
+  // Called when this wrapper refuses: the inner tool never ran, so nothing was committed.
+  onNoEffect?: NoEffectReporter,
 ): StructuredToolInterface {
   const refusal = unmetPreconditionMessage(inner.name, cond);
   // NOTE: DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
@@ -56,6 +67,24 @@ export function guardedTool(
   // exactly the run it would have had without any of this.
   const guarded = Object.create(inner) as StructuredToolInterface;
   guarded.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
+    // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct
+    // invocation with plain args (a unit test) has none, and the plain string is the honest
+    // degradation there — the same shape failableTool settled on. Shared by both refusals below,
+    // because a refusal that came back as a bare string where a ToolMessage was expected would
+    // break the same message sequence in either case.
+    const answer = (text: string) => {
+      const id =
+        (input as { type?: string; id?: string } | null)?.type === "tool_call"
+          ? (input as { id?: string }).id
+          : config?.toolCall?.id;
+      // REPORTED as a call that went nowhere, so a counter downstream can tell this apart from a
+      // call that ran (effect-free.ts). Said on the way out rather than carried on the result: the
+      // sibling exits inside the handlers include one that THROWS, and one channel covers both.
+      onNoEffect?.(inner.name);
+      return id
+        ? new ToolMessage({ content: text, tool_call_id: id, name: inner.name })
+        : text;
+    };
     let met: boolean;
     let err: unknown;
     let reason: RefusalReason = "unmet";
@@ -74,21 +103,19 @@ export function guardedTool(
       err = e;
       reason = "unreadable";
     }
-    if (met) return inner.invoke(input as never, config);
+    if (met) {
+      if (stillWanted && !(await stillWanted().catch(() => true))) {
+        return answer(
+          `Did not run ${inner.name} (the run was called off while its precondition was read).`,
+        );
+      }
+      return inner.invoke(input as never, config);
+    }
     onRefused?.({ tool: inner.name, cond, reason, err });
     // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
     // with plain args (a unit test) has none, and the plain string is the honest degradation there —
     // the same shape failableTool settled on.
-    const id =
-      (input as { type?: string; id?: string } | null)?.type === "tool_call"
-        ? (input as { id?: string }).id
-        : config?.toolCall?.id;
-    if (!id) return refusal;
-    return new ToolMessage({
-      content: refusal,
-      tool_call_id: id,
-      name: inner.name,
-    });
+    return answer(refusal);
   }) as StructuredToolInterface["invoke"];
   return guarded;
 }
@@ -113,6 +140,11 @@ export function applyToolPreconditions(
   // import under a different id and a different exposed name — so it is reported at assembly, where
   // the whole toolset is finally known, rather than never.
   onUnmatched?: (toolNames: string[]) => void,
+  // Handed to every wrapper: see guardedTool's own note. A tool with no condition is not wrapped at
+  // all, and its first effect stays covered by the graph's ask at dispatch.
+  stillWanted?: () => Promise<boolean>,
+  // Passed straight through to each wrapper, for the counter the observer's tick keeps.
+  onNoEffect?: NoEffectReporter,
 ): StructuredToolInterface[] {
   const names = Object.keys(preconditions);
   if (names.length === 0) return tools;
@@ -128,7 +160,9 @@ export function applyToolPreconditions(
     const cond = Object.hasOwn(preconditions, t.name)
       ? preconditions[t.name]
       : undefined;
-    return cond ? guardedTool(t, cond, loadState, onRefused) : t;
+    return cond
+      ? guardedTool(t, cond, loadState, onRefused, stillWanted, onNoEffect)
+      : t;
   });
 }
 

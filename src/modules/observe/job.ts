@@ -1,27 +1,26 @@
-import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import {
-  type BaseMessage,
-  HumanMessage,
-  SystemMessage,
-} from "@langchain/core/messages";
+import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
+import { ToolInputParsingException } from "@langchain/core/tools";
+import { MemorySaver } from "@langchain/langgraph";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import { contentToText } from "@/graph/message-text";
-import { type ModelConfig, verdictAskMode } from "@/graph/model-config";
-import {
-  PRIMARY_MAX_RETRIES,
-  PRIMARY_TIMEOUT_MS,
-} from "@/graph/model-fallback";
-import { runModelCall } from "@/graph/model-limit";
-import { createChatModel, type ResolvedModelConfig } from "@/graph/models";
+import { recursionLimitFor } from "@/graph/graph";
+import type { ResolvedModelConfig } from "@/graph/models";
 import {
   buildCallbacks,
-  buildFallbackModel,
+  buildModelAndGraph,
+  buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
 import { resetLandedAfter } from "@/graph/reset-episode";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import { ToolFlowLogger } from "@/graph/tool-flowlog";
+import { UTILITY_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { isEffectFreeTool } from "@/graph/tools/effect-free";
+import { modelVisibleLabels } from "@/graph/tools/label-view";
+import type { McpLoadDeps } from "@/graph/tools/mcp";
+import { buildNativeTools } from "@/graph/tools/native";
 import { parseDbId } from "@/lib/db-id";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -35,7 +34,6 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
-import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
@@ -45,6 +43,7 @@ import {
   renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
+import { underSignal } from "@/modules/contact-auth/check";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -56,13 +55,7 @@ import {
   announceSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
-import { applyVerdict, type VerdictChange } from "./apply";
-import {
-  type LabelGroup,
-  type MonitoringConfig,
-  observationEnabled,
-  readMonitoringConfig,
-} from "./settings";
+import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 
 // The OBSERVE job (issue #477): a monitoring agent's verdict on a conversation it does not answer,
 // written as labels. It is what a watcher is for — a memory that grows and is never asked anything
@@ -76,20 +69,43 @@ import {
 // thread never saw. Chatwoot has all of it, and a transcription written by anyone is read through the
 // same renderers the turn uses.
 //
-// ONE model call, constrained to a schema DERIVED from the label groups, and the verdict is applied
-// deterministically (./apply.ts): the model names a value per group, the code decides the set. It
-// never touches a label outside its groups, never writes a value the group does not list, and never
-// writes at all when nothing changed. A change is announced as a PRIVATE note on the conversation,
-// so the person answering it sees why the label moved without opening the console; nothing here has
-// a customer-facing channel.
+// THEN THE ORDINARY TURN, on a muted client: `buildToolset` and `buildModelAndGraph`, the same two
+// calls the reactive turn and the nudge make. What the watcher does with what it read is its prompt
+// and its tools, not this file's business — this file only guarantees that nothing it does can
+// reach the customer, and that it stops when the world moves under it. It used to be one model call
+// constrained to a schema derived from `settings.monitoring.labelGroups`, with the verdict applied
+// deterministically here and announced as a private note; issue #568 is that whole shape.
 
 export type ObserveReason = "burst" | "resolved";
 
-export const OBSERVE_TIMEOUT_MS = 60_000;
+// THE WHOLE TICK'S BUDGET, not the model call's. It bounds tool discovery as well as the turn,
+// because `runSchedulerTick` awaits every handler and `startScheduler` skips the next tick while one
+// is running: an MCP server that opens a stream and never says anything else stops reminders and
+// every other tenant's scheduled work, and discovery happens before any model call.
+//
+// Raised from the 60s the single constrained verdict call used to get, because a turn is now as many
+// model calls as the model makes tool calls, and a deadline a legitimate turn cannot meet is a tick
+// that fails, retries and spends again. Kept well under the scheduler's own 5-minute stale window,
+// so a tick always finishes before the reaper would treat its claim as abandoned.
+export const OBSERVE_TIMEOUT_MS = 120_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
-export const OBSERVE_NOTE_REASON_MAX = 300;
 const TRANSCRIPT_MAX_CHARS = 40_000;
-const FENCE_TAG = /<\s*\/?\s*(transcricao|etiquetas-atuais)[^>]*>/gi;
+// The notes block gets its own budget, and it needs one for the same reason the transcript has one:
+// `window.messages` caps a COUNT, and a count is not a size. Twenty notes of twenty thousand
+// characters is a four-hundred-thousand-character prompt beside a three-line transcript, which
+// overruns the model's context and fails the same tick forever. Smaller than the transcript's,
+// because the notes are context ABOUT the conversation and the conversation is the subject.
+const NOTES_MAX_CHARS = 8_000;
+// ...and no single note may eat the whole budget, so one operator who pasted a log cannot hide every
+// note around it. `clipText` keeps the START, which for a note is where it says what it is about.
+const NOTE_MAX_CHARS = 2_000;
+// NOTE: `notas-internas` joined the list when the notes block was added (issue #568, review round
+// 24), and it is the one whose content is WRITTEN BY PEOPLE — a colleague pasting a prompt they were
+// debugging, or a note that quoted a customer. A closing tag inside it ends the block early and
+// everything after it reads as if it were outside the notes, which is the same escape the transcript
+// closed on day one.
+const FENCE_TAG =
+  /<\s*\/?\s*(transcricao|etiquetas-atuais|notas-internas)[^>]*>/gi;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -100,11 +116,11 @@ function sysCtx(tenantId: bigint): TenantContext {
 //
 // THE AGENT IS PART OF THE KEY (issue #477 review, round 1). An inbox can be watched by TWO
 // personas at once — a monitoring agent bound as the RESPONDER (#209's first rung) and a different
-// agent bound beside it as the OBSERVER — and both routes arm a verdict, by design, each with its
-// own label groups. Keyed by the conversation alone the two upserts are the same row: the second
-// overwrites `payload.agentId`, and which persona classifies is decided by which delivery happens
-// to land last, with the other's verdict dropped and nothing anywhere saying so. Two classifiers is
-// two rows, two bursts and two model calls, which is what configuring two of them asks for.
+// agent bound beside it as the OBSERVER — and both routes arm a tick, by design, each with its own
+// prompt and its own tools. Keyed by the conversation alone the two upserts are the same row: the
+// second overwrites `payload.agentId`, and which persona gets to look is decided by which delivery
+// happens to land last, with the other's turn dropped and nothing anywhere saying so. Two watchers
+// is two rows, two bursts and two model calls, which is what configuring two of them asks for.
 export function observeDedupeKey(threadId: string, agentId: bigint): string {
   return `${observeKeyPrefix(threadId)}${String(agentId)}`;
 }
@@ -175,7 +191,11 @@ function readResolveMark(payload: unknown): number | null {
 export async function armObserve(
   p: ArmObserveParams,
 ): Promise<"armed" | "off" | "failed"> {
-  if (!observationEnabled(p.cfg)) return "off";
+  // OBSERVATION IS THE MODE, and nothing else switches it on (issue #568). It used to be "there is
+  // at least one label group", because a watcher with nothing to classify into had nothing to do —
+  // which was true of a classifier and is not true of an agent. An enabled monitoring agent attached
+  // to an inbox is an agent the operator wants looking at these conversations; switching it off is
+  // disabling it or taking it off the inbox, the same two answers a responder has.
   if (p.reason === "burst" && p.cfg.analysis !== "incremental") return "off";
   const threadId = chatwootThreadId(p.tenantId, p.instanceId, p.conversationId);
   const dedupeKey = observeDedupeKey(threadId, p.agentId);
@@ -318,39 +338,21 @@ export function parseObservePayload(
 export interface ObserveDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
   makeClient?: LoadChatwootClientDeps["makeClient"];
+  mcp?: McpLoadDeps;
+  // In-memory by default (see the invoke): injectable so a test can read the thread back.
+  checkpointer?: ConstructorParameters<typeof MemorySaver> extends never
+    ? never
+    : MemorySaver;
   // The row this tick is running FOR, so the generation fence below can ask whether it still is
   // (issue #477 review, round 7). Optional because `runObserve` is callable without the scheduler.
   claim?: { jobId: bigint; claimSeq: number };
-}
-
-// The schema the model answers in, one enum per group. `strict` on OpenAI turns it into a
-// constraint; the OpenAPI dialect (Google) takes the same shape since nothing here is nullable.
-export function verdictSchemaFor(groups: readonly LabelGroup[]) {
-  // PROTOTYPE-FREE, belt beside the braces `readLabelGroups` already provides: a group name is a key
-  // here, and on an ordinary object `__proto__` assigns the prototype instead of a property, leaving
-  // a schema that requires what it does not publish (issue #477 review, round 3).
-  const properties: Record<string, unknown> = Object.create(null);
-  // ...PLUS "" AS "NO VALUE APPLIES" (issue #477 review, round 13). Required with only the group's
-  // own values in it, the schema forced a choice even when the transcript supported none — worst on
-  // an ADDITIVE group like `[urgente, vip]`, where an ordinary first message had to acquire a signal
-  // that is false, and a label-triggered automation then acted on it. The sentinel cannot collide
-  // with a value: `readLabelGroups` drops a blank one, so no group can list "". `applyVerdict`
-  // already treats a blank as no opinion, which is what makes this a NO-CHANGE answer rather than a
-  // clearing one — a group keeps what it holds, and only new evidence moves it.
-  for (const g of groups)
-    properties[g.name] = { type: "string", enum: [...g.values, ""] };
-  // The range the prompt asks for, DECLARED (issue #477 review, round 12). A constrained ask holds
-  // the provider to it; a prose answer is held to it at the reading below, so `75` or `-1` never
-  // reaches the trail as a confidence.
-  properties.confidence = { type: "number", minimum: 0, maximum: 1 };
-  properties.reason = { type: "string" };
-  return {
-    title: "observation_verdict",
-    type: "object",
-    additionalProperties: false,
-    required: [...groups.map((g) => g.name), "confidence", "reason"],
-    properties,
-  } as const;
+  // The turn's deadline, injectable so a test can assert the tick gives up without waiting a
+  // minute for it. Production never passes it.
+  timeoutMs?: number;
+  // The fetch the outbound tools use, injectable for the same reason as makeClient and makeModel:
+  // the observer runs the ordinary toolset, and until this there was no way to exercise that path
+  // without the network. Production never passes it.
+  outboundFetch?: typeof fetch;
 }
 
 // A ROW THE TRANSCRIPT CAN USE. Factored out of `transcriptFromRows` so the paging below counts the
@@ -431,47 +433,118 @@ function quotesResolved(
   return true;
 }
 
-function stripFences(text: string): string {
-  return text.replace(FENCE_TAG, "");
-}
-
 // The task, appended to the agent's own prompt: the persona says what the business is, this says
 // what to do with the conversation. In the product's language, like the summarizer's.
-export function buildObserveTask(
-  groups: readonly LabelGroup[],
-  current: readonly string[] = [],
+// WHAT THE MODEL IS ASKED, and it is no longer a classification task. The groups, the enum and the
+// rules about which value wins used to be built here, because the verdict had to be machine-read;
+// now the operator writes that in their own prompt or in the tool's usage guidance, exactly as they
+// would for a responder — which is the whole point of the mode being generic (issue #568).
+//
+// What is left is the frame the agent cannot know on its own: it is reading, not answering, and
+// there is no reply channel this turn. The last line is the one that keeps a tick cheap: a
+// conversation where nothing changed should cost one model call and no writes.
+export function observeTurnText(
+  transcript: readonly TranscriptLine[],
+  // `null` is "we could not read them", which is NOT "there are none": the second is what makes a
+  // model clear a conversation it never saw the labels of (review round 33).
+  current: readonly string[] | null,
+  notes: readonly string[] = [],
 ): string {
-  const lines = groups.map(
-    (g) =>
-      `- ${g.name} (${g.exclusive ? "um valor por vez" : "pode acumular"}): ${g.values.join(", ")}`,
-  );
-  // The current value of each group, named per group rather than left for the model to find in the
-  // label list: the rule below is "repeat it unless the customer's newest message says otherwise",
-  // and a rule about a value the model has to look up is a rule it forgets (measured: a "thanks"
-  // flipped a label back to the first message's subject when the value sat only in the list).
-  const held = groups.map((g) => {
-    const v = current.filter((l) => g.values.includes(l));
-    return `- ${g.name}: ${v.length ? v.join(", ") : "(nenhum ainda)"}`;
-  });
   return [
-    "Tarefa de observação: você acompanha esta conversa sem responder a ninguém. Classifique-a nos grupos abaixo, escolhendo um valor da lista de cada grupo.",
+    "Turno de observação: você está acompanhando esta conversa e NÃO responde a ninguém.",
+    "Não existe canal de resposta aqui: qualquer texto que você escrever não chega a lugar nenhum, nem ao cliente nem à equipe.",
+    "O que você faz neste turno é agir sobre a conversa com as ferramentas que tem: etiquetar, anotar em nota privada, registrar atributo, mover o card, o que o seu papel pedir.",
+    "Cada turno começa do zero: o que você já fez nesta conversa está no que está registrado nela, não na sua memória.",
+    // ...AND THE HALF THAT DOES NOT REGISTER ITSELF (review round 32). A label and a note are on the
+    // conversation, so the two lines above are enough for them. An action whose effect lands
+    // somewhere else — an HTTP call, a booking, a charge — leaves NOTHING here, and the next burst
+    // reads an overlapping window with the same evidence, which is an invitation to do it again.
+    // The note channel is the trace this design already has, so the frame asks for it and asks the
+    // model to read it back. A mitigation, not a guarantee: the residual risk is declared in the PR
+    // and in docs/chatwoot.md, because a model that ignores the instruction, or an effect older than
+    // the window, is still a repeat nobody can see from here.
+    "Uma ação com efeito FORA desta conversa (chamada a sistema externo, agendamento, cobrança) não deixa rastro aqui: ao fazer uma, registre em nota privada o que foi feito, e não repita a que já estiver registrada.",
+    "As notas abaixo são as que aparecem na janela que você está lendo; pode haver outras mais antigas que não estão aqui.",
+    "Se nada precisa mudar em relação ao que já está registrado, não chame ferramenta nenhuma.",
     "",
-    "<grupos>",
-    ...lines,
-    "</grupos>",
+    // STRIPPED like the notes and the transcript, and for the same reason: `set_labels` sends the
+    // model's own strings to Chatwoot, and Chatwoot's tag list accepts what the account's label
+    // catalog would refuse — so a label can carry this block's own closing tag and end it early
+    // (review round 26). The tool's XML renderer escapes; this block is plain text, so it strips.
+    `<etiquetas-atuais>${
+      current === null
+        ? "(não foi possível ler)"
+        : current.length
+          ? current.map((l) => stripFences(l).trim()).join(", ")
+          : "(nenhuma)"
+    }</etiquetas-atuais>`,
     "",
-    "<valores-atuais>",
-    ...held,
-    "</valores-atuais>",
+    // THE NOTES THE CONVERSATION ALREADY CARRIES, and the reason they are here is the same as the
+    // labels'. A tick is stateless on purpose — its own thread, an in-memory checkpointer — so
+    // "don't write if nothing changed" is a question the model can only answer against what is
+    // WRITTEN on the conversation. A label it can see; a private note it wrote on the last burst it
+    // could not, because the transcript is public messages only, and it would file the same note
+    // again on every burst. Given as a separate block rather than folded into the transcript: a
+    // note is not somebody talking, and the window that counts messages must keep counting messages.
+    // NAMED FOR WHAT IT ACTUALLY HOLDS: the notes inside the window this turn read, not every note
+    // the conversation ever carried. The rows are the window's rows — a conversation with more
+    // public messages after a note than the window is wide does not fetch that note, and paging
+    // further for one would cost extra Chatwoot reads on every tick of every conversation that has
+    // no notes at all, which is most of them. So the block says its own scope instead of implying a
+    // completeness it does not have: "(nenhuma nesta janela)" is a different claim from "(nenhuma)",
+    // and it is the one that is true (review round 27).
+    `<notas-internas escopo="janela-lida">${
+      notes.length
+        ? `\n${notes.map((n) => `- ${n}`).join("\n")}\n`
+        : "(nenhuma nesta janela)"
+    }</notas-internas>`,
     "",
-    "Regras:",
-    "- O valor de um grupo é o da demanda MAIS RECENTE do cliente. Mensagens do atendente não definem o assunto.",
-    "- Repita o valor atual do grupo, a menos que a última mensagem do cliente traga uma demanda nova que caiba em outro valor. Mencionar um assunto antigo não é demanda nova.",
-    '- Um "ok", um "obrigado", uma saudação ou uma mensagem sem demanda não mudam nada: repita o valor atual.',
-    "- Só use o que está na transcrição; não deduza nem invente.",
-    '- Se nenhum valor da lista couber, responda "" nesse grupo: o valor atual dele fica como está.',
-    '- Responda apenas com o JSON pedido: um campo por grupo com o valor escolhido, "confidence" de 0 a 1 e "reason" com uma frase curta, no idioma da conversa.',
+    "<transcricao>",
+    renderTranscript(transcript),
+    "</transcricao>",
   ].join("\n");
+}
+
+// The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —
+// this watcher on an earlier tick, another watcher, the responder, a colleague — because the
+// question the block answers is "what does this conversation already say", and it is the same
+// question whoever wrote the answer.
+export function notesFromRows(
+  rows: ChatwootMessageRow[],
+  limit: number,
+): string[] {
+  const all = rows
+    .filter((m) => m.private && !m.isReaction && m.content.trim().length > 0)
+    .sort((a, b) => a.id - b.id)
+    .slice(-limit)
+    .map((m) =>
+      clipText(
+        stripFences(m.content)
+          .trim()
+          .replace(/\s*\n\s*/g, " "),
+        NOTE_MAX_CHARS,
+      ),
+    )
+    .filter((t) => t.length > 0);
+  // WHOLE NOTES, DROPPED FROM THE OLDEST, rather than one cut through the middle of the block. A cut
+  // leaves a fragment that reads as a complete note, which is the failure the label block avoids by
+  // saying "(nenhuma)" instead of nothing: half a fact presented as a whole one. Walked newest
+  // first, because the newest is the one a duplicate would duplicate; put back in order after.
+  const kept: string[] = [];
+  let budget = NOTES_MAX_CHARS;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const note = all[i] as string;
+    if (note.length > budget) break;
+    budget -= note.length;
+    kept.push(note);
+  }
+  return kept.reverse();
+}
+
+// The fence tags the renderers wrap machine-written text in (a transcription, an image
+// description): stripped so a transcript line reads as the message, not as its markup.
+function stripFences(text: string): string {
+  return text.replace(FENCE_TAG, "");
 }
 
 export interface TranscriptLine {
@@ -534,100 +607,12 @@ export function renderTranscript(lines: readonly TranscriptLine[]): string {
   return clipTextEnd(joined, TRANSCRIPT_MAX_CHARS);
 }
 
-function firstJsonObject(raw: string): Record<string, unknown> | null {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  try {
-    const v: unknown = JSON.parse(raw.slice(start, end + 1));
-    return v && typeof v === "object" && !Array.isArray(v)
-      ? (v as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function isRequestRefused(err: unknown): boolean {
+function _isRequestRefused(err: unknown): boolean {
   return (
     typeof err === "object" &&
     err !== null &&
     (err as { status?: unknown }).status === 400
   );
-}
-
-// The same two shapes the guardrail asks in (../guardrails/analyze.ts): constrained where the
-// endpoint implements it, prose elsewhere, and a 400 on the constrained ask is retried in prose —
-// a permanent answer about this request, unlike a rate limit.
-async function askVerdict(
-  model: BaseChatModel,
-  provider: ModelConfig["provider"],
-  schema: ReturnType<typeof verdictSchemaFor>,
-  messages: BaseMessage[],
-  callbacks: BaseCallbackHandler[],
-): Promise<Record<string, unknown> | null> {
-  const asProse = async () => {
-    const res = await model.invoke(messages, {
-      signal: AbortSignal.timeout(OBSERVE_TIMEOUT_MS),
-      callbacks,
-    });
-    return firstJsonObject(contentToText(res.content));
-  };
-  if (verdictAskMode(provider) === "prose") return asProse();
-  try {
-    const res = (await model
-      .withStructuredOutput(schema, {
-        name: schema.title,
-        strict: true,
-        includeRaw: true,
-      })
-      .invoke(messages, {
-        signal: AbortSignal.timeout(OBSERVE_TIMEOUT_MS),
-        callbacks,
-      })) as { raw: BaseMessage; parsed: Record<string, unknown> | null };
-    return res.parsed ?? firstJsonObject(contentToText(res.raw.content));
-  } catch (err) {
-    if (!isRequestRefused(err)) throw err;
-    logger.warn(
-      { err },
-      "observe: model refused the constrained verdict, retrying in prose",
-    );
-    return asProse();
-  }
-}
-
-export function observeNoteText(
-  agentName: string,
-  changes: readonly VerdictChange[],
-  reason: string | null,
-): string {
-  const moves = changes
-    .map((c) =>
-      c.from ? `${c.group}: ${c.from} → ${c.to}` : `${c.group}: ${c.to}`,
-    )
-    .join(" · ");
-  const why = reason ? `\n${clipText(reason, OBSERVE_NOTE_REASON_MAX)}` : "";
-  return `🔎 ${agentName} · ${moves}${why}`;
-}
-
-// WHAT THE TRAIL MAY CARRY, and it is never the model's own string (issue #477 review, round 3).
-// `ExecutionLog.detail` is allowlisted ids, counts and enums and NEVER message text or PII
-// (CLAUDE.md, docs/logs.md) — `redactSecretsDeep` takes out what LOOKS like a credential and
-// nothing else. A prose-mode provider, or the fallback after a refused constrained ask, answers
-// whatever it likes under a group's key: the customer's name, their phone, a line of what they
-// wrote. So a value reaches the line only by being one the GROUP lists, which is an enum by
-// construction; anything else is `null` here and counted, not quoted, below.
-function verdictValues(
-  groups: readonly LabelGroup[],
-  verdict: Record<string, unknown>,
-): Record<string, string | null> {
-  const out: Record<string, string | null> = {};
-  for (const g of groups) {
-    const v = verdict[g.name];
-    out[g.name] =
-      typeof v === "string" && g.values.includes(v.trim()) ? v.trim() : null;
-  }
-  return out;
 }
 
 // STILL ON THE INBOX, and not merely still a monitoring agent (issue #477 review, round 1).
@@ -701,7 +686,6 @@ export async function runObserve(
     });
     if (!agent?.enabled || !isMonitoring(agent.mode)) return null;
     const mon = readMonitoringConfig(agent.settings);
-    if (!observationEnabled(mon)) return null;
     // THE ARM'S OWN REFUSAL, ASKED AGAIN AGAINST THE CONFIGURATION NOW (issue #477 review, round 1).
     // A burst queued while the agent was `incremental` outlives a flip to `on_resolve`: the row is
     // not retired by the edit, and reloading the config here without re-asking spends a model call
@@ -736,7 +720,7 @@ export async function runObserve(
     // The CONV goes with it, so the stale-state fences below can run before this is treated as a
     // retryable failure (issue #477 review, round 20).
     if (!cfg) return { noModel: true as const, conv };
-    return { agentName: agent.name, mon, cfg, conv };
+    return { mon, cfg, conv };
   });
   if (loaded !== null && loaded.conv?.inboxId != null) {
     const onInbox = await agentStillOnInbox(
@@ -773,7 +757,7 @@ export async function runObserve(
   }
   if (!loaded) {
     logger.info(
-      "observe: nothing to do (conv=%s): the agent no longer observes, or has no label group",
+      "observe: nothing to do (conv=%s): the agent no longer observes, or this burst is refused by its `analysis` setting",
       String(conversationId),
     );
     return { outcome: "done" };
@@ -806,7 +790,7 @@ export async function runObserve(
       error: "observe: the agent's model configuration could not be built",
     };
   }
-  const { agentName, mon, cfg, conv } = loaded;
+  const { mon, cfg, conv } = loaded;
   const flow: FlowContext = {
     tenantId,
     turnId,
@@ -844,6 +828,21 @@ export async function runObserve(
   }
 
   const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
+  // MUTED, and this is where the guarantee that a watcher never answers now lives (issue #568).
+  // It used to live in `loadAgentConfig`, which refuses to build a config for a monitoring agent at
+  // all — and that refusal is why this module had to grow its own model call in the first place: the
+  // graph could not run, so a bespoke classifier was written beside it. `loadAgentConfig` keeps
+  // refusing for every customer-facing caller, which is what it is for; here the tick loads the
+  // config with `ignoreMode` and gets a client that cannot post to the customer instead, so the
+  // ordinary graph — the agent's tools, its MCP, its knowledge — can run for a watcher exactly as it
+  // does for a responder, minus the one thing a watcher must not do.
+  // THE TICK'S DEADLINE, created here so it covers everything after it: the transcript read, tool
+  // discovery, the turn, and — through `expiresOn` on the client below — any write a tool handler
+  // is still in the middle of when it fires. Aborting the invoke stops the caller waiting; it does
+  // not stop a handler already inside its own sequence of writes, and this client gives each
+  // request an independent deadline of its own, so without this the tick could report a retryable
+  // failure while the turn it walked away from kept mutating the conversation (review r10).
+  const deadline = AbortSignal.timeout(deps.timeoutMs ?? OBSERVE_TIMEOUT_MS);
   const client: ChatwootClient = await loadChatwootClient(
     tenantId,
     instanceId,
@@ -851,6 +850,8 @@ export async function runObserve(
       base,
       botToken: bot?.accessToken,
       makeClient: deps.makeClient,
+      mute: true,
+      expiresOn: deadline,
     },
   );
   const fetched = await readWindowRows(
@@ -878,6 +879,9 @@ export async function runObserve(
       ? fetched
       : fetched.filter((r) => r.id > resetBoundary);
   const transcript = transcriptFromRows(rows, mon.window.messages);
+  // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
+  // the operator wiped is not part of this one either.
+  const notes = notesFromRows(rows, mon.window.messages);
   if (!transcript.some((l) => l.role === "customer")) {
     line("skipped", {
       skipped: "no_customer_message",
@@ -885,55 +889,376 @@ export async function runObserve(
     });
     return { outcome: "done" };
   }
-  const current = await client.getConversationLabels(conversationId);
-  // The set the VERDICT will have been computed against, kept for the write below.
-  const promptLabels = current;
-
-  const schema = verdictSchemaFor(mon.labelGroups);
-  const system = `${cfg.systemPrompt}\n\n${buildObserveTask(mon.labelGroups, current)}`;
-  const user = [
-    `<etiquetas-atuais>${current.length ? current.join(", ") : "(nenhuma)"}</etiquetas-atuais>`,
-    "<transcricao>",
-    renderTranscript(transcript),
-    "</transcricao>",
-  ].join("\n");
-  const messages: BaseMessage[] = [
-    new SystemMessage(system),
-    new HumanMessage(user),
-  ];
-  // NOTE: BUILT BEFORE THE PRIMARY, because the primary's own bounds depend on whether it exists
-  // (issue #567 review, round 1). LangChain's defaults are six retries and an unbounded wait; with a
-  // second provider waiting, those turn a transient fault into the observer's whole 60-second abort
-  // and the fallback never gets a turn. `buildModelAndGraph` bounds the answer path the same way,
-  // and for the same reason: bounded ONLY when something was actually built behind it, so an
-  // install with no fallback keeps LangChain's behaviour byte for byte.
-  const fb = buildFallbackModel(cfg, deps.makeModel ?? createChatModel, {
-    // NOTE: ...AND A FALLBACK THAT CANNOT BE BUILT SAYS SO ON THE TRAIL (round 1). A deleted
-    // credential or an endpoint the provider pair does not accept leaves the tick with nothing
-    // behind it, which is indistinguishable from having configured none — and a server log is not
-    // where the operator who configured it is looking. Reported at BUILD time rather than at
-    // failure time, because by then it is too late to be the warning it needs to be.
-    onModelFallbackUnavailable: ({ provider, model: fbModel, reason }) =>
-      emitFlowEvent(flow, {
-        stage: "observe",
-        level: "warn",
-        status: "ok",
-        provider,
-        model: fbModel,
-        detail: { fallbackUnavailable: reason },
-      }),
-  });
-  const resolved: ResolvedModelConfig = {
-    ...cfg.mc,
-    apiKey: cfg.apiKey,
-    baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
-    ...(fb
-      ? { maxRetries: PRIMARY_MAX_RETRIES, timeoutMs: PRIMARY_TIMEOUT_MS }
-      : {}),
-  };
-  let model: BaseChatModel;
+  // ONE READ, for the prompt block below AND for the tool's comparison baseline. `set_labels` diffs
+  // the model's list against what the model was SHOWN, so two reads a few hundred milliseconds apart
+  // are two different claims about the same turn: a label this block advertises can be missing from
+  // the tool's baseline, and the model repeating it to keep it then reads as an ADDITION — putting
+  // back exactly what somebody removed in between. Handed to `buildToolset` for that reason.
+  // TOLERATED WHEN IT FAILS, because this read is not what the tick is FOR (review round 33). A
+  // watcher does not have to be a classifier: one that only writes a private note, or calls an HTTP
+  // tool, has nothing to do with labels — and an uncaught throw here ended its tick before the graph
+  // was ever invoked, retried the whole thing, and eventually dead-lettered it over a read it never
+  // needed. `buildToolset` already degrades its own label read the same way (prepare.ts): the scope
+  // simply disappears, which is the safe degenerate, since a scope that was not shown produces no
+  // removal.
+  //
+  // `null`, not `[]`, and the prompt block says which: "no labels" and "could not read" are
+  // different claims, and the first is the one that makes a model clear everything.
+  let current: string[] | null = null;
   try {
-    model = (deps.makeModel ?? createChatModel)(resolved);
+    current = await client.getConversationLabels(conversationId);
+  } catch (e) {
+    logger.warn(
+      "observe: conversation labels unreadable (tenant=%s conv=%s): %s",
+      String(tenantId),
+      String(conversationId),
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+  // THE PROMPT BLOCK HIDES THE GUARDED ONES TOO. `set_labels` filters them out of what it shows and
+  // out of what it accepts, and this block is the third model-facing place the same list reaches —
+  // leaving it raw would print `agente-off` under `<etiquetas-atuais>` while the tool's own
+  // description denies it exists, which is both a contradiction to reason from and the exact
+  // invitation the guard is there to withdraw. The unfiltered `current` still goes to `buildToolset`
+  // as the ONE read: what the tool does with it (seed `shownLabels`, minus the guard) is its rule to
+  // apply, and copying the subtraction here would make two places responsible for one decision.
+  // Through the same projection the tool renders: the guard subtracted AND the ceiling applied, so
+  // this block cannot advertise a label the tool's own description leaves out (see label-view.ts).
+  const currentForPrompt =
+    current === null ? null : modelVisibleLabels(current, cfg.protectedLabels);
+
+  // THE TURN ITSELF, and from here on this is the ordinary graph (issue #568). What used to sit in
+  // these lines was a classifier: one model call with a JSON schema built from the operator's label
+  // groups, then a deterministic apply that wrote the verdict. It existed because `loadAgentConfig`
+  // refuses to build a config for a monitoring agent, so the graph could not run and something had
+  // to be written beside it — and the taxonomy screen existed because that something needed to be
+  // told what to classify into.
+  //
+  // With a muted client the graph runs, so a watcher is what it was always meant to be: the ordinary
+  // agent, with its tools, its MCP and its knowledge, that cannot answer the customer. Classifying
+  // is then one thing it can do with `set_labels`, described in the operator's own prompt, and not a
+  // mode with a screen of its own.
+  const checkpointer = deps.checkpointer ?? new MemorySaver();
+  // A THREAD OF ITS OWN, per agent, and never the conversation's. The responder's memory lives on
+  // `chatwootThreadId(...)`; invoking here with that id would checkpoint the watcher's transcript,
+  // tool calls and prose into the history the responder replies from. In-memory by default, so a
+  // tick is stateless the way the verdict was: the transcript below is rebuilt from Chatwoot every
+  // time, which is what makes an observation reproducible from the conversation alone.
+  const graphThreadId = `${threadId}:observer:${agentId}`;
+
+  // WHY THE FENCES MOVED. They used to be asked once, after the model call and before the write,
+  // because there was exactly one write and it was ours. A turn has as many writes as the model has
+  // tool calls, so the same questions are now asked at every tool HOP, which is the seam
+  // `buildAgentGraph({stillWanted})` exists for and the one the nudge uses for the same reason: a
+  // scheduler job whose world can change while a model call is in flight.
+  //
+  // Each returns a REASON rather than a boolean, so the flow line can say which door closed — and
+  // `unreadable` is kept apart from `no` throughout, because folding a transient read failure into
+  // "the operator switched it off" throws away a turn already paid for and says something false on
+  // the trail (issue #477, rounds 7, 8 and 10).
+  //
+  // AND THE TWO ANSWERS END THE TICK DIFFERENTLY, which is the other half of keeping them apart. A
+  // withdrawal is done: the operator moved the world and the turn was right to stop, so the job
+  // completes. A read that FAILED is a verdict lost, not a verdict declined — nothing re-arms this
+  // row on its own, an `on_resolve` agent has no later burst and a resolve happens once, so a
+  // transient database blip here is a conversation that is never classified (issue #477 review,
+  // round 7). Those fail, and the scheduler retries with backoff up to the cap; the retry spends the
+  // model call again, which is the price, and the spend ceiling gates it like every other tick.
+  let refusal: string | null = null;
+  const fence = async (): Promise<boolean> => {
+    if (refusal !== null) return false;
+    const observesNow = await agentObservesNow(tenantId, agentId, base);
+    if (observesNow !== "yes") {
+      refusal =
+        observesNow === "unreadable"
+          ? "agent_state_unreadable"
+          : "agent_no_longer_observes";
+      return false;
+    }
+    // ONE ROW ANSWERS BOTH QUESTIONS, and this read is the later of the two: the switch and the mode
+    // were read a query ago, and an operator who turned the agent off in between leaves this read
+    // observing the new row while the fence goes on acting on the old pair. Re-asking them here is
+    // two more columns of a query already being made, and it closes the case a `settings`-only
+    // select could not even see — a row that is GONE, the agent deleted mid-turn, which read as "no
+    // monitoring config" and passed (review round 38). It narrows the window to this read and the
+    // work; nothing closes it, as with every other fence in this file.
+    const monNow = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.agent.findUnique({
+        where: { id: agentId },
+        select: { enabled: true, mode: true, settings: true },
+      }),
+    )
+      .then((row) =>
+        !row?.enabled || !isMonitoring(row.mode)
+          ? ("gone" as const)
+          : readMonitoringConfig(row.settings),
+      )
+      .catch(() => "unreadable" as const);
+    if (monNow === "unreadable") {
+      refusal = "settings_unreadable";
+      return false;
+    }
+    if (monNow === "gone") {
+      refusal = "agent_no_longer_observes";
+      return false;
+    }
+    // The arm's own second question, asked again: an operator switching to `on_resolve` while the
+    // call is in flight is refusing exactly this turn, and a fence that did not ask let it act.
+    if (
+      monNow !== null &&
+      reason === "burst" &&
+      monNow.analysis !== "incremental"
+    ) {
+      refusal = "analysis_changed";
+      return false;
+    }
+    const rows = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const convNow = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        // `inboxId` from HERE and not from the load: a conversation moved to another inbox while the
+        // model answered leaves the load's snapshot naming the old one, and the binding question
+        // would then be about an inbox this conversation is no longer on.
+        select: { status: true, resetAtMessageId: true, inboxId: true },
+      });
+      const claim =
+        deps.claim === undefined
+          ? null
+          : await db.schedulerJob.findUnique({
+              where: { id: deps.claim.jobId },
+              select: { status: true, claimSeq: true },
+            });
+      return { convNow, claim };
+    }).catch(() => "unreadable" as const);
+    // UNREADABLE IS NOT ABSENT: folded into `null`, a failed read says both "no reset happened" and
+    // "the conversation is gone", and acts on both — the reset fence answering the one way it must
+    // never answer.
+    if (rows === "unreadable") {
+      refusal = "conversation_unreadable";
+      return false;
+    }
+    const { convNow, claim: claimNow } = rows;
+    // A message landing while the model answers re-arms this row, and the scheduler's own CAS
+    // notices only after the handler returns — by which point the tools have written.
+    if (
+      deps.claim !== undefined &&
+      !(
+        claimNow?.status === "CLAIMED" &&
+        claimNow.claimSeq === deps.claim.claimSeq
+      )
+    ) {
+      refusal = "superseded";
+      return false;
+    }
+    if (
+      reason === "resolved" &&
+      convNow !== null &&
+      convNow.status !== "resolved"
+    ) {
+      refusal = "reopened";
+      return false;
+    }
+    if (resetLandedAfter(p.atMessageId, convNow?.resetAtMessageId ?? null)) {
+      refusal = "reset";
+      return false;
+    }
+    if (convNow?.inboxId != null) {
+      const onInbox = await agentStillOnInbox(
+        tenantId,
+        convNow.inboxId,
+        agentId,
+        base,
+      );
+      if (onInbox !== "yes") {
+        // A ROW THAT HAS NOT LANDED IS NOT A DETACH, and the load-time check already says so — this
+        // one folded it into a permanent detach, which COMPLETES the job. A detach and a reattach
+        // that straddle the model call leave `attachedAt` null for a moment, and for an
+        // `on_resolve` watcher that moment is the whole classification: the resolve mark suppresses
+        // every later delivery of the same resolution, so it is never observed at all (review r10).
+        refusal =
+          onInbox === "unreadable"
+            ? "binding_unreadable"
+            : onInbox === "attaching"
+              ? "binding_attaching"
+              : "agent_no_longer_on_inbox";
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // ...AND IT COVERS DISCOVERY, which is the one call that can hang forever: `buildToolset` contacts
+  // every MCP server the agent has, and an SSE server that opens the stream and never emits its
+  // endpoint waits with no timeout of its own.
+  let tools: Awaited<ReturnType<typeof buildToolset>>;
+  try {
+    tools = await underSignal(
+      buildToolset(
+        cfg,
+        {
+          tenantId,
+          instanceId,
+          base,
+          client,
+          conversationId,
+          threadId,
+          expiresOn: deadline,
+          // The burst's triggering message, exposed to HTTP and code tools as {{message_id}}. The
+          // observer runs the ORDINARY toolset now, so a tool whose URL carries that placeholder is
+          // as legal here as on a reactive turn — and without this it failed with a missing
+          // placeholder on every observation. Null on an `on_resolve` tick, which has no triggering
+          // message: the placeholder is then absent, which is the same answer a nudge gives.
+          ...(p.atMessageId != null ? { messageId: p.atMessageId } : {}),
+          ...(deps.outboundFetch ? { outboundFetch: deps.outboundFetch } : {}),
+          stillWanted: () => fence(),
+          onNoEffect: (toolName: string) => {
+            if (counted.has(toolName)) noEffect++;
+          },
+          observed: conv ? { status: conv.status, statusAt: null } : undefined,
+          // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
+          // degradation if that fails too — one extra request on the failing path only.
+          ...(current === null ? {} : { conversationLabels: current }),
+        },
+        { buildNativeTools, mcp: deps.mcp, flow },
+      ),
+      deadline,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    line("error", { failed: "toolset_build" }, "error");
+    return { outcome: "fail", error: `observe: ${msg}` };
+  }
+
+  // WHETHER ANYTHING IRREVERSIBLE HAS ALREADY HAPPENED THIS TICK. A scheduler job that fails is
+  // retried, and this tick is stateless by design — its own thread, an in-memory checkpointer — so a
+  // retry re-runs the WHOLE turn from the top. That was harmless while the tick was a classifier
+  // with one deterministic write; with the ordinary toolset it is not: a booking, an outbound POST,
+  // a charge, a hand-off can all have committed before the failure, and the retry does them again
+  // (issue #568, review round 25).
+  //
+  // So a tick that has already invoked a tool does not retry. At-most-once for the effects beats
+  // at-least-once for a classification: the effects reach other systems and cannot be taken back,
+  // while the classification is re-asked on the very next burst. Counted at the tool boundary rather
+  // than from the model's reported calls, because the count has to exist when the invoke THREW.
+  //
+  // COUNTED ONLY FOR A TOOL THAT CAN LEAVE SOMETHING BEHIND. Three cannot, by construction: the
+  // utility natives (a calculator, a clock), `skip_reply`, whose whole implementation is the
+  // sentence it returns, and the knowledge SEARCH. A tick whose only call was one of those has
+  // nothing to repeat, so refusing the retry there would throw away the run for free — and an
+  // `on_resolve` observer has no later burst to try again in.
+  //
+  // BY NAME FOR THE NATIVES, BY IDENTITY FOR THE SEARCH, and the asymmetry is the point (round 29).
+  // A native's name is reserved by the assembly whether the native was built or not (#457), so
+  // nothing else can answer under it. `search_knowledge` is a RAG built-in whose name is reserved
+  // nowhere, and RAG is assembled LAST, so a legacy tenant row carrying that name wins it — and
+  // exempting it by name would hand this exemption to whatever that row does, an HTTP POST
+  // included. The RAG tool is marked at its build seam instead (tools/effect-free.ts).
+  //
+  // Everything else counts, including an HTTP GET that happens to be a read: nothing in a tool
+  // definition says so, and the two errors are not symmetric. Counting a read costs one lost
+  // observation; NOT counting a write costs the write, again, in somebody else's system.
+  const effectFreeNames = new Set<string>([
+    ...UTILITY_NATIVE_TOOL_NAMES,
+    SKIP_REPLY_TOOL,
+  ]);
+  let toolsRan = 0;
+  // Dispatches that answered without writing anything. `toolsRan - noEffect` is what committed.
+  let noEffect = 0;
+  // ...AND ONLY FOR A TOOL THIS COUNTER COUNTS. An effect-free tool never incremented `toolsRan`, so
+  // a report from one — a guarded `calculator` refused by a precondition — would subtract something
+  // that was never added, and a real write by a sibling tool in the same turn would then read as
+  // nothing committed: the retry that repeats it (review round 37). The name is the key both ends
+  // can agree on, because the assembly makes it unique across every source.
+  const counted = new Set<string>();
+  const fencedTools = tools.map((t) => {
+    // The prototype trick guardedTool uses: name, description and schema stay the tool's own, and a
+    // permitted call reaches exactly the run it would have had.
+    const seen = Object.create(t) as typeof t;
+    seen.invoke = (async (input: unknown, config?: unknown) => {
+      // BEFORE the call, because the count has to exist when the invoke THREW — a booking that
+      // reached its POST and then blew up is exactly the case this guards. What did NOT happen is
+      // reported by the handler itself, through `onNoEffect` below: a precondition that refused, a
+      // fence that answered inside a handler before its write, a toolpack request that threw
+      // instead of leaving. Counted apart rather than subtracted here, because one of those exits
+      // throws and never comes back through this wrapper (rounds 33 and 36).
+      const countsHere = !effectFreeNames.has(t.name) && !isEffectFreeTool(t);
+      if (countsHere) {
+        counted.add(t.name);
+        toolsRan++;
+      }
+      try {
+        return await (t.invoke as (i: unknown, c?: unknown) => unknown)(
+          input,
+          config,
+        );
+      } catch (e) {
+        // ARGUMENTS THE TOOL NEVER ACCEPTED. The count above is deliberately blind — an invoke that
+        // threw may have thrown after its write — but ONE throw is provably before it: the schema
+        // parse, which happens in `invoke` and never reaches the handler, so no handler is there to
+        // report (review round 39). The model is handed the error and usually retries; what must
+        // not survive is a dispatch counted as committed on the strength of arguments that were
+        // rejected, because it turns the next failure into a completed job and the observation is
+        // never made.
+        if (countsHere && e instanceof ToolInputParsingException) noEffect++;
+        throw e;
+      }
+    }) as typeof t.invoke;
+    return seen;
+  });
+
+  let graph: Awaited<ReturnType<typeof buildModelAndGraph>>;
+  try {
+    graph = await buildModelAndGraph(cfg, fencedTools, {
+      makeModel: deps.makeModel,
+      checkpointer,
+      stillWanted: () => fence(),
+      onModelRetry: ({ attempt, provider, model }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          provider,
+          model,
+          detail: { retry: attempt, node: "observer" },
+        }),
+      onModelFallback: ({ provider, model, reason: why }) =>
+        emitFlowEvent(flow, {
+          stage: "observe",
+          level: "warn",
+          status: "ok",
+          provider,
+          model,
+          detail: { fallbackFrom: cfg.mc.provider, fallbackReason: why },
+        }),
+      onModelFallbackFailed: ({ provider, model, reason: why }) =>
+        emitFlowEvent(flow, {
+          stage: "observe",
+          level: "info",
+          status: "error",
+          provider,
+          model,
+          detail: { fallbackFailed: why },
+        }),
+      // ...AND THE ONE THAT FIRES BEFORE ANY FAILURE. A fallback the operator configured and that
+      // cannot be BUILT — credential deleted, configuration unrunnable — leaves the turn with
+      // nothing behind it, which is indistinguishable from having configured none. Reported at
+      // build time rather than on the failure, because by then it is too late to be the warning it
+      // needs to be, and a tick whose primary keeps answering would otherwise hide it forever.
+      onModelFallbackUnavailable: ({ provider, model, reason: why }) =>
+        emitFlowEvent(flow, {
+          stage: "observe",
+          level: "warn",
+          status: "ok",
+          provider,
+          model,
+          detail: { fallbackUnavailable: why },
+        }),
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     line("error", { failed: "model_build" }, "error");
@@ -942,22 +1267,12 @@ export async function runObserve(
       error: `observe: model could not be built: ${msg}`,
     };
   }
-  const callbacks = buildCallbacks(cfg, {
-    tenantId,
-    threadId,
-    node: "observer",
-    model: cfg.mc.model,
-    conversationId: conv?.id ?? null,
-    source: "inbox",
-    turnId,
-    base,
-  });
-  // GATED IMMEDIATELY BEFORE THE ONE BILLED CALL, and immediately is the whole rule
-  // (CLAUDE.md, spend-ceiling/coverage.ts names this node). Asked at the top of the tick instead, it
-  // answered for every exit that comes before it: a conversation with no customer message yet, a
-  // transcript the renderers emptied, a model configuration that does not build — each reported as
-  // `spend_ceiling` on a tick that was never going to spend anything, which reads on the flow page
-  // as a tenant hitting its budget and hides the configuration error that is actually there.
+
+  // GATED IMMEDIATELY BEFORE THE BILLED CALL, and immediately is the whole rule (CLAUDE.md,
+  // spend-ceiling/coverage.ts names this node). Asked at the top of the tick instead, it answered
+  // for every exit that comes before it — a conversation with no customer message yet, a transcript
+  // the renderers emptied — each reported as `spend_ceiling` on a tick that was never going to
+  // spend anything, which reads on the flow page as a tenant hitting its budget.
   const ceiling = await spendCeilingVerdict({
     tenantId,
     source: "inbox",
@@ -972,619 +1287,161 @@ export async function runObserve(
     return { outcome: "done" };
   }
 
-  // NOTE: THE SECOND PROVIDER RUNS FOR A VERDICT TOO (issue #567). `runModelCall` carries the one recovery
-  // LangChain does not make — an intermittent empty completion, measured at 1 in 184 on one install
-  // — and until now the observer called it bare, so an agent with a fallback configured had nothing
-  // behind its provider on this path. What that costs is not a turn but a LABEL: the tick ends, the
-  // conversation keeps yesterday's classification, and nothing on screen says why.
+  // THE REFUSALS THAT ARE NOT ANSWERS, listed by name rather than matched by suffix: a refusal
+  // added later that happens to end in the same word is a decision about retries, and it should be
+  // made here on purpose rather than inherited from how it was spelled.
   //
-  // The AGENT's own `modelFallback`, not a second setting: it is the same persona and the operator
-  // configured it once. A watcher-specific fallback is a real question — the model that answers a
-  // customer well and the one that classifies well are not necessarily the same, and this call runs
-  // with structured output — but it is a new setting to design, and running the configured one is
-  // strictly better than running nothing.
-  //
-  // Built through the same helper the answer path uses, so a fallback that cannot run is refused
-  // the same way here (a provider switch that would carry the agent's credentialRef, a constructor
-  // the SDK rejects) and reported through the same `onModelFallbackUnavailable`.
-  //
-  // ITS OWN CALLBACKS, and this is the part that is easy to get wrong: the usage row is stamped with
-  // the model named in `buildCallbacks`, so reusing the primary's would bill the fallback's tokens
-  // under the primary's name — the same defect `ModelRetryInfo` exists to prevent one lane up.
-  //
-  // Inside the spend ceiling above, deliberately: the gate is immediately before the billed call and
-  // the fallback is that call by another provider, under the same `observer` node.
-  const fbCallbacks = fb
-    ? buildCallbacks(cfg, {
-        tenantId,
-        threadId,
-        node: "observer",
-        model: fb.modelId,
-        conversationId: conv?.id ?? null,
-        source: "inbox",
-        turnId,
-        base,
-      })
-    : null;
+  // Four are reads that failed. The fifth is a binding that has not landed yet — not a failed read,
+  // but the same shape of answer: the world has not settled, so nothing it says is evidence.
+  const RETRYABLE_REFUSALS = new Set([
+    "agent_state_unreadable",
+    "settings_unreadable",
+    "conversation_unreadable",
+    "binding_unreadable",
+    "binding_attaching",
+  ]);
+  const endOnRefusal = (why: string): JobResult => {
+    if (!RETRYABLE_REFUSALS.has(why)) {
+      line("skipped", { skipped: why, messagesRead: transcript.length });
+      return { outcome: "done" };
+    }
+    // ...UNLESS SOMETHING ALREADY COMMITTED, which is the same rule the model-failure path below
+    // follows and for the same reason (review round 30). A fence is asked at EVERY tool hop, so an
+    // unreadable one can arrive after a booking, a charge or an HTTP POST has already left — and
+    // the retry would send it again. At-most-once for the effects wins over the retry here too:
+    // the tick stops, reported as a warn the operator reads, and the next burst re-asks the
+    // classification. Nothing is lost that a retry could have recovered, because the retry would
+    // re-run the very hops that committed.
+    if (toolsRan - noEffect > 0) {
+      line(
+        "error",
+        {
+          failed: why,
+          messagesRead: transcript.length,
+          toolCalls: toolsRan - noEffect,
+          retried: false,
+        },
+        "warn",
+      );
+      return { outcome: "done" };
+    }
+    line("error", { failed: why, messagesRead: transcript.length }, "error");
+    return {
+      outcome: "fail",
+      error: `observe: a fence could not be re-read before writing (${why})`,
+    };
+  };
+
   const startedAt = Date.now();
-  let verdict: Record<string, unknown> | null;
+  let toolCalls = 0;
+  // A DEADLINE, because this tick runs on the SHARED scheduler. `runSchedulerTick` awaits every
+  // handler and `startScheduler` skips the next tick while one is still running, so a provider that
+  // never answers does not just lose this observation: it stops reminders and every other scheduled
+  // job behind it. The verdict call this replaced carried `AbortSignal.timeout(OBSERVE_TIMEOUT_MS)`
+  // and the graph invoke came up without one (round 2 of review).
+  //
+  // BOTH HALVES, and they answer different questions. The signal in the config is what the model
+  // client receives, so the provider request is actually cancelled rather than left in flight;
+  // `underSignal` is what guarantees THIS function stops waiting, whatever a link in the chain does
+  // with the signal it was handed. The scheduler's problem is the waiting, not the socket.
   try {
-    verdict = await runModelCall(
-      () => askVerdict(model, cfg.mc.provider, schema, messages, callbacks),
-      {
-        primary: { provider: cfg.mc.provider, model: cfg.mc.model },
-        ...(fb && fbCallbacks
-          ? {
-              fallback: {
-                run: () =>
-                  askVerdict(
-                    fb.model,
-                    fb.provider as ModelConfig["provider"],
-                    schema,
-                    messages,
-                    fbCallbacks,
-                  ),
-                labels: { provider: fb.provider, model: fb.modelId },
-                onFallback: ({ reason }) =>
-                  emitFlowEvent(flow, {
-                    stage: "observe",
-                    level: "warn",
-                    status: "ok",
-                    provider: fb.provider,
-                    model: fb.modelId,
-                    detail: {
-                      fallbackFrom: cfg.mc.provider,
-                      fallbackReason: reason,
-                    },
-                  }),
-                // NOTE: ATTRIBUTION, NOT A SECOND ALARM (issue #567 review, round 1), which is
-                // why this line is `info` while the failure it describes is an error. The `observe` stage
-                // around this call emits its OWN error when both providers fail, and alert
-                // coalescing keys on (channel, stage, level): two `observe`/`error` events for one
-                // failed tick bump one delivery to "×2", or send two if they lose the coalesce
-                // window. The stage owns the alarm; this line exists only to say WHICH model died,
-                // since the stage is labelled with the primary by construction. `status` stays
-                // "error": the call did fail. Same shape the nudge and the runtime use.
-                onFallbackFailed: ({ reason }) =>
-                  emitFlowEvent(flow, {
-                    stage: "observe",
-                    level: "info",
-                    status: "error",
-                    provider: fb.provider,
-                    model: fb.modelId,
-                    detail: { fallbackFailed: reason },
-                  }),
-              },
-            }
-          : {}),
-      },
+    const result = await underSignal(
+      graph.invoke(
+        {
+          messages: [
+            new HumanMessage(
+              observeTurnText(transcript, currentForPrompt, notes),
+            ),
+          ],
+        },
+        {
+          signal: deadline,
+          // The budget the operator set is only reachable if the graph is allowed the steps it
+          // takes: LangGraph counts super-steps and its default runs out at about twelve rounds.
+          recursionLimit: recursionLimitFor(cfg.maxToolCalls),
+          configurable: { thread_id: graphThreadId },
+          // THE TOOL LOGGER TOO, exactly as the reactive runtime installs it. `buildCallbacks`
+          // carries usage capture and the optional trace; the per-tool line is separate, and
+          // without it a watcher whose HTTP or MCP tool answers `toolFailure` finishes the graph
+          // normally and this job reports `ok` with `acted: true` — a tool error with no line and
+          // no alert. There is no second copy to fall back on either: the observer's checkpoint is
+          // thrown away, so an install without Langfuse loses the diagnostic entirely.
+          callbacks: [
+            ...buildCallbacks(cfg, {
+              tenantId,
+              threadId,
+              node: "observer",
+              model: cfg.mc.model,
+              conversationId: conv?.id ?? null,
+              source: "inbox",
+              turnId,
+              base,
+              tools,
+            }),
+            new ToolFlowLogger(flow, { logValues: cfg.logToolValues, tools }),
+          ],
+        },
+      ),
+      deadline,
     );
+    // WHAT THE TURN DID is its tool calls, never its prose: there is no reply channel here, so the
+    // final text is the model talking to a wall. Counted for the trail and dropped.
+    for (const m of (result as { messages?: BaseMessage[] }).messages ?? []) {
+      const calls = (m as { tool_calls?: unknown[] }).tool_calls;
+      if (Array.isArray(calls)) toolCalls += calls.length;
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // A REFUSED FENCE IS NOT A MODEL FAILURE. `stillWanted` stops the turn by refusing the tool
+    // node, and whatever that surfaces as, the exception is not what went wrong — the world moved.
+    // Whether the tick is DONE or retried is the fence's own answer, not this catch's.
+    if (refusal !== null) return endOnRefusal(refusal);
+    // A FAILURE AFTER A TOOL RAN ENDS THE TICK, and the level says which of the two it was: an
+    // `error` the scheduler will retry, or a `warn` that stops here because a retry would repeat
+    // whatever already committed. Reported either way — the operator needs to know the observation
+    // did not finish, and that nothing will pick it up before the next burst.
+    // ...AND A DISPATCH THAT NEVER SETTLED COUNTS, which is the deadline's case and is deliberate
+    // (review round 34). When the tick's budget fires, `underSignal` rejects the whole invoke: a
+    // tool still running does not report back, so from here "it was resolving a credential" and
+    // "its POST landed and the response never arrived" are the same picture. The mark above can
+    // only speak for a call that RETURNED. Unknown therefore reads as committed, because the two
+    // errors are not symmetric: counting a no-op costs one observation, which the next burst
+    // re-asks; not counting a write costs the write, again, in somebody else's system. An
+    // `on_resolve` agent has no next burst, and that is the price, declared in docs/chatwoot.md
+    // rather than guessed away.
+    const committed = toolsRan - noEffect > 0;
     emitFlowEvent(flow, {
       stage: "observe",
-      level: "error",
+      level: committed ? "warn" : "error",
       status: "error",
       provider: cfg.mc.provider,
       model: cfg.mc.model,
       durationMs: Date.now() - startedAt,
-      detail: { reason, failed: "model_call" },
+      detail: {
+        reason,
+        failed: "model_call",
+        toolCalls: toolsRan - noEffect,
+        ...(committed ? { retried: false } : {}),
+      },
       errorMessage: msg,
     });
+    if (committed) return { outcome: "done" };
     return { outcome: "fail", error: `observe: ${msg}` };
   }
-  const durationMs = Date.now() - startedAt;
-  if (!verdict) {
-    // The model answered in a shape nothing can read. Retrying buys the same answer again at the
-    // same price, so the tick is done and the line says what came back.
-    emitFlowEvent(flow, {
-      stage: "observe",
-      level: "warn",
-      status: "error",
-      provider: cfg.mc.provider,
-      model: cfg.mc.model,
-      durationMs,
-      detail: { reason, failed: "unreadable_verdict" },
-    });
-    return { outcome: "done" };
-  }
-
-  // Read again before writing: a model call is seconds old, and an agent switched off or flipped
-  // to answering in the meantime must not have a watcher's verdict land under its name.
-  const observesNow = await agentObservesNow(tenantId, agentId, base);
-  if (observesNow === "no") {
-    line("skipped", { skipped: "agent_no_longer_observes" });
-    return { outcome: "done" };
-  }
-  // UNREADABLE IS RETRYABLE, and the helper answers in three values precisely so the caller can tell
-  // them apart (issue #477 review, round 8). Collapsed into "no", a transient read failure threw
-  // away a verdict already paid for, permanently on an `on_resolve` tick — under the line that says
-  // the agent stopped observing, which it did not. Same posture as the conversation read below.
-  if (observesNow === "unreadable") {
-    line("error", { failed: "agent_state_unreadable" }, "error");
-    return {
-      outcome: "fail",
-      error: "observe: the agent's state could not be re-read before writing",
-    };
-  }
-  // ...and the BINDING, for the same reason and over the same seconds: an unobserve that commits
-  // while the model is answering leaves an agent that still monitors and still is enabled, on an
-  // inbox that is no longer its.
-  // ...AND THE CONFIGURATION ITSELF (issue #477 review, round 5). The two fences above ask about the
-  // AGENT; the taxonomy is a different thing and an operator edits it from the console while a model
-  // call is in flight. Applied from the snapshot this tick loaded, a verdict lands under a group
-  // that was replaced, or on an agent whose last label group was just deleted — which is how
-  // observation is switched off. Re-read here and used for everything below: the groups the verdict
-  // is applied against and whether the change is announced. The VERDICT is still the one the model
-  // gave against the old taxonomy; `applyVerdict` refuses any value the current groups do not list,
-  // so a replaced taxonomy writes nothing rather than writing something stale.
-  const monNow = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const agent = await db.agent.findUnique({
-      where: { id: agentId },
-      select: { settings: true },
-    });
-    return agent === null ? null : readMonitoringConfig(agent.settings);
-  }).catch((err) => {
-    // UNREADABLE IS RETRYABLE, like every other pre-write read in this module (issue #477 review,
-    // round 12). Keeping the snapshot was the wrong reading of "does not fail closed": it is the
-    // TAXONOMY the verdict is applied against, so a failure here writes labels from a taxonomy an
-    // operator may have just replaced — or that no longer exists, which is how observation is
-    // switched off. The tick fails and the scheduler retries it.
-    logger.warn(
-      { err },
-      `observe: could not re-read the monitoring settings before writing (conv=${String(conversationId)})`,
-    );
-    return "unreadable" as const;
-  });
-  if (monNow === "unreadable") {
-    line("error", { failed: "settings_unreadable" }, "error");
-    return {
-      outcome: "fail",
-      error:
-        "observe: the monitoring settings could not be re-read before writing",
-    };
-  }
-  if (monNow === null || !observationEnabled(monNow)) {
-    line("skipped", { skipped: "observation_off" });
-    return { outcome: "done" };
-  }
-  // ...INCLUDING THE ANSWER THE ARM ITSELF GAVE (issue #477 review, round 6). `observationEnabled`
-  // is one of two questions the arm asks; the other is whether this agent classifies per burst at
-  // all. An operator switching to `on_resolve` while the call is in flight is refusing exactly this
-  // verdict, and a fence that only asked whether a group still exists let it write anyway.
-  if (reason === "burst" && monNow.analysis !== "incremental") {
-    line("skipped", { skipped: "analysis_changed" });
-    return { outcome: "done" };
-  }
-  // ...AND THE CONVERSATION ROW, for the three things that retire a verdict already computed. All
-  // three are asked INSIDE the label queue (issue #477 review, round 8), and that is the whole
-  // point of where they sit: `/reset`'s own clear runs in this same queue, so a fence read outside
-  // it could pass, the reset could then take the queue first and clear the labels, and this tick
-  // would enter afterwards and put back exactly what the operator was just told was gone. Read
-  // where the write happens, the two are ordered against each other rather than merely close.
-  //
-  // IT REOPENED: the load asked this too, so nothing was spent on a conversation that was already
-  // live, but a customer message lands inside the model call as easily as before it, and `conv`
-  // holds the snapshot read at load time. On an `on_resolve` agent that message arms nothing by
-  // design, so the row queued for the old resolution is the one that would classify a live
-  // conversation as if it had ended. Only a definite answer refuses: a mirror row that vanished is
-  // not a reopening.
-  //
-  // THE EPISODE ENDED: `/reset` retires the PENDING rows, but a tick already CLAIMED is past every
-  // cancel — its model call was in flight when the command landed — and writing now puts back the
-  // labels the operator was just told were cleared. The same fence the direct turn is held to,
-  // asked in the same order (Chatwoot's own message sequence).
-  //
-  // ...AND WHETHER THIS RUN IS STILL THE ONE (issue #477 review, round 7). A customer message that
-  // lands while the model answers re-arms the SAME row — one row per conversation and classifier —
-  // so the tick holding the older transcript is superseded before it writes. The scheduler already
-  // knows: `claimSeq` is the token the claim handed out, a re-arm puts the row back to PENDING, and
-  // `completeJob` CASes on it — but that CAS happens AFTER the handler returns, so the labels and
-  // the private note have already landed. The note is what makes this worth a read: a label a later
-  // tick repairs, a note is permanent, and so is anything a label-triggered automation did. Standing
-  // down cannot livelock, because standing down IS the successor being there: the row that
-  // superseded us is PENDING and will classify the newer transcript. Same fence, same shape, as the
-  // ingestion job's (`graph/ingest-job.ts`, `stillWanted`).
-  //
-  // All three read the SAME two rows and are asked in ONE query: the mirror is one row per
-  // conversation, and extra round trips inside the queue only hold it longer.
-  const stillWanted = async (): Promise<
-    | { ok: MonitoringConfig }
-    | "superseded"
-    | "reopened"
-    | "reset"
-    | "detached"
-    | "conv_unreadable"
-    | "binding_unreadable"
-    | "observation_off"
-    | "analysis_changed"
-    | "settings_unreadable"
-  > => {
-    // THE AGENT ITSELF, READ INSIDE THE QUEUE (issue #477 review, round 19). The checks before the
-    // queue are the cheap exits; the queue can be held by another writer for as long as its own
-    // Chatwoot round trips take, and an operator who switched observation off, flipped the mode or
-    // replaced the taxonomy inside that window had a label and a note land under their name anyway.
-    // The config THIS returns is the one the verdict is applied against, so the fence and the apply
-    // cannot disagree.
-    const agentNow = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.agent.findUnique({
-        where: { id: agentId },
-        select: { settings: true, enabled: true, mode: true },
-      }),
-    ).catch((err) => {
-      logger.warn(
-        { err },
-        `observe: could not re-read the agent inside the label queue (conv=${String(conversationId)})`,
-      );
-      return "unreadable" as const;
-    });
-    if (agentNow === "unreadable") return "settings_unreadable";
-    if (agentNow === null || !agentNow.enabled || !isMonitoring(agentNow.mode))
-      return "observation_off";
-    const monQueued = readMonitoringConfig(agentNow.settings);
-    if (!observationEnabled(monQueued)) return "observation_off";
-    if (reason === "burst" && monQueued.analysis !== "incremental")
-      return "analysis_changed";
-    const rows = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const conv = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-        },
-        // `inboxId` from HERE and not from the load (issue #477 review, round 11): a conversation
-        // moved to another inbox while the model answered leaves the load's snapshot naming the old
-        // one, and the binding fence would then ask whether the agent still watches an inbox this
-        // conversation is no longer on — passing, and writing onto one it never watched.
-        select: { status: true, resetAtMessageId: true, inboxId: true },
-      });
-      const claim =
-        deps.claim === undefined
-          ? null
-          : await db.schedulerJob.findUnique({
-              where: { id: deps.claim.jobId },
-              select: { status: true, claimSeq: true },
-            });
-      return { conv, claim };
-    }).catch((err) => {
-      // UNREADABLE IS NOT ABSENT (issue #477 review, round 7). Folded into `null`, a failed read
-      // says "no reset has happened" and "the conversation is gone", and the verdict writes on both
-      // — which is the reset fence answering the one way it must never answer. The tick fails
-      // instead and the scheduler retries it; the retry re-reads everything, since it is stateless.
-      logger.warn(
-        { err },
-        `observe: could not re-read the conversation before writing (conv=${String(conversationId)})`,
-      );
-      return "conv_unreadable" as const;
-    });
-    if (rows === "conv_unreadable") return "conv_unreadable";
-    const { conv: convNow, claim: claimNow } = rows;
-    if (
-      deps.claim !== undefined &&
-      !(
-        claimNow?.status === "CLAIMED" &&
-        claimNow.claimSeq === deps.claim.claimSeq
-      )
-    )
-      return "superseded";
-    if (
-      reason === "resolved" &&
-      convNow !== null &&
-      convNow.status !== "resolved"
-    )
-      return "reopened";
-    if (resetLandedAfter(p.atMessageId, convNow?.resetAtMessageId ?? null))
-      return "reset";
-    // ...AND THE BINDING, against the inbox this conversation is on NOW. Asked here, inside the
-    // label queue and after the row above, rather than before the queue where it used to sit: it
-    // reads the `inboxId` that read returned, and being in the queue costs nothing it did not
-    // already cost. UNREADABLE IS RETRYABLE — at LOAD time "unreadable keeps the tick" is right,
-    // since nothing has been spent and refusing on a blip would silence observation; here keeping
-    // the tick means WRITING onto an inbox the agent may already be off (round 10).
-    if (convNow?.inboxId != null) {
-      const onInbox = await agentStillOnInbox(
-        tenantId,
-        convNow.inboxId,
-        agentId,
-        base,
-      );
-      // A row that has not landed is the same answer the payload's flag gave: not a detach, and not
-      // a licence to write onto an inbox the agent may not end up on (issue #540, window 5).
-      if (onInbox === "attaching") return "binding_unreadable";
-      if (onInbox === "no")
-        return p.attaching === true ? "binding_unreadable" : "detached";
-      if (onInbox === "unreadable") return "binding_unreadable";
-    }
-    return { ok: monQueued };
-  };
-
-  // THE LABELS AGAIN, AND FROM CHATWOOT (issue #477 review, round 1). The set read before the model
-  // call is seconds old, and `setConversationLabels` REPLACES the whole set: a label a colleague or
-  // an automation added meanwhile is silently deleted by a POST built from the older snapshot, which
-  // is exactly the promise this feature makes — nothing outside the configured groups is touched.
-  // The verdict itself is still the one the model gave; only the set it is applied ONTO is refreshed.
-  //
-  // A READ THAT FAILS DOES NOT WRITE. Falling back to the stale set is the bug this exists to close.
-  //
-  // READ-MODIFY-WRITE, SERIALIZED AND THEN VERIFIED (issue #477 review, round 2). Two classifiers on
-  // one conversation — a monitoring responder and the observer beside it — hold two rows now, so
-  // their ticks can overlap, and Chatwoot has no compare-and-set on this endpoint: both read the
-  // same set and the later POST erases the earlier one's group. `withConversationLabels` is the ONE
-  // queue for this conversation's labels — `assign_label`, the nudge's merge and the reset's clear
-  // are all inside it too, so no writer in this process can land between our read and our POST;
-  // across processes the second pass is what closes it, and it costs one GET on a tick that actually
-  // changed something. The pass reads again and re-applies the SAME verdict: our value still
-  // standing makes `applyVerdict` answer "nothing changed" and nothing is written, and our value
-  // clobbered makes it write once more. The CHANGES reported are the first pass's — the second is a
-  // repair, not a new verdict.
-  //
-  // THE NOTE IS INSIDE THE QUEUE TOO, and for the same ordering reason as the fences: it describes
-  // the write, so a reset that takes the queue between the POST and the note would leave a note
-  // about labels that no longer exist. A note that FAILS still does not undo the label.
-  // ...and READ inside it, since the prose fallback answers whatever it likes: out of range is not
-  // a confidence, and a number the reader cannot vouch for is better absent than wrong.
-  const rawConfidence = verdict.confidence;
-  const confidence =
-    typeof rawConfidence === "number" &&
-    Number.isFinite(rawConfidence) &&
-    rawConfidence >= 0 &&
-    rawConfidence <= 1
-      ? rawConfidence
-      : null;
-  const reasonText =
-    typeof verdict.reason === "string" ? verdict.reason.trim() : null;
-  type Written = {
-    applied: ReturnType<typeof applyVerdict>;
-    before: string[];
-    noted: boolean;
-    // The groups the verdict was actually applied against — the in-queue reading, which is what the
-    // trail below must report (issue #477 review, round 19).
-    groups: LabelGroup[];
-  };
-  // A GROUP'S OWN SLICE of a label set, for comparing two readings of it. Sorted and joined on a
-  // character no label can contain, so the comparison is about membership and not about order.
-  // THE GROUP THE MODEL WAS PROMPTED WITH, by name. A verdict is an answer to a DEFINITION — these
-  // values, accumulating or not — and applying it under a definition the operator changed during the
-  // call is the same class of staleness as applying it onto labels somebody moved (issue #477
-  // review, round 18). The sharp case: an additive group holding `vip` and `urgente`, a verdict of
-  // `vip`, and a flip to exclusive mid-call — the slices match, and `applyVerdict` then sweeps out
-  // `urgente` on a rule the model was never told about.
-  const promptGroups = new Map(mon.labelGroups.map((g) => [g.name, g]));
-  const sameDefinition = (a: LabelGroup | undefined, b: LabelGroup): boolean =>
-    a !== undefined &&
-    a.exclusive === b.exclusive &&
-    a.values.length === b.values.length &&
-    a.values.every((v, i) => v === b.values[i]);
-  const groupSlice = (labels: readonly string[], g: LabelGroup): string =>
-    g.values
-      .filter((v) => labels.includes(v))
-      .sort()
-      .join("\u0000");
-  const writeLabels = async (): Promise<
-    | Written
-    | "unreadable"
-    | "conv_unreadable"
-    | "binding_unreadable"
-    | "settings_unreadable"
-    | "superseded"
-    | "reopened"
-    | "reset"
-    | "detached"
-    | "observation_off"
-    | "analysis_changed"
-  > => {
-    let first: Omit<Written, "noted" | "groups"> | null = null;
-    let applyTo: LabelGroup[] = [];
-    // The config read INSIDE the queue, and on the far side of the label GET (issue #477 review,
-    // round 22). Assigned by the fence below, which runs before every POST.
-    let monQ: MonitoringConfig | null = null;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      let living: string[];
-      try {
-        living = await client.getConversationLabels(conversationId);
-      } catch (err) {
-        logger.warn(
-          { err },
-          `observe: could not re-read the labels before writing (conv=${String(conversationId)})`,
-        );
-        if (first === null) return "unreadable";
-        // The VERIFICATION read failed, and only the verification is best-effort (issue #477
-        // review, round 13). The write already landed, so what is owed is the note describing it —
-        // and returning here skipped it entirely, leaving a moved label with no note on a
-        // conversation whose note endpoint was perfectly healthy. Fall through to the note with
-        // what the first pass applied.
-        break;
-      }
-      // THE DURABLE FENCE, AFTER THE READ AND BEFORE THE WRITE (issue #477 review, round 22). Asked
-      // once at the top of the queue it was already stale by the time the POST went out: the label
-      // GET beside it is a Chatwoot round trip, and a message re-arming the row, an operator
-      // switching the agent off, a detach or a `/reset` served by another replica inside it all
-      // reached the write unseen. The scheduler's CAS catches the supersession only after the
-      // handler returns, by which point the label, the private note and whatever automation the
-      // label triggered have landed. Asked here, the only gap left is the apply itself, which
-      // touches nothing outside this process.
-      //
-      // It is also what makes `monQ` the taxonomy the verdict is APPLIED against rather than the one
-      // read a round trip ago, which is the same rule the pre-queue reads follow.
-      const wanted = await stillWanted();
-      if (typeof wanted === "string") {
-        // Nothing written yet: the caller reports the refusal. On the repair pass the first write
-        // already landed and cannot be un-sent, so its report stands and the repair is abandoned.
-        if (first === null) return wanted;
-        logger.warn(
-          "observe: the repair pass stood down (conv=%s): %s",
-          String(conversationId),
-          wanted,
-        );
-        break;
-      }
-      monQ = wanted.ok;
-      if (attempt === 1) applyTo = [...monQ.labelGroups];
-      // ...AND THE REPAIR IS HELD TO THE SAME TAXONOMY IT WROTE (issue #477 review, round 23). The
-      // fence above hands back the CURRENT configuration on both passes, but the groups the repair
-      // applies were chosen on the first one — so a taxonomy replaced while our first POST was in
-      // flight would have the second write a value from a group that no longer exists, or one whose
-      // definition changed under it, which is exactly what the first pass refuses to do. Dropped
-      // rather than re-derived: the verdict answers the groups it was SHOWN, and a group that moved
-      // belongs to the next tick, not to a repair. An empty slice writes nothing and the first
-      // pass's report still stands.
-      else {
-        const live = new Map(monQ.labelGroups.map((g) => [g.name, g] as const));
-        // ...AND ONLY THE GROUPS THE FIRST PASS ACTUALLY MOVED (issue #477 review, round 24). The
-        // repair exists to put back a write another classifier clobbered, so its subject is that
-        // write and nothing else: a group the first pass left alone, edited by a person or an
-        // automation between our POST and this read, is an edit we have now SEEN — and re-applying
-        // the verdict over it reverts a manual classification and fires whatever the label triggers,
-        // which is the same mistake the first pass's moved-group comparison refuses to make. Unlike
-        // the write gap the waiver covers, this one is observable, so it is not conceded.
-        const changed = new Set(first?.applied.changes.map((c) => c.group));
-        applyTo = applyTo.filter((g) => {
-          const now = live.get(g.name);
-          return (
-            changed.has(g.name) && now !== undefined && sameDefinition(g, now)
-          );
-        });
-      }
-      // A GROUP SOMEBODY ELSE MOVED DURING THE CALL IS NOT THIS VERDICT'S TO ANSWER (issue #477
-      // review, round 14). The verdict was computed against the set the prompt showed; a person or
-      // a Chatwoot automation that moved one of OUR groups meanwhile is fresher information about
-      // it than a transcript that predates the move. Applied anyway, the commonest verdict — repeat
-      // the value you were shown, for a message with no new demand — reverts the edit silently.
-      //
-      // Detectable, unlike the write gap the waiver covers: we hold both sets. Compared per group,
-      // over that group's own values only, so an unrelated label moving changes nothing here. And
-      // only on the FIRST pass — the second re-reads a set our own write just changed, and its job
-      // is to repair that write, not to re-litigate it.
-      if (attempt === 1) {
-        const moved = new Set<string>();
-        for (const g of applyTo)
-          if (
-            groupSlice(promptLabels, g) !== groupSlice(living, g) ||
-            !sameDefinition(promptGroups.get(g.name), g)
-          )
-            moved.add(g.name);
-        if (moved.size > 0) {
-          logger.info(
-            "observe: %d group(s) moved during the model call (conv=%s); leaving them to the next tick",
-            moved.size,
-            String(conversationId),
-          );
-          applyTo = applyTo.filter((g) => !moved.has(g.name));
-        }
-      }
-      const applied = applyVerdict(living, applyTo, verdict);
-      first ??= { applied, before: living };
-      if (!applied.next) break;
-      if (attempt === 2)
-        // The fence above already stood the repair down if the episode moved (round 20 asked it
-        // here; round 22 moved it up so the FIRST write is covered by the same reading).
-        logger.warn(
-          `observe: another writer replaced the labels mid-write (conv=${String(conversationId)}); re-applied`,
-        );
-      await client.setConversationLabels(conversationId, applied.next);
-    }
-    const done = first as Omit<Written, "noted" | "groups">;
-    // `first` is written only on the far side of the fence, so a non-null one guarantees a config.
-    if (monQ === null) return "unreadable";
-    if (!done.applied.next || !monQ.noteOnChange)
-      return { ...done, noted: false, groups: monQ.labelGroups };
-    try {
-      await client.sendPrivateNote(
-        conversationId,
-        observeNoteText(agentName, done.applied.changes, reasonText),
-      );
-      return { ...done, noted: true, groups: monQ.labelGroups };
-    } catch (err) {
-      logger.warn(
-        { err },
-        `observe: the label moved but the note could not be posted (conv=${String(conversationId)})`,
-      );
-      return { ...done, noted: false, groups: monQ.labelGroups };
-    }
-  };
-  const written = await withConversationLabels(
-    tenantId,
-    conversationId,
-    writeLabels,
-  );
-  if (written === "superseded" || written === "reopened") {
-    line("skipped", {
-      skipped: written === "reopened" ? "conversation_reopened" : "superseded",
-    });
-    return { outcome: "done" };
-  }
-  if (written === "reset") {
-    line("skipped", { skipped: "reset" });
-    return { outcome: "done" };
-  }
-  if (written === "detached") {
-    line("skipped", { skipped: "agent_no_longer_on_inbox" });
-    return { outcome: "done" };
-  }
-  if (written === "observation_off" || written === "analysis_changed") {
-    line("skipped", { skipped: written });
-    return { outcome: "done" };
-  }
-  if (written === "settings_unreadable") {
-    line("error", { failed: "settings_unreadable" }, "error");
-    return {
-      outcome: "fail",
-      error:
-        "observe: the monitoring settings could not be re-read before writing",
-    };
-  }
-  if (written === "binding_unreadable") {
-    line("error", { failed: "binding_unreadable" }, "error");
-    return {
-      outcome: "fail",
-      error: "observe: the agent's binding could not be re-read before writing",
-    };
-  }
-  if (written === "conv_unreadable") {
-    line("error", { failed: "conversation_unreadable" }, "error");
-    return {
-      outcome: "fail",
-      error:
-        "observe: the conversation row could not be re-read before writing",
-    };
-  }
-  if (written === "unreadable") {
-    // A FIRST READ THAT FAILS IS THE VERDICT LOST, NOT A VERDICT DECLINED (issue #477 review,
-    // round 7). Nothing re-arms this row on its own: an `on_resolve` agent has no later burst, and
-    // a resolve happens once, so a transient Chatwoot timeout here is a conversation that is never
-    // classified. The tick fails and the scheduler retries with backoff up to the cap — the retry
-    // spends the model call again, which is the price, and the spend ceiling gates it like any
-    // other. Only the SECOND read is best-effort, and it can be: by then the write has landed and
-    // what is left is the repair pass.
-    line("error", { failed: "labels_unreadable" }, "error");
-    return {
-      outcome: "fail",
-      error: "observe: the labels could not be read before writing",
-    };
-  }
-  const { applied, before: living, noted, groups: appliedGroups } = written;
+  if (refusal !== null) return endOnRefusal(refusal);
   emitFlowEvent(flow, {
     stage: "observe",
-    level: applied.refused.length > 0 ? "warn" : "info",
+    level: "info",
     status: "ok",
     provider: cfg.mc.provider,
     model: cfg.mc.model,
-    durationMs,
+    durationMs: Date.now() - startedAt,
     detail: {
       reason,
-      verdict: verdictValues(appliedGroups, verdict),
-      confidence,
-      changed: applied.changes.length > 0,
-      changes: applied.changes,
-      // The GROUPS that refused something, never what they refused: a refused value is by
-      // definition not one the group lists, so it is the model's own text and has no place here.
-      refused: applied.refused.map((r) => r.group),
-      labelsBefore: living.length,
-      labelsAfter: applied.next ? applied.next.length : living.length,
-      noted,
+      acted: toolCalls > 0,
+      toolCalls,
       messagesRead: transcript.length,
+      labelsBefore: current === null ? null : current.length,
     },
   });
   return { outcome: "done" };

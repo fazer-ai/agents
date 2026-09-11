@@ -7,7 +7,7 @@ export const NATIVE_TOOL_NAMES = [
   "handoff_to_human",
   "private_note",
   "set_custom_attribute",
-  "assign_label",
+  "set_labels",
   "resolve_conversation",
   "kanban_move_card",
   "update_kanban_task",
@@ -19,6 +19,30 @@ export const NATIVE_TOOL_NAMES = [
   "get_current_time",
 ] as const;
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
+
+// NATIVES THAT WERE RENAMED, old name → new one. A migration repairs the rows that exist when it
+// runs; nothing repairs a BUNDLE, which is a file that can be exported today and imported in a year.
+// Read as an unknown native, the old name is dropped with a warning and the capability is simply
+// gone from the restored agent — the failure a backup exists to prevent (issue #568, review r5).
+//
+// A rename is not a removal, which is why this map exists and `run_code` is not in it: that name
+// stopped meaning anything (issue #363), so dropping it is the honest answer, while `assign_label`
+// still names a tool that is right there under another name.
+//
+// It is the IMPORT boundary that consults this, not the runtime: settings written through the API
+// are refused under the old name, and the catalog stays the one answer to "is this a native today".
+export const RENAMED_NATIVE_TOOLS: Readonly<Record<string, NativeToolName>> =
+  Object.freeze({
+    // issue #568: the tool stopped adding one label and started writing the whole set.
+    assign_label: "set_labels",
+  });
+
+// The new name for a legacy one, or the name itself when it was never renamed.
+export function currentNativeToolName(name: string): string {
+  return Object.hasOwn(RENAMED_NATIVE_TOOLS, name)
+    ? (RENAMED_NATIVE_TOOLS[name] as string)
+    : name;
+}
 
 // A name in the list above is RESERVED: the assembly drops any other tool that claims it, granted or
 // not (unique-names.ts, #457); the HTTP tool writers refuse it (tool-definitions/service.ts, which
@@ -41,7 +65,7 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     handoff_to_human: "conversation",
     private_note: "conversation",
     set_custom_attribute: "conversation",
-    assign_label: "conversation",
+    set_labels: "conversation",
     resolve_conversation: "conversation",
     kanban_move_card: "conversation",
     update_kanban_task: "conversation",
@@ -62,6 +86,17 @@ export const UTILITY_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
 export const CONVERSATION_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
   (n) => NATIVE_TOOL_CATEGORY[n] === "conversation",
 );
+
+// NATIVE TOOLS WHOSE WHOLE POINT IS TO PUT SOMETHING IN FRONT OF THE CUSTOMER. A muted turn — the
+// observer's (issue #568) — is not offered one: the reaction lands on the customer's phone and the
+// image is delivered by gates an observation does not have, so each would cost a model round and
+// answer with a failure an operator reads as a broken integration. Listed HERE, in the catalog, so
+// the runtime that strips them (buildNativeTools) and the editor that must not offer them read one
+// list instead of two that can drift (review round 30).
+export const CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES: readonly NativeToolName[] = [
+  "react_to_message",
+  "send_image",
+];
 
 export const RAG_TOOL_NAMES = ["search_knowledge", "suggest_kb_entry"] as const;
 export type RagToolName = (typeof RAG_TOOL_NAMES)[number];

@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
-import type { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { z } from "zod";
 import {
   buildHttpTool,
   type HttpToolDef,
   parseToolInputSchema,
   sanitizeToolName,
 } from "@/graph/tools/http";
+import {
+  buildToolpackTools,
+  deadlineFetch,
+  fencedFetch,
+  registerToolpack,
+} from "@/modules/integrations/toolpacks/types";
 
 // 8.8.8.8 is a public IP literal: the SSRF guard treats it as an IP (no DNS lookup) and does not
 // block it, so these tests never touch the network.
@@ -1649,5 +1656,436 @@ describe("a list of unknown length renders through a block (#459)", () => {
     expect(text).toBe("HTTP 200\na: 1\nb: (not returned)\nc: (not returned)\n");
     expect(notes.map((n) => n.phase)).toEqual(["response_template"]);
     expect(notes[0]?.detail).toMatchObject({ missing: ["itens.1.preco"] });
+  });
+});
+
+// ABORTING AN INVOKE STOPS THE CALLER WAITING, NOT THIS HANDLER WRITING. The observer's tick has a
+// whole-turn budget; when it runs out the tick is reported as a RETRYABLE failure, so anything the
+// handler still sends afterwards is sent again by the retry. The Chatwoot client refuses past its
+// deadline for that reason, and until this an external endpoint had none of that protection and
+// none of Chatwoot's idempotency either (issue #568 review, round 12).
+describe("the turn's deadline reaches an http tool", () => {
+  test("a budget that ran out while the credential resolved stops the request", async () => {
+    const captured: Captured = {};
+    const ctrl = new AbortController();
+    const tool = buildHttpTool(
+      def({
+        method: "POST",
+        credentialRef: "k",
+        credentialKind: "bearer_token",
+      }),
+      {
+        // The wait this exists to catch: the deadline expires DURING credential resolution, which
+        // is above the send and cannot itself be interrupted.
+        resolveCredential: async () => {
+          ctrl.abort();
+          return "segredo";
+        },
+        fetchImpl: stubFetch(captured),
+        expiresOn: ctrl.signal,
+      },
+    );
+    const out = await tool.invoke({});
+    expect(captured.url).toBeUndefined();
+    expect(String(out)).toContain("time budget");
+  });
+
+  test("a live deadline does not stop anything, and rides along to the fetch", async () => {
+    const captured: Captured = {};
+    const ctrl = new AbortController();
+    const tool = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(captured),
+      expiresOn: ctrl.signal,
+    });
+    await tool.invoke({});
+    expect(captured.url).toContain("/v1/thing");
+    // Relayed onto the bounded fetch's own controller, so a request in flight is cancelled when the
+    // budget ends instead of running to its own timeout past the end of the tick.
+    expect(captured.init?.signal).toBeDefined();
+  });
+
+  test("no deadline is the reactive turn, and it is unchanged", async () => {
+    const captured: Captured = {};
+    const tool = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(captured),
+    });
+    await tool.invoke({});
+    expect(captured.url).toContain("/v1/thing");
+  });
+});
+
+// A DEADLINE SAYS THERE IS NO TIME LEFT; THE FENCE SAYS NOBODY IS WAITING. A `/reset`, a supersede
+// or a detach landing while a tool resolves a credential or a DNS name leaves the budget perfectly
+// alive and the run withdrawn all the same, and the POST reaches somebody else's system anyway
+// (issue #568 review, round 28).
+describe("the turn's withdrawal fence reaches an http tool", () => {
+  test("a run called off while the credential resolved stops the request", async () => {
+    const captured: Captured = {};
+    let wanted = true;
+    const tool = buildHttpTool(
+      def({
+        method: "POST",
+        credentialRef: "k",
+        credentialKind: "bearer_token",
+      }),
+      {
+        resolveCredential: async () => {
+          wanted = false;
+          return "segredo";
+        },
+        fetchImpl: stubFetch(captured),
+        stillWanted: async () => wanted,
+      },
+    );
+    const out = await tool.invoke({});
+    expect(captured.url).toBeUndefined();
+    expect(String(out)).toContain("called off");
+  });
+
+  test("a fence that says yes, and one that cannot answer, both send", async () => {
+    const yes: Captured = {};
+    await buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(yes),
+      stillWanted: async () => true,
+    }).invoke({});
+    expect(yes.url).toContain("/v1/thing");
+    // An unreadable fence is not the operator saying no, which is how every other fence here reads.
+    const broken: Captured = {};
+    await buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch(broken),
+      stillWanted: async () => {
+        throw new Error("database blip");
+      },
+    }).invoke({});
+    expect(broken.url).toContain("/v1/thing");
+  });
+});
+
+// THE SAME DEADLINE, THE OTHER FAMILY OF TOOLS. Four toolpacks each have their own request helper,
+// so enforcing this at each of them is four places to forget and a fifth uncovered the day someone
+// adds a pack. It is applied by wrapping the ctx's `fetchImpl` at the build seam instead — the shape
+// the Chatwoot client's mutedFetch already uses (issue #568 review, round 13).
+describe("the turn's deadline reaches a toolpack", () => {
+  test("a budget already spent stops the request before it is sent", async () => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let called = false;
+    const wrapped = deadlineFetch(
+      (async () => {
+        called = true;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      ctrl.signal,
+    );
+    await expect(wrapped("https://example.com/x")).rejects.toThrow(
+      "time budget",
+    );
+    expect(called).toBe(false);
+  });
+
+  test("a live budget passes through and rides along as the request's signal", async () => {
+    const ctrl = new AbortController();
+    let seen: RequestInit | undefined;
+    const wrapped = deadlineFetch(
+      (async (_u: unknown, init: RequestInit) => {
+        seen = init;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      ctrl.signal,
+    );
+    await wrapped("https://example.com/x", { method: "DELETE" });
+    expect(seen?.method).toBe("DELETE");
+    expect(seen?.signal).toBe(ctrl.signal);
+  });
+
+  test("the wrap is applied at the build seam, so no pack can miss it", async () => {
+    // The seam, not the helper: `deadlineFetch` being right proves nothing if buildToolpackTools
+    // hands the pack the raw fetch. Registered under a private catalogType so the real registry is
+    // untouched.
+    const ctrl = new AbortController();
+    ctrl.abort();
+    let handed: typeof fetch | undefined;
+    registerToolpack({
+      catalogType: "__test_deadline__",
+      toolSpecs: [{ name: "t", schema: z.object({}) }],
+      build(_sel, ctx) {
+        handed = ctx.fetchImpl;
+        return [];
+      },
+    });
+    buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "__test_deadline__",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["t"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: {} as never,
+        threadId: "t",
+        resolveCredential: async () => null,
+        expiresOn: ctrl.signal,
+      },
+    );
+    expect(handed).toBeDefined();
+    await expect(
+      (handed as typeof fetch)("https://example.com/x"),
+    ).rejects.toThrow("time budget");
+  });
+
+  test("both signals survive: the pack's timeout AND the deadline", async () => {
+    // The half a `??` gets wrong, and it is the common case rather than the edge one: by the time
+    // this wrapper runs, fetchBounded has already put its OWN controller in `init.signal`, so
+    // preferring the caller's would drop the deadline on every real toolpack call, and preferring
+    // ours would disarm the pack's timeout.
+    const deadline = new AbortController();
+    const own = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    const wrapped = deadlineFetch(
+      (async (_u: unknown, init: RequestInit) => {
+        seen.push(init.signal);
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      deadline.signal,
+    );
+    await wrapped("https://example.com/x", { signal: own.signal });
+    const combined = seen[0];
+    expect(combined).toBeDefined();
+    expect(combined).not.toBe(own.signal);
+    expect(combined?.aborted).toBe(false);
+    // The pack's own timeout still cuts it.
+    own.abort();
+    expect(combined?.aborted).toBe(true);
+  });
+
+  test("and the deadline alone also cuts a request the pack did not arm", async () => {
+    const deadline = new AbortController();
+    const own = new AbortController();
+    const seen: (AbortSignal | null | undefined)[] = [];
+    const wrapped = deadlineFetch(
+      (async (_u: unknown, init: RequestInit) => {
+        seen.push(init.signal);
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      deadline.signal,
+    );
+    await wrapped("https://example.com/x", { signal: own.signal });
+    deadline.abort();
+    expect(seen[0]?.aborted).toBe(true);
+  });
+});
+
+// THE FENCE, AT THE SAME SEAM AND FOR THE SAME REASON (round 28). A pack's helper never learns about
+// it; the wrap does, so a pack written next month is covered the day it is registered.
+describe("the turn's withdrawal fence reaches a toolpack", () => {
+  test("a run called off refuses the request before it leaves", async () => {
+    let called = false;
+    const wrapped = fencedFetch(
+      (async () => {
+        called = true;
+        return new Response("{}");
+      }) as unknown as typeof fetch,
+      async () => false,
+    );
+    await expect(wrapped("https://example.com/x")).rejects.toThrow(
+      "called off",
+    );
+    expect(called).toBe(false);
+  });
+
+  test("a refusal the pack SWALLOWED is still reported once, with the tool's own name", async () => {
+    // The refusal that ends in `throw` has no result to carry the answer, and the observer's tick
+    // has to know that nothing left the process or it counts the dispatch as a write and stops
+    // retrying. The pack here does what every real pack does with a transport error — catches it and
+    // answers a tool failure (asaas.ts, google-drive.ts, google-calendar.ts all wrap their request
+    // helper in that catch) — so nothing escapes the invoke and a report waiting outside it never
+    // fires (review round 38). Two requests, one report: the dedupe that moving the report out was
+    // meant to buy is kept by the per-dispatch frame.
+    const reported: string[] = [];
+    registerToolpack({
+      catalogType: "TEST_NOEFFECT_PACK",
+      toolSpecs: [{ name: "probe_twice", schema: z.object({}) }],
+      build: (_sel, packCtx) => [
+        tool(
+          async () => {
+            const f = packCtx.fetchImpl ?? fetch;
+            const out: string[] = [];
+            for (const u of ["https://8.8.8.8/a", "https://8.8.8.8/b"]) {
+              try {
+                await f(u);
+                out.push("sent");
+              } catch {
+                out.push("failed to reach the provider");
+              }
+            }
+            return out.join(",");
+          },
+          {
+            name: "probe_twice",
+            description: "two requests",
+            schema: z.object({}),
+          },
+        ),
+      ],
+    });
+    const [built] = buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "TEST_NOEFFECT_PACK",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["probe_twice"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: {} as never,
+        threadId: "t",
+        resolveCredential: async () => null,
+        fetchImpl: (async () => new Response("{}")) as unknown as typeof fetch,
+        stillWanted: async () => false,
+        onNoEffect: (name: string) => {
+          reported.push(name);
+        },
+      },
+    );
+    if (!built) throw new Error("the pack tool was not built");
+    expect(await built.invoke({})).toBe(
+      "failed to reach the provider,failed to reach the provider",
+    );
+    expect(reported).toEqual(["probe_twice"]);
+  });
+
+  test("a fence that turns false AFTER a request left reports nothing", async () => {
+    // A pack tool is not one request. `asaas_create_pix_charge` POSTs the charge and then GETs its
+    // QR code: a withdrawal between the two is a refusal with the charge already made, and saying
+    // "no effect" there hands the scheduler a retry that charges twice (review round 41).
+    const reported: string[] = [];
+    const sent: string[] = [];
+    let allow = true;
+    registerToolpack({
+      catalogType: "TEST_SPENT_PACK",
+      toolSpecs: [{ name: "charge_then_qr", schema: z.object({}) }],
+      build: (_sel, packCtx) => [
+        tool(
+          async () => {
+            const f = packCtx.fetchImpl ?? fetch;
+            const out: string[] = [];
+            for (const u of ["https://8.8.8.8/charge", "https://8.8.8.8/qr"]) {
+              try {
+                await f(u);
+                out.push("sent");
+              } catch {
+                out.push("failed");
+              }
+            }
+            return out.join(",");
+          },
+          {
+            name: "charge_then_qr",
+            description: "a write and then a read",
+            schema: z.object({}),
+          },
+        ),
+      ],
+    });
+    const [built] = buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "TEST_SPENT_PACK",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["charge_then_qr"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: {} as never,
+        threadId: "t",
+        resolveCredential: async () => null,
+        fetchImpl: (async (u: unknown) => {
+          sent.push(String(u));
+          // The charge lands, and the world moves while its response is read.
+          allow = false;
+          return new Response("{}");
+        }) as unknown as typeof fetch,
+        stillWanted: async () => allow,
+        onNoEffect: (name: string) => {
+          reported.push(name);
+        },
+      },
+    );
+    if (!built) throw new Error("the pack tool was not built");
+    expect(await built.invoke({})).toBe("sent,failed");
+    expect(sent).toEqual(["https://8.8.8.8/charge"]);
+    // The dispatch is NOT reported: something already left, so the counter must keep reading it as
+    // a write and the tick must not be retried.
+    expect(reported).toEqual([]);
+  });
+
+  test("a fence that says yes, and one that cannot answer, both pass through", async () => {
+    const calls: string[] = [];
+    const inner = (async (u: unknown) => {
+      calls.push(String(u));
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    await fencedFetch(inner, async () => true)("https://example.com/yes");
+    await fencedFetch(inner, async () => {
+      throw new Error("database blip");
+    })("https://example.com/broken");
+    expect(calls).toEqual([
+      "https://example.com/yes",
+      "https://example.com/broken",
+    ]);
+  });
+
+  test("the wrap is applied at the build seam, so no pack can miss it", async () => {
+    // The seam, not the helper: `fencedFetch` being right proves nothing if buildToolpackTools hands
+    // the pack the raw fetch.
+    let handed: typeof fetch | undefined;
+    registerToolpack({
+      catalogType: "__test_fence__",
+      toolSpecs: [{ name: "t", schema: z.object({}) }],
+      build(_sel, ctx) {
+        handed = ctx.fetchImpl;
+        return [];
+      },
+    });
+    let called = false;
+    buildToolpackTools(
+      [
+        {
+          instanceId: 1n,
+          catalogType: "__test_fence__",
+          config: {},
+          credentialRef: null,
+          enabledTools: ["t"],
+        },
+      ],
+      {
+        tenantId: 1n,
+        base: undefined as never,
+        threadId: "1:1:1",
+        resolveCredential: async () => null,
+        fetchImpl: (async () => {
+          called = true;
+          return new Response("{}");
+        }) as unknown as typeof fetch,
+        stillWanted: async () => false,
+      },
+    );
+    if (!handed) throw new Error("the pack was handed no fetch");
+    await expect(handed("https://example.com/x")).rejects.toThrow("called off");
+    expect(called).toBe(false);
   });
 });

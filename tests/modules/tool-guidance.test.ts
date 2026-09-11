@@ -6,12 +6,12 @@ describe("readToolGuidance", () => {
     const g = readToolGuidance({
       toolGuidance: {
         set_custom_attribute: "  grave lead_stage  ",
-        assign_label: "vip = premium",
+        set_labels: "vip = premium",
       },
     });
     expect(g).toEqual({
       set_custom_attribute: "grave lead_stage",
-      assign_label: "vip = premium",
+      set_labels: "vip = premium",
     });
   });
 
@@ -19,7 +19,7 @@ describe("readToolGuidance", () => {
     const g = readToolGuidance({
       toolGuidance: {
         not_a_tool: "ignore me",
-        assign_label: "   ",
+        set_labels: "   ",
         set_custom_attribute: "",
       },
     });
@@ -35,8 +35,8 @@ describe("readToolGuidance", () => {
 
   test("caps overly long notes", () => {
     const g = readToolGuidance({
-      toolGuidance: { assign_label: "x".repeat(5000) },
+      toolGuidance: { set_labels: "x".repeat(5000) },
     });
-    expect((g.assign_label ?? "").length).toBeLessThanOrEqual(1500);
+    expect((g.set_labels ?? "").length).toBeLessThanOrEqual(1500);
   });
 });

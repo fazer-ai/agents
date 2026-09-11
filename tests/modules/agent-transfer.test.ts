@@ -5,7 +5,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import type { TenantContext } from "@/lib/tenancy";
+import {
+  assertSettingsProtectedLabels,
+  assertSettingsRetiredLabelKeys,
+} from "@/modules/agents/service";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import {
   type AgentExport,
   configBusinessHoursId,
@@ -305,6 +310,87 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     const w = warnings.find((x) => x.code === "guidanceClipped");
     expect(w?.params?.field).toBe("handoff.instructions");
     expect(w?.params?.max).toBe(TOOL_INSTRUCTIONS_MAX);
+  });
+
+  // A BUNDLE IS A FILE, and it can be exported today and imported in a year. The migration repairs
+  // the rows that exist when it runs; nothing repairs a backup, so restoring one taken before the
+  // rename would come back missing the tool — the one failure a backup exists to prevent. And the
+  // precondition is worse than the grant: the runtime matches by whatever name it finds, so it goes
+  // inert while the editor still shows it, and the write boundary then refuses the agent's next
+  // settings save because it checks the key against the native catalog.
+  test("a bundle carrying the pre-rename native name imports as the new one", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const imported = {
+      ...exp,
+      agent: {
+        ...exp.agent,
+        name: "Vendedora antiga",
+        settings: {
+          ...exp.agent.settings,
+          toolGuidance: { assign_label: "só clientes premium" },
+          toolPreconditions: {
+            assign_label: { kind: "attribute", scope: "contact", key: "cpf" },
+          },
+        },
+        tools: [
+          {
+            source: "NATIVE" as const,
+            enabledTools: ["assign_label", "handoff_to_human"],
+          },
+        ],
+      },
+    };
+    const { agent, warnings } = await importAgent(
+      ctx(),
+      imported as never,
+      appDb,
+    );
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const settings = row.settings as Record<string, Record<string, unknown>>;
+    expect(settings.toolGuidance).toEqual({
+      set_labels: "só clientes premium",
+    });
+    expect(settings.toolPreconditions).toEqual({
+      set_labels: { kind: "attribute", scope: "contact", key: "cpf" },
+    });
+    const native = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect(native.enabledTools).toEqual(["set_labels", "handoff_to_human"]);
+    // A rename is not an unknown name: nothing to warn about.
+    expect(
+      warnings.find((w) => w.code === "nativeToolUnknown"),
+    ).toBeUndefined();
+  });
+
+  test("a bundle naming BOTH the old and the new name grants it once", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const { agent } = await importAgent(
+      ctx(),
+      {
+        ...exp,
+        agent: {
+          ...exp.agent,
+          name: "Vendedora dupla",
+          tools: [
+            {
+              source: "NATIVE" as const,
+              enabledTools: ["assign_label", "set_labels"],
+            },
+          ],
+        },
+      } as never,
+      appDb,
+    );
+    const native = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect(native.enabledTools).toEqual(["set_labels"]);
   });
 
   // THE HALF THAT DECIDES WHETHER `__proto__` IS A PROBLEM AT ALL, and it is measured here because
@@ -1754,6 +1840,379 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ).toBe(true);
   });
 
+  // THE ORDER OF THE TWO MOVES, and it is a defect in one pass rather than two. A bundle can carry a
+  // custom tool named `set_labels` AND the native under its old name, each with its own rule. Moved
+  // in one pass, the native's rule finds the key already taken and is discarded, while the custom
+  // tool's rule stays on a key that now names the NATIVE: the operator's guard lands on a different
+  // tool and the custom tool is left open. The custom rename has to settle first.
+  test("a bundle carrying BOTH a custom set_labels and the old native keeps each rule on its own tool", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "set_labels";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "set_labels";
+    bundle.agent.name = "Vendedora dos dois";
+    (bundle.agent.settings as Record<string, unknown>).toolPreconditions = {
+      set_labels: { kind: "attribute", scope: "contact", key: "da_custom" },
+      assign_label: { kind: "attribute", scope: "contact", key: "do_nativo" },
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const conds =
+      (row.settings as Record<string, Record<string, { key?: string }>>)
+        .toolPreconditions ?? {};
+    // The custom tool was stored as `set_labels_2`; its rule went with it, and the native's rule
+    // took the key the custom tool vacated. Neither was dropped, and neither guards the other.
+    expect(conds.set_labels_2?.key).toBe("da_custom");
+    expect(conds.set_labels?.key).toBe("do_nativo");
+    expect(conds.assign_label).toBeUndefined();
+    // The tenant is shared with the tests below, and the row this import created would make the
+    // next walk for a free `set_labels_N` land on `_3`. Cleaning up keeps each case's expected
+    // name a property of that case rather than of the order the file happens to run in.
+    await suDb.toolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: "set_labels_2" },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A BUNDLE IS A FILE, so it can arrive carrying a key the write boundary now refuses. Refusing the
+  // import would block a restore over a key that governs nothing and that the operator cannot edit
+  // out of a bundle; it is dropped instead. Same boundary as the rename above, opposite verdict,
+  // because there the old key's value still governs something (issue #568 review).
+  test("a bundle carrying the retired taxonomy imports, without it", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada do backup antigo";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.labels = {
+      groups: [{ name: "assunto", values: ["a", "b"], exclusive: true }],
+      noteOnChange: true,
+    };
+    settings.monitoring = {
+      window: { messages: 20 },
+      labelGroups: [],
+      noteOnChange: true,
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = row.settings as Record<string, unknown>;
+    expect(stored.labels).toBeUndefined();
+    // The rest of the monitoring block survives: what is retired is the taxonomy, not the mode.
+    expect(
+      (stored.monitoring as Record<string, unknown> | undefined)?.labelGroups,
+    ).toBeUndefined();
+    expect(
+      (stored.monitoring as Record<string, unknown> | undefined)?.noteOnChange,
+    ).toBeUndefined();
+    expect(
+      (stored.monitoring as Record<string, Record<string, number>> | undefined)
+        ?.window?.messages,
+    ).toBe(20);
+    // And the agent it produced saves again, which is the whole point of dropping instead of storing.
+    expect(() => assertSettingsRetiredLabelKeys(stored)).not.toThrow();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A BUNDLE CARRIES THE TAXONOMY TOO, and dropping it here would mean a RESTORE loses exactly what
+  // an UPGRADE keeps (review round 28). The sentence is the migration's, word for word: the test
+  // over there asserts the same text for the same input, which is the only thing keeping a SQL
+  // renderer and a TS one from drifting apart.
+  test("a bundle's configured taxonomy becomes the tool's guidance, not nothing", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com taxonomia";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.monitoring = {
+      window: { messages: 25 },
+      labelGroups: [
+        {
+          name: "assunto",
+          values: ["cancelamento", "compra"],
+          exclusive: true,
+        },
+        { name: "sinal", values: ["urgente"] },
+        { name: "extra", values: ["vip"], exclusive: false },
+        { name: "solto", values: ["x"], exclusive: "custom" },
+      ],
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = row.settings as Record<string, Record<string, string>>;
+    expect(stored.toolGuidance?.set_labels).toBe(
+      "Migrado da taxonomia anterior. Grupos de etiquetas desta conta: assunto (escolha no máximo uma): cancelamento, compra. sinal (escolha no máximo uma): urgente. extra (pode usar mais de uma): vip. solto (escolha no máximo uma): x.",
+    );
+    // And the key it came from still goes, which is the whole point of the boundary.
+    expect(
+      (stored.monitoring as unknown as Record<string, unknown>).labelGroups,
+    ).toBeUndefined();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a restored classifier gets the label tool its guidance names", async () => {
+    // The old classifier applied labels itself and consulted no allowlist, so a bundle can carry an
+    // explicit NATIVE grant with no label tool in it and still have classified. Restoring it with
+    // the migrated sentence and without the tool leaves an agent that runs, spends a model call per
+    // burst, and classifies nothing. Step 1c of the migration does this for rows that exist when it
+    // runs; a bundle is a file (review round 31).
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Classificadora restaurada";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.monitoring = {
+      window: { messages: 25 },
+      labelGroups: [
+        { name: "assunto", values: ["cancelamento"], exclusive: true },
+      ],
+    };
+    bundle.agent.tools = [
+      {
+        source: "NATIVE",
+        enabledTools: ["private_note", "resolve_conversation"],
+      },
+    ] as never;
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect([...row.enabledTools].sort()).toEqual([
+      "private_note",
+      "resolve_conversation",
+      "set_labels",
+    ]);
+    await suDb.agentToolSelection.deleteMany({
+      where: { agentId: BigInt(agent.id) },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a bundle with NO taxonomy keeps the allowlist the operator exported", async () => {
+    // The control, and the reason the repair is conditional: adding the tool to an agent that never
+    // classified would grant a capability nobody chose.
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Sem taxonomia";
+    bundle.agent.tools = [
+      {
+        source: "NATIVE",
+        enabledTools: ["private_note", "resolve_conversation"],
+      },
+    ] as never;
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agentToolSelection.findFirstOrThrow({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect([...row.enabledTools].sort()).toEqual([
+      "private_note",
+      "resolve_conversation",
+    ]);
+    await suDb.agentToolSelection.deleteMany({
+      where: { agentId: BigInt(agent.id) },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a bundle whose operator already wrote the note keeps THEIR words", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com nota propria";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.monitoring = {
+      labelGroups: [{ name: "assunto", values: ["a"] }],
+    };
+    settings.toolGuidance = {
+      ...((settings.toolGuidance as Record<string, unknown>) ?? {}),
+      set_labels: "a minha própria orientação",
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect(
+      (row.settings as Record<string, Record<string, string>>).toolGuidance
+        ?.set_labels,
+    ).toBe("a minha própria orientação");
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A BUNDLE OVER THE PROTECTED-LABEL CEILING IS CLAMPED, not refused and not stored whole: the
+  // reader stops AT the ceiling, so a longer stored list would show the operator guards that guard
+  // nothing, and the agent it produced would fail its own first save (issue #568, review round 23).
+  test("a bundle with more guards than the ceiling imports clamped, and says so", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com guardas demais";
+    const settings = bundle.agent.settings as Record<string, unknown>;
+    settings.setLabels = {
+      protected: Array.from({ length: 57 }, (_, i) => `guarda-${i}`),
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = (row.settings as Record<string, Record<string, string[]>>)
+      .setLabels?.protected;
+    expect(stored?.length).toBe(PROTECTED_LABELS_MAX);
+    // The list kept is the FRONT of the bundle's, which is the same one the reader would have
+    // honoured — so what the console shows and what the tool guards are the same set.
+    expect(stored?.[0]).toBe("guarda-0");
+    expect(stored?.at(-1)).toBe(`guarda-${PROTECTED_LABELS_MAX - 1}`);
+    // And the operator is told, with the count of guards that are gone.
+    const w = warnings.find((x) => x.code === "protectedLabelsClipped");
+    expect(w?.params).toEqual({ count: 7, max: PROTECTED_LABELS_MAX });
+    // The agent it produced saves again, which is the point of clamping instead of storing whole.
+    expect(() =>
+      assertSettingsProtectedLabels(row.settings, undefined),
+    ).not.toThrow();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("a bundle within the ceiling is stored untouched, and warns about nothing", async () => {
+    // The negative above is worth nothing without this: a clamp that ran always would pass it and
+    // would be reshaping every ordinary bundle on the way in.
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com guardas de menos";
+    (bundle.agent.settings as Record<string, unknown>).setLabels = {
+      protected: ["agente-off", "testando-agente"],
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect(
+      (row.settings as Record<string, Record<string, string[]>>).setLabels
+        ?.protected,
+    ).toEqual(["agente-off", "testando-agente"]);
+    expect(warnings.some((x) => x.code === "protectedLabelsClipped")).toBe(
+      false,
+    );
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A BUNDLE IS A FILE, and one exported before the rename instructs the model to call a tool the
+  // catalog no longer has. The keys around it already move; the prose did not (review round 26).
+  test("a bundle whose PROMPT names the old tool has it moved, and says so", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com prompt antigo";
+    bundle.agent.systemPrompt =
+      "Use `assign_label` para marcar etapas. Nunca chame assign_labels nem xassign_labelx.";
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { systemPrompt: true },
+    });
+    expect(row.systemPrompt).toContain("`set_labels` para marcar etapas");
+    // The word boundary: only the identifier moves, never somebody's own vocabulary.
+    expect(row.systemPrompt).toContain("assign_labels");
+    expect(row.systemPrompt).toContain("xassign_labelx");
+    const w = warnings.find((x) => x.code === "promptToolRenamed");
+    expect(w?.params).toEqual({ count: 1, name: "set_labels" });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  test("...unless the bundle grants a CUSTOM tool under the old name", async () => {
+    // Then the prompt means THAT tool, and moving the mention would point it at the native. Same
+    // rule the key move follows, for the same reason.
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com tool propria";
+    bundle.agent.systemPrompt = "Chame assign_label, que é a nossa própria.";
+    // The GRANT is what makes the old name mean the operator's own tool; the component behind it is
+    // the import's own business (an unknown one is dropped with its own warning).
+    bundle.agent.tools = [
+      ...bundle.agent.tools,
+      { source: "HTTP", tool: "assign_label", enabledTools: ["assign_label"] },
+    ] as typeof bundle.agent.tools;
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { systemPrompt: true },
+    });
+    expect(row.systemPrompt).toContain("assign_label");
+    expect(row.systemPrompt).not.toContain("set_labels");
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // A LEGACY NAME IS ONLY LEGACY WHILE NOTHING ELSE ANSWERS TO IT. Once `assign_label` stopped being
+  // native, an operator became free to create a tool under it — and a bundle from THAT agent means
+  // its own tool by the key. Mapped blindly, the guard moves to `set_labels` while the custom tool,
+  // which keeps its name, runs unguarded.
+  test("a rule for a CUSTOM tool named assign_label stays on it", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "assign_label";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "assign_label";
+    bundle.agent.name = "Vendedora com tool propria";
+    (bundle.agent.settings as Record<string, unknown>).toolPreconditions = {
+      assign_label: { kind: "attribute", scope: "contact", key: "da_custom" },
+    };
+    const { agent } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const conds =
+      (row.settings as Record<string, Record<string, { key?: string }>>)
+        .toolPreconditions ?? {};
+    // `assign_label` is a legal custom name now, so the tool is NOT renamed and neither is its rule.
+    expect(conds.assign_label?.key).toBe("da_custom");
+    expect(conds.set_labels).toBeUndefined();
+    await suDb.toolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: "assign_label" },
+    });
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
   // Round 15 of PR #485: a bundle authored before a native took the name. The assembly reserves
   // every native name (#457), so a tool imported under one would exist in the console and never
   // reach the model, and this path writes straight to the DB, past the service's refusal. Renamed
@@ -2360,8 +2819,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     if (!code || !bundle.components?.codeTools) {
       throw new Error("bundle missing validar_cpf");
     }
-    code.name = "assign_label";
-    code.label = "Assign label";
+    code.name = "set_labels";
+    code.label = "Set labels";
     bundle.components.codeTools.push({
       ...structuredClone(code),
       name: "consultar_cep",
@@ -2371,7 +2830,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       (g) => g?.source === "CODE" && g.tool === "validar_cpf",
     );
     if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
-    grant.tool = "assign_label";
+    grant.tool = "set_labels";
     bundle.agent.tools.push({ source: "CODE", tool: "consultar_cep" });
     await suDb.toolDefinition.create({
       data: {
@@ -2388,7 +2847,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: {
         tenantId: dstTenant,
         OR: [
-          { name: { startsWith: "assign_label" } },
+          { name: { startsWith: "set_labels" } },
           { name: { startsWith: "consultar_cep" } },
         ],
       },
@@ -2398,13 +2857,13 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // NOTE: the label follows the name where the console would derive the old one from it, the
     // same rule as an HTTP tool's (round 20 of PR #485).
     expect(rows.map((r) => [r.name, r.label])).toEqual([
-      ["assign_label_2", "Assign label 2"],
       ["consultar_cep_2", "Consultar CEP 2"],
+      ["set_labels_2", "Set labels 2"],
     ]);
     expect(warnings).toContainEqual({
       code: "codeToolRenamed",
-      params: { name: "assign_label", renamed: "assign_label_2" },
-      target: { kind: "codeTool", name: "assign_label_2" },
+      params: { name: "set_labels", renamed: "set_labels_2" },
+      target: { kind: "codeTool", name: "set_labels_2" },
     });
     expect(warnings).toContainEqual({
       code: "codeToolRenamed",

@@ -76,6 +76,7 @@ export function makeConfig(
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     kanbanConfig: KANBAN_DEFAULTS,
     toolGuidance: {},
+    protectedLabels: [],
     toolPreconditions: {},
     httpToolContext: {},
     contactName: null,

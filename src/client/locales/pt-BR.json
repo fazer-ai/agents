@@ -1293,6 +1293,14 @@
       "mcpReused": "O servidor MCP \"{{name}}\" já existia e foi reaproveitado; confira se está certo.",
       "mcpUnsafeStdio": "O servidor MCP \"{{name}}\" tem um comando não suportado e foi ignorado.",
       "nativeToolUnknown": "A ferramenta nativa \"{{name}}\" não existe nesta versão, então ela foi deixada de fora do agente.",
+      "promptToolRenamed_zero": "O prompt citava uma ferramenta que foi renomeada, então {{count}} menções passaram a dizer \"{{name}}\". Vale conferir.",
+      "promptToolRenamed_one": "O prompt citava uma ferramenta que foi renomeada, então {{count}} menção passou a dizer \"{{name}}\". Vale conferir.",
+      "promptToolRenamed_many": "O prompt citava uma ferramenta que foi renomeada, então {{count}} menções passaram a dizer \"{{name}}\". Vale conferir.",
+      "promptToolRenamed_other": "O prompt citava uma ferramenta que foi renomeada, então {{count}} menções passaram a dizer \"{{name}}\". Vale conferir.",
+      "protectedLabelsClipped_zero": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foram descartadas na importação.",
+      "protectedLabelsClipped_one": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foi descartada na importação.",
+      "protectedLabelsClipped_many": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foram descartadas na importação.",
+      "protectedLabelsClipped_other": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foram descartadas na importação.",
       "toolSchemaAdjusted": "Ferramenta \"{{name}}\": o schema de entrada importado foi ajustado: {{reason}}. Confira os argumentos que o agente pode enviar.",
       "unknownGrantSourceSkipped_zero": "{{count}} concessões de ferramenta vieram de uma versão mais nova e foram ignoradas.",
       "unknownGrantSourceSkipped_one": "{{count}} concessão de ferramenta veio de uma versão mais nova e foi ignorada.",
@@ -1316,12 +1324,13 @@
       "suggestEnable": "Permitir que o agente sugira novas entradas"
     },
     "labelInstructions": "Orientação de uso",
-    "labelInstructionsHint": "Opcional. Explica qual etiqueta adicionar na conversa, no contato ou no card do kanban, e quando. A IA já vê as etiquetas existentes; isto acrescenta suas regras. Anexado à descrição da ferramenta.",
-    "labelInstructionsPlaceholder": "ex.: adicione \"vip\" ao contato para clientes premium; marque a conversa como \"urgente\" quando o cliente estiver irritado.",
+    "labelInstructionsHint": "Opcional. Quais etiquetas a conversa, o contato ou o card devem carregar, e quando. A IA já vê as que estão valendo; escreva aqui as suas regras, inclusive quais delas se excluem.",
+    "labelInstructionsPlaceholder": "ex.: a conversa carrega exatamente uma entre \"cancelamento\", \"compra-de-ingresso\" e \"outros\": ao definir uma, deixe as outras de fora. Mantenha \"vip\" e \"agente-off\" onde já estiverem.",
     "limits": "Limites de execução",
     "limitsHint": "Limite quanto trabalho o agente faz em um único turno antes de ter que responder.",
     "limitsMaxHistoryTokens": "Teto de histórico",
     "limitsMaxHistoryTokensHelp": "O agente envia todo o histórico deste contato a cada resposta. Quanto mais um cliente fala, mais lenta e mais cara fica cada resposta a ele.\n\nO teto corta esse envio: ao ser alcançado, os atendimentos mais antigos param de ir junto. A conversa que está sendo respondida nunca sai.\n\nA contagem é uma estimativa, fica abaixo do real em conversas com muitas ferramentas, e não inclui as instruções nem as definições das ferramentas. Defina abaixo do orçamento que você tem de fato.",
+    "limitsMaxHistoryTokensHelpObserving": "Uma observação não leva o histórico do contato: cada tique remonta a conversa a partir do canal, então este teto nunca corta nada de um tique.\n\nO que ele limita é a memória deste agente: quando um atendimento fecha, a transcrição entregue ao resumidor é cortada para caber.\n\nA contagem é uma estimativa, fica baixa em threads cheias de ferramenta, e não inclui as instruções nem as definições das ferramentas.",
     "limitsMaxHistoryTokensHint": "Vazio, sem teto. Entre 2.000 e 1.000.000.",
     "limitsMaxToolCalls": "Máx. de ferramentas / turno",
     "limitsMaxToolCallsHint": "Depois desse número de usos de ferramenta o agente é obrigado a responder com o que já tem (sem erro). 1-50.",
@@ -1366,7 +1375,6 @@
     "observabilityOnLangfuse": "conteúdo enviado ao Langfuse",
     "observabilityOnToolValues": "valores de ferramenta",
     "observation": "Observação",
-    "observationAddGroup": "Adicionar grupo",
     "observationAnalysis": "Quando classificar",
     "observationAnalysisHint": "Por rajada também faz uma passada final quando a conversa é resolvida.",
     "observationAnalysisIncremental": "Depois de cada rajada de mensagens do cliente",
@@ -1375,20 +1383,8 @@
     "observationBurstHint": "Mensagens do cliente mais próximas que isso são julgadas juntas. {{min}} a {{max}}.",
     "observationBurstMax": "Teto da rajada (segundos)",
     "observationBurstMaxHint": "Um cliente que não para de escrever é julgado no máximo este tempo depois da primeira mensagem.",
-    "observationGroupExclusive": "Um por vez",
-    "observationGroupExclusiveHelp": "Ligado: o veredito substitui a etiqueta atual do grupo. Desligado: as etiquetas acumulam.",
-    "observationGroupIncomplete": "Um grupo precisa de nome e de pelo menos uma etiqueta; este só é salvo quando tiver os dois.",
-    "observationGroupName": "Nome do grupo",
-    "observationGroupNameHint": "Também é a chave do veredito nos logs.",
-    "observationGroups": "Grupos de etiquetas",
-    "observationGroupsHint": "Cada grupo é uma pergunta que o agente responde com uma das etiquetas dele. As etiquetas precisam existir na conta do Chatwoot. Até {{max}} grupos.",
-    "observationGroupValues": "Etiquetas",
-    "observationGroupValuesHint": "Uma por linha, com o título que tem no Chatwoot. Até {{max}}.",
-    "observationHelp": "Um agente em monitoramento lê todas as mensagens das caixas que observa e não responde nenhuma. Este bloco é o que ele faz com o que lê.\n\nCom pelo menos um grupo de etiquetas, ele classifica a conversa depois de cada rajada de mensagens do cliente (ou só ao resolver) e grava o veredito como etiquetas do Chatwoot: um grupo exclusivo mantém um valor por vez, um cumulativo acumula. Etiqueta que muda ganha uma nota privada com o motivo.\n\nSem grupo, a observação fica desligada e o agente não custa nada. As etiquetas precisam existir na conta do Chatwoot; um veredito fora da lista é recusado.",
-    "observationHint": "O que este agente faz com o que lê: um veredito por grupo de etiquetas, escrito na conversa enquanto ela acontece.",
-    "observationNote": "Deixar uma nota privada quando um veredito muda uma etiqueta",
-    "observationOff": "Nenhum grupo ainda: este agente lê e lembra, e não classifica nada.",
-    "observationRemoveGroup": "Remover grupo {{name}}",
+    "observationHelp": "Um agente em monitoramento lê todas as mensagens das caixas que observa e não responde nenhuma. Ele é o agente comum, com o prompt dele, as ferramentas dele, o conhecimento dele e os servidores MCP dele, menos a única coisa que não consegue fazer: publicar algo que o cliente veja.\n\nEntão o que ele FAZ se configura onde o comportamento de qualquer agente se configura: o prompt diz o que observar, e a aba Ferramentas diz com o que ele pode agir. Etiquetar a conversa, deixar nota privada, registrar atributo e mover o card são ferramentas que ele pode receber.\n\nEste bloco é só sobre quando ele olha: depois de cada rajada de mensagens do cliente, ou só quando a conversa é resolvida. Para desligar, desative o agente ou tire-o da caixa de entrada.",
+    "observationHint": "Quando este agente olha a conversa, e quanto dela ele lê.",
     "observationWindow": "Mensagens lidas",
     "observationWindowHint": "As mensagens mais recentes que o modelo lê a cada passada. {{min}} a {{max}}.",
     "openPlayground": "Testar no playground",
@@ -1403,6 +1399,10 @@
     "promptPreviewNote": "A hora é o valor atual; os dados de contato são exemplos.",
     "promptVarsHint": "Inserir uma variável (datas também aceitam um sufixo :formato):",
     "promptViewToggle": "Editor ou pré-visualização",
+    "protectedLabels": "Etiquetas fora do alcance",
+    "protectedLabelsHint": "Opcional, separadas por vírgula. Etiquetas que este agente não pode acrescentar nem remover, e que nunca vê. Use para as que são de outro sistema: sem isso, só duram enquanto a IA lembra de repetir.",
+    "protectedLabelsPlaceholder": "ex.: agente-off, testando-agente",
+    "protectedLabelsTooMany": "Etiquetas fora do alcance aceita no máximo {{max}} etiquetas.",
     "provider": "Provedor",
     "providerOpenAiCompatible": "Compatível com OpenAI",
     "reasoningEffort": "Esforço de raciocínio",
@@ -1534,6 +1534,7 @@
       "noIntegrations": "Nenhuma integração ativada ainda.",
       "noMcp": "Nenhum servidor MCP conectado ainda.",
       "noNativeSelected": "Nenhuma ferramenta nativa selecionada — o agente só pode conversar.",
+      "observingDelivery": "Este agente só observa, então as ferramentas que entregam algo ao cliente (reações, imagens, documentos) não aparecem aqui: o turno dele é montado com um cliente mudo e recusaria todas.",
       "preconditions": "Precondições",
       "selectAll": "Selecionar tudo",
       "showConfig": "Configurações"
@@ -2101,10 +2102,6 @@
     }
   },
   "nativeTools": {
-    "assign_label": {
-      "desc": "Adiciona uma etiqueta à conversa, ao contato ou ao card do kanban para categorizá-los (vip, urgente, lead…).",
-      "label": "Adicionar etiqueta"
-    },
     "calculator": {
       "desc": "Avalia expressões aritméticas com exatidão (+ - * / % ^ e parênteses).",
       "label": "Calculadora"
@@ -2140,6 +2137,10 @@
     "set_custom_attribute": {
       "desc": "Define um atributo personalizado na conversa, no contato ou no card do kanban (ex.: estágio do lead, qualificação).",
       "label": "Definir atributo"
+    },
+    "set_labels": {
+      "desc": "Define quais etiquetas a conversa, o contato ou o card do kanban carrega, acrescentando e removendo numa escrita só (vip, urgente, lead…).",
+      "label": "Definir etiquetas"
     },
     "set_voice_preference": {
       "desc": "Registra se o cliente prefere respostas em áudio ou em texto.",

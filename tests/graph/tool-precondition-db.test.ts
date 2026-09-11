@@ -3,11 +3,18 @@ import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { type AgentConfig, buildToolset } from "@/graph/prepare";
+import { buildNativeTools } from "@/graph/tools/native";
 import {
   guardedTool,
   preconditionStateLoader,
 } from "@/graph/tools/precondition";
 import type { ToolPrecondition } from "@/modules/agents/tool-preconditions";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
+import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
+import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
+import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The effect the issue is about is NOT a return value: `handoff_to_human` reassigns a conversation
@@ -59,6 +66,7 @@ describe.skipIf(!dbUp)(
   "preconditionStateLoader against a real database",
   () => {
     let tenantId = 0n;
+    let instanceId = 0n;
     let conversationDbId = 0n;
     let contactDbId = 0n;
 
@@ -72,6 +80,7 @@ describe.skipIf(!dbUp)(
         accountId: 41,
         baseUrl: "https://203.0.113.41:9",
       });
+      instanceId = inst.id;
       const inbox = await suDb.inbox.create({
         data: {
           tenantId,
@@ -179,6 +188,64 @@ describe.skipIf(!dbUp)(
       const out = await guarded.invoke({});
       expect(calls).toHaveLength(0);
       expect(String(out)).toContain("was not run");
+    });
+
+    test("a MET condition is still stopped by the fence, and the turn's own wiring hands it in", async () => {
+      // The read above is a wait between the graph's ask at dispatch and the call it authorises, so
+      // a tool whose first act is a WRITE loses that cover the moment a precondition is configured
+      // on it (issue #568, review round 24). Asked through `buildToolset` rather than `guardedTool`
+      // because the fence's ARGUMENT POSITION is the half a unit test cannot see: passed one slot
+      // over, the wrapper reads `undefined`, every assertion about the fence still passes, and
+      // nothing is guarded. Measured while writing this: that is exactly what happened.
+      const cfg = {
+        agentId: 1n,
+        contactDbId: null,
+        conversationDbId,
+        contactVoiceReply: null,
+        documentSelections: [],
+        handoffConfig: HANDOFF_DEFAULTS,
+        kanbanConfig: KANBAN_DEFAULTS,
+        contactAuth: CONTACT_AUTH_DEFAULTS,
+        sendImageConfig: SEND_IMAGE_DEFAULTS,
+        httpToolContext: {},
+        codeToolDefs: [],
+        httpToolDefs: [],
+        integrationSelections: [],
+        mcpSelections: [],
+        nativeToolsAllow: ["private_note"],
+        ragConfig: undefined,
+        timezone: "America/Sao_Paulo",
+        toolGuidance: {},
+        toolPreconditions: { private_note: cond },
+        transferWithSummary: true,
+      } as unknown as AgentConfig;
+      const posted: unknown[] = [];
+      const client = {
+        sendPrivateNote: async (...args: unknown[]) => {
+          posted.push(args);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      const tools = await buildToolset(
+        cfg,
+        {
+          tenantId,
+          instanceId,
+          base: appDb,
+          client,
+          conversationId: CONV_ID,
+          threadId: `${tenantId}:${instanceId}:${CONV_ID}`,
+          // Wanted when the graph asked; withdrawn by the time the state read came back.
+          stillWanted: async () => false,
+        },
+        { buildNativeTools },
+      );
+      const note = tools.find((t) => t.name === "private_note");
+      if (!note) throw new Error("private_note was not built");
+      const out = String(await note.invoke({ content: "resumo" }));
+      // The condition IS met (the attribute was written above), so what stops it is the fence.
+      expect(posted).toHaveLength(0);
+      expect(out).toContain("called off");
     });
 
     test("another tenant's row cannot satisfy the condition", async () => {

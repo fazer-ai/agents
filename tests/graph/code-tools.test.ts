@@ -11,6 +11,7 @@ import {
   CODE_TOOL_CONTEXT_MAX_CHARS,
   CODE_TOOL_INPUT_MAX_CHARS,
 } from "@/graph/tools/code-sandbox";
+import { isEffectFreeTool } from "@/graph/tools/effect-free";
 
 // The operator-authored kind (issue #363): the body is the operator's, the arguments are the
 // model's, and a failure of the body is an integration failure the operator hears about.
@@ -259,5 +260,15 @@ describe("a code tool", () => {
         (t) => t.name,
       ),
     ).toEqual(["validar_cpf", "b"]);
+  });
+
+  test("a code tool is effect-free, and says so on the tool", () => {
+    // The body runs in a fresh QuickJS interpreter with no fetch, no process, no require and no
+    // timers (code-sandbox.ts): it computes and returns, so a second run duplicates nothing. The
+    // observer's tick reads this to decide whether a failed tick may be retried, and an operator
+    // names these tools, so the answer cannot be their name (review round 33).
+    const [tool] = buildCodeTools([VALIDAR_CPF]);
+    expect(tool).toBeDefined();
+    expect(isEffectFreeTool(tool as { name: string })).toBe(true);
   });
 });

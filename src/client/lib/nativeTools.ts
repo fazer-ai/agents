@@ -24,7 +24,7 @@ export const NATIVE_TOOL_ICONS: Record<string, LucideIcon> = {
   handoff_to_human: ArrowRightLeft,
   private_note: StickyNote,
   set_custom_attribute: Tag,
-  assign_label: Tags,
+  set_labels: Tags,
   resolve_conversation: CheckCircle2,
   kanban_move_card: LayoutGrid,
   update_kanban_task: SquarePen,
@@ -73,13 +73,13 @@ export function nativeToolMeta(name: string, t: TFunction): NativeToolMeta {
           "Set a conversation custom attribute (e.g. lead stage, qualification flag).",
         ),
       };
-    case "assign_label":
+    case "set_labels":
       return {
         icon,
-        label: t("nativeTools.assign_label.label", "Add label"),
+        label: t("nativeTools.set_labels.label", "Set labels"),
         description: t(
-          "nativeTools.assign_label.desc",
-          "Add a label (tag) to the conversation to categorize it (vip, urgent, lead…).",
+          "nativeTools.set_labels.desc",
+          "Set which labels (tags) the conversation carries, adding and removing in one write (vip, urgent, lead…).",
         ),
       };
     case "resolve_conversation":

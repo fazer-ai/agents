@@ -41,7 +41,7 @@ describe("the settings text walker", () => {
       paths({
         handoff: { instructions: over(TOOL_INSTRUCTIONS_MAX) },
         kanban: { instructions: over(TOOL_INSTRUCTIONS_MAX) },
-        toolGuidance: { assign_label: over(TOOL_INSTRUCTIONS_MAX) },
+        toolGuidance: { set_labels: over(TOOL_INSTRUCTIONS_MAX) },
         guardrails: {
           customPolicy: over(CUSTOM_POLICY_MAX),
           input: { templateMessage: over(TEMPLATE_MESSAGE_MAX) },
@@ -59,7 +59,7 @@ describe("the settings text walker", () => {
       [
         "handoff.instructions",
         "kanban.instructions",
-        "toolGuidance.assign_label",
+        "toolGuidance.set_labels",
         "guardrails.customPolicy",
         "guardrails.input.templateMessage",
         "guardrails.output.generationPrompt",

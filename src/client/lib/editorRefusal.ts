@@ -26,7 +26,7 @@ import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 // both of which have a visible control, so the banner said the opposite of the truth about them.
 export const UNDRAWN_TOOL_NOTES: readonly string[] = NATIVE_TOOL_NAMES.filter(
   (n) =>
-    !["set_custom_attribute", "assign_label", "update_kanban_task"].includes(n),
+    !["set_custom_attribute", "set_labels", "update_kanban_task"].includes(n),
 ).map((n) => `toolGuidance.${n}`);
 
 // Whether the console really has no control for a value the server named, said only where it can be
@@ -71,7 +71,7 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
   { match: /^kanban\.instructions$/, tab: "tools", sectionId: "tools-native" },
   {
     match:
-      /^toolGuidance\.(set_custom_attribute|assign_label|update_kanban_task)$/,
+      /^toolGuidance\.(set_custom_attribute|set_labels|update_kanban_task)$/,
     tab: "tools",
     sectionId: "tools-native",
   },
@@ -275,7 +275,7 @@ const OWNED_FIELDS: readonly OwnedField[] = [
   { field: "handoff.instructions", tab: "tools" },
   { field: "kanban.instructions", tab: "tools" },
   { field: "toolGuidance.set_custom_attribute", tab: "tools" },
-  { field: "toolGuidance.assign_label", tab: "tools" },
+  { field: "toolGuidance.set_labels", tab: "tools" },
   { field: "toolGuidance.update_kanban_task", tab: "tools" },
 ];
 

@@ -1622,19 +1622,15 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
   }
 
-  test("with a label group, a customer message arms the observer's OBSERVE row; without one nothing was armed", async () => {
-    expect(await observeRows()).toEqual([]);
-    await suDb.agent.update({
-      where: { id: observerId },
-      data: {
-        settings: {
-          monitoring: {
-            labelGroups: [
-              { name: "assunto", values: ["cancelamento", "outros"] },
-            ],
-          },
-        },
-      },
+  // ARMING IS THE MODE, and nothing else (issue #568). It used to need a label group configured,
+  // because a watcher with nothing to classify into had nothing to do; a watcher is now the ordinary
+  // agent that cannot answer, so being enabled, in monitoring mode and on the inbox is the whole
+  // condition.
+  test("a customer message on the observer's route arms its OBSERVE row", async () => {
+    // Cleared first: every customer message on this route arms one now, so the deliveries the tests
+    // above made have rows of their own.
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
     });
     await deliver(OBSERVER_BOT, 4, OBSERVED_ONLY_INBOX, {
       assigneeType: "User",

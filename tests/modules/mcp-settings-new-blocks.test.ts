@@ -594,4 +594,44 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(stored.toolGuidance?.handoff_to_human).toBeUndefined();
     expect(stored.toolGuidance?.private_note).toBe("keep me");
   });
+
+  // MCP IS A SECOND DOOR TO THE SAME BAG, and the retired taxonomy keys were refused only at the
+  // first one. `mergeBehaviorSettings` normalizes each touched block through its reader, and the
+  // reader no longer knows these keys — so by the time `updateAgent` sees the bag the groups are
+  // gone and both the dry run and the apply answer ok for configuration that does nothing. That is
+  // the precise silence issue #568 set out to end, reached through the other entrance (round 12).
+  test("the retired taxonomy keys are refused over MCP too, dry run included", async () => {
+    for (const dry of [true, false]) {
+      const r = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(agentId),
+          dry_run: dry,
+          monitoring: { labelGroups: [{ name: "assunto", values: ["a"] }] },
+        },
+        { base: app as PrismaClient },
+      );
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r)).toContain("toolGuidance.set_labels");
+    }
+    // And the guard's own block goes through the same door without trouble.
+    const ok = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        setLabels: { protected: ["agente-off"] },
+      },
+      { base: app as PrismaClient },
+    );
+    expect(ok.ok).toBe(true);
+    const row = await (su as PrismaClient).agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    expect(
+      (row.settings as Record<string, Record<string, unknown>>).setLabels
+        ?.protected,
+    ).toEqual(["agente-off"]);
+  });
 });

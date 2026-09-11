@@ -1640,7 +1640,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
 
   test("an agent flipped to monitoring inside the model call runs none of the tools it asked for", async () => {
     // The turn's fence covers the sends; the graph asks its own copy at the tool boundary, and a
-    // copy derived from the episode alone let `assign_label` write — and the slow-tool ack post —
+    // copy derived from the episode alone let `set_labels` write — and the slow-tool ack post —
     // for an agent that had just been flipped (issue #209 review, round 5).
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1673,7 +1673,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
           const message = new AIMessage({
             content: "",
             tool_calls: [
-              { name: "assign_label", args: { label: "vip" }, id: "call-1" },
+              { name: "set_labels", args: { label: "vip" }, id: "call-1" },
             ],
           });
           return { generations: [{ text: "", message }] };

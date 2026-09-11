@@ -274,7 +274,7 @@ describe("agent editor save errors", () => {
       ["vision.extractionPrompt", "DEFAULT_EXTRACTION_PROMPT"],
       ["handoff.instructions", "serializeHandoff(handoff).instructions"],
       ["kanban.instructions", "kanbanInstructions.trim()"],
-      ["toolGuidance.assign_label", "labelInstructions.trim()"],
+      ["toolGuidance.set_labels", "labelInstructions.trim()"],
     ] as const) {
       expect(body, field).toContain(writer);
     }
@@ -290,6 +290,25 @@ describe("agent editor save errors", () => {
     const call = save.slice(0, save.indexOf("settingsTextError("));
     expect(call).toContain("force");
     expect(call).toContain("agents({ id }).get()");
+  });
+
+  test("the protected-label ceiling is checked BEFORE the grants PUT", () => {
+    // The grants PUT goes first, so a PATCH refused for an over-ceiling guard would leave
+    // `set_labels` enabled with the protection the operator typed not stored — the tool armed and
+    // the fence missing, which is the one ordering that must not happen (round 20).
+    const save = after(SRC, "async function saveTools");
+    const putAt = save.indexOf('["tool-selections"].put(');
+    expect(putAt).toBeGreaterThan(-1);
+    const before = save.slice(0, putAt);
+    expect(before).toContain("protectedLabelsError(");
+    // And it compares against the stored list, so a legacy over-ceiling value does not block a save
+    // that never touched it.
+    expect(between(SRC, "function protectedLabelsError", "\n  }")).toContain(
+      "PROTECTED_LABELS_MAX",
+    );
+    expect(between(SRC, "function protectedLabelsError", "\n  }")).toContain(
+      "stored",
+    );
   });
 
   test("every handler that writes the agent shows the server's message", () => {

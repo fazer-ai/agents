@@ -213,6 +213,10 @@ let inboxDbId = 0n;
 // Turns one of the stub's Chatwoot calls into the moment /reset lands: the returned closure answers
 // `stillWanted` and flips the first time that call is made. The point is the POSITION — a retirement
 // that lands before the run starts is a different (and easier) test than one that lands mid-turn.
+// `nth` is which call of `method` retires the job, and it exists because a method can be called more
+// than once in a turn by parts that are not the subject of the test: turn prep reads the
+// conversation's labels to show them to the model (set_labels' diff base), so the postActions read
+// this file cares about is the SECOND one.
 function retireOn(
   s: { client: ChatwootClient },
   method:
@@ -220,15 +224,18 @@ function retireOn(
     | "sendMessage"
     | "setConversationLabels"
     | "getConversationLabels",
+  nth = 1,
 ): () => Promise<boolean> {
   let wanted = true;
+  let seen = 0;
   const holder = s.client as unknown as Record<
     string,
     (...a: never[]) => unknown
   >;
   const inner = holder[method]?.bind(s.client);
   holder[method] = ((...args: never[]) => {
-    wanted = false;
+    seen += 1;
+    if (seen >= nth) wanted = false;
     return inner?.(...args);
   }) as (...a: never[]) => unknown;
   return async () => wanted;
@@ -422,7 +429,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         agentId: agent.id,
         source: "NATIVE",
         // Deliberately WITHOUT skip_reply, which is the whole point.
-        enabledTools: ["private_note", "assign_label"],
+        enabledTools: ["private_note", "set_labels"],
         knowledgeBaseIds: [],
       },
       select: { id: true },
@@ -582,7 +589,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
 
   // ISSUE #449, on the path that owns fifteen of these asks and had none where it mattered. All of
   // them sit BETWEEN two steps; a tool call happens inside one, so a retirement landing while the
-  // model call is in flight left the nudge's own tools free to write. `assign_label` is the one this
+  // model call is in flight left the nudge's own tools free to write. `set_labels` is the one this
   // asserts because the client stub records it, and it is one of the three the issue names.
   test("a job retired during the model call does not get its tools run", async () => {
     // Ids of this test's own, and picked against the whole file rather than the neighbour: this
@@ -612,7 +619,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
                 content: "",
                 tool_calls: [
                   {
-                    name: "assign_label",
+                    name: "set_labels",
                     args: { label: "seguimento", scope: "conversation" },
                     id: "call_449_nudge",
                   },
@@ -695,7 +702,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
                 content: "",
                 tool_calls: [
                   {
-                    name: "assign_label",
+                    name: "set_labels",
                     args: { label: "seguimento", scope: "conversation" },
                     id: "call_449_flip",
                   },
@@ -2163,7 +2170,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   test("a reset landing during the label read withholds the label write", async () => {
     await seedConv(9996, null);
     const s = stub();
-    const wanted = retireOn(s, "getConversationLabels");
+    const wanted = retireOn(s, "getConversationLabels", 2);
     const outcome = await runAgentNudge({
       tenantId,
       threadId: `${tenantId}:${instanceId}:9996`,

@@ -1,16 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
-import type { ResolvedModelConfig } from "@/graph/models";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   armObserve,
   observeDedupeKey,
@@ -158,12 +157,74 @@ function verdictModel(answer: unknown, calls: { n: number }): BaseChatModel {
   return new VerdictModel(answer, calls);
 }
 
-const observeLines = () =>
+// A WATCHER'S TURN IS ITS TOOL CALLS. The graph asks the model, runs whatever it called, asks again,
+// and the second answer is prose nobody delivers — so a double that calls a tool on the first hop
+// and answers on the second is what an observation turn looks like end to end.
+class LabellingModel {
+  calls = 0;
+  constructor(
+    private readonly labels: string[],
+    // Runs after the model "answers" and before the tool node asks the fence, which is the window
+    // every one of these fences exists for: the world moved while the model was generating.
+    private readonly whileGenerating?: () => Promise<unknown>,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    this.calls++;
+    return new AIMessage("pronto");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        self.calls++;
+        n++;
+        if (n === 1 && self.whileGenerating) await self.whileGenerating();
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "set_labels",
+                  args: { labels: self.labels },
+                  id: "call_labels",
+                },
+              ],
+            })
+          : new AIMessage("classifiquei a conversa.");
+      },
+    };
+  }
+}
+
+// ...and one that decides nothing changed, which is what most ticks should look like.
+class SilentModel {
+  calls = 0;
+  async invoke(): Promise<AIMessage> {
+    this.calls++;
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    return {
+      async invoke(): Promise<AIMessage> {
+        self.calls++;
+        return new AIMessage("nada mudou.");
+      },
+    };
+  }
+}
+
+// ONE reader for this file, parameterised by stage: the tool logger writes `tool` lines and the
+// tick writes `observe` ones, and a second `flowLogRows` call here would be a second reader for
+// `flowlog-reader-scope.test.ts` to account for. Scoping stays in one place either way.
+const stageLines = (stage: "observe" | "tool") =>
   flowLogRows(suDb, {
-    where: { conversationId: convRowId, stage: "observe" },
+    where: { conversationId: convRowId, stage },
     orderBy: { id: "asc" },
     select: { status: true, level: true, detail: true, agentId: true },
   });
+const observeLines = () => stageLines("observe");
 
 describe.skipIf(!dbUp)("the OBSERVE job", () => {
   beforeAll(async () => {
@@ -350,225 +411,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(await suDb.schedulerJob.count({ where: { tenantId } })).toBe(1);
   });
 
-  test("nothing is armed without a label group, and a burst is not armed for an agent that only looks at the end", async () => {
-    expect(
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId: CONV + 1,
-        agentId,
-        reason: "burst",
-        cfg: readMonitoringConfig({}),
-        base: appDb,
-      }),
-    ).toBe("off");
-    const onResolve = readMonitoringConfig({
-      monitoring: { ...MONITORING, analysis: "on_resolve" },
-    });
-    expect(
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId: CONV + 1,
-        agentId,
-        reason: "burst",
-        cfg: onResolve,
-        base: appDb,
-      }),
-    ).toBe("off");
-    expect(
-      await armObserve({
-        tenantId,
-        instanceId,
-        conversationId: CONV + 1,
-        agentId,
-        reason: "resolved",
-        cfg: onResolve,
-        base: appDb,
-      }),
-    ).toBe("armed");
-    await suDb.schedulerJob.deleteMany({
-      where: { tenantId, dedupeKey: { contains: `:${CONV + 1}` } },
-    });
-  });
-
-  test("the tick writes the exclusive label once, posts one private note, and writes one observe line", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["agente-off", "compra-de-ingresso"];
-    const calls = { n: 0 };
-    const res = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient(
-            [
-              message(1, "oi, comprei ingresso para sábado"),
-              message(2, "Olá! Como posso ajudar?", "outgoing"),
-              message(3, "quero cancelar, não vou conseguir ir"),
-            ],
-            labels,
-            log,
-          ),
-        makeModel: () =>
-          verdictModel(
-            {
-              assunto: "cancelamento",
-              confidence: 0.92,
-              reason: "O cliente pediu para cancelar o ingresso.",
-            },
-            calls,
-          ),
-      },
-    );
-    expect(res).toEqual({ outcome: "done" });
-    expect(calls.n).toBe(1);
-    expect(log.labelsWritten).toEqual([["agente-off", "cancelamento"]]);
-    expect(log.notes).toEqual([
-      "🔎 Observadora · assunto: compra-de-ingresso → cancelamento\nO cliente pediu para cancelar o ingresso.",
-    ]);
-    expect(log.publicSends).toBe(0);
-    const lines = await observeLines();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.status).toBe("ok");
-    expect(lines[0]?.agentId).toBe(agentId);
-    const detail = detailOf(lines, 0);
-    expect(detail.changed).toBe(true);
-    expect(detail.reason).toBe("burst");
-    expect(detail.verdict).toEqual({ assunto: "cancelamento" });
-    expect(detail.noted).toBe(true);
-    expect(JSON.stringify(detail)).not.toContain("pediu para cancelar");
-    const usage = await suDb.llmUsage.findMany({
-      where: { tenantId },
-      select: { node: true, conversationId: true },
-    });
-    expect(usage.map((u) => u.node)).toEqual(["observer"]);
-    expect(usage[0]?.conversationId).toBe(convRowId);
-  });
-
-  test("the same verdict again writes nothing and says so; a value outside the list is refused", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    // A resolve verdict runs on a conversation that IS resolved (issue #477 review, round 6).
-    await suDb.conversation.update({
-      where: { id: convRowId },
-      data: { status: "resolved" },
-    });
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "resolved",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(3, "quero cancelar")], ["cancelamento"], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 1, reason: "" },
-            calls,
-          ),
-      },
-    );
-    await suDb.conversation.update({
-      where: { id: convRowId },
-      data: { status: "open" },
-    });
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(4, "quero reembolso")], ["cancelamento"], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "reembolso", confidence: 0.7, reason: "x" },
-            calls,
-          ),
-      },
-    );
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines).toHaveLength(3);
-    expect(detailOf(lines, 1).changed).toBe(false);
-    expect(detailOf(lines, 1).reason).toBe("resolved");
-    expect(lines[2]?.level).toBe("warn");
-    // The GROUP that refused, never what it refused: a value outside the enum is the model's own
-    // text, and `ExecutionLog.detail` carries no model text (issue #477 review, round 3).
-    expect(detailOf(lines, 2).refused).toEqual(["assunto"]);
-    expect(detailOf(lines, 2).verdict).toEqual({ assunto: null });
-    expect(JSON.stringify(detailOf(lines, 2))).not.toContain("reembolso");
-  });
-
-  test("an answer in prose is read for its JSON; one nothing can read is a done tick with an error line", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient(
-            [message(5, "afinal vou comprar outro")],
-            ["cancelamento"],
-            log,
-          ),
-        makeModel: () =>
-          verdictModel(
-            'Claro! {"assunto": "compra-de-ingresso", "confidence": 0.8, "reason": "novo pedido"} fim',
-            calls,
-          ),
-      },
-    );
-    expect(log.labelsWritten).toEqual([["compra-de-ingresso"]]);
-    const res = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(6, "oi")], ["cancelamento"], log),
-        makeModel: () => verdictModel("não sei dizer", calls),
-      },
-    );
-    expect(res).toEqual({ outcome: "done" });
-    const lines = await observeLines();
-    expect(lines.at(-1)?.status).toBe("error");
-    expect(detailOf(lines, -1).failed).toBe("unreadable_verdict");
-  });
-
   test("a conversation with nobody from the customer in view is skipped without a model call", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -591,52 +433,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(calls.n).toBe(0);
     expect(log.labelsWritten).toEqual([]);
     expect((await observeLines()).at(-1)?.status).toBe("skipped");
-  });
-
-  test("an agent flipped to answering while the tick was reading writes nothing", async () => {
-    // The flip lands AFTER the tick loaded the agent and BEFORE it writes: the model has answered,
-    // and the re-read before the write is what keeps the verdict off a responder's conversation.
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const client = stubClient([message(9, "cancela tudo")], [], log);
-    const flipping = {
-      ...client,
-      getConversationLabels: async () => {
-        await suDb.agent.update({
-          where: { id: agentId },
-          data: { mode: "production" },
-        });
-        return [];
-      },
-    } as unknown as ChatwootClient;
-    try {
-      const res = await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => flipping,
-          makeModel: () => verdictModel({ assunto: "cancelamento" }, calls),
-        },
-      );
-      expect(res).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const last = detailOf(await observeLines(), -1);
-      expect(last.skipped).toBe("agent_no_longer_observes");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { mode: "monitoring" },
-      });
-    }
   });
 
   test("an agent that stopped observing between the arm and the tick writes nothing", async () => {
@@ -671,103 +467,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         data: { mode: "monitoring" },
       });
     }
-  });
-
-  // `setConversationLabels` REPLACES the set, so the write has to be built on the labels as they are
-  // when it goes out. Built on the snapshot taken before the model call, a label a colleague added
-  // in those seconds is deleted by a feature whose whole promise is not to touch what is outside its
-  // groups (issue #477 review, round 1).
-  test("a label added while the model was answering survives the write", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["compra-de-ingresso"];
-    const calls = { n: 0 };
-    const client = stubClient(
-      [message(1, "quero cancelar, não vou conseguir ir")],
-      labels,
-      log,
-    );
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // The colleague's label lands between the read that feeds the prompt and the one that feeds
-        // the write; from then on it is part of the live set.
-        if (reads === 2) labels.push("vip");
-        return [...labels];
-      };
-    const res = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () => client,
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-            calls,
-          ),
-      },
-    );
-    expect(res).toEqual({ outcome: "done" });
-    // Three: the prompt's, the write's, and the verification pass that finds the write standing and
-    // writes nothing more.
-    expect(reads).toBe(3);
-    expect(log.labelsWritten).toEqual([["vip", "cancelamento"]]);
-  });
-
-  // A read that fails does not get to write a stale set. The tick does not end there either: the
-  // FIRST read failing is the verdict lost, since nothing re-arms an `on_resolve` row, so it fails
-  // and the scheduler retries (issue #477 review, round 7).
-  test("labels that cannot be re-read fail the tick without writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const client = stubClient(
-      [message(1, "quero cancelar")],
-      ["compra-de-ingresso"],
-      log,
-    );
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        if (reads === 1) return ["compra-de-ingresso"];
-        throw new Error("chatwoot 502");
-      };
-    const before = (await observeLines()).length;
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-              calls,
-            ),
-        },
-      ),
-    ).toEqual({
-      outcome: "fail",
-      error: "observe: the labels could not be read before writing",
-    });
-    expect(log.labelsWritten).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("labels_unreadable");
   });
 
   // TWO CLASSIFIERS, TWO ROWS. An inbox can carry a monitoring responder and a different observer,
@@ -1066,200 +765,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // Chatwoot has no compare-and-set on the labels endpoint, and two classifiers hold two rows now:
-  // the later POST erases the earlier one's group. The verification pass re-applies the same verdict
-  // onto the newest set (issue #477 review, round 2).
-  test("a write another classifier clobbered is re-applied once", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["compra-de-ingresso"];
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], labels, log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // The other classifier's POST lands between our write and the verification read, and it was
-        // built on the set as it was before ours.
-        if (reads === 3) labels.splice(0, labels.length, "urgente");
-        return [...labels];
-      };
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-              calls,
-            ),
-        },
-      ),
-    ).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([
-      ["cancelamento"],
-      ["urgente", "cancelamento"],
-    ]);
-    // ...and the other classifier's own label is kept, which is the point of re-applying rather than
-    // re-posting what we had.
-    expect(labels).toEqual(["urgente", "cancelamento"]);
-  });
-
-  // THE REPAIR'S SUBJECT IS THE WRITE IT REPAIRS (issue #477 review, round 24). A group the first
-  // pass left alone, edited by a person between our POST and the verification read, is an edit we
-  // have SEEN — re-applying the verdict over it would revert a manual classification and fire
-  // whatever the label triggers.
-  test("a group the first pass did not move is left alone by the repair", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    // Two groups: the verdict moves `assunto` and repeats what `sinal` already holds.
-    const labels = ["compra-de-ingresso", "morno"];
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], labels, log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // Read 1 feeds the prompt, read 2 is the pre-write re-read, read 3 the verification.
-        if (reads === 3)
-          // Another classifier clobbers OUR group, and a person moves the other one.
-          labels.splice(0, labels.length, "urgente", "quente");
-        return [...labels];
-      };
-    try {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: {
-          settings: {
-            monitoring: {
-              labelGroups: [
-                ...MONITORING.labelGroups,
-                {
-                  name: "sinal",
-                  exclusive: true,
-                  values: ["morno", "quente"],
-                },
-              ],
-            },
-          },
-        },
-      });
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () => client,
-            makeModel: () =>
-              verdictModel(
-                {
-                  assunto: "cancelamento",
-                  sinal: "morno",
-                  confidence: 0.9,
-                  reason: "pediu",
-                },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      // The repair puts OUR value back onto the set as it stands, and leaves `quente` — the edit it
-      // did not make and has now seen — exactly where the person put it.
-      expect(log.labelsWritten).toEqual([
-        // `assunto` moved; `sinal` was already on the value the verdict repeats.
-        ["morno", "cancelamento"],
-        // Without the restriction the repair would also sweep `quente` back to `morno`.
-        ["urgente", "quente", "cancelamento"],
-      ]);
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // THE REPAIR IS HELD TO THE TAXONOMY IT WROTE (issue #477 review, round 23). The in-queue fence
-  // hands back the CURRENT configuration on both passes; the groups the repair applies were chosen
-  // on the first, so a taxonomy replaced while our first POST was in flight would have the second
-  // pass write a value from a group that is gone — the very thing the first pass refuses to do.
-  test("a group replaced between the write and the repair is not repaired", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const labels = ["compra-de-ingresso"];
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], labels, log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // Read 1 feeds the prompt, read 2 is the pre-write re-read, read 3 the verification.
-        if (reads === 3) {
-          // Another classifier clobbers our write...
-          labels.splice(0, labels.length, "urgente");
-          // ...and the operator replaces the group we wrote under, in the same window.
-          await suDb.agent.update({
-            where: { id: agentId },
-            data: {
-              settings: {
-                monitoring: {
-                  labelGroups: [
-                    { name: "assunto", exclusive: false, values: ["outros"] },
-                  ],
-                },
-              },
-            },
-          });
-        }
-        return [...labels];
-      };
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () => client,
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      // The first write landed and stands; the repair wrote nothing, because the group it would
-      // have repaired is not the group standing now.
-      expect(log.labelsWritten).toEqual([["cancelamento"]]);
-      expect(labels).toEqual(["urgente"]);
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
   // A PENDING RESOLVE IS NOT THE BURST THIS MESSAGE JOINS (issue #477 review, round 2). Read as one,
   // the new burst inherits the resolve's `burstStartedAt` — by then past the max window — and runs
   // immediately instead of waiting the window it was configured with.
@@ -1442,199 +947,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // THE TAXONOMY IS A DIFFERENT THING FROM THE AGENT. An operator edits it from the console while a
-  // model call is in flight, and applied from the snapshot this tick loaded the verdict lands under
-  // a group that was replaced — or on an agent whose last group was deleted, which is how
-  // observation is switched off (issue #477 review, round 5).
-  test("label groups cleared during the model call stop the write", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient([message(1, "quero cancelar")], [], log),
-            makeModel: () => {
-              // The operator clears the taxonomy while the model is answering.
-              const m = verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.agent.update({
-                  where: { id: agentId },
-                  data: { settings: { monitoring: { labelGroups: [] } } },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("observation_off");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // ...AND THE SAME EDIT LANDING ONE ROUND TRIP LATER (issue #477 review, round 22). The fence used
-  // to be asked once, at the top of the label queue, with a Chatwoot GET between it and the POST:
-  // an operator switching observation off inside that window reached the write unseen, and the
-  // scheduler's CAS only notices after the label, the note and whatever the label triggered have
-  // landed.
-  test("label groups cleared during the label read stop the write", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    const client = stubClient([message(1, "quero cancelar")], [], log);
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        // The console write lands while this read is in flight.
-        await suDb.agent.update({
-          where: { id: agentId },
-          data: { settings: { monitoring: { labelGroups: [] } } },
-        });
-        return [];
-      };
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () => client,
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      // The model was still paid for — the fence is downstream of the call by design — but nothing
-      // was written.
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("observation_off");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-
-  // A TICK ALREADY CLAIMED IS PAST EVERY CANCEL. `/reset` retires the pending rows, but one whose
-  // model call was in flight when the command landed would write back the labels the operator was
-  // just told were cleared. The fence is the one the direct turn is held to, asked in Chatwoot's own
-  // message sequence (issue #477 review, round 6).
-  test("a verdict about a message the reset erased writes nothing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    await suDb.conversation.update({
-      where: { id: convRowId },
-      data: { resetAtMessageId: 500 },
-    });
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            // Armed on a message the command then erased.
-            atMessageId: 499,
-          },
-          appDb,
-          {
-            // A post-reset message stands too, so the transcript is not empty and the tick reaches
-            // the reset FENCE rather than exiting earlier for having nothing to read.
-            makeClient: async () =>
-              stubClient(
-                [message(499, "quero cancelar"), message(501, "oi")],
-                [],
-                log,
-              ),
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(detailOf(await observeLines(), -1).skipped).toBe("reset");
-      // A verdict about a message that arrived AFTER the command is a new episode, and writes.
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: 501,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient([message(501, "quero cancelar")], [], log),
-            makeModel: () =>
-              verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              ),
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([["cancelamento"]]);
-      expect((await observeLines()).length).toBe(before + 2);
-    } finally {
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { resetAtMessageId: null },
-      });
-    }
-  });
-
   // An `on_resolve` agent arms nothing on a reopening message, so the row queued for the old
   // resolution is still there — and it would classify a live conversation as if it had ended.
   test("a resolve verdict on a conversation that reopened writes nothing", async () => {
@@ -1668,244 +980,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const lines = await observeLines();
     expect(lines.length).toBe(before + 1);
     expect(detailOf(lines, -1).skipped).toBe("conversation_reopened");
-  });
-
-  // The arm asks two questions; the pre-write fence has to ask both. An operator switching to
-  // `on_resolve` while the call is in flight is refusing exactly this verdict.
-  test("analysis switched to on_resolve during the call stops the burst verdict", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            makeClient: async () =>
-              stubClient([message(1, "quero cancelar")], [], log),
-            makeModel: () => {
-              const m = verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.agent.update({
-                  where: { id: agentId },
-                  data: {
-                    settings: {
-                      monitoring: { ...MONITORING, analysis: "on_resolve" },
-                    },
-                  },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("analysis_changed");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-    }
-  });
-  // A message that lands while the model answers re-arms the SAME row, so the tick holding the older
-  // transcript is superseded before it writes. The scheduler's CAS only catches that after the
-  // handler returns, by which point the note is posted (issue #477 review, round 7).
-  test("a superseded run writes nothing and posts no note", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const key = observeDedupeKey(
-      chatwootThreadId(tenantId, instanceId, CONV),
-      agentId,
-    );
-    await suDb.schedulerJob.deleteMany({ where: { tenantId, dedupeKey: key } });
-    const row = await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "OBSERVE",
-        dedupeKey: key,
-        runAt: new Date(),
-        status: "CLAIMED",
-        claimSeq: 4,
-        payload: {},
-      },
-      select: { id: true },
-    });
-    const before = (await observeLines()).length;
-    try {
-      expect(
-        await runObserve(
-          tenantId,
-          {
-            instanceId,
-            conversationId: CONV,
-            agentId,
-            reason: "burst",
-            atMessageId: null,
-          },
-          appDb,
-          {
-            // The claim this tick holds is generation 4; the row moved on to 5 meanwhile.
-            claim: { jobId: row.id, claimSeq: 4 },
-            makeClient: async () =>
-              stubClient([message(1, "quero cancelar")], [], log),
-            makeModel: () => {
-              const m = verdictModel(
-                { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-                calls,
-              );
-              const inner = m.invoke.bind(m);
-              (m as { invoke: unknown }).invoke = async (
-                msgs: Parameters<typeof inner>[0],
-                opts: Parameters<typeof inner>[1],
-              ) => {
-                await suDb.schedulerJob.update({
-                  where: { id: row.id },
-                  data: { status: "PENDING", claimSeq: 5 },
-                });
-                return inner(msgs, opts);
-              };
-              return m;
-            },
-          },
-        ),
-      ).toEqual({ outcome: "done" });
-      expect(calls.n).toBe(1);
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("superseded");
-    } finally {
-      await suDb.schedulerJob.deleteMany({
-        where: { tenantId, dedupeKey: key },
-      });
-    }
-  });
-
-  // Unreadable is not absent: folded into `null`, a failed read says "no reset happened" and the
-  // verdict writes anyway, which is the one answer the reset fence must never give (round 7).
-  test("an unreadable conversation row fails the tick instead of writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    // The LOAD reads the row and succeeds; the pre-write read is the one that breaks, which is the
-    // only way to tell "unreadable" apart from "absent" — deleting the row would exercise `null`,
-    // the case that must NOT fail the tick.
-    const flaky = appDb.$extends({
-      query: {
-        conversation: {
-          findUnique({ args, query }) {
-            // The pre-write read is the one that asks for exactly these two columns.
-            const select = args.select as Record<string, unknown> | undefined;
-            if (
-              select?.status === true &&
-              select.resetAtMessageId === true &&
-              select.id !== true
-            )
-              throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("conversation_unreadable");
-  });
-
-  // `agentObservesNow` answers in three values precisely so the caller can tell a transient read
-  // failure from a definite "no"; collapsing them discarded a verdict already paid for (round 8).
-  test("an unreadable agent state fails the tick instead of standing down", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    // The load reads the agent with four columns; the pre-write re-read asks for exactly two.
-    const flaky = appDb.$extends({
-      query: {
-        agent: {
-          findUnique({ args, query }) {
-            const select = args.select as Record<string, unknown> | undefined;
-            if (
-              select?.enabled === true &&
-              select.mode === true &&
-              select.name !== true
-            )
-              throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("agent_state_unreadable");
   });
 
   // A credential the vault cannot hand over is not an operator switching observation off, and the
@@ -1956,69 +1030,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       await suDb.conversation.update({
         where: { id: convRowId },
         data: { status: "open" },
-      });
-    }
-  });
-
-  // `/reset` clears the labels INSIDE `withConversationLabels`. A fence read OUTSIDE that queue
-  // passes, the reset then takes the queue first and clears, and the tick enters afterwards and puts
-  // back exactly what the operator was told was gone (issue #477 review, round 8). Here another
-  // holder of the queue writes the marker while the tick is blocked on it: the fence only sees the
-  // marker if it is read after the queue is entered.
-  test("a reset that lands while the tick waits for the label queue wins", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    let release = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    // Enter the queue first and stay in it, the way `/reset` does while it clears.
-    const holder = withConversationLabels(tenantId, CONV, () => held);
-    try {
-      const tick = runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          // The burst is about message 40; the reset above lands after it.
-          atMessageId: 40,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            ),
-        },
-      );
-      // Let the tick get past everything that is NOT the queue and block on it. The marker is
-      // written only now: a fence read before the queue has already passed by this point, so the
-      // refusal below is evidence the fence is read after the queue is entered, not merely late.
-      await new Promise((r) => setTimeout(r, 50));
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { resetAtMessageId: 41 },
-      });
-      release();
-      await holder;
-      expect(await tick).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("reset");
-    } finally {
-      release();
-      await holder.catch(() => {});
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { resetAtMessageId: null },
       });
     }
   });
@@ -2180,53 +1191,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // At load time "unreadable keeps the tick" is right; on the other side of the model call it means
-  // WRITES, onto an inbox the agent may already be off (issue #477 review, round 10).
-  test("an unreadable binding fails the tick instead of writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    let reads = 0;
-    const flaky = appDb.$extends({
-      query: {
-        inbox: {
-          findUnique({ args, query }) {
-            reads += 1;
-            // The load asks once, before the model call; the pre-write fence is the second.
-            if (reads > 1) throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("binding_unreadable");
-  });
-
   // Enough ROWS is not enough CONTEXT: a reply inside the window can quote something on an older
   // page, and a terse "sim" without its question is what the resolver exists for (round 11).
   test("paging continues for a quote the window points at", async () => {
@@ -2284,153 +1248,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(calls.n).toBe(1);
     // The quoted line is rendered with the reply that points at it.
     expect(seen).toContain("boa tarde");
-  });
-
-  // A conversation moved to another inbox mid-call leaves the load's snapshot naming the old one,
-  // and the binding fence would ask about an inbox it is no longer on (round 11).
-  test("the binding fence asks about the inbox the conversation is on now", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    const other = await suDb.inbox.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootInboxId: 98765,
-        name: "Outra",
-      },
-      select: { id: true },
-    });
-    try {
-      const result = await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
-          makeModel: () => {
-            const m = verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            );
-            const inner = m.invoke.bind(m);
-            (m as { invoke: unknown }).invoke = async (
-              msgs: Parameters<typeof inner>[0],
-              opts: Parameters<typeof inner>[1],
-            ) => {
-              // The move lands while the model answers: nothing observes the new inbox.
-              await suDb.conversation.update({
-                where: { id: convRowId },
-                data: { inboxId: other.id },
-              });
-              return inner(msgs, opts);
-            };
-            return m;
-          },
-        },
-      );
-      expect(result).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("agent_no_longer_on_inbox");
-    } finally {
-      await suDb.conversation.update({
-        where: { id: convRowId },
-        data: { inboxId: inboxRowId },
-      });
-      await suDb.inbox.delete({ where: { id: other.id } });
-    }
-  });
-
-  // The taxonomy is what the verdict is applied AGAINST, so an unreadable re-read is not "keep the
-  // snapshot": it writes labels from a taxonomy an operator may have just replaced (round 12).
-  test("unreadable monitoring settings fail the tick instead of writing", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    // The load reads four columns off the agent; the settings re-read asks for one.
-    const flaky = appDb.$extends({
-      query: {
-        agent: {
-          findUnique({ args, query }) {
-            const select = args.select as Record<string, unknown> | undefined;
-            if (
-              select?.settings === true &&
-              select.name !== true &&
-              select.mode !== true
-            )
-              throw new Error("db down");
-            return query(args);
-          },
-        },
-      },
-    }) as unknown as typeof appDb;
-    const result = await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      flaky,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    expect(result.outcome).toBe("fail");
-    expect(log.labelsWritten).toEqual([]);
-    expect(log.notes).toEqual([]);
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).failed).toBe("settings_unreadable");
-  });
-
-  // The prompt asks for 0 to 1; a prose answer gives whatever it likes, and a number the reader
-  // cannot vouch for is better absent than wrong (issue #477 review, round 12).
-  test("a confidence outside the advertised range is not recorded", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        makeClient: async () =>
-          stubClient([message(1, "quero cancelar")], [], log),
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 75, reason: "r" },
-            calls,
-          ),
-      },
-    );
-    const lines = await observeLines();
-    expect(lines.length).toBe(before + 1);
-    expect(detailOf(lines, -1).confidence).toBe(null);
   });
 
   // The row not having landed reads identical to a detach on the row alone, and completing was
@@ -2535,46 +1352,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         data: { attachedAt: new Date() },
       });
     }
-  });
-
-  // The write already landed; only the VERIFICATION pass is best-effort, and returning there
-  // skipped the note that describes the change (issue #477 review, round 13).
-  test("a failed verification read still posts the change note", async () => {
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const client = stubClient([message(1, "quero cancelar")], [], log);
-    let reads = 0;
-    (client as { getConversationLabels: unknown }).getConversationLabels =
-      async () => {
-        reads += 1;
-        // 1: the prompt's read. 2: the pre-write read. 3: the verification, which fails.
-        if (reads >= 3) throw new Error("chatwoot 502");
-        return [];
-      };
-    expect(
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () => client,
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "pediu" },
-              calls,
-            ),
-        },
-      ),
-    ).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([["cancelamento"]]);
-    expect(log.notes).toHaveLength(1);
-    expect(log.notes[0]).toContain("cancelamento");
   });
 
   // The verdict was computed against the set the prompt showed; a person who moved one of OUR groups
@@ -2713,85 +1490,180 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // The queue can be held by another writer for as long as its own Chatwoot round trips take, and
-  // the checks before it are seconds old by the time the tick enters (issue #477 review, round 19).
-  test("observation switched off while the tick waits for the queue writes nothing", async () => {
+  // BOTH PROVIDERS DOWN LEAVES ONE ALARM, NOT TWO (issue #567 review, round 1). The `observe` stage
+  // emits its own error when the tick fails, and alert coalescing keys on (channel, stage, level):
+  // a second `observe`/`error` line for the same failure bumps one delivery to "×2", or sends two if
+  // it loses the coalesce window. The attribution line is `info` with `status: "error"` — it exists
+  // only to say WHICH model died, because the stage is labelled with the primary by construction.
+  // THE PER-TOOL LINE, which `buildCallbacks` does not carry. Without it a watcher whose tool fails
+  // finishes the graph normally and the tick reports `ok` with `acted: true`: a tool error with no
+  // line and no alert, and no second copy anywhere, since the observer's checkpoint is discarded.
+  // A SCHEDULER JOB THAT FAILS IS RETRIED, and this tick is stateless on purpose — its own thread,
+  // an in-memory checkpointer — so the retry re-runs the WHOLE turn from the top. Harmless while the
+  // tick was a classifier with one deterministic write; with the ordinary toolset a booking, an
+  // outbound POST or a charge can already have committed (review round 25).
+  test("a failure AFTER a tool ran ends the tick instead of arming a retry", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const before = (await observeLines()).length;
-    let release = () => {};
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    const holder = withConversationLabels(tenantId, CONV, () => held);
-    try {
-      const tick = runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient([message(1, "quero cancelar")], [], log),
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            ),
-        },
-      );
-      // The tick is blocked on the queue by now; the switch is thrown only here, so a check made
-      // before the queue has already passed.
-      await new Promise((r) => setTimeout(r, 50));
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: {} },
-      });
-      release();
-      await holder;
-      expect(await tick).toEqual({ outcome: "done" });
-      expect(log.labelsWritten).toEqual([]);
-      expect(log.notes).toEqual([]);
-      const lines = await observeLines();
-      expect(lines.length).toBe(before + 1);
-      expect(detailOf(lines, -1).skipped).toBe("observation_off");
-    } finally {
-      release();
-      await holder.catch(() => {});
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
+    // Calls the tool on the first hop, then dies on the second — the shape of a provider blip, a
+    // timeout, or the tick's own deadline landing between two rounds.
+    class DiesAfterTheTool {
+      calls = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.calls++;
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"] },
+                    id: "call_labels",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
     }
+    const model = new DiesAfterTheTool();
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    // DONE, not fail: the label is written, and a retry would run the whole turn again — with
+    // whatever else the model chose to call the first time.
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten.length).toBeGreaterThan(0);
+    // And it is not silent: the operator still learns the observation did not finish.
+    const lines = await stageLines("observe");
+    const stopped = lines.filter(
+      (l) => (l.detail as { retried?: boolean } | null)?.retried === false,
+    );
+    expect(stopped.length).toBeGreaterThan(0);
+    expect(stopped.at(-1)?.level).toBe("warn");
   });
 
-  // THE SECOND PROVIDER RUNS FOR A VERDICT (issue #567). `runModelCall` carries the recovery
-  // LangChain does not make, and the observer used to call it bare: an agent with a fallback
-  // configured had nothing behind its provider here, and an intermittent 503 cost the LABEL — the
-  // tick ends, the conversation keeps its old classification, and nothing says why.
-  //
-  // Both models come out of the SAME `makeModel`, told apart by the model id, which is also how the
-  // job builds them: the fallback is `buildFallbackModel` over the agent's own `modelFallback`.
-  test("a transient provider failure is answered by the configured fallback", async () => {
+  test("a failure after a READ-ONLY call still retries", async () => {
+    // A calculator and a knowledge search leave nothing behind, so there is nothing a retry would
+    // repeat — and refusing it there throws away the run for free, which for an `on_resolve`
+    // observer is its only chance (review round 27).
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    const built: ResolvedModelConfig[] = [];
-    await suDb.agent.update({
-      where: { id: agentId },
+    class CalculatesThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "calculator", args: { expression: "2+2" }, id: "c1" },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new CalculatesThenDies() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+  });
+
+  test("a tenant tool wearing the search_knowledge name counts as an effect", async () => {
+    // The exemption is for the RAG SEARCH, and `search_knowledge` is not a name the assembly
+    // reserves (only natives are, #457) — RAG is assembled LAST, so a legacy tenant row carrying it
+    // wins the name and reaches the model in its place. Exempting by name would hand the exemption
+    // to whatever that row does, an HTTP POST included, and the retry would send it twice
+    // (review round 29).
+    const td = await suDb.toolDefinition.create({
       data: {
-        settings: {
-          monitoring: MONITORING,
-          // Same vendor, another model: the resolution then takes the agent's own credential, so
-          // this needs no second vault entry to be runnable.
-          modelFallback: { provider: "openai", model: "gpt-5.4" },
-        },
+        tenantId,
+        name: "search_knowledge",
+        label: "Busca antiga",
+        method: "POST",
+        urlTemplate: "https://8.8.8.8/v1/legacy",
+        allowedHosts: ["8.8.8.8"],
       },
     });
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "HTTP",
+        toolDefinitionId: td.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    const sent: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      sent.push(String(input));
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class PostsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "search_knowledge", args: {}, id: "s1" }],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
     try {
       const res = await runObserve(
         tenantId,
@@ -2805,60 +1677,557 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         appDb,
         {
           makeClient: async () =>
-            stubClient(
-              [
-                message(1, "oi, comprei ingresso para sábado"),
-                message(2, "quero cancelar, não vou conseguir ir"),
-              ],
-              ["agente-off"],
-              log,
-            ),
-          makeModel: (mc) => {
-            built.push(mc);
-            if (mc.model === "gpt-5.4")
-              return verdictModel(
-                {
-                  assunto: "cancelamento",
-                  confidence: 0.9,
-                  reason: "O cliente pediu cancelamento.",
-                },
-                calls,
-              );
-            // The primary answers with a status the fallback exists for (503), not with a refusal:
-            // a 400 would be the same answer from anybody and must NOT be failed over.
-            const m = verdictModel({ assunto: "outros" }, calls);
-            (m as { invoke: unknown }).invoke = async () => {
-              const err = new Error("service unavailable") as Error & {
-                status?: number;
-              };
-              err.status = 503;
-              throw err;
-            };
-            return m;
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new PostsThenDies() as unknown as BaseChatModel,
+        },
+      );
+      // The request left, so the tick is over: a retry would send it again.
+      expect(sent.length).toBe(1);
+      expect(res.outcome).toBe("done");
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+      await suDb.toolDefinition.delete({ where: { id: td.id } });
+    }
+  });
+
+  test("the knowledge search keeps the retry, and it is the RAG tool that says so", async () => {
+    // The other half of the case above: the exemption belongs to the tool the RAG builder made, and
+    // it travels on the OBJECT (tools/effect-free.ts), through the prototype both wrappers use. The
+    // search may well fail here — there is no embedding credential in a test tenant — and that
+    // changes nothing: the count is taken at the tool boundary, before the invoke, because it has
+    // to exist when the invoke threw.
+    const kb = await suDb.knowledgeBase.create({
+      data: { tenantId, name: "Base" },
+      select: { id: true },
+    });
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "RAG",
+        enabledTools: ["search_knowledge"],
+        knowledgeBaseIds: [kb.id],
+      },
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("no egress in a test");
+    }) as unknown as typeof fetch;
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class SearchesThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "search_knowledge",
+                    args: { query: "cancelamento" },
+                    id: "k1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
           },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new SearchesThenDies() as unknown as BaseChatModel,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+      await suDb.knowledgeBase.delete({ where: { id: kb.id } });
+    }
+  });
+
+  test("skip_reply beside a read-only call does not burn the retry", async () => {
+    // `skip_reply` performs nothing: its RETURN is the whole tool. Alone it ends the turn, so the
+    // case only exists beside a companion — and then the turn goes on to another model round, which
+    // is where the transient lands. Counting the decision as an effect would discard the run for
+    // free (review round 29).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class SkipsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "calculator", args: { expression: "2+2" }, id: "c1" },
+                  { name: "skip_reply", args: {}, id: "s1" },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new SkipsThenDies() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+    expect(log.labelsWritten).toEqual([]);
+  });
+
+  test("a call the precondition refused is not a commit", async () => {
+    // The counter increments BEFORE dispatching, because it has to exist when the invoke threw. A
+    // guarded call that was refused never reached the handler, so counting it as committed throws
+    // away a retry that was free — and for an `on_resolve` observer that is its only pass
+    // (review round 33).
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          toolPreconditions: {
+            set_labels: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "liberado_para_etiquetar",
+            },
+          },
+        } as never,
+      },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class LabelsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"] },
+                    id: "l1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new LabelsThenDies() as unknown as BaseChatModel,
+        },
+      );
+      // The guard refused, so nothing was written and the tick is still worth retrying.
+      expect(log.labelsWritten).toEqual([]);
+      expect(res.outcome).toBe("fail");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings as never },
+      });
+    }
+  });
+
+  test("a labels read that fails does not take the tick with it", async () => {
+    // A watcher does not have to be a classifier. One that only writes a private note has nothing to
+    // do with labels, and an uncaught throw on this read ended its tick before the graph was ever
+    // invoked — retried whole, and eventually dead-lettered, over a read it never needed
+    // (review round 33).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const client = stubClient([message(1, "quero cancelar")], [], log);
+    (
+      client as unknown as { getConversationLabels: () => Promise<string[]> }
+    ).getConversationLabels = async () => {
+      throw new Error("labels endpoint 500");
+    };
+    class NotesOnly {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "private_note",
+                      args: { content: "cliente pediu cancelamento" },
+                      id: "n1",
+                    },
+                  ],
+                })
+              : new AIMessage("anotei.");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => client,
+        makeModel: () => new NotesOnly() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("done");
+    expect(log.notes).toEqual(["cliente pediu cancelamento"]);
+  });
+
+  test("a fence that failed INSIDE the handler leaves the tick retryable", async () => {
+    // The handler asks the fence again after its own read and before its own write. When that ask
+    // is the one that fails, the tool returns without writing — but the dispatch was already
+    // counted, so the tick read itself as committed and completed, dropping an observation a retry
+    // would have recovered for free (review round 36). The counters are separate for this: the
+    // handler reports what it did NOT do.
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let generating = false;
+    let asks = 0;
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            // The FIRST ask is the graph's, at dispatch, and it must pass: what this test is about
+            // is the second one, from inside the handler.
+            if (generating && sel?.resetAtMessageId === true && ++asks >= 2) {
+              throw new Error("conversation row unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const model = new LabellingModel(["cancelamento"], async () => {
+      generating = true;
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      unreadable,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    expect(res.outcome).toBe("fail");
+  });
+
+  test("a refused EFFECT-FREE tool does not cancel out a real write", async () => {
+    // The counter does not count an effect-free dispatch, so a report from one must not subtract:
+    // otherwise a guarded `calculator` refusing in the same turn as a real `set_labels` write reads
+    // as nothing committed, and the retry writes again (review round 37).
+    const before = await suDb.agent.findFirstOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          toolPreconditions: {
+            calculator: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "pode_calcular",
+            },
+          },
+        } as never,
+      },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class WritesAndIsRefused {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "calculator", args: { expression: "2+2" }, id: "c1" },
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"] },
+                    id: "l1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new WritesAndIsRefused() as unknown as BaseChatModel,
+        },
+      );
+      // The label write happened, so the tick is over: a retry would write it again.
+      expect(log.labelsWritten).toEqual([["cancelamento"]]);
+      expect(res.outcome).toBe("done");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings as never },
+      });
+    }
+  });
+
+  test("a label call that changed nothing leaves the tick retryable", async () => {
+    // No label moved, so no POST left: the dispatch was counted on the way in and the tick may
+    // safely run again (review round 37).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class SameLabelsThenDies {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["ja-estava"] },
+                    id: "l1",
+                  },
+                ],
+              });
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], ["ja-estava"], log),
+        makeModel: () => new SameLabelsThenDies() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    expect(res.outcome).toBe("fail");
+  });
+
+  test("a failure BEFORE any tool ran still retries", async () => {
+    // The control the case above needs: nothing committed, so the scheduler is still the right
+    // answer — and this is the ordinary transient, which is most of them.
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class DiesFirst {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        return {
+          async invoke(): Promise<AIMessage> {
+            throw new Error("provider 503");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new DiesFirst() as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+    expect(log.labelsWritten).toEqual([]);
+  });
+
+  test("a tool call writes its own flow line under the tick", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const model = new LabellingModel(["cancelamento"]);
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    const tools = await stageLines("tool");
+    expect(
+      tools.some(
+        (t) => (t.detail as { tool?: string } | null)?.tool === "set_labels",
+      ),
+    ).toBe(true);
+  });
+
+  // A FALLBACK THAT CANNOT BE BUILT is indistinguishable from no fallback at all, and the primary
+  // answering fine is exactly when nobody finds out. Reported at build time for that reason; the
+  // verdict path used to and the graph build came up without the callback.
+  test("a fallback that cannot be built is reported even when the primary answers", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          // A provider with no credential in this tenant: buildFallbackModel has nothing to build.
+          modelFallback: { provider: "anthropic", model: "claude-opus-5" },
+        },
+      },
+    });
+    const before = (await observeLines()).length;
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new SilentModel() as unknown as BaseChatModel,
         },
       );
       expect(res).toEqual({ outcome: "done" });
-      // Both models were built, and the verdict written is the FALLBACK's. The FALLBACK COMES FIRST
-      // in this list, and that order is itself the round-1 fix: the primary's bounds depend on
-      // whether a fallback exists, so it cannot be built before the answer to that question.
-      expect(built.map((m) => m.model)).toEqual(["gpt-5.4", "gpt-5.4-mini"]);
-      // ...and the primary WAS bounded, because one exists (issue #567 review, round 1). Unbounded,
-      // LangChain's six retries and its unbounded wait spend the observer's whole abort on the
-      // provider that already failed, and the second one never gets a turn.
-      const primaryBuilt = built.find((m) => m.model === "gpt-5.4-mini");
-      expect(primaryBuilt?.maxRetries).toBe(0);
-      expect(primaryBuilt?.timeoutMs).toBeGreaterThan(0);
-      expect(log.labelsWritten.at(-1)).toContain("cancelamento");
-      // The usage row is filed under the model that actually answered, not under the primary's
-      // name: the fallback gets its own callbacks for exactly this.
-      const usage = await suDb.llmUsage.findMany({
-        where: { tenantId, node: "observer" },
-        select: { model: true },
-        orderBy: { id: "desc" },
-        take: 1,
-      });
-      expect(usage.at(0)?.model).toBe("gpt-5.4");
+      const lines = (await observeLines()).slice(before);
+      const warned = lines.find(
+        (l) =>
+          (l.detail as { fallbackUnavailable?: string } | null)
+            ?.fallbackUnavailable !== undefined,
+      );
+      expect(warned).toBeDefined();
+      expect(warned?.level).toBe("warn");
     } finally {
       await suDb.agent.update({
         where: { id: agentId },
@@ -2867,11 +2236,6 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // BOTH PROVIDERS DOWN LEAVES ONE ALARM, NOT TWO (issue #567 review, round 1). The `observe` stage
-  // emits its own error when the tick fails, and alert coalescing keys on (channel, stage, level):
-  // a second `observe`/`error` line for the same failure bumps one delivery to "×2", or sends two if
-  // it loses the coalesce window. The attribution line is `info` with `status: "error"` — it exists
-  // only to say WHICH model died, because the stage is labelled with the primary by construction.
   test("when the fallback fails too, the attribution line does not raise a second alarm", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -2942,83 +2306,86 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // A FALLBACK THAT CANNOT BE BUILT SAYS SO, AT BUILD TIME (issue #567 review, round 1). A deleted
-  // credential leaves the tick with nothing behind its provider, which is indistinguishable from
-  // having configured none — and a server log is not where the operator who configured it looks.
-  test("a fallback that cannot be built leaves a warning on the trail", async () => {
+  // ── the turn ───────────────────────────────────────────────────────────────
+  //
+  // A watcher runs the ordinary graph now (issue #568): the agent's own tools act on the
+  // conversation, and the classifier that used to live in this module — one call, a JSON verdict, a
+  // deterministic apply — is gone with the taxonomy it needed.
+
+  test("the tick runs the agent's turn, and its tool call is what writes", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    await suDb.agent.update({
-      where: { id: agentId },
-      data: {
-        settings: {
-          monitoring: MONITORING,
-          // Another vendor, so the resolution demands its OWN credential, and the ref resolves to
-          // nothing: `buildFallbackModel` reports `credential_not_found`.
-          modelFallback: {
-            provider: "anthropic",
-            model: "claude-4-5-haiku",
-            credentialRef: "vault:999999",
-          },
-        },
+    const labels = ["agente-off", "compra-de-ingresso"];
+    const model = new LabellingModel(["agente-off", "cancelamento"]);
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
       },
-    });
-    const before2 = (await observeLines()).length;
-    try {
-      await runObserve(
-        tenantId,
-        {
-          instanceId,
-          conversationId: CONV,
-          agentId,
-          reason: "burst",
-          atMessageId: null,
-        },
-        appDb,
-        {
-          makeClient: async () =>
-            stubClient(
-              [message(1, "quero cancelar, não vou conseguir ir")],
-              ["agente-off"],
-              log,
-            ),
-          makeModel: () =>
-            verdictModel(
-              { assunto: "cancelamento", confidence: 0.9, reason: "r" },
-              calls,
-            ),
-        },
-      );
-      const lines = (await observeLines()).slice(before2);
-      const unavailable = lines.find(
-        (l) =>
-          (l.detail as Record<string, unknown> | null)?.fallbackUnavailable !==
-          undefined,
-      );
-      expect(unavailable?.level).toBe("warn");
-      // The tick still ran on the primary: a fallback that cannot be built is a warning, not a stop.
-      expect(log.labelsWritten.at(-1)).toContain("cancelamento");
-    } finally {
-      await suDb.agent.update({
-        where: { id: agentId },
-        data: { settings: { monitoring: MONITORING } },
-      });
-      await clearFlowLog(suDb, {
-        tenantId,
-        conversationId: convRowId,
-        stage: "observe",
-      });
-    }
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient(
+            [
+              message(1, "oi, comprei ingresso para sábado"),
+              message(2, "Olá! Como posso ajudar?", "outgoing"),
+              message(3, "quero cancelar, não vou conseguir ir"),
+            ],
+            labels,
+            log,
+          ),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([["agente-off", "cancelamento"]]);
+    // NOTHING REACHES THE CUSTOMER, which is the one promise the mode makes. The final prose is the
+    // model talking to a wall: the turn delivers no reply, and the client it holds would refuse one.
+    expect(log.publicSends).toBe(0);
+    const lines = await observeLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.status).toBe("ok");
+    expect(lines[0]?.agentId).toBe(agentId);
+    const detail = detailOf(lines, 0);
+    expect(detail.acted).toBe(true);
+    expect(detail.toolCalls).toBe(1);
+    expect(detail.reason).toBe("burst");
   });
 
-  // The other half of issue #493: the client the tick builds has to CARRY the persona's token, or the
-  // label write falls back to the admin one and signs the verdict with a person's name. The switch
-  // itself is fenced in chatwoot-client.test.ts; this is the seam that feeds it.
-  test("the tick builds its client with the persona's bot token", async () => {
+  test("a turn that calls nothing writes nothing, and says so on the trail", async () => {
+    await clearFlowLog(suDb, { tenantId });
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const calls = { n: 0 };
-    let captured: { botToken?: string; adminToken?: string } | null = null;
+    const model = new SilentModel();
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "obrigado!")], ["cancelamento"], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    expect(log.notes).toEqual([]);
+    const detail = detailOf(await observeLines(), 0);
+    expect(detail.acted).toBe(false);
+    expect(detail.toolCalls).toBe(0);
+  });
 
+  test("the tick builds its client MUTED, with the persona's bot token", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let built: { botToken?: string; mute?: boolean } | null = null;
     await runObserve(
       tenantId,
       {
@@ -3030,23 +2397,834 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
       appDb,
       {
-        makeClient: async (cfg) => {
-          captured = cfg as { botToken?: string; adminToken?: string };
-          return stubClient([message(90, "quero cancelar")], [], log);
+        makeClient: async (config) => {
+          built = config as { botToken?: string; mute?: boolean };
+          return stubClient([message(1, "oi")], [], log);
         },
-        makeModel: () =>
-          verdictModel(
-            { assunto: "cancelamento", confidence: 1, reason: "" },
-            calls,
-          ),
+        makeModel: () => new SilentModel() as unknown as BaseChatModel,
       },
     );
+    // The bot token is the persona's, so the private notes and labels it writes are signed by the
+    // watcher and not by a person; the mute is what makes the rest of the graph safe to run.
+    expect(built).not.toBeNull();
+    expect((built as unknown as { botToken: string }).botToken).toBe("BOT");
+    expect((built as unknown as { mute: boolean }).mute).toBe(true);
+  });
 
-    expect(captured).not.toBeNull();
-    expect((captured as unknown as { botToken?: string })?.botToken).toBe(
-      "BOT",
+  // ── the fences ─────────────────────────────────────────────────────────────
+  //
+  // They used to be asked once, between the verdict and the single write. A turn has as many writes
+  // as the model has tool calls, so they are asked at every tool HOP now — which is where a tool
+  // that would write is stopped, rather than after it already has.
+
+  test("an agent flipped to answering while the tick was reading acts on nothing", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const model = new LabellingModel(["cancelamento"], () =>
+      suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      }),
     );
-    // And it did write, so the assertion above is about a client that was actually used.
-    expect(log.labelsWritten.at(-1)).toContain("cancelamento");
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { mode: "monitoring" },
+    });
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+  });
+
+  // WHAT "COMMITTED" MAY NOT INCLUDE. The count is taken at dispatch and is deliberately blind — a
+  // call that threw may have thrown after its write — but two exits are provably before the write,
+  // and counting them costs the retry: the tick completes, and for an `on_resolve` watcher the
+  // observation is never made (review round 39).
+  test("a dispatch its own schema rejected does not count as a write", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class BadArgsThenDown {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                // `labels` is an array in the schema. The parse fails inside `invoke`, before any
+                // handler code, so no handler is there to say nothing was written.
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: "cancelamento" },
+                    id: "call_bad",
+                  },
+                ],
+              });
+            throw new Error("the model went down");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new BadArgsThenDown() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    // Nothing committed, so the model failure is a RETRY and not a finished job.
+    expect(res.outcome).toBe("fail");
+    const detail = (await observeLines()).at(-1)?.detail as {
+      toolCalls?: number;
+      retried?: boolean;
+    };
+    expect(detail.toolCalls).toBe(0);
+    expect(detail.retried).toBeUndefined();
+  });
+
+  test("a scope the conversation does not have does not count as a write", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    class ContactScopeThenDown {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                // The watcher's toolset carries no contact, so this exits with a sentence and
+                // writes nothing — a refusal the counter cannot tell from a write by reading it.
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["cancelamento"], scope: "contact" },
+                    id: "call_contact",
+                  },
+                ],
+              });
+            throw new Error("the model went down");
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new ContactScopeThenDown() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    expect(res.outcome).toBe("fail");
+    const last = (await observeLines()).at(-1)?.detail as {
+      toolCalls?: number;
+    };
+    expect(last.toolCalls).toBe(0);
+  });
+
+  // THE PAIR THAT COULD DISAGREE. `agentObservesNow` reads the switch and the mode; the read beside
+  // it reads the settings, a query later. An operator who turns the agent off in between leaves the
+  // second read looking straight at the new row — and it used to select `settings` alone, so it saw
+  // the change and said nothing, and the fence went on answering from the old pair (review round
+  // 38). The switch here is flipped for real, immediately before the query that observes it.
+  test("an agent switched off between the fence's two reads acts on nothing", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let generating = false;
+    let flipped = false;
+    // ON THE LAST FENCE CALL, and that is the whole difficulty of writing this test. The fence is
+    // asked TWICE before a native tool writes — once by the graph's tool node, once by the tool's
+    // own precondition — so a switch flipped during the first call's settings read is caught by the
+    // second call's `agentObservesNow`, and the hole never shows. It is the LAST call, the one with
+    // no re-ask after it, whose torn pair reaches the write.
+    let settingsReads = 0;
+    const racing = appDb.$extends({
+      query: {
+        agent: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (generating && sel?.settings === true) {
+              settingsReads++;
+              if (settingsReads === 2 && !flipped) {
+                flipped = true;
+                await suDb.agent.update({
+                  where: { id: agentId },
+                  data: { enabled: false },
+                });
+              }
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const model = new LabellingModel(["cancelamento"], async () => {
+      generating = true;
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      racing,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: true },
+    });
+    expect(flipped).toBe(true);
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    const rows = await observeLines();
+    expect(rows.at(-1)?.status).toBe("skipped");
+    expect((rows.at(-1)?.detail as { skipped?: string })?.skipped).toBe(
+      "agent_no_longer_observes",
+    );
+  });
+
+  // A WITHDRAWAL COMPLETES THE TICK; A FENCE THAT COULD NOT BE READ RETRIES IT. The two answers are
+  // kept apart everywhere else in this module for the same reason they have to end differently
+  // here: nothing re-arms this row on its own, an `on_resolve` agent has no later burst and a
+  // resolve happens once, so a transient database blip that completes the job is a conversation
+  // that is never classified (issue #477 review, round 7).
+  test("a fence that could not be read fails the tick instead of completing it", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let generating = false;
+    // The fence's own conversation read, and only once the model is answering: the same read at
+    // LOAD time is a different question, and failing it there is not what this test is about.
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (generating && sel?.resetAtMessageId === true) {
+              throw new Error("conversation row unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const model = new LabellingModel(["cancelamento"], async () => {
+      generating = true;
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      unreadable,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res.outcome).toBe("fail");
+    expect(log.labelsWritten).toEqual([]);
+    const rows = await observeLines();
+    expect(rows.at(-1)?.status).toBe("error");
+    expect((rows.at(-1)?.detail as { failed?: string })?.failed).toBe(
+      "conversation_unreadable",
+    );
+  });
+
+  // A BINDING THAT HAS NOT LANDED IS NOT A DETACH, and the load-time check has said so since #540.
+  // The tool fence folded it into a permanent detach, which COMPLETES the job — and for an
+  // `on_resolve` watcher that is the classification lost for good, because the resolve mark
+  // suppresses every later delivery of the same resolution.
+  test("an unreadable fence AFTER a write stops instead of retrying", async () => {
+    // The retryable refusals exist because nothing re-arms the row on its own — but the fence is
+    // asked at EVERY hop, so an unreadable one can arrive after a write has already left. A retry
+    // then repeats it, and for an HTTP POST or a booking that is the second charge. At-most-once for
+    // the effects wins here exactly as it does for a model failure (review round 30).
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    // Unreadable only ONCE THE FIRST WRITE LANDED, which is the whole point: the same read at load
+    // time, or before any tool ran, is the case the two tests above already cover.
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (
+              log.labelsWritten.length > 0 &&
+              sel?.resetAtMessageId === true
+            ) {
+              throw new Error("conversation row unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    class LabelsTwice {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("pronto");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n > 2) return new AIMessage("classifiquei a conversa.");
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "set_labels",
+                  args: {
+                    labels: n === 1 ? ["cancelamento"] : ["compra-de-ingresso"],
+                  },
+                  id: `call_${n}`,
+                },
+              ],
+            });
+          },
+        };
+      }
+    }
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      unreadable,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new LabelsTwice() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten.length).toBe(1);
+    expect(res.outcome).toBe("done");
+    const rows = await observeLines();
+    const last = rows.at(-1)?.detail as
+      | { failed?: string; retried?: boolean }
+      | undefined;
+    expect(last?.failed).toBe("conversation_unreadable");
+    expect(last?.retried).toBe(false);
+    expect(rows.at(-1)?.level).toBe("warn");
+  });
+
+  test("a binding still attaching at the fence retries instead of completing", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const rows = await suDb.inboxObserver.findMany({
+      where: { tenantId, agentId },
+      select: { id: true },
+    });
+    // Unstamped only after the model call starts, so the LOAD-time check passes and the FENCE is
+    // the one that sees the pending row — which is exactly the detach/reattach straddle. Driven as
+    // a burst rather than a resolve so the fence's own reopened check (which legitimately completes
+    // a resolve tick on an open conversation) cannot answer first; the binding question, and
+    // whether its answer is retryable, is the same either way.
+    const model = new LabellingModel(["cancelamento"], async () => {
+      await suDb.inboxObserver.updateMany({
+        where: { id: { in: rows.map((r) => r.id) } },
+        data: { attachedAt: null },
+      });
+    });
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => model as unknown as BaseChatModel,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      await suDb.inboxObserver.updateMany({
+        where: { id: { in: rows.map((r) => r.id) } },
+        data: { attachedAt: new Date() },
+      });
+    }
+  });
+
+  // ONE READ FOR THE PROMPT AND FOR THE TOOL'S BASELINE. `set_labels` diffs the model's list against
+  // what the model was SHOWN, so two reads are two claims about the same turn: a label the prompt
+  // advertises but the baseline lacks comes back as an ADDITION when the model repeats it to keep
+  // it, which puts back what somebody removed in between — the exact harm the diff exists to avoid.
+  test("the labels in the prompt are the labels the tool compares against", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let reads = 0;
+    const base = stubClient([message(1, "quero cancelar")], [], log);
+    // First read (the prompt's) sees `vip`; a second read would see it gone. With one read there is
+    // no second, and the model repeating `vip` cannot resurrect it.
+    const drifting = {
+      ...base,
+      getConversationLabels: async () => {
+        reads++;
+        return reads === 1 ? ["vip"] : [];
+      },
+    } as unknown as typeof base;
+    const model = new LabellingModel(["vip", "cancelamento"]);
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => drifting,
+        makeModel: () => model as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    // The write is computed against the read INSIDE the label queue (reads 2+), and `vip` was in
+    // the shown set, so repeating it is not a request to add it back.
+    const written = log.labelsWritten.at(-1);
+    expect(written).toBeDefined();
+    expect(written).not.toContain("vip");
+    expect(written).toContain("cancelamento");
+  });
+
+  // THE GUARD HAS TO HOLD IN EVERY MODEL-FACING PLACE, not only in the tool's diff. `set_labels`
+  // filters guarded labels out of what it shows and out of what it accepts, but the observer's own
+  // prompt prints the conversation's labels in `<etiquetas-atuais>` from the SAME read — so without
+  // this the block advertised `agente-off` while the tool's description denied it existed, which is
+  // both a contradiction to reason from and the invitation the guard exists to withdraw (round 12).
+  test("a guarded label is absent from the prompt, and survives the write", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const client = stubClient([message(1, "quero cancelar")], [], log);
+    (client as { getConversationLabels: unknown }).getConversationLabels =
+      async () => ["agente-off", "compra-de-ingresso"];
+    let prompt = "";
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          monitoring: MONITORING,
+          setLabels: { protected: ["agente-off"] },
+        },
+      },
+    });
+    try {
+      // A local stub, because LabellingModel's `bindTools` returns an invoke that takes no
+      // arguments: what this test needs is exactly the two things it drops, the messages the model
+      // was handed and the tool descriptions it was bound to.
+      const seenTools: string[] = [];
+      const model = {
+        async invoke(): Promise<AIMessage> {
+          return new AIMessage("pronto");
+        },
+        bindTools(tools: { name?: string; description?: string }[]) {
+          for (const t of tools) seenTools.push(String(t.description ?? ""));
+          let n = 0;
+          return {
+            async invoke(msgs: unknown): Promise<AIMessage> {
+              prompt += JSON.stringify(msgs);
+              n++;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "set_labels",
+                        args: { labels: ["cancelamento"] },
+                        id: "call_labels",
+                      },
+                    ],
+                  })
+                : new AIMessage("pronto");
+            },
+          };
+        },
+      };
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () => client,
+          makeModel: () => model as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      // Neither the labels block in the prompt nor the tool's own description names it.
+      expect(prompt).toContain("compra-de-ingresso");
+      expect(prompt).not.toContain("agente-off");
+      const labelsTool = seenTools.find((d) => d.includes("current_labels"));
+      expect(labelsTool).toBeDefined();
+      expect(labelsTool).not.toContain("agente-off");
+      // And the model asking for `cancelamento` alone did not take it off the conversation.
+      const written = log.labelsWritten.at(-1);
+      expect(written).toContain("agente-off");
+      expect(written).toContain("cancelamento");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
+  });
+
+  // THE OBSERVER RUNS THE ORDINARY TOOLSET NOW, so a tool whose URL carries `{{message_id}}` is as
+  // legal on a tick as on a reactive turn — and the tick was the only caller that never supplied it,
+  // so such a tool failed with a missing-placeholder error on EVERY observation. The burst knows the
+  // id (`atMessageId`); it just was not being passed (round 13).
+  test("a burst hands its triggering message id to the tools", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const client = stubClient([message(1, "e o pedido?")], [], log);
+    let calledUrl = "";
+    const def = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: `eco_${process.pid}`,
+        label: "Eco",
+        method: "GET",
+        // A public IP literal: the SSRF guard treats it as an IP and makes no DNS lookup, and the
+        // injected fetch means nothing leaves this process.
+        urlTemplate: "https://8.8.8.8/eco/{{message_id}}",
+        allowedHosts: ["8.8.8.8"],
+      },
+    });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "HTTP",
+        toolDefinitionId: def.id,
+        knowledgeBaseIds: [],
+        enabledTools: [def.name],
+      },
+    });
+    try {
+      const model = {
+        async invoke(): Promise<AIMessage> {
+          return new AIMessage("pronto");
+        },
+        bindTools() {
+          let n = 0;
+          return {
+            async invoke(): Promise<AIMessage> {
+              n++;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [{ name: def.name, args: {}, id: "call_eco" }],
+                  })
+                : new AIMessage("pronto");
+            },
+          };
+        },
+      };
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: 4242,
+        },
+        appDb,
+        {
+          makeClient: async () => client,
+          makeModel: () => model as unknown as BaseChatModel,
+          outboundFetch: (async (url: string) => {
+            calledUrl = String(url);
+            return new Response('{"ok":true}', {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          }) as unknown as typeof fetch,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      expect(calledUrl).toContain("/eco/4242");
+    } finally {
+      await suDb.agentToolSelection.deleteMany({ where: { id: sel.id } });
+      await suDb.toolDefinition.deleteMany({ where: { id: def.id } });
+    }
+  });
+
+  // DISCOVERY IS THE ONE CALL THAT CAN HANG FOREVER, and before this it was the one call the
+  // deadline did not cover: it was created after `buildToolset`. An MCP server that opens its stream
+  // and never emits an endpoint waits with no timeout of its own, and `startScheduler` skips every
+  // later tick while one is running — so one tenant's broken server stops everyone's reminders.
+  test("an MCP server that never answers gives the tick back instead of hanging discovery", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const conn = await suDb.mcpServerConnection.create({
+      data: {
+        tenantId,
+        name: `mudo-${process.pid}`,
+        transport: "streamableHttp",
+        url: "https://mudo.example.com/mcp",
+      },
+    });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "MCP",
+        mcpServerConnectionId: conn.id,
+        knowledgeBaseIds: [],
+        enabledTools: ["qualquer_uma"],
+      },
+    });
+    const started = Date.now();
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => new SilentModel() as unknown as BaseChatModel,
+          // Opens and never says anything else, which is the SSE pathology in miniature.
+          mcp: { connect: (() => new Promise(() => {})) as never },
+          timeoutMs: 300,
+        },
+      );
+      expect(res.outcome).toBe("fail");
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(log.labelsWritten).toEqual([]);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+      await suDb.mcpServerConnection.delete({ where: { id: conn.id } });
+    }
+  });
+
+  // THE TICK RUNS ON THE SHARED SCHEDULER, so a provider that never answers is not just this
+  // observation lost: `runSchedulerTick` awaits every handler and `startScheduler` skips the next
+  // tick while one is still running, so reminders and every other job queue up behind it. The
+  // verdict call this replaced carried a deadline; the graph invoke came up without one.
+  test("a model that never answers gives the tick back instead of hanging the scheduler", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    // An ARRAY and not a `let`: control-flow analysis narrows a variable assigned only inside a
+    // callback to `never`, and the release below stops type-checking.
+    const release: (() => void)[] = [];
+    const stalled = {
+      calls: 0,
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      },
+      bindTools(_tools: unknown) {
+        return {
+          invoke(): Promise<AIMessage> {
+            // Never resolves on its own: only the deadline can end this.
+            return new Promise<AIMessage>((resolve) => {
+              release.push(() => resolve(new AIMessage("tarde demais")));
+            });
+          },
+        };
+      },
+    };
+    const started = Date.now();
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => stalled as unknown as BaseChatModel,
+        timeoutMs: 200,
+      },
+    );
+    for (const r of release) r();
+    expect(res.outcome).toBe("fail");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(log.labelsWritten).toEqual([]);
+  });
+
+  test("a superseded run acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const job = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: `sup-${process.pid}`,
+        status: "CLAIMED",
+        claimSeq: 7,
+        runAt: new Date(),
+        payload: {},
+      },
+    });
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
+        // A message that landed while the model answered re-armed the row, so the claim this tick
+        // holds is no longer the current one.
+        claim: { jobId: job.id, claimSeq: 6 },
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    const detail = detailOf(await observeLines(), 0);
+    expect(detail.skipped).toBe("superseded");
+  });
+
+  test("a turn about a message the reset erased acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { resetAtMessageId: 500 },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: 400,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(600, "quero cancelar")], [], log),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
+      },
+    );
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { resetAtMessageId: null },
+    });
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
+    const detail = detailOf(await observeLines(), 0);
+    expect(detail.skipped).toBe("reset");
+  });
+
+  test("an observer taken off the inbox while the model answered acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"], () =>
+            suDb.inboxObserver.deleteMany({
+              where: { tenantId, inboxId: inboxRowId, agentId },
+            }),
+          ) as unknown as BaseChatModel,
+      },
+    );
+    const stillThere = await suDb.inboxObserver.count({
+      where: { tenantId, inboxId: inboxRowId, agentId },
+    });
+    await suDb.inboxObserver.createMany({
+      data: [{ tenantId, inboxId: inboxRowId, agentId }],
+      skipDuplicates: true,
+    });
+    // The detach has to have actually landed, or this asserts nothing about the fence.
+    expect(stillThere).toBe(0);
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([]);
   });
 });

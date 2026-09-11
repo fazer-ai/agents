@@ -2734,10 +2734,25 @@ export function BehaviorTab({
                   "editor.limitsMaxHistoryTokensHint",
                   "Empty means no ceiling. Between 2,000 and 1,000,000.",
                 )}
-                help={t(
-                  "editor.limitsMaxHistoryTokensHelp",
-                  "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
-                )}
+                // WHAT IT DOES IS NOT THE SAME FOR A WATCHER (review round 40). An observation does
+                // not travel with the contact's history at all: the tick rebuilds the conversation
+                // from Chatwoot into a single message and keeps its own thread, and the window
+                // always keeps the current turn, so nothing is ever trimmed off a tick. The setting
+                // is NOT inert for it, though, which is why it stays on screen: `runCompaction`
+                // loads a watcher's config with `ignoreMode` and hands this same ceiling to the
+                // summariser, so it bounds the transcript the watcher's memory reads when an
+                // attendance closes. The help says which of the two the operator is buying.
+                help={
+                  watcher
+                    ? t(
+                        "editor.limitsMaxHistoryTokensHelpObserving",
+                        "An observation does not carry this contact's history: each tick rebuilds the conversation from the channel, so this ceiling never trims one.\n\nWhat it does bound is this agent's memory: when an attendance closes, the transcript handed to the summariser is cut to fit.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions.",
+                      )
+                    : t(
+                        "editor.limitsMaxHistoryTokensHelp",
+                        "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
+                      )
+                }
               >
                 <Input
                   type="number"

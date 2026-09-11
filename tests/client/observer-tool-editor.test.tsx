@@ -15,6 +15,7 @@ import { MemoryRouter } from "react-router";
 const { ToolGrantsEditor, offeredPackTools } = await import(
   "@/client/pages/agents/ToolGrantsEditor"
 );
+const { ToolsTab } = await import("@/client/pages/agents/ToolsTab");
 const { ToastProvider } = await import("@/client/components/Toast");
 const { AuthProvider } = await import("@/client/contexts/AuthContext");
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
@@ -206,4 +207,139 @@ test("...and an agent that answers is offered all of them", async () => {
   expect(screen.queryAllByText("React with emoji").length).toBeGreaterThan(0);
   expect(screen.queryAllByText("Send file").length).toBeGreaterThan(0);
   expect(screen.queryAllByText("Documents").length).toBeGreaterThan(0);
+});
+
+// THE OTHER HALF OF THE SAME SCREEN (review round 40). The grant cards stopped offering what a muted
+// turn strips; the preconditions block beside them, and the section index on the left, were still
+// drawn from the unfiltered catalog.
+function renderToolsTab(
+  observing: boolean,
+  rows: { tool: string; scope: string; key: string; value: string }[] = [],
+) {
+  const noop = () => undefined;
+  return render(
+    <MemoryRouter>
+      <ThemeProvider>
+        <AuthProvider>
+          <ToastProvider>
+            <ToolsTab
+              agentId="1"
+              observing={observing}
+              catalog={CATALOG as never}
+              grants={[] as never}
+              onChange={noop}
+              onCatalogChange={noop}
+              transferWithSummary={false}
+              setTransferWithSummary={noop}
+              handoff={{
+                mode: "",
+                target: "",
+                targetInstanceId: null,
+                instructions: "",
+              }}
+              setHandoff={noop}
+              kanbanInstructions=""
+              setKanbanInstructions={noop}
+              customAttributeInstructions=""
+              refusals={{
+                handoffInstructions: null,
+                kanbanInstructions: null,
+                attributeInstructions: null,
+                labelInstructions: null,
+                updateKanbanInstructions: null,
+              }}
+              setCustomAttributeInstructions={noop}
+              labelInstructions=""
+              setLabelInstructions={noop}
+              protectedLabels=""
+              setProtectedLabels={noop}
+              updateKanbanTaskInstructions=""
+              setUpdateKanbanTaskInstructions={noop}
+              toolPreconditions={rows as never}
+              setToolPreconditions={noop}
+              mcpTools={{}}
+              setMcpTools={noop}
+              mcpInstructions={{}}
+              setMcpInstructions={noop}
+              mcpCollapsed={{}}
+              setMcpCollapsed={noop}
+              integrationCollapsed={{}}
+              setIntegrationCollapsed={noop}
+              dirty={false}
+              saving={false}
+              onSave={noop}
+              onDiscard={noop}
+            />
+          </ToastProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </MemoryRouter>,
+  );
+}
+
+// The empty row is what an operator adding a guard sees, and its select is the list of choices.
+const EMPTY_ROW = { tool: "", scope: "conversation", key: "", value: "" };
+
+test("a watcher is not offered a precondition on a tool its turn would strip", async () => {
+  stubAuth();
+  renderToolsTab(true, [EMPTY_ROW]);
+  await waitFor(() =>
+    expect(screen.queryAllByText("Tool preconditions").length).toBeGreaterThan(
+      0,
+    ),
+  );
+  const options = Array.from(
+    document.querySelectorAll<HTMLOptionElement>("option"),
+  ).map((o) => o.textContent);
+  expect(options).toContain("Set labels");
+  expect(options).not.toContain("Send image");
+  expect(options).not.toContain("React with emoji");
+});
+
+test("...and a guard saved before the mode flipped is still on screen", async () => {
+  // The filter is about what can be ADDED. A rule already stored keeps its own tool in the select
+  // (`optionsFor` puts it back), because a select whose value is not among its options renders
+  // blank, and a blank row invites deleting a rule nobody read.
+  stubAuth();
+  renderToolsTab(true, [{ ...EMPTY_ROW, tool: "send_image" }]);
+  await waitFor(() =>
+    expect(screen.queryAllByText("Tool preconditions").length).toBeGreaterThan(
+      0,
+    ),
+  );
+  const options = Array.from(
+    document.querySelectorAll<HTMLOptionElement>("option"),
+  ).map((o) => o.textContent);
+  expect(options).toContain("Send image");
+});
+
+test("an agent that answers is offered every native it was granted", async () => {
+  stubAuth();
+  renderToolsTab(false, [EMPTY_ROW]);
+  await waitFor(() =>
+    expect(screen.queryAllByText("Tool preconditions").length).toBeGreaterThan(
+      0,
+    ),
+  );
+  const options = Array.from(
+    document.querySelectorAll<HTMLOptionElement>("option"),
+  ).map((o) => o.textContent);
+  expect(options).toContain("Send image");
+  expect(options).toContain("React with emoji");
+});
+
+test("the section index carries no link to a block the watcher does not draw", async () => {
+  stubAuth();
+  const { unmount } = renderToolsTab(false);
+  await waitFor(() =>
+    expect(screen.queryAllByRole("link", { name: "Documents" }).length).toBe(1),
+  );
+  unmount();
+  renderToolsTab(true);
+  await waitFor(() =>
+    expect(screen.queryAllByText("Tool preconditions").length).toBeGreaterThan(
+      0,
+    ),
+  );
+  expect(screen.queryAllByRole("link", { name: "Documents" })).toHaveLength(0);
 });

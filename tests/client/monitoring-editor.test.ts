@@ -316,6 +316,25 @@ describe("the Channels tab of a watcher", () => {
     );
   });
 
+  // THE CEILING ACTS ON A WATCHER, BUT NOT WHERE THE HELP SAID IT DID (review round 40). An
+  // observation carries no contact history: the tick rebuilds the conversation into one message and
+  // the window always keeps the current turn, so nothing is ever trimmed off a tick. It is not inert
+  // either — `runCompaction` loads a watcher's config with `ignoreMode` and hands this same ceiling
+  // to the summariser — so the control stays and the prose is the thing that changes.
+  test("the history ceiling tells a watcher what it actually bounds", () => {
+    const at = BEHAVIOR.indexOf("editor.limitsMaxHistoryTokensHelpObserving");
+    expect(at).toBeGreaterThan(-1);
+    const before = BEHAVIOR.slice(Math.max(0, at - 300), at).replace(
+      /\s+/g,
+      " ",
+    );
+    expect(before).toContain("help={ watcher ?");
+    // ...and the setting itself is still offered: hiding it would take away a control that bounds
+    // what the watcher's own memory summarises.
+    expect(BEHAVIOR).toContain("editor.limitsMaxHistoryTokens");
+    expect(MONITORING_SECTIONS.has("limits")).toBe(true);
+  });
+
   test("routes a new binding by the SAVED mode", () => {
     // Binding acts immediately and the server judges the stored agent, so a draft flipped on
     // General must not decide which endpoint the switch calls.

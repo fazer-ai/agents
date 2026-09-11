@@ -1329,6 +1329,7 @@
     "limitsHint": "Limite quanto trabalho o agente faz em um único turno antes de ter que responder.",
     "limitsMaxHistoryTokens": "Teto de histórico",
     "limitsMaxHistoryTokensHelp": "O agente envia todo o histórico deste contato a cada resposta. Quanto mais um cliente fala, mais lenta e mais cara fica cada resposta a ele.\n\nO teto corta esse envio: ao ser alcançado, os atendimentos mais antigos param de ir junto. A conversa que está sendo respondida nunca sai.\n\nA contagem é uma estimativa, fica abaixo do real em conversas com muitas ferramentas, e não inclui as instruções nem as definições das ferramentas. Defina abaixo do orçamento que você tem de fato.",
+    "limitsMaxHistoryTokensHelpObserving": "Uma observação não leva o histórico do contato: cada tique remonta a conversa a partir do canal, então este teto nunca corta nada de um tique.\n\nO que ele limita é a memória deste agente: quando um atendimento fecha, a transcrição entregue ao resumidor é cortada para caber.\n\nA contagem é uma estimativa, fica baixa em threads cheias de ferramenta, e não inclui as instruções nem as definições das ferramentas.",
     "limitsMaxHistoryTokensHint": "Vazio, sem teto. Entre 2.000 e 1.000.000.",
     "limitsMaxToolCalls": "Máx. de ferramentas / turno",
     "limitsMaxToolCallsHint": "Depois desse número de usos de ferramenta o agente é obrigado a responder com o que já tem (sem erro). 1-50.",

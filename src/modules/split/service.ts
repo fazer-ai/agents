@@ -310,6 +310,7 @@ export async function deliverReply(
             signature.text,
             signature.position,
             signature.separator,
+            seps,
           )
         : rawChunks;
       let delivered = 0;

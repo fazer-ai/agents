@@ -1430,6 +1430,7 @@ function AgentEditor() {
     setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
+    setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
     setVision(b.vision);
@@ -1471,6 +1472,7 @@ function AgentEditor() {
     setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
+    setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
     setVision(b.vision);
@@ -1830,6 +1832,7 @@ function AgentEditor() {
       contactAuth,
       tts,
       split,
+      signature,
       serviceWindow,
       followUp,
       vision,
@@ -2763,6 +2766,7 @@ function AgentEditor() {
     setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
+    setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
     setVision(b.vision);

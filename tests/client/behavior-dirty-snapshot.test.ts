@@ -99,3 +99,141 @@ describe("the Behavior tab's dirty snapshot", () => {
     expect(savedBlocksMissingFromSnapshot(fixed)).toEqual([]);
   });
 });
+
+// EVERY BEHAVIOR BLOCK THE SAVE WRITES IS ALSO READ BACK, ON ALL THREE PATHS.
+//
+// The fence above guards one half of the contract and the review of #599 found the other half open.
+// `signature` was written by the save, absent from the snapshot AND absent from `applyAgent`,
+// `applyBehavior` and `revertBehavior` — so the operator configured a signature, reopened the agent
+// to an empty field, and the next save of ANY behaviour setting wrote that empty value over the one
+// they had stored. Silent data loss with nothing wrong on screen, which is the same failure shape
+// the snapshot fence exists for, one step earlier.
+//
+// It slipped past that fence for a reason worth naming, because it is the fence's own stated
+// assumption: the scan reads the writer through `<block>ToStored(`, and its comment argues the plain
+// shorthand blocks need no cover since "the payload names them the same way the snapshot does".
+// `signature: { text: ..., position: ... }` is neither — an inline object literal that reads several
+// pieces of state under a block name of its own. So the scan below reads the writer's TOP-LEVEL KEYS
+// instead of one spelling of them, and it is the keys that a new block cannot avoid having.
+//
+// Two of those keys name a block whose form state is spelled differently, and they are listed rather
+// than pattern-matched: a rule that guessed at aliases would quietly excuse the next real gap.
+const STATE_ALIASES: Record<string, string[]> = {
+  // One stored block, assembled from two independent pieces of form state.
+  availability: ["awayEnabled", "awayMessage"],
+  // Named after the block the save writes; the form state behind it is `observation`.
+  monitoring: ["observation"],
+};
+
+function braceBlockAt(source: string, from: number): string {
+  const open = source.indexOf("{", from);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, i + 1);
+    }
+  }
+  return "";
+}
+
+export function savedBlockKeys(source: string): string[] {
+  const fn = braceBlockAt(source, source.indexOf("function buildSettings"));
+  const ret = braceBlockAt(fn, fn.indexOf("return {"));
+  const keys: string[] = [];
+  let depth = 0;
+  for (const m of ret.matchAll(/[{}]|^[ \t]*([A-Za-z_]\w*)\s*:/gm)) {
+    if (m[0] === "{" || m[0] === "}") depth += m[0] === "{" ? 1 : -1;
+    else if (depth === 1 && m[1]) keys.push(m[1]);
+  }
+  return keys;
+}
+
+// A block is hydrated when the path assigns the state it is made of. Reading the ALIAS targets, not
+// the stored name, is what keeps `availability` from reading as a gap and what would make a genuinely
+// missing `awayMessage` read as one.
+export function blocksMissingFromHydration(source: string): string[] {
+  const paths = [
+    "const applyAgent = useCallback",
+    "const applyBehavior = useCallback",
+    "const revertBehavior = () =>",
+  ].map((needle) => braceBlockAt(source, source.indexOf(needle)));
+  return savedBlockKeys(source).filter((k) => {
+    const names = STATE_ALIASES[k] ?? [k];
+    return paths.some(
+      (body) => !names.every((n) => new RegExp(`\\bb\\.${n}\\b`).test(body)),
+    );
+  });
+}
+
+export function blocksMissingFromSnapshotByKey(source: string): string[] {
+  const snap = snapshotBody(source);
+  return savedBlockKeys(source).filter((k) => {
+    const names = STATE_ALIASES[k] ?? [k];
+    return !names.every((n) => new RegExp(`\\b${n}\\b`).test(snap));
+  });
+}
+
+describe("the Behavior tab reads back everything it writes", () => {
+  test("every saved block is restored on all three hydration paths", () => {
+    expect(blocksMissingFromHydration(PAGE)).toEqual([]);
+  });
+
+  // The same rule the fence above enforces, asked of EVERY key rather than only the `ToStored` pairs.
+  // Kept beside it instead of replacing it: that one names the pair shape a new block is likely to
+  // use, and this one catches the block that arrives in any other shape.
+  test("every saved block is in the dirty snapshot, whatever shape it was written in", () => {
+    expect(blocksMissingFromSnapshotByKey(PAGE)).toEqual([]);
+  });
+
+  test("the scan actually sees the blocks", () => {
+    const keys = savedBlockKeys(PAGE);
+    expect(keys.length).toBeGreaterThanOrEqual(15);
+    expect(keys).toContain("signature");
+    expect(keys).toContain("availability");
+  });
+
+  // POSITIVE CONTROL over both predicates: an inline-literal block, which is exactly the shape the
+  // pair-based scan above cannot see, saved and then read back nowhere.
+  test("an inline-literal block that is never read back is caught", () => {
+    const broken = `
+      function buildSettings(): Record<string, unknown> {
+        return {
+          memory: memoryToStored(memory),
+          newBlock: { text: newBlock.text.trim() },
+        };
+      }
+      const applyAgent = useCallback((a: Agent) => { setMemory(b.memory); });
+      const applyBehavior = useCallback((a: Agent) => { setMemory(b.memory); });
+      const revertBehavior = () => { setMemory(b.memory); };
+      behavior: JSON.stringify({
+        memory,
+      }),
+    `;
+    expect(savedBlocksMissingFromSnapshot(broken)).toEqual([]);
+    expect(blocksMissingFromSnapshotByKey(broken)).toEqual(["newBlock"]);
+    expect(blocksMissingFromHydration(broken)).toEqual(["newBlock"]);
+  });
+
+  test("and the same fixture, read back everywhere, is clean", () => {
+    const fixed = `
+      function buildSettings(): Record<string, unknown> {
+        return {
+          memory: memoryToStored(memory),
+          newBlock: { text: newBlock.text.trim() },
+        };
+      }
+      const applyAgent = useCallback((a: Agent) => { setMemory(b.memory); setNewBlock(b.newBlock); });
+      const applyBehavior = useCallback((a: Agent) => { setMemory(b.memory); setNewBlock(b.newBlock); });
+      const revertBehavior = () => { setMemory(b.memory); setNewBlock(b.newBlock); };
+      behavior: JSON.stringify({
+        memory,
+        newBlock,
+      }),
+    `;
+    expect(blocksMissingFromSnapshotByKey(fixed)).toEqual([]);
+    expect(blocksMissingFromHydration(fixed)).toEqual([]);
+  });
+});

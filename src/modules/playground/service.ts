@@ -1268,8 +1268,22 @@ export async function runPlaygroundFollowup(
   }
   // Bump the session (or create one titled by the first message if the follow-up is the first turn).
   await upsertPlaygroundSession(base, ctx, agentId, threadId, "");
+  // SIGNED LIKE THE REACTIVE TURN ABOVE, because production signs BOTH (issue #599, found in
+  // review). `runAgentNudge` signs the proactive message, so a playground follow-up that came back
+  // bare would be the one surface showing the operator something the customer never receives, which
+  // is the whole reason this surface exists. `attachSignature` is what declines the empty case, so
+  // a silent or suppressed follow-up is left exactly as it was.
+  const followUpSig = signatureFor(loaded.signatureConfig, loaded.promptVars);
+  const [signedFollowUp = reply] = followUpSig
+    ? attachSignature(
+        [reply],
+        followUpSig,
+        loaded.signatureConfig.position,
+        loaded.signatureConfig.separator,
+      )
+    : [reply];
   return {
-    reply,
+    reply: signedFollowUp,
     threadId,
     trace,
     sources: collectTraceSources(trace),

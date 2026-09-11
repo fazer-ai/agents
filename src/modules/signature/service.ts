@@ -99,8 +99,8 @@ function interpolate(text: string, vars?: Record<string, string>): string {
 // `trimmedBody.endsWith(cleanedSignature)`). Containment reads a short signature that merely appears
 // in the prose — "Gi" in a sentence about Gi — as one already written, and silently drops it.
 //
-// ASKED ACROSS THE WHOLE REPLY, not inside the one chunk about to be touched, and BOTH ends rather
-// than only the configured one. With `position: "top"` the signature goes on the FIRST chunk, and a
+// ASKED ACROSS THE WHOLE REPLY, reassembled from the chunks and the separators the splitter cut on,
+// not inside the one chunk about to be touched, and BOTH ends rather than only the configured one. With `position: "top"` the signature goes on the FIRST chunk, and a
 // model that signed itself at the end put its copy on the LAST one: a check scoped to chunk zero
 // finds nothing, prepends, and the customer reads two closings. Asking both ends leaves ONE
 // signature, at the end the model chose — so `position` is where WE place a signature, not a promise
@@ -109,12 +109,32 @@ function interpolate(text: string, vars?: Record<string, string>): string {
 // What this does NOT catch, and it has to be said rather than implied: it de-duplicates an exact
 // repetition. A model that writes its own VARIANT of the closing still produces two, and the fix for
 // that is the prompt, which this feature exists to empty. Chatwoot has the same limit.
-export function alreadySigned(chunks: string[], signature: string): boolean {
+export function alreadySigned(
+  chunks: string[],
+  signature: string,
+  seps?: string[],
+): boolean {
   const s = signature.trim();
   if (!s || chunks.length === 0) return false;
-  const head = (chunks[0] ?? "").trim();
-  const tail = (chunks[chunks.length - 1] ?? "").trim();
-  return head.startsWith(s) || tail.endsWith(s);
+  const whole = rejoin(chunks, seps).trim();
+  return whole.startsWith(s) || whole.endsWith(s);
+}
+
+// The reply the model wrote, put back together. `splitReplyParts` captures the exact whitespace it
+// cut on in `seps`, so this is byte-identical to what came in — which is the difference between
+// asking the dedupe question of the whole reply, as the rule above says, and asking it of two
+// chunks. A SIGNATURE CONTAINING A BLANK LINE is itself split by the paragraph cut, so neither edge
+// chunk holds all of it: `Resposta.\n\n— Gi\n\nGuichê Web` against the signature `— Gi\n\nGuichê
+// Web` matched nothing, and the customer read two closings. Found in review of #599.
+//
+// A caller with no `seps` is one that never split (`[text]`), where the join is the element itself.
+// The `\n\n` fallback is for a chunk array assembled by hand in a test, and it is the paragraph cut's
+// own inverse: it can only make the check stricter, never looser.
+function rejoin(chunks: string[], seps?: string[]): string {
+  return chunks.reduce(
+    (acc, c, i) => (i === 0 ? c : acc + (seps?.[i] ?? "\n\n") + c),
+    "",
+  );
 }
 
 // ATTACHES TO A CHUNK, and that is the whole design. `deliverReply` cuts the reply on /\n{2,}/, and
@@ -135,6 +155,7 @@ export function attachSignature(
   signature: string | null,
   position: SignaturePosition,
   separator: SignatureSeparator,
+  seps?: string[],
 ): string[] {
   if (!signature || chunks.length === 0) return chunks;
   // Nothing was said, so nothing is signed. With split ON the splitter already trims a whitespace
@@ -144,7 +165,8 @@ export function attachSignature(
   const delimiter = DELIMITERS[separator];
   const i = position === "top" ? 0 : chunks.length - 1;
   const chunk = chunks[i];
-  if (chunk === undefined || alreadySigned(chunks, signature)) return chunks;
+  if (chunk === undefined || alreadySigned(chunks, signature, seps))
+    return chunks;
   const out = [...chunks];
   out[i] =
     position === "top"

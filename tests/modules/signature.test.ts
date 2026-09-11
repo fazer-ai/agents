@@ -335,3 +335,58 @@ describe("deliverReply: what the customer actually receives", () => {
     expect(rec.sent).toEqual([]);
   });
 });
+
+describe("dedupe across the whole reply, not two chunks (review of #599)", () => {
+  const MULTI = "— Gi\n\nGuichê Web";
+
+  test("a model signature that SPANS chunks is still caught", () => {
+    // The signature holds a blank line, so the paragraph cut splits it too: the last chunk is
+    // `Guichê Web` and the one before it `— Gi`, and neither holds all of it. Asked of the two edge
+    // chunks this matched nothing and the customer read two closings.
+    const { chunks, seps } = splitReplyParts(
+      `Resposta.\n\n${MULTI}`,
+      SPLIT_DEFAULTS,
+    );
+    expect(chunks.length).toBeGreaterThan(2);
+    expect(alreadySigned(chunks, MULTI, seps)).toBe(true);
+    expect(attachSignature(chunks, MULTI, "bottom", "blank", seps)).toEqual(
+      chunks,
+    );
+  });
+
+  test("and at the top, for position top", () => {
+    const { chunks, seps } = splitReplyParts(
+      `${MULTI}\n\nResposta.`,
+      SPLIT_DEFAULTS,
+    );
+    expect(alreadySigned(chunks, MULTI, seps)).toBe(true);
+    expect(attachSignature(chunks, MULTI, "top", "blank", seps)).toEqual(
+      chunks,
+    );
+  });
+
+  test("the same signature in the MIDDLE is not a match", () => {
+    // Still a tail check over the whole reply, not containment: the rule did not get looser.
+    const { chunks, seps } = splitReplyParts(
+      `Resposta.\n\n${MULTI}\n\nMais uma coisa.`,
+      SPLIT_DEFAULTS,
+    );
+    expect(alreadySigned(chunks, MULTI, seps)).toBe(false);
+  });
+
+  test("the rejoin is byte-identical to what the splitter was given", () => {
+    // What makes the check above exact rather than approximate: `seps` carries the run of newlines
+    // the model actually typed, which is not always two.
+    const reply = "Um.\n\n\nDois.\n\nTrês.";
+    const { chunks, seps } = splitReplyParts(reply, SPLIT_DEFAULTS);
+    const whole = chunks.reduce(
+      (acc, c, i) => (i === 0 ? c : acc + seps[i] + c),
+      "",
+    );
+    expect(whole).toBe(reply);
+  });
+
+  test("a one-message caller needs no seps", () => {
+    expect(alreadySigned([`corpo\n\n${MULTI}`], MULTI)).toBe(true);
+  });
+});

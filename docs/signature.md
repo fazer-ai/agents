@@ -39,6 +39,7 @@ An allowlist is not a step toward that. It is a different field with a different
 
 - `readSignatureConfig(settings)` — the block, defaults applied, values of another shape dropped rather than carried (the bag is operator-editable through the REST API as well as the UI).
 - `signatureFor(cfg, vars?)` — the signature for this turn, or null when `text` is empty, with the placeholders resolved. The playground calls the same function, because it is asking the same question.
+- `alreadySigned(chunks, signature, seps?)` — the dedupe, asked of the reply **reassembled** from the chunks and the exact whitespace `splitReplyParts` cut on. Asking it of the two edge chunks instead was a real defect, found in review: a signature that itself contains a blank line is split by the same paragraph cut, so neither edge chunk holds all of it and the customer read two closings.
 - `attachSignature(chunks, signature, position, separator)` — pure, and the single spelling of the rule. Takes the **already-split** array and returns it with the signature on the last chunk (or the first, with `top`).
 
 ## It attaches to a CHUNK, never to the text
@@ -111,6 +112,16 @@ This is what the **preview** in the Behavior tab is for. The field is a plain te
 The "insert a variable" chips under the field offer the **context** vars only, not the prompt's whole list. The time and schedule names interpolate here too, because it is the same function, but a closing line that announces the current minute is not a signature, and offering it invites one that changes on every message, which is the property this feature exists to remove.
 
 An unknown placeholder is **left standing**, not blanked. That is `interpolatePromptVars`'s own rule, and it is what makes a typo visible on the customer's screen instead of silently deleting the operator's text.
+
+## The playground shows what the customer would get
+
+Three places, and they have to agree or the surface is worse than not having it:
+
+- the **live turn** signs the reply it returns;
+- the **simulated follow-up** signs too, because production signs the proactive message;
+- the **reload** signs at rebuild, not from storage. The checkpointer holds the model's own words and keeps them: the signature is presentation, applied on the way out, exactly as in production. Nothing is stored, so a signature edited after a turn was written shows the current one on both surfaces, and the model's memory never learns the signature exists.
+
+The TTS text is not signed, for the reason production's audio branch is not: the operator would hear a spoken closing that no customer ever hears.
 
 ## The prompt's job is the opposite one
 

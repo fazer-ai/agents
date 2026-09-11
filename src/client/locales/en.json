@@ -1406,6 +1406,7 @@
     "signatureText": "Signature",
     "signatureTextHint": "Empty turns it off. Takes the same {{variables}} as the system prompt, and Markdown for **bold** and _italic_, which Chatwoot converts per channel.",
     "signatureTop": "Above the message",
+    "signatureVarNoRoom": "Not enough room left before the limit.",
     "signatureVarsHint": "Insert a variable:",
     "split": "Reply in multiple messages",
     "splitEnabled": "Split replies into several messages with a typing delay",

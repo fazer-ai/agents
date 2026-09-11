@@ -1443,6 +1443,7 @@
     "signatureText": "Assinatura",
     "signatureTextHint": "Vazio desliga. Aceita as mesmas {{variáveis}} do prompt do sistema, e Markdown para **negrito** e _itálico_, que o Chatwoot converte por canal.",
     "signatureTop": "Acima da mensagem",
+    "signatureVarNoRoom": "Não cabe antes do limite.",
     "signatureVarsHint": "Inserir uma variável:",
     "split": "Resposta em várias mensagens",
     "splitEnabled": "Dividir respostas em várias mensagens com atraso de digitação",

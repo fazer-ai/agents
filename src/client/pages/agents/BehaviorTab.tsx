@@ -1206,8 +1206,15 @@ export function BehaviorTab({
   // signature, and offering it invites a signature that changes on every message — which is the one
   // property this feature exists to remove.
   const signatureRef = useRef<HTMLTextAreaElement>(null);
+  // What is left before the cap. A chip whose token does not fit is DISABLED rather than clipped:
+  // clipping an insert cuts the TAIL of what the operator already wrote, which is the one thing a
+  // helper button must never do — the caret is at the front, the loss is at the back, and nothing
+  // on screen connects the two. Found in review of #599.
+  const signatureRoom = SIGNATURE_MAX - signature.text.length;
   function insertSignatureVar(name: string) {
     const token = `{{${name}}}`;
+    // Asked here too, not only on the button: the same guard has to hold whatever reaches this.
+    if (token.length > signatureRoom) return;
     const el = signatureRef.current;
     if (!el) {
       setSignature((sg) => ({
@@ -2543,16 +2550,28 @@ export function BehaviorTab({
                   {t("editor.signatureVarsHint", "Insert a variable:")}
                 </span>
                 <div className="flex flex-wrap gap-1.5">
-                  {PROMPT_CONTEXT_VARS.map((v) => (
-                    <button
-                      key={v}
-                      type="button"
-                      onClick={() => insertSignatureVar(v)}
-                      className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
-                    >
-                      {`{{${v}}}`}
-                    </button>
-                  ))}
+                  {PROMPT_CONTEXT_VARS.map((v) => {
+                    const fits = `{{${v}}}`.length <= signatureRoom;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        disabled={!fits}
+                        title={
+                          fits
+                            ? undefined
+                            : t(
+                                "editor.signatureVarNoRoom",
+                                "Not enough room left before the limit.",
+                              )
+                        }
+                        onClick={() => insertSignatureVar(v)}
+                        className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary"
+                      >
+                        {`{{${v}}}`}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </FormField>

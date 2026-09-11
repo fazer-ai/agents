@@ -212,11 +212,11 @@ const SIGNATURE_PREVIEW_VARS: Record<string, string> = {
   contact_first_name: "Ana",
 };
 
-function signaturePreview(
+function signaturePreviewParts(
   sig: SignatureState,
   t: (k: string, d: string) => string,
   vars: Record<string, string>,
-): string {
+): string[] {
   // Interpolated like the signature itself, so the example name in the body and the one a
   // `{{nome_contato}}` in the signature resolves to are the SAME person. A preview that greets Ana
   // and signs off to somebody else teaches the operator the variables do not work.
@@ -227,15 +227,12 @@ function signaturePreview(
     ),
     vars,
   );
-  const sep = sig.separator === "--" ? "\n\n--\n\n" : "\n\n";
   // Through the RUNTIME's own interpolation, not a second copy of it: what the preview shows and
   // what the customer receives have to be the same function, including the rule that an unknown
   // placeholder is left standing instead of blanked, which is how a typo stays visible here.
   const text = interpolatePromptVars(sig.text.trim(), vars);
-  if (!text) return body;
-  return sig.position === "top"
-    ? `${text}${sep}${body}`
-    : `${body}${sep}${text}`;
+  if (!text) return [body];
+  return sig.position === "top" ? [text, body] : [body, text];
 }
 
 interface SignatureState {
@@ -2518,14 +2515,14 @@ export function BehaviorTab({
             )}
             help={t(
               "editor.signatureHelp",
-              "The signature goes on the message that closes a turn: the reply, and the farewell of a handoff. Not on a mid-turn acknowledgement, not on a private note, and not on an audio reply, where a spoken closing is noise.\n\nIt is delivered exactly as written and is NOT converted per channel. A link or bold written for e-mail reaches WhatsApp with the characters showing, so keep it plain when the agent answers on more than one kind of channel. The preview renders it the way a channel that understands Markdown does.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
+              "The signature goes on the message that closes a turn: the reply, and the farewell of a handoff. Not on a mid-turn acknowledgement, not on a private note, and not on an audio reply, where a spoken closing is noise.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
             )}
           >
             <FormField
               label={t("editor.signatureText", "Signature")}
               description={t(
                 "editor.signatureTextHint",
-                "Empty turns it off. Takes the same {{variables}} as the system prompt, and Markdown for bold and italics.",
+                "Empty turns it off. Takes the same {{variables}} as the system prompt, and Markdown for **bold** and _italic_, which Chatwoot converts per channel.",
               )}
             >
               <HighlightedPromptEditor
@@ -2612,13 +2609,34 @@ export function BehaviorTab({
               label={t("editor.signaturePreview", "Preview")}
               description={t(
                 "editor.signaturePreviewHint",
-                "How it lands, separator included, with example values for the variables.",
+                "One message, with example values for the variables. The gap or the -- below is what the separator puts between the two.",
               )}
             >
+              {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
+                  Rendering the whole thing at once made `blank` and `--` look almost alike: a blank
+                  line between two paragraphs came out as Markdown's own paragraph gap, which is
+                  smaller than a line and reads as ordinary spacing rather than as the choice the
+                  operator just made. Splitting at the separator is also what the bytes are. */}
               <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
-                <Markdown>
-                  {signaturePreview(signature, t, SIGNATURE_PREVIEW_VARS)}
-                </Markdown>
+                {signaturePreviewParts(
+                  signature,
+                  t,
+                  SIGNATURE_PREVIEW_VARS,
+                ).map((part, i) => (
+                  <div key={part}>
+                    {i > 0 &&
+                      (signature.separator === "--" ? (
+                        <div className="py-1 font-mono text-sm text-text-secondary">
+                          {/* Not translatable: these are the bytes the separator puts on the
+                              wire, the same two `DELIMITERS` writes. */}
+                          {"--"}
+                        </div>
+                      ) : (
+                        <div className="h-5" aria-hidden="true" />
+                      ))}
+                    <Markdown>{part}</Markdown>
+                  </div>
+                ))}
               </div>
             </FormField>
           </Section>

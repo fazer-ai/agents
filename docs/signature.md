@@ -80,15 +80,29 @@ It is asked **across the whole reply and at both ends**, not inside the one chun
 
 **What it does not catch is a paraphrase.** A model that writes its own variant of the closing still produces two, and the fix for that is emptying the prompt, which is what this feature is for. Chatwoot has the same limit.
 
-## Markdown is delivered as written
+## Write Markdown, and Chatwoot converts it per channel
 
-The signature is **not** converted per channel. Chatwoot strips markdown the target channel cannot render (`stripUnsupportedMarkdown` against the `FORMATTING` table: email takes `**bold**`, `_italic_`, `code`, links and lists; WhatsApp takes bold, italic, code and strike but **not** links; SMS and Twitter take none), and this runtime does that for nothing it sends — the model's reply already goes out raw.
+**Corrected on 11/09**, because the first version of this document said the opposite and it was wrong. The claim was that nothing converts markdown and a signature written for e-mail reaches WhatsApp with its brackets showing. Chatwoot does convert, on the way out, for every channel that has a renderer.
 
-So a signature written with a link for email reaches WhatsApp with its brackets showing. That is a real limit rather than an oversight, and it is sharper for a signature than for the body: the body is written per turn by a model that knows the channel, while the signature is a frozen string that goes to every channel and repeats on every message, and a signature is exactly the kind of text that wants a link. There is no upstream that can adapt it.
+`Message#outgoing_content` runs `Messages::MarkdownRendererService` (upstream, added by #12600 in 2025-12; present in the fork's `main` at 4.17.0), and the provider send path reads `outgoing_content`, not `content`. So the conversion applies to **anything** in the message, whoever wrote it: the model's reply, the operator's signature, a message posted through the API by an agent bot.
 
-Converting only the signature would have left the larger half broken while making the problem look handled, so the conversion is its own issue, scoped to the whole outgoing message: **[#603](https://github.com/fazer-ai/agents/issues/603)**. Until it lands, write a signature in plain text when the agent answers on more than one kind of channel.
+What the WhatsApp renderer does, from the fork's own spec (`spec/services/messages/markdown_renderer_service_spec.rb`):
 
-This is what the **preview** in the Behavior tab is for. The field is a plain textarea rather than a rich editor, so `**Gi**` is what the operator types, and the preview is the only place that answers whether it lands as bold or as four asterisks. It renders through the same `<Markdown>` the conversation view and the playground use, which is what a channel that understands Markdown does with it, and it resolves the variables against example values so the shape is visible before anything is sent.
+| written | reaches WhatsApp |
+| --- | --- |
+| `**bold**` | `*bold*` (WhatsApp's own single asterisk) |
+| `_italic_` | `_italic_` |
+| `` `code` `` | `` `code` `` |
+| `[label](url)` | `url` — **the label is dropped** |
+| `- item` | `- item` |
+
+Email and the web widget get HTML, Telegram gets its own HTML, Instagram/Facebook/Line get their own markup, SMS and Twitter get plain text. So the vocabulary an operator writes is one: **Markdown**, the same in the signature, in the reply box and in the prompt.
+
+**The one channel with no renderer is `Channel::Api`**, which is not in `CHANNEL_RENDERERS` and therefore passes the content through untouched. A signature written with `**` on an API inbox reaches the consumer with the asterisks in it, which is correct behaviour for a channel whose consumer decides its own rendering, and worth knowing before writing one.
+
+The remaining limit is the link. `[fazer.ai](https://fazer.ai)` keeps its label on e-mail and loses it on WhatsApp, where only the URL survives. That is upstream's decision rather than something this feature can fix, so a signature that carries a link is best written with the URL bare when the agent answers on WhatsApp.
+
+This is what the **preview** in the Behavior tab is for. The field is a plain textarea rather than a rich editor, so `**Gi**` is what the operator types, and the preview is the only place that answers whether that lands as bold. It renders through the same `<Markdown>` the conversation view and the playground use, which is what a channel with a renderer does with it, and it resolves the variables against example values so the shape is visible before anything is sent.
 
 ## The variables are the prompt's
 

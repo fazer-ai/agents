@@ -937,7 +937,11 @@ export async function runPlaygroundTurn(
   //
   // Same function production calls, because the question is the same one: the signature is a single
   // channel-agnostic text, and the playground is where the operator checks what it will look like.
-  const previewSig = signatureFor(loaded.signatureConfig, loaded.promptVars);
+  const previewSig = signatureFor(
+    loaded.signatureConfig,
+    loaded.promptVars,
+    loaded.promptOpts,
+  );
   const [signedReply = reply] = previewSig
     ? attachSignature(
         [reply],
@@ -1273,7 +1277,11 @@ export async function runPlaygroundFollowup(
   // bare would be the one surface showing the operator something the customer never receives, which
   // is the whole reason this surface exists. `attachSignature` is what declines the empty case, so
   // a silent or suppressed follow-up is left exactly as it was.
-  const followUpSig = signatureFor(loaded.signatureConfig, loaded.promptVars);
+  const followUpSig = signatureFor(
+    loaded.signatureConfig,
+    loaded.promptVars,
+    loaded.promptOpts,
+  );
   const [signedFollowUp = reply] = followUpSig
     ? attachSignature(
         [reply],

@@ -20,11 +20,6 @@ import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { documentToolName } from "@/modules/documents/templates";
-import {
-  attachSignature,
-  readSignatureConfig,
-  signatureFor,
-} from "@/modules/signature/service";
 import { listThreadMedia } from "./media";
 import { isValidPlaygroundThread } from "./thread";
 import { type LoadedTurnNote, listThreadTurnNotes } from "./turn-notes";
@@ -524,33 +519,6 @@ export async function getPlaygroundSessionTurns(
     ),
     await listThreadTurnNotes(base, ctx, threadId),
   );
-
-  // THE SIGNATURE IS APPLIED HERE, on the way out, and stored nowhere (issue #599, found in review).
-  // The live turn returns a signed reply while the checkpointer holds the model's own words, so a
-  // reload used to drop the signature off every message the operator had just seen. Signing on
-  // rebuild is the same rule production follows — the signature is presentation, attached at
-  // delivery — and it is the only version that cannot drift: a signature changed after a turn was
-  // written shows the CURRENT one on both surfaces, and the model's memory never learns it exists.
-  //
-  // Only assistant turns that said something: an empty bubble is the agent choosing silence, and a
-  // lone signature is exactly what `attachSignature` refuses in production.
-  const agent = await runScopedOn(base, ctx, (db) =>
-    db.agent.findUnique({ where: { id: agentId }, select: { settings: true } }),
-  );
-  const sigCfg = readSignatureConfig(agent?.settings);
-  const sig = signatureFor(sigCfg);
-  if (sig) {
-    for (const turn of turns) {
-      if (turn.role !== "assistant" || !turn.text.trim()) continue;
-      const [signed = turn.text] = attachSignature(
-        [turn.text],
-        sig,
-        sigCfg.position,
-        sigCfg.separator,
-      );
-      turn.text = signed;
-    }
-  }
 
   // Join persisted media onto the turns by message id (best-effort replay — if the checkpointer
   // didn't round-trip the message id, the media simply isn't re-attached, never an error).

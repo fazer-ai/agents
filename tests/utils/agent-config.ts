@@ -73,6 +73,7 @@ export function makeConfig(
     splitConfig: SPLIT_DEFAULTS,
     signatureConfig: SIGNATURE_DEFAULTS,
     promptVars: {},
+    promptOpts: {},
     serviceWindowConfig: SERVICE_WINDOW_DEFAULTS,
     contactAuthConfig: CONTACT_AUTH_DEFAULTS,
     handoffConfig: HANDOFF_DEFAULTS,

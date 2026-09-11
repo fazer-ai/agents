@@ -1112,7 +1112,11 @@ async function runTurnBody(
         );
       }
     }
-    const sig = signatureFor(loaded.signatureConfig, loaded.promptVars);
+    const sig = signatureFor(
+      loaded.signatureConfig,
+      loaded.promptVars,
+      loaded.promptOpts,
+    );
     const signed = sig
       ? {
           text: sig,

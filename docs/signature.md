@@ -107,21 +107,26 @@ This is what the **preview** in the Behavior tab is for. The field is a plain te
 
 ## The variables are the prompt's
 
-`{{nome_agente}}`, `{{nome_empresa}}`, `{{nome_contato}}` and the rest, through `interpolatePromptVars` itself rather than a second copy of it. An operator who has learned the prompt's `{{var}}` has learned this one, the editor highlights a real name against a typo with the prompt's own known-token set, and a variable added to the prompt reaches here without anyone remembering to.
+`{{nome_agente}}`, `{{nome_empresa}}`, `{{nome_contato}}` and the rest, through `interpolatePromptVars` itself rather than a second copy of it, **with the render options the system prompt was built with** (`AgentConfig.promptOpts`): the map alone answers the context names and leaves every schedule and time name literal, which review of #599 caught reaching the customer that way. An operator who has learned the prompt's `{{var}}` has learned this one, the editor highlights a real name against a typo with the prompt's own known-token set, and a variable added to the prompt reaches here without anyone remembering to.
 
 The "insert a variable" chips under the field offer the **context** vars only, not the prompt's whole list. The time and schedule names interpolate here too, because it is the same function, but a closing line that announces the current minute is not a signature, and offering it invites one that changes on every message, which is the property this feature exists to remove.
 
 An unknown placeholder is **left standing**, not blanked. That is `interpolatePromptVars`'s own rule, and it is what makes a typo visible on the customer's screen instead of silently deleting the operator's text.
 
-## The playground shows what the customer would get
+## The playground signs the live turn, and the reload does not
 
-Three places, and they have to agree or the surface is worse than not having it:
+Two places sign, and they are the two the operator is watching when they ask "what would the customer get":
 
 - the **live turn** signs the reply it returns;
-- the **simulated follow-up** signs too, because production signs the proactive message;
-- the **reload** signs at rebuild, not from storage. The checkpointer holds the model's own words and keeps them: the signature is presentation, applied on the way out, exactly as in production. Nothing is stored, so a signature edited after a turn was written shows the current one on both surfaces, and the model's memory never learns the signature exists.
+- the **simulated follow-up** signs too, because production signs the proactive message, and a bare follow-up here would make the playground the one surface showing something the customer never receives.
 
 The TTS text is not signed, for the reason production's audio branch is not: the operator would hear a spoken closing that no customer ever hears.
+
+**A reopened session shows the model's own words, unsigned**, and that is a decision rather than a gap. It was implemented the other way first, signing at rebuild, and review found the two questions such a site has to answer and cannot: which variables resolve (`{{nome_agente}}` needs the map, `{{horario_atendimento}}` needs the schedule and the instant, and neither survives into a transcript) and which turns qualify at all (an input-guardrail refusal is the operator's own sentence and is never signed, which the rebuild can only infer).
+
+Both are known at delivery and unknowable cheaply at rebuild, and `docs/playground.md` already says what to do when the transcript must show something the checkpointer does not hold: it gets a row, in `playground_turn_notes`. A render-time re-derivation is the thing that table exists to replace.
+
+The reload also replays nothing else about delivery: the reply is not split into balloons, the pacing is not reproduced. Signing on reload while not splitting on reload would be arbitrary. So the rule is the plain one: **the transcript is the thread, and delivery-time transformations are shown where they are decided, on the live turn.**
 
 ## The prompt's job is the opposite one
 

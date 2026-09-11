@@ -390,3 +390,35 @@ describe("dedupe across the whole reply, not two chunks (review of #599)", () =>
     expect(alreadySigned([`corpo\n\n${MULTI}`], MULTI)).toBe(true);
   });
 });
+
+describe("the render options travel with the variables (review of #599)", () => {
+  test("a schedule variable resolves, instead of going out literal on every message", async () => {
+    // The map alone is half the answer: `interpolatePromptVars` reads the schedule and the instant
+    // off `opts`, so a caller that passed only the vars rendered this literally to the customer.
+    const cfg = {
+      ...SIGNATURE_DEFAULTS,
+      text: "— Gi · {{horario_atendimento}}",
+    };
+    const schedule = {
+      timezone: "America/Sao_Paulo",
+      windows: [{ day: 1, start: "09:00", end: "18:00" }],
+    };
+    const out = signatureFor(cfg, {}, {
+      availability: { schedule },
+      now: new Date("2026-09-14T13:00:00Z"),
+    } as Parameters<typeof signatureFor>[2]);
+    expect(out).not.toBeNull();
+    expect(out).not.toContain("{{horario_atendimento}}");
+  });
+
+  test("without options the same name stays literal rather than blank", () => {
+    // The failure this guards is silent deletion, not a literal placeholder: a name the caller
+    // cannot answer must stay visible so the operator sees it, which is the prompt's own rule.
+    expect(
+      signatureFor(
+        { ...SIGNATURE_DEFAULTS, text: "— {{horario_atendimento}}" },
+        {},
+      ),
+    ).toBe("— {{horario_atendimento}}");
+  });
+});

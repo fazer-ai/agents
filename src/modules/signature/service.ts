@@ -13,7 +13,7 @@
 // operator who configures both should meet the same words, the same bytes and the same defaults in
 // both places, `top` included.
 
-import { interpolatePromptVars } from "@/graph/prompt";
+import { interpolatePromptVars, type PromptRenderOpts } from "@/graph/prompt";
 import { clipText } from "@/lib/text";
 import { SIGNATURE_MAX } from "@/modules/agents/text-caps";
 
@@ -77,9 +77,10 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
 export function signatureFor(
   cfg: SignatureConfig,
   vars?: Record<string, string>,
+  opts?: PromptRenderOpts,
 ): string | null {
   if (!cfg.text) return null;
-  return interpolate(cfg.text, vars);
+  return interpolate(cfg.text, vars, opts);
 }
 
 // THE SAME PLACEHOLDERS THE SYSTEM PROMPT TAKES, through the same function — `{{nome_agente}}`,
@@ -89,8 +90,17 @@ export function signatureFor(
 // prompt's own known-token set, and a name added to the prompt reaches here without anyone
 // remembering to. `interpolatePromptVars` leaves an unknown placeholder untouched rather than
 // blanking it, which is what makes a typo visible instead of silently deleting the operator's text.
-function interpolate(text: string, vars?: Record<string, string>): string {
-  return vars ? interpolatePromptVars(text, vars) : text;
+// The OPTIONS travel with the map, and they have to: `interpolatePromptVars` answers a schedule or
+// time variable from `opts` (the agent's timezone, the instant, the business-hours grid), so a
+// caller that passes only the map renders `{{horario_atendimento}}` literally on every message the
+// customer receives. Found in review of #599, on the reading that the doc promises the prompt's
+// placeholders and the code delivered a subset of them.
+function interpolate(
+  text: string,
+  vars?: Record<string, string>,
+  opts?: PromptRenderOpts,
+): string {
+  return vars ? interpolatePromptVars(text, vars, opts ?? {}) : text;
 }
 
 // Whether this reply already carries the signature, asked at the two ENDS it could occupy.

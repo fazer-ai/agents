@@ -1172,7 +1172,11 @@ export async function runAgentNudge(
   // A one-element array because this path sends one message: `attachSignature` is the single
   // spelling of the rule, and "split off" is not a second rule about signatures, it is one chunk.
   const sign = (text: string): string => {
-    const sig = signatureFor(cfg.signatureConfig, cfg.promptVars);
+    const sig = signatureFor(
+      cfg.signatureConfig,
+      cfg.promptVars,
+      cfg.promptOpts,
+    );
     if (!sig) return text;
     const [out = text] = attachSignature(
       [text],

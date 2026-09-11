@@ -38,6 +38,7 @@ import {
   buildQuoteResolver,
   type ChatwootMessageRow,
   parseChatwootMessages,
+  toRenderable,
 } from "@/modules/chatwoot/messages";
 import {
   renderAttendantMessage,
@@ -570,16 +571,13 @@ export function transcriptFromRows(
     const text =
       m.messageType === "incoming"
         ? renderInboundMessage(
-            {
-              text: m.content,
-              transcribedText: m.transcribedText,
-              imageDescription: m.imageDescription,
-              extractedText: m.extractedText,
-              attachmentTypes: m.attachmentTypes,
-              attachmentName: m.attachmentName,
-              location: m.location,
-              inReplyTo: m.inReplyTo,
-            },
+            // ASKED OF `toRenderable`, not spelled here (issue #598). The same copy the memory fold
+            // had, and the same cost: the email subject reached the renderer, the burst, the ceiling
+            // gate and the fold, while the observer went on reading a subject-only email as a blank
+            // line and classifying a conversation in which, as far as it could see, the customer had
+            // said nothing. `isReaction` is always false past `usableRow`, so the shared mapping
+            // changes nothing else here.
+            toRenderable(m),
             // WHAT A REPLY IS ANSWERING (issue #477 review, round 4), resolved off the same rows the
             // window fetched — the debounce path builds it the same way. Without it a quoted "sim"
             // reaches the model with the demand it answers stripped out, and a label decided on that

@@ -239,6 +239,9 @@ export function normalizeChatwootEvent(
       // The content is the emoji; in_reply_to points at the message it reacts to.
       isReaction: ca?.is_reaction === true,
       externalSenderName: ca ? str(ca.external_sender_name) : null,
+      // NOTE: The Subject header of an inbound email (issue #598). Read through the shared reader so
+      // the delivered event and the REST page cannot disagree about what the subject is.
+      emailSubject: emailSubjectFrom(ca),
       imported: ca?.imported === true,
     };
   }
@@ -792,12 +795,16 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // still carry a usable fallback_title (place name + address). Neither ⇒ null, and the render falls
 // back to the generic attachment marker. Shared by the direct webhook path and the debounce
 // re-fetch (issue #45).
-// THE ONE MAPPING FROM A NORMALIZED EVENT TO WHAT THE AGENT WOULD READ. Two callers ask it and one
-// of them is not running a turn: the spend-ceiling gate has to know whether the message it is about
+// THE ONE MAPPING FROM A NORMALIZED EVENT TO WHAT THE AGENT WOULD READ. Three callers ask it and two
+// of them are not running a turn. The spend-ceiling gate has to know whether the message it is about
 // to refuse would have reached a model at all, and `runAgentTurn` answers `skipped` — before any
 // billed call — for a message that renders to nothing (blank content, an attachment type we do not
-// recognise, a reaction). Asking that there with a second copy of this shape would be a second
-// answer to one question, and the two would drift the first time a marker or a field is added.
+// recognise, a reaction). `ingestUnhandledMessage` has to know what to fold into memory for the
+// message no turn will ever cover: the one that arrived outside business hours, and the one a
+// colleague had already taken. Asking either of those with a second copy of this shape would be a
+// second answer to one question, and the two would drift the first time a marker or a field is
+// added — which is exactly what happened to the email subject (issue #598), read by the renderer,
+// the burst and the gate while the memory fold went on dropping the message whole.
 export function incomingRenderable(
   n: NormalizedChatwootEvent,
 ): RenderableMessage {
@@ -812,7 +819,24 @@ export function incomingRenderable(
     location: firstLocationAttachment(n.message?.attachments),
     inReplyTo: n.message?.inReplyTo,
     isReaction: n.message?.isReaction,
+    emailSubject: n.message?.emailSubject,
   };
+}
+
+// The Subject header the mailbox wrote into `content_attributes.email` (MailboxSanitizer sets
+// `email: processed_mail.serialized_data`, and MailPresenter#serialized_data carries `subject`).
+// Read as a STRING and nothing else: the bag is shared with whatever else writes there, and a value
+// of another shape is somebody's colliding key, not a subject. Shared by both readers of the bag so
+// the REST page and the delivered event cannot disagree about it.
+export function emailSubjectFrom(
+  contentAttributes: Record<string, unknown> | null | undefined,
+): string | null {
+  const email = isRecord(contentAttributes?.email)
+    ? contentAttributes.email
+    : null;
+  const subject = email?.subject;
+  if (typeof subject !== "string") return null;
+  return subject.trim() ? subject : null;
 }
 
 export function firstLocationAttachment(

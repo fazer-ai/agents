@@ -23,6 +23,7 @@ function row(over: Partial<ChatwootMessageRow> = {}): ChatwootMessageRow {
     messageType: "incoming",
     private: false,
     sendId: null,
+    emailSubject: null,
     attachmentTypes: ["audio"],
     transcribedText: null,
     imageDescription: null,

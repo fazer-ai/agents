@@ -70,6 +70,9 @@ export interface NormalizedChatwootMessage {
   // in the payload that separates an attendant replying on the paired phone from the other three
   // shapes of sender-less outgoing message Chatwoot itself produces (see isDeviceAttendantMessage).
   externalSenderName?: string | null;
+  // NOTE: The email's Subject header (issue #598), from `content_attributes.email.subject`. Only a
+  // mailbox writes that bag, so its presence is the channel gate. Null on every other channel.
+  emailSubject?: string | null;
   // content_attributes.imported. Set by the history importer on a backfilled row.
   imported?: boolean;
   // Filled by the eager STT pass (NOT from the payload): the audio transcription, used by the direct

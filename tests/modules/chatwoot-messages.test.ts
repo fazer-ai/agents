@@ -19,6 +19,7 @@ describe("parseChatwootMessages", () => {
     expect(rows[0]).toEqual({
       id: 1,
       content: "a",
+      emailSubject: null,
       messageType: "incoming",
       private: false,
       sendId: null,

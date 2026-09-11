@@ -336,57 +336,51 @@ describe("deliverReply: what the customer actually receives", () => {
   });
 });
 
-describe("dedupe across the whole reply, not two chunks (review of #599)", () => {
+describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
   const MULTI = "— Gi\n\nGuichê Web";
 
+  // The split is LOSSY for this question in two independent ways, and each cost a review round.
   test("a model signature that SPANS chunks is still caught", () => {
-    // The signature holds a blank line, so the paragraph cut splits it too: the last chunk is
-    // `Guichê Web` and the one before it `— Gi`, and neither holds all of it. Asked of the two edge
-    // chunks this matched nothing and the customer read two closings.
-    const { chunks, seps } = splitReplyParts(
-      `Resposta.\n\n${MULTI}`,
-      SPLIT_DEFAULTS,
-    );
+    const reply = `Resposta.\n\n${MULTI}`;
+    const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
     expect(chunks.length).toBeGreaterThan(2);
-    expect(alreadySigned(chunks, MULTI, seps)).toBe(true);
-    expect(attachSignature(chunks, MULTI, "bottom", "blank", seps)).toEqual(
+    expect(alreadySigned(chunks, MULTI, reply)).toBe(true);
+    expect(attachSignature(chunks, MULTI, "bottom", "blank", reply)).toEqual(
       chunks,
     );
   });
 
   test("and at the top, for position top", () => {
-    const { chunks, seps } = splitReplyParts(
-      `${MULTI}\n\nResposta.`,
-      SPLIT_DEFAULTS,
+    const reply = `${MULTI}\n\nResposta.`;
+    const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
+    expect(alreadySigned(chunks, MULTI, reply)).toBe(true);
+    expect(attachSignature(chunks, MULTI, "top", "blank", reply)).toEqual(
+      chunks,
     );
-    expect(alreadySigned(chunks, MULTI, seps)).toBe(true);
-    expect(attachSignature(chunks, MULTI, "top", "blank", seps)).toEqual(
+  });
+
+  test("an INDENTED line inside the signature survives the comparison", () => {
+    // The second loss: `splitReplyParts` trims every paragraph, so a signature whose second line is
+    // indented comes back without the indentation. Reassembling from the separators recovered the
+    // newlines and not this, which is why the caller passes the reply itself.
+    const indented = "— Gi\n\n  Guichê Web";
+    const reply = `Resposta.\n\n${indented}`;
+    const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
+    expect(chunks.join("\n\n")).not.toContain("  Guichê Web");
+    expect(alreadySigned(chunks, indented, reply)).toBe(true);
+    expect(attachSignature(chunks, indented, "bottom", "blank", reply)).toEqual(
       chunks,
     );
   });
 
   test("the same signature in the MIDDLE is not a match", () => {
     // Still a tail check over the whole reply, not containment: the rule did not get looser.
-    const { chunks, seps } = splitReplyParts(
-      `Resposta.\n\n${MULTI}\n\nMais uma coisa.`,
-      SPLIT_DEFAULTS,
-    );
-    expect(alreadySigned(chunks, MULTI, seps)).toBe(false);
+    const reply = `Resposta.\n\n${MULTI}\n\nMais uma coisa.`;
+    const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
+    expect(alreadySigned(chunks, MULTI, reply)).toBe(false);
   });
 
-  test("the rejoin is byte-identical to what the splitter was given", () => {
-    // What makes the check above exact rather than approximate: `seps` carries the run of newlines
-    // the model actually typed, which is not always two.
-    const reply = "Um.\n\n\nDois.\n\nTrês.";
-    const { chunks, seps } = splitReplyParts(reply, SPLIT_DEFAULTS);
-    const whole = chunks.reduce(
-      (acc, c, i) => (i === 0 ? c : acc + seps[i] + c),
-      "",
-    );
-    expect(whole).toBe(reply);
-  });
-
-  test("a one-message caller needs no seps", () => {
+  test("a one-message caller needs no whole", () => {
     expect(alreadySigned([`corpo\n\n${MULTI}`], MULTI)).toBe(true);
   });
 });

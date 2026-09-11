@@ -39,7 +39,7 @@ An allowlist is not a step toward that. It is a different field with a different
 
 - `readSignatureConfig(settings)` — the block, defaults applied, values of another shape dropped rather than carried (the bag is operator-editable through the REST API as well as the UI).
 - `signatureFor(cfg, vars?)` — the signature for this turn, or null when `text` is empty, with the placeholders resolved. The playground calls the same function, because it is asking the same question.
-- `alreadySigned(chunks, signature, seps?)` — the dedupe, asked of the reply **reassembled** from the chunks and the exact whitespace `splitReplyParts` cut on. Asking it of the two edge chunks instead was a real defect, found in review: a signature that itself contains a blank line is split by the same paragraph cut, so neither edge chunk holds all of it and the customer read two closings.
+- `alreadySigned(chunks, signature, whole?)` — the dedupe, asked of **the reply as it arose**, which the splitting caller has in hand and passes. Asking it of the chunks was a real defect twice over, and both halves came from review: a signature containing a blank line is cut by the same paragraph rule, so neither edge chunk holds all of it; and `splitReplyParts` **trims** every paragraph, so even a reassembly from the separators loses an indented line. There is nothing to reconstruct when the caller still has the original.
 - `attachSignature(chunks, signature, position, separator)` — pure, and the single spelling of the rule. Takes the **already-split** array and returns it with the signature on the last chunk (or the first, with `top`).
 
 ## It attaches to a CHUNK, never to the text

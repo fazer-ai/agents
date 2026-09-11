@@ -109,8 +109,17 @@ function interpolate(
 // `trimmedBody.endsWith(cleanedSignature)`). Containment reads a short signature that merely appears
 // in the prose — "Gi" in a sentence about Gi — as one already written, and silently drops it.
 //
-// ASKED ACROSS THE WHOLE REPLY, reassembled from the chunks and the separators the splitter cut on,
-// not inside the one chunk about to be touched, and BOTH ends rather than only the configured one. With `position: "top"` the signature goes on the FIRST chunk, and a
+// ASKED ACROSS THE WHOLE REPLY, the text as it arose rather than any view of it, and BOTH ends
+// rather than only the configured one.
+//
+// THE WHOLE REPLY, not the chunks, because the split is LOSSY for this question and twice over.
+// A signature containing a blank line is cut by the same paragraph rule, so neither edge chunk holds
+// all of it: `Resposta.\n\n— Gi\n\nGuichê Web` against `— Gi\n\nGuichê Web` matched nothing and the
+// customer read two closings. Reassembling from `seps` fixed that one and not the second, which
+// review found next: `splitReplyParts` TRIMS each paragraph, so a signature with an indented line
+// comes back without the indentation and the comparison fails again. The caller that splits has the
+// original in hand, so it passes it; there is nothing to reconstruct. (The `\n\n` join is the
+// fallback for a chunk array assembled by hand in a test, and it can only make the check stricter.) With `position: "top"` the signature goes on the FIRST chunk, and a
 // model that signed itself at the end put its copy on the LAST one: a check scoped to chunk zero
 // finds nothing, prepends, and the customer reads two closings. Asking both ends leaves ONE
 // signature, at the end the model chose — so `position` is where WE place a signature, not a promise
@@ -122,29 +131,12 @@ function interpolate(
 export function alreadySigned(
   chunks: string[],
   signature: string,
-  seps?: string[],
+  whole?: string,
 ): boolean {
   const s = signature.trim();
   if (!s || chunks.length === 0) return false;
-  const whole = rejoin(chunks, seps).trim();
-  return whole.startsWith(s) || whole.endsWith(s);
-}
-
-// The reply the model wrote, put back together. `splitReplyParts` captures the exact whitespace it
-// cut on in `seps`, so this is byte-identical to what came in — which is the difference between
-// asking the dedupe question of the whole reply, as the rule above says, and asking it of two
-// chunks. A SIGNATURE CONTAINING A BLANK LINE is itself split by the paragraph cut, so neither edge
-// chunk holds all of it: `Resposta.\n\n— Gi\n\nGuichê Web` against the signature `— Gi\n\nGuichê
-// Web` matched nothing, and the customer read two closings. Found in review of #599.
-//
-// A caller with no `seps` is one that never split (`[text]`), where the join is the element itself.
-// The `\n\n` fallback is for a chunk array assembled by hand in a test, and it is the paragraph cut's
-// own inverse: it can only make the check stricter, never looser.
-function rejoin(chunks: string[], seps?: string[]): string {
-  return chunks.reduce(
-    (acc, c, i) => (i === 0 ? c : acc + (seps?.[i] ?? "\n\n") + c),
-    "",
-  );
+  const text = (whole ?? chunks.join("\n\n")).trim();
+  return text.startsWith(s) || text.endsWith(s);
 }
 
 // ATTACHES TO A CHUNK, and that is the whole design. `deliverReply` cuts the reply on /\n{2,}/, and
@@ -165,7 +157,9 @@ export function attachSignature(
   signature: string | null,
   position: SignaturePosition,
   separator: SignatureSeparator,
-  seps?: string[],
+  // The reply AS IT AROSE, before the split. Only the dedupe reads it (see `alreadySigned`); the
+  // attachment still happens on a chunk, which is the whole design.
+  whole?: string,
 ): string[] {
   if (!signature || chunks.length === 0) return chunks;
   // Nothing was said, so nothing is signed. With split ON the splitter already trims a whitespace
@@ -175,7 +169,7 @@ export function attachSignature(
   const delimiter = DELIMITERS[separator];
   const i = position === "top" ? 0 : chunks.length - 1;
   const chunk = chunks[i];
-  if (chunk === undefined || alreadySigned(chunks, signature, seps))
+  if (chunk === undefined || alreadySigned(chunks, signature, whole))
     return chunks;
   const out = [...chunks];
   out[i] =

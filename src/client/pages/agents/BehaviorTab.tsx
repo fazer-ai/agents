@@ -39,6 +39,7 @@ import {
   Textarea,
 } from "@/client/components";
 import { Markdown } from "@/client/components/Markdown";
+import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import {
@@ -211,17 +212,22 @@ interface SplitState {
 // function production builds them with, so a variable added there appears here without anyone
 // remembering to.
 //
-// EXAMPLE values, not live ones, and the preview says so. The tab knows the agent's id and not its
-// name, and the company name lives in the tenant's branding — threading both through for a preview
-// would be plumbing in exchange for nothing, because what this box is for is the SHAPE: where the
-// signature sits and what separates it. The same choice the prompt editor's format help makes with
-// its fixed reference instant. The person is the SHARED example, so the two previews on this agent
-// speak to the same customer.
-export const SIGNATURE_PREVIEW_VARS: Record<string, string> = buildPromptVars({
-  agentName: PROMPT_PREVIEW_AGENT,
-  companyName: PROMPT_PREVIEW_COMPANY,
-  ...PROMPT_PREVIEW_CONTACT,
-});
+// The CONTACT is an example, and the preview says so; the agent and the company are the operator's
+// OWN, the way the prompt editor already renders them. A signature is mostly those two names, so a
+// preview that shows somebody else's is a preview of a message the operator will never send — the
+// acceptance run put it plainly: "o operador que olha a prévia vê um nome de exemplo, não o dele".
+// The generic stand-ins survive for what the editor cannot know yet: an agent still being named,
+// and a tenant with no company name set.
+export function signaturePreviewVars(
+  agentName?: string | null,
+  companyName?: string | null,
+): Record<string, string> {
+  return buildPromptVars({
+    agentName: agentName?.trim() || PROMPT_PREVIEW_AGENT,
+    companyName: companyName?.trim() || PROMPT_PREVIEW_COMPANY,
+    ...PROMPT_PREVIEW_CONTACT,
+  });
+}
 
 // THE OPTIONS, not only the variables, because `interpolatePromptVars` answers a schedule name from
 // `opts.availability` and a time name from `opts.now`/`opts.timezone`. Passing the map alone left
@@ -347,6 +353,9 @@ export interface FollowUpState {
 
 interface BehaviorTabProps {
   agentId: string;
+  // The name being edited on General, live, so the signature preview signs with the operator's own
+  // agent instead of a stand-in. Empty while a new agent is still unnamed.
+  agentName: string;
   // The refused input this tab draws, if the standing refusal is about one of them. Read in
   // AgentEditorPage and passed as answers -- see the note on the type.
   refusals: BehaviorRefusals;
@@ -1153,6 +1162,7 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
 
 export function BehaviorTab({
   agentId,
+  agentName,
   refusals,
   hours,
   businessHoursId,
@@ -1244,6 +1254,7 @@ export function BehaviorTab({
   // clipping an insert cuts the TAIL of what the operator already wrote, which is the one thing a
   // helper button must never do — the caret is at the front, the loss is at the back, and nothing
   // on screen connects the two. Found in review of #599.
+  const tenantName = useActiveTenantName();
   const signatureRoom =
     SIGNATURE_MAX - signature.text.length + signatureSelected;
   // The agent's own Availability, so a `{{horario_atendimento}}` in the signature previews the hours
@@ -1260,6 +1271,10 @@ export function BehaviorTab({
         : null,
     },
   };
+  // Live on both names: the one being typed on General, and the tenant's, through the same hook the
+  // prompt editor's preview reads. A signature is mostly those two, so previewing a stand-in
+  // previews a message the operator never sends.
+  const signatureVars = signaturePreviewVars(agentName, tenantName);
   const signatureVarsBlocked = PROMPT_CONTEXT_VARS.some(
     (v) => `{{${v}}}`.length > signatureRoom,
   );
@@ -2694,7 +2709,7 @@ export function BehaviorTab({
               label={t("editor.signaturePreview", "Preview")}
               description={t(
                 "editor.signaturePreviewHint",
-                "One message, with example values for the variables. The gap or the -- below is what the separator puts between the two.",
+                "One message. Your agent and company names are the real ones; the contact details are examples. The gap or the -- below is what the separator puts between the two.",
               )}
             >
               {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
@@ -2706,7 +2721,7 @@ export function BehaviorTab({
                 {signaturePreviewParts(
                   signature,
                   t,
-                  SIGNATURE_PREVIEW_VARS,
+                  signatureVars,
                   signaturePreviewOpts,
                 ).map((part, i) => (
                   <div key={part}>

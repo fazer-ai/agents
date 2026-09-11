@@ -3837,6 +3837,7 @@ function AgentEditor() {
             {tab === "behavior" && (
               <BehaviorTab
                 agentId={id}
+                agentName={name}
                 langfuseSendContent={langfuseSendContent}
                 savedObservability={savedObservability}
                 hours={hours}

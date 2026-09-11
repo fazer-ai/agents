@@ -1398,7 +1398,7 @@
     "signaturePositionHint": "Where it goes in the message.",
     "signaturePreview": "Preview",
     "signaturePreviewBody": "Hi {{primeiro_nome}}, all set here. Any questions, just ask.",
-    "signaturePreviewHint": "One message, with example values for the variables. The gap or the -- below is what the separator puts between the two.",
+    "signaturePreviewHint": "One message. Your agent and company names are the real ones; the contact details are examples. The gap or the -- below is what the separator puts between the two.",
     "signatureSeparator": "Separator",
     "signatureSeparatorHint": "What sits between the message and the signature.",
     "signatureSepBlank": "A blank line",

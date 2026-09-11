@@ -1435,7 +1435,7 @@
     "signaturePositionHint": "Onde ela entra na mensagem.",
     "signaturePreview": "Prévia",
     "signaturePreviewBody": "Oi, {{primeiro_nome}}! Tudo certo por aqui. Qualquer dúvida, é só chamar.",
-    "signaturePreviewHint": "Uma mensagem, com valores de exemplo nas variáveis. O espaço ou o -- abaixo é o que o separador põe entre as duas partes.",
+    "signaturePreviewHint": "Uma mensagem. O nome do agente e o da empresa são os seus; os dados do contato são exemplos. O espaço ou o -- abaixo é o que o separador põe entre as duas partes.",
     "signatureSeparator": "Separador",
     "signatureSeparatorHint": "O que fica entre a mensagem e a assinatura.",
     "signatureSepBlank": "Uma linha em branco",

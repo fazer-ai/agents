@@ -48,6 +48,7 @@ function renderWithProvider(
       followUpSteps: [],
     },
     agentId: "1",
+    agentName: "Recepção",
     hours: [],
     businessHoursId: "",
     setBusinessHoursId: noop,

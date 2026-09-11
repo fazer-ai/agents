@@ -129,6 +129,7 @@ function renderContactAuth(
         followUpSteps: [],
       },
       agentId: "1",
+      agentName: "Recepção",
       hours: [],
       businessHoursId: "",
       setBusinessHoursId: noop,

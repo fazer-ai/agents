@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
-  SIGNATURE_PREVIEW_VARS,
   signaturePreviewParts,
+  signaturePreviewVars,
 } from "@/client/pages/agents/BehaviorTab";
 import {
   PROMPT_CONTEXT_VARS,
+  PROMPT_PREVIEW_AGENT,
+  PROMPT_PREVIEW_COMPANY,
   PROMPT_PREVIEW_CONTACT,
   PROMPT_SCHEDULE_VARS_DISPLAY,
   type PromptRenderOpts,
@@ -45,11 +47,14 @@ const OPTS: PromptRenderOpts = {
   now: new Date("2026-09-14T13:00:00Z"),
 };
 
-function preview(text: string): string {
+// No names given: the stand-ins, which is the editor with an agent still being named.
+const FALLBACK_VARS = signaturePreviewVars();
+
+function preview(text: string, vars = FALLBACK_VARS): string {
   return signaturePreviewParts(
     { ...SIGNATURE_DEFAULTS, text },
     t,
-    SIGNATURE_PREVIEW_VARS,
+    vars,
     OPTS,
   ).join("\n");
 }
@@ -72,9 +77,7 @@ describe("the signature preview answers every variable the field offers", () => 
   });
 
   test("the example map itself carries every context name", () => {
-    const missing = PROMPT_CONTEXT_VARS.filter(
-      (v) => !(v in SIGNATURE_PREVIEW_VARS),
-    );
+    const missing = PROMPT_CONTEXT_VARS.filter((v) => !(v in FALLBACK_VARS));
     expect(missing).toEqual([]);
   });
 });
@@ -88,7 +91,7 @@ describe("the tab passes the render options to its preview", () => {
     expect(at).toBeGreaterThan(-1);
     const call = SOURCE.slice(at, SOURCE.indexOf(").map(", at));
     // Four arguments: the state, `t`, the example variables, and the options.
-    expect(call).toContain("SIGNATURE_PREVIEW_VARS");
+    expect(call).toContain("signatureVars");
     expect(call).toContain("signaturePreviewOpts");
   });
 
@@ -135,5 +138,45 @@ describe("the editor's previews speak to one example person", () => {
       ...(/contactName: "/.test(src) ? [`${name}: sample name`] : []),
     ]);
     expect(offenders).toEqual([]);
+  });
+});
+
+// THE OPERATOR'S OWN AGENT SIGNS THE PREVIEW.
+//
+// The acceptance run's note on the first version: the preview resolved `{{nome_agente}}` to a
+// stand-in, so the operator read a message their agent would never send. A signature is mostly
+// those two names, which makes a stand-in there the one place an example costs something.
+describe("the preview signs with the operator's own names", () => {
+  const vars = signaturePreviewVars("Recepção", "Clínica Moreira");
+
+  test("the agent and the company come from the editor, not the stand-ins", () => {
+    // The joined parts are the signature AND the example body, so read the signature's line.
+    expect(
+      preview("{{nome_agente}}, {{nome_empresa}}", vars).split("\n")[0],
+    ).toBe("Recepção, Clínica Moreira");
+  });
+
+  // An agent still being named, or a tenant with no company set, still has to preview SOMETHING.
+  test("blank names fall back to the stand-ins", () => {
+    const blank = signaturePreviewVars("   ", null);
+    expect(
+      preview("{{nome_agente}}, {{nome_empresa}}", blank).split("\n")[0],
+    ).toBe(`${PROMPT_PREVIEW_AGENT}, ${PROMPT_PREVIEW_COMPANY}`);
+  });
+
+  // The contact stays an example in both cases: it is the half the editor cannot know.
+  test("the contact is the shared example either way", () => {
+    expect(preview("{{nome_contato}}", vars)).toContain(
+      PROMPT_PREVIEW_CONTACT.contactName,
+    );
+  });
+
+  // The call site has to hand the component's live map over, not rebuild a fixed one beside it.
+  test("the tab passes the live map to its preview", () => {
+    const at = SOURCE.indexOf("const signatureVars =");
+    expect(at).toBeGreaterThan(-1);
+    const decl = SOURCE.slice(at, at + 120);
+    expect(decl).toContain("agentName");
+    expect(decl).toContain("tenantName");
   });
 });

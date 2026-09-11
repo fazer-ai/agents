@@ -36,6 +36,11 @@ export interface RenderableMessage {
   // the agent understands the customer reacted (vs sent the emoji as a message) and can decide whether
   // to respond. Mirrors the audio/image markers.
   isReaction?: boolean;
+  // NOTE: The email's Subject header (issue #598), from the message's own
+  // `content_attributes.email.subject`. Only an email channel writes that bag, so the field being
+  // present IS the channel gate and nothing here has to ask what channel it is on. Absent/null on
+  // every other channel, which renders exactly as before.
+  emailSubject?: string | null;
 }
 
 // The same job as renderInboundMessage, for the OTHER direction: one message a human agent sent,
@@ -96,6 +101,11 @@ export function renderInboundMessage(
       : "";
     return `<reação do cliente emoji="${emoji}"${para}>`;
   }
+  // NOTE: Collapsed, never clipped. Folded across lines it would stop being the FIRST LINE of the
+  // message, which is the whole point; clipped it would lose the request, because on this channel
+  // the subject IS frequently the request — the case in the issue runs to 237 characters and its
+  // operative half ("recuperar o acesso à minha conta") is the tail.
+  const subject = (m.emailSubject ?? "").replace(/\s+/g, " ").trim();
   const imageDescription = (m.imageDescription ?? "").trim();
   const extractedText = (m.extractedText ?? "").trim();
   let body: string;
@@ -139,6 +149,10 @@ export function renderInboundMessage(
       ? ` chamado '${m.attachmentName.trim()}'`
       : "";
     body = `<usuário enviou um arquivo do tipo '${ty}'${named}; não foi possível extrair o conteúdo>`;
+  } else if (subject) {
+    // The subject is the whole message. An email whose body is empty or a client footer is NOT a
+    // blank message, and the branch below would have dropped the turn with the request in it.
+    body = "";
   } else {
     return ""; // nothing renderable → skip
   }
@@ -149,6 +163,12 @@ export function renderInboundMessage(
       const snippet = clipText(quoted.replace(/\s+/g, " ").trim(), QUOTE_MAX);
       if (snippet) body = `<em resposta a: "${snippet}">\n${body}`;
     }
+  }
+  // OUTERMOST, and after the quote marker for that reason: the quote is context for the body, the
+  // subject is the envelope both sit in — and an email client shows it above everything else.
+  if (subject) {
+    const marker = `<assunto>${subject}</assunto>`;
+    body = body ? `${marker}\n${body}` : marker;
   }
   return body;
 }

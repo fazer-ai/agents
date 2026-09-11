@@ -1,5 +1,9 @@
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
-import { firstLocationAttachment, messageTypeOf } from "./normalize";
+import {
+  emailSubjectFrom,
+  firstLocationAttachment,
+  messageTypeOf,
+} from "./normalize";
 import {
   cleanTranscription,
   type RenderableLocation,
@@ -37,6 +41,9 @@ export interface ChatwootMessageRow {
   inReplyTo: number | null;
   // content_attributes.is_reaction — true when this message is an emoji reaction (content = emoji).
   isReaction: boolean;
+  // NOTE: The email's Subject header (issue #598), from `content_attributes.email.subject`. Null on
+  // every message no mailbox wrote, which is every message on every other channel.
+  emailSubject: string | null;
   // The name the send gave itself on the way out (issue #499), when this message is one of ours and
   // the sender asked for one. Null on every message nobody named: everything inbound, everything a
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
@@ -159,6 +166,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,
+      emailSubject: emailSubjectFrom(ca),
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.
@@ -198,14 +206,32 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
     location: row.location,
     inReplyTo: row.inReplyTo,
     isReaction: row.isReaction,
+    emailSubject: row.emailSubject,
   };
+}
+
+// CAN THIS MESSAGE BE ANSWERED AT ALL — asked in three places that have to agree: the one branch
+// `renderInboundMessage` returns "" on, the debounce burst (`pendingIncoming`) and the supersede
+// gate (`maxIncomingId`). It used to be spelled three times as "text OR an attachment", and the
+// email subject (issue #598) is exactly the shape that separates the copies if one is updated and
+// another is not: the burst would drop the message the renderer had just learned to read. One
+// function, three callers, and a fence test that walks the shapes and asserts they answer alike.
+export function hasAnswerableContent(
+  m: Pick<ChatwootMessageRow, "content" | "attachmentTypes" | "emailSubject">,
+): boolean {
+  return (
+    m.content.trim().length > 0 ||
+    m.attachmentTypes.length > 0 ||
+    (m.emailSubject ?? "").trim().length > 0
+  );
 }
 
 // The highest incoming, non-private, RENDERABLE message id in a fetched page (or `floor` if none).
 // The supersede gates (debounce flush AND the direct path) compare it against the id a turn is
-// answering to detect a mid-turn arrival. Renderable uses the SAME criterion as pendingIncoming
-// (text OR an attachment): a voice note / image / file carries empty content, and treating it as
-// "no new input" let a stale turn post its reply over a customer who had already moved on.
+// answering to detect a mid-turn arrival. Renderable is `hasAnswerableContent`, the same predicate
+// pendingIncoming asks: a voice note / image / file carries empty content, and so does an email
+// whose request is in the subject — treating either as "no new input" let a stale turn post its
+// reply over a customer who had already moved on.
 export function maxIncomingId(
   messages: ChatwootMessageRow[],
   floor: number,
@@ -215,7 +241,7 @@ export function maxIncomingId(
     if (
       m.messageType === "incoming" &&
       !m.private &&
-      (m.content.trim().length > 0 || m.attachmentTypes.length > 0) &&
+      hasAnswerableContent(m) &&
       m.id > max
     ) {
       max = m.id;
@@ -225,8 +251,8 @@ export function maxIncomingId(
 }
 
 // The incoming, non-private, RENDERABLE customer messages whose id is beyond the watermark — the
-// burst a flush must answer. Renderable = has text OR an attachment (audio/image/file), so a voice
-// note (empty content) is included. `watermark` null ⇒ everything in the fetched page.
+// burst a flush must answer. Renderable is `hasAnswerableContent`, so a voice note (empty content)
+// and a subject-only email are both included. `watermark` null ⇒ everything in the fetched page.
 export function pendingIncoming(
   messages: ChatwootMessageRow[],
   watermark: number | null,
@@ -235,7 +261,7 @@ export function pendingIncoming(
     (m) =>
       m.messageType === "incoming" &&
       !m.private &&
-      (m.content.trim().length > 0 || m.attachmentTypes.length > 0) &&
+      hasAnswerableContent(m) &&
       (watermark === null || m.id > watermark),
   );
 }

@@ -239,6 +239,9 @@ export function normalizeChatwootEvent(
       // The content is the emoji; in_reply_to points at the message it reacts to.
       isReaction: ca?.is_reaction === true,
       externalSenderName: ca ? str(ca.external_sender_name) : null,
+      // NOTE: The Subject header of an inbound email (issue #598). Read through the shared reader so
+      // the delivered event and the REST page cannot disagree about what the subject is.
+      emailSubject: emailSubjectFrom(ca),
       imported: ca?.imported === true,
     };
   }
@@ -812,7 +815,24 @@ export function incomingRenderable(
     location: firstLocationAttachment(n.message?.attachments),
     inReplyTo: n.message?.inReplyTo,
     isReaction: n.message?.isReaction,
+    emailSubject: n.message?.emailSubject,
   };
+}
+
+// The Subject header the mailbox wrote into `content_attributes.email` (MailboxSanitizer sets
+// `email: processed_mail.serialized_data`, and MailPresenter#serialized_data carries `subject`).
+// Read as a STRING and nothing else: the bag is shared with whatever else writes there, and a value
+// of another shape is somebody's colliding key, not a subject. Shared by both readers of the bag so
+// the REST page and the delivered event cannot disagree about it.
+export function emailSubjectFrom(
+  contentAttributes: Record<string, unknown> | null | undefined,
+): string | null {
+  const email = isRecord(contentAttributes?.email)
+    ? contentAttributes.email
+    : null;
+  const subject = email?.subject;
+  if (typeof subject !== "string") return null;
+  return subject.trim() ? subject : null;
 }
 
 export function firstLocationAttachment(

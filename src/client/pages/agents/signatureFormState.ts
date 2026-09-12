@@ -14,9 +14,20 @@ import type { SignatureState } from "./BehaviorTab";
 // instead of two copies that drift the first time one of them is edited.
 export function signatureToForm(settings: unknown): SignatureState {
   const c = readSignatureConfig(settings);
+  const bag = (settings as { signature?: { text?: unknown } } | null)
+    ?.signature;
+  const storedText = typeof bag?.text === "string" ? bag.text : "";
   return {
     enabled: c.enabled,
-    text: c.text,
+    // THE RAW STORED TEXT, not the reader's copy, and this is the one place the pair must NOT
+    // defer to it. `readSignatureConfig` clamps to `SIGNATURE_MAX` because that is what the
+    // customer receives; an editor that clamps too shows a truncated copy of a signature stored
+    // before the cap existed, and the next save of any unrelated field on the page writes that
+    // copy over the original. Silent, permanent, and the same loss this feature is about.
+    // The boundary already assumes the form gives back what was stored:
+    // `collectOversizedTextChanges` lets an oversized value through exactly when it is UNCHANGED.
+    // Found in review of #613.
+    text: storedText,
     position: c.position,
     separator: c.separator,
   };

@@ -6,6 +6,7 @@ import {
   signatureToStored,
 } from "@/client/pages/agents/signatureFormState";
 import { PROMPT_CONTEXT_VARS } from "@/graph/prompt";
+import { SIGNATURE_MAX } from "@/modules/agents/text-caps";
 
 // THE SCREEN'S HALF OF #612, which the mutation battery found uncovered: every property below
 // survived a mutant while the rule lived inline in the page. Each test here is one of those
@@ -145,5 +146,42 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
     );
     expect(named.length).toBeGreaterThan(0);
     expect(named.filter((n) => !PROMPT_CONTEXT_VARS.includes(n))).toEqual([]);
+  });
+});
+
+// AN OVERSIZED SIGNATURE ALREADY IN THE BAG SURVIVES AN UNRELATED SAVE.
+//
+// Round 1 of the review on #613. `readSignatureConfig` clamps the text to `SIGNATURE_MAX` because
+// that is what the customer receives; the EDITOR must not, or an agent whose stored signature is
+// longer than the cap opens the tab showing a truncated copy, and the next save of any other field
+// on the page writes that copy over the original. Silent, permanent, and the same loss this issue
+// exists to prevent, arriving through the screen instead of through the switch.
+//
+// The boundary already has the matching rule: `collectOversizedTextChanges` lets an oversized value
+// through when it is UNCHANGED, which only works if the form gives back what was stored.
+describe("a stored signature longer than the cap", () => {
+  const LONG = "x".repeat(SIGNATURE_MAX + 100);
+
+  test("hydrates whole, not clamped", () => {
+    expect(signatureToForm({ signature: { text: LONG } }).text).toBe(LONG);
+  });
+
+  test("round-trips byte for byte, so an untouched save is a no-op", () => {
+    const bag = {
+      enabled: true,
+      text: LONG,
+      position: "bottom" as const,
+      separator: "--" as const,
+    };
+    expect(signatureToStored(signatureToForm({ signature: bag }))).toEqual(bag);
+  });
+
+  // And it survives the switch, which is the state an operator is most likely to be in when they
+  // meet this: turning a long signature off for a while.
+  test("turning it off and on again does not shorten it", () => {
+    const form = signatureToForm({ signature: { text: LONG } });
+    expect(signatureOnToggle(signatureOnToggle(form, false), true).text).toBe(
+      LONG,
+    );
   });
 });

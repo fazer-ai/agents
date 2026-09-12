@@ -179,6 +179,7 @@ function renderContactAuth(
       },
       setSplit: noop,
       signature: {
+        enabled: false,
         text: "",
         position: "top" as const,
         separator: "blank" as const,

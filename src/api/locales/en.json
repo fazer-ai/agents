@@ -129,6 +129,7 @@
     "invalidRequestValue": "The value sent in {{field}} is not valid.",
     "invalidSecretType": "That secret type is not valid.",
     "invalidSetupToken": "Invalid or missing setup token",
+    "invalidSignatureSwitch": "`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.",
     "invalidSiteUrl": "Invalid website URL",
     "invalidSupportEmail": "Invalid support e-mail",
     "invalidTimezone": "Unknown timezone: {{timezone}}.",

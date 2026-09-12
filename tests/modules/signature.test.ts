@@ -163,7 +163,8 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
 });
 
 describe("signatureFor: on or off, and the variables", () => {
-  const cfg = { ...SIGNATURE_DEFAULTS, text: SIG };
+  // `enabled: true` since #612: these cases are about what an ON signature renders.
+  const cfg = { ...SIGNATURE_DEFAULTS, enabled: true, text: SIG };
 
   test("one text, on every channel: the config carries no channel at all", () => {
     // Deliberate, and the shape a later version would take is why. A channels ALLOWLIST answers only
@@ -172,6 +173,7 @@ describe("signatureFor: on or off, and the variables", () => {
     // channel, and an allowlist is not a step toward it, it is a field that would be migrated away.
     expect(signatureFor(cfg)).toBe(SIG);
     expect(Object.keys(SIGNATURE_DEFAULTS).sort()).toEqual([
+      "enabled",
       "position",
       "separator",
       "text",
@@ -222,9 +224,19 @@ describe("readSignatureConfig", () => {
   test("it reads what the operator wrote", () => {
     expect(
       readSignatureConfig({
-        signature: { text: `  ${SIG}  `, position: "bottom", separator: "--" },
+        signature: {
+          enabled: true,
+          text: `  ${SIG}  `,
+          position: "bottom",
+          separator: "--",
+        },
       }),
-    ).toEqual({ text: SIG, position: "bottom", separator: "--" });
+    ).toEqual({
+      enabled: true,
+      text: SIG,
+      position: "bottom",
+      separator: "--",
+    });
   });
 
   test("a value of another shape falls back instead of travelling", () => {
@@ -392,6 +404,7 @@ describe("the render options travel with the variables (review of #599)", () => 
     // off `opts`, so a caller that passed only the vars rendered this literally to the customer.
     const cfg = {
       ...SIGNATURE_DEFAULTS,
+      enabled: true,
       text: "— Gi · {{horario_atendimento}}",
     };
     const schedule = {
@@ -411,7 +424,11 @@ describe("the render options travel with the variables (review of #599)", () => 
     // cannot answer must stay visible so the operator sees it, which is the prompt's own rule.
     expect(
       signatureFor(
-        { ...SIGNATURE_DEFAULTS, text: "— {{horario_atendimento}}" },
+        {
+          ...SIGNATURE_DEFAULTS,
+          enabled: true,
+          text: "— {{horario_atendimento}}",
+        },
         {},
       ),
     ).toBe("— {{horario_atendimento}}");
@@ -467,5 +484,93 @@ describe("the dedupe asks for a whole line, not a prefix", () => {
   // And a reply that is nothing but the signature is signed, with no boundary to find.
   test("a reply that is only the signature is already signed", () => {
     expect(sign("Ana", "Ana", "bottom")).toEqual(["Ana"]);
+  });
+});
+
+// ===== #612: THE SWITCH =====
+//
+// Written against the ISSUE, before the fix, and before reading the sealed scenarios in detail.
+// Three properties the issue states, each of which loses operator data if it is wrong.
+describe("turning the signature off without deleting it (#612)", () => {
+  const SIG = "Atenciosamente,\nAlex | Minha Empresa";
+
+  // THE POINT OF THE WHOLE ISSUE. Off has to be a state, not an erasure.
+  test("off keeps the text, and on gives it back byte for byte", () => {
+    const on = { ...SIGNATURE_DEFAULTS, enabled: true, text: SIG };
+    const off = { ...on, enabled: false };
+    expect(signatureFor(off)).toBeNull();
+    expect(off.text).toBe(SIG);
+    expect(signatureFor({ ...off, enabled: true })).toBe(SIG);
+  });
+
+  // An enabled block with nothing written signs nothing: an operator who has not finished, not an
+  // error. Both answers are needed before a customer sees anything.
+  test("on with an empty text still signs nothing", () => {
+    expect(
+      signatureFor({ ...SIGNATURE_DEFAULTS, enabled: true, text: "" }),
+    ).toBeNull();
+    expect(
+      signatureFor({ ...SIGNATURE_DEFAULTS, enabled: true, text: "   " }),
+    ).toBeNull();
+  });
+
+  // THE MIGRATION PROPERTY, and the one that silently destroys work if it is wrong. Every agent
+  // configured under #599 has text and no flag, and meant ON. Reading the absence as off would
+  // unsign all of them on the next load, with nobody touching anything.
+  describe("a bag written before the switch existed", () => {
+    test("text and no flag reads as on", () => {
+      const cfg = readSignatureConfig({
+        signature: { text: SIG, position: "bottom", separator: "--" },
+      });
+      expect(cfg.enabled).toBe(true);
+      // and it still signs, which is the part the customer sees
+      expect(signatureFor(cfg)).toBe(SIG);
+    });
+
+    test("no text and no flag reads as off", () => {
+      expect(readSignatureConfig({ signature: { text: "" } }).enabled).toBe(
+        false,
+      );
+      expect(
+        readSignatureConfig({ signature: { text: "  \n " } }).enabled,
+      ).toBe(false);
+    });
+
+    test("no signature block at all is off", () => {
+      expect(readSignatureConfig({}).enabled).toBe(false);
+      expect(readSignatureConfig(null).enabled).toBe(false);
+    });
+  });
+
+  // An explicit flag is the operator's own answer and is never second-guessed from the text.
+  test("an explicit flag wins over the text, in both directions", () => {
+    expect(
+      readSignatureConfig({ signature: { enabled: false, text: SIG } }).enabled,
+    ).toBe(false);
+    expect(
+      readSignatureConfig({ signature: { enabled: true, text: "" } }).enabled,
+    ).toBe(true);
+  });
+
+  // A non-boolean is not an answer: it falls back to the same reading as an absent flag, the way
+  // every other field in this reader falls back rather than travelling.
+  test("a flag of another shape falls back instead of travelling", () => {
+    const cfg = readSignatureConfig({
+      signature: { enabled: "yes", text: SIG },
+    });
+    expect(cfg.enabled).toBe(true);
+    expect(
+      readSignatureConfig({ signature: { enabled: 0, text: "" } }).enabled,
+    ).toBe(false);
+  });
+
+  test("the defaults carry the switch, off", () => {
+    expect(SIGNATURE_DEFAULTS.enabled).toBe(false);
+    expect(Object.keys(SIGNATURE_DEFAULTS).sort()).toEqual([
+      "enabled",
+      "position",
+      "separator",
+      "text",
+    ]);
   });
 });

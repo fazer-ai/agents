@@ -341,6 +341,22 @@ export class DebugWindowTooLongError extends AppError {
   }
 }
 
+// The signature's switch, refused at the write rather than normalised in the reader (#612). Its
+// value is the only thing that says whether an agent is signing, and a reader that quietly maps
+// `"sim"` onto a boolean leaves GET echoing `"sim"` while the runtime signs: two answers to one
+// question, and the API's is the wrong one. The acceptance run measured exactly that.
+export class InvalidSignatureSwitchError extends AppError {
+  constructor(got: string) {
+    super(
+      `signature.enabled must be a boolean, got ${got}`,
+      400,
+      "errors.invalidSignatureSwitch",
+      { got },
+      "signature.enabled",
+    );
+  }
+}
+
 export class InvalidToolPreconditionError extends AppError {
   constructor(toolName: string) {
     super(
@@ -715,6 +731,27 @@ export function assertSettingsModelFallback(
   );
 }
 
+// REFUSED AT THE BOUNDARY, and only when this write introduces or changes it, the way every other
+// rule in this family is scoped: a stored bad value must not freeze a save that edits some other
+// section. `undefined` is not a bad value, it is the pre-#612 bag, and the reader answers it from
+// the text.
+export function assertSettingsSignature(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const next = rawSignatureEnabled(settings);
+  if (next === undefined || typeof next === "boolean") return;
+  if (next === rawSignatureEnabled(stored)) return;
+  throw new InvalidSignatureSwitchError(next === null ? "null" : typeof next);
+}
+
+function rawSignatureEnabled(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return undefined;
+  const sg = (settings as Record<string, unknown>).signature;
+  if (!sg || typeof sg !== "object") return undefined;
+  return (sg as Record<string, unknown>).enabled;
+}
+
 export function assertSettingsDebugWindow(
   settings: unknown,
   stored: unknown,
@@ -969,6 +1006,7 @@ export async function updateAgent(
     assertSettingsTextSizes(rest.settings, before?.settings);
     assertSettingsDebugWindow(rest.settings, before?.settings);
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
+    assertSettingsSignature(rest.settings, before?.settings);
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
@@ -1190,6 +1228,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsTextSizes(input.settings, undefined);
   assertSettingsDebugWindow(input.settings, undefined);
   assertSettingsModelFallback(input.settings, undefined, "replace");
+  assertSettingsSignature(input.settings, undefined);
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);

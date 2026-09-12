@@ -194,10 +194,11 @@ const split = z.looseObject({
 });
 
 const signature = z.looseObject({
-  text: z
-    .string()
+  enabled: z
+    .boolean()
     .optional()
-    .describe('the operator\'s closing line; "" is off'),
+    .describe("off by default; off keeps the text"),
+  text: z.string().optional().describe("the operator's closing line"),
   position: z.enum(["top", "bottom"]).optional().describe("default top"),
   separator: z
     .enum(["blank", "--"])

@@ -562,7 +562,12 @@ describe("MCP tool descriptions", () => {
   // The first draft of the block had a fourth field, a `channels` allowlist, and it cost 331. It was
   // dropped for a product reason rather than this one (docs/signature.md says why), and the ceiling
   // came back down with it instead of being left as slack: a ratchet that keeps the headroom of a
-  // feature that shipped smaller is a ratchet that has stopped measuring. 56,960 measured, same 16.
+  // feature that shipped smaller is a ratchet that has stopped measuring.
+  //
+  // RAISED AGAIN to 57,043 by `signature.enabled` (#612), the block's fourth field. 51 characters for
+  // a boolean a client cannot otherwise discover, and without which an MCP client can only turn the
+  // signature off by deleting the operator's text, which is the loss the field exists to prevent.
+  // 57,027 measured, same 16 of headroom.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -572,7 +577,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_432);
-    expect(schema).toBeLessThanOrEqual(56_976);
+    expect(schema).toBeLessThanOrEqual(57_043);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

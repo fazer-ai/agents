@@ -138,6 +138,7 @@ import {
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
+import { signatureToForm, signatureToStored } from "./signatureFormState";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -385,7 +386,6 @@ function readBehaviorState(a: Agent) {
   const st = (s.stt ?? {}) as Record<string, unknown>;
   const tt = (s.tts ?? {}) as Record<string, unknown>;
   const sp = (s.split ?? {}) as Record<string, unknown>;
-  const sg = (s.signature ?? {}) as Record<string, unknown>;
   const sw = (s.serviceWindow ?? {}) as Record<string, unknown>;
   const vi = (s.vision ?? {}) as Record<string, unknown>;
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
@@ -463,12 +463,7 @@ function readBehaviorState(a: Agent) {
       typingWpm: num(sp.typingWpm) || "250",
       maxDelayMs: num(sp.maxDelayMs) || "8000",
     },
-    signature: {
-      text: str(sg.text),
-      position:
-        sg.position === "bottom" ? ("bottom" as const) : ("top" as const),
-      separator: sg.separator === "--" ? ("--" as const) : ("blank" as const),
-    },
+    signature: signatureToForm(s),
     serviceWindow: {
       enabled: typeof sw.enabled === "boolean" ? sw.enabled : true,
       windowHours: num(sw.windowHours) || "24",
@@ -829,6 +824,7 @@ function AgentEditor() {
   });
   // The operator's closing line. Mirrors modules/signature (off by default, `top`, `blank`).
   const [signature, setSignature] = useState({
+    enabled: false,
     text: "",
     position: "top" as "top" | "bottom",
     separator: "blank" as "blank" | "--",
@@ -1736,11 +1732,7 @@ function AgentEditor() {
         typingWpm: Number(split.typingWpm) || 250,
         maxDelayMs: Number(split.maxDelayMs) || 8000,
       },
-      signature: {
-        text: signature.text.trim(),
-        position: signature.position,
-        separator: signature.separator,
-      },
+      signature: signatureToStored(signature),
       serviceWindow: {
         enabled: serviceWindow.enabled,
         windowHours: Number(serviceWindow.windowHours) || 24,

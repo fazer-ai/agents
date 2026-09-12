@@ -203,6 +203,24 @@ export function alreadySigned(
   return text.endsWith(s) && text[text.length - s.length - 1] === "\n";
 }
 
+// THE SAME CUT `splitReplyParts` MAKES, and the same trim, because everything this module compares
+// a balloon against has been through it. Kept in one place: the two callers below would otherwise
+// be two spellings of the splitter's rule, and a module whose whole subject is what the split does
+// to a signature cannot afford a second, drifting copy of it.
+function paragraphsOf(signature: string): string[] {
+  return signature
+    .trim()
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+}
+
+// The signature as the splitter would have left it: paragraphs trimmed, rejoined with a plain
+// blank line, which is exactly what the `maxChunks` merge does to the model's own copy.
+function normalizeParagraphs(signature: string): string {
+  return paragraphsOf(signature).join("\n\n");
+}
+
 // WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the signature it wrote SPANS A BLANK LINE.
 //
 // This is #599's split-boundary defect seen from the other side. A signature containing a blank
@@ -233,12 +251,7 @@ function copyRun(
   whole?: string,
 ): Set<number> {
   const out = new Set<number>();
-  // The same cut `splitReplyParts` makes, because the fragments this is looking for are its output.
-  const parts = signature
-    .trim()
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
+  const parts = paragraphsOf(signature);
   // One paragraph is the per-balloon check's own case, and it answers it better: with the line
   // boundary, against the balloon as it stands.
   if (parts.length < 2) return out;
@@ -297,8 +310,18 @@ export function attachSignature(
     // balloon, which is the failure this feature exists to prevent, produced by the guard against
     // its twin. The rule inside the balloon is unchanged, line boundary included.
     const own = copyRun(chunks, signature, whole);
+    // ASKED TWICE, of the signature as written and of the signature PUT THROUGH THE SPLITTER'S OWN
+    // NORMALISATION. At the `maxChunks` ceiling the overflow is merged back into the last balloon
+    // with a plain "\n\n" after each paragraph was trimmed, so a signature with an indented line
+    // arrives there without its indentation and matches nothing. `once` survives that because it
+    // asks the original; a per-balloon question cannot, so it compares like with like instead.
+    // Round 3 of the review, and the third time the trimming invariant has bitten this module.
+    const asSplit = normalizeParagraphs(signature);
     return chunks.map((c, i) =>
-      c.trim().length === 0 || own.has(i) || alreadySigned([c], signature)
+      c.trim().length === 0 ||
+      own.has(i) ||
+      alreadySigned([c], signature) ||
+      alreadySigned([c], asSplit)
         ? c
         : put(c),
     );

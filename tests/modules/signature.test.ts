@@ -878,6 +878,28 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[0]).toBe(`Resposta.\nAlex\n\n${MULTI}`);
   });
 
+  // THE maxChunks CEILING MERGES the overflow into the last balloon, and the merge rejoins the
+  // paragraphs with a plain "\n\n" after trimming each one — so a signature with an INDENTED line
+  // comes back without the indentation and matches neither the signature nor its paragraphs. That
+  // is the same trimming invariant #599 hit twice; `once` survives it because it asks the original,
+  // and the per-balloon question cannot. Round 3 of the review.
+  //
+  // The answer is to compare like with like: the balloon holds what the splitter made of the
+  // signature, so the check asks about the signature put through the same normalisation.
+  test("all: a copy merged at the ceiling is recognised despite the lost indentation", () => {
+    const INDENTED = "Alex\n\n  Minha Empresa";
+    // What `splitReplyParts` returns for this reply at maxChunks 2, measured.
+    const chunks = ["Bom dia.", "Alex\n\nMinha Empresa"];
+    expect(
+      attachSignature(
+        chunks,
+        INDENTED,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        `Bom dia.\n\n${INDENTED}`,
+      ),
+    ).toEqual([`Bom dia.\n\n${INDENTED}`, "Alex\n\nMinha Empresa"]);
+  });
+
   // THE ORIGINAL IS THE AUTHORITY, not the chunk array, which is the same rule the whole-reply
   // dedupe is built on (#599): the split TRIMS and throws the separators away, so an array can
   // reassemble into something the model never wrote. Balloons that merely look like the signature's

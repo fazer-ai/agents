@@ -649,9 +649,12 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
   });
 
   // ONE MESSAGE, ONE SIGNATURE, and a retry that spans several balloons can already contain the
-  // model's own copy inside one of them. "Some balloon was signed" is then true and not enough:
-  // with `all` every non-blank balloon is answered, so a balloon the pass left ALONE is a copy, and
-  // a message that already carries one does not get another. Round 9.
+  // model's own copy inside one of them. "Some balloon was signed" says the retry SHOULD carry one;
+  // whether it already does is `attachSignature`'s own question, asked of the retry's own text
+  // through the same normalisation the merge performs. Round 9, and round 10 is why it is that
+  // question and not "some balloon was left alone": a balloon left alone may hold a FRAGMENT of the
+  // copy rather than all of it, and a retry carrying only the fragment went out with no name on
+  // it.
   test("the consolidated retry does not add a second copy to one it already carries", async () => {
     const rec = { sent: [] as string[], typing: [] as boolean[] };
     const SIG3 = "Alex\n\n  Minha Empresa";
@@ -668,6 +671,27 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     const last = rec.sent.at(-1) ?? "";
     expect(last.split("Minha Empresa")).toHaveLength(2);
+  });
+
+  // A FRAGMENT IS NOT A COPY. The walk leaves every balloon of a multi-balloon copy alone, so an
+  // untouched balloon proves nothing about what the retry carries: here the first half of the
+  // closing already landed and the retry holds only the second, which is a message with the
+  // company on it and not the agent. Round 10.
+  test("a retry holding only a FRAGMENT of the copy still gets its signature", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG4 = "Alex\n\nSupport";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      `${SIG4}\n\nSegue o retorno.`,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG4, position: "bottom", separator: "blank", frequency: "all" },
+    );
+    expect(rec.sent.at(-1)).toContain("Alex");
   });
 
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching

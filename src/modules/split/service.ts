@@ -439,22 +439,8 @@ export async function deliverReply(
             const owedWasSigned = rawChunks
               .slice(from)
               .some((raw, k) => chunks[from + k] !== raw);
-            // ONE MESSAGE, ONE SIGNATURE. A retry spanning several balloons can already contain the
-            // model's own copy inside one of them, and then "some balloon was signed" is true and
-            // not enough. With `all` every non-blank balloon is answered — signed, or left alone
-            // because it IS a copy — so a balloon the pass did not touch is the evidence, and it is
-            // the only evidence that survives the lossy rejoin (round 9). `once` touches exactly
-            // one balloon by design, so the same reading there would call every other balloon a
-            // copy and silence a retry that should carry the closing.
-            const owedHasCopy =
-              signature?.frequency === "all" &&
-              rawChunks
-                .slice(from)
-                .some(
-                  (raw, k) => raw.trim() !== "" && chunks[from + k] === raw,
-                );
             const owed =
-              signature && owedWasSigned && !owedHasCopy
+              signature && owedWasSigned
                 ? (attachSignature(
                     [owedRaw],
                     signature.text,

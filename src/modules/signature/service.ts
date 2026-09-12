@@ -345,25 +345,34 @@ export function attachSignature(
     // line boundary into a space, and for a one-line signature that is #599's round-12 hole coming
     // back through the other door: "chame o Alex" would read as already signed and the balloon
     // would go out with no closing at all, which is worse than a second copy. Round 5.
+    // THE MODEL'S COPY AT A BALLOON'S END, seen through the normalisation the `maxChunks` merge
+    // performs: it trims each paragraph and keeps the newlines between them, so indentation and
+    // blank lines may go and every line break must stay.
+    //
+    // ON WHOLE LINES, AT AN END, never in the middle. A run matched anywhere inside is containment,
+    // and containment is how a balloon loses its own closing: with the breaks collapsed as well,
+    // the two-line signature "Alex\nSupport" equalled the one prose line "Alex Support", and
+    // "Alex Support can help with that." read as already signed (rounds 6 and 7).
     const sigLines = normalizeLines(signature);
     const sigCount = sigLines.split("\n").length;
-    // ONLY WHEN THE REPLY DOES CARRY A COPY. Without it this comparison is asked of every balloon of
-    // every reply, and two lines of ordinary text — a short list, an address — are one whitespace
-    // coincidence away from going out with no closing at all.
-    const signedSomewhere = alreadySigned(chunks, signature, whole);
-    const flatSigned = (c: string): boolean => {
-      if (!signedSomewhere) return false;
-      // ON WHOLE LINES, at one END of the balloon, which is the line boundary the exact check has.
-      // The merge this exists for puts the copy at an end or gives it the whole balloon; a run
-      // matched anywhere inside would be containment, and containment is what sends a balloon out
-      // bare because the signature's words happen to appear in it.
-      const lines = normalizeLines(c).split("\n");
+    const endRunMatches = (t: string): boolean => {
+      const lines = normalizeLines(t).split("\n");
       if (lines.length < sigCount) return false;
       return (
         lines.slice(0, sigCount).join("\n") === sigLines ||
         lines.slice(lines.length - sigCount).join("\n") === sigLines
       );
     };
+    // ASKED OF THE REPLY FIRST, and of a balloon only when the reply says there is a copy to find.
+    // Without that gate the comparison runs on every balloon of every reply, where two lines of
+    // ordinary text — a short list, an address — are one coincidence away from going out bare.
+    // `alreadySigned` answers exactly and this answers through the merge's own losses, because the
+    // rejoin that produced the balloon also produced the text this is asked about.
+    const signedSomewhere =
+      alreadySigned(chunks, signature, whole) ||
+      endRunMatches(whole ?? chunks.join("\n\n"));
+    const flatSigned = (c: string): boolean =>
+      signedSomewhere && endRunMatches(c);
     return chunks.map((c, i) =>
       c.trim().length === 0 ||
       own.has(i) ||

@@ -949,21 +949,36 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual([`Available teams:\nAlex Support\n\n${TWO_LINES}`, TWO_LINES]);
   });
 
-  // AND THE FLATTENED COMPARISON IS ONLY EVER USED on a reply whose ends say the model signed.
-  // Everywhere else a balloon of two short lines is the operator's own text — a list, an address —
-  // and a whitespace coincidence must not send it out bare. The price is a near-copy that differs
-  // from the configured signature in whitespace getting a second one, which is the trade this
-  // module makes every time: a duplicate over a missing closing.
-  test("all: without a real copy in the reply, a look-alike balloon is still signed", () => {
-    const INDENTED = "Alex\n  Support";
-    const chunks = ["Alex\nSupport", "Resposta."];
+  // THE GATE IS THE REPLY'S OWN ENDS. Without it the normalised comparison runs on every balloon of
+  // every reply, and a balloon whose last lines happen to be the signature's words — a short list,
+  // an address — goes out with no closing at all. Here the reply carries no copy at either end, so
+  // the list keeps its signature even though its own tail would have matched.
+  test("all: a list balloon keeps its signature when the reply carries no copy", () => {
+    const TWO_LINES = "Alex\n  Support";
+    const chunks = ["Times disponíveis:\nAlex\nSupport", "Resposta."];
     const out = attachSignature(
       chunks,
-      INDENTED,
+      TWO_LINES,
       { position: "bottom", separator: "blank", frequency: "all" },
       chunks.join("\n\n"),
     );
-    for (const c of out) expect(c.endsWith(INDENTED)).toBe(true);
+    for (const c of out) expect(c.endsWith(TWO_LINES)).toBe(true);
+  });
+
+  // And when the reply DOES carry one, the same comparison recognises it through the whitespace the
+  // splitter changed: the balloon is the model's own closing, indentation aside, and a second one
+  // on top of it is what this check exists to prevent.
+  test("all: a copy that differs only in whitespace is recognised", () => {
+    const INDENTED = "Alex\n  Support";
+    const chunks = ["Alex\nSupport", "Resposta."];
+    expect(
+      attachSignature(
+        chunks,
+        INDENTED,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        chunks.join("\n\n"),
+      ),
+    ).toEqual(["Alex\nSupport", `Resposta.\n\n${INDENTED}`]);
   });
 
   // A COPY IN THE MIDDLE is reached by no walk, because the walks start at the ends. The exact

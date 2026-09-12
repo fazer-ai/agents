@@ -203,6 +203,47 @@ export function alreadySigned(
   return text.endsWith(s) && text[text.length - s.length - 1] === "\n";
 }
 
+// WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the signature it wrote SPANS A BLANK LINE.
+//
+// This is #599's split-boundary defect seen from the other side. A signature containing a blank
+// line is cut by the same paragraph rule the reply is, so its copy occupies several balloons and no
+// single one holds all of it: the per-balloon check recognises none of them, and every fragment
+// would come back with a second signature glued to it. Found in review round 1 of #617, which is
+// the second time this exact property has bitten this module.
+//
+// The whole-reply question still answers WHETHER a copy exists, because it is the only one that can
+// — and matching the signature's own paragraphs against the balloons at that END answers WHICH.
+// A run that does not match exactly (the splitter clamped or merged) claims nothing rather than
+// guessing, so the worst case is the pre-existing one: a second signature, never a missing one.
+// Scoped to a reply the whole check already calls signed, so a balloon that merely repeats one
+// paragraph of the signature in the middle of ordinary prose is prose, and gets signed.
+function copyRun(
+  chunks: string[],
+  signature: string,
+  whole?: string,
+): Set<number> {
+  const s = signature.trim();
+  // The same cut `splitReplyParts` makes, because the fragments this is looking for are its output.
+  const parts = s
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  const out = new Set<number>();
+  // One paragraph is the per-balloon check's own case, and it answers it better: with the line
+  // boundary, against the balloon as it stands.
+  if (parts.length < 2) return out;
+  if (!alreadySigned(chunks, signature, whole)) return out;
+  const text = (whole ?? chunks.join("\n\n")).trim();
+  const atStart = text === s || (text.startsWith(s) && text[s.length] === "\n");
+  const from = atStart ? 0 : chunks.length - parts.length;
+  if (from < 0 || from + parts.length > chunks.length) return out;
+  for (let k = 0; k < parts.length; k += 1) {
+    if (chunks[from + k]?.trim() !== parts[k]) return new Set();
+  }
+  for (let k = 0; k < parts.length; k += 1) out.add(from + k);
+  return out;
+}
+
 // ATTACHES TO A CHUNK, and that is the whole design. `deliverReply` cuts the reply on /\n{2,}/, and
 // BOTH separators contain "\n\n" — so a signature concatenated onto the text BEFORE the cut becomes
 // its own balloon with `blank`, and with `--` it becomes a balloon whose entire body is `--`. At the
@@ -250,8 +291,11 @@ export function attachSignature(
     // wrong one here: a model that signed itself at the end would suppress the badge on every other
     // balloon, which is the failure this feature exists to prevent, produced by the guard against
     // its twin. The rule inside the balloon is unchanged, line boundary included.
-    return chunks.map((c) =>
-      c.trim().length === 0 || alreadySigned([c], signature) ? c : put(c),
+    const own = copyRun(chunks, signature, whole);
+    return chunks.map((c, i) =>
+      c.trim().length === 0 || own.has(i) || alreadySigned([c], signature)
+        ? c
+        : put(c),
     );
   }
   const i = position === "top" ? 0 : chunks.length - 1;

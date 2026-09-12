@@ -511,6 +511,71 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
+  // THE CONSOLIDATED RETRY IS ONE MESSAGE, so it carries one signature (#616, review round 1 of
+  // #617). What is owed was built from chunks that ALREADY carried one each, so with `all` the
+  // retry arrived with the badge repeated inside its body — the same configuration rendering two
+  // ways depending on whether a send happened to fail, which is the defect class the
+  // attach-to-a-chunk design exists to close.
+  test("the consolidated retry carries ONE signature with frequency all", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: "Alex", position: "top", separator: "blank", frequency: "all" },
+    );
+    expect(out.failed).toBe(false);
+    expect(rec.sent).toEqual([
+      "Alex\n\nOlá!",
+      "Alex\n\nComo vai?\n\nPosso ajudar?",
+    ]);
+    expect(rec.sent[1]?.split("Alex")).toHaveLength(2);
+  });
+
+  // And `once` is untouched by that fix, in both directions: a `top` signature whose first balloon
+  // already landed must not come back on the retry, and a `bottom` one must still close it.
+  test("the consolidated retry does not re-sign a top signature already delivered", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: "Alex", position: "top", separator: "blank", frequency: "once" },
+    );
+    expect(rec.sent).toEqual(["Alex\n\nOlá!", "Como vai?\n\nPosso ajudar?"]);
+  });
+
+  test("the consolidated retry still closes with a bottom signature", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      {
+        text: "Alex",
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      },
+    );
+    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?\n\nAlex"]);
+  });
+
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
   // any occurrence reports a chunk that genuinely did not land as delivered, drops it from what is
   // owed, and truncates the reply while the turn reports `posted` — silently, which is the outcome

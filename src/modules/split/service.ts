@@ -414,13 +414,34 @@ export async function deliverReply(
               unproven = true;
             }
             const from = verdict.known && verdict.id === null ? i : i + 1;
-            const owed = chunks
+            // BUILT FROM THE RAW BALLOONS, not the signed ones, and then signed ONCE. With
+            // `frequency: "all"` every chunk already carries a signature, so joining them put the
+            // badge three times inside a single message — one configuration rendering two ways
+            // depending on whether a send happened to fail, which is the defect class
+            // attach-to-a-chunk exists to close (#616, review round 1 of #617).
+            const owedRaw = rawChunks
               .slice(from)
               .reduce(
                 (acc, c, k) => (k === 0 ? c : acc + seps[from + k] + c),
                 "",
               );
-            if (!owed) break;
+            if (!owedRaw) break;
+            // WHICH message of a turn carries it does not change because a send failed. `all` gives
+            // this one message one; `once` gives it to the one the position designates, so a `top`
+            // signature whose first balloon already landed must NOT come back on the retry, and a
+            // `bottom` one still closes it.
+            const owed =
+              signature &&
+              (signature.frequency === "all" ||
+                signature.position === "bottom" ||
+                from === 0)
+                ? (attachSignature(
+                    [owedRaw],
+                    signature.text,
+                    signature,
+                    reply,
+                  )[0] ?? owedRaw)
+                : owedRaw;
             // The retry is a send like any other, so it names itself like any other: it carries the
             // same 15s deadline and can be rejected after being accepted in exactly the same way.
             const retrySendId = crypto.randomUUID();

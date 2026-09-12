@@ -811,6 +811,77 @@ describe("frequency: every message of the turn, or one of them", () => {
     }
   });
 
+  // A SIGNATURE THAT SPANS A BLANK LINE is cut by the same paragraph rule the reply is, so the
+  // model's own copy of it occupies SEVERAL balloons and no single one holds all of it. The
+  // per-balloon check therefore recognises none of them, and every fragment would get a second
+  // signature glued to it. This is #599's split-boundary defect, reintroduced by the loop that
+  // replaced the index; review round 1 of #617 caught it. The whole-reply question still answers
+  // WHETHER there is a copy, and matching its paragraphs against the edge balloons answers WHICH.
+  test("all: the model's multi-paragraph copy is left whole, and the rest is signed", () => {
+    const MULTI = "Alex\n\nMinha Empresa";
+    const fim = ["Resposta.", "Alex", "Minha Empresa"];
+    expect(
+      attachSignature(
+        fim,
+        MULTI,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        fim.join("\n\n"),
+      ),
+    ).toEqual([`Resposta.\n\n${MULTI}`, "Alex", "Minha Empresa"]);
+
+    const inicio = ["Alex", "Minha Empresa", "Resposta."];
+    expect(
+      attachSignature(
+        inicio,
+        MULTI,
+        { position: "top", separator: "blank", frequency: "all" },
+        inicio.join("\n\n"),
+      ),
+    ).toEqual(["Alex", "Minha Empresa", `${MULTI}\n\nResposta.`]);
+  });
+
+  // The guard is scoped to a reply the whole-reply check says IS signed. A balloon that merely
+  // repeats one paragraph of the signature somewhere in the middle is prose, and prose gets signed.
+  test("all: a lone paragraph that looks like half the signature is still signed", () => {
+    const MULTI = "Alex\n\nMinha Empresa";
+    const chunks = ["Bom dia.", "Alex", "Até logo."];
+    expect(
+      attachSignature(
+        chunks,
+        MULTI,
+        { position: "top", separator: "blank", frequency: "all" },
+        chunks.join("\n\n"),
+      ),
+    ).toEqual([
+      `${MULTI}\n\nBom dia.`,
+      `${MULTI}\n\nAlex`,
+      `${MULTI}\n\nAté logo.`,
+    ]);
+  });
+
+  // THE ORIGINAL IS THE AUTHORITY, not the chunk array, which is the same rule the whole-reply
+  // dedupe is built on (#599): the split TRIMS and throws the separators away, so an array can
+  // reassemble into something the model never wrote. Balloons that merely look like the signature's
+  // paragraphs, in a reply the original says was never signed, are prose — and prose gets signed.
+  test("all: balloons that reassemble into the signature are not a copy if the reply is not", () => {
+    const MULTI = "Alex\n\nMinha Empresa";
+    const chunks = ["Bom dia.", "Alex", "Minha Empresa"];
+    expect(
+      attachSignature(
+        chunks,
+        MULTI,
+        { position: "top", separator: "blank", frequency: "all" },
+        // One paragraph, cut by the SENTENCE rule: the balloons above are what it produced, and
+        // "\n\n" never appeared in what the model wrote.
+        "Bom dia. Alex Minha Empresa",
+      ),
+    ).toEqual([
+      `${MULTI}\n\nBom dia.`,
+      `${MULTI}\n\nAlex`,
+      `${MULTI}\n\nMinha Empresa`,
+    ]);
+  });
+
   // A BLANK BALLOON IS NOT SIGNED, which is the loop's version of the whole-array guard above.
   // `splitReplyParts` never emits a blank chunk, so this cannot arise from the delivery path today
   // — but `attachSignature` is a pure function other callers hand arrays to, and signing a blank

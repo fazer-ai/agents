@@ -72,6 +72,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.providerListUnreachable', 'Could not reach {{provider}} to list the options')
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
+// translate('errors.invalidSignatureSwitch', '`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
 // translate('errors.retiredLabelSetting', '`settings.{{key}}` was retired: say which labels exist and which exclude each other in the `set_labels` usage guidance.')

@@ -129,6 +129,7 @@
     "invalidRequestValue": "O valor enviado em {{field}} não é válido.",
     "invalidSecretType": "Este tipo de segredo não é válido.",
     "invalidSetupToken": "Token de configuração inválido ou ausente",
+    "invalidSignatureSwitch": "`signature.enabled` tem que ser true ou false, não {{got}}. Mande o bloco inteiro da assinatura para mudá-lo.",
     "invalidSiteUrl": "URL do site inválida",
     "invalidSupportEmail": "E-mail de suporte inválido",
     "invalidTimezone": "Fuso horário desconhecido: {{timezone}}.",

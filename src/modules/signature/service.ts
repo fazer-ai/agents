@@ -203,6 +203,12 @@ export function alreadySigned(
   return text.endsWith(s) && text[text.length - s.length - 1] === "\n";
 }
 
+// Every way the splitter can cut, trim, merge or rejoin the model's own copy differs from what it
+// wrote only in WHITESPACE, so this is the one normalisation everything below compares through.
+function flatten(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
 // WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the splitter has taken it apart.
 //
 // This is #599's split-boundary defect seen from the other side, and it arrives in more than one
@@ -230,33 +236,43 @@ function copyRun(
   whole?: string,
 ): Set<number> {
   const out = new Set<number>();
-  if (!alreadySigned(chunks, signature, whole)) return out;
   const s = signature.trim();
-  const flat = (t: string): string => t.trim().replace(/\s+/g, " ");
-  const target = flat(s);
+  const target = flatten(s);
   if (!target) return out;
   const text = (whole ?? chunks.join("\n\n")).trim();
-  // Which END the copy is at, by the same two answers `alreadySigned` gives. `top` and `bottom` are
-  // where WE put a signature, not where the model put its own, so this reads the reply rather than
-  // the config.
+  // WHICH END, asked with `alreadySigned`'s own two comparisons rather than by calling it: they ARE
+  // the gate, so a separate call in front of this would be a second copy of the same question. A
+  // reply the model never signed answers no to both, the loop below never runs, and that is what
+  // keeps the walk off prose. BOTH ends when both say yes:
+  // a model that opened and closed with the same line wrote two copies, and one walk only ever
+  // reaches one of them (round 5). `top` and `bottom` are where WE put a signature, not where the
+  // model put its own, so this reads the reply rather than the config.
   const atStart = text === s || (text.startsWith(s) && text[s.length] === "\n");
-  const order = atStart
-    ? chunks.map((_, i) => i)
-    : chunks.map((_, i) => chunks.length - 1 - i);
-  let acc = "";
-  for (const i of order) {
-    const piece = flat(chunks[i] ?? "");
-    if (!piece) break;
-    acc = atStart
-      ? acc
-        ? `${acc} ${piece}`
-        : piece
-      : acc
-        ? `${piece} ${acc}`
-        : piece;
-    if (!(atStart ? target.startsWith(acc) : target.endsWith(acc))) break;
-    out.add(i);
-    if (acc === target) break;
+  const atEnd =
+    text === s ||
+    (text.endsWith(s) && text[text.length - s.length - 1] === "\n");
+  for (const fromStart of [true, false]) {
+    if (fromStart ? !atStart : !atEnd) continue;
+    let acc = "";
+    const order = fromStart
+      ? chunks.map((_, i) => i)
+      : chunks.map((_, i) => chunks.length - 1 - i);
+    for (const i of order) {
+      // A balloon already claimed by the other end cannot also belong to this one.
+      if (out.has(i)) break;
+      const piece = flatten(chunks[i] ?? "");
+      if (!piece) break;
+      acc = fromStart
+        ? acc
+          ? `${acc} ${piece}`
+          : piece
+        : acc
+          ? `${piece} ${acc}`
+          : piece;
+      if (!(fromStart ? target.startsWith(acc) : target.endsWith(acc))) break;
+      out.add(i);
+      if (acc === target) break;
+    }
   }
   return out;
 }
@@ -309,8 +325,29 @@ export function attachSignature(
     // balloon, which is the failure this feature exists to prevent, produced by the guard against
     // its twin. The rule inside the balloon is unchanged, line boundary included.
     const own = copyRun(chunks, signature, whole);
+    // A WHOLE COPY CAN SHARE A BALLOON WITH PROSE, when the ceiling merges them, and then the
+    // balloon is neither a fragment the walk claims nor an exact match: the merge trimmed the
+    // signature's own indentation. So the per-balloon question is asked through the same
+    // normalisation — and ONLY for a signature that spans more than one line. Collapsing turns the
+    // line boundary into a space, and for a one-line signature that is #599's round-12 hole coming
+    // back through the other door: "chame o Alex" would read as already signed and the balloon
+    // would go out with no closing at all, which is worse than a second copy. Round 5.
+    const flatSig = flatten(signature);
+    const multiline = signature.trim().includes("\n");
+    const flatSigned = (c: string): boolean => {
+      if (!multiline) return false;
+      const f = flatten(c);
+      return (
+        f === flatSig ||
+        f.endsWith(` ${flatSig}`) ||
+        f.startsWith(`${flatSig} `)
+      );
+    };
     return chunks.map((c, i) =>
-      c.trim().length === 0 || own.has(i) || alreadySigned([c], signature)
+      c.trim().length === 0 ||
+      own.has(i) ||
+      alreadySigned([c], signature) ||
+      flatSigned(c)
         ? c
         : put(c),
     );

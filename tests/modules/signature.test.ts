@@ -878,6 +878,102 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[0]).toBe(`Resposta.\nAlex\n\n${MULTI}`);
   });
 
+  // A COPY IN THE MIDDLE is reached by no walk, because the walks start at the ends. The exact
+  // per-balloon check is what covers it, and that is why it is not redundant with them.
+  test("all: a balloon that IS the signature in the middle is left alone", () => {
+    const chunks = [SIG, "Resposta.", SIG, "Mais uma coisa."];
+    const out = attachSignature(
+      chunks,
+      SIG,
+      { position: "top", separator: "blank", frequency: "all" },
+      chunks.join("\n\n"),
+    );
+    expect(out[0]).toBe(SIG);
+    expect(out[2]).toBe(SIG);
+    expect(out[1]).toBe(`${SIG}\n\nResposta.`);
+    expect(out[3]).toBe(`${SIG}\n\nMais uma coisa.`);
+  });
+
+  // AND THE FLATTENED CHECK IS A BOUNDARY CHECK, not containment, for the reason the exact one is:
+  // a signature that merely APPEARS inside a sentence is prose, and reading it as a signature sends
+  // that balloon out with no closing at all.
+  test("all: a multi-line signature mentioned inside a sentence is still prose", () => {
+    const MULTI = "Alex\n\nMinha Empresa";
+    const chunks = ["Falei com Alex Minha Empresa ontem.", MULTI];
+    expect(
+      attachSignature(
+        chunks,
+        MULTI,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        chunks.join("\n\n"),
+      ),
+    ).toEqual([`Falei com Alex Minha Empresa ontem.\n\n${MULTI}`, MULTI]);
+  });
+
+  // BOTH ENDS ARE WALKED, because `alreadySigned` asks about both and a model that opened and closed
+  // with the same closing wrote two copies, each of which the splitter may have cut. Round 5.
+  test("all: a multi-balloon copy at EACH end is left whole, and only the body is signed", () => {
+    const MULTI = "Alex\n\nMinha Empresa";
+    // Measured from `splitReplyParts` on `MULTI + "\n\nResposta.\n\n" + MULTI`.
+    const chunks = [
+      "Alex",
+      "Minha Empresa",
+      "Resposta.",
+      "Alex",
+      "Minha Empresa",
+    ];
+    expect(
+      attachSignature(
+        chunks,
+        MULTI,
+        { position: "top", separator: "blank", frequency: "all" },
+        `${MULTI}\n\nResposta.\n\n${MULTI}`,
+      ),
+    ).toEqual([
+      "Alex",
+      "Minha Empresa",
+      `${MULTI}\n\nResposta.`,
+      "Alex",
+      "Minha Empresa",
+    ]);
+  });
+
+  // A WHOLE COPY CAN SHARE A BALLOON WITH PROSE, when the ceiling merges them, and then the balloon
+  // is neither a fragment nor an exact match: the merge trimmed the signature's indentation. The
+  // per-balloon question gets a whitespace-collapsed form too — but ONLY for a signature that spans
+  // more than one line. Collapsing turns the line boundary into a space, and for a one-line
+  // signature that is the round-12 hole of #599 coming back through the other door: "chame o Alex"
+  // would read as signed and the balloon would go out bare, which is worse than a second copy.
+  test("all: a whole copy merged into a balloon with prose is recognised", () => {
+    const INDENTED = "Alex\n\n  Minha Empresa";
+    // Measured from `splitReplyParts` at maxChunks 2.
+    const chunks = ["Bom dia.", "Resposta.\n\nAlex\n\nMinha Empresa"];
+    expect(
+      attachSignature(
+        chunks,
+        INDENTED,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        `Bom dia.\n\nResposta.\n\n${INDENTED}`,
+      ),
+    ).toEqual([
+      `Bom dia.\n\n${INDENTED}`,
+      "Resposta.\n\nAlex\n\nMinha Empresa",
+    ]);
+  });
+
+  test("a ONE-LINE signature is never matched with whitespace collapsed", () => {
+    // "Alex" at the end of a sentence is prose, and the line boundary is what says so. Collapsing
+    // would read this balloon as already signed and send it out with no closing at all.
+    expect(
+      attachSignature(
+        ["Se precisar, é só chamar o Alex"],
+        "Alex",
+        { position: "bottom", separator: "blank", frequency: "all" },
+        "Se precisar, é só chamar o Alex",
+      ),
+    ).toEqual(["Se precisar, é só chamar o Alex\n\nAlex"]);
+  });
+
   // A COPY AT EACH END is two copies, and the walk only ever reaches one of them: it stops the
   // moment the accumulation is the whole signature. The per-balloon question is what covers the
   // other, and it is not redundant with the walk for exactly this reason.

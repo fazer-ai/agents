@@ -203,46 +203,25 @@ export function alreadySigned(
   return text.endsWith(s) && text[text.length - s.length - 1] === "\n";
 }
 
-// THE SAME CUT `splitReplyParts` MAKES, and the same trim, because everything this module compares
-// a balloon against has been through it. Kept in one place: the two callers below would otherwise
-// be two spellings of the splitter's rule, and a module whose whole subject is what the split does
-// to a signature cannot afford a second, drifting copy of it.
-function paragraphsOf(signature: string): string[] {
-  return signature
-    .trim()
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0);
-}
-
-// The signature as the splitter would have left it: paragraphs trimmed, rejoined with a plain
-// blank line, which is exactly what the `maxChunks` merge does to the model's own copy.
-function normalizeParagraphs(signature: string): string {
-  return paragraphsOf(signature).join("\n\n");
-}
-
-// WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the signature it wrote SPANS A BLANK LINE.
+// WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the splitter has taken it apart.
 //
-// This is #599's split-boundary defect seen from the other side. A signature containing a blank
-// line is cut by the same paragraph rule the reply is, so its copy occupies several balloons and no
-// single one holds all of it: the per-balloon check recognises none of them, and every fragment
-// would come back with a second signature glued to it. Found in review round 1 of #617, which is
-// the second time this exact property has bitten this module.
+// This is #599's split-boundary defect seen from the other side, and it arrives in more than one
+// shape: a signature containing a blank line is cut by the paragraph rule, one longer than
+// `maxChars` is cut by the SENTENCE rule with no blank line involved, and at the `maxChunks`
+// ceiling the overflow is merged back with each paragraph trimmed and the original separator run
+// kept. Review rounds 1, 3 and 4 each reported one of those, which is the signal that chasing them
+// one at a time is the wrong shape: EVERY one of them differs from what the model wrote only in
+// whitespace.
 //
-// TWO QUESTIONS, and only the first can be asked of the reply as a whole. `alreadySigned` answers
-// WHETHER there is a copy, and it is the only thing that can, because the split is lossy. A balloon
-// that is ENTIRELY one paragraph of the signature then answers WHICH, on its own, without a
-// position and without a run: a balloon whose whole body is a piece of the closing is not something
-// the customer reads as content, so a second signature on it is only noise.
-//
-// A balloon that holds content AND a fragment is not one of these, and is signed like any other.
-// That case is the model gluing its closing to the last line of prose, and suppressing the
+// So there is one question, asked twice over. `alreadySigned` answers WHETHER a copy exists, on the
+// reply as it arose, exactly, and it is the only thing that can. Then the walk answers WHICH
+// balloons hold it: in from that end, over balloons that are still a suffix (or a prefix) of the
+// signature once whitespace is collapsed on both sides. It stops at the first balloon that is not,
+// which is how a balloon holding content AND a fragment keeps its own signature — suppressing the
 // signature on a balloon the customer reads as content is the failure this whole feature exists to
-// prevent — so the worst case here stays a second signature, never a missing one. Round 2 of the
-// same review asked for the fragment to be matched as a line-bounded suffix instead; that rule
-// would have skipped the balloon carrying "Resposta." along with the fragment glued to it.
+// prevent, so the worst case here stays a second signature and never a missing one.
 //
-// The `alreadySigned` gate is what keeps this off prose. A balloon reading exactly "Alex" in a
+// The `alreadySigned` gate is what keeps the walk off prose. A balloon reading exactly "Alex" in a
 // reply the model never signed is a paragraph of the operator's own text, and it gets the
 // signature like every other.
 function copyRun(
@@ -251,14 +230,34 @@ function copyRun(
   whole?: string,
 ): Set<number> {
   const out = new Set<number>();
-  const parts = paragraphsOf(signature);
-  // One paragraph is the per-balloon check's own case, and it answers it better: with the line
-  // boundary, against the balloon as it stands.
-  if (parts.length < 2) return out;
   if (!alreadySigned(chunks, signature, whole)) return out;
-  chunks.forEach((c, i) => {
-    if (parts.includes(c.trim())) out.add(i);
-  });
+  const s = signature.trim();
+  const flat = (t: string): string => t.trim().replace(/\s+/g, " ");
+  const target = flat(s);
+  if (!target) return out;
+  const text = (whole ?? chunks.join("\n\n")).trim();
+  // Which END the copy is at, by the same two answers `alreadySigned` gives. `top` and `bottom` are
+  // where WE put a signature, not where the model put its own, so this reads the reply rather than
+  // the config.
+  const atStart = text === s || (text.startsWith(s) && text[s.length] === "\n");
+  const order = atStart
+    ? chunks.map((_, i) => i)
+    : chunks.map((_, i) => chunks.length - 1 - i);
+  let acc = "";
+  for (const i of order) {
+    const piece = flat(chunks[i] ?? "");
+    if (!piece) break;
+    acc = atStart
+      ? acc
+        ? `${acc} ${piece}`
+        : piece
+      : acc
+        ? `${piece} ${acc}`
+        : piece;
+    if (!(atStart ? target.startsWith(acc) : target.endsWith(acc))) break;
+    out.add(i);
+    if (acc === target) break;
+  }
   return out;
 }
 
@@ -310,18 +309,8 @@ export function attachSignature(
     // balloon, which is the failure this feature exists to prevent, produced by the guard against
     // its twin. The rule inside the balloon is unchanged, line boundary included.
     const own = copyRun(chunks, signature, whole);
-    // ASKED TWICE, of the signature as written and of the signature PUT THROUGH THE SPLITTER'S OWN
-    // NORMALISATION. At the `maxChunks` ceiling the overflow is merged back into the last balloon
-    // with a plain "\n\n" after each paragraph was trimmed, so a signature with an indented line
-    // arrives there without its indentation and matches nothing. `once` survives that because it
-    // asks the original; a per-balloon question cannot, so it compares like with like instead.
-    // Round 3 of the review, and the third time the trimming invariant has bitten this module.
-    const asSplit = normalizeParagraphs(signature);
     return chunks.map((c, i) =>
-      c.trim().length === 0 ||
-      own.has(i) ||
-      alreadySigned([c], signature) ||
-      alreadySigned([c], asSplit)
+      c.trim().length === 0 || own.has(i) || alreadySigned([c], signature)
         ? c
         : put(c),
     );

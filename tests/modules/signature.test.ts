@@ -878,6 +878,59 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[0]).toBe(`Resposta.\nAlex\n\n${MULTI}`);
   });
 
+  // A COPY AT EACH END is two copies, and the walk only ever reaches one of them: it stops the
+  // moment the accumulation is the whole signature. The per-balloon question is what covers the
+  // other, and it is not redundant with the walk for exactly this reason.
+  test("all: a balloon that IS the signature is left alone wherever it sits", () => {
+    const chunks = [SIG, "Resposta.", SIG];
+    expect(
+      attachSignature(
+        chunks,
+        SIG,
+        { position: "top", separator: "blank", frequency: "all" },
+        chunks.join("\n\n"),
+      ),
+    ).toEqual([SIG, `${SIG}\n\nResposta.`, SIG]);
+  });
+
+  // THE SPLITTER MANGLES THE MODEL'S COPY IN MORE WAYS THAN ONE, and chasing them one at a time is
+  // how this module collected three near-identical defects. The rule below is one question asked of
+  // the whole family: with the reply's own ends saying a copy EXISTS, walk in from that end over
+  // balloons that are still a suffix (or prefix) of the signature with whitespace collapsed. Every
+  // way the splitter can cut, trim, merge or rejoin is a whitespace difference, so every one of
+  // them is the same question. Rounds 1, 3 and 4 of the review, in one place.
+  test("all: a signature the splitter cut BY SENTENCE is recognised in both balloons", () => {
+    const LONG =
+      "Atenciosamente, Alex da Minha Empresa. Estamos aqui de segunda a sexta, das nove as seis.";
+    // What `splitReplyParts` returns for this reply at maxChars 80, measured.
+    const chunks = [
+      "Atenciosamente, Alex da Minha Empresa.",
+      "Estamos aqui de segunda a sexta, das nove as seis.",
+    ];
+    expect(
+      attachSignature(
+        chunks,
+        LONG,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        LONG,
+      ),
+    ).toEqual(chunks);
+  });
+
+  test("all: a separator run the merge kept is still the same copy", () => {
+    const WIDE = "Alex\n\n\n  Minha Empresa";
+    // Measured: the merge keeps the original "\n\n\n" and trims the indentation.
+    const chunks = ["Bom dia.", "Alex\n\n\nMinha Empresa"];
+    expect(
+      attachSignature(
+        chunks,
+        WIDE,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        `Bom dia.\n\n${WIDE}`,
+      ),
+    ).toEqual([`Bom dia.\n\n${WIDE}`, "Alex\n\n\nMinha Empresa"]);
+  });
+
   // THE maxChunks CEILING MERGES the overflow into the last balloon, and the merge rejoins the
   // paragraphs with a plain "\n\n" after trimming each one — so a signature with an INDENTED line
   // comes back without the indentation and matches neither the signature nor its paragraphs. That

@@ -551,6 +551,18 @@ describe("MCP tool descriptions", () => {
   // having its save refused. REMEASURED on this base after the rebase over #543/#547/#548, never
   // summed from the earlier reading: 30,417 and 56,748 on this tree, so the ceilings are 30,432 and
   // 56,764 — the description one is #476's, untouched, and the schema one keeps the same 16.
+  //
+  // RAISED to 56,976 by the `signature` block (#599), and remeasured the same way rather than summed:
+  // 212 characters for three fields, which is what a client needs to WRITE one — the two enums publish
+  // their values, and a client that cannot see `top`/`bottom` or `blank`/`--` cannot set them. The
+  // prose that would have explained the block (why it attaches to a chunk, which sends carry it, that
+  // markdown is not converted per channel) is in `docs/signature.md` instead, where it costs no
+  // tokens on every tools/list. The description total does not move: the block adds no paragraph.
+  //
+  // The first draft of the block had a fourth field, a `channels` allowlist, and it cost 331. It was
+  // dropped for a product reason rather than this one (docs/signature.md says why), and the ceiling
+  // came back down with it instead of being left as slack: a ratchet that keeps the headroom of a
+  // feature that shipped smaller is a ratchet that has stopped measuring. 56,960 measured, same 16.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -560,7 +572,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_432);
-    expect(schema).toBeLessThanOrEqual(56_764);
+    expect(schema).toBeLessThanOrEqual(56_976);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

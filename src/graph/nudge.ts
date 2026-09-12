@@ -38,6 +38,7 @@ import {
   buildTemplatePayload,
   proactiveSendMode,
 } from "@/modules/service-window/service";
+import { attachSignature, signatureFor } from "@/modules/signature/service";
 import {
   announceSpendCeiling,
   spendCeilingVerdict,
@@ -1162,6 +1163,30 @@ export async function runAgentNudge(
   // Returns the whole decision, not just the text. What follows a screening on this path depends on
   // whether a judge ran at all and on whether it wrote anything down, and those are questions only
   // the decision answers.
+
+  // THE SAME SIGNATURE THE REACTIVE TURN APPLIES, through the same function (issue #599). Both sends
+  // below close a turn the customer will read — the handoff's closing line and the proactive message
+  // itself — and the farewell in particular is the SAME sentence `deliverText` signs on the reactive
+  // path. Signed there and bare here is the inconsistency an operator reports as a bug.
+  //
+  // A one-element array because this path sends one message: `attachSignature` is the single
+  // spelling of the rule, and "split off" is not a second rule about signatures, it is one chunk.
+  const sign = (text: string): string => {
+    const sig = signatureFor(
+      cfg.signatureConfig,
+      cfg.promptVars,
+      cfg.promptOpts,
+    );
+    if (!sig) return text;
+    const [out = text] = attachSignature(
+      [text],
+      sig,
+      cfg.signatureConfig.position,
+      cfg.signatureConfig.separator,
+    );
+    return out;
+  };
+
   const screenOutput = (text: string): Promise<GuardrailDecision> =>
     buildGuardrailGate({
       cfg: cfg.guardrails,
@@ -1220,7 +1245,7 @@ export async function runAgentNudge(
       // both answers above it are spent by the time it returns. The reply branch does exactly this.
       if (!(await stillWanted())) return "stale";
       if (sendModeNow() !== "freeform") return await noteOutsideWindow();
-      await client.sendMessage(conversationId, line2);
+      await client.sendMessage(conversationId, sign(line2));
       logger.info(
         "agentNudge handed off: conv=%s source=%s",
         String(conversationId),
@@ -1890,7 +1915,7 @@ export async function runAgentNudge(
     // where the reply can still fall through to the template/note branch below instead of being
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
-      await client.sendMessage(conversationId, screened);
+      await client.sendMessage(conversationId, sign(screened));
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
         String(conversationId),

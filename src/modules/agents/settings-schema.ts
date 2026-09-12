@@ -193,6 +193,18 @@ const split = z.looseObject({
   maxChunks: z.number().optional().describe("1-12, clamped"),
 });
 
+const signature = z.looseObject({
+  text: z
+    .string()
+    .optional()
+    .describe('the operator\'s closing line; "" is off'),
+  position: z.enum(["top", "bottom"]).optional().describe("default top"),
+  separator: z
+    .enum(["blank", "--"])
+    .optional()
+    .describe("blank = 2 newlines; -- adds a -- line. Chatwoot's own bytes"),
+});
+
 const serviceWindow = z.looseObject({
   enabled: z.boolean().optional(),
   windowHours: z.number().optional().describe("1-168, clamped"),
@@ -780,6 +792,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   tts: tts.optional(),
   vision: vision.optional(),
   split: split.optional(),
+  signature: signature.optional(),
   serviceWindow: serviceWindow.optional(),
   grounding: grounding.optional(),
   followUp: followUp.optional(),

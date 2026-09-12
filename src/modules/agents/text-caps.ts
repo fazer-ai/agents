@@ -26,6 +26,11 @@ export const TEMPLATE_MESSAGE_MAX = 2000;
 export const GENERATION_PROMPT_MAX = 2000;
 export const EXTRACTION_PROMPT_MAX = 4000;
 export const FOLLOW_UP_INSTRUCTIONS_MAX = 2000;
+// TIGHTER THAN THE TEMPLATE MESSAGES ABOVE, and for a reason those do not have: a template is read
+// once, when a gate trips, while the signature is prepended or appended to EVERY message the agent
+// closes a turn with. 500 is around six lines, which is a closing; past that it stops being a
+// signature and starts being a paragraph the customer reads again on every reply.
+export const SIGNATURE_MAX = 500;
 
 // Not a text cap: how many follow-up steps readFollowUpConfig keeps. It lives here because the walker
 // below has to stop where the reader stops — text in a step the reader discards is text nothing reads.
@@ -154,6 +159,12 @@ function cappedFields(settings: unknown): CappedField[] {
         );
       }
     }
+  }
+  // The operator's closing line (issue #599). Customer-facing copy like the two above, and clamped
+  // by readSignatureConfig the same way.
+  const signature = bagOf(root.signature);
+  if (signature) {
+    add(signature, "text", "signature.text", SIGNATURE_MAX);
   }
   const vision = bagOf(root.vision);
   if (vision) {

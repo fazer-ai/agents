@@ -335,6 +335,23 @@ export const PROMPT_CONTEXT_VARS = [
   "canal",
 ];
 
+// The example person every preview in the editor speaks to. One set, because the prompt editor and
+// the signature editor sit two clicks apart on the same agent: two different sample contacts there
+// read as two different features. Nothing in it names a real tenant — this product ships to all of
+// them, and a preview that greets a customer of one is a preview that is wrong everywhere else.
+export const PROMPT_PREVIEW_CONTACT = {
+  contactName: "Maria Silva",
+  contactEmail: "maria.silva@exemplo.com",
+  contactPhone: "+55 11 98888-7777",
+  inboxName: "WhatsApp",
+} as const;
+
+// Stand-ins for the two names the editor may not have at hand. The prompt editor overrides both
+// with the real agent and the tenant's own company; the signature editor knows neither, and says so
+// on screen instead of threading them through for a box whose job is the SHAPE.
+export const PROMPT_PREVIEW_AGENT = "Alex";
+export const PROMPT_PREVIEW_COMPANY = "Minha Empresa";
+
 // Every interpolatable name (time vars, schedule vars, and both EN/pt-BR context aliases), so the
 // editor's syntax highlighter can tell a real {{var}} from a typo. Derived from the same sources the
 // runtime uses. Exported because `tests/graph/prompt-audit.test.ts` renders one template naming ALL

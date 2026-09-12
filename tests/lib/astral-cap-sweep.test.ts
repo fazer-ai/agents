@@ -295,6 +295,19 @@ const CAPS: {
       return malformedTokenIn(`{{${s}`) ?? "";
     },
   },
+  {
+    // The operator's closing line (#599), cut on the way OUT of the settings bag. An emoji at the
+    // end of a signature is the ordinary case for this field rather than the exotic one, and an
+    // orphan half here repeats on EVERY message the agent sends instead of degrading one.
+    name: "signature: readSignatureConfig",
+    cap: 500,
+    run: async (s) => {
+      const { readSignatureConfig } = await import(
+        "@/modules/signature/service"
+      );
+      return readSignatureConfig({ signature: { text: s } }).text;
+    },
+  },
 ];
 
 describe("no text cap ever cuts an astral character in half", () => {
@@ -397,6 +410,11 @@ const BARE_SLICES: Record<
   // `clipText` like every other cap.
   "src/client/pages/AuditPage.tsx": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
+  // The signature's own token insert, which splices at a SELECTION (#599). A caret is a position the
+  // browser maintains and it never sits between the two halves of an astral character. The two cuts
+  // in that field that DO bound the value go through `clipText`, which is the whole point of the
+  // distinction: an operator signing off with an emoji is the ordinary case here, not the exotic one.
+  "src/client/pages/agents/BehaviorTab.tsx": [1, "index"],
   "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],

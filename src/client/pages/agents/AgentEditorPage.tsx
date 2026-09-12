@@ -48,6 +48,7 @@ import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
+import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import type { FieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
@@ -384,6 +385,7 @@ function readBehaviorState(a: Agent) {
   const st = (s.stt ?? {}) as Record<string, unknown>;
   const tt = (s.tts ?? {}) as Record<string, unknown>;
   const sp = (s.split ?? {}) as Record<string, unknown>;
+  const sg = (s.signature ?? {}) as Record<string, unknown>;
   const sw = (s.serviceWindow ?? {}) as Record<string, unknown>;
   const vi = (s.vision ?? {}) as Record<string, unknown>;
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
@@ -460,6 +462,12 @@ function readBehaviorState(a: Agent) {
       maxChars: num(sp.maxChars) || "600",
       typingWpm: num(sp.typingWpm) || "250",
       maxDelayMs: num(sp.maxDelayMs) || "8000",
+    },
+    signature: {
+      text: str(sg.text),
+      position:
+        sg.position === "bottom" ? ("bottom" as const) : ("top" as const),
+      separator: sg.separator === "--" ? ("--" as const) : ("blank" as const),
     },
     serviceWindow: {
       enabled: typeof sw.enabled === "boolean" ? sw.enabled : true,
@@ -744,6 +752,8 @@ function AgentEditor() {
 
   // Agent fields
   const [name, setName] = useState("");
+  // Resolved here, in the page, so BehaviorTab stays renderable without an auth context.
+  const tenantName = useActiveTenantName();
   const [systemPrompt, setSystemPrompt] = useState("");
   // Gated on the TAB, for the same reason a dialog's holder is gated on `isOpen`: `GeneralTab` is
   // only mounted while `tab === "general"`, so a save that answers after the operator has moved on —
@@ -816,6 +826,12 @@ function AgentEditor() {
     maxChars: "600",
     typingWpm: "250",
     maxDelayMs: "8000",
+  });
+  // The operator's closing line. Mirrors modules/signature (off by default, `top`, `blank`).
+  const [signature, setSignature] = useState({
+    text: "",
+    position: "top" as "top" | "bottom",
+    separator: "blank" as "blank" | "--",
   });
   // Proactive follow-up sequence. Mirrors agent.settings.followUp ({ enabled, steps[] }).
   const [followUp, setFollowUp] = useState({
@@ -1417,6 +1433,7 @@ function AgentEditor() {
     setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
+    setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
     setVision(b.vision);
@@ -1458,6 +1475,7 @@ function AgentEditor() {
     setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
+    setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
     setVision(b.vision);
@@ -1718,6 +1736,11 @@ function AgentEditor() {
         typingWpm: Number(split.typingWpm) || 250,
         maxDelayMs: Number(split.maxDelayMs) || 8000,
       },
+      signature: {
+        text: signature.text.trim(),
+        position: signature.position,
+        separator: signature.separator,
+      },
       serviceWindow: {
         enabled: serviceWindow.enabled,
         windowHours: Number(serviceWindow.windowHours) || 24,
@@ -1812,6 +1835,7 @@ function AgentEditor() {
       contactAuth,
       tts,
       split,
+      signature,
       serviceWindow,
       followUp,
       vision,
@@ -2745,6 +2769,7 @@ function AgentEditor() {
     setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
+    setSignature(b.signature);
     setServiceWindow(b.serviceWindow);
     setFollowUp(b.followUp);
     setVision(b.vision);
@@ -3815,6 +3840,8 @@ function AgentEditor() {
             {tab === "behavior" && (
               <BehaviorTab
                 agentId={id}
+                agentName={name}
+                companyName={tenantName}
                 langfuseSendContent={langfuseSendContent}
                 savedObservability={savedObservability}
                 hours={hours}
@@ -3845,6 +3872,8 @@ function AgentEditor() {
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
                 split={split}
                 setSplit={setSplit}
+                signature={signature}
+                setSignature={setSignature}
                 serviceWindow={serviceWindow}
                 setServiceWindow={setServiceWindow}
                 followUp={followUp}

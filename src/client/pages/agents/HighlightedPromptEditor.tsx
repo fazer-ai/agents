@@ -13,20 +13,39 @@ export const HighlightedPromptEditor = forwardRef<
     rows?: number;
     // Grow to fill a flex-column parent instead of the fixed `rows` (the expand-to-modal view).
     fill?: boolean;
+    // Declares a cap on the control (counter + over-limit line). The system prompt is deliberately
+    // uncapped and passes nothing; the signature field passes SIGNATURE_MAX.
+    maxLength?: number;
+    onSelect?: () => void;
     "aria-label"?: string;
   }
->(({ value, onChange, rows = 10, fill, "aria-label": ariaLabel }, ref) => (
-  <HighlightedTemplateField
-    ref={ref}
-    value={value}
-    onChange={onChange}
-    isKnownToken={isKnownPromptVar}
-    patternSource={PROMPT_PLACEHOLDER_SOURCE}
-    multiline
-    rows={rows}
-    fill={fill}
-    aria-label={ariaLabel}
-  />
-));
+>(
+  (
+    {
+      value,
+      onChange,
+      rows = 10,
+      fill,
+      maxLength,
+      onSelect,
+      "aria-label": ariaLabel,
+    },
+    ref,
+  ) => (
+    <HighlightedTemplateField
+      ref={ref}
+      value={value}
+      onChange={onChange}
+      isKnownToken={isKnownPromptVar}
+      patternSource={PROMPT_PLACEHOLDER_SOURCE}
+      multiline
+      rows={rows}
+      fill={fill}
+      maxLength={maxLength}
+      onSelect={onSelect}
+      aria-label={ariaLabel}
+    />
+  ),
+);
 
 HighlightedPromptEditor.displayName = "HighlightedPromptEditor";

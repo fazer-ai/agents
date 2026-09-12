@@ -12,6 +12,7 @@ import {
   ListChecks,
   Megaphone,
   Mic,
+  PenLine,
   Plus,
   Scissors,
   ScrollText,
@@ -20,7 +21,7 @@ import {
   UserRoundCheck,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -37,6 +38,7 @@ import {
   SwitchField,
   Textarea,
 } from "@/client/components";
+import { Markdown } from "@/client/components/Markdown";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import {
@@ -51,10 +53,21 @@ import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import {
+  buildPromptVars,
+  interpolatePromptVars,
+  PROMPT_CONTEXT_VARS,
+  PROMPT_PREVIEW_AGENT,
+  PROMPT_PREVIEW_COMPANY,
+  PROMPT_PREVIEW_CONTACT,
+  type PromptRenderOpts,
+} from "@/graph/prompt";
+import { clipText } from "@/lib/text";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
+  SIGNATURE_MAX,
   TEMPLATE_MESSAGE_MAX,
 } from "@/modules/agents/text-caps";
 import { formatWindowsSummary } from "@/modules/business-hours/announce";
@@ -68,6 +81,7 @@ import {
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import {
   fallbackIsConfigured,
   fallbackModelIsMissing,
@@ -178,6 +192,83 @@ interface SplitState {
   maxDelayMs: string;
 }
 
+// The operator's closing line (issue #599), mirroring modules/signature. One text, on every channel
+// the agent answers on, and an empty text is the off switch.
+//
+// The bytes the customer receives, built by the SAME rule the runtime applies (modules/signature:
+// blank is two newlines, `--` is two newlines around a `--` line). An operator who has to guess what
+// "separator" means reads it here instead.
+//
+// RENDERED, not shown raw, and that is the point of having it. The field is a plain textarea rather
+// than a rich editor, so `**Gi**` is what the operator types; the preview is the only place that
+// answers whether it lands as bold or as four asterisks. It renders through the same <Markdown> the
+// conversation view and the playground use, which is what a channel that understands Markdown does
+// with it — on one that does not, the characters go out as typed (#603, and the field's own hint).
+// THROUGH `buildPromptVars`, not a hand-written map, so the example context cannot fall behind the
+// chips: it was written by hand first and omitted `{{email_contato}}`, `{{telefone_contato}}` and
+// `{{canal}}`, which the chips offer — so the preview rendered three supported variables as literal
+// text and taught the operator they do not work. Review of #599. The names come from the same
+// function production builds them with, so a variable added there appears here without anyone
+// remembering to.
+//
+// The CONTACT is an example, and the preview says so; the agent and the company are the operator's
+// OWN, the way the prompt editor already renders them. A signature is mostly those two names, so a
+// preview that shows somebody else's is a preview of a message the operator will never send — the
+// acceptance run put it plainly: "o operador que olha a prévia vê um nome de exemplo, não o dele".
+// The generic stand-ins survive for what the editor cannot know yet: an agent still being named,
+// and a tenant with no company name set.
+export function signaturePreviewVars(
+  agentName?: string | null,
+  companyName?: string | null,
+): Record<string, string> {
+  return buildPromptVars({
+    agentName: agentName?.trim() || PROMPT_PREVIEW_AGENT,
+    companyName: companyName?.trim() || PROMPT_PREVIEW_COMPANY,
+    ...PROMPT_PREVIEW_CONTACT,
+  });
+}
+
+// THE OPTIONS, not only the variables, because `interpolatePromptVars` answers a schedule name from
+// `opts.availability` and a time name from `opts.now`/`opts.timezone`. Passing the map alone left
+// `{{horario_atendimento}}` literal in the preview while production rendered the real hours — the
+// third finding in this family, after the map itself was completed and after the live path got its
+// options. `tests/client/signature-preview-vars.test.ts` now fences the whole set rather than the
+// name that happened to be reported.
+//
+// The schedule is the operator's OWN, looked up from the Availability the agent is on, so the
+// preview shows the hours they configured instead of a plausible fake. No Availability means
+// `schedule: null`, which is what production passes and what the gate reads as always on.
+export function signaturePreviewParts(
+  sig: SignatureState,
+  t: (k: string, d: string) => string,
+  vars: Record<string, string>,
+  opts: PromptRenderOpts = {},
+): string[] {
+  // Interpolated like the signature itself, so the example name in the body and the one a
+  // `{{nome_contato}}` in the signature resolves to are the SAME person. A preview that greets Ana
+  // and signs off to somebody else teaches the operator the variables do not work.
+  const body = interpolatePromptVars(
+    t(
+      "editor.signaturePreviewBody",
+      "Hi {{primeiro_nome}}, all set here. Any questions, just ask.",
+    ),
+    vars,
+    opts,
+  );
+  // Through the RUNTIME's own interpolation, not a second copy of it: what the preview shows and
+  // what the customer receives have to be the same function, including the rule that an unknown
+  // placeholder is left standing instead of blanked, which is how a typo stays visible here.
+  const text = interpolatePromptVars(sig.text.trim(), vars, opts);
+  if (!text) return [body];
+  return sig.position === "top" ? [text, body] : [body, text];
+}
+
+interface SignatureState {
+  text: string;
+  position: "top" | "bottom";
+  separator: "blank" | "--";
+}
+
 interface VisionState {
   enabled: boolean;
   provider: string;
@@ -261,6 +352,14 @@ export interface FollowUpState {
 
 interface BehaviorTabProps {
   agentId: string;
+  // The name being edited on General, live, so the signature preview signs with the operator's own
+  // agent instead of a stand-in. Empty while a new agent is still unnamed.
+  agentName: string;
+  // The active tenant's display name, RESOLVED BY THE PAGE rather than by a hook in here. Reaching
+  // for `useActiveTenantName()` from this tab made it unrenderable without an AuthProvider, which
+  // the full suite hid (an earlier file leaves the context standing) and a sharded CI run would not.
+  // Null while it is still resolving, or when a fleet session has nothing selected.
+  companyName: string | null;
   // The refused input this tab draws, if the standing refusal is about one of them. Read in
   // AgentEditorPage and passed as answers -- see the note on the type.
   refusals: BehaviorRefusals;
@@ -292,6 +391,8 @@ interface BehaviorTabProps {
   ttsNormalizeCredBaseUrl: string | null;
   split: SplitState;
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
+  signature: SignatureState;
+  setSignature: React.Dispatch<React.SetStateAction<SignatureState>>;
   vision: VisionState;
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
@@ -1065,6 +1166,8 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
 
 export function BehaviorTab({
   agentId,
+  agentName,
+  companyName,
   refusals,
   hours,
   businessHoursId,
@@ -1091,6 +1194,8 @@ export function BehaviorTab({
   ttsNormalizeCredBaseUrl,
   split,
   setSplit,
+  signature,
+  setSignature,
   vision,
   setVision,
   visionCredBaseUrl,
@@ -1128,6 +1233,88 @@ export function BehaviorTab({
   onOpenPlayground,
 }: BehaviorTabProps) {
   const { t, i18n } = useTranslation();
+
+  // The signature's "insert variable" helper, the same affordance the prompt editor has and for the
+  // same reason: `{{nome_agente}}` is only useful to someone who knows it exists, and a chip that
+  // writes it at the caret is how they find out. `HighlightedPromptEditor` forwards its ref to the
+  // inner <textarea> precisely so this works.
+  //
+  // CONTEXT VARS ONLY, not the prompt's whole list. The time and schedule names interpolate here too
+  // (it is the same function), but a closing line that announces the current minute is not a
+  // signature, and offering it invites a signature that changes on every message — which is the one
+  // property this feature exists to remove.
+  const signatureRef = useRef<HTMLTextAreaElement>(null);
+  // How much a SELECTION would free, since an insert REPLACES it. Tracked in state because the
+  // chips' disabled state is decided at render and a selection change does not otherwise cause one:
+  // without it a chip stays greyed out while the very text it would overwrite sits highlighted.
+  const [signatureSelected, setSignatureSelected] = useState(0);
+  const readSignatureSelection = useCallback(() => {
+    const el = signatureRef.current;
+    if (!el) return;
+    setSignatureSelected(
+      Math.max(0, (el.selectionEnd ?? 0) - (el.selectionStart ?? 0)),
+    );
+  }, []);
+  // What is left before the cap. A chip whose token does not fit is DISABLED rather than clipped:
+  // clipping an insert cuts the TAIL of what the operator already wrote, which is the one thing a
+  // helper button must never do — the caret is at the front, the loss is at the back, and nothing
+  // on screen connects the two. Found in review of #599.
+  const signatureRoom =
+    SIGNATURE_MAX - signature.text.length + signatureSelected;
+  // The agent's own Availability, so a `{{horario_atendimento}}` in the signature previews the hours
+  // the operator configured rather than a plausible fake. `null` when none is picked, which is what
+  // production passes and what the gate reads as always on.
+  const signaturePreviewSchedule =
+    hours.find((h) => String(h.id) === businessHoursId) ?? null;
+  const signaturePreviewOpts: PromptRenderOpts = {
+    availability: {
+      schedule: signaturePreviewSchedule
+        ? (toScheduleOption(signaturePreviewSchedule) as unknown as NonNullable<
+            NonNullable<PromptRenderOpts["availability"]>["schedule"]
+          >)
+        : null,
+    },
+  };
+  // Live on both names: the one being typed on General, and the tenant's, through the same hook the
+  // prompt editor's preview reads. A signature is mostly those two, so previewing a stand-in
+  // previews a message the operator never sends.
+  const signatureVars = signaturePreviewVars(agentName, companyName);
+  const signatureVarsBlocked = PROMPT_CONTEXT_VARS.some(
+    (v) => `{{${v}}}`.length > signatureRoom,
+  );
+  function insertSignatureVar(name: string) {
+    const token = `{{${name}}}`;
+    // Asked here too, not only on the button, and against the LIVE selection rather than the tracked
+    // one: the guard has to hold whatever reaches this, including a selection the render has not
+    // seen yet.
+    const el0 = signatureRef.current;
+    const selected = el0
+      ? Math.max(0, (el0.selectionEnd ?? 0) - (el0.selectionStart ?? 0))
+      : signatureSelected;
+    if (token.length > SIGNATURE_MAX - signature.text.length + selected) return;
+    const el = signatureRef.current;
+    if (!el) {
+      setSignature((sg) => ({
+        ...sg,
+        text: clipText(sg.text + token, SIGNATURE_MAX),
+      }));
+      return;
+    }
+    // A caret index, not a cap: `selectionStart` is a position the browser maintains and it never
+    // sits between the two halves of an astral character, which is why this cut is bare and the two
+    // that bound the value are not (tests/lib/astral-cap-sweep.test.ts).
+    const start = el.selectionStart ?? signature.text.length;
+    const end = el.selectionEnd ?? signature.text.length;
+    const next =
+      signature.text.slice(0, start) + token + signature.text.slice(end);
+    setSignature({ ...signature, text: clipText(next, SIGNATURE_MAX) });
+    setSignatureSelected(0);
+    requestAnimationFrame(() => {
+      el.focus();
+      const pos = start + token.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }
 
   // NOTE: the `enabled` guards are load-bearing, not defensive. Each block is HIDDEN when its
   // feature is off, so a leftover openai-compatible provider with no endpoint would disable Save for
@@ -1386,6 +1573,11 @@ export function BehaviorTab({
       id: "split",
       icon: Scissors,
       label: t("editor.split", "Reply in multiple messages"),
+    },
+    {
+      id: "signature",
+      icon: PenLine,
+      label: t("editor.signature", "Signature"),
     },
     {
       id: "attributeContext",
@@ -2395,6 +2587,163 @@ export function BehaviorTab({
                 </FormField>
               </div>
             )}
+          </Section>
+
+          <Section
+            id="signature"
+            hidden={watcher}
+            icon={PenLine}
+            title={t("editor.signature", "Signature")}
+            description={t(
+              "editor.signatureHint",
+              "A closing line you write once, added to the agent's messages. Asked for in the prompt instead, it comes out differently every time and never on a handoff.",
+            )}
+            help={t(
+              "editor.signatureHelp",
+              "The signature goes on the message that closes a turn: the reply, and the farewell of a handoff. Not on a mid-turn acknowledgement, not on a private note, and not on an audio reply, where a spoken closing is noise.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
+            )}
+          >
+            <FormField
+              label={t("editor.signatureText", "Signature")}
+              description={t(
+                "editor.signatureTextHint",
+                "Empty turns it off. Takes the same {{variables}} as the system prompt, and Markdown for **bold** and _italic_, which Chatwoot converts per channel.",
+              )}
+            >
+              <HighlightedPromptEditor
+                ref={signatureRef}
+                rows={3}
+                maxLength={SIGNATURE_MAX}
+                onSelect={readSignatureSelection}
+                value={signature.text}
+                onChange={(v) =>
+                  setSignature({
+                    ...signature,
+                    text: clipText(v, SIGNATURE_MAX),
+                  })
+                }
+                aria-label={t("editor.signatureText", "Signature")}
+              />
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                <span className="text-text-muted text-xs">
+                  {t("editor.signatureVarsHint", "Insert a variable:")}
+                  {/* INLINE, not a tooltip on the disabled button. A native `title` is unreachable
+                      by keyboard (a disabled button takes no focus) and by touch, so the one state
+                      that needs explaining would explain itself only to a mouse. This is outcome 2
+                      in docs/ui.md: the app can tell the limit now applies, so it says so, at that
+                      moment, and goes away again on its own. */}
+                  {signatureVarsBlocked && (
+                    <span className="ml-1 text-warning">
+                      {t(
+                        "editor.signatureVarNoRoom",
+                        "Not enough room left before the limit.",
+                      )}
+                    </span>
+                  )}
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {PROMPT_CONTEXT_VARS.map((v) => {
+                    const fits = `{{${v}}}`.length <= signatureRoom;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        disabled={!fits}
+                        onClick={() => insertSignatureVar(v)}
+                        className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary"
+                      >
+                        {`{{${v}}}`}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </FormField>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                label={t("editor.signaturePosition", "Position")}
+                description={t(
+                  "editor.signaturePositionHint",
+                  "Where it goes in the message.",
+                )}
+              >
+                <Select
+                  value={signature.position}
+                  onChange={(e) =>
+                    setSignature({
+                      ...signature,
+                      position: e.target.value as "top" | "bottom",
+                    })
+                  }
+                >
+                  <option value="top">
+                    {t("editor.signatureTop", "Above the message")}
+                  </option>
+                  <option value="bottom">
+                    {t("editor.signatureBottom", "Below the message")}
+                  </option>
+                </Select>
+              </FormField>
+              <FormField
+                label={t("editor.signatureSeparator", "Separator")}
+                description={t(
+                  "editor.signatureSeparatorHint",
+                  "What sits between the message and the signature.",
+                )}
+              >
+                <Select
+                  value={signature.separator}
+                  onChange={(e) =>
+                    setSignature({
+                      ...signature,
+                      separator: e.target.value as "blank" | "--",
+                    })
+                  }
+                >
+                  <option value="blank">
+                    {t("editor.signatureSepBlank", "A blank line")}
+                  </option>
+                  <option value="--">
+                    {t("editor.signatureSepDashes", "A blank line and --")}
+                  </option>
+                </Select>
+              </FormField>
+            </div>
+            <FormField
+              label={t("editor.signaturePreview", "Preview")}
+              description={t(
+                "editor.signaturePreviewHint",
+                "One message. Your agent and company names are the real ones; the contact details are examples. The gap or the -- below is what the separator puts between the two.",
+              )}
+            >
+              {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
+                  Rendering the whole thing at once made `blank` and `--` look almost alike: a blank
+                  line between two paragraphs came out as Markdown's own paragraph gap, which is
+                  smaller than a line and reads as ordinary spacing rather than as the choice the
+                  operator just made. Splitting at the separator is also what the bytes are. */}
+              <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+                {signaturePreviewParts(
+                  signature,
+                  t,
+                  signatureVars,
+                  signaturePreviewOpts,
+                ).map((part, i) => (
+                  <div key={part}>
+                    {i > 0 &&
+                      (signature.separator === "--" ? (
+                        <div className="py-1 font-mono text-sm text-text-secondary">
+                          {/* Not translatable: these are the bytes the separator puts on the
+                              wire, the same two `DELIMITERS` writes. */}
+                          {"--"}
+                        </div>
+                      ) : (
+                        <div className="h-5" aria-hidden="true" />
+                      ))}
+                    <Markdown>{part}</Markdown>
+                  </div>
+                ))}
+              </div>
+            </FormField>
           </Section>
 
           <Section

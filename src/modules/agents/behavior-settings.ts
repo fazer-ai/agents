@@ -25,6 +25,7 @@ import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
+import { readSignatureConfig } from "@/modules/signature/service";
 import { readSplitConfig } from "@/modules/split/service";
 import { readSttConfig } from "@/modules/stt/settings";
 import { readTtsConfig } from "@/modules/tts/settings";
@@ -56,6 +57,7 @@ export interface BehaviorSettings {
   tts: ReturnType<typeof readTtsConfig>;
   vision: ReturnType<typeof readVisionConfig>;
   split: ReturnType<typeof readSplitConfig>;
+  signature: ReturnType<typeof readSignatureConfig>;
   serviceWindow: ReturnType<typeof readServiceWindowConfig>;
   grounding: { maxDistance: number | null };
   followUp: ReturnType<typeof readFollowUpConfig>;
@@ -99,6 +101,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "tts",
   "vision",
   "split",
+  "signature",
   "serviceWindow",
   "grounding",
   "followUp",
@@ -139,6 +142,7 @@ export function readBehaviorSettings(
     tts: readTtsConfig(settings),
     vision: readVisionConfig(settings),
     split: readSplitConfig(settings),
+    signature: readSignatureConfig(settings),
     serviceWindow: readServiceWindowConfig(settings),
     grounding: readGrounding(settings),
     followUp: readFollowUpConfig(settings),
@@ -170,6 +174,7 @@ export interface BehaviorSettingsPatch {
   tts?: Record<string, unknown>;
   vision?: Record<string, unknown>;
   split?: Record<string, unknown>;
+  signature?: Record<string, unknown>;
   serviceWindow?: Record<string, unknown>;
   grounding?: Record<string, unknown>;
   followUp?: Record<string, unknown>;

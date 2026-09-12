@@ -89,6 +89,10 @@ import {
   readServiceWindowConfig,
   type ServiceWindowConfig,
 } from "@/modules/service-window/service";
+import {
+  readSignatureConfig,
+  type SignatureConfig,
+} from "@/modules/signature/service";
 import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
@@ -121,6 +125,7 @@ import {
   buildPromptVars,
   composeSystemPrompt,
   interpolatePromptVars,
+  type PromptRenderOpts,
 } from "./prompt";
 import { type AuditedSection, buildPromptAudit } from "./prompt-audit";
 import { DEFAULT_TIMEZONE, zonedWallClockToInstant } from "./time";
@@ -230,6 +235,17 @@ export interface AgentConfig {
   contactVoiceReply: boolean | null;
   // Humanized text delivery (split into balloons + typing delay).
   splitConfig: SplitConfig;
+  signatureConfig: SignatureConfig;
+  // The same placeholder values the system prompt was rendered with, carried so the OPERATOR's own
+  // texts can use them too (issue #599: the signature). Built once per turn and reused rather than
+  // rebuilt, so `{{nome_agente}}` in a signature and in the prompt can never disagree.
+  promptVars: Record<string, string>;
+  // The options those vars were rendered WITH, carried beside them because a variable is only half
+  // the answer: `{{horario_atendimento}}` and every time variable need the schedule and the instant
+  // to resolve, and a caller handed only the map renders them literally. The signature is the second
+  // consumer of this pair (issue #599); the system prompt is the first, and it reads them from the
+  // same place, so the two cannot disagree about what a placeholder means.
+  promptOpts: PromptRenderOpts;
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
@@ -770,6 +786,8 @@ export async function loadAgentConfig(
     systemPrompt: promptSections.length
       ? `${systemPrompt}\n\n${promptSections.join("\n\n")}`
       : systemPrompt,
+    promptVars,
+    promptOpts,
     systemPromptAudit: buildPromptAudit({
       template: promptTemplate,
       vars: promptVars,
@@ -799,6 +817,7 @@ export async function loadAgentConfig(
     modelFallbackCredentialBaseUrl,
     contactVoiceReply: conv?.contact?.voiceReply ?? null,
     splitConfig: readSplitConfig(effSettings),
+    signatureConfig: readSignatureConfig(effSettings),
     serviceWindowConfig: readServiceWindowConfig(effSettings),
     handoffConfig: readHandoffConfig(effSettings),
     contactAuthConfig: readContactAuthConfig(effSettings),

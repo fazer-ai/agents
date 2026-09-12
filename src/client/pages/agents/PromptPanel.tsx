@@ -12,6 +12,7 @@ import {
   findExactTimeVarUsages,
   interpolatePromptVars,
   PROMPT_CONTEXT_VARS,
+  PROMPT_PREVIEW_CONTACT,
   PROMPT_SCHEDULE_VARS_DISPLAY,
   PROMPT_TIME_VARS_DISPLAY,
   TIME_ROUND_MINUTES,
@@ -301,16 +302,22 @@ export function PromptPanel({
                   buildPromptVars({
                     companyName: previewVar("nome_empresa", companyFallback),
                     agentName: previewVar("nome_agente", agentFallback),
-                    contactName: previewVar("nome_contato", "Maria Silva"),
+                    contactName: previewVar(
+                      "nome_contato",
+                      PROMPT_PREVIEW_CONTACT.contactName,
+                    ),
                     contactEmail: previewVar(
                       "email_contato",
-                      "maria.silva@exemplo.com",
+                      PROMPT_PREVIEW_CONTACT.contactEmail,
                     ),
                     contactPhone: previewVar(
                       "telefone_contato",
-                      "+55 11 98888-7777",
+                      PROMPT_PREVIEW_CONTACT.contactPhone,
                     ),
-                    inboxName: previewVar("canal", "WhatsApp"),
+                    inboxName: previewVar(
+                      "canal",
+                      PROMPT_PREVIEW_CONTACT.inboxName,
+                    ),
                   }),
                   { wrap: wrapPreviewVar, availability },
                 )}

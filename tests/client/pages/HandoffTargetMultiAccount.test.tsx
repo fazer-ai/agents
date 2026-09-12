@@ -129,6 +129,8 @@ function renderContactAuth(
         followUpSteps: [],
       },
       agentId: "1",
+      agentName: "Recepção",
+      companyName: "Clínica Moreira",
       hours: [],
       businessHoursId: "",
       setBusinessHoursId: noop,
@@ -176,6 +178,12 @@ function renderContactAuth(
         maxDelayMs: "0",
       },
       setSplit: noop,
+      signature: {
+        text: "",
+        position: "top" as const,
+        separator: "blank" as const,
+      },
+      setSignature: () => {},
       vision: {
         enabled: false,
         provider: "openai",

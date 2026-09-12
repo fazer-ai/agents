@@ -66,6 +66,7 @@ import {
   guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { synthesizeReply } from "@/modules/tts/service";
@@ -928,8 +929,30 @@ export async function runPlaygroundTurn(
     }
   }
 
+  // SIGNED ONLY HERE, on the way to the operator's screen (issue #599). Not in the thread above,
+  // because production's checkpointer holds the model's own reply and the signature is attached at
+  // delivery; and NOT in the TTS text, for the reason production's audio branch is unsigned — the
+  // operator would hear a spoken "Alex, Minha Empresa" that no customer ever hears, which is the one
+  // divergence the playground exists to avoid.
+  //
+  // Same function production calls, because the question is the same one: the signature is a single
+  // channel-agnostic text, and the playground is where the operator checks what it will look like.
+  const previewSig = signatureFor(
+    loaded.signatureConfig,
+    loaded.promptVars,
+    loaded.promptOpts,
+  );
+  const [signedReply = reply] = previewSig
+    ? attachSignature(
+        [reply],
+        previewSig,
+        loaded.signatureConfig.position,
+        loaded.signatureConfig.separator,
+      )
+    : [reply];
+
   return {
-    reply,
+    reply: signedReply,
     threadId,
     trace,
     sources: collectTraceSources(trace),
@@ -1249,8 +1272,26 @@ export async function runPlaygroundFollowup(
   }
   // Bump the session (or create one titled by the first message if the follow-up is the first turn).
   await upsertPlaygroundSession(base, ctx, agentId, threadId, "");
+  // SIGNED LIKE THE REACTIVE TURN ABOVE, because production signs BOTH (issue #599, found in
+  // review). `runAgentNudge` signs the proactive message, so a playground follow-up that came back
+  // bare would be the one surface showing the operator something the customer never receives, which
+  // is the whole reason this surface exists. `attachSignature` is what declines the empty case, so
+  // a silent or suppressed follow-up is left exactly as it was.
+  const followUpSig = signatureFor(
+    loaded.signatureConfig,
+    loaded.promptVars,
+    loaded.promptOpts,
+  );
+  const [signedFollowUp = reply] = followUpSig
+    ? attachSignature(
+        [reply],
+        followUpSig,
+        loaded.signatureConfig.position,
+        loaded.signatureConfig.separator,
+      )
+    : [reply];
   return {
-    reply,
+    reply: signedFollowUp,
     threadId,
     trace,
     sources: collectTraceSources(trace),

@@ -648,6 +648,28 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent.at(-1)).toBe("Resposta.\n\nAlex\n\nMinha Empresa");
   });
 
+  // ONE MESSAGE, ONE SIGNATURE, and a retry that spans several balloons can already contain the
+  // model's own copy inside one of them. "Some balloon was signed" is then true and not enough:
+  // with `all` every non-blank balloon is answered, so a balloon the pass left ALONE is a copy, and
+  // a message that already carries one does not get another. Round 9.
+  test("the consolidated retry does not add a second copy to one it already carries", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG3 = "Alex\n\n  Minha Empresa";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      `Bom dia.\n\nMais informação.\n\nResposta.\n\n${SIG3}`,
+      { ...SPLIT_DEFAULTS, enabled: true, maxChunks: 3 },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG3, position: "top", separator: "blank", frequency: "all" },
+    );
+    const last = rec.sent.at(-1) ?? "";
+    expect(last.split("Minha Empresa")).toHaveLength(2);
+  });
+
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
   // any occurrence reports a chunk that genuinely did not land as delivered, drops it from what is
   // owed, and truncates the reply while the turn reports `posted` — silently, which is the outcome

@@ -2613,11 +2613,11 @@ export function BehaviorTab({
             title={t("editor.signature", "Signature")}
             description={t(
               "editor.signatureHint",
-              "A closing line you write once, added to the agent's messages. Asked for in the prompt instead, it comes out differently every time and never on a handoff.",
+              "A line you write once, added to the agent's messages. Asked for in the prompt instead, it comes out differently every time and never on a handoff.",
             )}
             help={t(
               "editor.signatureHelp",
-              'The signature goes on the agent\'s reply and on the farewell of a handoff. Not on a mid-turn acknowledgement, not on a private note, and not on an audio reply, where a spoken closing is noise.\n\nA long reply is delivered as more than one message, and "Which messages" says whether the signature repeats on each of them. Above the message it is a badge, and a badge answers "who is talking to me" on every message; below it is a farewell, and a farewell is said once.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.',
+              "The signature goes on the agent's reply and on a handoff's farewell, never on a private note or an audio reply. A long reply arrives as more than one message: above it the signature is a badge, and a badge belongs on every one; below it is a farewell, and a farewell is said once.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
             )}
           >
             <SwitchField
@@ -2782,7 +2782,7 @@ export function BehaviorTab({
                   label={t("editor.signaturePreview", "Preview")}
                   description={t(
                     "editor.signaturePreviewHint",
-                    "An example reply, as the customer receives it. Your agent and company names are the real ones; the contact details are examples. The gap or the -- is what the separator puts between the message and the signature.",
+                    "An example reply, as the customer receives it. Your agent and company names are the real ones; the contact details are examples.",
                   )}
                 >
                   {/* ONE bubble with the separator drawn inside it, not a single Markdown string.

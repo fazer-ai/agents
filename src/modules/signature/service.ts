@@ -211,36 +211,41 @@ export function alreadySigned(
 // would come back with a second signature glued to it. Found in review round 1 of #617, which is
 // the second time this exact property has bitten this module.
 //
-// The whole-reply question still answers WHETHER a copy exists, because it is the only one that can
-// — and matching the signature's own paragraphs against the balloons at that END answers WHICH.
-// A run that does not match exactly (the splitter clamped or merged) claims nothing rather than
-// guessing, so the worst case is the pre-existing one: a second signature, never a missing one.
-// Scoped to a reply the whole check already calls signed, so a balloon that merely repeats one
-// paragraph of the signature in the middle of ordinary prose is prose, and gets signed.
+// TWO QUESTIONS, and only the first can be asked of the reply as a whole. `alreadySigned` answers
+// WHETHER there is a copy, and it is the only thing that can, because the split is lossy. A balloon
+// that is ENTIRELY one paragraph of the signature then answers WHICH, on its own, without a
+// position and without a run: a balloon whose whole body is a piece of the closing is not something
+// the customer reads as content, so a second signature on it is only noise.
+//
+// A balloon that holds content AND a fragment is not one of these, and is signed like any other.
+// That case is the model gluing its closing to the last line of prose, and suppressing the
+// signature on a balloon the customer reads as content is the failure this whole feature exists to
+// prevent — so the worst case here stays a second signature, never a missing one. Round 2 of the
+// same review asked for the fragment to be matched as a line-bounded suffix instead; that rule
+// would have skipped the balloon carrying "Resposta." along with the fragment glued to it.
+//
+// The `alreadySigned` gate is what keeps this off prose. A balloon reading exactly "Alex" in a
+// reply the model never signed is a paragraph of the operator's own text, and it gets the
+// signature like every other.
 function copyRun(
   chunks: string[],
   signature: string,
   whole?: string,
 ): Set<number> {
-  const s = signature.trim();
+  const out = new Set<number>();
   // The same cut `splitReplyParts` makes, because the fragments this is looking for are its output.
-  const parts = s
+  const parts = signature
+    .trim()
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
-  const out = new Set<number>();
   // One paragraph is the per-balloon check's own case, and it answers it better: with the line
   // boundary, against the balloon as it stands.
   if (parts.length < 2) return out;
   if (!alreadySigned(chunks, signature, whole)) return out;
-  const text = (whole ?? chunks.join("\n\n")).trim();
-  const atStart = text === s || (text.startsWith(s) && text[s.length] === "\n");
-  const from = atStart ? 0 : chunks.length - parts.length;
-  if (from < 0 || from + parts.length > chunks.length) return out;
-  for (let k = 0; k < parts.length; k += 1) {
-    if (chunks[from + k]?.trim() !== parts[k]) return new Set();
-  }
-  for (let k = 0; k < parts.length; k += 1) out.add(from + k);
+  chunks.forEach((c, i) => {
+    if (parts.includes(c.trim())) out.add(i);
+  });
   return out;
 }
 

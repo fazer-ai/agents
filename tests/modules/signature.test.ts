@@ -859,6 +859,25 @@ describe("frequency: every message of the turn, or one of them", () => {
     ]);
   });
 
+  // A FRAGMENT DOES NOT HAVE TO OWN ITS WHOLE BALLOON. When the model glues its closing to the last
+  // line of prose, one balloon holds content AND half the signature while the next holds the other
+  // half alone. Requiring every fragment to be an entire balloon rejected the run and signed both;
+  // review round 2 of #617. The balloon that is ENTIRELY a fragment is left alone, and the one that
+  // carries content is still signed, because suppressing a signature on a balloon the customer
+  // reads as content is the failure this feature exists to prevent.
+  test("all: a balloon that is entirely a fragment is skipped, one with content is not", () => {
+    const MULTI = "Alex\n\nMinha Empresa";
+    const chunks = ["Resposta.\nAlex", "Minha Empresa"];
+    const out = attachSignature(
+      chunks,
+      MULTI,
+      { position: "bottom", separator: "blank", frequency: "all" },
+      "Resposta.\nAlex\n\nMinha Empresa",
+    );
+    expect(out[1]).toBe("Minha Empresa");
+    expect(out[0]).toBe(`Resposta.\nAlex\n\n${MULTI}`);
+  });
+
   // THE ORIGINAL IS THE AUTHORITY, not the chunk array, which is the same rule the whole-reply
   // dedupe is built on (#599): the split TRIMS and throws the separators away, so an array can
   // reassemble into something the model never wrote. Balloons that merely look like the signature's

@@ -333,15 +333,25 @@ export function attachSignature(
     // back through the other door: "chame o Alex" would read as already signed and the balloon
     // would go out with no closing at all, which is worse than a second copy. Round 5.
     const flatSig = flatten(signature);
-    const multiline = signature.trim().includes("\n");
+    // ONLY WHEN THE REPLY DOES CARRY A COPY. Without it this is a loose comparison asked of every
+    // balloon of every reply, and a balloon of ordinary two-line text — a short list, an address —
+    // would go out bare on the strength of a whitespace coincidence.
+    const signedSomewhere = alreadySigned(chunks, signature, whole);
     const flatSigned = (c: string): boolean => {
-      if (!multiline) return false;
-      const f = flatten(c);
-      return (
-        f === flatSig ||
-        f.endsWith(` ${flatSig}`) ||
-        f.startsWith(`${flatSig} `)
-      );
+      if (!signedSomewhere) return false;
+      const lines = c.trim().split("\n");
+      // ON WHOLE LINES, which is the line boundary the exact check has, kept through the
+      // normalisation. Two short lines flatten into two ordinary words — "Alex\nSupport" becomes
+      // "Alex Support" — so a rule that matched anywhere in the balloon read "Alex Support can help
+      // with that." as already signed and sent it out bare. The merge this exists for trims the
+      // paragraphs and KEEPS the newlines between them, so a real copy always begins and ends on a
+      // line; prose in a single line never does.
+      for (let k = 0; k < lines.length; k += 1) {
+        if (flatten(lines.slice(k).join("\n")) === flatSig) return true;
+        if (flatten(lines.slice(0, lines.length - k).join("\n")) === flatSig)
+          return true;
+      }
+      return false;
     };
     return chunks.map((c, i) =>
       c.trim().length === 0 ||

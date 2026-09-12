@@ -878,6 +878,74 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[0]).toBe(`Resposta.\nAlex\n\n${MULTI}`);
   });
 
+  // TWO SHORT LINES FLATTEN INTO TWO ORDINARY WORDS, and "more than one line" was never enough on
+  // its own: the signature "Alex\nSupport" collapses to "Alex Support", which is how an ordinary
+  // sentence starts. The balloon went out with no closing at all, which is the failure this feature
+  // exists to prevent, produced by the guard against its twin for the third time. Round 6.
+  //
+  // The flattened check keeps the LINE BOUNDARY the exact one has: the match must cover whole lines
+  // of the balloon. That is what the `maxChunks` merge preserves (it trims the paragraphs and keeps
+  // the newlines between them) and what prose in a single line does not have.
+  test("all: a sentence that merely opens with the signature's words is prose", () => {
+    const TWO_LINES = "Alex\nSupport";
+    const chunks = ["Alex Support can help with that.", "Segue o retorno."];
+    const out = attachSignature(
+      chunks,
+      TWO_LINES,
+      { position: "bottom", separator: "blank", frequency: "all" },
+      chunks.join("\n\n"),
+    );
+    for (const c of out) expect(c.endsWith(TWO_LINES)).toBe(true);
+  });
+
+  // Same sentence, in a reply the model DID sign: the boundary still says it is prose.
+  test("all: and it stays prose even when the reply carries a real copy", () => {
+    const TWO_LINES = "Alex\nSupport";
+    const chunks = ["Alex Support can help with that.", TWO_LINES];
+    expect(
+      attachSignature(
+        chunks,
+        TWO_LINES,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        chunks.join("\n\n"),
+      ),
+    ).toEqual([`Alex Support can help with that.\n\n${TWO_LINES}`, TWO_LINES]);
+  });
+
+  // And the exact per-balloon check answers the case neither the walks nor the flattened comparison
+  // can: a balloon whose whole body IS the signature, in the middle of a reply whose ENDS say
+  // nothing. No walk starts there and the gate above is closed, so this is the oldest rule in the
+  // module doing the work on its own.
+  test("all: a balloon that is exactly the signature is left alone even mid-reply", () => {
+    const chunks = ["Bom dia.", SIG, "Mais uma coisa."];
+    const out = attachSignature(
+      chunks,
+      SIG,
+      { position: "bottom", separator: "blank", frequency: "all" },
+      chunks.join("\n\n"),
+    );
+    expect(out[1]).toBe(SIG);
+    expect(out[0]).toBe(`Bom dia.\n\n${SIG}`);
+    expect(out[2]).toBe(`Mais uma coisa.\n\n${SIG}`);
+  });
+
+  // AND THE FLATTENED COMPARISON IS ONLY EVER USED on a reply whose ends say the model signed.
+  // Everywhere else a balloon of two short lines is the operator's own text — a list, an address —
+  // and a whitespace coincidence must not send it out bare. The price is a near-copy that differs
+  // from the configured signature in whitespace getting a second one, which is the trade this
+  // module makes every time: a duplicate over a missing closing.
+  test("all: without a real copy in the reply, a look-alike balloon is still signed", () => {
+    const INDENTED = "Alex\n  Support";
+    const chunks = ["Alex\nSupport", "Resposta."];
+    const out = attachSignature(
+      chunks,
+      INDENTED,
+      { position: "bottom", separator: "blank", frequency: "all" },
+      chunks.join("\n\n"),
+    );
+    for (const c of out) expect(c.endsWith(INDENTED)).toBe(true);
+  });
+
   // A COPY IN THE MIDDLE is reached by no walk, because the walks start at the ends. The exact
   // per-balloon check is what covers it, and that is why it is not redundant with them.
   test("all: a balloon that IS the signature in the middle is left alone", () => {

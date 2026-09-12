@@ -426,26 +426,29 @@ export async function deliverReply(
                 "",
               );
             if (!owedRaw) break;
-            // WHICH message of a turn carries it does not change because a send failed. `all` gives
-            // this one message one; `once` gives it to the one the position designates, so a `top`
-            // signature whose first balloon already landed must NOT come back on the retry, and a
-            // `bottom` one still closes it.
+            // THE RETRY CARRIES A SIGNATURE IF AND ONLY IF THE BALLOONS IT REPLACES DID, which is
+            // the only rule that cannot disagree with the decision already made above. A
+            // conditional on frequency and position could: with the model's own copy merged into a
+            // balloon at the `maxChunks` ceiling, the balloon pass recognised it and signed
+            // nothing, while the retry's own evidence — the lossy reconstruction it was handed —
+            // no longer matched the signature exactly, so it prepended a second one (round 8).
+            //
+            // It also says the `once` rule without naming it: a `top` signature whose first balloon
+            // already landed is not among the balloons being retried, so none of them was signed
+            // and neither is the retry.
+            const owedWasSigned = rawChunks
+              .slice(from)
+              .some((raw, k) => chunks[from + k] !== raw);
             const owed =
-              signature &&
-              (signature.frequency === "all" ||
-                signature.position === "bottom" ||
-                from === 0)
+              signature && owedWasSigned
                 ? (attachSignature(
                     [owedRaw],
                     signature.text,
                     signature,
-                    // THE RETRY'S OWN TEXT with `all`, the whole reply with `once`, because the two
-                    // ask different questions. `once` asks whether the model already signed this
-                    // TURN, which only the original can answer; `all` asks whether THIS message
-                    // carries a copy, and handing it the original made the opening copy answer for
-                    // a remainder that merely starts with the same word — the retry then went out
-                    // bare (round 7).
-                    signature.frequency === "all" ? owedRaw : reply,
+                    // ITS OWN TEXT: whether the model already signed the TURN was answered above,
+                    // by the balloons; what is left for `attachSignature` is whether THIS message
+                    // already carries a copy.
+                    owedRaw,
                   )[0] ?? owedRaw)
                 : owedRaw;
             // The retry is a send like any other, so it names itself like any other: it carries the

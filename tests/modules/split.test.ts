@@ -625,6 +625,29 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent.join("|")).not.toContain("Dois.\n\nAlex");
   });
 
+  // THE RETRY CARRIES A SIGNATURE IF AND ONLY IF THE BALLOONS IT REPLACES DID. That is the whole
+  // rule, and it replaced a frequency-and-position conditional that could disagree with the
+  // decision the balloon pass had already made: with the copy merged at the ceiling, the balloon
+  // was correctly recognised and skipped, and the retry then prepended a second one because its own
+  // evidence, the lossy reconstruction, no longer matched the signature exactly. Round 8.
+  test("the consolidated retry repeats the decision its balloons already got", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG3 = "Alex\n\n  Minha Empresa";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      `Bom dia.\n\nResposta.\n\n${SIG3}`,
+      { ...SPLIT_DEFAULTS, enabled: true, maxChunks: 2 },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG3, position: "top", separator: "blank", frequency: "all" },
+    );
+    // The balloon holding the model's own copy was skipped, so its retry is skipped too.
+    expect(rec.sent.at(-1)).toBe("Resposta.\n\nAlex\n\nMinha Empresa");
+  });
+
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
   // any occurrence reports a chunk that genuinely did not land as delivered, drops it from what is
   // owed, and truncates the reply while the turn reports `posted` — silently, which is the outcome

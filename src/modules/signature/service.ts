@@ -209,6 +209,19 @@ function flatten(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 
+// The same idea for a SINGLE balloon, where the line breaks must survive. The `maxChunks` merge
+// trims each paragraph and keeps the newlines between them, so dropping indentation and blank lines
+// is exactly the difference it introduces — and keeping the breaks is what stops the two-line
+// signature "Alex\nSupport" from being equated with the one prose line "Alex Support" (round 7).
+function normalizeLines(text: string): string {
+  return text
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .join("\n");
+}
+
 // WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the splitter has taken it apart.
 //
 // This is #599's split-boundary defect seen from the other side, and it arrives in more than one
@@ -332,26 +345,24 @@ export function attachSignature(
     // line boundary into a space, and for a one-line signature that is #599's round-12 hole coming
     // back through the other door: "chame o Alex" would read as already signed and the balloon
     // would go out with no closing at all, which is worse than a second copy. Round 5.
-    const flatSig = flatten(signature);
-    // ONLY WHEN THE REPLY DOES CARRY A COPY. Without it this is a loose comparison asked of every
-    // balloon of every reply, and a balloon of ordinary two-line text — a short list, an address —
-    // would go out bare on the strength of a whitespace coincidence.
+    const sigLines = normalizeLines(signature);
+    const sigCount = sigLines.split("\n").length;
+    // ONLY WHEN THE REPLY DOES CARRY A COPY. Without it this comparison is asked of every balloon of
+    // every reply, and two lines of ordinary text — a short list, an address — are one whitespace
+    // coincidence away from going out with no closing at all.
     const signedSomewhere = alreadySigned(chunks, signature, whole);
     const flatSigned = (c: string): boolean => {
       if (!signedSomewhere) return false;
-      const lines = c.trim().split("\n");
-      // ON WHOLE LINES, which is the line boundary the exact check has, kept through the
-      // normalisation. Two short lines flatten into two ordinary words — "Alex\nSupport" becomes
-      // "Alex Support" — so a rule that matched anywhere in the balloon read "Alex Support can help
-      // with that." as already signed and sent it out bare. The merge this exists for trims the
-      // paragraphs and KEEPS the newlines between them, so a real copy always begins and ends on a
-      // line; prose in a single line never does.
-      for (let k = 0; k < lines.length; k += 1) {
-        if (flatten(lines.slice(k).join("\n")) === flatSig) return true;
-        if (flatten(lines.slice(0, lines.length - k).join("\n")) === flatSig)
-          return true;
-      }
-      return false;
+      // ON WHOLE LINES, at one END of the balloon, which is the line boundary the exact check has.
+      // The merge this exists for puts the copy at an end or gives it the whole balloon; a run
+      // matched anywhere inside would be containment, and containment is what sends a balloon out
+      // bare because the signature's words happen to appear in it.
+      const lines = normalizeLines(c).split("\n");
+      if (lines.length < sigCount) return false;
+      return (
+        lines.slice(0, sigCount).join("\n") === sigLines ||
+        lines.slice(lines.length - sigCount).join("\n") === sigLines
+      );
     };
     return chunks.map((c, i) =>
       c.trim().length === 0 ||

@@ -929,6 +929,26 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[2]).toBe(`Mais uma coisa.\n\n${SIG}`);
   });
 
+  // THE SIGNATURE'S OWN LINE BREAKS ARE PART OF IT. Collapsing them equated the two-line signature
+  // "Alex\nSupport" with the single prose line "Alex Support", so a balloon listing teams went out
+  // bare whenever the model happened to sign somewhere else in the reply. Round 7, and the same
+  // failure direction as round 6 through a narrower door.
+  //
+  // The merge this comparison exists for TRIMS the paragraphs and keeps the newlines between them,
+  // so the normalisation may drop indentation and blank lines and must keep the line breaks.
+  test("all: a prose line is not the two-line signature, even in a signed reply", () => {
+    const TWO_LINES = "Alex\nSupport";
+    const chunks = ["Available teams:\nAlex Support", TWO_LINES];
+    expect(
+      attachSignature(
+        chunks,
+        TWO_LINES,
+        { position: "bottom", separator: "blank", frequency: "all" },
+        chunks.join("\n\n"),
+      ),
+    ).toEqual([`Available teams:\nAlex Support\n\n${TWO_LINES}`, TWO_LINES]);
+  });
+
   // AND THE FLATTENED COMPARISON IS ONLY EVER USED on a reply whose ends say the model signed.
   // Everywhere else a balloon of two short lines is the operator's own text — a list, an address —
   // and a whitespace coincidence must not send it out bare. The price is a near-copy that differs

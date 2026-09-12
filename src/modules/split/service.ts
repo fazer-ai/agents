@@ -439,7 +439,13 @@ export async function deliverReply(
                     [owedRaw],
                     signature.text,
                     signature,
-                    reply,
+                    // THE RETRY'S OWN TEXT with `all`, the whole reply with `once`, because the two
+                    // ask different questions. `once` asks whether the model already signed this
+                    // TURN, which only the original can answer; `all` asks whether THIS message
+                    // carries a copy, and handing it the original made the opening copy answer for
+                    // a remainder that merely starts with the same word — the retry then went out
+                    // bare (round 7).
+                    signature.frequency === "all" ? owedRaw : reply,
                   )[0] ?? owedRaw)
                 : owedRaw;
             // The retry is a send like any other, so it names itself like any other: it carries the

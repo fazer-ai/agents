@@ -576,6 +576,55 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?\n\nAlex"]);
   });
 
+  // THE RETRY IS ITS OWN MESSAGE, and with `all` the question "did the model already sign this?"
+  // has to be asked of the retry, not of the whole reply it was cut from. Asking the original made
+  // the opening copy answer for a remainder that merely starts with the same word, and the retry
+  // went out bare. Round 7 of the review.
+  test("the consolidated retry is not silenced by a copy it does not contain", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG2 = "Alex\nSupport";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 3),
+      1,
+      `${SIG2}\n\nO agente responsável é:\n\nAlex`,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG2, position: "bottom", separator: "blank", frequency: "all" },
+    );
+    // The model's own copy opens the reply and is left whole; every other message carries one,
+    // including the retry.
+    expect(rec.sent[0]).toBe(SIG2);
+    expect(rec.sent.at(-1)).toBe(`Alex\n\n${SIG2}`);
+  });
+
+  // And with `once` the question is the other one: did the model already sign this TURN. Only the
+  // original reply can answer that, so a copy the customer already received in an earlier balloon
+  // still keeps the retry bare.
+  test("the consolidated retry stays bare when the model signed the turn already", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 3),
+      1,
+      "Alex\n\nUm.\n\nDois.",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      {
+        text: "Alex",
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      },
+    );
+    expect(rec.sent.at(-1)).toBe("Dois.");
+    expect(rec.sent.join("|")).not.toContain("Dois.\n\nAlex");
+  });
+
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
   // any occurrence reports a chunk that genuinely did not land as delivered, drops it from what is
   // owed, and truncates the reply while the turn reports `posted` — silently, which is the outcome

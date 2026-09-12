@@ -17,7 +17,7 @@ The fork already stores per-inbox signatures — `inbox_signatures` (our own PR 
 
 - `inbox_signatures` is `belongs_to :user` with `UNIQUE (user_id, inbox_id)`. An agent bot is not a User, so it could not be stored there without a migration.
 - The application is **frontend-only**: `appendSignature()` lives in `app/javascript/dashboard/helper/editorHelper.js` and runs in the reply box at send time. Rails never appends on the message-create path — the only backend reference outside storage is Captain's reply-suggestion service, which passes the signature to the LLM as context. A bot posting through the API goes nowhere near it, so doing it there would be a **port from JS to Ruby**, in a repo we rebase onto upstream.
-- **And it could not be correct there.** A split reply is N balloons, which is N independent message-create calls. Chatwoot cannot know which one is the last of a turn, so it would sign every balloon. "Once per turn, on the last message" is knowledge only this runtime has.
+- **And it could not be correct there.** A split reply is N balloons, which is N independent message-create calls. Chatwoot cannot know which one is the last of a turn, so it could only sign every balloon. That is now one of the two answers this feature offers (`frequency: "all"`), and it is the right one for a badge; but *which message closes a turn* is still knowledge only this runtime has, and it is the whole of `once`.
 
 The defaults match too, `top` included.
 
@@ -28,6 +28,7 @@ The defaults match too, `top` included.
 | `enabled` | `true` \| `false` | `false` — the off switch |
 | `text` | any text, multi-line, capped at 500 | `""` |
 | `position` | `top` \| `bottom` | `top` |
+| `frequency` | `all` \| `once` | read off `position`: `top` → `all`, `bottom` → `once` |
 | `separator` | `blank` (`\n\n`) \| `--` (`\n\n--\n\n`) | `blank` |
 
 **The switch is a switch, not an empty field** (#612). The first version made `text: ""` the only way to be off, which means turning the signature off destroys the text you would have to retype to turn it back on, and the text is the part that took thought to write. Every other block on the Behavior tab is a toggle over fields that keep their values. A stored block with text and no `enabled` reads as **on**, because that is what it meant when it was written; reading the absence as off would silently unsign every agent already configured.
@@ -35,6 +36,23 @@ The defaults match too, `top` included.
 Both answers are needed before a customer sees anything: `enabled` says whether to sign, `text` says what with. An enabled block with an empty text signs nothing, and that is not an error state, it is an operator who has not finished.
 
 **The field seeds itself once.** The first time the switch goes on over an empty field, the editor fills it with `**{{nome_agente}}**`, the agent's own name in bold, which is the signature most operators write by hand. It only ever seeds an empty field: turning the switch off keeps what you wrote, and seeding over a kept text would hand it back with the other hand.
+
+## Position and repetition are the same decision
+
+`position` alone was the first version's mistake (#616). A signature at the **bottom** is a farewell: said once, at the end, and repeating it on four balloons in ten seconds is worse than not having it. A signature at the **top** is a badge, and the question a badge answers, "who is talking to me", comes back on **every** balloon, because on WhatsApp each balloon is an independent message with its own notification, its own preview and its own forward. #599 offered `top` and then treated it as a farewell: on a three-balloon reply the customer read the agent's name once and got two anonymous messages after it.
+
+Two more arguments, beyond the operator's own:
+
+- **The fork's human signature already repeats.** `appendSignature` runs in the reply box at send time, so a human agent who sends three messages signs three. An agent signing once per turn is inconsistent with the person sitting next to it in the same conversation.
+- A message read in isolation, a notification, a group, a forwarded e-mail, carries nothing that says who wrote it.
+
+So `frequency` is a field of its own, and the two stay **independent**. The cross combinations are real: a badge only on the opening balloon is a legitimate choice for an operator who wants to introduce the agent once and then stop repeating itself.
+
+**The default is read off the position**, `top` → `all` and `bottom` → `once`, and the same derivation answers a bag that never wrote the field. That makes it a **behaviour change on deploy** for an agent already configured with `position: "top"`: one signed balloon becomes all of them, with nobody touching the agent. Declared rather than discovered, and narrow because the feature is off by default and shipped the day before. The alternative, defaulting an old bag to `once`, would have every existing top signature keep doing the thing the operator reported as wrong.
+
+**The value is refused at the write**, like `enabled` and unlike `position` and `separator`. The tie-breaker is what GET does: the API echoes the settings bag as it was stored, so normalising in the reader would leave the operator's client reading `"sempre"` on a field the runtime answered as `"all"`. The two older enums still have that hole; it belongs to the write path rather than to this feature, and is filed on its own.
+
+**`all` and `once` are indistinguishable wherever one message is sent** — split off, the handoff's farewell on the proactive path, the follow-up, the playground. Those callers pass a one-element array, so the repetition cannot leak into a path that never splits.
 
 ## There is no per-channel switch, and the shape of the next version is why
 
@@ -47,7 +65,7 @@ An allowlist is not a step toward that. It is a different field with a different
 - `readSignatureConfig(settings)` — the block, defaults applied, values of another shape dropped rather than carried (the bag is operator-editable through the REST API as well as the UI).
 - `signatureFor(cfg, vars?)` — the signature for this turn, or null when `text` is empty, with the placeholders resolved. The playground calls the same function, because it is asking the same question.
 - `alreadySigned(chunks, signature, whole?)` — the dedupe, asked of **the reply as it arose**, which the splitting caller has in hand and passes. Asking it of the chunks was a real defect twice over, and both halves came from review: a signature containing a blank line is cut by the same paragraph rule, so neither edge chunk holds all of it; and `splitReplyParts` **trims** every paragraph, so even a reassembly from the separators loses an indented line. There is nothing to reconstruct when the caller still has the original.
-- `attachSignature(chunks, signature, position, separator)` — pure, and the single spelling of the rule. Takes the **already-split** array and returns it with the signature on the last chunk (or the first, with `top`).
+- `attachSignature(chunks, signature, cfg, whole?)` — pure, and the single spelling of the rule. Takes the **already-split** array and returns it with the signature on every chunk (`all`) or on the last one, or the first with `top` (`once`). `cfg` is the config object rather than three loose arguments so a caller cannot forget the frequency, which is the mistake that silently reverts the feature at one send site out of four.
 
 ## It attaches to a CHUNK, never to the text
 
@@ -58,11 +76,13 @@ This is the whole design, and it is not a detail. `splitReplyParts` cuts on `/\n
 - at the `maxChunks` ceiling, is instead merged into the last paragraph, so **one configuration renders two different ways** depending on how long the reply happened to be;
 - on an email inbox with split on, where each balloon is an email, produces **an email whose whole body is the signature**.
 
+With `all` the dedupe becomes a **per-balloon** question, and it has to: `alreadySigned` asks about the reply as it arose, at both ends, which is right for `once` and wrong here, because a model that signed itself at the end would suppress the badge on every other balloon. The rule inside a balloon is unchanged, line boundary included. The balloon **count** is the invariant repetition must not touch: `deliverReply` keeps `seps` aligned with `chunks` by index, so a signature that added or merged a balloon would misalign every pause after it.
+
 It also answers the silent turn for free. A reply of only whitespace is truthy, so it passes the runtime's `if (!reply)` gate, and the splitter trims it to **zero** chunks — nothing is sent today. Attaching to a chunk that does not exist attaches nothing, where appending to the text would have made the signature a lone message in a turn where the agent said nothing.
 
 ## Which messages are signed
 
-The rule is **the message that closes a turn**, not "every outgoing message". There are thirteen sends in this runtime; four are signed:
+Which messages **of a signed turn** carry it is `frequency`, above. Which turns are signed at all is the rule below: there are thirteen sends in this runtime, and four are signed.
 
 | signed | where |
 | --- | --- |
@@ -112,7 +132,7 @@ Email and the web widget get HTML, Telegram gets its own HTML, Instagram/Faceboo
 
 The remaining limit is the link. `[fazer.ai](https://fazer.ai)` keeps its label on e-mail and loses it on WhatsApp, where only the URL survives. That is upstream's decision rather than something this feature can fix, so a signature that carries a link is best written with the URL bare when the agent answers on WhatsApp.
 
-This is what the **preview** in the Behavior tab is for. The field is a plain textarea rather than a rich editor, so `**Gi**` is what the operator types, and the preview is the only place that answers whether that lands as bold. It renders through the same `<Markdown>` the conversation view and the playground use, which is what a channel with a renderer does with it, and it resolves the variables against example values so the shape is visible before anything is sent.
+This is what the **preview** in the Behavior tab is for. It shows **one bubble per message**, the way the customer receives them, which is what makes the repetition visible and what makes `once` legible for the first time: the operator sees *which* of two messages carries the signature, the half of the old rule nobody could read off a single bubble. The message count follows the **split**, not the frequency, because with the split off the agent sends one message and the two frequencies are the same thing. The field is a plain textarea rather than a rich editor, so `**Gi**` is what the operator types, and the preview is the only place that answers whether that lands as bold. It renders through the same `<Markdown>` the conversation view and the playground use, which is what a channel with a renderer does with it, and it resolves the variables against example values so the shape is visible before anything is sent.
 
 ## The cap is declared on the control
 

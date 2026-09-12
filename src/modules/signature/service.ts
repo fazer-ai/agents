@@ -19,6 +19,7 @@ import { SIGNATURE_MAX } from "@/modules/agents/text-caps";
 
 export type SignaturePosition = "top" | "bottom";
 export type SignatureSeparator = "blank" | "--";
+export type SignatureFrequency = "all" | "once";
 
 export interface SignatureConfig {
   // THE OFF SWITCH, and a switch rather than an empty field (#612). The first version made
@@ -32,12 +33,26 @@ export interface SignatureConfig {
   text: string;
   position: SignaturePosition;
   separator: SignatureSeparator;
+  // POSITION AND REPETITION ARE THE SAME DECISION SEEN FROM TWO SIDES (#616), and the first version
+  // answered only one of them. A signature at the BOTTOM is a farewell: said once, at the end, and
+  // repeating it on four balloons in ten seconds is worse than not having it. A signature at the TOP
+  // is a badge, and the question a badge answers, "who is talking to me", comes back on EVERY
+  // balloon, because on WhatsApp each balloon is an independent message with its own notification,
+  // its own preview and its own forward. #599 offered `top` and then treated it as a farewell.
+  //
+  // The two fields stay independent rather than being folded into one, because the cross
+  // combinations are real: a badge only on the opening balloon is a legitimate choice for an
+  // operator who wants to introduce the agent once and then stop repeating itself.
+  frequency: SignatureFrequency;
 }
 
 export const SIGNATURE_DEFAULTS: SignatureConfig = {
   enabled: false,
   text: "",
   position: "top",
+  // Derived from the position above, and it has to match it: see the reader, where the same
+  // derivation answers a bag that never wrote the field.
+  frequency: "all",
   separator: "blank",
 };
 
@@ -54,6 +69,10 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
       : undefined;
   if (!s || typeof s !== "object") return { ...SIGNATURE_DEFAULTS };
   const bag = s as Record<string, unknown>;
+  const position =
+    bag.position === "top" || bag.position === "bottom"
+      ? bag.position
+      : SIGNATURE_DEFAULTS.position;
   return {
     // A BAG WRITTEN BEFORE THE SWITCH EXISTED MEANT ON, and reading its absence as off would unsign
     // every agent configured under #599 on the next load, silently, with nobody touching anything.
@@ -70,10 +89,23 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
       typeof bag.text === "string"
         ? clipText(bag.text.trim(), SIGNATURE_MAX)
         : SIGNATURE_DEFAULTS.text,
-    position:
-      bag.position === "top" || bag.position === "bottom"
-        ? bag.position
-        : SIGNATURE_DEFAULTS.position,
+    position,
+    // READ OFF THE POSITION when the bag never wrote it, which is every bag written before #616.
+    // The position is where the operator's intent is already visible — a badge above, a farewell
+    // below — so the default reads it instead of asking the same question twice, and an operator
+    // who wants the cross combination says so explicitly.
+    //
+    // This is a BEHAVIOUR CHANGE on deploy for an agent already configured with `position: "top"`:
+    // one signed balloon becomes all of them, with nobody touching the agent. Declared in the issue
+    // rather than discovered, and narrow because the feature is off by default and shipped the day
+    // before. The alternative, defaulting an old bag to `once`, would have every existing top
+    // signature keep doing the thing the operator reported as wrong.
+    frequency:
+      bag.frequency === "all" || bag.frequency === "once"
+        ? bag.frequency
+        : position === "top"
+          ? "all"
+          : "once",
     separator:
       bag.separator === "blank" || bag.separator === "--"
         ? bag.separator
@@ -183,12 +215,17 @@ export function alreadySigned(
 // Attaching to a chunk that does not exist attaches nothing, where appending to the text would have
 // made the signature a lone message in a turn where the agent said nothing.
 //
-// Pure, and the single spelling of the rule: a caller that sends one message passes `[text]`.
+// Pure, and the single spelling of the rule: a caller that sends one message passes `[text]`, which
+// is also why `all` and `once` are indistinguishable on the three single-message sends (split off,
+// the handoff's farewell on the proactive path, the follow-up). One chunk is one signature either
+// way, so the repetition cannot leak into a path that never splits.
 export function attachSignature(
   chunks: string[],
   signature: string | null,
-  position: SignaturePosition,
-  separator: SignatureSeparator,
+  // THE CONFIG, not three loose arguments, since #616 added the third. A caller that passes the
+  // agent's `signatureConfig` straight through cannot forget one of them, and forgetting the
+  // frequency is the mistake that silently reverts this feature at one send site out of four.
+  cfg: Pick<SignatureConfig, "position" | "separator" | "frequency">,
   // The reply AS IT AROSE, before the split. Only the dedupe reads it (see `alreadySigned`); the
   // attachment still happens on a chunk, which is the whole design.
   whole?: string,
@@ -198,15 +235,30 @@ export function attachSignature(
   // reply to zero chunks; with split OFF the same reply arrives here as one blank chunk, and without
   // this the two paths would disagree about the same silent turn.
   if (chunks.every((c) => c.trim().length === 0)) return chunks;
+  const { position, separator, frequency } = cfg;
   const delimiter = DELIMITERS[separator];
+  const put = (chunk: string): string =>
+    position === "top"
+      ? `${signature}${delimiter}${chunk.trimStart()}`
+      : `${chunk.trimEnd()}${delimiter}${signature}`;
+  // EVERY MESSAGE OF THE TURN, which is a loop over the same rule and not a second one. The balloon
+  // COUNT is the invariant it must not touch: `deliverReply` keeps `seps` aligned with `chunks` by
+  // index, so a signature that added or merged a balloon would misalign every pause after it.
+  if (frequency === "all") {
+    // ASKED PER BALLOON, and that is the shape change the repetition forces. `alreadySigned` asks
+    // about the reply as it AROSE, at both ends, which is the right question for `once` and the
+    // wrong one here: a model that signed itself at the end would suppress the badge on every other
+    // balloon, which is the failure this feature exists to prevent, produced by the guard against
+    // its twin. The rule inside the balloon is unchanged, line boundary included.
+    return chunks.map((c) =>
+      c.trim().length === 0 || alreadySigned([c], signature) ? c : put(c),
+    );
+  }
   const i = position === "top" ? 0 : chunks.length - 1;
   const chunk = chunks[i];
   if (chunk === undefined || alreadySigned(chunks, signature, whole))
     return chunks;
   const out = [...chunks];
-  out[i] =
-    position === "top"
-      ? `${signature}${delimiter}${chunk.trimStart()}`
-      : `${chunk.trimEnd()}${delimiter}${signature}`;
+  out[i] = put(chunk);
   return out;
 }

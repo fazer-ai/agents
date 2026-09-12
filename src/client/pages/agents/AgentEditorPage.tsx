@@ -822,11 +822,14 @@ function AgentEditor() {
     typingWpm: "250",
     maxDelayMs: "8000",
   });
-  // The operator's closing line. Mirrors modules/signature (off by default, `top`, `blank`).
+  // The operator's closing line. Mirrors modules/signature (off by default, `top`, `blank`, and
+  // `all`, which is what `top` implies: a badge above the message answers "who is talking to me"
+  // on every message, where a farewell below it is said once).
   const [signature, setSignature] = useState({
     enabled: false,
     text: "",
     position: "top" as "top" | "bottom",
+    frequency: "all" as "all" | "once",
     separator: "blank" as "blank" | "--",
   });
   // Proactive follow-up sequence. Mirrors agent.settings.followUp ({ enabled, steps[] }).

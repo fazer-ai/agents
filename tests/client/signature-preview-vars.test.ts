@@ -51,12 +51,9 @@ const OPTS: PromptRenderOpts = {
 const FALLBACK_VARS = signaturePreviewVars();
 
 function preview(text: string, vars = FALLBACK_VARS): string {
-  return signaturePreviewParts(
-    { ...SIGNATURE_DEFAULTS, text },
-    t,
-    vars,
-    OPTS,
-  ).join("\n");
+  return signaturePreviewParts({ ...SIGNATURE_DEFAULTS, text }, t, vars, OPTS)
+    .flat()
+    .join("\n");
 }
 
 describe("the signature preview answers every variable the field offers", () => {
@@ -178,5 +175,84 @@ describe("the preview signs with the operator's own names", () => {
     const decl = SOURCE.slice(at, at + 120);
     expect(decl).toContain("agentName");
     expect(decl).toContain("companyName");
+  });
+});
+
+// Issue #616: the preview is where the operator sees what they are buying. A single bubble could
+// not show the repetition, and could not show WHICH of two messages `once` signs either — the half
+// of the old rule nobody could read off the screen.
+describe("the preview shows one bubble per message", () => {
+  const VARS = signaturePreviewVars("Alex", "Minha Empresa");
+  const sig = (over: Record<string, unknown>) => ({
+    ...SIGNATURE_DEFAULTS,
+    text: "Alex",
+    ...over,
+  });
+
+  test("all: every message carries it", () => {
+    const msgs = signaturePreviewParts(
+      sig({ position: "top", frequency: "all" }),
+      t,
+      VARS,
+      OPTS,
+    );
+    expect(msgs.length).toBeGreaterThan(1);
+    for (const parts of msgs) expect(parts[0]).toBe("Alex");
+  });
+
+  test("once + top: only the first, and the rest are bare", () => {
+    const msgs = signaturePreviewParts(
+      sig({ position: "top", frequency: "once" }),
+      t,
+      VARS,
+      OPTS,
+    );
+    expect(msgs.length).toBeGreaterThan(1);
+    expect(msgs[0]?.[0]).toBe("Alex");
+    expect(msgs.flat().filter((p) => p === "Alex")).toHaveLength(1);
+  });
+
+  test("once + bottom: only the last", () => {
+    const msgs = signaturePreviewParts(
+      sig({ position: "bottom", frequency: "once" }),
+      t,
+      VARS,
+      OPTS,
+    );
+    expect(msgs.at(-1)?.at(-1)).toBe("Alex");
+    expect(msgs.flat().filter((p) => p === "Alex")).toHaveLength(1);
+  });
+
+  // THE MESSAGE COUNT FOLLOWS THE SPLIT, not the frequency. With the split off the agent sends one
+  // message and the two frequencies are the same thing, so two bubbles would preview a delivery
+  // that never happens.
+  test("split off: one bubble, whatever the frequency says", () => {
+    for (const frequency of ["all", "once"]) {
+      const msgs = signaturePreviewParts(
+        sig({ position: "top", frequency }),
+        t,
+        VARS,
+        OPTS,
+        false,
+      );
+      expect(msgs).toHaveLength(1);
+      expect(msgs.flat().filter((p) => p === "Alex")).toHaveLength(1);
+    }
+  });
+
+  test("an empty signature previews the bodies alone", () => {
+    const msgs = signaturePreviewParts(sig({ text: "  " }), t, VARS, OPTS);
+    for (const parts of msgs) expect(parts).toHaveLength(1);
+  });
+});
+
+// The tab has to hand the preview the SPLIT's own switch, or an operator with the split off reads a
+// two-balloon preview of a one-message delivery.
+describe("the tab tells its preview whether the reply is split", () => {
+  test("the preview call forwards the split switch", () => {
+    const at = SOURCE.indexOf("{signaturePreviewParts(");
+    expect(at).toBeGreaterThan(-1);
+    const call = SOURCE.slice(at, SOURCE.indexOf(").map(", at));
+    expect(call).toContain("split.enabled");
   });
 });

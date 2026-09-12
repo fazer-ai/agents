@@ -1178,12 +1178,7 @@ export async function runAgentNudge(
       cfg.promptOpts,
     );
     if (!sig) return text;
-    const [out = text] = attachSignature(
-      [text],
-      sig,
-      cfg.signatureConfig.position,
-      cfg.signatureConfig.separator,
-    );
+    const [out = text] = attachSignature([text], sig, cfg.signatureConfig);
     return out;
   };
 

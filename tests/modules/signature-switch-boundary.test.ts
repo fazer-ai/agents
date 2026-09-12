@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertSettingsSignature,
+  InvalidSignatureFrequencyError,
   InvalidSignatureSwitchError,
 } from "@/modules/agents/service";
 
@@ -69,5 +70,92 @@ describe("assertSettingsSignature", () => {
     expect(() =>
       assertSettingsSignature({ signature: { enabled: "nao" } }, stored),
     ).toThrow(InvalidSignatureSwitchError);
+  });
+});
+
+// THE FREQUENCY IS REFUSED THE SAME WAY (#616), and the tie-breaker is what GET does rather than
+// what the reader can cope with. `position` and `separator` normalise, so a wrong value there is
+// harmless to the runtime — but the API echoes the settings bag AS STORED, so normalising leaves
+// the operator's client reading "sempre" on a field the runtime answered as "all". #612 already
+// settled that two answers to one question is one too many.
+describe("assertSettingsSignature: the frequency", () => {
+  test("both values pass", () => {
+    for (const frequency of ["all", "once"]) {
+      expect(() =>
+        assertSettingsSignature({ signature: { frequency } }, undefined),
+      ).not.toThrow();
+    }
+  });
+
+  test("an absent frequency passes, because that is every bag written before it existed", () => {
+    expect(() =>
+      assertSettingsSignature({ signature: { text: "Alex" } }, undefined),
+    ).not.toThrow();
+  });
+
+  test("a value outside the domain is refused, naming the field", () => {
+    let caught: unknown;
+    try {
+      assertSettingsSignature(
+        { signature: { frequency: "sempre" } },
+        undefined,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(InvalidSignatureFrequencyError);
+    const err = caught as InvalidSignatureFrequencyError & {
+      field?: string;
+      statusCode?: number;
+    };
+    expect(err.field).toBe("signature.frequency");
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toContain('"sempre"');
+  });
+
+  test("a number, a null and an object are refused too", () => {
+    for (const bad of [1, null, {}, true]) {
+      expect(() =>
+        assertSettingsSignature({ signature: { frequency: bad } }, undefined),
+      ).toThrow(InvalidSignatureFrequencyError);
+    }
+  });
+
+  // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, the scoping every rule in this family has: a bag
+  // that already holds a bad value is re-sent untouched by every save that edits some other
+  // section, and refusing those would freeze the agent on a field nobody is editing.
+  test("a stored bad value re-sent unchanged does not block an unrelated save", () => {
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { frequency: "sempre", text: "Outro" } },
+        { signature: { frequency: "sempre", text: "Alex" } },
+      ),
+    ).not.toThrow();
+  });
+
+  test("changing one bad value for another is still a change, and still refused", () => {
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { frequency: "toda" } },
+        { signature: { frequency: "sempre" } },
+      ),
+    ).toThrow(InvalidSignatureFrequencyError);
+  });
+
+  // The two guards are independent: a bad switch alongside a good frequency still throws the
+  // switch's error, and a good switch does not excuse a bad frequency.
+  test("the switch and the frequency are checked independently", () => {
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { enabled: "sim", frequency: "all" } },
+        undefined,
+      ),
+    ).toThrow(InvalidSignatureSwitchError);
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { enabled: true, frequency: "sempre" } },
+        undefined,
+      ),
+    ).toThrow(InvalidSignatureFrequencyError);
   });
 });

@@ -200,6 +200,10 @@ const signature = z.looseObject({
     .describe("off by default; off keeps the text"),
   text: z.string().optional().describe("the operator's closing line"),
   position: z.enum(["top", "bottom"]).optional().describe("default top"),
+  frequency: z
+    .enum(["all", "once"])
+    .optional()
+    .describe("which messages of a split reply; default from position"),
   separator: z
     .enum(["blank", "--"])
     .optional()

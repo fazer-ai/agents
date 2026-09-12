@@ -15,6 +15,7 @@ import {
 } from "@/modules/flowlog/service";
 import {
   attachSignature,
+  type SignatureFrequency,
   type SignaturePosition,
   type SignatureSeparator,
 } from "@/modules/signature/service";
@@ -250,6 +251,7 @@ export async function deliverReply(
     text: string;
     position: SignaturePosition;
     separator: SignatureSeparator;
+    frequency: SignatureFrequency;
   } | null = null,
 ): Promise<ReplyDelivery> {
   return withFlowStage(
@@ -268,12 +270,7 @@ export async function deliverReply(
         // Through the SAME function the split branch uses, on a one-element array. Split off is not
         // a second rule about signatures, it is one chunk.
         const [single = reply] = signature
-          ? attachSignature(
-              [reply],
-              signature.text,
-              signature.position,
-              signature.separator,
-            )
+          ? attachSignature([reply], signature.text, signature)
           : [reply];
         try {
           await client.sendMessage(conversationId, single, { sendId });
@@ -305,13 +302,7 @@ export async function deliverReply(
       // the count never changes. A reply that trimmed to zero chunks is a turn that said nothing,
       // and nothing is what it gets signed with.
       const chunks = signature
-        ? attachSignature(
-            rawChunks,
-            signature.text,
-            signature.position,
-            signature.separator,
-            reply,
-          )
+        ? attachSignature(rawChunks, signature.text, signature, reply)
         : rawChunks;
       let delivered = 0;
       let failed = false;

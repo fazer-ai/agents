@@ -29,6 +29,11 @@ export function signatureToForm(settings: unknown): SignatureState {
     // Found in review of #613.
     text: storedText,
     position: c.position,
+    // Through the reader again, which is where the migration lives: a bag written before #616 has
+    // no frequency, and what its absence means is read off the position. The form must not answer
+    // that question a second time, or the screen and the customer disagree about an agent nobody
+    // has opened yet.
+    frequency: c.frequency,
     separator: c.separator,
   };
 }
@@ -38,6 +43,7 @@ export function signatureToStored(form: SignatureState): {
   text: string;
   position: "top" | "bottom";
   separator: "blank" | "--";
+  frequency: "all" | "once";
 } {
   return {
     // The operator's own answer, written back as given. Writing `true` whenever there is text would
@@ -47,6 +53,10 @@ export function signatureToStored(form: SignatureState): {
     // is a no-op instead of a diff.
     text: form.text.trim(),
     position: form.position,
+    // WRITTEN OUT, even when it equals what the position would have implied. The derivation is the
+    // reader's answer to a bag that never said; once the operator has seen the control, the bag
+    // says. Otherwise a later change of position would silently move a choice the operator made.
+    frequency: form.frequency,
     separator: form.separator,
   };
 }

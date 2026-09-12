@@ -29,26 +29,41 @@ const SIG = "— Gi, Guichê Web";
 describe("attachSignature: it attaches to a CHUNK, never to the text", () => {
   test("the last balloon carries it, and only that one", () => {
     expect(
-      attachSignature(["um", "dois", "três"], SIG, "bottom", "blank"),
+      attachSignature(["um", "dois", "três"], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
     ).toEqual(["um", "dois", `três\n\n${SIG}`]);
   });
 
   test("with position top it is the FIRST balloon", () => {
-    expect(attachSignature(["um", "dois"], SIG, "top", "blank")).toEqual([
-      `${SIG}\n\num`,
-      "dois",
-    ]);
+    expect(
+      attachSignature(["um", "dois"], SIG, {
+        position: "top",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual([`${SIG}\n\num`, "dois"]);
   });
 
   test("the separator is byte-identical to Chatwoot's", () => {
     // `appendSignature` builds `{ blank: '\n\n', '--': '\n\n--\n\n' }`. An operator who configures
     // the same separator in both places has to get the same bytes out of both.
-    expect(attachSignature(["corpo"], SIG, "bottom", "blank")).toEqual([
-      `corpo\n\n${SIG}`,
-    ]);
-    expect(attachSignature(["corpo"], SIG, "bottom", "--")).toEqual([
-      `corpo\n\n--\n\n${SIG}`,
-    ]);
+    expect(
+      attachSignature(["corpo"], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual([`corpo\n\n${SIG}`]);
+    expect(
+      attachSignature(["corpo"], SIG, {
+        position: "bottom",
+        separator: "--",
+        frequency: "once",
+      }),
+    ).toEqual([`corpo\n\n--\n\n${SIG}`]);
   });
 
   test("THE REASON IT IS A CHUNK: no balloon is ever just the separator", () => {
@@ -68,7 +83,11 @@ describe("attachSignature: it attaches to a CHUNK, never to the text", () => {
         "Primeiro parágrafo.\n\nSegundo parágrafo.",
         SPLIT_DEFAULTS,
       );
-      const right = attachSignature(chunks, SIG, "bottom", separator);
+      const right = attachSignature(chunks, SIG, {
+        position: "bottom",
+        separator,
+        frequency: "once",
+      });
       expect(right).toHaveLength(chunks.length);
       expect(right.some((c) => c.trim() === "--" || c.trim() === SIG)).toBe(
         false,
@@ -87,7 +106,11 @@ describe("attachSignature: it attaches to a CHUNK, never to the text", () => {
     const short = "Parágrafo único.";
     for (const body of [long, short]) {
       const { chunks } = splitReplyParts(body, cfg);
-      const out = attachSignature(chunks, SIG, "bottom", "blank");
+      const out = attachSignature(chunks, SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      });
       expect(out[out.length - 1]?.endsWith(`\n\n${SIG}`)).toBe(true);
       expect(out).toHaveLength(chunks.length);
     }
@@ -99,16 +122,46 @@ describe("attachSignature: it attaches to a CHUNK, never to the text", () => {
     // chunk, the signature would be a lone message in a turn where the agent said nothing.
     const { chunks } = splitReplyParts("   ", SPLIT_DEFAULTS);
     expect(chunks).toHaveLength(0);
-    expect(attachSignature(chunks, SIG, "bottom", "blank")).toEqual([]);
+    expect(
+      attachSignature(chunks, SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual([]);
     // And the split-OFF path, which reaches the same function as one blank chunk, has to agree.
-    expect(attachSignature(["   "], SIG, "bottom", "blank")).toEqual(["   "]);
-    expect(attachSignature([""], SIG, "top", "--")).toEqual([""]);
+    expect(
+      attachSignature(["   "], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual(["   "]);
+    expect(
+      attachSignature([""], SIG, {
+        position: "top",
+        separator: "--",
+        frequency: "once",
+      }),
+    ).toEqual([""]);
   });
 
   test("no signature changes nothing at all", () => {
     for (const chunks of [["a"], ["a", "b"], []]) {
-      expect(attachSignature(chunks, null, "bottom", "blank")).toEqual(chunks);
-      expect(attachSignature(chunks, "", "top", "--")).toEqual(chunks);
+      expect(
+        attachSignature(chunks, null, {
+          position: "bottom",
+          separator: "blank",
+          frequency: "once",
+        }),
+      ).toEqual(chunks);
+      expect(
+        attachSignature(chunks, "", {
+          position: "top",
+          separator: "--",
+          frequency: "once",
+        }),
+      ).toEqual(chunks);
     }
   });
 });
@@ -116,7 +169,11 @@ describe("attachSignature: it attaches to a CHUNK, never to the text", () => {
 describe("alreadySigned: a tail check across the whole reply, not containment", () => {
   test("an exact repetition at the end is not doubled", () => {
     expect(
-      attachSignature([`corpo\n\n${SIG}`], SIG, "bottom", "blank"),
+      attachSignature([`corpo\n\n${SIG}`], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
     ).toEqual([`corpo\n\n${SIG}`]);
   });
 
@@ -124,9 +181,13 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
     // Containment — "does the body contain the signature" — silently drops the signature whenever
     // the text happens to mention it. Chatwoot asks `trimmedBody.endsWith(...)` for this reason.
     const body = `Como a ${SIG} já explicou, o prazo é de 7 dias.`;
-    expect(attachSignature([body], SIG, "bottom", "blank")).toEqual([
-      `${body}\n\n${SIG}`,
-    ]);
+    expect(
+      attachSignature([body], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual([`${body}\n\n${SIG}`]);
   });
 
   test("BOTH ends are asked, across the whole reply", () => {
@@ -134,10 +195,22 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
     // at the end put its copy on the LAST one. A check scoped to chunk zero finds nothing, prepends,
     // and the customer reads two closings.
     const chunks = ["primeiro", `último\n\n${SIG}`];
-    expect(attachSignature(chunks, SIG, "top", "blank")).toEqual(chunks);
+    expect(
+      attachSignature(chunks, SIG, {
+        position: "top",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual(chunks);
     expect(alreadySigned(chunks, SIG)).toBe(true);
     const atTop = [`${SIG}\n\nprimeiro`, "último"];
-    expect(attachSignature(atTop, SIG, "bottom", "blank")).toEqual(atTop);
+    expect(
+      attachSignature(atTop, SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual(atTop);
   });
 
   test("what it does NOT catch is a paraphrase, by design", () => {
@@ -145,14 +218,22 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
     // and the fix for that is emptying the prompt, which is what this feature is for. Chatwoot has
     // the same limit.
     const paraphrase = "corpo\n\nAtenciosamente,\nGi";
-    expect(attachSignature([paraphrase], SIG, "bottom", "blank")).toEqual([
-      `${paraphrase}\n\n${SIG}`,
-    ]);
+    expect(
+      attachSignature([paraphrase], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
+    ).toEqual([`${paraphrase}\n\n${SIG}`]);
   });
 
   test("trailing whitespace does not defeat it", () => {
     expect(
-      attachSignature([`corpo\n\n${SIG}\n  \n`], SIG, "bottom", "blank"),
+      attachSignature([`corpo\n\n${SIG}\n  \n`], SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      }),
     ).toEqual([`corpo\n\n${SIG}\n  \n`]);
   });
 
@@ -174,6 +255,7 @@ describe("signatureFor: on or off, and the variables", () => {
     expect(signatureFor(cfg)).toBe(SIG);
     expect(Object.keys(SIGNATURE_DEFAULTS).sort()).toEqual([
       "enabled",
+      "frequency",
       "position",
       "separator",
       "text",
@@ -236,6 +318,7 @@ describe("readSignatureConfig", () => {
       text: SIG,
       position: "bottom",
       separator: "--",
+      frequency: "once",
     });
   });
 
@@ -274,6 +357,7 @@ describe("deliverReply: what the customer actually receives", () => {
     text: SIG,
     position: "bottom" as const,
     separator: "--" as const,
+    frequency: "once" as const,
   };
 
   test("split ON: the last balloon is signed and no balloon is the separator", async () => {
@@ -358,18 +442,28 @@ describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
     const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
     expect(chunks.length).toBeGreaterThan(2);
     expect(alreadySigned(chunks, MULTI, reply)).toBe(true);
-    expect(attachSignature(chunks, MULTI, "bottom", "blank", reply)).toEqual(
-      chunks,
-    );
+    expect(
+      attachSignature(
+        chunks,
+        MULTI,
+        { position: "bottom", separator: "blank", frequency: "once" },
+        reply,
+      ),
+    ).toEqual(chunks);
   });
 
   test("and at the top, for position top", () => {
     const reply = `${MULTI}\n\nResposta.`;
     const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
     expect(alreadySigned(chunks, MULTI, reply)).toBe(true);
-    expect(attachSignature(chunks, MULTI, "top", "blank", reply)).toEqual(
-      chunks,
-    );
+    expect(
+      attachSignature(
+        chunks,
+        MULTI,
+        { position: "top", separator: "blank", frequency: "once" },
+        reply,
+      ),
+    ).toEqual(chunks);
   });
 
   test("an INDENTED line inside the signature survives the comparison", () => {
@@ -381,9 +475,14 @@ describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
     const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
     expect(chunks.join("\n\n")).not.toContain("  Guichê Web");
     expect(alreadySigned(chunks, indented, reply)).toBe(true);
-    expect(attachSignature(chunks, indented, "bottom", "blank", reply)).toEqual(
-      chunks,
-    );
+    expect(
+      attachSignature(
+        chunks,
+        indented,
+        { position: "bottom", separator: "blank", frequency: "once" },
+        reply,
+      ),
+    ).toEqual(chunks);
   });
 
   test("the same signature in the MIDDLE is not a match", () => {
@@ -444,7 +543,11 @@ describe("the render options travel with the variables (review of #599)", () => 
 // name, which is the common case, so this is not an exotic input.
 describe("the dedupe asks for a whole line, not a prefix", () => {
   const sign = (text: string, signature: string, position: SignaturePosition) =>
-    attachSignature([text], signature, position, "blank");
+    attachSignature([text], signature, {
+      position,
+      separator: "blank",
+      frequency: "once",
+    });
 
   test("a word that merely starts with the signature is not a signature", () => {
     expect(
@@ -568,9 +671,320 @@ describe("turning the signature off without deleting it (#612)", () => {
     expect(SIGNATURE_DEFAULTS.enabled).toBe(false);
     expect(Object.keys(SIGNATURE_DEFAULTS).sort()).toEqual([
       "enabled",
+      "frequency",
       "position",
       "separator",
       "text",
     ]);
+  });
+});
+
+// Issue #616. POSITION AND REPETITION ARE THE SAME DECISION SEEN FROM TWO SIDES, and #599 answered
+// only one of them. A signature at the BOTTOM is a farewell, said once; a signature at the TOP is a
+// badge, and the question it answers ("who is talking to me") comes back on every balloon, because
+// on WhatsApp each balloon is an independent message with its own notification and its own preview.
+// The first version offered `top` and then treated it as a farewell: on a three-balloon reply the
+// customer read the agent's name once and got two anonymous messages after it.
+//
+// The fork's own human signature already repeats — `appendSignature` runs in the reply box at SEND
+// time, so a human who sends three messages signs three — and an agent signing once per turn is
+// inconsistent with the person sitting next to it in the same conversation.
+describe("frequency: every message of the turn, or one of them", () => {
+  const THREE = [
+    "Boa tarde, verifiquei aqui.",
+    "O seu pedido foi confirmado.",
+    "Qualquer dúvida, é só chamar.",
+  ];
+
+  test("all + top: every balloon opens with the badge, and no balloon is added", () => {
+    expect(
+      attachSignature(THREE, SIG, {
+        position: "top",
+        separator: "--",
+        frequency: "all",
+      }),
+    ).toEqual([
+      `${SIG}\n\n--\n\nBoa tarde, verifiquei aqui.`,
+      `${SIG}\n\n--\n\nO seu pedido foi confirmado.`,
+      `${SIG}\n\n--\n\nQualquer dúvida, é só chamar.`,
+    ]);
+  });
+
+  test("all + bottom: every balloon closes with it", () => {
+    expect(
+      attachSignature(THREE, SIG, {
+        position: "bottom",
+        separator: "blank",
+        frequency: "all",
+      }),
+    ).toEqual([
+      `Boa tarde, verifiquei aqui.\n\n${SIG}`,
+      `O seu pedido foi confirmado.\n\n${SIG}`,
+      `Qualquer dúvida, é só chamar.\n\n${SIG}`,
+    ]);
+  });
+
+  // The whole point of keeping the old value: an operator who wants the farewell keeps what #599
+  // shipped, byte for byte, and nothing about this change reaches them.
+  test("once: byte-identical to what #599 delivers, in both positions", () => {
+    expect(
+      attachSignature(THREE, SIG, {
+        position: "top",
+        separator: "--",
+        frequency: "once",
+      }),
+    ).toEqual([
+      `${SIG}\n\n--\n\nBoa tarde, verifiquei aqui.`,
+      "O seu pedido foi confirmado.",
+      "Qualquer dúvida, é só chamar.",
+    ]);
+    expect(
+      attachSignature(THREE, SIG, {
+        position: "bottom",
+        separator: "--",
+        frequency: "once",
+      }),
+    ).toEqual([
+      "Boa tarde, verifiquei aqui.",
+      "O seu pedido foi confirmado.",
+      `Qualquer dúvida, é só chamar.\n\n--\n\n${SIG}`,
+    ]);
+  });
+
+  // THE DEDUPE BECOMES A PER-BALLOON QUESTION, and it has to. `alreadySigned` asks about the reply
+  // as it AROSE, at both ends, which is the right question for `once` and the wrong shape for
+  // `all`: a model that signed itself at the end would suppress the badge on the other three
+  // balloons, which is the failure this feature exists to prevent, produced by the guard against
+  // its twin. Same rule as #599 otherwise, including the line boundary.
+  test("all: the balloon the model signed keeps ONE, and the others still get theirs", () => {
+    const fim = [...THREE.slice(0, 2), SIG];
+    const out = attachSignature(fim, SIG, {
+      position: "top",
+      separator: "blank",
+      frequency: "all",
+    });
+    expect(out).toEqual([
+      `${SIG}\n\nBoa tarde, verifiquei aqui.`,
+      `${SIG}\n\nO seu pedido foi confirmado.`,
+      SIG,
+    ]);
+    expect(out.join("\n\n").split(SIG).length - 1).toBe(3);
+  });
+
+  test("all: the model's copy at the START is left alone, bottom", () => {
+    const inicio = [SIG, ...THREE.slice(0, 2)];
+    const out = attachSignature(inicio, SIG, {
+      position: "bottom",
+      separator: "blank",
+      frequency: "all",
+    });
+    expect(out).toEqual([
+      SIG,
+      `Boa tarde, verifiquei aqui.\n\n${SIG}`,
+      `O seu pedido foi confirmado.\n\n${SIG}`,
+    ]);
+  });
+
+  // The `once` rule still asks the WHOLE reply, because with `once` one copy anywhere is already
+  // the one copy the customer should read.
+  test("once: a reply the model signed at the end gets nothing added", () => {
+    const fim = [...THREE.slice(0, 2), SIG];
+    expect(
+      attachSignature(
+        fim,
+        SIG,
+        { position: "top", separator: "blank", frequency: "once" },
+        fim.join("\n\n"),
+      ),
+    ).toEqual(fim);
+  });
+
+  test("a silent turn stays silent with all: no balloon is invented", () => {
+    for (const chunks of [[], ["   "], ["  ", "\n "]]) {
+      expect(
+        attachSignature(chunks, SIG, {
+          position: "top",
+          separator: "--",
+          frequency: "all",
+        }),
+      ).toEqual(chunks);
+    }
+  });
+
+  // A BLANK BALLOON IS NOT SIGNED, which is the loop's version of the whole-array guard above.
+  // `splitReplyParts` never emits a blank chunk, so this cannot arise from the delivery path today
+  // — but `attachSignature` is a pure function other callers hand arrays to, and signing a blank
+  // one produces a balloon whose entire body is the signature, which is the exact shape the
+  // attach-to-a-chunk design exists to prevent.
+  test("all: a blank balloon in a mixed array is left alone", () => {
+    expect(
+      attachSignature(["Tem texto.", "   "], SIG, {
+        position: "top",
+        separator: "--",
+        frequency: "all",
+      }),
+    ).toEqual([`${SIG}\n\n--\n\nTem texto.`, "   "]);
+  });
+
+  // The three single-message sends — split off, the handoff's farewell on the proactive path, the
+  // follow-up — all call this with a one-element array, so the two frequencies cannot diverge
+  // there. If they ever do, a follow-up starts carrying two signatures.
+  test("on a one-element array the two frequencies are indistinguishable", () => {
+    for (const position of ["top", "bottom"] as SignaturePosition[]) {
+      const all = attachSignature(["Mensagem única."], SIG, {
+        position,
+        separator: "--",
+        frequency: "all",
+      });
+      const once = attachSignature(["Mensagem única."], SIG, {
+        position,
+        separator: "--",
+        frequency: "once",
+      });
+      expect(all).toEqual(once);
+      expect(all.join("").split(SIG).length - 1).toBe(1);
+    }
+  });
+});
+
+describe("readSignatureConfig: the frequency an old bag never wrote", () => {
+  // THE MIGRATION, and it is a behaviour change stated out loud rather than discovered: a bag
+  // written under #599/#612 with `position: "top"` starts signing every balloon on deploy. The
+  // position is where the operator's intent is already visible, so the default reads it instead of
+  // asking the same question twice.
+  test("no frequency: top means all, bottom means once", () => {
+    expect(
+      readSignatureConfig({ signature: { text: "Alex", position: "top" } })
+        .frequency,
+    ).toBe("all");
+    expect(
+      readSignatureConfig({ signature: { text: "Alex", position: "bottom" } })
+        .frequency,
+    ).toBe("once");
+  });
+
+  test("a value of another shape falls back the same way every other field does", () => {
+    for (const bad of ["sempre", 1, null, {}, true]) {
+      expect(
+        readSignatureConfig({
+          signature: { text: "Alex", position: "bottom", frequency: bad },
+        }).frequency,
+      ).toBe("once");
+    }
+  });
+
+  test("a written frequency wins over the position it disagrees with", () => {
+    expect(
+      readSignatureConfig({
+        signature: { text: "Alex", position: "top", frequency: "once" },
+      }).frequency,
+    ).toBe("once");
+    expect(
+      readSignatureConfig({
+        signature: { text: "Alex", position: "bottom", frequency: "all" },
+      }).frequency,
+    ).toBe("all");
+  });
+
+  test("the default matches the default position", () => {
+    expect(SIGNATURE_DEFAULTS.frequency).toBe("all");
+    expect(SIGNATURE_DEFAULTS.position).toBe("top");
+  });
+});
+
+describe("deliverReply with frequency: what the customer actually receives", () => {
+  function stub(rec: { sent: string[] }) {
+    return {
+      sendMessage: async (_c: number, content: string) => {
+        rec.sent.push(content);
+        return {};
+      },
+      toggleTyping: async () => {},
+    } as unknown as Parameters<typeof deliverReply>[0];
+  }
+  const noSleep = async () => {};
+  const BODY =
+    "Boa tarde, verifiquei aqui.\n\nO seu pedido foi confirmado.\n\nQualquer dúvida, é só chamar.";
+
+  test("all + top: three balloons, three badges, through the real delivery path", async () => {
+    const rec = { sent: [] as string[] };
+    await deliverReply(
+      stub(rec),
+      1,
+      BODY,
+      SPLIT_DEFAULTS,
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG, position: "top", separator: "--", frequency: "all" },
+    );
+    expect(rec.sent).toEqual([
+      `${SIG}\n\n--\n\nBoa tarde, verifiquei aqui.`,
+      `${SIG}\n\n--\n\nO seu pedido foi confirmado.`,
+      `${SIG}\n\n--\n\nQualquer dúvida, é só chamar.`,
+    ]);
+  });
+
+  // The balloon COUNT is the invariant the repetition must not touch: `seps` stays aligned with
+  // `chunks` because attaching never adds or merges one.
+  test("all + bottom: same balloon count as the same reply unsigned", async () => {
+    const signed = { sent: [] as string[] };
+    const bare = { sent: [] as string[] };
+    await deliverReply(
+      stub(signed),
+      1,
+      BODY,
+      SPLIT_DEFAULTS,
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG, position: "bottom", separator: "blank", frequency: "all" },
+    );
+    await deliverReply(stub(bare), 1, BODY, SPLIT_DEFAULTS, noSleep);
+    expect(signed.sent.length).toBe(bare.sent.length);
+    expect(signed.sent).toEqual([
+      `Boa tarde, verifiquei aqui.\n\n${SIG}`,
+      `O seu pedido foi confirmado.\n\n${SIG}`,
+      `Qualquer dúvida, é só chamar.\n\n${SIG}`,
+    ]);
+  });
+
+  test("split OFF with all: one message, one signature", async () => {
+    const rec = { sent: [] as string[] };
+    await deliverReply(
+      stub(rec),
+      1,
+      "Mensagem única.",
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG, position: "top", separator: "--", frequency: "all" },
+    );
+    expect(rec.sent).toEqual([`${SIG}\n\n--\n\nMensagem única.`]);
+  });
+
+  test("a silent turn with all sends nothing, on both split paths", async () => {
+    for (const cfg of [SPLIT_DEFAULTS, { ...SPLIT_DEFAULTS, enabled: false }]) {
+      const signed = { sent: [] as string[] };
+      const bare = { sent: [] as string[] };
+      await deliverReply(
+        stub(signed),
+        1,
+        "   \n\n  ",
+        cfg,
+        noSleep,
+        undefined,
+        undefined,
+        null,
+        { text: SIG, position: "top", separator: "--", frequency: "all" },
+      );
+      await deliverReply(stub(bare), 1, "   \n\n  ", cfg, noSleep);
+      expect(signed.sent).toEqual(bare.sent);
+      for (const s of signed.sent) expect(s).not.toContain(SIG);
+    }
   });
 });

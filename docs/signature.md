@@ -77,6 +77,8 @@ Not signed, each for a reason:
 
 The guard is Chatwoot's own rule: `findSignatureInBody` asks `trimmedBody.endsWith(cleanedSignature)`. A **tail check, not containment** — containment reads a short signature that merely appears in the prose ("Alex" in a sentence about Alex) as one already written, and silently drops it.
 
+**On a line boundary**, which is where this goes further than Chatwoot. A bare tail check reads any reply whose first word merely begins with the signature as already signed: `Ana` against `Analisei o seu pedido` matches, and the customer gets a reply with no closing at all. A short signature is a first name, so that is the common case. The boundary is a single line break rather than the separator's full blank line, because a model writing its own closing does not have to leave one, and the question is whether that line **is** the signature, not how it was spaced.
+
 It is asked **across the whole reply and at both ends**, not inside the one chunk about to be touched. With `position: "top"` the signature goes on the first chunk, and a model that signed itself at the end put its copy on the last one: a check scoped to chunk zero finds nothing, prepends, and the customer reads two closings. Asking both ends leaves **one** signature, at the end the model chose — so `position` is where *we* place a signature, not a promise about where one the model wrote ends up. One in the wrong place beats two in the right one.
 
 **What it does not catch is a paraphrase.** A model that writes its own variant of the closing still produces two, and the fix for that is emptying the prompt, which is what this feature is for. Chatwoot has the same limit.

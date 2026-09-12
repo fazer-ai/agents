@@ -108,6 +108,8 @@ function interpolate(
 // A TAIL CHECK, NOT CONTAINMENT, which is Chatwoot's own rule (`findSignatureInBody` is
 // `trimmedBody.endsWith(cleanedSignature)`). Containment reads a short signature that merely appears
 // in the prose, "Alex" in a sentence about Alex, as one already written, and silently drops it.
+// Chatwoot's own version is missing the line boundary below, which is why it also drops the
+// signature from a reply that merely starts with the same letters.
 //
 // ASKED ACROSS THE WHOLE REPLY, the text as it arose rather than any view of it, and BOTH ends
 // rather than only the configured one.
@@ -136,7 +138,16 @@ export function alreadySigned(
   const s = signature.trim();
   if (!s || chunks.length === 0) return false;
   const text = (whole ?? chunks.join("\n\n")).trim();
-  return text.startsWith(s) || text.endsWith(s);
+  if (text === s) return true;
+  // ON A LINE BOUNDARY, or it is not the signature. A bare `startsWith` reads any reply whose first
+  // word merely begins with it as signed: "Ana" against "Analisei o seu pedido" matched, and the
+  // customer got a reply with no closing at all, which is the failure this whole feature exists to
+  // prevent, produced by the guard against its twin. Round 12 of the review. A short signature is a
+  // first name, so this is the common case and not an exotic input. The boundary is a line break
+  // rather than the separator's full "\n\n": a model writing its own closing need not leave a blank
+  // line, and the question is whether that LINE is the signature, not how it was spaced.
+  if (text.startsWith(s) && text[s.length] === "\n") return true;
+  return text.endsWith(s) && text[text.length - s.length - 1] === "\n";
 }
 
 // ATTACHES TO A CHUNK, and that is the whole design. `deliverReply` cuts the reply on /\n{2,}/, and

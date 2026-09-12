@@ -5,6 +5,7 @@ import {
   attachSignature,
   readSignatureConfig,
   SIGNATURE_DEFAULTS,
+  type SignaturePosition,
   signatureFor,
 } from "@/modules/signature/service";
 import {
@@ -414,5 +415,57 @@ describe("the render options travel with the variables (review of #599)", () => 
         {},
       ),
     ).toBe("— {{horario_atendimento}}");
+  });
+});
+
+// A SIGNATURE IS A LINE, NOT A PREFIX.
+//
+// Round 12 of the review: `startsWith`/`endsWith` on the raw string reads any reply whose first
+// word merely BEGINS with the signature as already signed. "Ana" against "Analisei o seu pedido"
+// matches, and the customer gets a reply with no closing at all — the exact failure this feature
+// exists to prevent, caused by the guard meant to prevent its twin. A short signature is a first
+// name, which is the common case, so this is not an exotic input.
+describe("the dedupe asks for a whole line, not a prefix", () => {
+  const sign = (text: string, signature: string, position: SignaturePosition) =>
+    attachSignature([text], signature, position, "blank");
+
+  test("a word that merely starts with the signature is not a signature", () => {
+    expect(
+      sign("Analisei o seu pedido e está tudo certo.", "Ana", "top"),
+    ).toEqual(["Ana\n\nAnalisei o seu pedido e está tudo certo."]);
+  });
+
+  // The mirror case, and the one that reads most like real prose: the signature's own name is the
+  // last word of a sentence that mentions the agent instead of signing off as one.
+  test("the name mentioned mid-sentence at the end is not a signature", () => {
+    expect(sign("Se precisar, é só chamar o Alex", "Alex", "bottom")).toEqual([
+      "Se precisar, é só chamar o Alex\n\nAlex",
+    ]);
+  });
+
+  // The other half stays true: a real repetition is still caught, at either end.
+  test("the signature on its own line is still recognised at the top", () => {
+    expect(sign("Ana\n\nAnalisei o seu pedido.", "Ana", "top")).toEqual([
+      "Ana\n\nAnalisei o seu pedido.",
+    ]);
+  });
+
+  test("the signature on its own line is still recognised at the bottom", () => {
+    expect(sign("Analisei o seu pedido.\n\nAna", "Ana", "bottom")).toEqual([
+      "Analisei o seu pedido.\n\nAna",
+    ]);
+  });
+
+  // A single newline counts too: the model writing its own closing does not have to leave a blank
+  // line, and the question is whether the line IS the signature, not how it was spaced.
+  test("one newline is boundary enough", () => {
+    expect(sign("Analisei o seu pedido.\nAna", "Ana", "bottom")).toEqual([
+      "Analisei o seu pedido.\nAna",
+    ]);
+  });
+
+  // And a reply that is nothing but the signature is signed, with no boundary to find.
+  test("a reply that is only the signature is already signed", () => {
+    expect(sign("Ana", "Ana", "bottom")).toEqual(["Ana"]);
   });
 });

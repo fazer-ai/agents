@@ -329,6 +329,18 @@ export function assertSettingsTextSizes(
 //
 // Same shape as the text rule: only a value the write INTRODUCES or CHANGES is refused, so a bag
 // that already holds one does not block an unrelated save.
+export class DebugWindowTooLongError extends AppError {
+  constructor(hours: number) {
+    super(
+      `observability.fullDetailUntil is further than ${hours}h ahead`,
+      400,
+      "errors.debugWindowTooLong",
+      { hours },
+      "observability.fullDetailUntil",
+    );
+  }
+}
+
 // The signature's switch, refused at the write rather than normalised in the reader (#612). Its
 // value is the only thing that says whether an agent is signing, and a reader that quietly maps
 // `"sim"` onto a boolean leaves GET echoing `"sim"` while the runtime signs: two answers to one
@@ -341,18 +353,6 @@ export class InvalidSignatureSwitchError extends AppError {
       "errors.invalidSignatureSwitch",
       { got },
       "signature.enabled",
-    );
-  }
-}
-
-export class DebugWindowTooLongError extends AppError {
-  constructor(hours: number) {
-    super(
-      `observability.fullDetailUntil is further than ${hours}h ahead`,
-      400,
-      "errors.debugWindowTooLong",
-      { hours },
-      "observability.fullDetailUntil",
     );
   }
 }

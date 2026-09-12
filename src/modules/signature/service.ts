@@ -21,13 +21,21 @@ export type SignaturePosition = "top" | "bottom";
 export type SignatureSeparator = "blank" | "--";
 
 export interface SignatureConfig {
-  // "" is both the default and the off switch.
+  // THE OFF SWITCH, and a switch rather than an empty field (#612). The first version made
+  // `text: ""` the only way to be off, so turning the signature off DESTROYED the text the operator
+  // would have to retype to turn it back on, and the text is the part that took thought to write.
+  // Every other block on the Behavior tab is a toggle over fields that keep their values.
+  enabled: boolean;
+  // Still empty by default: `enabled` says whether to sign, this says what with. Both have to be
+  // answered before a customer sees anything, so an enabled block with no text signs nothing, and
+  // that is an operator who has not finished rather than an error.
   text: string;
   position: SignaturePosition;
   separator: SignatureSeparator;
 }
 
 export const SIGNATURE_DEFAULTS: SignatureConfig = {
+  enabled: false,
   text: "",
   position: "top",
   separator: "blank",
@@ -47,6 +55,15 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
   if (!s || typeof s !== "object") return { ...SIGNATURE_DEFAULTS };
   const bag = s as Record<string, unknown>;
   return {
+    // A BAG WRITTEN BEFORE THE SWITCH EXISTED MEANT ON, and reading its absence as off would unsign
+    // every agent configured under #599 on the next load, silently, with nobody touching anything.
+    // That is the same class of loss the switch exists to prevent, so the fallback reads the only
+    // signal such a bag carries: whether there is anything to sign with. A flag of another shape is
+    // not an answer either, and falls back the same way every other field here does.
+    enabled:
+      typeof bag.enabled === "boolean"
+        ? bag.enabled
+        : typeof bag.text === "string" && bag.text.trim() !== "",
     // Clamped like every other operator-authored field in the bag: the row keeps what was written
     // and only the copy that reaches the customer is bounded (see modules/agents/text-caps.ts).
     text:
@@ -72,14 +89,18 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
 // written for e-mail is not the closing they want on WhatsApp. The version that answers both is a
 // signature PER CHANNEL, which is what the Chatwoot fork already does per inbox, and a channels
 // allowlist is not a step toward it: it is a different field that would have to be migrated away.
-// So the first version is one text and an empty string for off, and the second one, if it is ever
-// needed, is `signature.channels: { "Channel::Whatsapp": {...} }` with this as the default.
+// So the first version is one text behind one switch, and the second one, if it is ever needed, is
+// `signature.channels: { "Channel::Whatsapp": {...} }` with this as the default. The `enabled` flag
+// is not the second off switch that argument refuses: an empty allowlist preserves nothing and
+// answers a different question, while `enabled` preserves the text, which is the point (#612).
 export function signatureFor(
   cfg: SignatureConfig,
   vars?: Record<string, string>,
   opts?: PromptRenderOpts,
 ): string | null {
-  if (!cfg.text) return null;
+  // Both halves, and `trim` rather than truthiness: a text of only spaces is nothing to sign with,
+  // and this function is called with configs the reader has not necessarily trimmed.
+  if (!cfg.enabled || !cfg.text.trim()) return null;
   return interpolate(cfg.text, vars, opts);
 }
 

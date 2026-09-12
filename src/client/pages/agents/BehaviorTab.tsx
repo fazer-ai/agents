@@ -97,6 +97,7 @@ import {
 import { ObservationSection } from "./ObservationSection";
 import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
+import { signatureOnToggle } from "./signatureFormState";
 import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
@@ -263,7 +264,8 @@ export function signaturePreviewParts(
   return sig.position === "top" ? [text, body] : [body, text];
 }
 
-interface SignatureState {
+export interface SignatureState {
+  enabled: boolean;
   text: string;
   position: "top" | "bottom";
   separator: "blank" | "--";
@@ -2603,147 +2605,164 @@ export function BehaviorTab({
               "The signature goes on the message that closes a turn: the reply, and the farewell of a handoff. Not on a mid-turn acknowledgement, not on a private note, and not on an audio reply, where a spoken closing is noise.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
             )}
           >
-            <FormField
-              label={t("editor.signatureText", "Signature")}
-              description={t(
-                "editor.signatureTextHint",
-                "Empty turns it off. Takes the same {{variables}} as the system prompt, and Markdown for **bold** and _italic_, which Chatwoot converts per channel.",
+            <SwitchField
+              checked={signature.enabled}
+              // Through the pair, not a second copy of the rule here: what the toggle does to the
+              // text is a decision (seed an empty box, never touch a kept one) and it belongs where
+              // a test can reach it.
+              onCheckedChange={(v) =>
+                setSignature(signatureOnToggle(signature, v))
+              }
+              label={t(
+                "editor.signatureEnabled",
+                "Add a signature to the agent's messages",
               )}
-            >
-              <HighlightedPromptEditor
-                ref={signatureRef}
-                rows={3}
-                maxLength={SIGNATURE_MAX}
-                onSelect={readSignatureSelection}
-                value={signature.text}
-                onChange={(v) =>
-                  setSignature({
-                    ...signature,
-                    text: clipText(v, SIGNATURE_MAX),
-                  })
-                }
-                aria-label={t("editor.signatureText", "Signature")}
-              />
-              <div className="mt-1.5 flex flex-col gap-1.5">
-                <span className="text-text-muted text-xs">
-                  {t("editor.signatureVarsHint", "Insert a variable:")}
-                  {/* INLINE, not a tooltip on the disabled button. A native `title` is unreachable
+            />
+            {signature.enabled && (
+              <>
+                <FormField
+                  label={t("editor.signatureText", "Signature")}
+                  description={t(
+                    "editor.signatureTextHint",
+                    "Takes the same {{variables}} as the system prompt, and Markdown for **bold** and _italic_, which Chatwoot converts per channel.",
+                  )}
+                >
+                  <HighlightedPromptEditor
+                    ref={signatureRef}
+                    rows={3}
+                    maxLength={SIGNATURE_MAX}
+                    onSelect={readSignatureSelection}
+                    value={signature.text}
+                    onChange={(v) =>
+                      setSignature({
+                        ...signature,
+                        text: clipText(v, SIGNATURE_MAX),
+                      })
+                    }
+                    aria-label={t("editor.signatureText", "Signature")}
+                  />
+                  <div className="mt-1.5 flex flex-col gap-1.5">
+                    <span className="text-text-muted text-xs">
+                      {t("editor.signatureVarsHint", "Insert a variable:")}
+                      {/* INLINE, not a tooltip on the disabled button. A native `title` is unreachable
                       by keyboard (a disabled button takes no focus) and by touch, so the one state
                       that needs explaining would explain itself only to a mouse. This is outcome 2
                       in docs/ui.md: the app can tell the limit now applies, so it says so, at that
                       moment, and goes away again on its own. */}
-                  {signatureVarsBlocked && (
-                    <span className="ml-1 text-warning">
-                      {t(
-                        "editor.signatureVarNoRoom",
-                        "Not enough room left before the limit.",
+                      {signatureVarsBlocked && (
+                        <span className="ml-1 text-warning">
+                          {t(
+                            "editor.signatureVarNoRoom",
+                            "Not enough room left before the limit.",
+                          )}
+                        </span>
                       )}
                     </span>
-                  )}
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {PROMPT_CONTEXT_VARS.map((v) => {
-                    const fits = `{{${v}}}`.length <= signatureRoom;
-                    return (
-                      <button
-                        key={v}
-                        type="button"
-                        disabled={!fits}
-                        onClick={() => insertSignatureVar(v)}
-                        className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary"
-                      >
-                        {`{{${v}}}`}
-                      </button>
-                    );
-                  })}
+                    <div className="flex flex-wrap gap-1.5">
+                      {PROMPT_CONTEXT_VARS.map((v) => {
+                        const fits = `{{${v}}}`.length <= signatureRoom;
+                        return (
+                          <button
+                            key={v}
+                            type="button"
+                            disabled={!fits}
+                            onClick={() => insertSignatureVar(v)}
+                            className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-bg-tertiary disabled:hover:text-text-secondary"
+                          >
+                            {`{{${v}}}`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </FormField>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    label={t("editor.signaturePosition", "Position")}
+                    description={t(
+                      "editor.signaturePositionHint",
+                      "Where it goes in the message.",
+                    )}
+                  >
+                    <Select
+                      value={signature.position}
+                      onChange={(e) =>
+                        setSignature({
+                          ...signature,
+                          position: e.target.value as "top" | "bottom",
+                        })
+                      }
+                    >
+                      <option value="top">
+                        {t("editor.signatureTop", "Above the message")}
+                      </option>
+                      <option value="bottom">
+                        {t("editor.signatureBottom", "Below the message")}
+                      </option>
+                    </Select>
+                  </FormField>
+                  <FormField
+                    label={t("editor.signatureSeparator", "Separator")}
+                    description={t(
+                      "editor.signatureSeparatorHint",
+                      "What sits between the message and the signature.",
+                    )}
+                  >
+                    <Select
+                      value={signature.separator}
+                      onChange={(e) =>
+                        setSignature({
+                          ...signature,
+                          separator: e.target.value as "blank" | "--",
+                        })
+                      }
+                    >
+                      <option value="blank">
+                        {t("editor.signatureSepBlank", "A blank line")}
+                      </option>
+                      <option value="--">
+                        {t("editor.signatureSepDashes", "A blank line and --")}
+                      </option>
+                    </Select>
+                  </FormField>
                 </div>
-              </div>
-            </FormField>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <FormField
-                label={t("editor.signaturePosition", "Position")}
-                description={t(
-                  "editor.signaturePositionHint",
-                  "Where it goes in the message.",
-                )}
-              >
-                <Select
-                  value={signature.position}
-                  onChange={(e) =>
-                    setSignature({
-                      ...signature,
-                      position: e.target.value as "top" | "bottom",
-                    })
-                  }
+                <FormField
+                  label={t("editor.signaturePreview", "Preview")}
+                  description={t(
+                    "editor.signaturePreviewHint",
+                    "One message. Your agent and company names are the real ones; the contact details are examples. The gap or the -- below is what the separator puts between the two.",
+                  )}
                 >
-                  <option value="top">
-                    {t("editor.signatureTop", "Above the message")}
-                  </option>
-                  <option value="bottom">
-                    {t("editor.signatureBottom", "Below the message")}
-                  </option>
-                </Select>
-              </FormField>
-              <FormField
-                label={t("editor.signatureSeparator", "Separator")}
-                description={t(
-                  "editor.signatureSeparatorHint",
-                  "What sits between the message and the signature.",
-                )}
-              >
-                <Select
-                  value={signature.separator}
-                  onChange={(e) =>
-                    setSignature({
-                      ...signature,
-                      separator: e.target.value as "blank" | "--",
-                    })
-                  }
-                >
-                  <option value="blank">
-                    {t("editor.signatureSepBlank", "A blank line")}
-                  </option>
-                  <option value="--">
-                    {t("editor.signatureSepDashes", "A blank line and --")}
-                  </option>
-                </Select>
-              </FormField>
-            </div>
-            <FormField
-              label={t("editor.signaturePreview", "Preview")}
-              description={t(
-                "editor.signaturePreviewHint",
-                "One message. Your agent and company names are the real ones; the contact details are examples. The gap or the -- below is what the separator puts between the two.",
-              )}
-            >
-              {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
+                  {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
                   Rendering the whole thing at once made `blank` and `--` look almost alike: a blank
                   line between two paragraphs came out as Markdown's own paragraph gap, which is
                   smaller than a line and reads as ordinary spacing rather than as the choice the
                   operator just made. Splitting at the separator is also what the bytes are. */}
-              <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
-                {signaturePreviewParts(
-                  signature,
-                  t,
-                  signatureVars,
-                  signaturePreviewOpts,
-                ).map((part, i) => (
-                  <div key={part}>
-                    {i > 0 &&
-                      (signature.separator === "--" ? (
-                        <div className="py-1 font-mono text-sm text-text-secondary">
-                          {/* Not translatable: these are the bytes the separator puts on the
+                  <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+                    {signaturePreviewParts(
+                      signature,
+                      t,
+                      signatureVars,
+                      signaturePreviewOpts,
+                    ).map((part, i) => (
+                      <div key={part}>
+                        {i > 0 &&
+                          (signature.separator === "--" ? (
+                            <div className="py-1 font-mono text-sm text-text-secondary">
+                              {/* Not translatable: these are the bytes the separator puts on the
                               wire, the same two `DELIMITERS` writes. */}
-                          {"--"}
-                        </div>
-                      ) : (
-                        <div className="h-5" aria-hidden="true" />
-                      ))}
-                    <Markdown>{part}</Markdown>
+                              {"--"}
+                            </div>
+                          ) : (
+                            <div className="h-5" aria-hidden="true" />
+                          ))}
+                        <Markdown>{part}</Markdown>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </FormField>
+                </FormField>
+              </>
+            )}
           </Section>
 
           <Section

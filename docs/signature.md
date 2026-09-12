@@ -1,6 +1,6 @@
 # Signature (the operator's, never the model's)
 
-A closing line the operator configures once and the agent never writes: `Alex, Minha Empresa` on every reply, on every channel the agent answers on. Per agent, **off by default** (`text: ""`), configured in the Behavior tab.
+A closing line the operator configures once and the agent never writes: `Alex, Minha Empresa` on every reply, on every channel the agent answers on. Per agent, **off by default** (`enabled: false`), configured in the Behavior tab.
 
 It exists because asking the model for it does not work. Measured over three rounds of the same twelve real customer emails, `gpt-5.6-luna` with a prompt asking for a fixed two-line closing:
 
@@ -25,15 +25,22 @@ The defaults match too, `top` included.
 
 | field | values | default |
 | --- | --- | --- |
-| `text` | any text, multi-line, capped at 500 | `""` — both the default and the off switch |
+| `enabled` | `true` \| `false` | `false` — the off switch |
+| `text` | any text, multi-line, capped at 500 | `""` |
 | `position` | `top` \| `bottom` | `top` |
 | `separator` | `blank` (`\n\n`) \| `--` (`\n\n--\n\n`) | `blank` |
+
+**The switch is a switch, not an empty field** (#612). The first version made `text: ""` the only way to be off, which means turning the signature off destroys the text you would have to retype to turn it back on, and the text is the part that took thought to write. Every other block on the Behavior tab is a toggle over fields that keep their values. A stored block with text and no `enabled` reads as **on**, because that is what it meant when it was written; reading the absence as off would silently unsign every agent already configured.
+
+Both answers are needed before a customer sees anything: `enabled` says whether to sign, `text` says what with. An enabled block with an empty text signs nothing, and that is not an error state, it is an operator who has not finished.
+
+**The field seeds itself once.** The first time the switch goes on over an empty field, the editor fills it with `**{{nome_agente}}**`, the agent's own name in bold, which is the signature most operators write by hand. It only ever seeds an empty field: turning the switch off keeps what you wrote, and seeding over a kept text would hand it back with the other hand.
 
 ## There is no per-channel switch, and the shape of the next version is why
 
 The first design had a `channels` allowlist: "sign these channel classes". It was dropped before it shipped, because it answers only half of the operator's question. The other half is that **a closing written for e-mail is not the closing they want on WhatsApp** — a link and a two-line block on one, a short line on the other. The version that answers both is a signature **per channel**, which is exactly what the Chatwoot fork already does per inbox.
 
-An allowlist is not a step toward that. It is a different field with a different meaning that would have to be migrated away, and in the meantime it lets an operator turn the feature on and see nothing, with an empty list as the second off switch next to the empty text. So the first version is **one text, on every channel**, with `text: ""` as the only off switch. If per-channel signatures are ever needed, they arrive as `signature.channels: { "Channel::Whatsapp": { text, position, separator } }` with this block as the default, and nothing configured today has to change.
+An allowlist is not a step toward that. It is a different field with a different meaning that would have to be migrated away, and in the meantime it lets an operator turn the feature on and see nothing, with an empty list as the second off switch next to the empty text. So the first version is **one text, on every channel**, behind one switch. If per-channel signatures are ever needed, they arrive as `signature.channels: { "Channel::Whatsapp": { text, position, separator } }` with this block as the default, and nothing configured today has to change.
 
 ## Module (`src/modules/signature/service.ts`)
 

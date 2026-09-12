@@ -130,6 +130,7 @@ function renderContactAuth(
       },
       agentId: "1",
       agentName: "Recepção",
+      companyName: "Clínica Moreira",
       hours: [],
       businessHoursId: "",
       setBusinessHoursId: noop,

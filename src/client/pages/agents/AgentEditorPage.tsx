@@ -48,6 +48,7 @@ import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
+import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import type { FieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
@@ -751,6 +752,8 @@ function AgentEditor() {
 
   // Agent fields
   const [name, setName] = useState("");
+  // Resolved here, in the page, so BehaviorTab stays renderable without an auth context.
+  const tenantName = useActiveTenantName();
   const [systemPrompt, setSystemPrompt] = useState("");
   // Gated on the TAB, for the same reason a dialog's holder is gated on `isOpen`: `GeneralTab` is
   // only mounted while `tab === "general"`, so a save that answers after the operator has moved on —
@@ -3838,6 +3841,7 @@ function AgentEditor() {
               <BehaviorTab
                 agentId={id}
                 agentName={name}
+                companyName={tenantName}
                 langfuseSendContent={langfuseSendContent}
                 savedObservability={savedObservability}
                 hours={hours}

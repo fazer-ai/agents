@@ -177,6 +177,6 @@ describe("the preview signs with the operator's own names", () => {
     expect(at).toBeGreaterThan(-1);
     const decl = SOURCE.slice(at, at + 120);
     expect(decl).toContain("agentName");
-    expect(decl).toContain("tenantName");
+    expect(decl).toContain("companyName");
   });
 });

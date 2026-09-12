@@ -39,7 +39,6 @@ import {
   Textarea,
 } from "@/client/components";
 import { Markdown } from "@/client/components/Markdown";
-import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import {
@@ -356,6 +355,11 @@ interface BehaviorTabProps {
   // The name being edited on General, live, so the signature preview signs with the operator's own
   // agent instead of a stand-in. Empty while a new agent is still unnamed.
   agentName: string;
+  // The active tenant's display name, RESOLVED BY THE PAGE rather than by a hook in here. Reaching
+  // for `useActiveTenantName()` from this tab made it unrenderable without an AuthProvider, which
+  // the full suite hid (an earlier file leaves the context standing) and a sharded CI run would not.
+  // Null while it is still resolving, or when a fleet session has nothing selected.
+  companyName: string | null;
   // The refused input this tab draws, if the standing refusal is about one of them. Read in
   // AgentEditorPage and passed as answers -- see the note on the type.
   refusals: BehaviorRefusals;
@@ -1163,6 +1167,7 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
 export function BehaviorTab({
   agentId,
   agentName,
+  companyName,
   refusals,
   hours,
   businessHoursId,
@@ -1254,7 +1259,6 @@ export function BehaviorTab({
   // clipping an insert cuts the TAIL of what the operator already wrote, which is the one thing a
   // helper button must never do — the caret is at the front, the loss is at the back, and nothing
   // on screen connects the two. Found in review of #599.
-  const tenantName = useActiveTenantName();
   const signatureRoom =
     SIGNATURE_MAX - signature.text.length + signatureSelected;
   // The agent's own Availability, so a `{{horario_atendimento}}` in the signature previews the hours
@@ -1274,7 +1278,7 @@ export function BehaviorTab({
   // Live on both names: the one being typed on General, and the tenant's, through the same hook the
   // prompt editor's preview reads. A signature is mostly those two, so previewing a stand-in
   // previews a message the operator never sends.
-  const signatureVars = signaturePreviewVars(agentName, tenantName);
+  const signatureVars = signaturePreviewVars(agentName, companyName);
   const signatureVarsBlocked = PROMPT_CONTEXT_VARS.some(
     (v) => `{{${v}}}`.length > signatureRoom,
   );

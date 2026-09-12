@@ -170,6 +170,20 @@ export const SECRET_TYPES: SecretType[] = [
     },
   },
   {
+    id: "resend",
+    injection: "bearer",
+    service: "resend",
+    // /domains needs a full-access key; a sending-only key answers 401 with
+    // `restricted_api_key` — valid key, restricted scope. That body is a pass (the key still
+    // sends email); only a genuine auth error (invalid_api_key) fails the probe.
+    test: {
+      bases: ["https://api.resend.com"],
+      path: "/domains",
+      authConfirmedOn4xx: (status, body) =>
+        status === 401 && body.includes("restricted_api_key"),
+    },
+  },
+  {
     id: "chatwoot_api_token",
     injection: "header",
     // Reused from the Chatwoot client so an agent's HTTP tool / the connectivity test authenticate

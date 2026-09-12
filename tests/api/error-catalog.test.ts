@@ -30,7 +30,9 @@ import { expectWaiverLedger } from "@/tests/utils/ledger";
 async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   for (const e of await readdir(dir, { withFileTypes: true })) {
-    const p = join(dir, e.name);
+    // NOTE: normalized to forward slashes so the `/locales/` filter here and the
+    // path-literal exemptions downstream hold on Windows, where join() answers backslashes.
+    const p = join(dir, e.name).replaceAll("\\", "/");
     if (e.isDirectory()) out.push(...(await sourceFiles(p)));
     else if (/\.tsx?$/.test(e.name) && !p.includes("/locales/")) out.push(p);
   }
@@ -114,6 +116,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "integrations.catalog.ASAAS.label",
   "integrations.catalog.GOOGLE_CALENDAR.label",
   "integrations.catalog.GOOGLE_DRIVE.label",
+  "integrations.catalog.RESEND.label",
   "mcp.admin.clientNamePlaceholder",
   "nav.github",
   // "item" is the same word in both languages, so the SINGULAR of this counter coincides while its
@@ -136,6 +139,7 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "vault.secretType.langfuse",
   "vault.secretType.openai",
   "vault.secretType.openrouter",
+  "vault.secretType.resend",
 
   // Acronyms, units and format strings: no letters to translate, or none outside a placeholder.
   "common.notAvailable",
@@ -1102,7 +1106,10 @@ describe("both languages answer, and answer differently", () => {
       // that counter (issue #509) created a SINGULAR form whose two languages coincide, because
       // "item" is the same word in both. Its plural does not coincide, which is why the waiver names
       // the form rather than the key.
-      hasProOnlyKeys ? 103 : 101,
+      // 103 -> 105: the RESEND integration ships two proper-noun keys
+      // (`integrations.catalog.RESEND.label`, `vault.secretType.resend`) — the brand is not
+      // translated in any language, same standing as the Asaas and Google entries above.
+      hasProOnlyKeys ? 105 : 103,
     );
     // NOT per edition any more, and that is the point: the list is empty in every tree, so the two
     // editions can no longer differ on it. The one entry that used to make them differ was waived

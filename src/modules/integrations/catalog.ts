@@ -37,6 +37,17 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
     supportsInbound: false,
     defaultInboundAuth: "NONE",
   },
+  {
+    catalogType: "RESEND",
+    label: "Resend",
+    kind: "TOOLPACK",
+    description:
+      "Transactional email. Outbound toolpack (send an email to the customer + check its delivery status) over a Resend API key; the sender address is bound to the instance config, never the model.",
+    // NOTE: Resend delivery webhooks sign with Svix (svix-id/timestamp/signature), which the generic
+    // HMAC_SHA256 strategy does not verify; inbound ships with a Svix-aware verifier later.
+    supportsInbound: false,
+    defaultInboundAuth: "NONE",
+  },
 ];
 
 const BY_TYPE = new Map(CATALOG.map((e) => [e.catalogType, e]));

@@ -18,6 +18,7 @@ export const SECRET_TYPE_IDS = [
   "openai_compatible",
   "elevenlabs",
   "asaas",
+  "resend",
   "chatwoot_api_token",
   "langfuse",
   "google_oauth",
@@ -69,6 +70,7 @@ export const SECRET_TYPE_META: Record<SecretTypeId, SecretTypeMeta> = {
   },
   elevenlabs: { service: "elevenlabs", testable: true },
   asaas: { service: "asaas", testable: true },
+  resend: { service: "resend", testable: true },
   chatwoot_api_token: {
     service: "chatwoot",
     testable: true,

@@ -39,6 +39,7 @@ const CATALOG_TYPE_TYPE: Record<string, string> = {
   ASAAS: "asaas",
   GOOGLE_CALENDAR: "google_oauth",
   GOOGLE_DRIVE: "google_oauth",
+  RESEND: "resend",
 };
 
 function single(map: Record<string, string>, key: string): string[] {

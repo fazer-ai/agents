@@ -943,12 +943,7 @@ export async function runPlaygroundTurn(
     loaded.promptOpts,
   );
   const [signedReply = reply] = previewSig
-    ? attachSignature(
-        [reply],
-        previewSig,
-        loaded.signatureConfig.position,
-        loaded.signatureConfig.separator,
-      )
+    ? attachSignature([reply], previewSig, loaded.signatureConfig)
     : [reply];
 
   return {
@@ -1283,12 +1278,7 @@ export async function runPlaygroundFollowup(
     loaded.promptOpts,
   );
   const [signedFollowUp = reply] = followUpSig
-    ? attachSignature(
-        [reply],
-        followUpSig,
-        loaded.signatureConfig.position,
-        loaded.signatureConfig.separator,
-      )
+    ? attachSignature([reply], followUpSig, loaded.signatureConfig)
     : [reply];
   return {
     reply: signedFollowUp,

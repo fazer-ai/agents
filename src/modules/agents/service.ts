@@ -357,6 +357,27 @@ export class InvalidSignatureSwitchError extends AppError {
   }
 }
 
+// The frequency, refused the same way and for the same reason (#616). It is an enum like `position`
+// and `separator`, which normalise in the reader, and the tie-breaker is what GET does: the API
+// echoes the settings bag as it was stored, so a normalised value leaves the operator's client
+// reading `"sempre"` on a field the runtime answered as `"all"`. Two answers to one question, and
+// #612 already settled which one wins.
+//
+// The two older enums are still un-guarded and have exactly this hole. Out of scope here on purpose
+// (it is a different write path's defect, not this feature's) and filed separately rather than
+// fixed in passing.
+export class InvalidSignatureFrequencyError extends AppError {
+  constructor(got: string) {
+    super(
+      `signature.frequency must be "all" or "once", got ${got}`,
+      400,
+      "errors.invalidSignatureFrequency",
+      { got },
+      "signature.frequency",
+    );
+  }
+}
+
 export class InvalidToolPreconditionError extends AppError {
   constructor(toolName: string) {
     super(
@@ -739,17 +760,30 @@ export function assertSettingsSignature(
   settings: unknown,
   stored: unknown,
 ): void {
-  const next = rawSignatureEnabled(settings);
-  if (next === undefined || typeof next === "boolean") return;
-  if (next === rawSignatureEnabled(stored)) return;
-  throw new InvalidSignatureSwitchError(next === null ? "null" : typeof next);
+  const next = rawSignatureField(settings, "enabled");
+  if (next !== undefined && typeof next !== "boolean") {
+    if (next !== rawSignatureField(stored, "enabled"))
+      throw new InvalidSignatureSwitchError(
+        next === null ? "null" : typeof next,
+      );
+  }
+  const freq = rawSignatureField(settings, "frequency");
+  if (freq === undefined || freq === "all" || freq === "once") return;
+  if (freq === rawSignatureField(stored, "frequency")) return;
+  throw new InvalidSignatureFrequencyError(
+    freq === null
+      ? "null"
+      : typeof freq === "string"
+        ? `"${freq}"`
+        : typeof freq,
+  );
 }
 
-function rawSignatureEnabled(settings: unknown): unknown {
+function rawSignatureField(settings: unknown, field: string): unknown {
   if (!settings || typeof settings !== "object") return undefined;
   const sg = (settings as Record<string, unknown>).signature;
   if (!sg || typeof sg !== "object") return undefined;
-  return (sg as Record<string, unknown>).enabled;
+  return (sg as Record<string, unknown>)[field];
 }
 
 export function assertSettingsDebugWindow(

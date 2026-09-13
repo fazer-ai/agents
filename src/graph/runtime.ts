@@ -1122,6 +1122,7 @@ async function runTurnBody(
           text: sig,
           position: loaded.signatureConfig.position,
           separator: loaded.signatureConfig.separator,
+          frequency: loaded.signatureConfig.frequency,
         }
       : null;
     // And again for the text path, which is reached either directly or after the whole TTS attempt

@@ -182,6 +182,7 @@ function renderContactAuth(
         enabled: false,
         text: "",
         position: "top" as const,
+        frequency: "all" as const,
         separator: "blank" as const,
       },
       setSignature: () => {},

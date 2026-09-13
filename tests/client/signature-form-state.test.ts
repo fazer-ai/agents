@@ -23,6 +23,7 @@ describe("signatureToForm: what the screen shows for a stored bag", () => {
       enabled: true,
       text: SIG,
       position: "top",
+      frequency: "all",
       separator: "blank",
     });
   });
@@ -36,6 +37,7 @@ describe("signatureToForm: what the screen shows for a stored bag", () => {
       enabled: false,
       text: "",
       position: "top",
+      frequency: "all",
       separator: "blank",
     });
   });
@@ -60,12 +62,14 @@ describe("signatureToStored: what the screen writes back", () => {
         enabled: false,
         text: SIG,
         position: "bottom",
+        frequency: "once",
         separator: "--",
       }),
     ).toEqual({
       enabled: false,
       text: SIG,
       position: "bottom",
+      frequency: "once",
       separator: "--",
     });
   });
@@ -76,6 +80,7 @@ describe("signatureToStored: what the screen writes back", () => {
         enabled: true,
         text: SIG,
         position: "top",
+        frequency: "all",
         separator: "blank",
       }).enabled,
     ).toBe(true);
@@ -84,9 +89,27 @@ describe("signatureToStored: what the screen writes back", () => {
   // Saving an untouched form must be a no-op, or every unrelated save rewrites this block.
   test("the pair round-trips a stored bag unchanged", () => {
     for (const bag of [
-      { enabled: true, text: SIG, position: "bottom", separator: "--" },
-      { enabled: false, text: SIG, position: "top", separator: "blank" },
-      { enabled: true, text: "", position: "top", separator: "blank" },
+      {
+        enabled: true,
+        text: SIG,
+        position: "bottom",
+        frequency: "once",
+        separator: "--",
+      },
+      {
+        enabled: false,
+        text: SIG,
+        position: "top",
+        frequency: "all",
+        separator: "blank",
+      },
+      {
+        enabled: true,
+        text: "",
+        position: "top",
+        frequency: "all",
+        separator: "blank",
+      },
     ]) {
       expect(signatureToStored(signatureToForm({ signature: bag }))).toEqual(
         bag as ReturnType<typeof signatureToStored>,
@@ -107,6 +130,7 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
     enabled: false,
     text: "",
     position: "top" as const,
+    frequency: "all" as const,
     separator: "blank" as const,
   };
 
@@ -171,6 +195,7 @@ describe("a stored signature longer than the cap", () => {
       enabled: true,
       text: LONG,
       position: "bottom" as const,
+      frequency: "once" as const,
       separator: "--" as const,
     };
     expect(signatureToStored(signatureToForm({ signature: bag }))).toEqual(bag);
@@ -182,6 +207,78 @@ describe("a stored signature longer than the cap", () => {
     const form = signatureToForm({ signature: { text: LONG } });
     expect(signatureOnToggle(signatureOnToggle(form, false), true).text).toBe(
       LONG,
+    );
+  });
+});
+
+// Issue #616. The frequency's default is a MIGRATION rule, not a UI preference: a bag written
+// before the field existed says nothing, and what its silence means is read off the position.
+describe("the frequency the form reads and the one it writes", () => {
+  test("a bag with no frequency: top reads all, bottom reads once", () => {
+    expect(
+      signatureToForm({ signature: { text: "Alex", position: "top" } })
+        .frequency,
+    ).toBe("all");
+    expect(
+      signatureToForm({ signature: { text: "Alex", position: "bottom" } })
+        .frequency,
+    ).toBe("once");
+  });
+
+  test("a written frequency is what the screen shows, position notwithstanding", () => {
+    expect(
+      signatureToForm({
+        signature: { text: "Alex", position: "top", frequency: "once" },
+      }).frequency,
+    ).toBe("once");
+  });
+
+  // WRITTEN OUT even when it equals the derivation. Once the operator has seen the control, the bag
+  // says; leaving it implicit would let a later change of position silently move a choice they made.
+  test("the save writes the frequency, and writing it is not optional", () => {
+    const stored = signatureToStored({
+      enabled: true,
+      text: "Alex",
+      position: "top",
+      frequency: "all",
+      separator: "blank",
+    });
+    expect(stored.frequency).toBe("all");
+    expect(Object.keys(stored).sort()).toEqual([
+      "enabled",
+      "frequency",
+      "position",
+      "separator",
+      "text",
+    ]);
+  });
+
+  test("a cross combination survives the round trip", () => {
+    const form = {
+      enabled: true,
+      text: "Alex",
+      position: "top" as const,
+      frequency: "once" as const,
+      separator: "--" as const,
+    };
+    expect(signatureToForm({ signature: signatureToStored(form) })).toEqual(
+      form,
+    );
+  });
+
+  // The seed guard is about the TEXT and must stay that way: turning the switch on may not move a
+  // frequency the operator chose while it was off.
+  test("the toggle leaves the frequency alone", () => {
+    const off = {
+      enabled: false,
+      text: "",
+      position: "top" as const,
+      frequency: "once" as const,
+      separator: "blank" as const,
+    };
+    expect(signatureOnToggle(off, true).frequency).toBe("once");
+    expect(signatureOnToggle({ ...off, enabled: true }, false).frequency).toBe(
+      "once",
     );
   });
 });

@@ -15,6 +15,7 @@ import {
 } from "@/modules/flowlog/service";
 import {
   attachSignature,
+  type SignatureFrequency,
   type SignaturePosition,
   type SignatureSeparator,
 } from "@/modules/signature/service";
@@ -250,6 +251,7 @@ export async function deliverReply(
     text: string;
     position: SignaturePosition;
     separator: SignatureSeparator;
+    frequency: SignatureFrequency;
   } | null = null,
 ): Promise<ReplyDelivery> {
   return withFlowStage(
@@ -268,12 +270,7 @@ export async function deliverReply(
         // Through the SAME function the split branch uses, on a one-element array. Split off is not
         // a second rule about signatures, it is one chunk.
         const [single = reply] = signature
-          ? attachSignature(
-              [reply],
-              signature.text,
-              signature.position,
-              signature.separator,
-            )
+          ? attachSignature([reply], signature.text, signature)
           : [reply];
         try {
           await client.sendMessage(conversationId, single, { sendId });
@@ -305,13 +302,7 @@ export async function deliverReply(
       // the count never changes. A reply that trimmed to zero chunks is a turn that said nothing,
       // and nothing is what it gets signed with.
       const chunks = signature
-        ? attachSignature(
-            rawChunks,
-            signature.text,
-            signature.position,
-            signature.separator,
-            reply,
-          )
+        ? attachSignature(rawChunks, signature.text, signature, reply)
         : rawChunks;
       let delivered = 0;
       let failed = false;
@@ -423,13 +414,43 @@ export async function deliverReply(
               unproven = true;
             }
             const from = verdict.known && verdict.id === null ? i : i + 1;
-            const owed = chunks
+            // BUILT FROM THE RAW BALLOONS, not the signed ones, and then signed ONCE. With
+            // `frequency: "all"` every chunk already carries a signature, so joining them put the
+            // badge three times inside a single message — one configuration rendering two ways
+            // depending on whether a send happened to fail, which is the defect class
+            // attach-to-a-chunk exists to close (#616, review round 1 of #617).
+            const owedRaw = rawChunks
               .slice(from)
               .reduce(
                 (acc, c, k) => (k === 0 ? c : acc + seps[from + k] + c),
                 "",
               );
-            if (!owed) break;
+            if (!owedRaw) break;
+            // THE RETRY CARRIES A SIGNATURE IF AND ONLY IF THE BALLOONS IT REPLACES DID, which is
+            // the only rule that cannot disagree with the decision already made above. A
+            // conditional on frequency and position could: with the model's own copy merged into a
+            // balloon at the `maxChunks` ceiling, the balloon pass recognised it and signed
+            // nothing, while the retry's own evidence — the lossy reconstruction it was handed —
+            // no longer matched the signature exactly, so it prepended a second one (round 8).
+            //
+            // It also says the `once` rule without naming it: a `top` signature whose first balloon
+            // already landed is not among the balloons being retried, so none of them was signed
+            // and neither is the retry.
+            const owedWasSigned = rawChunks
+              .slice(from)
+              .some((raw, k) => chunks[from + k] !== raw);
+            const owed =
+              signature && owedWasSigned
+                ? (attachSignature(
+                    [owedRaw],
+                    signature.text,
+                    signature,
+                    // ITS OWN TEXT: whether the model already signed the TURN was answered above,
+                    // by the balloons; what is left for `attachSignature` is whether THIS message
+                    // already carries a copy.
+                    owedRaw,
+                  )[0] ?? owedRaw)
+                : owedRaw;
             // The retry is a send like any other, so it names itself like any other: it carries the
             // same 15s deadline and can be rejected after being accepted in exactly the same way.
             const retrySendId = crypto.randomUUID();

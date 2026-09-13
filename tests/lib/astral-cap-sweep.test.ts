@@ -505,6 +505,10 @@ const BARE_SLICES: Record<
   // ARRAY of rows, so none can land inside a surrogate pair.
   "src/modules/observe/job.ts": [3, "array"],
   "src/modules/playground/service.ts": [1, "array"],
+  // The balloon's own LINES, cut from the array `split("\n")` returned, to ask whether the run at
+  // either end of it is the model's copy of the signature. An array of strings, never a string, so
+  // no cut can land inside a code point; and the pieces are compared, never sent.
+  "src/modules/signature/service.ts": [2, "array"],
   // Two, since the overflow merge carries the separators beside the chunks (issue #429): both are
   // slices of an ARRAY of already-split strings, so neither can land inside a surrogate pair.
   "src/modules/split/service.ts": [2, "array"],

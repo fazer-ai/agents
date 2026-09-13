@@ -568,6 +568,13 @@ describe("MCP tool descriptions", () => {
   // a boolean a client cannot otherwise discover, and without which an MCP client can only turn the
   // signature off by deleting the operator's text, which is the loss the field exists to prevent.
   // 57,027 measured, same 16 of headroom.
+  //
+  // RAISED AGAIN to 57,166 by `signature.frequency` (#616), the block's fifth field. 123 characters
+  // for an enum whose two values a client cannot guess and cannot otherwise discover — and the field
+  // is the one that decides whether the agent's name reaches every message of a split reply or only
+  // one of them, which is the question the first version of the block got wrong. The reasoning (why
+  // repetition is the same decision as position, and why the default is read off it) is in
+  // `docs/signature.md`, where it costs no tokens on every tools/list. 57,150 measured, same 16.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -577,7 +584,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_432);
-    expect(schema).toBeLessThanOrEqual(57_043);
+    expect(schema).toBeLessThanOrEqual(57_166);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

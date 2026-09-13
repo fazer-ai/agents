@@ -19,6 +19,7 @@ import { SIGNATURE_MAX } from "@/modules/agents/text-caps";
 
 export type SignaturePosition = "top" | "bottom";
 export type SignatureSeparator = "blank" | "--";
+export type SignatureFrequency = "all" | "once";
 
 export interface SignatureConfig {
   // THE OFF SWITCH, and a switch rather than an empty field (#612). The first version made
@@ -32,12 +33,26 @@ export interface SignatureConfig {
   text: string;
   position: SignaturePosition;
   separator: SignatureSeparator;
+  // POSITION AND REPETITION ARE THE SAME DECISION SEEN FROM TWO SIDES (#616), and the first version
+  // answered only one of them. A signature at the BOTTOM is a farewell: said once, at the end, and
+  // repeating it on four balloons in ten seconds is worse than not having it. A signature at the TOP
+  // is a badge, and the question a badge answers, "who is talking to me", comes back on EVERY
+  // balloon, because on WhatsApp each balloon is an independent message with its own notification,
+  // its own preview and its own forward. #599 offered `top` and then treated it as a farewell.
+  //
+  // The two fields stay independent rather than being folded into one, because the cross
+  // combinations are real: a badge only on the opening balloon is a legitimate choice for an
+  // operator who wants to introduce the agent once and then stop repeating itself.
+  frequency: SignatureFrequency;
 }
 
 export const SIGNATURE_DEFAULTS: SignatureConfig = {
   enabled: false,
   text: "",
   position: "top",
+  // Derived from the position above, and it has to match it: see the reader, where the same
+  // derivation answers a bag that never wrote the field.
+  frequency: "all",
   separator: "blank",
 };
 
@@ -54,6 +69,10 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
       : undefined;
   if (!s || typeof s !== "object") return { ...SIGNATURE_DEFAULTS };
   const bag = s as Record<string, unknown>;
+  const position =
+    bag.position === "top" || bag.position === "bottom"
+      ? bag.position
+      : SIGNATURE_DEFAULTS.position;
   return {
     // A BAG WRITTEN BEFORE THE SWITCH EXISTED MEANT ON, and reading its absence as off would unsign
     // every agent configured under #599 on the next load, silently, with nobody touching anything.
@@ -70,10 +89,23 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
       typeof bag.text === "string"
         ? clipText(bag.text.trim(), SIGNATURE_MAX)
         : SIGNATURE_DEFAULTS.text,
-    position:
-      bag.position === "top" || bag.position === "bottom"
-        ? bag.position
-        : SIGNATURE_DEFAULTS.position,
+    position,
+    // READ OFF THE POSITION when the bag never wrote it, which is every bag written before #616.
+    // The position is where the operator's intent is already visible — a badge above, a farewell
+    // below — so the default reads it instead of asking the same question twice, and an operator
+    // who wants the cross combination says so explicitly.
+    //
+    // This is a BEHAVIOUR CHANGE on deploy for an agent already configured with `position: "top"`:
+    // one signed balloon becomes all of them, with nobody touching the agent. Declared in the issue
+    // rather than discovered, and narrow because the feature is off by default and shipped the day
+    // before. The alternative, defaulting an old bag to `once`, would have every existing top
+    // signature keep doing the thing the operator reported as wrong.
+    frequency:
+      bag.frequency === "all" || bag.frequency === "once"
+        ? bag.frequency
+        : position === "top"
+          ? "all"
+          : "once",
     separator:
       bag.separator === "blank" || bag.separator === "--"
         ? bag.separator
@@ -171,6 +203,93 @@ export function alreadySigned(
   return text.endsWith(s) && text[text.length - s.length - 1] === "\n";
 }
 
+// Every way the splitter can cut, trim, merge or rejoin the model's own copy differs from what it
+// wrote only in WHITESPACE, so this is the one normalisation everything below compares through.
+function flatten(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+// The same idea for a SINGLE balloon, where the line breaks must survive. The `maxChunks` merge
+// trims each paragraph and keeps the newlines between them, so dropping indentation and blank lines
+// is exactly the difference it introduces — and keeping the breaks is what stops the two-line
+// signature "Alex\nSupport" from being equated with the one prose line "Alex Support" (round 7).
+function normalizeLines(text: string): string {
+  return text
+    .trim()
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .join("\n");
+}
+
+// WHICH BALLOONS ARE THE MODEL'S OWN COPY, when the splitter has taken it apart.
+//
+// This is #599's split-boundary defect seen from the other side, and it arrives in more than one
+// shape: a signature containing a blank line is cut by the paragraph rule, one longer than
+// `maxChars` is cut by the SENTENCE rule with no blank line involved, and at the `maxChunks`
+// ceiling the overflow is merged back with each paragraph trimmed and the original separator run
+// kept. Review rounds 1, 3 and 4 each reported one of those, which is the signal that chasing them
+// one at a time is the wrong shape: EVERY one of them differs from what the model wrote only in
+// whitespace.
+//
+// So there is one question, asked twice over. `alreadySigned` answers WHETHER a copy exists, on the
+// reply as it arose, exactly, and it is the only thing that can. Then the walk answers WHICH
+// balloons hold it: in from that end, over balloons that are still a suffix (or a prefix) of the
+// signature once whitespace is collapsed on both sides. It stops at the first balloon that is not,
+// which is how a balloon holding content AND a fragment keeps its own signature — suppressing the
+// signature on a balloon the customer reads as content is the failure this whole feature exists to
+// prevent, so the worst case here stays a second signature and never a missing one.
+//
+// The `alreadySigned` gate is what keeps the walk off prose. A balloon reading exactly "Alex" in a
+// reply the model never signed is a paragraph of the operator's own text, and it gets the
+// signature like every other.
+function copyRun(
+  chunks: string[],
+  signature: string,
+  whole?: string,
+): Set<number> {
+  const out = new Set<number>();
+  const s = signature.trim();
+  const target = flatten(s);
+  if (!target) return out;
+  const text = (whole ?? chunks.join("\n\n")).trim();
+  // WHICH END, asked with `alreadySigned`'s own two comparisons rather than by calling it: they ARE
+  // the gate, so a separate call in front of this would be a second copy of the same question. A
+  // reply the model never signed answers no to both, the loop below never runs, and that is what
+  // keeps the walk off prose. BOTH ends when both say yes:
+  // a model that opened and closed with the same line wrote two copies, and one walk only ever
+  // reaches one of them (round 5). `top` and `bottom` are where WE put a signature, not where the
+  // model put its own, so this reads the reply rather than the config.
+  const atStart = text === s || (text.startsWith(s) && text[s.length] === "\n");
+  const atEnd =
+    text === s ||
+    (text.endsWith(s) && text[text.length - s.length - 1] === "\n");
+  for (const fromStart of [true, false]) {
+    if (fromStart ? !atStart : !atEnd) continue;
+    let acc = "";
+    const order = fromStart
+      ? chunks.map((_, i) => i)
+      : chunks.map((_, i) => chunks.length - 1 - i);
+    for (const i of order) {
+      // A balloon already claimed by the other end cannot also belong to this one.
+      if (out.has(i)) break;
+      const piece = flatten(chunks[i] ?? "");
+      if (!piece) break;
+      acc = fromStart
+        ? acc
+          ? `${acc} ${piece}`
+          : piece
+        : acc
+          ? `${piece} ${acc}`
+          : piece;
+      if (!(fromStart ? target.startsWith(acc) : target.endsWith(acc))) break;
+      out.add(i);
+      if (acc === target) break;
+    }
+  }
+  return out;
+}
+
 // ATTACHES TO A CHUNK, and that is the whole design. `deliverReply` cuts the reply on /\n{2,}/, and
 // BOTH separators contain "\n\n" — so a signature concatenated onto the text BEFORE the cut becomes
 // its own balloon with `blank`, and with `--` it becomes a balloon whose entire body is `--`. At the
@@ -183,12 +302,17 @@ export function alreadySigned(
 // Attaching to a chunk that does not exist attaches nothing, where appending to the text would have
 // made the signature a lone message in a turn where the agent said nothing.
 //
-// Pure, and the single spelling of the rule: a caller that sends one message passes `[text]`.
+// Pure, and the single spelling of the rule: a caller that sends one message passes `[text]`, which
+// is also why `all` and `once` are indistinguishable on the three single-message sends (split off,
+// the handoff's farewell on the proactive path, the follow-up). One chunk is one signature either
+// way, so the repetition cannot leak into a path that never splits.
 export function attachSignature(
   chunks: string[],
   signature: string | null,
-  position: SignaturePosition,
-  separator: SignatureSeparator,
+  // THE CONFIG, not three loose arguments, since #616 added the third. A caller that passes the
+  // agent's `signatureConfig` straight through cannot forget one of them, and forgetting the
+  // frequency is the mistake that silently reverts this feature at one send site out of four.
+  cfg: Pick<SignatureConfig, "position" | "separator" | "frequency">,
   // The reply AS IT AROSE, before the split. Only the dedupe reads it (see `alreadySigned`); the
   // attachment still happens on a chunk, which is the whole design.
   whole?: string,
@@ -198,15 +322,71 @@ export function attachSignature(
   // reply to zero chunks; with split OFF the same reply arrives here as one blank chunk, and without
   // this the two paths would disagree about the same silent turn.
   if (chunks.every((c) => c.trim().length === 0)) return chunks;
+  const { position, separator, frequency } = cfg;
   const delimiter = DELIMITERS[separator];
+  const put = (chunk: string): string =>
+    position === "top"
+      ? `${signature}${delimiter}${chunk.trimStart()}`
+      : `${chunk.trimEnd()}${delimiter}${signature}`;
+  // EVERY MESSAGE OF THE TURN, which is a loop over the same rule and not a second one. The balloon
+  // COUNT is the invariant it must not touch: `deliverReply` keeps `seps` aligned with `chunks` by
+  // index, so a signature that added or merged a balloon would misalign every pause after it.
+  if (frequency === "all") {
+    // ASKED PER BALLOON, and that is the shape change the repetition forces. `alreadySigned` asks
+    // about the reply as it AROSE, at both ends, which is the right question for `once` and the
+    // wrong one here: a model that signed itself at the end would suppress the badge on every other
+    // balloon, which is the failure this feature exists to prevent, produced by the guard against
+    // its twin. The rule inside the balloon is unchanged, line boundary included.
+    const own = copyRun(chunks, signature, whole);
+    // A WHOLE COPY CAN SHARE A BALLOON WITH PROSE, when the ceiling merges them, and then the
+    // balloon is neither a fragment the walk claims nor an exact match: the merge trimmed the
+    // signature's own indentation. So the per-balloon question is asked through the same
+    // normalisation — and ONLY for a signature that spans more than one line. Collapsing turns the
+    // line boundary into a space, and for a one-line signature that is #599's round-12 hole coming
+    // back through the other door: "chame o Alex" would read as already signed and the balloon
+    // would go out with no closing at all, which is worse than a second copy. Round 5.
+    // THE MODEL'S COPY AT A BALLOON'S END, seen through the normalisation the `maxChunks` merge
+    // performs: it trims each paragraph and keeps the newlines between them, so indentation and
+    // blank lines may go and every line break must stay.
+    //
+    // ON WHOLE LINES, AT AN END, never in the middle. A run matched anywhere inside is containment,
+    // and containment is how a balloon loses its own closing: with the breaks collapsed as well,
+    // the two-line signature "Alex\nSupport" equalled the one prose line "Alex Support", and
+    // "Alex Support can help with that." read as already signed (rounds 6 and 7).
+    const sigLines = normalizeLines(signature);
+    const sigCount = sigLines.split("\n").length;
+    const endRunMatches = (t: string): boolean => {
+      const lines = normalizeLines(t).split("\n");
+      if (lines.length < sigCount) return false;
+      return (
+        lines.slice(0, sigCount).join("\n") === sigLines ||
+        lines.slice(lines.length - sigCount).join("\n") === sigLines
+      );
+    };
+    // ASKED OF THE REPLY FIRST, and of a balloon only when the reply says there is a copy to find.
+    // Without that gate the comparison runs on every balloon of every reply, where two lines of
+    // ordinary text — a short list, an address — are one coincidence away from going out bare.
+    // `alreadySigned` answers exactly and this answers through the merge's own losses, because the
+    // rejoin that produced the balloon also produced the text this is asked about.
+    const signedSomewhere =
+      alreadySigned(chunks, signature, whole) ||
+      endRunMatches(whole ?? chunks.join("\n\n"));
+    const flatSigned = (c: string): boolean =>
+      signedSomewhere && endRunMatches(c);
+    return chunks.map((c, i) =>
+      c.trim().length === 0 ||
+      own.has(i) ||
+      alreadySigned([c], signature) ||
+      flatSigned(c)
+        ? c
+        : put(c),
+    );
+  }
   const i = position === "top" ? 0 : chunks.length - 1;
   const chunk = chunks[i];
   if (chunk === undefined || alreadySigned(chunks, signature, whole))
     return chunks;
   const out = [...chunks];
-  out[i] =
-    position === "top"
-      ? `${signature}${delimiter}${chunk.trimStart()}`
-      : `${chunk.trimEnd()}${delimiter}${signature}`;
+  out[i] = put(chunk);
   return out;
 }

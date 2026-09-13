@@ -239,35 +239,50 @@ export function signaturePreviewVars(
 // The schedule is the operator's OWN, looked up from the Availability the agent is on, so the
 // preview shows the hours they configured instead of a plausible fake. No Availability means
 // `schedule: null`, which is what production passes and what the gate reads as always on.
+// ONE ARRAY PER MESSAGE, since #616, because repetition is the thing being previewed and a preview
+// of one balloon cannot show it. It also makes `once` legible for the first time: the operator sees
+// WHICH of the two messages carries the signature, which is the half of the old rule nobody could
+// read off a single bubble.
+//
+// The message count follows the SPLIT, not the frequency: with the split off the agent sends one
+// message and the two frequencies are the same thing, so showing two balloons there would preview
+// a delivery that never happens.
 export function signaturePreviewParts(
   sig: SignatureState,
   t: (k: string, d: string) => string,
   vars: Record<string, string>,
   opts: PromptRenderOpts = {},
-): string[] {
+  splitOn = true,
+): string[][] {
   // Interpolated like the signature itself, so the example name in the body and the one a
   // `{{nome_contato}}` in the signature resolves to are the SAME person. A preview that greets Ana
   // and signs off to somebody else teaches the operator the variables do not work.
-  const body = interpolatePromptVars(
-    t(
-      "editor.signaturePreviewBody",
-      "Hi {{primeiro_nome}}, all set here. Any questions, just ask.",
-    ),
-    vars,
-    opts,
-  );
+  const bodies = [
+    t("editor.signaturePreviewBody", "Hi {{primeiro_nome}}, all set here."),
+    ...(splitOn
+      ? [t("editor.signaturePreviewBody2", "Any questions, just ask.")]
+      : []),
+  ].map((b) => interpolatePromptVars(b, vars, opts));
   // Through the RUNTIME's own interpolation, not a second copy of it: what the preview shows and
   // what the customer receives have to be the same function, including the rule that an unknown
   // placeholder is left standing instead of blanked, which is how a typo stays visible here.
   const text = interpolatePromptVars(sig.text.trim(), vars, opts);
-  if (!text) return [body];
-  return sig.position === "top" ? [text, body] : [body, text];
+  if (!text) return bodies.map((b) => [b]);
+  // The same index `attachSignature` picks, spelled once: every message with `all`, otherwise the
+  // first with `top` and the last with `bottom`.
+  const signedAt = (i: number): boolean =>
+    sig.frequency === "all" ||
+    (sig.position === "top" ? i === 0 : i === bodies.length - 1);
+  return bodies.map((b, i) =>
+    signedAt(i) ? (sig.position === "top" ? [text, b] : [b, text]) : [b],
+  );
 }
 
 export interface SignatureState {
   enabled: boolean;
   text: string;
   position: "top" | "bottom";
+  frequency: "all" | "once";
   separator: "blank" | "--";
 }
 
@@ -2598,11 +2613,11 @@ export function BehaviorTab({
             title={t("editor.signature", "Signature")}
             description={t(
               "editor.signatureHint",
-              "A closing line you write once, added to the agent's messages. Asked for in the prompt instead, it comes out differently every time and never on a handoff.",
+              "A line you write once, added to the agent's messages. Asked for in the prompt instead, it comes out differently every time and never on a handoff.",
             )}
             help={t(
               "editor.signatureHelp",
-              "The signature goes on the message that closes a turn: the reply, and the farewell of a handoff. Not on a mid-turn acknowledgement, not on a private note, and not on an audio reply, where a spoken closing is noise.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
+              "The signature goes on the agent's reply and on a handoff's farewell, never on a private note or an audio reply. A long reply arrives as more than one message: above it the signature is a badge, and a badge belongs on every one; below it is a farewell, and a farewell is said once.\n\nWrite Markdown and Chatwoot converts it per channel on the way out: **bold** reaches WhatsApp as *bold* and e-mail as bold text. A link keeps its label on e-mail and loses it on WhatsApp, where only the address goes, so write the address bare if the agent answers there.\n\nOnce this is set, the prompt should say nothing about signing. A prompt that still asks for a closing produces a second, slightly different one that no check can catch.",
             )}
           >
             <SwitchField
@@ -2702,6 +2717,43 @@ export function BehaviorTab({
                     </Select>
                   </FormField>
                   <FormField
+                    label={t("editor.signatureFrequency", "Which messages")}
+                    description={t(
+                      "editor.signatureFrequencyHint",
+                      "A reply can arrive as more than one message. This says whether the signature repeats on each of them.",
+                    )}
+                  >
+                    <Select
+                      value={signature.frequency}
+                      onChange={(e) =>
+                        setSignature({
+                          ...signature,
+                          frequency: e.target.value as "all" | "once",
+                        })
+                      }
+                    >
+                      <option value="all">
+                        {t("editor.signatureFreqAll", "On every message")}
+                      </option>
+                      {/* THE LABEL FOLLOWS THE POSITION, because "one of them" is not an answer on
+                      its own: with the signature above the message it is the FIRST, below it the
+                      LAST, and an operator reading "only once" has to guess which. Changing the
+                      position rewrites this label and leaves the SELECTION alone — the two fields
+                      are independent, and a badge only on the opening balloon is a real choice. */}
+                      <option value="once">
+                        {signature.position === "top"
+                          ? t(
+                              "editor.signatureFreqFirst",
+                              "Only on the first message",
+                            )
+                          : t(
+                              "editor.signatureFreqLast",
+                              "Only on the last message",
+                            )}
+                      </option>
+                    </Select>
+                  </FormField>
+                  <FormField
                     label={t("editor.signatureSeparator", "Separator")}
                     description={t(
                       "editor.signatureSeparatorHint",
@@ -2730,7 +2782,7 @@ export function BehaviorTab({
                   label={t("editor.signaturePreview", "Preview")}
                   description={t(
                     "editor.signaturePreviewHint",
-                    "One message. Your agent and company names are the real ones; the contact details are examples. The gap or the -- below is what the separator puts between the two.",
+                    "An example reply, as the customer receives it. Your agent and company names are the real ones; the contact details are examples.",
                   )}
                 >
                   {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
@@ -2738,25 +2790,33 @@ export function BehaviorTab({
                   line between two paragraphs came out as Markdown's own paragraph gap, which is
                   smaller than a line and reads as ordinary spacing rather than as the choice the
                   operator just made. Splitting at the separator is also what the bytes are. */}
-                  <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+                  <div className="flex flex-col gap-2">
                     {signaturePreviewParts(
                       signature,
                       t,
                       signatureVars,
                       signaturePreviewOpts,
-                    ).map((part, i) => (
-                      <div key={part}>
-                        {i > 0 &&
-                          (signature.separator === "--" ? (
-                            <div className="py-1 font-mono text-sm text-text-secondary">
-                              {/* Not translatable: these are the bytes the separator puts on the
-                              wire, the same two `DELIMITERS` writes. */}
-                              {"--"}
-                            </div>
-                          ) : (
-                            <div className="h-5" aria-hidden="true" />
-                          ))}
-                        <Markdown>{part}</Markdown>
+                      split.enabled,
+                    ).map((parts) => (
+                      <div
+                        key={parts.join("\u0000")}
+                        className="rounded-lg border border-border bg-bg-tertiary px-3 py-2"
+                      >
+                        {parts.map((part, i) => (
+                          <div key={part}>
+                            {i > 0 &&
+                              (signature.separator === "--" ? (
+                                <div className="py-1 font-mono text-sm text-text-secondary">
+                                  {/* Not translatable: these are the bytes the separator puts on
+                                  the wire, the same two `DELIMITERS` writes. */}
+                                  {"--"}
+                                </div>
+                              ) : (
+                                <div className="h-5" aria-hidden="true" />
+                              ))}
+                            <Markdown>{part}</Markdown>
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </div>

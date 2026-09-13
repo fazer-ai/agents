@@ -511,6 +511,189 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(out).toEqual({ delivered: 2, failed: false, unproven: false });
   });
 
+  // THE CONSOLIDATED RETRY IS ONE MESSAGE, so it carries one signature (#616, review round 1 of
+  // #617). What is owed was built from chunks that ALREADY carried one each, so with `all` the
+  // retry arrived with the badge repeated inside its body — the same configuration rendering two
+  // ways depending on whether a send happened to fail, which is the defect class the
+  // attach-to-a-chunk design exists to close.
+  test("the consolidated retry carries ONE signature with frequency all", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: "Alex", position: "top", separator: "blank", frequency: "all" },
+    );
+    expect(out.failed).toBe(false);
+    expect(rec.sent).toEqual([
+      "Alex\n\nOlá!",
+      "Alex\n\nComo vai?\n\nPosso ajudar?",
+    ]);
+    expect(rec.sent[1]?.split("Alex")).toHaveLength(2);
+  });
+
+  // And `once` is untouched by that fix, in both directions: a `top` signature whose first balloon
+  // already landed must not come back on the retry, and a `bottom` one must still close it.
+  test("the consolidated retry does not re-sign a top signature already delivered", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: "Alex", position: "top", separator: "blank", frequency: "once" },
+    );
+    expect(rec.sent).toEqual(["Alex\n\nOlá!", "Como vai?\n\nPosso ajudar?"]);
+  });
+
+  test("the consolidated retry still closes with a bottom signature", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      {
+        text: "Alex",
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      },
+    );
+    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?\n\nAlex"]);
+  });
+
+  // THE RETRY IS ITS OWN MESSAGE, and with `all` the question "did the model already sign this?"
+  // has to be asked of the retry, not of the whole reply it was cut from. Asking the original made
+  // the opening copy answer for a remainder that merely starts with the same word, and the retry
+  // went out bare. Round 7 of the review.
+  test("the consolidated retry is not silenced by a copy it does not contain", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG2 = "Alex\nSupport";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 3),
+      1,
+      `${SIG2}\n\nO agente responsável é:\n\nAlex`,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG2, position: "bottom", separator: "blank", frequency: "all" },
+    );
+    // The model's own copy opens the reply and is left whole; every other message carries one,
+    // including the retry.
+    expect(rec.sent[0]).toBe(SIG2);
+    expect(rec.sent.at(-1)).toBe(`Alex\n\n${SIG2}`);
+  });
+
+  // And with `once` the question is the other one: did the model already sign this TURN. Only the
+  // original reply can answer that, so a copy the customer already received in an earlier balloon
+  // still keeps the retry bare.
+  test("the consolidated retry stays bare when the model signed the turn already", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 3),
+      1,
+      "Alex\n\nUm.\n\nDois.",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      {
+        text: "Alex",
+        position: "bottom",
+        separator: "blank",
+        frequency: "once",
+      },
+    );
+    expect(rec.sent.at(-1)).toBe("Dois.");
+    expect(rec.sent.join("|")).not.toContain("Dois.\n\nAlex");
+  });
+
+  // THE RETRY CARRIES A SIGNATURE IF AND ONLY IF THE BALLOONS IT REPLACES DID. That is the whole
+  // rule, and it replaced a frequency-and-position conditional that could disagree with the
+  // decision the balloon pass had already made: with the copy merged at the ceiling, the balloon
+  // was correctly recognised and skipped, and the retry then prepended a second one because its own
+  // evidence, the lossy reconstruction, no longer matched the signature exactly. Round 8.
+  test("the consolidated retry repeats the decision its balloons already got", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG3 = "Alex\n\n  Minha Empresa";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      `Bom dia.\n\nResposta.\n\n${SIG3}`,
+      { ...SPLIT_DEFAULTS, enabled: true, maxChunks: 2 },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG3, position: "top", separator: "blank", frequency: "all" },
+    );
+    // The balloon holding the model's own copy was skipped, so its retry is skipped too.
+    expect(rec.sent.at(-1)).toBe("Resposta.\n\nAlex\n\nMinha Empresa");
+  });
+
+  // ONE MESSAGE, ONE SIGNATURE, and a retry that spans several balloons can already contain the
+  // model's own copy inside one of them. "Some balloon was signed" says the retry SHOULD carry one;
+  // whether it already does is `attachSignature`'s own question, asked of the retry's own text
+  // through the same normalisation the merge performs. Round 9, and round 10 is why it is that
+  // question and not "some balloon was left alone": a balloon left alone may hold a FRAGMENT of the
+  // copy rather than all of it, and a retry carrying only the fragment went out with no name on
+  // it.
+  test("the consolidated retry does not add a second copy to one it already carries", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG3 = "Alex\n\n  Minha Empresa";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      `Bom dia.\n\nMais informação.\n\nResposta.\n\n${SIG3}`,
+      { ...SPLIT_DEFAULTS, enabled: true, maxChunks: 3 },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG3, position: "top", separator: "blank", frequency: "all" },
+    );
+    const last = rec.sent.at(-1) ?? "";
+    expect(last.split("Minha Empresa")).toHaveLength(2);
+  });
+
+  // A FRAGMENT IS NOT A COPY. The walk leaves every balloon of a multi-balloon copy alone, so an
+  // untouched balloon proves nothing about what the retry carries: here the first half of the
+  // closing already landed and the retry holds only the second, which is a message with the
+  // company on it and not the agent. Round 10.
+  test("a retry holding only a FRAGMENT of the copy still gets its signature", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const SIG4 = "Alex\n\nSupport";
+    await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      `${SIG4}\n\nSegue o retorno.`,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      undefined,
+      null,
+      { text: SIG4, position: "bottom", separator: "blank", frequency: "all" },
+    );
+    expect(rec.sent.at(-1)).toContain("Alex");
+  });
+
   // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
   // any occurrence reports a chunk that genuinely did not land as delivered, drops it from what is
   // owed, and truncates the reply while the turn reports `posted` — silently, which is the outcome

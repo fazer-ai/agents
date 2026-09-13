@@ -78,7 +78,7 @@ describe("agentNode system-message normalization", () => {
 // A model that keeps calling a tool while tools are bound, and answers in text when they are NOT
 // (the hard-limit path invokes the raw model). Records the system prompt seen on each bound invoke.
 class ToolLoopModel {
-  boundSystemPrompts: string[] = [];
+  boundRounds: BaseMessage[][] = [];
   rawInvokes = 0;
   // Hard-limit path: raw model, no tools → a plain text answer ends the turn.
   async invoke(_messages: BaseMessage[]): Promise<AIMessage> {
@@ -91,7 +91,7 @@ class ToolLoopModel {
     return {
       async invoke(messages: BaseMessage[]): Promise<AIMessage> {
         n++;
-        self.boundSystemPrompts.push(String(messages[0]?.content ?? ""));
+        self.boundRounds.push(messages);
         return new AIMessage({
           content: "",
           tool_calls: [{ name: "noop", args: {}, id: `call_${n}` }],
@@ -100,6 +100,11 @@ class ToolLoopModel {
     };
   }
 }
+
+// The soft limit's wrap-up instruction, recognized wherever it sits in a request.
+const WRAP_UP = "[Sistema] Você já usou";
+const carriesWrapUp = (round: BaseMessage[]) =>
+  round.some((m) => contentToText(m.content).includes(WRAP_UP));
 
 const noopTool = tool(async () => "feito", {
   name: "noop",
@@ -130,7 +135,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const skipTool = realSkipTool();
     // One skip_reply call, then an empty answer — the shape a silent turn actually has.
     class SkipThenSilentModel {
-      boundSystemPrompts: string[] = [];
+      boundRounds: BaseMessage[][] = [];
       async invoke(): Promise<AIMessage> {
         return new AIMessage("");
       }
@@ -140,7 +145,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         return {
           async invoke(messages: BaseMessage[]): Promise<AIMessage> {
             n++;
-            self.boundSystemPrompts.push(String(messages[0]?.content ?? ""));
+            self.boundRounds.push(messages);
             if (n === 1) {
               return new AIMessage({
                 content: "",
@@ -167,12 +172,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
     // ONE round: the decision ended the turn. The wrap-up instruction cannot land because there is
     // no round after it to land on (the control below proves the same cap DOES produce it).
-    expect(model.boundSystemPrompts).toHaveLength(1);
-    expect(
-      model.boundSystemPrompts.some((p) =>
-        p.includes("[Sistema] Você já usou"),
-      ),
-    ).toBe(false);
+    expect(model.boundRounds).toHaveLength(1);
+    expect(model.boundRounds.some(carriesWrapUp)).toBe(false);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
@@ -1474,7 +1475,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       schema: z.object({}),
     });
     class ParallelThenSilentModel {
-      boundSystemPrompts: string[] = [];
+      boundRounds: BaseMessage[][] = [];
       async invoke(): Promise<AIMessage> {
         return new AIMessage("");
       }
@@ -1484,7 +1485,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         return {
           async invoke(messages: BaseMessage[]): Promise<AIMessage> {
             n++;
-            self.boundSystemPrompts.push(String(messages[0]?.content ?? ""));
+            self.boundRounds.push(messages);
             if (n === 1) {
               return new AIMessage({
                 content: "",
@@ -1517,12 +1518,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     // called something else is not terminal (round 18) — which is exactly why reading the whole
     // batch still matters: the wrap-up instruction would otherwise land on the round after a
     // decision to stay quiet.
-    expect(model.boundSystemPrompts.length).toBeGreaterThanOrEqual(2);
-    expect(
-      model.boundSystemPrompts.some((p) =>
-        p.includes("[Sistema] Você já usou"),
-      ),
-    ).toBe(false);
+    expect(model.boundRounds.length).toBeGreaterThanOrEqual(2);
+    expect(model.boundRounds.some(carriesWrapUp)).toBe(false);
   });
 
   test("forces a no-tools answer at the hard limit and fires onToolLimit", async () => {
@@ -1548,14 +1545,51 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     // Hard limit fired exactly once, at maxToolCalls executions.
     expect(hits).toHaveLength(1);
     expect(hits[0]).toEqual({ maxToolCalls: 3, toolCalls: 3 });
-    // The soft "wrap up" instruction was appended once the budget got close (N-2 = 1 execution in).
-    expect(
-      model.boundSystemPrompts.some((p) =>
-        p.includes("[Sistema] Você já usou"),
-      ),
-    ).toBe(true);
-    // The first invoke (0 executions) used the plain prompt.
-    expect(model.boundSystemPrompts[0]).toBe("PROMPT");
+    // The soft "wrap up" instruction was sent once the budget got close (N-2 = 1 execution in), and
+    // the first invoke (0 executions) went without it.
+    expect(model.boundRounds.map(carriesWrapUp)).toEqual([false, true, true]);
+  });
+
+  // Issue #628. A provider caches a request by its exact prefix, so the instruction must not touch
+  // anything a previous round already sent: not the system prompt, and not the history. It rides as
+  // the LAST message, is gone from the round after it, and never reaches the thread.
+  test("the wrap-up instruction is the last message, and everything before it is what the previous round sent", async () => {
+    const model = new ToolLoopModel();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [noopTool],
+      maxToolCalls: 3,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("faça muitas coisas")] },
+      { configurable: { thread_id: "limit-prefix" } },
+    );
+    const rounds = model.boundRounds;
+    expect(rounds).toHaveLength(3);
+    const shape = (m: BaseMessage) =>
+      `${m.getType()}:${contentToText(m.content)}`;
+    for (const [i, round] of rounds.entries()) {
+      // The system prompt is the same bytes on every round, instruction or not.
+      expect(round.filter((m) => m.getType() === "system")).toHaveLength(1);
+      expect(round[0]?.getType()).toBe("system");
+      expect(round[0]?.content).toBe("PROMPT");
+      // Where the instruction is sent, it is the last message and a human one.
+      if (carriesWrapUp(round)) {
+        expect(round.at(-1)?.getType()).toBe("human");
+        expect(contentToText(round.at(-1)?.content ?? "")).toContain(WRAP_UP);
+        expect(carriesWrapUp(round.slice(0, -1))).toBe(false);
+      }
+      // Everything this round sent before its instruction opens the next round, message for message.
+      const next = rounds[i + 1];
+      if (!next) continue;
+      const kept = carriesWrapUp(round) ? round.slice(0, -1) : round;
+      expect(next.slice(0, kept.length).map(shape)).toEqual(kept.map(shape));
+    }
+    // Sent, not persisted: the thread the next turn loads carries no instruction.
+    expect(carriesWrapUp(result.messages)).toBe(false);
   });
 });
 

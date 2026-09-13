@@ -2,6 +2,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import {
   AIMessage,
   type BaseMessage,
+  HumanMessage,
   type MessageContent,
   SystemMessage,
 } from "@langchain/core/messages";
@@ -527,10 +528,28 @@ export function buildAgentGraph({
       !staySilent &&
       toolCalls >= Math.max(1, max - 2);
 
-    let prompt = systemPrompt;
-    if (softLimit) {
-      prompt = `${systemPrompt}\n\n[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
-    }
+    // THE WRAP-UP GOES AFTER THE HISTORY, NEVER INTO THE SYSTEM PROMPT (issue #628).
+    //
+    // Providers cache a request by its exact prefix, and the system prompt is the first thing in
+    // every request. A line appended to it changes the prefix at the first message, so the round the
+    // instruction lands on cannot read the cache the round before it wrote and pays for the whole
+    // prompt again — on GPT-5.6 that is a cache WRITE, billed at 1.25x input, instead of a read at
+    // 0.1x. Measured on one install: calls carrying the instruction read the cache 8 times in 311,
+    // calls without it 399 in 1003, and an observer at `maxToolCalls: 3` gets it on every second
+    // call. After the history, everything before it is byte for byte what the last round sent.
+    //
+    // A HUMAN message, because the node sends exactly one system message and it must be first
+    // (Google and Anthropic reject a second one). SENT, never persisted: it is not in the channel, so
+    // the count above never reads it as the customer's turn. And a tool result that ends in a human
+    // message is not a new shape for any provider: it is what every turn after a silent one sends,
+    // once `isEmptyAssistantTurn` drops the empty assistant message between them.
+    const wrapUp = softLimit
+      ? [
+          new HumanMessage(
+            `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`,
+          ),
+        ]
+      : [];
     if (hardLimit) {
       reportToolLimit({ maxToolCalls: max, toolCalls });
     }
@@ -565,7 +584,7 @@ export function buildAgentGraph({
     const sent = narration.length
       ? history.map((m) => narration.find((n) => n.id === m.id) ?? m)
       : history;
-    const messages = [new SystemMessage(prompt), ...sent];
+    const messages = [new SystemMessage(systemPrompt), ...sent, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
     const second =

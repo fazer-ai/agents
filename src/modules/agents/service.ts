@@ -790,7 +790,92 @@ function setAt(
   return true;
 }
 
-// WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631). A bundle is authored somewhere else, so the import
+// How many tail elements of one list are tried, and how many candidates are judged one by one when the
+// block's whole batch is not reader-equal. Both are ceilings on WORK, not on correctness: past them the
+// values stay where they are, which is the outcome that changes nothing the runtime reads. A bundle is
+// caller input and the import runs inside a 5s transaction, so a bag holding fifty thousand unusable
+// entries has to cost one pass over the block, not one pass per entry (review round 2).
+const IMPORT_POP_LIMIT = 64;
+const IMPORT_ONE_BY_ONE_MAX = 32;
+
+type ImportFix =
+  | { kind: "trim"; path: PropertyKey[]; trimmed: string }
+  | { kind: "remove"; path: PropertyKey[] };
+
+// Applies every fix to a copy of the block and answers it with the paths it took out, or null when the
+// block's reading changed anyway. Paths are the BUNDLE's: every fix is applied to a copy of the original
+// value, so an index never names a position some earlier removal created.
+function applyImportFixes(
+  fixes: readonly ImportFix[],
+  value: unknown,
+  block: string,
+  sameReading: (candidate: unknown) => boolean,
+): { next: unknown; taken: string[] } | null {
+  const trial = structuredClone(value);
+  const taken: string[] = [];
+  for (const fix of fixes) {
+    if (fix.kind === "trim") setAt(trial, fix.path, fix.trimmed);
+  }
+  // Keys first, elements after: a key is addressed inside an element the bundle numbered, so removing
+  // elements first would renumber the list under the paths still to be applied.
+  const lists = new Map<
+    string,
+    { at: PropertyKey[]; drop: Set<number>; kept: number[] }
+  >();
+  for (const fix of fixes) {
+    if (fix.kind !== "remove") continue;
+    const at = [...fix.path];
+    const last = at.pop();
+    const parent = valueAt(trial, at);
+    if (Array.isArray(parent) && last !== undefined) {
+      const key = at.map(String).join(".");
+      const list = lists.get(key) ?? { at, drop: new Set<number>(), kept: [] };
+      list.drop.add(Number(last));
+      lists.set(key, list);
+      taken.push([block, ...fix.path.map(String)].join("."));
+      continue;
+    }
+    if (removeAt(trial, fix.path))
+      taken.push([block, ...fix.path.map(String)].join("."));
+  }
+  // Deepest list first, for the same reason: an inner list is addressed through its element's index.
+  const byDepth = [...lists.values()].sort((a, b) => b.at.length - a.at.length);
+  for (const list of byDepth) {
+    const arr = valueAt(trial, list.at) as unknown[];
+    const kept: unknown[] = [];
+    arr.forEach((element, i) => {
+      if (list.drop.has(i)) return;
+      kept.push(element);
+      list.kept.push(i);
+    });
+    arr.length = 0;
+    arr.push(...kept);
+  }
+  // A list the reader cuts to a window BEFORE it filters: what slid into the window from past it is an
+  // element the reader ignored, and taking that too is what keeps the window's contents. Named by its
+  // own index in the bundle, which is why the kept indices are carried here.
+  for (const list of byDepth) {
+    if (sameReading(trial)) break;
+    const arr = valueAt(trial, list.at) as unknown[];
+    const floor = Math.min(...list.drop);
+    let pops = 0;
+    while (
+      pops < IMPORT_POP_LIMIT &&
+      arr.length > 0 &&
+      (list.kept[list.kept.length - 1] ?? -1) > floor &&
+      !sameReading(trial)
+    ) {
+      taken.push(
+        [block, ...list.at.map(String), String(list.kept.pop())].join("."),
+      );
+      arr.pop();
+      pops += 1;
+    }
+  }
+  return sameReading(trial) ? { next: trial, taken } : null;
+}
+
+// WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631).// WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631). A bundle is authored somewhere else, so the import
 // path does not refuse it whole over one field (transfer.ts already clamps over-cap prose and the
 // protected-label list for that reason); it takes the unusable value out, so the reader's default
 // applies and GET agrees with the runtime, and hands back the paths so the import can say what it
@@ -843,55 +928,98 @@ export function dropUnusableImportedSettingsInPlace(
         unknown
       >
     )[block];
-  const closed: string[] = [];
-  for (const { block, path, next } of closedValueIssues(bag).reverse()) {
+  const byBlock = new Map<string, ClosedValueIssue[]>();
+  for (const issue of closedValueIssues(bag)) {
+    const list = byBlock.get(issue.block) ?? [];
+    list.push(issue);
+    byBlock.set(issue.block, list);
+  }
+  for (const [block, issues] of byBlock) {
     const reading = readBlock(block, bag[block]);
     const sameReading = (candidate: unknown) =>
       isDeepStrictEqual(readBlock(block, candidate), reading);
-    // Padded, and the reader trims it: the trimmed spelling is the value the runtime already uses, so
-    // nothing is lost and there is nothing to warn about.
-    if (typeof next === "string" && next.trim() !== next) {
-      const trial = structuredClone(bag[block]);
-      if (
-        setAt(trial, path, next.trim()) &&
-        sameReading(trial) &&
-        !closedValueIssues({ [block]: trial }).some((i) =>
-          isDeepStrictEqual(i.path, path),
-        )
-      ) {
-        bag[block] = trial;
-        continue;
-      }
-    }
-    if (path.length === 0) {
-      // The block itself is the wrong type: the reader answers it with every default.
+    // The block itself is the wrong type: the reader answers it with every default.
+    if (issues.some((i) => i.path.length === 0)) {
       if (sameReading(undefined)) {
         delete bag[block];
-        closed.unshift(block);
+        dropped.push(block);
       }
       continue;
     }
-    const trial = structuredClone(bag[block]);
-    if (!removeAt(trial, path)) continue;
-    const taken = [[block, ...path.map(String)].join(".")];
-    // A list the reader cuts to a window before it filters: the element that slid in from past the
-    // window is one the reader ignored, and taking it too is what keeps the window's contents. Named
-    // by its index in the bundle, one past where it sits now because the element above was just taken
-    // out of the window.
-    const listPath = [...path];
-    const index = Number(listPath.pop());
-    const list = valueAt(trial, listPath);
-    while (!sameReading(trial) && Array.isArray(list) && list.length > index) {
-      taken.push(
-        [block, ...listPath.map(String), String(list.length)].join("."),
+    // A padded value the reader trims and honours is stored trimmed rather than taken out, and nothing
+    // is lost to warn about. Which paddings the schema then accepts is asked ONCE, not per value.
+    const padded = issues.filter(
+      (i) => typeof i.next === "string" && i.next.trim() !== i.next,
+    );
+    let trimmable = new Set<string>();
+    if (padded.length > 0) {
+      const trimTrial = structuredClone(bag[block]);
+      for (const i of padded)
+        setAt(trimTrial, i.path, (i.next as string).trim());
+      const stillFlagged = new Set(
+        closedValueIssues({ [block]: trimTrial }).map((i) =>
+          i.path.map(String).join("."),
+        ),
       );
-      list.pop();
+      trimmable = new Set(
+        padded
+          .map((i) => i.path.map(String).join("."))
+          .filter((key) => !stillFlagged.has(key)),
+      );
     }
-    if (!sameReading(trial)) continue;
-    bag[block] = trial;
-    closed.unshift(...taken);
+    const fixFor = (issue: ClosedValueIssue): ImportFix =>
+      trimmable.has(issue.path.map(String).join("."))
+        ? {
+            kind: "trim",
+            path: issue.path,
+            trimmed: (issue.next as string).trim(),
+          }
+        : { kind: "remove", path: issue.path };
+    const fixes = issues.map(fixFor);
+    // The whole block in one pass first, which is what a bundle with many unusable entries costs.
+    const batch = applyImportFixes(fixes, bag[block], block, sameReading);
+    if (batch) {
+      bag[block] = batch.next;
+      dropped.push(...batch.taken);
+      continue;
+    }
+    // Some value in there is one the runtime reads. Judged one by one, each time from the bundle's own
+    // value plus what has been accepted so far, so a rejected fix leaves no trace and an index still
+    // names the position the bundle wrote. Bounded, because this is the quadratic path.
+    if (fixes.length > IMPORT_ONE_BY_ONE_MAX) continue;
+    const accepted: ImportFix[] = [];
+    let best: { next: unknown; taken: string[] } | null = null;
+    for (const fix of fixes) {
+      const withTrim = applyImportFixes(
+        [...accepted, fix],
+        bag[block],
+        block,
+        sameReading,
+      );
+      if (withTrim) {
+        accepted.push(fix);
+        best = withTrim;
+        continue;
+      }
+      if (fix.kind !== "trim") continue;
+      // Trimming it changed the reading; taking it out may not.
+      const asRemoval: ImportFix = { kind: "remove", path: fix.path };
+      const withRemoval = applyImportFixes(
+        [...accepted, asRemoval],
+        bag[block],
+        block,
+        sameReading,
+      );
+      if (withRemoval) {
+        accepted.push(asRemoval);
+        best = withRemoval;
+      }
+    }
+    if (best) {
+      bag[block] = best.next;
+      dropped.push(...best.taken);
+    }
   }
-  dropped.push(...closed);
   // Half a fallback is no fallback to the runtime (`hasModelFallback`), and a stored half is what the
   // write boundary refuses: the pair goes, the rest of the block stays. After the closed values, since
   // a provider outside its domain taken out above leaves exactly this half.

@@ -2288,6 +2288,12 @@ function AgentEditor() {
           'The value in "{{field}}" is not one this agent can use, so it was left out on import and the default applies.',
           p,
         );
+      case "settingsValuesDroppedMore":
+        return t(
+          "editor.importWarning.settingsValuesDroppedMore",
+          "{{count}} more settings values this agent cannot use were left out on import.",
+          { ...p, count: importWarningCount(p) },
+        );
       case "promptToolRenamed":
         return t(
           "editor.importWarning.promptToolRenamed",

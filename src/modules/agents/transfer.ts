@@ -1080,6 +1080,9 @@ class DryRunRollback extends Error {
   }
 }
 
+// How many unusable settings values an import names one by one before it just counts the rest.
+const SETTINGS_DROPPED_NAMED = 20;
+
 export async function importAgent(
   ctx: TenantContext,
   raw: unknown,
@@ -1387,8 +1390,20 @@ export async function importAgent(
     // fallback, a tool guard that cannot parse. Asked of the bag AS IT WILL BE STORED, after the
     // renames and strips above, so a note under a pre-rename native name is judged under the name the
     // schema checks rather than passing as an unknown key.
-    for (const field of dropUnusableImportedSettingsInPlace(storable)) {
+    // Named one by one up to a point, and counted past it: a bundle can carry thousands of unusable
+    // entries in one list, and a warning apiece would be the whole response.
+    const unusable = dropUnusableImportedSettingsInPlace(storable);
+    let named = 0;
+    for (const field of unusable) {
+      if (named >= SETTINGS_DROPPED_NAMED) break;
       warnings.push({ code: "settingsValueDropped", params: { field } });
+      named += 1;
+    }
+    if (unusable.length > named) {
+      warnings.push({
+        code: "settingsValuesDroppedMore",
+        params: { count: unusable.length - named },
+      });
     }
     const created = await db.agent.create({
       data: {

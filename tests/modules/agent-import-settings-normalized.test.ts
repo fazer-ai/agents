@@ -187,6 +187,47 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     });
   });
 
+  // A BUNDLE IS CALLER INPUT, and the import runs inside a 5s transaction. One pass over the block,
+  // not one pass per entry: judged one by one this took about 17 seconds for this list (review round 2).
+  test("a list of fifty thousand unusable entries costs one pass, and the warnings are counted past the first twenty", async () => {
+    const started = Date.now();
+    const { stored, result } = await importWith({
+      guardrails: { competitors: Array(50_000).fill(1) },
+    });
+    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(stored?.guardrails).toEqual({ competitors: [] });
+    const named = result.warnings.filter(
+      (w) => w.code === "settingsValueDropped",
+    );
+    expect(named).toHaveLength(20);
+    expect(named[0]?.params?.field).toBe("guardrails.competitors.0");
+    const rest = result.warnings.find(
+      (w) => w.code === "settingsValuesDroppedMore",
+    );
+    expect(rest?.params?.count).toBe(49_980);
+  });
+
+  // Every path names the position the BUNDLE wrote, however many elements came out before it.
+  test("a second bad step past the window is named by its own index, not by where it ended up", async () => {
+    const steps = Array.from({ length: 9 }, (_, i) => ({
+      delayValue: i + 1,
+      delayUnit: "minutes",
+      instructions: `s${i}`,
+    }));
+    const { stored, dropped } = await importWith({
+      followUp: {
+        enabled: true,
+        steps: ["x", ...steps, "y", { delayValue: 5, delayUnit: "hours" }],
+      },
+    });
+    expect(dropped).toEqual([
+      "followUp.steps.0",
+      "followUp.steps.10",
+      "followUp.steps.11",
+    ]);
+    expect(stored?.followUp).toEqual({ enabled: true, steps });
+  });
+
   test("half a model fallback is no fallback: the pair goes, the rest of the block stays", async () => {
     const half = await importWith({
       modelFallback: { provider: "openai", baseURL: "https://llm.example" },

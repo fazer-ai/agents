@@ -31,6 +31,7 @@ const CROSS_TENANT = [
   "runSchedulerTick",
   "claimDueJobs",
   "claimDueTrafficJobs",
+  "claimDueObserveJobs",
   "claimDueDebounceJobs",
   "claimPendingByKeyPrefix",
   "reapStaleJobs",

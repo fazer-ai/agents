@@ -8,6 +8,7 @@ import {
   JOB_LANE,
   JOB_SPENDS_PROVIDER,
   JOB_TRAFFIC_PROPORTIONAL,
+  observeClaimLimit,
   type SchedulerLane,
   sharedProviderConcurrency,
 } from "@/modules/scheduler/lanes";
@@ -15,6 +16,7 @@ import {
   claimDueCompactionJobs,
   claimDueDebounceJobs,
   claimDueJobs,
+  claimDueObserveJobs,
   claimDueTrafficJobs,
   enqueueJob,
   type SchedulerJobKind,
@@ -95,7 +97,9 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   DELIVERY_RECOVERY: "shared",
   TAKEOVER_RECOVERY: "shared",
   SPEND_CEILING_POLL: "shared",
-  OBSERVE: "shared",
+  // A cap of its own, drained by the shared tick (issue #621): on the traffic share it waited behind
+  // every ingestion row armed before it, five rows a tick for the whole install.
+  OBSERVE: "observe",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -156,10 +160,9 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // when the process died.
   TAKEOVER_RECOVERY: true,
   SPEND_CEILING_POLL: false,
-  // One row per observed CONVERSATION, which is the same shape as DEBOUNCE's — but DEBOUNCE has a
-  // lane of its own, so its rows never share a batch with a reminder. OBSERVE is on `shared`, where
-  // it is the only kind whose count follows how much contacts write (issue #477 review, round 8).
-  OBSERVE: true,
+  // One row per observed CONVERSATION, which is the same shape as DEBOUNCE's, and now the same answer:
+  // with a lane of its own (issue #621) no claim that holds a fixed-rate kind ever holds it.
+  OBSERVE: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -274,6 +277,10 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       "compaction",
       await claimDueCompactionJobs(50, appDb, new Date(), tenantId),
     );
+    record(
+      "observe",
+      await claimDueObserveJobs(50, appDb, new Date(), tenantId),
+    );
 
     // Exactly one, both directions: a kind in no lane never runs, and a kind in two is claimed twice.
     // The old shared filter was a NOT IN, so a kind that got its own lane and was not excluded there
@@ -348,6 +355,77 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     expect(outcome).toBe("finished");
     expect(ranA && ranB).toBe(true);
   }, 15_000);
+
+  // ISSUE #621. OBSERVE used to be claimed from the traffic share, five rows a tick for the whole
+  // install, FIFO behind every ingestion row armed before it: one busy observed inbox queued its
+  // labels for half an hour. The tick now claims it on its own, up to a limit sized to the provider
+  // bound. Asserted through the tick rather than the claim function, because the call site is the
+  // half a mutation can delete without a claim-level test noticing (see the case above).
+  test("the shared tick claims OBSERVE beyond the traffic share, and only up to its own limit", async () => {
+    const BOUND = 2;
+    const ingestRows = 10;
+    const observeRows = 10;
+    // Older than the observations, which is the production shape: ingestion is armed for `now` and
+    // a burst for `now` plus its window, so a claim ordered by run_at reaches ingestion first.
+    for (let i = 0; i < ingestRows; i++) {
+      await enqueueJob({
+        rearm: "same-work",
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: `observe-lane-ingest-${i}`,
+        runAt: new Date(Date.now() - 120_000),
+        base: appDb,
+      });
+    }
+    for (let i = 0; i < observeRows; i++) {
+      await enqueueJob({
+        rearm: "same-work",
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: `observe-lane-observe-${i}`,
+        runAt: past(),
+        base: appDb,
+      });
+    }
+    const ran = { INGEST_MESSAGE: 0, OBSERVE: 0 };
+    const previous = {
+      INGEST_MESSAGE: getJobHandler("INGEST_MESSAGE"),
+      OBSERVE: getJobHandler("OBSERVE"),
+    };
+    for (const kind of ["INGEST_MESSAGE", "OBSERVE"] as const) {
+      registerJobHandler(kind, async () => {
+        ran[kind] += 1;
+        return { outcome: "done" };
+      });
+    }
+    try {
+      await runSchedulerTick(appDb, {
+        staleMs: 300_000,
+        batchSize: 20,
+        tenantId,
+        providerConcurrency: BOUND,
+      });
+    } finally {
+      for (const [kind, handler] of Object.entries(previous)) {
+        if (handler) registerJobHandler(kind, handler);
+      }
+    }
+
+    // The traffic share is still a quarter of the batch, and ingestion still has all of it.
+    expect(ran.INGEST_MESSAGE).toBe(5);
+    // Four rounds of the provider bound, and not the ten that are due.
+    expect(ran.OBSERVE).toBe(observeClaimLimit(BOUND));
+    expect(observeClaimLimit(BOUND)).toBe(8);
+    // What the tick left is still PENDING for the next one, not lost.
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, kind: "OBSERVE", status: "PENDING" },
+      }),
+    ).toBe(observeRows - 8);
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: { in: ["INGEST_MESSAGE", "OBSERVE"] } },
+    });
+  });
 
   test("provider-spending kinds are bounded; the cheap ones are not", async () => {
     // The bound the concurrent drain made necessary. Twenty due follow-ups used to be able to hold

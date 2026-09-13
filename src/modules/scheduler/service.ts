@@ -721,6 +721,18 @@ export function claimDueTrafficJobs(
   return claimWhere(limit, base, now, laneFilter("shared", true), tenantId);
 }
 
+// The observe lane (issue #621): OBSERVE only, claimed by the shared tick with a limit of its own
+// (./lanes.ts, observeClaimLimit) rather than from the traffic share it used to wait in behind
+// ingestion.
+export function claimDueObserveJobs(
+  limit: number,
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+  tenantId?: bigint,
+): Promise<ClaimedJob[]> {
+  return claimWhere(limit, base, now, laneFilter("observe"), tenantId);
+}
+
 // Claims every PENDING job of one kind whose dedupeKey starts with `prefix`, DUE OR NOT. The one
 // caller is the turn barrier (../../graph/ingest-job.ts): a turn is about to read this thread and
 // must not read it without the messages already queued for it, and a job deferred a minute ago for

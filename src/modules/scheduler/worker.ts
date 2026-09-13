@@ -8,11 +8,13 @@ import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
   JOB_SPENDS_PROVIDER,
+  observeClaimLimit,
   sharedProviderConcurrency,
 } from "@/modules/scheduler/lanes";
 import {
   type ClaimedJob,
   claimDueJobs,
+  claimDueObserveJobs,
   claimDueTrafficJobs,
   completeJob,
   failJob,
@@ -326,10 +328,24 @@ export async function runSchedulerTick(
   // making the floor depend on it would put this rule in another module, in a line written for the
   // opposite purpose.
   const trafficShare = Math.max(1, Math.floor(opts.batchSize / 4));
+  const providerConcurrency =
+    opts.providerConcurrency ??
+    sharedProviderConcurrency(config.agent.modelConcurrency);
+  // NOTE: A THIRD CLAIM, for the observe lane (issue #621). OBSERVE follows traffic like the share
+  // above, but its latency is read live, and inside that share it waited behind every ingestion row
+  // armed before it: five rows a tick for the whole install, a ceiling of 20 observations a minute
+  // against a peak-hour demand of 73. Its own limit is sized to the provider bound it runs under
+  // below, so it can only ever spend the permits the shared lane already had.
   const jobs = [
     ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
     ...(await claimDueTrafficJobs(
       trafficShare,
+      base,
+      new Date(),
+      opts.tenantId,
+    )),
+    ...(await claimDueObserveJobs(
+      observeClaimLimit(providerConcurrency),
       base,
       new Date(),
       opts.tenantId,
@@ -356,10 +372,7 @@ export async function runSchedulerTick(
   // drain would put a heartbeat back behind a nudge, which is the head-of-line blocking this change
   // removed — and leaving the costly ones unbounded lets a batch of twenty hold every model permit
   // while a customer's reply waits (see JOB_SPENDS_PROVIDER).
-  const gate = new Semaphore(
-    opts.providerConcurrency ??
-      sharedProviderConcurrency(config.agent.modelConcurrency),
-  );
+  const gate = new Semaphore(providerConcurrency);
   const settled = await Promise.allSettled(
     jobs.map((job) =>
       JOB_SPENDS_PROVIDER[job.kind]

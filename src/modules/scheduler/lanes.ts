@@ -24,11 +24,19 @@ import type { SchedulerJobKind } from "@/modules/scheduler/service";
 //   model semaphore a customer's turn queues on, so its lane sizes its batch to a quarter of that
 //   budget. Concurrency does not help here either; it is the opposite of what is wanted.
 //
+//   A CAP OF ITS OWN is the same question asked from the other side. OBSERVE is the case (issue
+//   #621): its rows follow traffic, so the fixed batch cannot hold them, and the traffic share it
+//   used to take is a ceiling of five rows a tick for the whole install, split with ingestion and the
+//   recoveries. A label is read live, so a queue that grows without bound there is felt. Its lane is
+//   drained BY THE SHARED TICK, with a claim of its own sized to the provider bound it already runs
+//   under: the tick rate is right, only the cap was wrong, and a worker of its own would add a flag
+//   an install can leave off.
+//
 // So the question for an eleventh kind is not "is it slow" but "does it need a different tick rate,
 // or a cap of its own". If neither, it belongs here, and the compiler will ask: this map is exhaustive
 // over SchedulerJobKind, so a kind added to the enum does not compile until it is placed.
 
-export type SchedulerLane = "shared" | "debounce" | "compaction";
+export type SchedulerLane = "shared" | "debounce" | "compaction" | "observe";
 
 export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   FOLLOWUP: "shared",
@@ -73,12 +81,13 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // notices. Budget: it spends no model at all, only two or three Chatwoot calls, and the shared
   // lane's provider concurrency is not the resource that bounds those.
   TAKEOVER_RECOVERY: "shared",
-  // Shared, and neither reason applies. Cadence: what it writes is a label on a conversation a person
-  // is answering, and a label that lands one shared tick after the burst it describes is not a
-  // delay anyone feels. Budget: it spends the model, and the shared lane's provider concurrency is
-  // the cap it wants — the same pool a customer's turn queues on, so a busy inbox's observers cannot
-  // starve the replies on it.
-  OBSERVE: "shared",
+  // A cap of its own, drained by the shared tick (issue #621). Cadence is not the reason: a label that
+  // lands one shared tick after the burst it describes is not a delay anyone feels. The cap is. On
+  // the traffic share it waited behind every ingestion row armed before it, and one busy observed
+  // inbox had a ceiling of 20 observations a minute against a demand of 31 in the p90 hour and 73 at
+  // the peak. It still runs under the shared lane's provider concurrency, the same pool a customer's turn
+  // queues on, so a busy inbox's observers cannot starve the replies on it.
+  OBSERVE: "observe",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -130,6 +139,16 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // One model call per tick, on the agent's own model.
   OBSERVE: true,
 };
+
+// How many OBSERVE rows one shared tick claims (issue #621): enough to keep the provider bound busy
+// for about one tick, and no more. One observation is two short model calls, measured at 3.0s p50
+// and 3.7s p90 in production, so `concurrency` of them finish in about 3.5s and four rounds fit
+// inside the 15s default interval. A tick that overruns its interval does not start the next one
+// late, it SKIPS it (the worker's non-overlap guard), so claiming more than fits halves the rate
+// instead of raising it. Never below one, for the floor `sharedProviderConcurrency` keeps.
+export function observeClaimLimit(concurrency: number): number {
+  return 4 * Math.max(1, concurrency);
+}
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER
 // the whole of it, and never zero: the same arithmetic the compaction lane uses (see
@@ -231,17 +250,11 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // no age ceiling to discard it, because what it recovers does not go stale (recover-takeover.ts).
   // A conversation the agent is wrongly holding stays wrong however long the queue was.
   TAKEOVER_RECOVERY: true,
-  // TRUE, and DEBOUNCE being false is not the precedent it looks like (issue #477 review, round 8).
-  // The shape is the same — one row per conversation, re-armed by every burst — but DEBOUNCE has a
-  // LANE of its own, so however many of its rows a busy inbox arms, none of them is ever claimed in
-  // the same batch as an appointment reminder. OBSERVE is on `shared`, and there it is the only kind
-  // whose row count follows how much contacts write: every other one is per agent, per appointment,
-  // per closed attendance, per tenant, per retry. A resolve arms for `now` and a burst for `now`
-  // plus a window measured in seconds, so within a tick or two they are as old as anything else in
-  // the lane, and a claim ordered by `run_at` fills the batch with them. On an inbox under
-  // observation and under load that is exactly the starvation the separate traffic claim exists to
-  // prevent, and the kind it would starve is the one that has to arrive BEFORE something.
-  OBSERVE: true,
+  // FALSE now that it has a lane of its own (issue #621), which is DEBOUNCE's answer for DEBOUNCE's
+  // reason: its row count does follow traffic, one row per observed conversation re-armed by every
+  // burst, but no claim that holds a fixed-rate kind ever holds it, so there is nothing for it to
+  // starve. The traffic share is what it left, not what protects the reminders from it.
+  OBSERVE: false,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it

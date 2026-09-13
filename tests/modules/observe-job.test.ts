@@ -432,7 +432,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
     expect(calls.n).toBe(0);
     expect(log.labelsWritten).toEqual([]);
-    expect((await observeLines()).at(-1)?.status).toBe("skipped");
+    const last = (await observeLines()).at(-1);
+    expect(last?.status).toBe("skipped");
+    // Nothing to classify yet pages nobody (issue #611).
+    expect(last?.level).toBe("info");
   });
 
   test("an agent that stopped observing between the arm and the tick writes nothing", async () => {
@@ -684,6 +687,68 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       const lines = await observeLines();
       expect(lines.length).toBe(before + 1);
       expect(detailOf(lines, -1).skipped).toBe("no_customer_message");
+      expect(lines.at(-1)?.level).toBe("info");
+    } finally {
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+    }
+  });
+
+  // THE ONE SKIP THAT STAYS A WARN (issue #611). Every other reason is the world moving under the tick,
+  // and those went to `info`; an observation lost to the budget is the one an operator can act on.
+  test("over the ceiling, an observation that would have spent is skipped at warn", async () => {
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 1000,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 1000, polledAt: new Date() },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    const before = (await observeLines()).length;
+    try {
+      expect(
+        await runObserve(
+          tenantId,
+          {
+            instanceId,
+            conversationId: CONV,
+            agentId,
+            reason: "burst",
+            atMessageId: null,
+          },
+          appDb,
+          {
+            makeClient: async () =>
+              stubClient([message(1, "quero cancelar")], [], log),
+            makeModel: () => verdictModel({ assunto: "cancelamento" }, calls),
+          },
+        ),
+      ).toEqual({ outcome: "done" });
+      expect(calls.n).toBe(0);
+      const lines = await observeLines();
+      expect(lines.length).toBe(before + 1);
+      expect(detailOf(lines, -1).skipped).toBe("spend_ceiling");
+      expect(lines.at(-1)?.level).toBe("warn");
     } finally {
       await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
       await suDb.tenant.update({
@@ -980,6 +1045,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const lines = await observeLines();
     expect(lines.length).toBe(before + 1);
     expect(detailOf(lines, -1).skipped).toBe("conversation_reopened");
+    expect(lines.at(-1)?.level).toBe("info");
   });
 
   // A credential the vault cannot hand over is not an operator switching observation off, and the
@@ -2628,6 +2694,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect((rows.at(-1)?.detail as { skipped?: string })?.skipped).toBe(
       "agent_no_longer_observes",
     );
+    expect(rows.at(-1)?.level).toBe("info");
   });
 
   // A WITHDRAWAL COMPLETES THE TICK; A FENCE THAT COULD NOT BE READ RETRIES IT. The two answers are
@@ -3158,8 +3225,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
     expect(res).toEqual({ outcome: "done" });
     expect(log.labelsWritten).toEqual([]);
-    const detail = detailOf(await observeLines(), 0);
-    expect(detail.skipped).toBe("superseded");
+    const lines = await observeLines();
+    expect(detailOf(lines, 0).skipped).toBe("superseded");
+    // The next tick reads the message that re-armed the row, so there is nothing to page anyone
+    // about: at `warn` this was every observe alert of the first production day (issue #611).
+    expect(lines[0]?.level).toBe("info");
   });
 
   // ISSUE #621 review, round 1. The shared tick claims several rounds of observations and runs them
@@ -3238,8 +3308,97 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     });
     expect(res).toEqual({ outcome: "done" });
     expect(log.labelsWritten).toEqual([]);
-    const detail = detailOf(await observeLines(), 0);
-    expect(detail.skipped).toBe("reset");
+    const lines = await observeLines();
+    expect(detailOf(lines, 0).skipped).toBe("reset");
+    expect(lines[0]?.level).toBe("info");
+  });
+
+  // THE TWO WITHDRAWALS THE FENCE ANSWERS THAT NO OTHER TEST REACHED, and they are here for the level
+  // as much as for the refusal: each is the tick being right to stop, so each is `info` (issue #611).
+  test("a resolve verdict whose conversation reopened while the model answered acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { status: "resolved" },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "resolved",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () =>
+            new LabellingModel(["cancelamento"], () =>
+              suDb.conversation.update({
+                where: { id: convRowId },
+                data: { status: "open" },
+              }),
+            ) as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      expect(log.labelsWritten).toEqual([]);
+      const lines = await observeLines();
+      expect(detailOf(lines, -1).skipped).toBe("reopened");
+      expect(lines.at(-1)?.level).toBe("info");
+    } finally {
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { status: "open" },
+      });
+    }
+  });
+
+  test("a burst whose agent moved to on_resolve while the model answered acts on nothing", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () =>
+            new LabellingModel(["cancelamento"], () =>
+              suDb.agent.update({
+                where: { id: agentId },
+                data: {
+                  settings: {
+                    monitoring: { ...MONITORING, analysis: "on_resolve" },
+                  },
+                },
+              }),
+            ) as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      expect(log.labelsWritten).toEqual([]);
+      const lines = await observeLines();
+      expect(detailOf(lines, -1).skipped).toBe("analysis_changed");
+      expect(lines.at(-1)?.level).toBe("info");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
   });
 
   test("an observer taken off the inbox while the model answered acts on nothing", async () => {
@@ -3277,5 +3436,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(stillThere).toBe(0);
     expect(res).toEqual({ outcome: "done" });
     expect(log.labelsWritten).toEqual([]);
+    const lines = await observeLines();
+    expect(detailOf(lines, -1).skipped).toBe("agent_no_longer_on_inbox");
+    expect(lines.at(-1)?.level).toBe("info");
   });
 });

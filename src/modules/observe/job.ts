@@ -90,6 +90,34 @@ export type ObserveReason = "burst" | "resolved";
 // so a tick always finishes before the reaper would treat its claim as abandoned.
 export const OBSERVE_TIMEOUT_MS = 120_000;
 export const OBSERVE_CEILING_WINDOW_MS = 10 * 60_000;
+
+// HOW EACH FENCE REFUSAL ENDS THE TICK, one entry per refusal, so a refusal added later is a type
+// error until both of its questions are answered on purpose: is it retried, and if not, is its
+// `skipped` line something an operator has to act on.
+//
+// `retry` for the four reads that failed, and for a binding that has not landed yet: not a failed
+// read, but the same shape of answer, the world has not settled, so nothing it says is evidence.
+//
+// `info` for every withdrawal, because each one is the tick being RIGHT to stop and nobody has
+// anything to do about it: a message re-armed the row and the next tick reads it, the conversation
+// reopened or was reset, the operator switched the agent off, changed its analysis or took it off
+// the inbox. They defaulted to `warn`, and a warn pages the alert channel; on its first day in
+// production every observe alert was a `superseded` with nothing behind it (issue #611).
+const REFUSAL_ENDING = {
+  agent_state_unreadable: "retry",
+  settings_unreadable: "retry",
+  conversation_unreadable: "retry",
+  binding_unreadable: "retry",
+  binding_attaching: "retry",
+  superseded: "info",
+  reopened: "info",
+  reset: "info",
+  analysis_changed: "info",
+  agent_no_longer_observes: "info",
+  agent_no_longer_on_inbox: "info",
+} as const satisfies Record<string, "retry" | "info" | "warn">;
+type Refusal = keyof typeof REFUSAL_ENDING;
+
 const TRANSCRIPT_MAX_CHARS = 40_000;
 // The notes block gets its own budget, and it needs one for the same reason the transcript has one:
 // `window.messages` caps a COUNT, and a count is not a size. Twenty notes of twenty thousand
@@ -843,7 +871,8 @@ export async function runObserve(
   // same question is asked again before writing, for a reopening that lands mid-call. Only a
   // definite answer refuses: a mirror row that vanished is not a reopening.
   if (reason === "resolved" && conv !== null && conv.status !== "resolved") {
-    line("skipped", { skipped: "conversation_reopened" });
+    // `info`, as its twin `reopened` at the fence: the tick is right to stop (issue #611).
+    line("skipped", { skipped: "conversation_reopened" }, "info");
     return { outcome: "done" };
   }
 
@@ -903,10 +932,12 @@ export async function runObserve(
   // the operator wiped is not part of this one either.
   const notes = notesFromRows(rows, mon.window.messages);
   if (!transcript.some((l) => l.role === "customer")) {
-    line("skipped", {
-      skipped: "no_customer_message",
-      messages: transcript.length,
-    });
+    // `info`: nothing to classify yet is not a problem anybody can fix (issue #611).
+    line(
+      "skipped",
+      { skipped: "no_customer_message", messages: transcript.length },
+      "info",
+    );
     return { outcome: "done" };
   }
   // ONE READ, for the prompt block below AND for the tool's comparison baseline. `set_labels` diffs
@@ -984,7 +1015,7 @@ export async function runObserve(
   // transient database blip here is a conversation that is never classified (issue #477 review,
   // round 7). Those fail, and the scheduler retries with backoff up to the cap; the retry spends the
   // model call again, which is the price, and the spend ceiling gates it like every other tick.
-  let refusal: string | null = null;
+  let refusal: Refusal | null = null;
   const fence = async (): Promise<boolean> => {
     if (refusal !== null) return false;
     const observesNow = await agentObservesNow(tenantId, agentId, base);
@@ -1303,26 +1334,24 @@ export async function runObserve(
     windowMs: OBSERVE_CEILING_WINDOW_MS,
   });
   if (ceiling.state === "over") {
-    line("skipped", { skipped: "spend_ceiling" });
+    // Kept at `warn`, unlike every other skip here (issue #611): the budget is the one reason an
+    // observation is skipped that an operator can do something about.
+    line("skipped", { skipped: "spend_ceiling" }, "warn");
     return { outcome: "done" };
   }
 
-  // THE REFUSALS THAT ARE NOT ANSWERS, listed by name rather than matched by suffix: a refusal
-  // added later that happens to end in the same word is a decision about retries, and it should be
-  // made here on purpose rather than inherited from how it was spelled.
-  //
-  // Four are reads that failed. The fifth is a binding that has not landed yet — not a failed read,
-  // but the same shape of answer: the world has not settled, so nothing it says is evidence.
-  const RETRYABLE_REFUSALS = new Set([
-    "agent_state_unreadable",
-    "settings_unreadable",
-    "conversation_unreadable",
-    "binding_unreadable",
-    "binding_attaching",
-  ]);
-  const endOnRefusal = (why: string): JobResult => {
-    if (!RETRYABLE_REFUSALS.has(why)) {
-      line("skipped", { skipped: why, messagesRead: transcript.length });
+  // THE REFUSALS THAT ARE NOT ANSWERS are the `retry` entries of `REFUSAL_ENDING`, listed by name
+  // rather than matched by suffix: a refusal added later that happens to end in the same word is a
+  // decision about retries, and it should be made there on purpose rather than inherited from how it
+  // was spelled.
+  const endOnRefusal = (why: Refusal): JobResult => {
+    const ending = REFUSAL_ENDING[why];
+    if (ending !== "retry") {
+      line(
+        "skipped",
+        { skipped: why, messagesRead: transcript.length },
+        ending,
+      );
       return { outcome: "done" };
     }
     // ...UNLESS SOMETHING ALREADY COMMITTED, which is the same rule the model-failure path below

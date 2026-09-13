@@ -24,6 +24,7 @@ import {
   auditSafe,
   grantSetChanged,
 } from "@/modules/agents/audit-projection";
+import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
@@ -678,22 +679,38 @@ export function assertSettingsClosedValues(
     const parsed = schema.safeParse(value);
     if (parsed.success) continue;
     for (const issue of parsed.error.issues) {
+      const next = valueAt(value, issue.path);
       // `never` is the schema saying "the runtime does not read this key here" (the reply-only
       // guardrail checks and generation prompt under `input`). MCP refuses them so a caller cannot
-      // store configuration that does nothing; REST cannot, because the console's own Guardrails save
-      // sends the reader's output for the block and that output materialises them (measured on the
-      // base: refusing them refuses the editor on an agent that never had guardrails).
-      if (issue.code === "invalid_type" && issue.expected === "never") continue;
+      // store configuration that does nothing; REST cannot refuse them outright, because the console's
+      // own Guardrails save sends the reader's output for the block and that output materialises them
+      // (measured on the base: refusing them refuses the editor on an agent that never had guardrails).
+      // So the question for these is the reader's own: the TYPE it reads there passes, and anything
+      // else is a value it throws away like any other (`"sim"` saved with a 200 until the acceptance
+      // run of #626 asked).
+      let expected: string | undefined;
+      if (issue.code === "invalid_type" && issue.expected === "never") {
+        const read = valueAt(
+          (
+            readBehaviorSettings({ [block]: value }) as unknown as Record<
+              string,
+              unknown
+            >
+          )[block],
+          issue.path,
+        );
+        if (typeof next === typeof read) continue;
+        expected = typeof read;
+      }
       // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, by value and per path, so a legacy row re-sent
       // untouched saves and a list element is judged field by field. Path by index: a value that moved
       // to another index is a change, and naming its new path is what lets the caller find it.
-      const next = valueAt(value, issue.path);
       if (isDeepStrictEqual(next, valueAt(storedBag?.[block], issue.path)))
         continue;
       const path = [block, ...issue.path.map(String)].join(".");
       throw new InvalidSettingsValueError(
         path,
-        describeExpected(issue),
+        expected ?? describeExpected(issue),
         describeGot(next),
       );
     }

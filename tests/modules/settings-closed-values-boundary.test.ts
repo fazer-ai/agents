@@ -72,6 +72,20 @@ describe("closed settings values on the create path", () => {
     ],
     ["monitoring.analysis", { monitoring: { analysis: "sempre" } }],
     ["memory.compaction.enabled", { memory: { compaction: { enabled: 1 } } }],
+    // Keys the schema declares `never` under `input` are tolerated only with the type the reader
+    // reads there, so a value it throws away is still refused (#626's acceptance run: "sim" saved).
+    [
+      "guardrails.input.checks.promptAdherence",
+      { guardrails: { input: { checks: { promptAdherence: "sim" } } } },
+    ],
+    [
+      "guardrails.input.checks.answerRelevance",
+      { guardrails: { input: { checks: { answerRelevance: "sim" } } } },
+    ],
+    [
+      "guardrails.input.generationPrompt",
+      { guardrails: { input: { generationPrompt: 5 } } },
+    ],
   ];
   for (const [path, settings] of cases) {
     test(`${path} outside its domain is refused, naming the path`, () => {
@@ -208,8 +222,9 @@ describe("assertSettingsClosedValues", () => {
   });
 
   // The schema's `never`: keys the runtime does not read in that position. Tolerated on REST because
-  // the console's Guardrails save materialises them (the describe block above measures that save).
-  test("a key the schema declares never is not a refusal", () => {
+  // the console's Guardrails save materialises them (the describe block above measures that save), but
+  // only with the type the reader reads there: anything else is a value it throws away.
+  test("a key the schema declares never passes with the type the reader reads there", () => {
     expect(
       caught(
         {
@@ -218,6 +233,22 @@ describe("assertSettingsClosedValues", () => {
           },
         },
         undefined,
+      ),
+    ).toBeNull();
+  });
+
+  test("a never key with another type names the reader's type, not never", () => {
+    const err = caught(
+      { guardrails: { input: { checks: { promptAdherence: "sim" } } } },
+      undefined,
+    );
+    expect(err?.field).toBe("guardrails.input.checks.promptAdherence");
+    expect(err?.translationParams?.expected).toBe("boolean");
+    expect(err?.translationParams?.got).toBe('"sim"');
+    expect(
+      caught(
+        { guardrails: { input: { checks: { answerRelevance: "sim" } } } },
+        { guardrails: { input: { checks: { answerRelevance: "sim" } } } },
       ),
     ).toBeNull();
   });

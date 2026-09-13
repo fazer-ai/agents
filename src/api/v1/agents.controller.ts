@@ -73,7 +73,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.invalidSignatureSwitch', '`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.')
-// translate('errors.settingsBlocksDropped', 'This `settings` bag does not name {{blocks}}, which this agent has configured, and a bag replaces the whole column: those {{count}} block(s) would be deleted. Send them along with the change, or pass `settingsMode: "replace"` to say the bag is complete.')
+// translate('errors.settingsBlocksDropped', 'This `settings` would delete what this agent has configured under {{blocks}}, because it replaces the whole object. Add what is missing, or pass `settingsMode: "replace"` to say it is complete.')
 // translate('errors.invalidSignatureFrequency', '`signature.frequency` must be "all" or "once", not {{got}}. Send the whole signature block to change it.')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')

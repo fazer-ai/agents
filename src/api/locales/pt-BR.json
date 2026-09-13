@@ -196,7 +196,7 @@
     "returnResponderChanged": "O respondedor desta caixa de entrada mudou durante a devolução; tente de novo.",
     "roleChangeCannotMoveTenant": "Só o rebaixamento de um administrador da frota pode nomear um tenant",
     "sessionNotFound": "Sessão do playground não encontrada.",
-    "settingsBlocksDropped": "Este `settings` não nomeia {{blocks}}, que este agente tem configurado, e o bag substitui a coluna inteira: esses {{count}} bloco(s) seriam apagados. Mande-os junto com a mudança, ou passe `settingsMode: \"replace\"` para dizer que o bag está completo.",
+    "settingsBlocksDropped": "Este `settings` apagaria o que este agente tem configurado em {{blocks}}, porque ele substitui o objeto inteiro. Inclua o que falta, ou passe `settingsMode: \"replace\"` para dizer que ele está completo.",
     "settingsTextTooLong": "O texto em {{field}} é longo demais: {{len}} caracteres (limite {{max}}).",
     "setupAlreadyComplete": "A configuração inicial já foi concluída",
     "signupDisabled": "Cadastros estão desabilitados",

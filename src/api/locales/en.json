@@ -196,7 +196,7 @@
     "returnResponderChanged": "The responder of this inbox changed while the conversation was being returned; try again.",
     "roleChangeCannotMoveTenant": "Only a fleet administrator's demotion can name a tenant",
     "sessionNotFound": "Playground session not found.",
-    "settingsBlocksDropped": "This `settings` bag does not name {{blocks}}, which this agent has configured, and a bag replaces the whole column: those {{count}} block(s) would be deleted. Send them along with the change, or pass `settingsMode: \"replace\"` to say the bag is complete.",
+    "settingsBlocksDropped": "This `settings` would delete what this agent has configured under {{blocks}}, because it replaces the whole object. Add what is missing, or pass `settingsMode: \"replace\"` to say it is complete.",
     "settingsTextTooLong": "The text in {{field}} is too long: {{len}} characters (limit {{max}}).",
     "setupAlreadyComplete": "Initial setup has already been completed",
     "signupDisabled": "Sign-ups are disabled",

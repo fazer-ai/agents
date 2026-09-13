@@ -313,7 +313,7 @@ export class SettingsTextTooLongError extends AppError {
 export class SettingsBlocksDroppedError extends AppError {
   constructor(blocks: string[]) {
     super(
-      `settings would drop ${blocks.length} configured block(s): ${blocks.join(", ")}`,
+      `settings would delete configured blocks it does not name: ${blocks.join(", ")}`,
       400,
       "errors.settingsBlocksDropped",
       { blocks: blocks.join(", "), count: blocks.length },

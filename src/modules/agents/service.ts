@@ -307,7 +307,7 @@ export class SettingsTextTooLongError extends AppError {
 // A `settings` bag REPLACES the column, which is the contract every caller has today and the reason
 // this rule is a refusal rather than a merge: the console sends the whole bag, the MCP patch builds
 // one, and flipping the write to merge would silently change what a caller who MEANT replacement
-// gets — the same silence one door over. What is refused is the write that would cost blocks the
+// gets: the same silence one door over. What is refused is the write that would cost blocks the
 // caller never named. Measured on #612's acceptance run: `{"settings":{"split":{"enabled":false}}}`
 // answered 200 and took signature, debounce, followUp, handoff and eleven other blocks with it.
 export class SettingsBlocksDroppedError extends AppError {
@@ -323,11 +323,15 @@ export class SettingsBlocksDroppedError extends AppError {
 }
 
 // WHAT THE BAG WOULD COST, asked of the stored row inside the write's own lock like every other rule
-// in this family. A key the bag names is this write's business whatever it holds — `{}` and `null`
+// in this family. A key the bag names is this write's business whatever it holds: `{}` and `null`
 // are edits of that block, and its reader answers what they mean. A key the bag does NOT name is a
 // deletion, and the only ones worth refusing are the ones that would lose something: a block the
 // operator never configured reads back as `{}` from agent_settings_get and materialises empty in
 // the console, so refusing a save over those would be a refusal about nothing.
+//
+// Not `carriesConfiguration` below, which answers a different question on purpose: it reads
+// `false` and `""` as nothing, so a retired taxonomy left as a tombstone is inert. Here a block
+// switched OFF is a decision somebody made, and dropping it reverts that decision to the default.
 function holdsSomething(value: unknown): boolean {
   if (value === null || value === undefined) return false;
   if (Array.isArray(value)) return value.length > 0;
@@ -339,7 +343,7 @@ export function assertSettingsBlocksKept(
   settings: unknown,
   stored: unknown,
 ): void {
-  // `undefined` is "this write does not touch the column" — a rename, a mode change — and not an
+  // `undefined` is "this write does not touch the column" (a rename, a mode change) and not an
   // empty bag. An empty bag IS the whole wipe, and goes through the same question as any other.
   if (settings === undefined) return;
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return;
@@ -347,8 +351,12 @@ export function assertSettingsBlocksKept(
     settings && typeof settings === "object" && !Array.isArray(settings)
       ? (settings as Record<string, unknown>)
       : {};
+  // By VALUE, not by `in`: a key that holds `undefined` is named in the object and gone from the row,
+  // because JSON has no spelling for it and the write drops it on the way to Postgres. Measured by
+  // mutation, which is how this stopped being `key in next`: the looser check let `{ signature:
+  // undefined }` through as an edit of the block, and the column then had no signature at all.
   const dropped = Object.entries(stored as Record<string, unknown>)
-    .filter(([key, value]) => !(key in next) && holdsSomething(value))
+    .filter(([key, value]) => next[key] === undefined && holdsSomething(value))
     .map(([key]) => key)
     .sort();
   // Every block at once, not the first: a caller who learns the size of the mistake one refusal at a

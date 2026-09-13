@@ -5,7 +5,7 @@ import {
 } from "@/modules/agents/service";
 
 // A `settings` bag REPLACES the column (docs/graph.md), so every block the bag does not name is
-// deleted — and the call answers 200 saying nothing (#614). The contract stays; what changes is that
+// deleted, and the call answers 200 saying nothing (#614). The contract stays; what changes is that
 // a write which would destroy configuration has to say it means it.
 //
 // The question is asked of the STORED row, inside the same lock the write takes, like every other
@@ -46,7 +46,7 @@ describe("assertSettingsBlocksKept", () => {
     );
   });
 
-  // The write that does not touch settings at all — a rename, a mode change — is not this rule's
+  // The write that does not touch settings at all (a rename, a mode change) is not this rule's
   // business. `undefined` is "the column is not in this write", not "an empty bag".
   test("a write without a settings bag passes", () => {
     expect(() => assertSettingsBlocksKept(undefined, stored)).not.toThrow();
@@ -125,5 +125,34 @@ describe("assertSettingsBlocksKept", () => {
         stored,
       ),
     ).not.toThrow();
+  });
+  // `undefined` is the one value a bag can name and still not keep: JSON has no spelling for it, so
+  // the key is gone from the row the moment the write serializes. Only an in-process caller can hand
+  // one over (the wire cannot carry it), and that caller would lose the block exactly as silently.
+  test("a block named with undefined is a block dropped", () => {
+    let caught: unknown;
+    try {
+      assertSettingsBlocksKept(
+        { signature: undefined, split: {}, followUp: {} },
+        stored,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SettingsBlocksDroppedError);
+    expect(
+      (caught as SettingsBlocksDroppedError).translationParams?.blocks,
+    ).toBe("signature");
+  });
+
+  // A bag that is not an object keeps nothing, so it costs everything the row holds. The route's
+  // schema and the service's zod record refuse these before they get here; this is what the rule
+  // answers for the caller that reaches it anyway.
+  test("a bag that is not an object is the whole wipe", () => {
+    for (const bag of [null, [], "x"]) {
+      expect(() => assertSettingsBlocksKept(bag, stored)).toThrow(
+        SettingsBlocksDroppedError,
+      );
+    }
   });
 });

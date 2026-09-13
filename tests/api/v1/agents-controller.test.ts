@@ -57,7 +57,7 @@ describe("splitAgentUpdateBody (PATCH body → patch + precondition)", () => {
 
   // #614: the opt-in that says "this bag is complete, drop what it omits" travels in the body and is
   // NOT part of the agent, so it has to come off the patch for the same reason expectedUpdatedAt
-  // does — the strict schema refuses an unrecognized key.
+  // does: the strict schema refuses an unrecognized key.
   test("strips settingsMode and hands it back as the write's mode", () => {
     const { patch, settingsMode } = splitAgentUpdateBody({
       settings: { split: { enabled: false } },

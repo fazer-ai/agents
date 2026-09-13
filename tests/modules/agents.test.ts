@@ -1134,7 +1134,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     );
   });
   // #614: a `settings` bag REPLACES the column, so a partial bag deletes every block it does not
-  // name — and answered 200. Measured during #612's acceptance: patching `split` alone removed the
+  // name, and answered 200. Measured during #612's acceptance: patching `split` alone removed the
   // whole `signature` block, and nothing in the response, the audit entry or config health said a
   // bag had been replaced rather than amended. The contract stays; the silence does not.
   test("a bag that drops configured blocks is refused, and the row is untouched", async () => {
@@ -1212,7 +1212,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
   });
 
   // The same race the 409 covers, one level down. The console sends the bag it LOADED, so a block
-  // written after that load (by MCP, or by another tab) is missing from it — and used to be deleted
+  // written after that load (by MCP, or by another tab) is missing from it, and used to be deleted
   // by the save. Without a precondition there is no 409 to raise, and this refusal is what is left
   // between a stale bag and a block nobody meant to touch.
   test("a save that raced a block written elsewhere is refused, not silently reverted", async () => {
@@ -1243,7 +1243,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
   });
 
   // The console has always sent the whole bag (AgentEditorPage spreads the last-synced settings), so
-  // the rule must be invisible to it — including for a block only MCP knows how to write.
+  // the rule must be invisible to it, including for a block only MCP knows how to write.
   test("a save carrying every stored block passes, unknown keys included", async () => {
     const a = await createAgent(ctx(tenantC), { name: "WholeBag" }, appDb);
     const id = BigInt(a.id);

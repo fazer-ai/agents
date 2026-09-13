@@ -193,7 +193,7 @@ describe.skipIf(!dbUp)("a partial settings bag over the wire", () => {
   });
 
   // The schema publishes one value, so the typo is answered by the route rather than reaching the
-  // service as "not replace" — which would read as the refusing default and destroy nothing, but
+  // service as "not replace", which would read as the refusing default and destroy nothing, but
   // would also tell the caller their word was accepted.
   test("a settingsMode the schema does not publish is refused by the route", async () => {
     await su?.agent.update({

@@ -150,6 +150,30 @@ describe("the reader comparisons a bag can cost", () => {
     expect(dropped.paths).toEqual(["followUp.enabled"]);
   });
 
+  // Bounding how MANY comparisons a block gets does not bound what one costs, and each is a clone and a
+  // read of the block: a 2.8 MB block spent a small budget over six seconds (review round 7). A block
+  // gets fewer comparisons the bigger it is, down to the single pass the batch exists to be.
+  test("a block of three hundred thousand labels is judged in one pass, not in a budget of them", () => {
+    const step = (labels: unknown[]) => ({
+      delayValue: 1,
+      delayUnit: "minutes",
+      assignLabels: labels,
+    });
+    const bag = {
+      followUp: {
+        enabled: true,
+        steps: [
+          "x",
+          step([1, ...Array.from({ length: 300_000 }, (_, i) => `l${i}`)]),
+          ...Array.from({ length: 9 }, () => step([1, "vip"])),
+        ],
+      },
+    };
+    const started = Date.now();
+    dropUnusableImportedSettingsInPlace(bag);
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
   // A bundle's list is caller-sized, and the paths taken out are answered bounded and counted: spreading
   // a million of them threw `RangeError` and took the import and its preview with it.
   test("a million unusable entries answer a bounded list of paths and their count", () => {

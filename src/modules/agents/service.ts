@@ -809,6 +809,15 @@ const IMPORT_POP_LISTS = 8;
 // can hold a million unusable entries in one list: an array of a million paths is neither answerable
 // nor readable (review round 5 hit `RangeError` spreading one).
 const IMPORT_PATHS_KEPT = 64;
+// Every comparison costs a clone and a read of the BLOCK, so the budget above bounds how many are made
+// and this bounds what each one may cost: a block gets fewer the bigger it is, down to the single pass
+// that is the whole point of the batch (review round 7 measured 6s spending a small budget on a block
+// of three hundred thousand labels). Sizes in JSON characters, measured once per block.
+function importChecksFor(weight: number): number {
+  if (weight <= 64_000) return IMPORT_READING_CHECKS;
+  if (weight <= 512_000) return 16;
+  return 1;
+}
 
 // The paths taken out, bounded, beside how many there were.
 interface ImportTaken {
@@ -842,9 +851,17 @@ function applyImportFixes(
   fixes: readonly ImportFix[],
   value: unknown,
   block: string,
-  sameReading: (candidate: unknown) => boolean,
-  budget: { left: number },
+  reads: (candidate: unknown) => boolean,
+  attemptCap: number,
 ): { next: unknown; taken: ImportTaken } | null {
+  // This attempt's own share of the block's comparisons, so the first one cannot leave the next with
+  // nothing: the batch that fails over a padding is followed by the batch that takes the paddings out.
+  let used = 0;
+  const sameReading = (candidate: unknown) => {
+    if (used >= attemptCap) return false;
+    used += 1;
+    return reads(candidate);
+  };
   const trial = structuredClone(value);
   const taken = newTaken();
   for (const fix of fixes) {
@@ -896,11 +913,11 @@ function applyImportFixes(
   // A list the reader cuts to a window BEFORE it filters: what slid into the window from past it is an
   // element the reader ignored, and taking that too is what keeps the window's contents. Named by its
   // own index in the bundle, which is why the kept indices are carried here.
+  let settled = sameReading(trial);
   let listsTried = 0;
   for (const list of byDepth) {
-    if (budget.left <= 0 || listsTried >= IMPORT_POP_LISTS) break;
+    if (settled || listsTried >= IMPORT_POP_LISTS || used >= attemptCap) break;
     listsTried += 1;
-    if (sameReading(trial)) break;
     const arr = list.arr;
     let floor = Number.POSITIVE_INFINITY;
     for (const i of list.drop) floor = Math.min(floor, i);
@@ -916,10 +933,10 @@ function applyImportFixes(
     const takenBefore = { paths: [...taken.paths], count: taken.count };
     let pops = 0;
     while (
+      !settled &&
       pops < IMPORT_POP_LIMIT &&
       arr.length > 0 &&
-      (list.kept[list.kept.length - 1] ?? -1) > floor &&
-      !sameReading(trial)
+      (list.kept[list.kept.length - 1] ?? -1) > floor
     ) {
       takePath(
         taken,
@@ -927,15 +944,16 @@ function applyImportFixes(
       );
       arr.pop();
       pops += 1;
+      settled = sameReading(trial);
     }
-    if (sameReading(trial)) continue;
+    if (settled) continue;
     arr.length = 0;
     for (const element of before) arr.push(element);
     list.kept = keptBefore;
     taken.paths = takenBefore.paths;
     taken.count = takenBefore.count;
   }
-  return sameReading(trial) ? { next: trial, taken } : null;
+  return settled ? { next: trial, taken } : null;
 }
 
 // WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631).// WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631). A bundle is authored somewhere else, so the import
@@ -1000,8 +1018,15 @@ export function dropUnusableImportedSettingsInPlace(
   }
   for (const [block, issues] of byBlock) {
     const reading = readBlock(block, bag[block]);
+    const allowance = {
+      left: Math.min(
+        budget.left,
+        importChecksFor(JSON.stringify(bag[block])?.length ?? 0),
+      ),
+    };
     const sameReading = (candidate: unknown) => {
-      if (budget.left <= 0) return false;
+      if (allowance.left <= 0) return false;
+      allowance.left -= 1;
       budget.left -= 1;
       return isDeepStrictEqual(readBlock(block, candidate), reading);
     };
@@ -1044,12 +1069,13 @@ export function dropUnusableImportedSettingsInPlace(
         : { kind: "remove", path: issue.path };
     const fixes = issues.map(fixFor);
     // The whole block in one pass first, which is what a bundle with many unusable entries costs.
+    // Half the block's share, so the second attempt below still has one.
     const batch = applyImportFixes(
       fixes,
       bag[block],
       block,
       sameReading,
-      budget,
+      Math.max(1, Math.floor(allowance.left / 2)),
     );
     if (batch) {
       bag[block] = batch.next;
@@ -1069,7 +1095,7 @@ export function dropUnusableImportedSettingsInPlace(
         bag[block],
         block,
         sameReading,
-        budget,
+        allowance.left,
       );
       if (second) {
         bag[block] = second.next;
@@ -1084,13 +1110,13 @@ export function dropUnusableImportedSettingsInPlace(
     const accepted: ImportFix[] = [];
     let best: { next: unknown; taken: ImportTaken } | null = null;
     for (const fix of fixes) {
-      if (budget.left <= 0) break;
+      if (allowance.left <= 0) break;
       const withTrim = applyImportFixes(
         [...accepted, fix],
         bag[block],
         block,
         sameReading,
-        budget,
+        allowance.left,
       );
       if (withTrim) {
         accepted.push(fix);
@@ -1105,7 +1131,7 @@ export function dropUnusableImportedSettingsInPlace(
         bag[block],
         block,
         sameReading,
-        budget,
+        allowance.left,
       );
       if (withRemoval) {
         accepted.push(asRemoval);

@@ -16,10 +16,17 @@
 import { interpolatePromptVars, type PromptRenderOpts } from "@/graph/prompt";
 import { clipText } from "@/lib/text";
 import { SIGNATURE_MAX } from "@/modules/agents/text-caps";
+import {
+  isOneOf,
+  SIGNATURE_FREQUENCIES,
+  SIGNATURE_POSITIONS,
+  SIGNATURE_SEPARATORS,
+  type SignatureFrequency,
+  type SignaturePosition,
+  type SignatureSeparator,
+} from "@/modules/signature/domains";
 
-export type SignaturePosition = "top" | "bottom";
-export type SignatureSeparator = "blank" | "--";
-export type SignatureFrequency = "all" | "once";
+export type { SignatureFrequency, SignaturePosition, SignatureSeparator };
 
 export interface SignatureConfig {
   // THE OFF SWITCH, and a switch rather than an empty field (#612). The first version made
@@ -69,10 +76,9 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
       : undefined;
   if (!s || typeof s !== "object") return { ...SIGNATURE_DEFAULTS };
   const bag = s as Record<string, unknown>;
-  const position =
-    bag.position === "top" || bag.position === "bottom"
-      ? bag.position
-      : SIGNATURE_DEFAULTS.position;
+  const position = isOneOf(SIGNATURE_POSITIONS, bag.position)
+    ? bag.position
+    : SIGNATURE_DEFAULTS.position;
   return {
     // A BAG WRITTEN BEFORE THE SWITCH EXISTED MEANT ON, and reading its absence as off would unsign
     // every agent configured under #599 on the next load, silently, with nobody touching anything.
@@ -100,16 +106,14 @@ export function readSignatureConfig(settings: unknown): SignatureConfig {
     // rather than discovered, and narrow because the feature is off by default and shipped the day
     // before. The alternative, defaulting an old bag to `once`, would have every existing top
     // signature keep doing the thing the operator reported as wrong.
-    frequency:
-      bag.frequency === "all" || bag.frequency === "once"
-        ? bag.frequency
-        : position === "top"
-          ? "all"
-          : "once",
-    separator:
-      bag.separator === "blank" || bag.separator === "--"
-        ? bag.separator
-        : SIGNATURE_DEFAULTS.separator,
+    frequency: isOneOf(SIGNATURE_FREQUENCIES, bag.frequency)
+      ? bag.frequency
+      : position === "top"
+        ? "all"
+        : "once",
+    separator: isOneOf(SIGNATURE_SEPARATORS, bag.separator)
+      ? bag.separator
+      : SIGNATURE_DEFAULTS.separator,
   };
 }
 

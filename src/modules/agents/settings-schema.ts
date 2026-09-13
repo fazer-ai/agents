@@ -21,6 +21,11 @@ import {
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { GUARDRAIL_ACTIONS } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
+import {
+  SIGNATURE_FREQUENCIES,
+  SIGNATURE_POSITIONS,
+  SIGNATURE_SEPARATORS,
+} from "@/modules/signature/domains";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
@@ -199,13 +204,13 @@ const signature = z.looseObject({
     .optional()
     .describe("off by default; off keeps the text"),
   text: z.string().optional().describe("the operator's closing line"),
-  position: z.enum(["top", "bottom"]).optional().describe("default top"),
+  position: z.enum(SIGNATURE_POSITIONS).optional().describe("default top"),
   frequency: z
-    .enum(["all", "once"])
+    .enum(SIGNATURE_FREQUENCIES)
     .optional()
     .describe("which messages of a split reply; default from position"),
   separator: z
-    .enum(["blank", "--"])
+    .enum(SIGNATURE_SEPARATORS)
     .optional()
     .describe("blank = 2 newlines; -- adds a -- line. Chatwoot's own bytes"),
 });

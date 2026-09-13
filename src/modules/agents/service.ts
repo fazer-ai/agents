@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { broadcastAgentConfigEvent } from "@/api/features/realtime/realtime.service";
@@ -49,6 +50,7 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import { isOneOf, SIGNATURE_CHOICES } from "@/modules/signature/domains";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
 import {
@@ -432,23 +434,22 @@ export class InvalidSignatureSwitchError extends AppError {
   }
 }
 
-// The frequency, refused the same way and for the same reason (#616). It is an enum like `position`
-// and `separator`, which normalise in the reader, and the tie-breaker is what GET does: the API
-// echoes the settings bag as it was stored, so a normalised value leaves the operator's client
-// reading `"sempre"` on a field the runtime answered as `"all"`. Two answers to one question, and
-// #612 already settled which one wins.
-//
-// The two older enums are still un-guarded and have exactly this hole. Out of scope here on purpose
-// (it is a different write path's defect, not this feature's) and filed separately rather than
-// fixed in passing.
-export class InvalidSignatureFrequencyError extends AppError {
-  constructor(got: string) {
+// THE SIGNATURE'S CLOSED FIELDS, refused at the write rather than normalised in the reader (#616 for
+// `frequency`, #618 for `position` and `separator`). All three normalise in the reader, so a wrong
+// value is harmless to the runtime, and the tie-breaker is what GET does: the API echoes the bag as
+// it was stored, so a normalised value leaves the operator's client reading `"esquerda"` on a field
+// the runtime answered as `"top"`. #612 already settled that two answers to one question is one too
+// many. One class for the three, driven by `SIGNATURE_CHOICES`, because the domains are the reader's
+// own and a per-field copy of them is how two of the three went unguarded.
+export class InvalidSignatureChoiceError extends AppError {
+  constructor(field: string, allowed: readonly string[], got: string) {
+    const list = allowed.map((v) => `"${v}"`).join(", ");
     super(
-      `signature.frequency must be "all" or "once", got ${got}`,
+      `signature.${field} must be one of ${list}, got ${got}`,
       400,
-      "errors.invalidSignatureFrequency",
-      { got },
-      "signature.frequency",
+      "errors.invalidSignatureChoice",
+      { field, allowed: list, got },
+      `signature.${field}`,
     );
   }
 }
@@ -837,21 +838,31 @@ export function assertSettingsSignature(
 ): void {
   const next = rawSignatureField(settings, "enabled");
   if (next !== undefined && typeof next !== "boolean") {
-    if (next !== rawSignatureField(stored, "enabled"))
+    if (!isDeepStrictEqual(next, rawSignatureField(stored, "enabled")))
       throw new InvalidSignatureSwitchError(
         next === null ? "null" : typeof next,
       );
   }
-  const freq = rawSignatureField(settings, "frequency");
-  if (freq === undefined || freq === "all" || freq === "once") return;
-  if (freq === rawSignatureField(stored, "frequency")) return;
-  throw new InvalidSignatureFrequencyError(
-    freq === null
-      ? "null"
-      : typeof freq === "string"
-        ? `"${freq}"`
-        : typeof freq,
-  );
+  // Per FIELD, with the family's scoping: only a value this write introduces or changes. A legacy row
+  // re-sent untouched saves, and fixing one of its fields does not require fixing the others.
+  for (const [choice, allowed] of Object.entries(SIGNATURE_CHOICES)) {
+    const value = rawSignatureField(settings, choice);
+    if (value === undefined || isOneOf(allowed, value)) continue;
+    // By VALUE: a legacy `position: {}` re-sent through JSON is a new object every time, and `===`
+    // would refuse the very save this exemption is for.
+    if (isDeepStrictEqual(value, rawSignatureField(stored, choice))) continue;
+    throw new InvalidSignatureChoiceError(
+      choice,
+      allowed,
+      value === null
+        ? "null"
+        : typeof value === "string"
+          ? `"${value}"`
+          : Array.isArray(value)
+            ? "array"
+            : typeof value,
+    );
+  }
 }
 
 function rawSignatureField(settings: unknown, field: string): unknown {

@@ -871,7 +871,7 @@ export async function runObserve(
   // same question is asked again before writing, for a reopening that lands mid-call. Only a
   // definite answer refuses: a mirror row that vanished is not a reopening.
   if (reason === "resolved" && conv !== null && conv.status !== "resolved") {
-    // `info`, as its twin `reopened` at the fence: the tick is right to stop (issue #611).
+    // NOTE: `info`, as its twin `reopened` at the fence: the tick is right to stop (issue #611).
     line("skipped", { skipped: "conversation_reopened" }, "info");
     return { outcome: "done" };
   }
@@ -932,7 +932,7 @@ export async function runObserve(
   // the operator wiped is not part of this one either.
   const notes = notesFromRows(rows, mon.window.messages);
   if (!transcript.some((l) => l.role === "customer")) {
-    // `info`: nothing to classify yet is not a problem anybody can fix (issue #611).
+    // NOTE: `info`: nothing to classify yet is not a problem anybody can fix (issue #611).
     line(
       "skipped",
       { skipped: "no_customer_message", messages: transcript.length },
@@ -1334,8 +1334,8 @@ export async function runObserve(
     windowMs: OBSERVE_CEILING_WINDOW_MS,
   });
   if (ceiling.state === "over") {
-    // Kept at `warn`, unlike every other skip here (issue #611): the budget is the one reason an
-    // observation is skipped that an operator can do something about.
+    // NOTE: kept at `warn`, unlike every other skip here (issue #611): the budget is the one
+    // reason an observation is skipped that an operator can do something about.
     line("skipped", { skipped: "spend_ceiling" }, "warn");
     return { outcome: "done" };
   }

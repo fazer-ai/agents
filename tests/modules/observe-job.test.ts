@@ -434,7 +434,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
     const last = (await observeLines()).at(-1);
     expect(last?.status).toBe("skipped");
-    // Nothing to classify yet pages nobody (issue #611).
+    // NOTE: nothing to classify yet pages nobody (issue #611).
     expect(last?.level).toBe("info");
   });
 
@@ -3227,8 +3227,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
     const lines = await observeLines();
     expect(detailOf(lines, 0).skipped).toBe("superseded");
-    // The next tick reads the message that re-armed the row, so there is nothing to page anyone
-    // about: at `warn` this was every observe alert of the first production day (issue #611).
+    // NOTE: the next tick reads the message that re-armed the row, so there is nothing to page
+    // anyone about: at `warn` this was every observe alert of the first production day (#611).
     expect(lines[0]?.level).toBe("info");
   });
 

@@ -71,6 +71,7 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 
 import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./catalog";
 import type { NoEffectReporter } from "./effect-free";
+import { describeLabelWrite, type LabelWriteReporter } from "./label-writes";
 
 export {
   HANDOFF_DONE_PREFIX,
@@ -276,6 +277,10 @@ export interface ToolCtx {
   // the returned sentence, and reading them as writes costs the retry that the observer's tick
   // needs — for an `on_resolve` watcher, the only pass it will ever get.
   onNoEffect?: NoEffectReporter;
+  // Called by `set_labels` after a write that MOVED something, with what moved (label-writes.ts).
+  // Threaded beside `onNoEffect` because it is the same kind of fact arriving from the same place:
+  // what the call did, told by the handler that knows, rather than parsed out of its sentence.
+  onLabelsWritten?: LabelWriteReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,
@@ -1084,6 +1089,9 @@ function setLabelsTool(ctx: ToolCtx) {
           return labelWriteReport("kanban card", added, removed, visible);
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
+        ctx.onLabelsWritten?.(
+          describeLabelWrite("task", added, removed, next, ctx.vocab?.labels),
+        );
         // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
         // the same turn would otherwise diff against the set before this write and put back what it
         // just removed.
@@ -1133,6 +1141,15 @@ function setLabelsTool(ctx: ToolCtx) {
           return "Could not set the contact labels (the run was called off while this write waited).";
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
+        ctx.onLabelsWritten?.(
+          describeLabelWrite(
+            "contact",
+            added,
+            removed,
+            next,
+            ctx.vocab?.labels,
+          ),
+        );
         recordShown(ctx, "contact", visible);
         return labelWriteReport("contact", added, removed, visible);
       }
@@ -1171,6 +1188,15 @@ function setLabelsTool(ctx: ToolCtx) {
             return "Could not set the labels (the run was called off while this write waited its turn).";
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
+          ctx.onLabelsWritten?.(
+            describeLabelWrite(
+              "conversation",
+              added,
+              removed,
+              next,
+              ctx.vocab?.labels,
+            ),
+          );
           recordShown(ctx, "conversation", visible);
           return labelWriteReport("conversation", added, removed, visible);
         },

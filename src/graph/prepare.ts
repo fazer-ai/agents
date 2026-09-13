@@ -8,6 +8,7 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
+import type { LabelWriteReporter } from "@/graph/tools/label-writes";
 import {
   applyToolPreconditions,
   preconditionFlowEvent,
@@ -878,6 +879,9 @@ export interface ToolsetCtx {
   // Threaded to every source that has such an exit, so the caller counting committed effects hears
   // about all of them — and can apply to each report the same test it applied at dispatch.
   onNoEffect?: (toolName: string) => void;
+  // Called by `set_labels` with what a write moved, for a caller whose own flow line is the record of
+  // the turn (the observation tick). See graph/tools/label-writes.ts.
+  onLabelsWritten?: LabelWriteReporter;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
@@ -981,6 +985,7 @@ export interface ToolBuildDeps {
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
       onNoEffect?: (toolName: string) => void;
+      onLabelsWritten?: LabelWriteReporter;
     },
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];
@@ -1305,6 +1310,7 @@ export async function buildToolset(
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,
       onNoEffect: ctx.onNoEffect,
+      onLabelsWritten: ctx.onLabelsWritten,
       kanban,
       sendImage: cfg.sendImageConfig,
       fetchImpl: ctx.imageDeps?.fetchImpl,

@@ -10,6 +10,7 @@ import {
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
 import {
   armObserve,
   observeDedupeKey,
@@ -115,6 +116,22 @@ function stubClient(
       log.publicSends++;
       return {};
     },
+  } as unknown as ChatwootClient;
+}
+
+// THE SAME STUB WITH THE ACCOUNT'S OWN LABEL LIST, which is the closed vocabulary the trail names
+// titles from (issue #635). The plain stub above has no `listLabels`, so the vocab fetch fails there
+// and the trail names nothing — both halves are asserted.
+function stubClientWithVocab(
+  messages: unknown[],
+  labels: string[],
+  log: ClientLog,
+  vocabulary: string[],
+): ChatwootClient {
+  return {
+    ...stubClient(messages, labels, log),
+    listLabels: async () => [...vocabulary],
+    listCustomAttributeDefinitions: async () => [],
   } as unknown as ChatwootClient;
 }
 
@@ -3439,5 +3456,113 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const lines = await observeLines();
     expect(detailOf(lines, -1).skipped).toBe("agent_no_longer_on_inbox");
     expect(lines.at(-1)?.level).toBe("info");
+  });
+
+  // ISSUE #635. The line used to say `acted: true` and stop, so which label the observation applied,
+  // and which one it replaced, existed only in Chatwoot — which keeps no history of a label write.
+  test("the line records what the observation wrote, naming the operator's own labels", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClientWithVocab(
+            [message(1, "quero cancelar")],
+            ["compra-de-ingresso"],
+            log,
+            ["compra-de-ingresso", "cancelamento"],
+          ),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(log.labelsWritten).toEqual([["cancelamento"]]);
+    const detail = detailOf(await observeLines(), -1);
+    expect(detail.acted).toBe(true);
+    expect(detail.labels).toEqual([
+      {
+        scope: "conversation",
+        added: ["cancelamento"],
+        removed: ["compra-de-ingresso"],
+        after: 1,
+        unnamed: 0,
+      },
+    ]);
+  });
+
+  test("with no label list to check against, the write is counted and not named", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        // The plain stub has no `listLabels`: the vocab fetch fails, as it does on a Chatwoot that
+        // refuses the read.
+        makeClient: async () =>
+          stubClient(
+            [message(1, "quero cancelar")],
+            ["compra-de-ingresso"],
+            log,
+          ),
+        makeModel: () =>
+          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([["cancelamento"]]);
+    const detail = detailOf(await observeLines(), -1);
+    expect(detail.labels).toEqual([
+      {
+        scope: "conversation",
+        added: [],
+        removed: [],
+        after: 1,
+        unnamed: 2,
+      },
+    ]);
+  });
+
+  test("a tick that wrote no label leaves the key off the line", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClient([message(1, "quero cancelar")], [], log),
+        makeModel: () => new SilentModel() as unknown as BaseChatModel,
+      },
+    );
+    expect(log.labelsWritten).toEqual([]);
+    const detail = detailOf(await observeLines(), -1);
+    expect(detail.labels).toBeUndefined();
   });
 });

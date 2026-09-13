@@ -433,6 +433,9 @@ const BARE_SLICES: Record<
   "src/graph/tools/native.ts": [5, "array"],
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
+  // How many label titles the flow line NAMES (issue #635), not how long one is: the cut bounds the
+  // array so a pathological write cannot make the row as long as the model made it.
+  "src/graph/tools/label-writes.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],
   "src/lib/redact.ts": [1, "array"],

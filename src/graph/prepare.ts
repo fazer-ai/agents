@@ -1707,6 +1707,9 @@ export interface GraphBuildDeps {
     dropped: number;
     tokens: number;
   }) => void;
+  // Forwarded to the graph: this caller's turn has no reply channel, so the tool budget's wrap-up
+  // must not tell the model to answer a customer (issue #629). The observation tick passes it.
+  noReplyChannel?: boolean;
 }
 
 // The second provider, built or deliberately absent. Every way this returns undefined is a way an
@@ -1836,6 +1839,7 @@ export async function buildModelAndGraph(
     onModelFallbackFailed: deps.onModelFallbackFailed,
     maxHistoryTokens: cfg.maxHistoryTokens,
     onHistoryTrim: deps.onHistoryTrim,
+    noReplyChannel: deps.noReplyChannel,
     stillWanted: deps.stillWanted,
   });
 }

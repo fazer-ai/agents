@@ -1560,6 +1560,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     threadId: string,
     primary: string,
     fallbackProvider?: string,
+    noReplyChannel?: boolean,
   ) => {
     const model = new ToolLoopModel();
     const graph = buildAgentGraph({
@@ -1578,6 +1579,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       checkpointer: new MemorySaver(),
       tools: [noopTool],
       maxToolCalls: 3,
+      ...(noReplyChannel ? { noReplyChannel: true } : {}),
     });
     const result = await graph.invoke(
       { messages: [new HumanMessage("faça muitas coisas")] },
@@ -1585,6 +1587,49 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
     return { rounds: model.boundRounds, result };
   };
+
+  // ISSUE #629. An observation turn has nobody to answer: its frame says any text it writes reaches
+  // nowhere and its client is muted. The budget is the same, the sentence after it is not.
+  const REPLY_SENTENCE = "responda ao cliente";
+  const roundWithWrapUp = (rounds: BaseMessage[][]) => {
+    const round = rounds.find(carriesWrapUp);
+    if (!round) throw new Error("no round carried the wrap-up");
+    return round.map((m) => contentToText(m.content)).join("\n");
+  };
+
+  test("a turn with no reply channel is told to finish with its tools, never to answer a customer", async () => {
+    const { rounds } = await runToTheCap(
+      "limit-noreply",
+      "openai",
+      undefined,
+      true,
+    );
+    expect(rounds.map(carriesWrapUp)).toEqual([false, true, true]);
+    const sent = roundWithWrapUp(rounds);
+    expect(sent).not.toContain(REPLY_SENTENCE);
+    expect(sent).toContain("encerre sem escrever nada");
+    // The budget itself is unchanged, and so is where the instruction travels.
+    expect(sent).toContain("1 de 3 ferramentas");
+    for (const round of rounds) expect(humanCarriesWrapUp(round)).toBe(false);
+  });
+
+  test("an ordinary turn still gets the answer-the-customer wording", async () => {
+    const { rounds } = await runToTheCap("limit-reply", "openai");
+    expect(roundWithWrapUp(rounds)).toContain(REPLY_SENTENCE);
+  });
+
+  test("the wording follows the turn, not the provider", async () => {
+    const { rounds } = await runToTheCap(
+      "limit-noreply-anthropic",
+      "anthropic",
+      undefined,
+      true,
+    );
+    // Inside the system prompt here, and still without the reply sentence.
+    const prompt = contentToText(rounds[1]?.[0]?.content ?? "");
+    expect(prompt).toContain(WRAP_UP);
+    expect(prompt).not.toContain(REPLY_SENTENCE);
+  });
 
   // Where every destination takes a system message after the history, the instruction goes there,
   // because a provider caches a request by its exact prefix: nothing a previous round sent may

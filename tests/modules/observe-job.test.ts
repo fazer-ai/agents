@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
@@ -211,6 +211,48 @@ class LabellingModel {
           : new AIMessage("classifiquei a conversa.");
       },
     };
+  }
+}
+
+// A LABELLING MODEL THAT REMEMBERS WHAT IT WAS SENT, for the wrap-up wording (issue #629): the tick
+// has no reply channel, so the instruction the budget adds must not tell it to answer a customer.
+class RecordingLabellingModel {
+  calls = 0;
+  readonly rounds: string[] = [];
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(msgs: BaseMessage[]): Promise<AIMessage> {
+        self.calls++;
+        n++;
+        self.rounds.push(
+          msgs
+            .map((m) =>
+              typeof m.content === "string"
+                ? m.content
+                : JSON.stringify(m.content),
+            )
+            .join("\n"),
+        );
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "set_labels",
+                  args: { labels: ["cancelamento"] },
+                  id: "call_labels",
+                },
+              ],
+            })
+          : new AIMessage("");
+      },
+    };
+  }
+  async invoke(): Promise<AIMessage> {
+    this.calls++;
+    return new AIMessage("");
   }
 }
 
@@ -3670,5 +3712,50 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(last.labels).toEqual([
       { scope: "conversation", added: 1, removed: 1, after: 1 },
     ]);
+  });
+
+  // ISSUE #629. At `maxToolCalls: 3` the wrap-up lands on the round right after the first tool call,
+  // which on an observation is every observation that writes.
+  test("the budget's wrap-up tells the tick to finish with its tools, never to answer a customer", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: { monitoring: MONITORING, limits: { maxToolCalls: 3 } },
+      },
+    });
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const model = new RecordingLabellingModel();
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            stubClient([message(1, "quero cancelar")], [], log),
+          makeModel: () => model as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      const carrying = model.rounds.filter((r) =>
+        r.includes("ferramentas permitidas neste turno"),
+      );
+      expect(carrying.length).toBeGreaterThan(0);
+      for (const round of carrying) {
+        expect(round).not.toContain("responda ao cliente");
+        expect(round).toContain("encerre sem escrever nada");
+      }
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { monitoring: MONITORING } },
+      });
+    }
   });
 });

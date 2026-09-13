@@ -106,6 +106,14 @@ export interface BuildAgentGraphParams {
   // turn and the NUDGE pass one: a nudge runs from a job that `/reset` retires, which is the same
   // withdrawal by another route (review round 1 found the nudge missing here).
   stillWanted?: () => Promise<boolean>;
+  // A TURN WITH NO REPLY CHANNEL, which is an observation (issue #629). Its frame says that any text
+  // the model writes reaches nobody and its Chatwoot client is muted, so the tool budget's wrap-up
+  // telling it to answer the customer contradicts the frame on the very round it lands on — for a
+  // watcher at `maxToolCalls: 3`, the round after its first tool call. Measured there: `gpt-5.6-luna`
+  // wrote nothing in 15 of 15, while `claude-haiku-4.5` and `gemini-3.5-flash` each argued back in
+  // prose that goes nowhere and is paid for by the token. Absent means the ordinary turn, which does
+  // answer somebody.
+  noReplyChannel?: boolean;
 }
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -430,6 +438,7 @@ export function buildAgentGraph({
   maxHistoryTokens,
   onHistoryTrim,
   stillWanted,
+  noReplyChannel,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -562,7 +571,12 @@ export function buildAgentGraph({
     //
     // So the late system message only goes where it is accepted, and the prompt keeps it everywhere
     // else — the cache miss those providers pay today, and nothing new.
-    const wrapUpText = `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
+    // WHAT THE TURN CAN STILL DO, and on an observation that is not answering anybody (issue #629).
+    // The budget is the same; the sentence after it is what changes, because the wrap-up's job is to
+    // land the turn and an instruction the frame forbids is one the model has to argue with first.
+    const wrapUpText = noReplyChannel
+      ? `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: se ainda falta registrar algo, use a última ferramenta; se não, encerre sem escrever nada.`
+      : `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
     const prompt =
       softLimit && !lateSystemAccepted
         ? `${systemPrompt}\n\n${wrapUpText}`

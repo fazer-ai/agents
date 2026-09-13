@@ -131,10 +131,17 @@ function readStep(raw: unknown): FollowUpStep | null {
       ? [bag.assignLabel]
       : [];
   const labels: string[] = [];
+  // Membership by SET, not by a scan of what is already kept: this list has no ceiling, and every read
+  // of the agent runs it — a stored bag with a hundred thousand labels cost about ten seconds per read
+  // this way, on the turn path as much as on the import that has to read a bundle before storing it
+  // (agents#633, review round 6).
+  const seen = new Set<string>();
   for (const l of rawLabels) {
     if (typeof l !== "string") continue;
     const trimmed = clipText(l.trim(), 100);
-    if (trimmed && !labels.includes(trimmed)) labels.push(trimmed);
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    labels.push(trimmed);
   }
   if (labels.length > 0) step.assignLabels = labels;
   if (bag.resolve === true) step.resolve = true;

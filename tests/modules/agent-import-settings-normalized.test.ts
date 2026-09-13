@@ -128,6 +128,28 @@ describe("the reader comparisons a bag can cost", () => {
     ]);
   });
 
+  // The reader this pass compares with is the one every TURN runs, and its label de-dupe scanned what it
+  // had kept for each entry: a hundred thousand labels cost about ten seconds per read, so one
+  // comparison overran the import's transaction however few comparisons were made (review round 6).
+  test("a step with a hundred thousand labels is read in one pass, not one scan per label", () => {
+    const bag = {
+      followUp: {
+        enabled: "sim",
+        steps: [
+          {
+            delayValue: 1,
+            delayUnit: "minutes",
+            assignLabels: Array.from({ length: 100_000 }, (_, i) => `l${i}`),
+          },
+        ],
+      },
+    };
+    const started = Date.now();
+    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(dropped.paths).toEqual(["followUp.enabled"]);
+  });
+
   // A bundle's list is caller-sized, and the paths taken out are answered bounded and counted: spreading
   // a million of them threw `RangeError` and took the import and its preview with it.
   test("a million unusable entries answer a bounded list of paths and their count", () => {

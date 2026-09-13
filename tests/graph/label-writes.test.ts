@@ -1,69 +1,36 @@
 import { describe, expect, test } from "bun:test";
 import { describeLabelWrite } from "@/graph/tools/label-writes";
 
-// Issue #635. `detail` is allowlisted ids, counts and enums (docs/logs.md), and a label title is only
-// a closed vocabulary while the ACCOUNT'S list names it: `set_labels` takes the model's array, so a
-// title can be a string the model wrote about a customer. This function is the fence.
+// Issue #635, review round 2. `detail` is allowlisted ids, counts and enums (docs/logs.md), and a
+// label title is not one: `set_labels` takes the model's array and Chatwoot CREATES a title it does
+// not have, so one cache refresh later the account's own list contains the invented string and no
+// filter against that list can tell it from an operator's label. The entry therefore counts.
 
 describe("describeLabelWrite", () => {
-  const vocab = ["compra-de-ingresso", "cancelamento", "duvidas-evento"];
-
-  test("names the titles the account's list has", () => {
+  test("counts what moved and what the scope has afterwards", () => {
     expect(
       describeLabelWrite(
         "conversation",
         ["cancelamento"],
         ["compra-de-ingresso"],
         ["cancelamento", "agente-off"],
-        vocab,
       ),
-    ).toEqual({
-      scope: "conversation",
-      added: ["cancelamento"],
-      removed: ["compra-de-ingresso"],
-      after: 2,
-      unnamed: 0,
-    });
+    ).toEqual({ scope: "conversation", added: 1, removed: 1, after: 2 });
   });
 
-  test("counts what the list does not have instead of naming it", () => {
+  test("no title reaches the entry, whatever the model called the label", () => {
     const w = describeLabelWrite(
       "contact",
-      ["cancelamento", "cliente Zebrafina Quixotesca"],
+      ["cliente Zebrafina Quixotesca", "zebrafina@example.com"],
       ["pedido-99887766"],
-      ["cancelamento"],
-      vocab,
+      ["cliente Zebrafina Quixotesca"],
     );
-    expect(w.added).toEqual(["cancelamento"]);
-    expect(w.removed).toEqual([]);
-    expect(w.unnamed).toBe(2);
-    expect(JSON.stringify(w)).not.toContain("Zebrafina");
+    expect(w).toEqual({ scope: "contact", added: 2, removed: 1, after: 1 });
+    expect(JSON.stringify(w).toLowerCase()).not.toContain("zebrafina");
+    expect(JSON.stringify(w)).not.toContain("99887766");
   });
 
-  test("with no vocabulary read, nothing is named at all", () => {
-    expect(
-      describeLabelWrite(
-        "task",
-        ["cancelamento"],
-        ["compra-de-ingresso"],
-        ["cancelamento"],
-        undefined,
-      ),
-    ).toEqual({
-      scope: "task",
-      added: [],
-      removed: [],
-      after: 1,
-      unnamed: 2,
-    });
-  });
-
-  // `detail` bounds each string and nothing bounds an array's length, so the row needs this cap.
-  test("the named lists are capped", () => {
-    const many = Array.from({ length: 40 }, (_, i) => `etiqueta-${i}`);
-    const w = describeLabelWrite("conversation", many, [], many, many);
-    expect(w.added.length).toBe(20);
-    expect(w.unnamed).toBe(20);
-    expect(w.after).toBe(40);
+  test("the scope is carried, because three of them can be written in one turn", () => {
+    expect(describeLabelWrite("task", [], ["x"], []).scope).toBe("task");
   });
 });

@@ -1089,9 +1089,7 @@ function setLabelsTool(ctx: ToolCtx) {
           return labelWriteReport("kanban card", added, removed, visible);
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
-        ctx.onLabelsWritten?.(
-          describeLabelWrite("task", added, removed, next, ctx.vocab?.labels),
-        );
+        ctx.onLabelsWritten?.(describeLabelWrite("task", added, removed, next));
         // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
         // the same turn would otherwise diff against the set before this write and put back what it
         // just removed.
@@ -1142,13 +1140,7 @@ function setLabelsTool(ctx: ToolCtx) {
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
         ctx.onLabelsWritten?.(
-          describeLabelWrite(
-            "contact",
-            added,
-            removed,
-            next,
-            ctx.vocab?.labels,
-          ),
+          describeLabelWrite("contact", added, removed, next),
         );
         recordShown(ctx, "contact", visible);
         return labelWriteReport("contact", added, removed, visible);
@@ -1189,13 +1181,7 @@ function setLabelsTool(ctx: ToolCtx) {
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
           ctx.onLabelsWritten?.(
-            describeLabelWrite(
-              "conversation",
-              added,
-              removed,
-              next,
-              ctx.vocab?.labels,
-            ),
+            describeLabelWrite("conversation", added, removed, next),
           );
           recordShown(ctx, "conversation", visible);
           return labelWriteReport("conversation", added, removed, visible);

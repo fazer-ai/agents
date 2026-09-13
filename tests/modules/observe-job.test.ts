@@ -119,9 +119,9 @@ function stubClient(
   } as unknown as ChatwootClient;
 }
 
-// THE SAME STUB WITH THE ACCOUNT'S OWN LABEL LIST, which is the closed vocabulary the trail names
-// titles from (issue #635). The plain stub above has no `listLabels`, so the vocab fetch fails there
-// and the trail names nothing — both halves are asserted.
+// THE SAME STUB WITH THE ACCOUNT'S OWN LABEL LIST, which is what the tool puts in its description
+// (`<existing_labels>`); the plain stub above has no `listLabels`, so that read fails there. The trail
+// itself names no title either way (label-writes.ts).
 function stubClientWithVocab(
   messages: unknown[],
   labels: string[],
@@ -3491,53 +3491,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const detail = detailOf(await observeLines(), -1);
     expect(detail.acted).toBe(true);
     expect(detail.labels).toEqual([
-      {
-        scope: "conversation",
-        added: ["cancelamento"],
-        removed: ["compra-de-ingresso"],
-        after: 1,
-        unnamed: 0,
-      },
-    ]);
-  });
-
-  test("with no label list to check against, the write is counted and not named", async () => {
-    await clearFlowLog(suDb, { tenantId });
-    __resetChatwootVocabCache();
-    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    await runObserve(
-      tenantId,
-      {
-        instanceId,
-        conversationId: CONV,
-        agentId,
-        reason: "burst",
-        atMessageId: null,
-      },
-      appDb,
-      {
-        // The plain stub has no `listLabels`: the vocab fetch fails, as it does on a Chatwoot that
-        // refuses the read.
-        makeClient: async () =>
-          stubClient(
-            [message(1, "quero cancelar")],
-            ["compra-de-ingresso"],
-            log,
-          ),
-        makeModel: () =>
-          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
-      },
-    );
-    expect(log.labelsWritten).toEqual([["cancelamento"]]);
-    const detail = detailOf(await observeLines(), -1);
-    expect(detail.labels).toEqual([
-      {
-        scope: "conversation",
-        added: [],
-        removed: [],
-        after: 1,
-        unnamed: 2,
-      },
+      { scope: "conversation", added: 1, removed: 1, after: 1 },
     ]);
   });
 
@@ -3647,13 +3601,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const last = detailOf(lines, -1);
     expect(last.skipped).toBe("superseded");
     expect(last.labels).toEqual([
-      {
-        scope: "conversation",
-        added: ["cancelamento"],
-        removed: ["compra-de-ingresso"],
-        after: 1,
-        unnamed: 0,
-      },
+      { scope: "conversation", added: 1, removed: 1, after: 1 },
     ]);
   });
 
@@ -3719,8 +3667,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const last = detailOf(await observeLines(), -1);
     expect(last.failed).toBe("model_call");
     expect(last.retried).toBe(false);
-    expect(
-      (last.labels as { added: string[] }[] | undefined)?.[0]?.added,
-    ).toEqual(["cancelamento"]);
+    expect(last.labels).toEqual([
+      { scope: "conversation", added: 1, removed: 1, after: 1 },
+    ]);
   });
 });

@@ -73,6 +73,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.invalidSignatureSwitch', '`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.')
+// translate('errors.settingsBlocksDropped', 'This `settings` bag does not name {{blocks}}, which this agent has configured, and a bag replaces the whole column: those {{count}} block(s) would be deleted. Send them along with the change, or pass `settingsMode: "replace"` to say the bag is complete.')
 // translate('errors.invalidSignatureFrequency', '`signature.frequency` must be "all" or "once", not {{got}}. Send the whole signature block to change it.')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
@@ -122,12 +123,19 @@ export function parseExpectedUpdatedAt(
 // `expectedUpdatedAt` still on it fails with `unrecognized_keys` — the precondition must travel as an
 // opt, never as a patch field. Exported so the split is unit-tested directly.
 export function splitAgentUpdateBody(
-  body: AgentUpdate & { expectedUpdatedAt?: string },
-): { patch: AgentUpdate; expectedUpdatedAt: Date | undefined } {
-  const { expectedUpdatedAt, ...patch } = body;
+  body: AgentUpdate & { expectedUpdatedAt?: string; settingsMode?: "replace" },
+): {
+  patch: AgentUpdate;
+  expectedUpdatedAt: Date | undefined;
+  settingsMode: "replace" | undefined;
+} {
+  // Both of these are about the WRITE and not about the agent, so both come off the patch: the
+  // strict update schema refuses an unrecognized key, which is the regression the test below pins.
+  const { expectedUpdatedAt, settingsMode, ...patch } = body;
   return {
     patch: patch as AgentUpdate,
     expectedUpdatedAt: parseExpectedUpdatedAt(expectedUpdatedAt),
+    settingsMode,
   };
 }
 
@@ -506,8 +514,11 @@ export const agentsController = new Elysia({
   .patch(
     "/:id",
     async ({ tenantContext, params, body }) => {
-      const { patch, expectedUpdatedAt } = splitAgentUpdateBody(
-        body as AgentUpdate & { expectedUpdatedAt?: string },
+      const { patch, expectedUpdatedAt, settingsMode } = splitAgentUpdateBody(
+        body as AgentUpdate & {
+          expectedUpdatedAt?: string;
+          settingsMode?: "replace";
+        },
       );
       return {
         instance: instanceIdentity,
@@ -516,7 +527,7 @@ export const agentsController = new Elysia({
           requireDbId(params.id),
           patch,
           undefined,
-          { expectedUpdatedAt },
+          { expectedUpdatedAt, settingsMode },
         ),
       };
     },
@@ -597,6 +608,12 @@ export const agentsController = new Elysia({
           t.String({
             description:
               "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
+          }),
+        ),
+        settingsMode: t.Optional(
+          t.Literal("replace", {
+            description:
+              'A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `"replace"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).',
           }),
         ),
       }),

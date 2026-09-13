@@ -202,6 +202,9 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
           agentId,
           { settings: { tts: { enabled: true, credentialRef: oauthRef } } },
           appDb,
+          // The seeded row carries an `stt` block, and this bag replaces the column: said out loud
+          // since #614, so what answers here is the credential rule and not the drop rule.
+          { settingsMode: "replace" },
         ),
       );
       expect(r?.status).toBe(400);
@@ -302,6 +305,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
             },
           },
           appDb,
+          { settingsMode: "replace" },
         ),
       );
       expect(r).toBeNull();
@@ -323,6 +327,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
             },
           },
           appDb,
+          { settingsMode: "replace" },
         ),
       );
       expect(r?.status).toBe(400);

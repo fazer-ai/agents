@@ -6821,6 +6821,11 @@
                   "expectedUpdatedAt": {
                     "description": "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
                     "type": "string"
+                  },
+                  "settingsMode": {
+                    "description": "A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `\"replace\"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).",
+                    "const": "replace",
+                    "type": "string"
                   }
                 }
               }
@@ -6894,6 +6899,11 @@
                   "expectedUpdatedAt": {
                     "description": "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
                     "type": "string"
+                  },
+                  "settingsMode": {
+                    "description": "A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `\"replace\"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).",
+                    "const": "replace",
+                    "type": "string"
                   }
                 }
               }
@@ -6966,6 +6976,11 @@
                   },
                   "expectedUpdatedAt": {
                     "description": "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
+                    "type": "string"
+                  },
+                  "settingsMode": {
+                    "description": "A `settings` bag REPLACES the column, so every block it omits is deleted. Omit this field and a bag that would drop blocks the agent has configured is refused with 400, naming them; send `\"replace\"` to say the bag is complete and the omitted blocks are meant to go. A caller that meant to change one block sends the stored bag with that block changed (GET /v1/agents/{id} answers it).",
+                    "const": "replace",
                     "type": "string"
                   }
                 }

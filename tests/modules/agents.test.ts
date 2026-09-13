@@ -16,6 +16,7 @@ import {
   listAgentsPaged,
   PromptTooLongError,
   replaceAgentToolSelections,
+  SettingsBlocksDroppedError,
   SettingsTextTooLongError,
   updateAgent,
 } from "@/modules/agents/service";
@@ -172,6 +173,10 @@ describe.skipIf(!dbUp)("agents service", () => {
         },
       },
       appDb,
+      // This bag IS the whole column as far as this test is concerned, and the previous test left a
+      // `monitoring` block on the same agent: said out loud since #614, because a bag that drops a
+      // configured block is otherwise refused.
+      { settingsMode: "replace" },
     );
     const row = await suDb.agent.findFirstOrThrow({
       where: { id: agentAId },
@@ -1022,6 +1027,9 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
         BigInt(a.id),
         { settings: { handoff: { instructions: `${legacy}!` } } },
         appDb,
+        // Declared, because the save above left `kanban` on the row: this call is about the cap and
+        // the drop rule runs first (#614), so without the word it would answer the other refusal.
+        { settingsMode: "replace" },
       ),
     ).rejects.toBeInstanceOf(SettingsTextTooLongError);
   });
@@ -1124,5 +1132,144 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     expect(readHandoffConfig(ok.settings).instructions).toHaveLength(
       TOOL_INSTRUCTIONS_MAX,
     );
+  });
+  // #614: a `settings` bag REPLACES the column, so a partial bag deletes every block it does not
+  // name — and answered 200. Measured during #612's acceptance: patching `split` alone removed the
+  // whole `signature` block, and nothing in the response, the audit entry or config health said a
+  // bag had been replaced rather than amended. The contract stays; the silence does not.
+  test("a bag that drops configured blocks is refused, and the row is untouched", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "DropBlocks" }, appDb);
+    const id = BigInt(a.id);
+    const full = {
+      signature: { enabled: true, text: "Alex", position: "top" },
+      split: { enabled: true, maxChars: 300 },
+      followUp: { enabled: true, steps: [{ afterMinutes: 60 }] },
+    };
+    await updateAgent(ctx(tenantC), id, { settings: full }, appDb);
+
+    expect(
+      updateAgent(
+        ctx(tenantC),
+        id,
+        { settings: { split: { enabled: false } } },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(SettingsBlocksDroppedError);
+
+    // The refusal is the whole point only if nothing was written: read the RAW column, not the DTO.
+    const row = await suDb.agent.findUnique({ where: { id } });
+    expect(row?.settings).toEqual(full);
+  });
+
+  test("the caller that means replacement says so once, and gets the old behaviour", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "MeansIt" }, appDb);
+    const id = BigInt(a.id);
+    await updateAgent(
+      ctx(tenantC),
+      id,
+      {
+        settings: {
+          signature: { enabled: true, text: "Alex" },
+          split: { enabled: true },
+        },
+      },
+      appDb,
+    );
+    const replaced = await updateAgent(
+      ctx(tenantC),
+      id,
+      { settings: { split: { enabled: false } } },
+      appDb,
+      { settingsMode: "replace" },
+    );
+    expect(replaced.settings).toEqual({ split: { enabled: false } });
+  });
+
+  // ORDER, and it is the reason the drop rule is first among the settings rules: a bag that is both
+  // partial and carries a bad value has the bigger problem, and answering about the value would send
+  // the caller to fix a field while the write still costs four blocks.
+  test("a bag that is both partial and over-cap answers about the blocks", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "BothWrong" }, appDb);
+    const id = BigInt(a.id);
+    await updateAgent(
+      ctx(tenantC),
+      id,
+      { settings: { signature: { enabled: true, text: "Alex" } } },
+      appDb,
+    );
+    expect(
+      updateAgent(
+        ctx(tenantC),
+        id,
+        {
+          settings: {
+            handoff: { instructions: "h".repeat(TOOL_INSTRUCTIONS_MAX + 1) },
+          },
+        },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(SettingsBlocksDroppedError);
+  });
+
+  // The same race the 409 covers, one level down. The console sends the bag it LOADED, so a block
+  // written after that load (by MCP, or by another tab) is missing from it — and used to be deleted
+  // by the save. Without a precondition there is no 409 to raise, and this refusal is what is left
+  // between a stale bag and a block nobody meant to touch.
+  test("a save that raced a block written elsewhere is refused, not silently reverted", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "RacedBlock" }, appDb);
+    const id = BigInt(a.id);
+    const loaded = { signature: { enabled: true, text: "Alex" } };
+    await updateAgent(ctx(tenantC), id, { settings: loaded }, appDb);
+    // Somebody else adds a block while this editor holds `loaded`.
+    await suDb.agent.update({
+      where: { id },
+      data: {
+        settings: { ...loaded, memory: { compaction: { enabled: true } } },
+      },
+    });
+
+    expect(
+      updateAgent(
+        ctx(tenantC),
+        id,
+        { settings: { signature: { enabled: true, text: "Alex Souza" } } },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(SettingsBlocksDroppedError);
+    const row = await suDb.agent.findFirstOrThrow({ where: { id } });
+    expect((row.settings as Record<string, unknown>).memory).toEqual({
+      compaction: { enabled: true },
+    });
+  });
+
+  // The console has always sent the whole bag (AgentEditorPage spreads the last-synced settings), so
+  // the rule must be invisible to it — including for a block only MCP knows how to write.
+  test("a save carrying every stored block passes, unknown keys included", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "WholeBag" }, appDb);
+    const id = BigInt(a.id);
+    await suDb.agent.update({
+      where: { id },
+      data: {
+        settings: {
+          signature: { enabled: true, text: "Alex" },
+          somethingOnlyMcpWrites: { on: true },
+        },
+      },
+    });
+    const saved = await updateAgent(
+      ctx(tenantC),
+      id,
+      {
+        settings: {
+          signature: { enabled: true, text: "Alex Souza" },
+          somethingOnlyMcpWrites: { on: true },
+          split: { enabled: true },
+        },
+      },
+      appDb,
+    );
+    const bag = saved.settings as Record<string, unknown>;
+    expect(bag.somethingOnlyMcpWrites).toEqual({ on: true });
+    expect((bag.signature as Record<string, unknown>).text).toBe("Alex Souza");
   });
 });

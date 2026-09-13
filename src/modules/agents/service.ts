@@ -304,6 +304,59 @@ export class SettingsTextTooLongError extends AppError {
   }
 }
 
+// A `settings` bag REPLACES the column, which is the contract every caller has today and the reason
+// this rule is a refusal rather than a merge: the console sends the whole bag, the MCP patch builds
+// one, and flipping the write to merge would silently change what a caller who MEANT replacement
+// gets — the same silence one door over. What is refused is the write that would cost blocks the
+// caller never named. Measured on #612's acceptance run: `{"settings":{"split":{"enabled":false}}}`
+// answered 200 and took signature, debounce, followUp, handoff and eleven other blocks with it.
+export class SettingsBlocksDroppedError extends AppError {
+  constructor(blocks: string[]) {
+    super(
+      `settings would drop ${blocks.length} configured block(s): ${blocks.join(", ")}`,
+      400,
+      "errors.settingsBlocksDropped",
+      { blocks: blocks.join(", "), count: blocks.length },
+      "settings",
+    );
+  }
+}
+
+// WHAT THE BAG WOULD COST, asked of the stored row inside the write's own lock like every other rule
+// in this family. A key the bag names is this write's business whatever it holds — `{}` and `null`
+// are edits of that block, and its reader answers what they mean. A key the bag does NOT name is a
+// deletion, and the only ones worth refusing are the ones that would lose something: a block the
+// operator never configured reads back as `{}` from agent_settings_get and materialises empty in
+// the console, so refusing a save over those would be a refusal about nothing.
+function holdsSomething(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+export function assertSettingsBlocksKept(
+  settings: unknown,
+  stored: unknown,
+): void {
+  // `undefined` is "this write does not touch the column" — a rename, a mode change — and not an
+  // empty bag. An empty bag IS the whole wipe, and goes through the same question as any other.
+  if (settings === undefined) return;
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return;
+  const next =
+    settings && typeof settings === "object" && !Array.isArray(settings)
+      ? (settings as Record<string, unknown>)
+      : {};
+  const dropped = Object.entries(stored as Record<string, unknown>)
+    .filter(([key, value]) => !(key in next) && holdsSomething(value))
+    .map(([key]) => key)
+    .sort();
+  // Every block at once, not the first: a caller who learns the size of the mistake one refusal at a
+  // time fixes it one refusal at a time, and the point of this rule is that the whole cost is said
+  // out loud before anything is written.
+  if (dropped.length > 0) throw new SettingsBlocksDroppedError(dropped);
+}
+
 // `stored` is the bag this write replaces, and it is what keeps the refusal answerable: only text the
 // write introduces or changes is refused. See collectOversizedTextChanges for why an already-stored
 // value cannot be one (the editor has no control for several of these fields).
@@ -971,7 +1024,12 @@ export async function updateAgent(
   // Optimistic concurrency (editor): when set, the update only applies if the row's updatedAt still
   // matches; a mismatch yields 409 (errors.agentModifiedElsewhere) instead of silently overwriting a
   // change made elsewhere (another tab, the REST API, or the MCP server). Omitted ⇒ last-write-wins.
-  opts: { expectedUpdatedAt?: Date } = {},
+  //
+  // `settingsMode: "replace"` is the caller saying the bag is COMPLETE, so the blocks it omits are
+  // meant to go. Omitted, a bag that would drop configured blocks is refused instead (#614). Not a
+  // default that changes the write: every path that already sends a whole bag (the console, the MCP
+  // patch, which merges onto the stored one first) passes either way.
+  opts: { expectedUpdatedAt?: Date; settingsMode?: "replace" } = {},
 ): Promise<AgentDto> {
   const {
     rest,
@@ -1037,6 +1095,12 @@ export async function updateAgent(
     }
     // NOTE: Inside the lock, against the row this write replaces — reading the stored bag separately
     // would compare against a value another writer could have changed in between.
+    // FIRST of the settings rules, because it is the only structural one: the others ask whether a
+    // value is allowed, this one asks whether the write keeps the blocks it does not mention. A bag
+    // that is both partial and carries a bad value has a bigger problem than the value.
+    if (opts.settingsMode !== "replace") {
+      assertSettingsBlocksKept(rest.settings, before?.settings);
+    }
     assertSettingsTextSizes(rest.settings, before?.settings);
     assertSettingsDebugWindow(rest.settings, before?.settings);
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");

@@ -752,6 +752,42 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     );
   });
 
+  // #614 fenced the REST bag: a `settings` write that omits blocks the row holds is refused. The MCP
+  // patch reaches the SAME service function and must not be caught by it, because
+  // `mergeBehaviorSettings` starts from a copy of the stored bag, so by the time `updateAgent` sees
+  // it every stored key is present. Asked here rather than assumed: the fence protects this path too
+  // the day that merge stops carrying a key, which is the failure it would otherwise hide.
+  test("a one-block MCP patch still applies on an agent with other blocks configured", async () => {
+    const p = principal({ tenantId: tenantLegacy });
+    const ag = await suDb.agent.create({
+      data: {
+        tenantId: tenantLegacy,
+        name: "McpMerge",
+        systemPrompt: "p",
+        settings: {
+          signature: { enabled: true, text: "Gi" },
+          onlyTheRowKnows: { x: 1 },
+        },
+      },
+    });
+    const r = await agentSettingsSet(
+      p,
+      {
+        agent_id: String(ag.id),
+        split: { enabled: true, maxChars: 400 },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const row = await suDb.agent.findUnique({ where: { id: ag.id } });
+    expect(blk(row?.settings, "split").maxChars).toBe(400);
+    expect(blk(row?.settings, "signature").text).toBe("Gi");
+    // Not a block any reader knows, and it survives for the same reason the fence counts it: the
+    // question is asked of the row's own keys.
+    expect(blk(row?.settings, "onlyTheRowKnows").x).toBe(1);
+  });
+
   test("agent_settings_set apply merges + clamps + audits, preserving other keys", async () => {
     // Seed an unrelated key (grounding) to prove the merge preserves untouched keys.
     await suDb.agent.update({

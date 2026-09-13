@@ -355,8 +355,22 @@ export function assertSettingsBlocksKept(
   // because JSON has no spelling for it and the write drops it on the way to Postgres. Measured by
   // mutation, which is how this stopped being `key in next`: the looser check let `{ signature:
   // undefined }` through as an edit of the block, and the column then had no signature at all.
+  //
+  // And OWN, not inherited: `{}.constructor` is a function, so a stored block named `constructor` or
+  // `toString` read as present in an empty bag and was deleted without a word (review round 1).
+  //
+  // Except `__proto__`, which no bag can keep: zod's record rebuild drops it before the service and
+  // Prisma drops an own one while serializing (both measured, see the `__proto__` notes in
+  // src/modules/mcp/write.ts and tests/modules/audit-agent-family.test.ts). A row only carries one
+  // from a migration or a direct write, and refusing over it would refuse every save of that agent
+  // forever, over a key the caller has no way to send.
   const dropped = Object.entries(stored as Record<string, unknown>)
-    .filter(([key, value]) => next[key] === undefined && holdsSomething(value))
+    .filter(
+      ([key, value]) =>
+        key !== "__proto__" &&
+        (!Object.hasOwn(next, key) || next[key] === undefined) &&
+        holdsSomething(value),
+    )
     .map(([key]) => key)
     .sort();
   // Every block at once, not the first: a caller who learns the size of the mistake one refusal at a

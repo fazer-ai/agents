@@ -2845,6 +2845,15 @@ function AgentEditor() {
   const expectedFor = (force: boolean) =>
     force ? undefined : (loadedUpdatedAtRef.current ?? undefined);
 
+  // The other half of "overwrite anyway" (#614). Every save here sends a WHOLE settings bag built from
+  // the last-synced one, so a block another writer added after the load is missing from it, and the
+  // server refuses a bag that would drop it. That refusal is right for an ordinary save and wrong for
+  // this one: the operator saw the conflict and chose their copy, and without saying so the forced
+  // retry would answer 400 on every attempt. Spread into every PATCH of this page; a patch that
+  // carries no settings is untouched by it.
+  const replaceFor = (force: boolean) =>
+    force ? { settingsMode: "replace" as const } : {};
+
   // A 409 means another writer advanced the agent since we loaded. Surface the banner + stash a retry
   // that re-runs the SAME save forcing the overwrite. Returns true when handled (caller stops).
   function handleConflict(
@@ -2891,6 +2900,7 @@ function AgentEditor() {
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
         ...patch,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
+        ...replaceFor(force),
       });
       if (handleConflict(err, () => void saveAgent(patch, section, true))) {
         return;
@@ -3058,6 +3068,7 @@ function AgentEditor() {
         transferWithSummary,
         settings: toolsSettings,
         ...(patchExpected ? { expectedUpdatedAt: patchExpected } : {}),
+        ...replaceFor(force),
       });
       if (handleConflict(agentRes.error, () => void saveTools(true))) return;
       if (agentRes.error || !agentRes.data) {
@@ -3119,6 +3130,7 @@ function AgentEditor() {
       const patch = {
         settings: { ...syncedSettings, channelRedirect: crJson },
         ...(expected ? { expectedUpdatedAt: expected } : {}),
+        ...replaceFor(force),
       };
       // Snapshot BEFORE the request, never read in the catch: `currentRef` is live, so comparing it
       // with itself there can never fire the staleness check.
@@ -3168,6 +3180,7 @@ function AgentEditor() {
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
         ...patch,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
+        ...replaceFor(force),
       });
       if (handleConflict(err, () => void saveGuardrails(true))) return;
       if (err || !data) throw err ?? new Error("no data");

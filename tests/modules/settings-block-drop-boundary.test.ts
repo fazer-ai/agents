@@ -155,4 +155,37 @@ describe("assertSettingsBlocksKept", () => {
       );
     }
   });
+  // A settings bag is a plain object, so a key that is also the name of something every object
+  // inherits reads as present in a bag that never named it. Arbitrary keys are legal here (the audit
+  // tests already store one called `constructor`), so the question is asked of OWN properties.
+  test("a stored block named like an inherited property is still a block", () => {
+    let caught: unknown;
+    try {
+      assertSettingsBlocksKept(
+        {},
+        { constructor: { a: 1 }, toString: { b: 2 }, hasOwnProperty: true },
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SettingsBlocksDroppedError);
+    expect(
+      (caught as SettingsBlocksDroppedError).translationParams?.blocks,
+    ).toBe("constructor, hasOwnProperty, toString");
+    // And one that IS named by the bag passes, like any other.
+    expect(() =>
+      assertSettingsBlocksKept(JSON.parse('{"constructor":{"a":1}}'), {
+        constructor: { a: 1 },
+      }),
+    ).not.toThrow();
+  });
+  // The one key the rule does not count, because no write can keep it: the route's record parse and
+  // Prisma's serialization both drop it. A refusal over it would freeze every save of an agent whose
+  // row carries one (only a migration or a direct write can put it there), and name something the
+  // caller cannot send. The audit family pins the row side in its own `__proto__` case.
+  test("a stored __proto__ is not a refusal, because no bag can keep it", () => {
+    const row = JSON.parse('{"__proto__":{"knob":"one"},"ok":1}');
+    expect(Object.hasOwn(row, "__proto__")).toBe(true);
+    expect(() => assertSettingsBlocksKept({ ok: 1 }, row)).not.toThrow();
+  });
 });

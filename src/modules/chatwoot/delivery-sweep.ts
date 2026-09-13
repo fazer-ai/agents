@@ -476,6 +476,7 @@ interface StrandedRow {
   inboundMessageId: number | null;
   humanReplyShape: string | null;
   routeObserved: boolean | null;
+  routeRemembers: boolean | null;
 }
 
 export interface SweepCounts {
@@ -670,6 +671,7 @@ export async function sweepStrandedDeliveries(
         inboundMessageId: true,
         humanReplyShape: true,
         routeObserved: true,
+        routeRemembers: true,
       },
     }),
   )) as StrandedRow[];
@@ -782,8 +784,9 @@ async function record(
       // WHAT THIS LINE MAY CLAIM, and it is less than the first draft of it claimed (issue #476
       // review, round 30). Beside a responder of ours, that responder's own delivery of the same
       // reply folds it into the shared memory and owes the takeover, so the row lost nothing. With
-      // none, the observer's memory is the only one the inbox has and this reply is simply not in
-      // it, and nothing will replay it.
+      // none, the route's own claim records that it remembers nothing (issue #620) and the row is
+      // closed benign before it gets here; one that still arrives was claimed by an earlier build,
+      // which promised the append, and nothing will replay it.
       //
       // The question is about RECEIPT TIME and this runs half an hour later, so the binding read
       // here is evidence and not an answer: an inbox bound in between reads as covered when it was

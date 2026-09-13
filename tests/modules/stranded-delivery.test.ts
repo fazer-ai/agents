@@ -42,6 +42,8 @@ function verdict(row: {
   humanReplyShape?: string | null;
   // Whose route it arrived on: an observer's, the responder's, or a row that never said.
   routeObserved?: boolean | null;
+  // Whether that route's claim said it folds into memory what it does not answer.
+  routeRemembers?: boolean | null;
 }): StrandedVerdict {
   const at = new Date(NOW.getTime() - row.ageMs);
   const claimed = row.claimed ?? true;
@@ -56,6 +58,7 @@ function verdict(row: {
       inboundMessageId: row.inboundMessageId,
       humanReplyShape: row.humanReplyShape ?? null,
       routeObserved: row.routeObserved ?? null,
+      routeRemembers: row.routeRemembers ?? null,
     },
     { now: NOW, staleAfterMs: STALE_MS },
   );
@@ -73,6 +76,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     receivedAgoMs?: number;
     humanReplyShape?: string | null;
     routeObserved?: boolean | null;
+    routeRemembers?: boolean | null;
     expected: StrandedVerdict;
   }> = [
     {
@@ -253,6 +257,39 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "owed-transcription",
     },
     {
+      // ISSUE #620. An observer on an inbox with no responder of ours folds nothing into memory, and
+      // its claim says so. The transcription was the append, so there is nothing to replay, and a
+      // recovery armed for it would only reach the same answer after a warning about a gap.
+      name: "a transcription strand on an observer's route that remembers nothing owes nothing",
+      ageMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: 902,
+      routeObserved: true,
+      routeRemembers: false,
+      expected: "no-message",
+    },
+    {
+      // ...and only the observer's: a responder's `false` is a test agent or a failed arm, which is
+      // the replay this verdict exists for.
+      name: "the same strand on the responder's route still owes its transcription",
+      ageMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: 903,
+      routeObserved: false,
+      routeRemembers: false,
+      expected: "owed-transcription",
+    },
+    {
+      // ...and an observer's row that DID promise the append, beside a responder, still owes it.
+      name: "an observer's transcription strand that promised the append still owes it",
+      ageMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: 904,
+      routeObserved: true,
+      routeRemembers: true,
+      expected: "owed-transcription",
+    },
+    {
       // ISSUE #540, window 2. A colleague's reply whose delivery died between the INSERT and the
       // claim: the shape is on the row (written at INSERT), and the role is not, because the claim
       // is the statement that writes it. Read as the responder's — which is what shipped — a
@@ -320,6 +357,18 @@ describe("classifying a delivery stranded non-terminal", () => {
       humanReplyShape: "composer",
       routeObserved: true,
       expected: "observer-strand",
+    },
+    {
+      // ISSUE #620. The same reply, on an observer whose claim said its route remembers nothing (no
+      // responder of ours on the inbox). It owed no takeover and no ingestion, so there is no gap to
+      // report.
+      name: "a colleague's reply on an observer's route that remembers nothing owes nothing",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      routeObserved: true,
+      routeRemembers: false,
+      expected: "no-message",
     },
     {
       // Explicitly the responder's, which is what the receiver writes on every delivery that is not
@@ -413,6 +462,7 @@ describe("classifying a delivery stranded non-terminal", () => {
           receivedAgoMs: c.receivedAgoMs,
           humanReplyShape: c.humanReplyShape,
           routeObserved: c.routeObserved,
+          routeRemembers: c.routeRemembers,
         }),
       ).toBe(c.expected);
     });

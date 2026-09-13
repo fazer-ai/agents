@@ -61,6 +61,13 @@ export interface StrandedDeliveryRow {
   // `humanReplyShape` already decided the row owed a side effect, to say WHICH side effect that is —
   // never as evidence about a customer message.
   routeObserved: boolean | null;
+  // WHETHER THAT ROUTE FOLDS INTO MEMORY what it does not answer, as its own claim stated it (issue
+  // #540, window 3). Read only on an OBSERVER's row, and only to close as benign what that route
+  // owed nothing to: since issue #620 an observer on an inbox with no responder of ours remembers
+  // nothing, and a switched-off one never did, so a strand there lost no memory. `false` on an
+  // observer's row means exactly that, because the receiver never writes it down after an attempt
+  // on that route. Null is a row the claim never reached, which states nothing.
+  routeRemembers: boolean | null;
 }
 
 export interface StrandedDeliveryPolicy {
@@ -196,7 +203,13 @@ export function classifyStrandedDelivery(
   // itself proof this build wrote it, so its nulls are recorded and there is nothing for the fence
   // to protect. Asked after it, a transcription row stranded on PROCESSING without a stamp would be
   // called `lost` — the one answer it must never get, since no customer is waiting on a reply.
-  if (bears === "transcription") return "owed-transcription";
+  if (bears === "transcription") {
+    // NOTE: AN OBSERVER'S ROUTE THAT OWED NO MEMORY (issue #620). The transcription is the append,
+    // and a watcher on an inbox with no responder of ours, or a switched-off one, makes none: its
+    // claim recorded as much. Replayed, the delivery path reaches the same answer and closes, having
+    // spent a recovery job and a warning about a gap that is not there.
+    return observerOwedNoMemory(row) ? "no-message" : "owed-transcription";
+  }
   // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
   // the literal way, every message the previous release lost would be closed as carrying none — the
   // exact silence this sweep exists to remove, on the rows a deploy is most likely to strand, since
@@ -227,6 +240,10 @@ export function classifyStrandedDelivery(
     // the claim is the statement, and a row it never reached carries a null that records nothing.
     // True of every build, not only this one — a PENDING row is unclaimed whoever wrote it.
     if (row.claimedAt === null) return "role-unstated";
+    // NOTE: THE WATCHER'S REPLY WITH NO MEMORY TO KEEP IT (issue #620). What an observer's row owed
+    // was the ingestion, and a claim that recorded none owed nothing: no takeover, no append, and so
+    // no gap line saying the observer's memory lost a reply it was never going to hold.
+    if (observerOwedNoMemory(row)) return "no-message";
     // The ROLE decides which of the two, and it is read only here: a takeover is the responder's to
     // owe, and arming one for an observer's row spends a job that answers `not-owed` and reports
     // nothing (issue #476 review, round 27). Null HERE is a row the claim reached without stating a
@@ -235,6 +252,13 @@ export function classifyStrandedDelivery(
     return row.routeObserved === true ? "observer-strand" : "owed-takeover";
   }
   return "lost";
+}
+
+// An observer's row whose claim stated that the route folds nothing into memory (issue #620). Both
+// halves are the claim's own statement, so an unclaimed row, whose nulls record nothing, never
+// qualifies, and neither does a responder's row, which this reading is not about.
+function observerOwedNoMemory(row: StrandedDeliveryRow): boolean {
+  return row.routeObserved === true && row.routeRemembers === false;
 }
 
 // WHETHER THIS ROW COULD HAVE OWED A CUSTOMER AN ANSWER, from the two columns every build writes in

@@ -583,6 +583,33 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(row.status).toBe("PROCESSING");
   });
 
+  // THE SAME FAILURE ON AN OBSERVER'S ROUTE BESIDE A RESPONDER, and what it leaves on the row
+  // (issue #620). The stranded sweep reads an observer's `route_remembers = false` as "this route
+  // owed no memory" and closes the row benign, so the promise the claim wrote must survive the
+  // failed arm: written down to false, the replay the throw leaves the row for would never be armed.
+  test("an observer's arm that cannot be queued leaves the row still owing the append", async () => {
+    const n = lateAudio(6009, {
+      transcribed: true,
+      conversationId: BOTH_CONV_ID,
+      chatwootInboxId: BOTH_INBOX_ID,
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    const rowId = await newDeliveryRow();
+    await expect(
+      deliver(n, OBSERVER_BOT_ID, failingIngest(), rowId),
+    ).rejects.toThrow("could not be armed");
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { status: true, routeObserved: true, routeRemembers: true },
+    });
+    expect(row).toEqual({
+      status: "PROCESSING",
+      routeObserved: true,
+      routeRemembers: true,
+    });
+  });
+
   // WHAT THE LEDGER KEEPS ABOUT IT, which is the difference between a process death here being
   // recoverable and being silent. A delivery that dies between the claim and the arm leaves a row
   // nothing reads unless the row NAMES the message: `classifyStrandedDelivery` closes every

@@ -145,9 +145,18 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
 // and 3.7s p90 in production, so `concurrency` of them finish in about 3.5s and four rounds fit
 // inside the 15s default interval. A tick that overruns its interval does not start the next one
 // late, it SKIPS it (the worker's non-overlap guard), so claiming more than fits halves the rate
-// instead of raising it. Never below one, for the floor `sharedProviderConcurrency` keeps.
-export function observeClaimLimit(concurrency: number): number {
-  return 4 * Math.max(1, concurrency);
+// instead of raising it.
+//
+// THE ROUNDS ARE THE WHOLE TICK'S, not the observe lane's (PR review, round 1): the fixed batch and
+// the traffic share go through the same bound, so every provider-spending row they already claimed
+// takes a slot from those four rounds. Never below one round, so a tick full of follow-ups still
+// moves the labels, and never below one row, for the floor `sharedProviderConcurrency` keeps.
+export function observeClaimLimit(
+  concurrency: number,
+  alreadyGated = 0,
+): number {
+  const bound = Math.max(1, concurrency);
+  return Math.max(bound, 4 * bound - alreadyGated);
 }
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER

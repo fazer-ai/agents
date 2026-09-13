@@ -677,6 +677,28 @@ export async function runObserve(
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
   const turnId = crypto.randomUUID();
 
+  // NOTE: THE CLAIM, ASKED BEFORE ANYTHING IS PAID FOR (issue #621 review, round 1). The shared tick
+  // claims several rounds of observations and runs them one provider bound at a time, so a claimed
+  // row can wait seconds for its permit, and a message landing in that wait re-arms it to PENDING.
+  // The fence at the tool boundary below still refuses the write, but only after the model has been
+  // paid, for a conversation the re-armed row will observe again anyway. Unreadable proceeds: that
+  // fence is still ahead, and an unknown is not a supersession.
+  if (deps.claim !== undefined) {
+    const claim = deps.claim;
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.schedulerJob.findUnique({
+        where: { id: claim.jobId },
+        select: { status: true, claimSeq: true },
+      }),
+    ).catch(() => "unreadable" as const);
+    if (
+      row !== "unreadable" &&
+      !(row?.status === "CLAIMED" && row.claimSeq === claim.claimSeq)
+    ) {
+      return { outcome: "done" };
+    }
+  }
+
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const agent = await db.agent.findUnique({
       where: { id: agentId },

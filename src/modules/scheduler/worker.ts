@@ -335,8 +335,9 @@ export async function runSchedulerTick(
   // above, but its latency is read live, and inside that share it waited behind every ingestion row
   // armed before it: five rows a tick for the whole install, a ceiling of 20 observations a minute
   // against a peak-hour demand of 73. Its own limit is sized to the provider bound it runs under
-  // below, so it can only ever spend the permits the shared lane already had.
-  const jobs = [
+  // below, so it can only ever spend the permits the shared lane already had, and it counts the
+  // provider-spending rows the first two claims took, which queue on that same bound.
+  const earlier = [
     ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
     ...(await claimDueTrafficJobs(
       trafficShare,
@@ -344,8 +345,14 @@ export async function runSchedulerTick(
       new Date(),
       opts.tenantId,
     )),
+  ];
+  const jobs = [
+    ...earlier,
     ...(await claimDueObserveJobs(
-      observeClaimLimit(providerConcurrency),
+      observeClaimLimit(
+        providerConcurrency,
+        earlier.filter((job) => JOB_SPENDS_PROVIDER[job.kind]).length,
+      ),
       base,
       new Date(),
       opts.tenantId,

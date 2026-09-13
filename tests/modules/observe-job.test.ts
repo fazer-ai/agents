@@ -3126,7 +3126,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         kind: "OBSERVE",
         dedupeKey: `sup-${process.pid}`,
         status: "CLAIMED",
-        claimSeq: 7,
+        claimSeq: 6,
         runAt: new Date(),
         payload: {},
       },
@@ -3144,10 +3144,15 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       {
         makeClient: async () =>
           stubClient([message(1, "quero cancelar")], [], log),
+        // A message that landed while the model answered re-armed the row, and a later tick claimed
+        // it again, so the claim this run holds is no longer the current one.
         makeModel: () =>
-          new LabellingModel(["cancelamento"]) as unknown as BaseChatModel,
-        // A message that landed while the model answered re-armed the row, so the claim this tick
-        // holds is no longer the current one.
+          new LabellingModel(["cancelamento"], () =>
+            suDb.schedulerJob.update({
+              where: { id: job.id },
+              data: { claimSeq: 7 },
+            }),
+          ) as unknown as BaseChatModel,
         claim: { jobId: job.id, claimSeq: 6 },
       },
     );
@@ -3155,6 +3160,52 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
     const detail = detailOf(await observeLines(), 0);
     expect(detail.skipped).toBe("superseded");
+  });
+
+  // ISSUE #621 review, round 1. The shared tick claims several rounds of observations and runs them
+  // one provider bound at a time, so a claimed row can be re-armed while it WAITS for its permit.
+  // That run is superseded before it starts, and the model must not be paid to find out at the tool
+  // boundary.
+  test("a run superseded while it waited for its permit does not reach the model", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const job = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: `sup-wait-${process.pid}`,
+        // Re-armed in place: back to PENDING, with the token the claim handed out unchanged.
+        status: "PENDING",
+        claimSeq: 3,
+        runAt: new Date(),
+        payload: {},
+      },
+    });
+    const model = new LabellingModel(["cancelamento"]);
+    let readConversation = false;
+    const res = await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => {
+          readConversation = true;
+          return stubClient([message(1, "quero cancelar")], [], log);
+        },
+        makeModel: () => model as unknown as BaseChatModel,
+        claim: { jobId: job.id, claimSeq: 3 },
+      },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    expect(model.calls).toBe(0);
+    expect(readConversation).toBe(false);
+    expect(log.labelsWritten).toEqual([]);
+    await suDb.schedulerJob.delete({ where: { id: job.id } });
   });
 
   test("a turn about a message the reset erased acts on nothing", async () => {

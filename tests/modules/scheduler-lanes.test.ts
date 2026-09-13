@@ -427,6 +427,68 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     });
   });
 
+  // PR review, round 1. The four rounds are the whole TICK's: the fixed batch goes through the same
+  // provider bound, so an observe claim that ignored it would overrun the interval whenever
+  // follow-ups were due, and the non-overlap guard would skip the next tick.
+  test("the OBSERVE claim gives up the rounds the fixed batch's provider work already took", async () => {
+    const BOUND = 2;
+    for (let i = 0; i < 3; i++) {
+      await enqueueJob({
+        rearm: "same-work",
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: `observe-budget-reminder-${i}`,
+        runAt: past(),
+        base: appDb,
+      });
+    }
+    for (let i = 0; i < 10; i++) {
+      await enqueueJob({
+        rearm: "same-work",
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: `observe-budget-observe-${i}`,
+        runAt: past(),
+        base: appDb,
+      });
+    }
+    const ran = { APPOINTMENT_REMINDER: 0, OBSERVE: 0 };
+    const previous = {
+      APPOINTMENT_REMINDER: getJobHandler("APPOINTMENT_REMINDER"),
+      OBSERVE: getJobHandler("OBSERVE"),
+    };
+    for (const kind of ["APPOINTMENT_REMINDER", "OBSERVE"] as const) {
+      registerJobHandler(kind, async () => {
+        ran[kind] += 1;
+        return { outcome: "done" };
+      });
+    }
+    try {
+      await runSchedulerTick(appDb, {
+        staleMs: 300_000,
+        batchSize: 20,
+        tenantId,
+        providerConcurrency: BOUND,
+      });
+    } finally {
+      for (const [kind, handler] of Object.entries(previous)) {
+        if (handler) registerJobHandler(kind, handler);
+      }
+    }
+
+    expect(ran.APPOINTMENT_REMINDER).toBe(3);
+    // Eight slots in four rounds of two, three of them already the reminders'.
+    expect(ran.OBSERVE).toBe(5);
+    // And never less than one round, however much provider work the batch holds.
+    expect(observeClaimLimit(BOUND, 50)).toBe(BOUND);
+    await suDb.schedulerJob.deleteMany({
+      where: {
+        tenantId,
+        kind: { in: ["APPOINTMENT_REMINDER", "OBSERVE"] },
+      },
+    });
+  });
+
   test("provider-spending kinds are bounded; the cheap ones are not", async () => {
     // The bound the concurrent drain made necessary. Twenty due follow-ups used to be able to hold
     // every permit in the process-wide model semaphore while a customer's reply queued behind a

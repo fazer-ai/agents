@@ -663,13 +663,19 @@ function describeExpected(issue: z.core.$ZodIssue): string {
   return "a valid value";
 }
 
-export function assertSettingsClosedValues(
-  settings: unknown,
-  stored: unknown,
-): void {
-  const bag = plainObject(settings);
-  if (!bag) return;
-  const storedBag = plainObject(stored);
+// One closed value a block's schema refuses, with the path it sits at and what the reader reads there.
+interface ClosedValueIssue {
+  block: string;
+  path: PropertyKey[];
+  next: unknown;
+  expected: string;
+}
+
+// Every closed value in `bag` the schema MCP asks would refuse, block by block. Shared by the write
+// boundary below, which refuses the first one the write changes, and by the import (#631), which
+// normalizes all of them, so the two cannot disagree about what a closed value outside its domain is.
+function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
+  const out: ClosedValueIssue[] = [];
   for (const [block, schema] of Object.entries(BEHAVIOR_PATCH_SHAPE)) {
     if (!Object.hasOwn(bag, block)) continue;
     const value = bag[block];
@@ -702,18 +708,34 @@ export function assertSettingsClosedValues(
         if (typeof next === typeof read) continue;
         expected = typeof read;
       }
-      // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, by value and per path, so a legacy row re-sent
-      // untouched saves and a list element is judged field by field. Path by index: a value that moved
-      // to another index is a change, and naming its new path is what lets the caller find it.
-      if (isDeepStrictEqual(next, valueAt(storedBag?.[block], issue.path)))
-        continue;
-      const path = [block, ...issue.path.map(String)].join(".");
-      throw new InvalidSettingsValueError(
-        path,
-        expected ?? describeExpected(issue),
-        describeGot(next),
-      );
+      out.push({
+        block,
+        path: issue.path,
+        next,
+        expected: expected ?? describeExpected(issue),
+      });
     }
+  }
+  return out;
+}
+
+export function assertSettingsClosedValues(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const bag = plainObject(settings);
+  if (!bag) return;
+  const storedBag = plainObject(stored);
+  for (const { block, path, next, expected } of closedValueIssues(bag)) {
+    // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, by value and per path, so a legacy row re-sent
+    // untouched saves and a list element is judged field by field. Path by index: a value that moved
+    // to another index is a change, and naming its new path is what lets the caller find it.
+    if (isDeepStrictEqual(next, valueAt(storedBag?.[block], path))) continue;
+    throw new InvalidSettingsValueError(
+      [block, ...path.map(String)].join("."),
+      expected,
+      describeGot(next),
+    );
   }
 }
 
@@ -724,6 +746,90 @@ export function assertSettingsClosedValues(
 export function stripDerivedFullDetailInPlace(settings: unknown): void {
   const obs = plainObject(plainObject(settings)?.observability);
   if (obs && Object.hasOwn(obs, "fullDetail")) delete obs.fullDetail;
+}
+
+// Removes what `path` points at: a key of an object, or an element of a list (the reader drops a list
+// element of the wrong type, so removing it is what the runtime already reads). False when nothing
+// was there, so a refusal about an ABSENT value is not reported as something taken away.
+function removeAt(root: unknown, path: readonly PropertyKey[]): boolean {
+  const parentPath = [...path];
+  const last = parentPath.pop();
+  if (last === undefined) return false;
+  const parent = valueAt(root, parentPath);
+  if (Array.isArray(parent)) {
+    const i = typeof last === "number" ? last : Number(last);
+    if (!Number.isInteger(i) || i < 0 || i >= parent.length) return false;
+    parent.splice(i, 1);
+    return true;
+  }
+  const obj = plainObject(parent);
+  if (!obj || !Object.hasOwn(obj, last as string)) return false;
+  delete obj[last as string];
+  return true;
+}
+
+// WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631). A bundle is authored somewhere else, so the import
+// path does not refuse it whole over one field (transfer.ts already clamps over-cap prose and the
+// protected-label list for that reason); it takes the unusable value out, so the reader's default
+// applies and GET agrees with the runtime, and hands back the paths so the import can say what it
+// took. Asked by the same predicates the write boundary refuses on, never by a second copy of them.
+// Returns the dropped paths, in the order they were found.
+export function dropUnusableImportedSettingsInPlace(
+  settings: unknown,
+): string[] {
+  const bag = plainObject(settings);
+  if (!bag) return [];
+  const dropped: string[] = [];
+  // Derived, dropped silently as on create: nothing the operator configured is lost.
+  stripDerivedFullDetailInPlace(bag);
+  // A guard that cannot parse guards nothing, and the reader drops it WHOLE; the import says so. Asked
+  // the READER's question, not the write boundary's: a rule keyed by a custom tool (a bundled HTTP tool
+  // named `assign_label`, one renamed to `set_labels_2`) is refused by create, which only offers the
+  // natives, but `readToolPreconditions` honours it and the import has carried it on purpose since
+  // #568, so removing it here would open a tool the bundle guards. Before the closed values, which
+  // would otherwise take one field out of a rule: an `equals` of the wrong type removed alone turns "the
+  // attribute must be X", which the runtime ignores, into "the attribute must exist", a guard nobody
+  // wrote.
+  const guards = bag.toolPreconditions;
+  if (guards !== undefined && guards !== null) {
+    if (typeof guards !== "object" || Array.isArray(guards)) {
+      delete bag.toolPreconditions;
+      dropped.push("toolPreconditions");
+    } else {
+      for (const [name, raw] of Object.entries(
+        guards as Record<string, unknown>,
+      )) {
+        if (raw === null || parseToolPrecondition(raw) !== null) continue;
+        delete (guards as Record<string, unknown>)[name];
+        dropped.push(`toolPreconditions.${name}`);
+      }
+    }
+  }
+  // Last issue first: zod reports a list in index order, so removing from the end never moves the
+  // path of an element still to be removed.
+  const closed: string[] = [];
+  for (const { block, path } of closedValueIssues(bag).reverse()) {
+    if (removeAt(bag, [block, ...path]))
+      closed.unshift([block, ...path.map(String)].join("."));
+  }
+  dropped.push(...closed);
+  // Half a fallback is no fallback to the runtime (`hasModelFallback`), and a stored half is what the
+  // write boundary refuses: the pair goes, the rest of the block stays. After the closed values, since
+  // a provider outside its domain taken out above leaves exactly this half.
+  const pair = fallbackPair(bag);
+  if (pair) {
+    const provider = namedOrNull(pair.provider);
+    const model = namedOrNull(pair.model);
+    const complete =
+      provider !== null && (model !== null || modelOptionalFor(provider));
+    if (!complete && (provider !== null || model !== null)) {
+      const fb = bag.modelFallback as Record<string, unknown>;
+      delete fb.provider;
+      delete fb.model;
+      dropped.push("modelFallback");
+    }
+  }
+  return dropped;
 }
 
 export function stripRetiredNoteFlagInPlace(settings: unknown): boolean {

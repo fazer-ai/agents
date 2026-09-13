@@ -1301,6 +1301,7 @@
       "protectedLabelsClipped_one": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foi descartada na importação.",
       "protectedLabelsClipped_many": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foram descartadas na importação.",
       "protectedLabelsClipped_other": "O pacote trazia mais de {{max}} etiquetas fora do alcance, então {{count}} delas foram descartadas na importação.",
+      "settingsValueDropped": "O valor em \"{{field}}\" não serve para este agente, então ficou de fora na importação e vale o padrão.",
       "toolSchemaAdjusted": "Ferramenta \"{{name}}\": o schema de entrada importado foi ajustado: {{reason}}. Confira os argumentos que o agente pode enviar.",
       "unknownGrantSourceSkipped_zero": "{{count}} concessões de ferramenta vieram de uma versão mais nova e foram ignoradas.",
       "unknownGrantSourceSkipped_one": "{{count}} concessão de ferramenta veio de uma versão mais nova e foi ignorada.",

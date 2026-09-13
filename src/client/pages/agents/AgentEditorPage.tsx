@@ -2280,6 +2280,14 @@ function AgentEditor() {
           'The text in "{{field}}" was longer than {{max}} characters and was trimmed on import.',
           p,
         );
+      // What create would have refused, taken out so the default applies (#631). Named by path, like
+      // guidanceClipped: the bundle may hold several, and the path is what says where to look.
+      case "settingsValueDropped":
+        return t(
+          "editor.importWarning.settingsValueDropped",
+          'The value in "{{field}}" is not one this agent can use, so it was left out on import and the default applies.',
+          p,
+        );
       case "promptToolRenamed":
         return t(
           "editor.importWarning.promptToolRenamed",

@@ -114,6 +114,7 @@ import {
   AGENT_SELECT,
   type AgentDto,
   assertPromptSize,
+  dropUnusableImportedSettingsInPlace,
   requireTenant,
   toDto,
 } from "./service";
@@ -1369,21 +1370,33 @@ export async function importAgent(
         params: { count: prompt.renamed, name: "set_labels" },
       });
     }
+    // Copied before the pass below edits it in place: the bag above is still read after the row is
+    // written (`carriesRetiredTaxonomy`), and the blocks the passes above did not rebuild are shared.
+    const storable = structuredClone(
+      disarmFullDetail(
+        stripRetiredLabelKeys(
+          renameNativeToolKeys(
+            normalizeSettingsForStorage(settings) ?? settings,
+            renamed,
+            customToolNames,
+          ),
+        ),
+      ),
+    );
+    // What create would refuse, normalized and named (#631): a closed value outside its domain, half a
+    // fallback, a tool guard that cannot parse. Asked of the bag AS IT WILL BE STORED, after the
+    // renames and strips above, so a note under a pre-rename native name is judged under the name the
+    // schema checks rather than passing as an unknown key.
+    for (const field of dropUnusableImportedSettingsInPlace(storable)) {
+      warnings.push({ code: "settingsValueDropped", params: { field } });
+    }
     const created = await db.agent.create({
       data: {
         tenantId,
         name: exp.name,
         systemPrompt: prompt.text,
         modelConfig: modelConfig as Prisma.InputJsonValue,
-        settings: disarmFullDetail(
-          stripRetiredLabelKeys(
-            renameNativeToolKeys(
-              normalizeSettingsForStorage(settings) ?? settings,
-              renamed,
-              customToolNames,
-            ),
-          ),
-        ) as Prisma.InputJsonValue,
+        settings: storable as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
         businessHoursId,
         followUpHoursId,

@@ -151,6 +151,42 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     });
   });
 
+  // THE INVARIANT IS THE RUNTIME'S READING (review round 1). A value the reader throws away leaves the
+  // reading unchanged when it goes; three that looked the same to the schema did not.
+  test("a padded value the reader trims is stored trimmed, silently, and a padded guard keeps guarding", async () => {
+    const { stored, dropped } = await importWith({
+      tts: { mode: " mirror " },
+      stt: { language: " pt-BR " },
+      toolPreconditions: {
+        handoff_to_human: { kind: "attribute", scope: " contact ", key: "cpf" },
+      },
+    });
+    expect(dropped).toEqual([]);
+    expect(stored?.tts).toEqual({ mode: "mirror" });
+    expect(stored?.stt).toEqual({ language: "pt-BR" });
+    expect(stored?.toolPreconditions).toEqual({
+      handoff_to_human: { kind: "attribute", scope: "contact", key: "cpf" },
+    });
+  });
+
+  // The follow-up reader cuts the list to its window BEFORE it drops bad steps, so taking out a bad
+  // step inside the window alone would pull the step past it in, and that step can resolve the
+  // conversation. The step that would slide in goes too, and both are named.
+  test("taking a bad step out of the reader's window does not pull a step in from past it", async () => {
+    const steps = Array.from({ length: 10 }, (_, i) => ({
+      delayValue: i + 1,
+      delayUnit: "minutes",
+    }));
+    const { stored, dropped } = await importWith({
+      followUp: { enabled: true, steps: ["x", ...steps] },
+    });
+    expect(dropped).toEqual(["followUp.steps.0", "followUp.steps.10"]);
+    expect(stored?.followUp).toEqual({
+      enabled: true,
+      steps: steps.slice(0, 9),
+    });
+  });
+
   test("half a model fallback is no fallback: the pair goes, the rest of the block stays", async () => {
     const half = await importWith({
       modelFallback: { provider: "openai", baseURL: "https://llm.example" },

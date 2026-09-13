@@ -768,6 +768,28 @@ function removeAt(root: unknown, path: readonly PropertyKey[]): boolean {
   return true;
 }
 
+// Sets what `path` points at, when its parent exists. False otherwise.
+function setAt(
+  root: unknown,
+  path: readonly PropertyKey[],
+  value: unknown,
+): boolean {
+  const parentPath = [...path];
+  const last = parentPath.pop();
+  if (last === undefined) return false;
+  const parent = valueAt(root, parentPath);
+  if (Array.isArray(parent)) {
+    const i = typeof last === "number" ? last : Number(last);
+    if (!Number.isInteger(i) || i < 0 || i >= parent.length) return false;
+    parent[i] = value;
+    return true;
+  }
+  const obj = plainObject(parent);
+  if (!obj || !Object.hasOwn(obj, last as string)) return false;
+  obj[last as string] = value;
+  return true;
+}
+
 // WHAT CREATE REFUSES, AN IMPORT NORMALIZES (#631). A bundle is authored somewhere else, so the import
 // path does not refuse it whole over one field (transfer.ts already clamps over-cap prose and the
 // protected-label list for that reason); it takes the unusable value out, so the reader's default
@@ -799,12 +821,69 @@ export function dropUnusableImportedSettingsInPlace(
     delete (guards as Record<string, unknown>)[name];
     dropped.push(`toolPreconditions.${name}`);
   }
-  // Last issue first: zod reports a list in index order, so removing from the end never moves the
-  // path of an element still to be removed.
+  // THE INVARIANT: what the runtime reads does not change. A closed value the reader throws away is
+  // taken out, which by definition leaves the block's reading as it was; a change the reader would
+  // notice is not a normalization, and review round 1 found three (a padded guard scope whose field
+  // removal voided the whole guard, a padded `tts.mode` the reader trims and honours, and an invalid
+  // follow-up step whose removal pulled an eleventh step into the reader's ten-step window). So every
+  // candidate is tried on a copy and kept only when `readBehaviorSettings` answers the same for the
+  // block. Last issue first: zod reports a list in index order, so working from the end never moves
+  // the path of an element still to be judged.
+  const now = new Date();
+  const readBlock = (block: string, value: unknown) =>
+    (
+      readBehaviorSettings({ [block]: value }, now) as unknown as Record<
+        string,
+        unknown
+      >
+    )[block];
   const closed: string[] = [];
-  for (const { block, path } of closedValueIssues(bag).reverse()) {
-    if (removeAt(bag, [block, ...path]))
-      closed.unshift([block, ...path.map(String)].join("."));
+  for (const { block, path, next } of closedValueIssues(bag).reverse()) {
+    const reading = readBlock(block, bag[block]);
+    const sameReading = (candidate: unknown) =>
+      isDeepStrictEqual(readBlock(block, candidate), reading);
+    // Padded, and the reader trims it: the trimmed spelling is the value the runtime already uses, so
+    // nothing is lost and there is nothing to warn about.
+    if (typeof next === "string" && next.trim() !== next) {
+      const trial = structuredClone(bag[block]);
+      if (
+        setAt(trial, path, next.trim()) &&
+        sameReading(trial) &&
+        !closedValueIssues({ [block]: trial }).some((i) =>
+          isDeepStrictEqual(i.path, path),
+        )
+      ) {
+        bag[block] = trial;
+        continue;
+      }
+    }
+    if (path.length === 0) {
+      // The block itself is the wrong type: the reader answers it with every default.
+      if (sameReading(undefined)) {
+        delete bag[block];
+        closed.unshift(block);
+      }
+      continue;
+    }
+    const trial = structuredClone(bag[block]);
+    if (!removeAt(trial, path)) continue;
+    const taken = [[block, ...path.map(String)].join(".")];
+    // A list the reader cuts to a window before it filters: the element that slid in from past the
+    // window is one the reader ignored, and taking it too is what keeps the window's contents. Named
+    // by its index in the bundle, one past where it sits now because the element above was just taken
+    // out of the window.
+    const listPath = [...path];
+    const index = Number(listPath.pop());
+    const list = valueAt(trial, listPath);
+    while (!sameReading(trial) && Array.isArray(list) && list.length > index) {
+      taken.push(
+        [block, ...listPath.map(String), String(list.length)].join("."),
+      );
+      list.pop();
+    }
+    if (!sameReading(trial)) continue;
+    bag[block] = trial;
+    closed.unshift(...taken);
   }
   dropped.push(...closed);
   // Half a fallback is no fallback to the runtime (`hasModelFallback`), and a stored half is what the

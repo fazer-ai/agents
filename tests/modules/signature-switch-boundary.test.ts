@@ -4,6 +4,7 @@ import {
   InvalidSignatureChoiceError,
   InvalidSignatureSwitchError,
 } from "@/modules/agents/service";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import {
   SIGNATURE_CHOICES,
   SIGNATURE_FREQUENCIES,
@@ -285,5 +286,71 @@ describe("the signature's domains are the reader's", () => {
       ...SIGNATURE_SEPARATORS,
       ...SIGNATURE_FREQUENCIES,
     ]).toHaveLength(6);
+  });
+});
+
+// The three edges the mutation battery found untested, each a way the family's scoping can go wrong.
+describe("assertSettingsSignature: what the stored-value exemption compares", () => {
+  // BY VALUE. A legacy non-primitive arrives through JSON as a new object on every save, so a
+  // reference comparison refuses the very re-send the exemption exists for.
+  test("a stored non-primitive bad value re-sent unchanged saves", () => {
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { position: { lado: "esquerdo" }, text: "Outro" } },
+        { signature: { position: { lado: "esquerdo" }, text: "Alex" } },
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { enabled: { sim: true }, text: "Outro" } },
+        { signature: { enabled: { sim: true }, text: "Alex" } },
+      ),
+    ).not.toThrow();
+  });
+
+  // ABSENT is not a value. A bag that stops naming the field over a stored bad value leaves it to the
+  // reader's default; refusing would report "got undefined" about a field the caller never sent.
+  test("a bag that omits the field over a stored bad value saves", () => {
+    expect(() =>
+      assertSettingsSignature(
+        { signature: { text: "Alex" } },
+        { signature: { position: "esquerda", separator: "~~" } },
+      ),
+    ).not.toThrow();
+  });
+
+  test("an array is reported as an array, not as an object", () => {
+    let caught: unknown;
+    try {
+      assertSettingsSignature({ signature: { separator: ["--"] } }, undefined);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).toContain("got array");
+  });
+});
+
+// THE MCP SCHEMA ASKS THE SAME DOMAINS. It already refused these on the base; what this pins is that it
+// reads them from `domains.ts` rather than from a fourth copy that could drift.
+describe("the MCP patch schema's signature enums are the domains", () => {
+  const shape = BEHAVIOR_PATCH_SHAPE.signature;
+  test("every allowed value parses and an outside value does not", () => {
+    for (const [field, allowed] of Object.entries(SIGNATURE_CHOICES)) {
+      for (const value of allowed) {
+        expect(shape.safeParse({ [field]: value }).success).toBe(true);
+      }
+      for (const other of Object.values(SIGNATURE_CHOICES).flat()) {
+        if ((allowed as readonly string[]).includes(other)) continue;
+        expect({
+          field,
+          other,
+          ok: shape.safeParse({ [field]: other }).success,
+        }).toEqual({
+          field,
+          other,
+          ok: false,
+        });
+      }
+    }
   });
 });

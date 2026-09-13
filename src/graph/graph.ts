@@ -571,7 +571,7 @@ export function buildAgentGraph({
     //
     // So the late system message only goes where it is accepted, and the prompt keeps it everywhere
     // else — the cache miss those providers pay today, and nothing new.
-    // WHAT THE TURN CAN STILL DO, and on an observation that is not answering anybody (issue #629).
+    // NOTE: WHAT THE TURN CAN STILL DO, and on an observation that is not answering anybody (#629).
     // The budget is the same; the sentence after it is what changes, because the wrap-up's job is to
     // land the turn and an instruction the frame forbids is one the model has to argue with first.
     const wrapUpText = noReplyChannel

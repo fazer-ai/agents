@@ -1608,7 +1608,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const sent = roundWithWrapUp(rounds);
     expect(sent).not.toContain(REPLY_SENTENCE);
     expect(sent).toContain("encerre sem escrever nada");
-    // The budget itself is unchanged, and so is where the instruction travels.
+    // NOTE: the budget itself is unchanged, and so is where the instruction travels.
     expect(sent).toContain("1 de 3 ferramentas");
     for (const round of rounds) expect(humanCarriesWrapUp(round)).toBe(false);
   });
@@ -1625,7 +1625,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       undefined,
       true,
     );
-    // Inside the system prompt here, and still without the reply sentence.
+    // NOTE: inside the system prompt here, and still without the reply sentence.
     const prompt = contentToText(rounds[1]?.[0]?.content ?? "");
     expect(prompt).toContain(WRAP_UP);
     expect(prompt).not.toContain(REPLY_SENTENCE);

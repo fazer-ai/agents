@@ -797,6 +797,14 @@ function setAt(
 // entries has to cost one pass over the block, not one pass per entry (review round 2).
 const IMPORT_POP_LIMIT = 64;
 const IMPORT_ONE_BY_ONE_MAX = 32;
+// And a ceiling on the comparisons themselves, for the whole bag rather than per list: each one reads
+// the block, so a bundle with thousands of lists pays thousands of reads before any per-list limit is
+// reached (review round 4 measured 7.6s that way). Spent, the remaining values stay where they are.
+const IMPORT_READING_CHECKS = 256;
+// How many lists in one block get a tail cut tried on them. The element that slides into a reader's
+// window comes from the list the removal was in, so trying every list of a bag that has thousands of
+// them spends the whole budget before the useful answer is reached.
+const IMPORT_POP_LISTS = 8;
 
 type ImportFix =
   | { kind: "trim"; path: PropertyKey[]; trimmed: string }
@@ -810,6 +818,7 @@ function applyImportFixes(
   value: unknown,
   block: string,
   sameReading: (candidate: unknown) => boolean,
+  budget: { left: number },
 ): { next: unknown; taken: string[] } | null {
   const trial = structuredClone(value);
   const taken: string[] = [];
@@ -862,7 +871,10 @@ function applyImportFixes(
   // A list the reader cuts to a window BEFORE it filters: what slid into the window from past it is an
   // element the reader ignored, and taking that too is what keeps the window's contents. Named by its
   // own index in the bundle, which is why the kept indices are carried here.
+  let listsTried = 0;
   for (const list of byDepth) {
+    if (budget.left <= 0 || listsTried >= IMPORT_POP_LISTS) break;
+    listsTried += 1;
     if (sameReading(trial)) break;
     const arr = list.arr;
     const floor = Math.min(...list.drop);
@@ -947,6 +959,7 @@ export function dropUnusableImportedSettingsInPlace(
         unknown
       >
     )[block];
+  const budget = { left: IMPORT_READING_CHECKS };
   const byBlock = new Map<string, ClosedValueIssue[]>();
   for (const issue of closedValueIssues(bag)) {
     const list = byBlock.get(issue.block) ?? [];
@@ -955,8 +968,11 @@ export function dropUnusableImportedSettingsInPlace(
   }
   for (const [block, issues] of byBlock) {
     const reading = readBlock(block, bag[block]);
-    const sameReading = (candidate: unknown) =>
-      isDeepStrictEqual(readBlock(block, candidate), reading);
+    const sameReading = (candidate: unknown) => {
+      if (budget.left <= 0) return false;
+      budget.left -= 1;
+      return isDeepStrictEqual(readBlock(block, candidate), reading);
+    };
     // The block itself is the wrong type: the reader answers it with every default.
     if (issues.some((i) => i.path.length === 0)) {
       if (sameReading(undefined)) {
@@ -996,11 +1012,38 @@ export function dropUnusableImportedSettingsInPlace(
         : { kind: "remove", path: issue.path };
     const fixes = issues.map(fixFor);
     // The whole block in one pass first, which is what a bundle with many unusable entries costs.
-    const batch = applyImportFixes(fixes, bag[block], block, sameReading);
+    const batch = applyImportFixes(
+      fixes,
+      bag[block],
+      block,
+      sameReading,
+      budget,
+    );
     if (batch) {
       bag[block] = batch.next;
       dropped.push(...batch.taken);
       continue;
+    }
+    // One padding the reader does not honour would otherwise cost the block its whole pass, and with it
+    // every other value in there once the list is past the one-by-one ceiling. Asked once more with the
+    // paddings taken out instead of trimmed.
+    if (trimmable.size > 0) {
+      const asRemovals = issues.map((issue) => ({
+        kind: "remove" as const,
+        path: issue.path,
+      }));
+      const second = applyImportFixes(
+        asRemovals,
+        bag[block],
+        block,
+        sameReading,
+        budget,
+      );
+      if (second) {
+        bag[block] = second.next;
+        dropped.push(...second.taken);
+        continue;
+      }
     }
     // Some value in there is one the runtime reads. Judged one by one, each time from the bundle's own
     // value plus what has been accepted so far, so a rejected fix leaves no trace and an index still
@@ -1009,11 +1052,13 @@ export function dropUnusableImportedSettingsInPlace(
     const accepted: ImportFix[] = [];
     let best: { next: unknown; taken: string[] } | null = null;
     for (const fix of fixes) {
+      if (budget.left <= 0) break;
       const withTrim = applyImportFixes(
         [...accepted, fix],
         bag[block],
         block,
         sameReading,
+        budget,
       );
       if (withTrim) {
         accepted.push(fix);
@@ -1028,6 +1073,7 @@ export function dropUnusableImportedSettingsInPlace(
         bag[block],
         block,
         sameReading,
+        budget,
       );
       if (withRemoval) {
         accepted.push(asRemoval);

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import { dropUnusableImportedSettingsInPlace } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 
 // WHAT CREATE REFUSES, AN IMPORT NORMALIZES AND NAMES (#631).
@@ -73,6 +74,32 @@ async function importWith(
     stored: row.settings as Record<string, Record<string, unknown>>,
   };
 }
+
+// THE CEILINGS ARE ON WORK, NOT ON THE ANSWER. Each reader comparison reads the whole block, so a bag
+// with thousands of lists has to spend a bounded number of them and still normalize what it can: five
+// thousand of these lists took 7.6s before the budget, past the import's own 5s transaction (review
+// round 4). Asked of the pass itself, with no database in the way.
+describe("the reader comparisons a bag can cost", () => {
+  test("thousands of lists, one padding the reader does not honour, and the values still come out", () => {
+    const labels = Array.from({ length: 1000 }, (_, i) => `l${i}`);
+    const steps: unknown[] = [
+      { delayValue: 1, delayUnit: " hours ", assignLabels: labels },
+    ];
+    for (let i = 1; i < 5000; i++) {
+      steps.push({ delayValue: 1, delayUnit: "minutes", assignLabels: [1] });
+    }
+    const bag = { followUp: { enabled: true, steps } };
+    const started = Date.now();
+    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(dropped).toHaveLength(5_000);
+    expect(dropped[0]).toBe("followUp.steps.0.delayUnit");
+    // The pass answers a normalized copy of the block, so the bag is what to read.
+    const first = (bag.followUp as { steps: { delayUnit?: string }[] })
+      .steps[0];
+    expect(first?.delayUnit).toBeUndefined();
+  });
+});
 
 describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
   beforeAll(async () => {

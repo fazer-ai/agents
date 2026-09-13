@@ -831,10 +831,14 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ]);
   });
 
-  // The recovery the observer's path deliberately relies on (issue #476 review, round 6): its
-  // ingestion, having spent its retries, leaves the row for the sweep. An observed inbox names no
-  // responder, so a recovery that derived the identity from the inbox would resolve NOTHING here and
-  // consume the very message it was called to save. The route the delivery arrived on is on the row.
+  // The recovery the observer's path deliberately relies on (issue #476 review, round 6): a delivery
+  // that died before its watermark and its verdict leaves the row for the sweep. An observed inbox
+  // names no responder, so a recovery that derived the identity from the inbox would resolve NOTHING
+  // here and consume the very message it was called to save. The route the delivery arrived on is on
+  // the row.
+  //
+  // CLOSED, NOT PUT BACK (issue #620): with no responder the route remembers nothing, and it says so.
+  // Read as "no route asked", the replay would go back to DEAD and retry until its attempts ran out.
   test("a delivery stranded on an OBSERVER's route is re-run on that route", async () => {
     const convId = 8974;
     const messageId = 9474;
@@ -870,30 +874,33 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       deps: depsWith(stub),
     });
 
-    // Nothing is said to the customer on an observer's route, and the message is remembered: the
-    // ingestion the strand was about is armed for the watcher.
+    // Nothing is said to the customer on an observer's route, nothing is remembered for a responder
+    // the inbox does not have, and the row is closed with the watermark moved past the message.
     expect(stub.sent).toEqual([]);
     const armed = await suDb.schedulerJob.findMany({
       where: { tenantId, kind: "INGEST_MESSAGE" },
       select: { payload: true },
     });
-    const forThisMessage = armed.filter((j) =>
-      JSON.stringify(j.payload).includes(String(messageId)),
-    );
-    expect(forThisMessage.length).toBeGreaterThan(0);
     expect(
-      forThisMessage.some((j) =>
-        JSON.stringify(j.payload).includes(String(watcherAgentDbId)),
+      armed.filter((j) =>
+        JSON.stringify(j.payload).includes(String(messageId)),
       ),
-    ).toBe(true);
-    expect(conv.id).toBeGreaterThan(0n);
+    ).toEqual([]);
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { lastHandledMessageId: true },
+        })
+      ).lastHandledMessageId,
+    ).toBe(messageId);
   });
 
   // THE FRESHNESS CHECK IS THE RESPONDER'S, and asking it of an observer loses the message for good
   // (issue #476 review, round 54). It refuses because the newer message's own delivery carries the
-  // REPLY — a premise about answering. An observer's replay answers nobody: its turn is the
-  // ingestion its delivery died before reaching, and an ingest job carries its OWN message, so the
-  // newer delivery folded its own text into memory and never this one.
+  // REPLY — a premise about answering. An observer's replay answers nobody: what it owes is the
+  // watermark and the verdict its delivery died before reaching.
   test("a newer customer message does not refuse an OBSERVER's replay", async () => {
     const convId = 8988;
     const messageId = 9488;
@@ -939,16 +946,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         deps: depsWith(stub),
       }),
     ).not.toBe("unrecoverable");
-    // Still nothing said to the customer, and the message is in memory.
+    // Still nothing said to the customer, and the replay ran to its close.
     expect(stub.sent).toEqual([]);
-    const armed = await suDb.schedulerJob.findMany({
-      where: { tenantId, kind: "INGEST_MESSAGE" },
-      select: { payload: true },
-    });
-    expect(
-      armed.filter((j) => JSON.stringify(j.payload).includes(String(messageId)))
-        .length,
-    ).toBeGreaterThan(0);
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
   });
 
   // ISSUE #478 review, round 2. The transcription replay, on the RESPONDER's own route: the update
@@ -1206,16 +1206,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         deps: depsWith(stub),
       });
 
+      // Nothing said, and the row closed on the watcher's path: taken for the responder's, the
+      // agent now in production would have been asked to answer.
       expect(stub.sent).toEqual([]);
-      const armed = await suDb.schedulerJob.findMany({
-        where: { tenantId, kind: "INGEST_MESSAGE" },
-        select: { payload: true },
-      });
-      expect(
-        armed.some((j) =>
-          JSON.stringify(j.payload).includes(String(messageId)),
-        ),
-      ).toBe(true);
+      expect((await ledger(rowId)).status).toBe("PROCESSED");
     } finally {
       await suDb.agent.update({
         where: { id: watcherAgentDbId },

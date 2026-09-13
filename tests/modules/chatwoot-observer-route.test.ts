@@ -14,10 +14,10 @@ import { flowLogRows } from "../utils/flowlog";
 // A delivery on an OBSERVER's route (issue #476). The same inbox can have a responder of ours and
 // an observer of ours, and Chatwoot delivers every event to each on its own route; what is asserted
 // is that the observer's route takes the monitoring path with the OBSERVER's runtime — nothing
-// posted, no flush, the message remembered under the observer — and that it touches nothing the
-// responder's route owns: the handled watermark and the responder's own ledger row. On an inbox
-// nobody of ours answers, the observer keeps the watermark, so a responder bound later does not
-// answer the whole observed backlog as one burst.
+// posted, no flush — and that it touches nothing the responder's route owns: the handled watermark
+// and the responder's own ledger row. On an inbox nobody of ours answers, the observer remembers
+// nothing, since the only reader of that memory is a responder's turn (issue #620), and it keeps the
+// watermark, so a responder bound later does not answer the whole observed backlog as one burst.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -296,6 +296,18 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
   }
 
+  // WHICH ROUTE the delivery took, as its own claim recorded it. On an inbox nobody of ours answers
+  // the observer's route remembers nothing (issue #620), so this is the witness a case about routing
+  // reads there, where it used to count the memory the route armed.
+  async function routeObservedOf(deliveryRowId: bigint) {
+    return (
+      await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: deliveryRowId },
+        select: { routeObserved: true },
+      })
+    ).routeObserved;
+  }
+
   async function row(convId: number) {
     return suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
@@ -360,17 +372,71 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     ).toEqual([]);
   });
 
-  test("on an inbox nobody of ours answers: remembered, and the watermark is the observer's to keep", async () => {
+  // Nothing reads the contact-inbox thread on this inbox: a person answers it, and the observer's
+  // tick reads the conversation from Chatwoot. Appending there was a job per message claimed from the
+  // share the observations wait on (issue #620). The watermark is still this route's, and the
+  // verdict is still armed.
+  test("on an inbox nobody of ours answers: NOT remembered, and the watermark is still the observer's to keep", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
-    const { messageId } = await deliver(OBSERVER_BOT, 2, OBSERVED_ONLY_INBOX, {
-      assigneeType: "User",
-      status: "open",
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "OBSERVE" },
     });
+    const before = (await jobs("INGEST_MESSAGE")).length;
+    const { messageId, deliveryRowId } = await deliver(
+      OBSERVER_BOT,
+      2,
+      OBSERVED_ONLY_INBOX,
+      { assigneeType: "User", status: "open" },
+    );
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
     expect((await row(2))?.lastHandledMessageId).toBe(messageId);
+    expect(await routeObservedOf(deliveryRowId)).toBe(true);
+    const verdict = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "OBSERVE",
+        dedupeKey: `observe:${chatwootThreadId(tenantId, instanceId, 2)}:${observerId}`,
+      },
+      select: { status: true },
+    });
+    expect(verdict).toEqual([{ status: "PENDING" }]);
+    expect(
+      await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: deliveryRowId },
+        select: { status: true, routeRemembers: true },
+      }),
+    ).toEqual({ status: "PROCESSED", routeRemembers: false });
+  });
+
+  // THE SWITCH IS NOT WHAT DECIDES IT: a row-backed observer ignores its mode (issue #476 review,
+  // round 19), and an observer whose mode reads as one that ingests continuously still has nobody
+  // to remember for here.
+  test("on an inbox nobody of ours answers, an observer whose mode ingests continuously still remembers nothing", async () => {
+    requests.length = 0;
+    await suDb.agent.update({
+      where: { id: observerId },
+      data: { mode: "production" },
+    });
+    try {
+      const before = (await jobs("INGEST_MESSAGE")).length;
+      const { messageId, deliveryRowId } = await deliver(
+        OBSERVER_BOT,
+        90,
+        OBSERVED_ONLY_INBOX,
+        { assigneeType: "User", status: "open" },
+      );
+      expect(customerFacing()).toEqual([]);
+      expect(await routeObservedOf(deliveryRowId)).toBe(true);
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect((await row(90))?.lastHandledMessageId).toBe(messageId);
+    } finally {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { mode: "monitoring" },
+      });
+    }
   });
 
   // A switched-off agent's contract: the message waits for the switch. Ingestion refuses a disabled
@@ -401,9 +467,8 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
 
   test("a payload that names no inbox still reaches the observer, through the mirrored conversation", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
-    // Conversation 2 was mirrored with its inbox by the previous case; this message says nothing.
-    const { messageId } = await deliver(
+    // Conversation 2 was mirrored with its inbox by an earlier case; this message says nothing.
+    const { messageId, deliveryRowId } = await deliver(
       OBSERVER_BOT,
       2,
       OBSERVED_ONLY_INBOX,
@@ -412,12 +477,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     );
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    const ingest = await jobs("INGEST_MESSAGE");
-    expect(ingest.length).toBe(before + 1);
-    const last = ingest[ingest.length - 1]?.payload as
-      | { agentId?: string }
-      | undefined;
-    expect(last?.agentId).toBe(String(observerId));
+    expect(await routeObservedOf(deliveryRowId)).toBe(true);
     expect((await row(2))?.lastHandledMessageId).toBe(messageId);
   });
 
@@ -1045,10 +1105,11 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       where: { id: delivery.id },
       select: { routeObserved: true, status: true },
     });
-    // The role is stated and the message remembered, which is the pair a spent resolution loses.
+    // The role is stated and the delivery settled, which is the pair a spent resolution loses. On
+    // this inbox the route remembers nothing (issue #620), so the memory is no witness here.
     expect(row.routeObserved).toBe(true);
     expect(row.status).toBe("PROCESSED");
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
   });
 
   // THE CLAIM STATES THE ROLE, so a row that is PROCESSING has already said what it is. Written by a
@@ -1272,14 +1333,15 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         name: "Vigia",
       },
     });
-    const before = (await jobs("INGEST_MESSAGE")).length;
-    const { messageId } = await deliver(26, 43, OBSERVED_ONLY_INBOX, {
-      assigneeType: "User",
-      status: "open",
-    });
+    const { messageId, deliveryRowId } = await deliver(
+      26,
+      43,
+      OBSERVED_ONLY_INBOX,
+      { assigneeType: "User", status: "open" },
+    );
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect(await routeObservedOf(deliveryRowId)).toBe(true);
     expect((await row(43))?.lastHandledMessageId).toBe(messageId);
   });
 
@@ -1342,18 +1404,18 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     ).toBe(true);
   });
 
-  // With NO responder there is nobody to hand it to: the watcher's memory is the only one the inbox
-  // has, and the assigned bot's path would resolve no runtime at all.
+  // With NO responder there is nobody to hand it to: the assigned bot's path would resolve no
+  // runtime at all, and the watcher's route is the one that keeps the watermark and the verdict.
   test("...but on an inbox nobody answers, the watcher keeps the conversations it holds", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
-    await deliver(OBSERVER_BOT, 52, OBSERVED_ONLY_INBOX, {
-      assigneeType: "AgentBot",
-      assigneeId: OBSERVER_BOT,
-      status: "open",
-    });
+    const { deliveryRowId } = await deliver(
+      OBSERVER_BOT,
+      52,
+      OBSERVED_ONLY_INBOX,
+      { assigneeType: "AgentBot", assigneeId: OBSERVER_BOT, status: "open" },
+    );
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect(await routeObservedOf(deliveryRowId)).toBe(true);
   });
 
   // The watcher that used to answer: an agent added as the inbox's observer still HOLDS the
@@ -1397,24 +1459,17 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       assigneeId: OBSERVER_BOT,
       status: "open",
     });
-    const before = (await jobs("INGEST_MESSAGE")).length;
-    const { messageId } = await deliver(OBSERVER_BOT, 51, OBSERVED_ONLY_INBOX, {
-      assigneeType: null,
-      status: "open",
-    });
-    const armed = (
-      await suDb.schedulerJob.findMany({
-        where: { tenantId, kind: "INGEST_MESSAGE" },
-        select: { payload: true },
-      })
-    ).filter((j) => JSON.stringify(j.payload).includes(String(messageId)));
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
-    // Unassigned, so this route is the observer's: the message is remembered under the WATCHER.
-    expect(
-      armed.some((j) =>
-        JSON.stringify(j.payload).includes(`"agentId":"${observerId}"`),
-      ),
-    ).toBe(true);
+    const { deliveryRowId } = await deliver(
+      OBSERVER_BOT,
+      51,
+      OBSERVED_ONLY_INBOX,
+      {
+        assigneeType: null,
+        status: "open",
+      },
+    );
+    // Unassigned, so this route is the observer's.
+    expect(await routeObservedOf(deliveryRowId)).toBe(true);
   });
 
   // A DEGRADED payload names no assignee at all, and the mirror is what still knows the conversation
@@ -1684,6 +1739,32 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // A DELAYED RESOLVE THE MIRROR REJECTED is not a resolve: read off the payload alone it pulled the
   // verdict forward and let an `on_resolve` agent relabel a conversation that is open again (issue
   // #477 review, round 2). The effective status is the mirror's.
+  // THE COMPACTION FOLLOWS THE MEMORY (issue #620). On an inbox nobody of ours answers the observer's
+  // route remembers nothing, so an attendance that ends there has nothing to summarise; beside a
+  // responder, the responder's own compaction is armed as it always was.
+  test("a resolve on an inbox nobody of ours answers arms no compaction, and the responder's inbox still does", async () => {
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "MEMORY_COMPACT" },
+    });
+    await deliverStatus(OBSERVER_BOT, 91, OBSERVED_ONLY_INBOX, "open");
+    await deliverStatus(OBSERVER_BOT, 91, OBSERVED_ONLY_INBOX, "resolved");
+    expect(
+      await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "MEMORY_COMPACT" },
+      }),
+    ).toEqual([]);
+
+    await deliverStatus(RESPONDER_BOT, 92, SHARED_INBOX, "open");
+    await deliverStatus(RESPONDER_BOT, 92, SHARED_INBOX, "resolved");
+    const armed = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "MEMORY_COMPACT" },
+      select: { payload: true },
+    });
+    expect(
+      armed.map((j) => (j.payload as { agentId: string }).agentId),
+    ).toEqual([String(responderId)]);
+  });
+
   test("a stale resolve the mirror rejected arms no verdict", async () => {
     await suDb.schedulerJob.deleteMany({
       where: { tenantId, kind: "OBSERVE" },

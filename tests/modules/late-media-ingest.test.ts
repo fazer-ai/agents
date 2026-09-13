@@ -473,10 +473,10 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     expect(mine).toHaveLength(1);
   });
 
-  // THE CASE THE FEATURE EXISTS FOR: an inbox no responder answers, watched by a monitoring agent.
-  // There is no turn here and there never will be, so the append is not a supplement to somebody
-  // else's memory — it is the only memory of what the customer said.
-  test("a watcher's conversation folds the transcription in too", async () => {
+  // An inbox no responder of ours answers, watched by a monitoring agent: nothing reads the
+  // contact-inbox thread there (issue #620). The words live in Chatwoot, where the watcher's own tick
+  // reads them, so the write-back arms no append and the delivery still settles.
+  test("a watcher's conversation with no responder folds nothing in, and the delivery settles", async () => {
     const n = lateAudio(6005, {
       transcribed: true,
       conversationId: WATCHED_CONV_ID,
@@ -484,14 +484,20 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     });
     if (!n) throw new Error("unreachable: the fixture is a valid event");
 
-    await deliver(n, OBSERVER_BOT_ID);
+    const rowId = await deliver(n, OBSERVER_BOT_ID);
 
     const mine = (await ingestJobs()).filter(
       (j) => (j.payload as Record<string, unknown>).messageId === 6005,
     );
-    expect(mine).toHaveLength(1);
-    const payload = mine[0]?.payload as Record<string, unknown> | undefined;
-    expect(payload?.role).toBe("customer");
+    expect(mine).toHaveLength(0);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
   });
 
   // THE OTHER HALF OF WIDENING THE GATE (issue #478 review, round 1). On an inbox with a responder

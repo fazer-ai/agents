@@ -1697,7 +1697,11 @@ export interface ProcessChatwootParams {
   // (issue #478 review, round 8). A decision, like the gate's `"nothing"`, and it must not read as
   // silence — an observer's replay beside a responder reaches it every time, and read as silence the
   // recovery would put a settled row back on the worklist until it exhausted its attempts.
-  onIngest?: (outcome: IngestOutcome | "covered") => void;
+  //
+  // "no-reader" is the other decision that is not an enqueue: a switched-on observer on an inbox
+  // with no responder of ours, whose route remembers nothing because nothing would read it (issue
+  // #620).
+  onIngest?: (outcome: IngestOutcome | "covered" | "no-reader") => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -4439,20 +4443,33 @@ export async function processChatwootDelivery(
   // NOT ON A REPLAY. A recovery arrives with the generation gap already true and by construction
   // wider, and throwing there would spend the row's attempts re-reporting what the sweep's own line
   // already says.
-  // WHAT THIS ROUTE DOES WITH A MESSAGE IT DOES NOT ANSWER (issue #540, window 3), resolved here so
-  // the claim below can state it. An observer's route folds it into memory — that is the whole of
-  // its work; a responder's does while it is switched on and ingests continuously.
+  // NOTE: WHAT THIS ROUTE DOES WITH A MESSAGE IT DOES NOT ANSWER (issue #540, window 3), resolved
+  // here so the claim below can state it. A responder's route folds it into memory while it is
+  // switched on and ingests continuously.
   //
-  // A ROW-BACKED observer ingests whatever its mode says (issue #476 review, round 19), which is why
-  // `observer !== null` sits inside the switch rather than beside it: the row is written without
-  // re-asking the mode, and the receiver honours the row over the mode everywhere else.
+  // An observer's route folds it in ONLY FOR A RESPONDER OF OURS BOUND TO THE INBOX (issue #620).
+  // The contact-inbox thread has exactly one kind of reader, a responder's turn, and the observer's
+  // own work is the OBSERVE tick, which reads the conversation from Chatwoot on a throwaway thread
+  // of its own. On an inbox a person or a bot outside this system answers, the append was a job per
+  // message and a compaction per attendance for a memory nobody would open, claimed from the same
+  // lane share the observations wait on. Beside a responder the thread is that responder's, and the
+  // stand-down below decides whether this route fills the message in for it. A responder bound LATER
+  // starts from its binding, and the watermark this route still keeps is what stops it answering the
+  // observed backlog.
+  //
+  // A ROW-BACKED observer decides this whatever its mode says (issue #476 review, round 19): the row
+  // is written without re-asking the mode, and the receiver honours the row over the mode everywhere
+  // else. Only its switch is asked.
   //
   // Named here and reused by `routeIngests` far below, so the fact this delivery RECORDS and the
   // fact it ACTS on cannot drift apart.
   const routeRemembers =
     rt === null
       ? false
-      : rt.enabled && (ingestsContinuously(rt.mode) || observer !== null);
+      : rt.enabled &&
+        (observer !== null
+          ? responderRt !== null
+          : ingestsContinuously(rt.mode));
   const receiptGeneration = params.receiptBindingGeneration ?? null;
   const resolvedGeneration = resolved?.generation ?? null;
   if (
@@ -4861,7 +4878,8 @@ export async function processChatwootDelivery(
   // once more doubled every answered customer message in the checkpoint — the invariant
   // `graph/runtime.ts` states ("a message a turn answers is never ingested"), broken from a second
   // route. So beside a responder this route neither moves the watermark (below) nor appends. With
-  // no responder, the observer is the only memory the inbox has.
+  // no responder nothing reads that memory, and this route keeps only the watermark
+  // (`routeRemembers`).
   //
   // ...AND WHAT IT REMEMBERS IS READ FROM THE SIBLING'S OWN STATEMENT WHERE THERE IS ONE (issue #540,
   // window 3). The mode reading below is about the responder as it stands NOW, and the two
@@ -5117,32 +5135,15 @@ export async function processChatwootDelivery(
     const closingInboxId = n.inboxId ?? storedInboxId;
     const closingContactInboxId = n.contactInboxId ?? storedContactInboxId;
     try {
-      // The responder, or — on an inbox nobody of ours answers — the observer this route belongs
-      // to (issue #476): its memory grows on every message like a responder's and needs the same
-      // compaction. On an inbox with both, the responder's own delivery of this resolve arms it.
+      // NOTE: The responder's alone. An observer's route remembers nothing on an inbox without one
+      // (`routeRemembers`, issue #620), so there is no memory of its own to compact.
       const responderClosingRt = await inboxAgentRuntime(
         params.tenantId,
         params.instanceId,
         closingInboxId,
         base,
       );
-      const closingRt =
-        responderClosingRt ??
-        (await observerRuntimeForRoute(
-          params.tenantId,
-          params.instanceId,
-          params.agentBotId,
-          {
-            chatwootInboxId: closingInboxId,
-            chatwootConversationId: conversationId,
-          },
-          n.assigneeType === undefined && n.assigneeId === undefined
-            ? null
-            : { type: n.assigneeType, id: n.assigneeId },
-          params.routeObserved === true,
-          base,
-        ));
-      if (closingRt) {
+      if (responderClosingRt) {
         // Memory compaction: an attendance that ended is an attendance that can become a summary.
         // Armed here, with a grace period, so the thread is already compacted BEFORE the customer
         // comes back — measurement says the resumption turn is the one billed fresh (cache rate
@@ -5156,9 +5157,10 @@ export async function processChatwootDelivery(
               instanceId: params.instanceId,
               contactInboxId: closingContactInboxId,
               conversationId,
-              agentId: closingRt.agentId,
+              agentId: responderClosingRt.agentId,
               reason: "resolved",
-              enabled: readMemoryConfig(closingRt.settings).compaction.enabled,
+              enabled: readMemoryConfig(responderClosingRt.settings).compaction
+                .enabled,
               base,
             });
           } catch (err) {
@@ -5169,9 +5171,7 @@ export async function processChatwootDelivery(
             );
           }
         }
-        // THE REDIRECT IS THE RESPONDER'S, never the watcher's (issue #476 review, round 25).
-        // `closingRt` falls back to the observer on an inbox nobody of ours answers, and that is
-        // right for compaction — the observer's memory is the only one the inbox has — but this
+        // THE REDIRECT IS THE RESPONDER'S, never the watcher's (issue #476 review, round 25). This
         // block ends in customer-facing text on the WhatsApp sibling, and an observer answers
         // nothing whatever its mode says. Read off the responder alone, so the guarantee is
         // structural here rather than left to the fences downstream, and so the configuration that
@@ -6331,6 +6331,13 @@ export async function processChatwootDelivery(
     // observer's replay beside a responder would be put back on the worklist until its attempts ran
     // out, over a message that was handled.
     params.onIngest?.("covered");
+  } else if (observer?.enabled === true && responderRt === null) {
+    // NOTE: A SWITCHED-ON OBSERVER WITH NO RESPONDER TO REMEMBER FOR (issue #620): a decision
+    // about the message, like the stand-down above, and reported for the same reason. Silent, every
+    // replay of a stranded observer delivery would read as "no route asked" and go back to DEAD
+    // until its attempts ran out, although the watermark and the verdict it owes are this same
+    // delivery's work below. A switched-off observer stays silent: the message waits for its switch.
+    params.onIngest?.("no-reader");
   }
   // A COLLEAGUE'S REPLY the observer could not remember, its retries spent (round 24). There is no
   // recovery to leave the row for — the sweep cannot rebuild an outgoing body — so the loss is

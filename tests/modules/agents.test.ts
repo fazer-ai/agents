@@ -1272,4 +1272,100 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     expect(bag.somethingOnlyMcpWrites).toEqual({ on: true });
     expect((bag.signature as Record<string, unknown>).text).toBe("Alex Souza");
   });
+  // #622: closed values are refused only when the write INTRODUCES or CHANGES them, the scoping every
+  // rule in this family has. A legacy row carrying a value an older build or a hand-written call
+  // stored must keep saving when it is re-sent untouched, or one bad field freezes the whole agent.
+  describe("closed settings values against the stored row", () => {
+    const refused = async (id: bigint, settings: Record<string, unknown>) => {
+      try {
+        await updateAgent(ctx(tenantC), id, { settings }, appDb);
+      } catch (e) {
+        return e as { field?: string; statusCode?: number };
+      }
+      return null;
+    };
+    const legacy = {
+      split: { enabled: "sim" },
+      tts: { mode: "sempre" },
+      followUp: {
+        enabled: true,
+        steps: [{ delayUnit: "semanas", delayValue: 2, instructions: "antes" }],
+      },
+    };
+    const seed = async (name: string) => {
+      const a = await createAgent(ctx(tenantC), { name }, appDb);
+      const id = BigInt(a.id);
+      await suDb.agent.update({ where: { id }, data: { settings: legacy } });
+      return id;
+    };
+
+    test("a legacy bad value re-sent untouched saves alongside an edit elsewhere", async () => {
+      const id = await seed("ClosedLegacyResend");
+      expect(
+        await refused(id, {
+          ...legacy,
+          signature: { enabled: true, text: "Alex" },
+        }),
+      ).toBeNull();
+    });
+
+    test("changing a legacy bad value for another is refused, naming only that path", async () => {
+      const id = await seed("ClosedLegacyChange");
+      const err = await refused(id, { ...legacy, tts: { mode: "nunca-mais" } });
+      expect(err?.statusCode).toBe(400);
+      expect(err?.field).toBe("tts.mode");
+      const row = await suDb.agent.findFirstOrThrow({ where: { id } });
+      expect(row.settings).toEqual(legacy);
+    });
+
+    // Per FIELD inside a list element: the step's text is being edited, its unit is not.
+    test("editing a legacy step's text saves; appending a step with a bad unit is refused", async () => {
+      const id = await seed("ClosedLegacyStep");
+      const step = legacy.followUp.steps[0] as Record<string, unknown>;
+      expect(
+        await refused(id, {
+          ...legacy,
+          followUp: {
+            ...legacy.followUp,
+            steps: [{ ...step, instructions: "depois" }],
+          },
+        }),
+      ).toBeNull();
+      const err = await refused(id, {
+        ...legacy,
+        followUp: {
+          ...legacy.followUp,
+          steps: [
+            { ...step, instructions: "depois" },
+            { delayUnit: "anos", delayValue: 1 },
+          ],
+        },
+      });
+      expect(err?.field).toBe("followUp.steps.1.delayUnit");
+    });
+
+    // DERIVED, so never stored: `observability.fullDetail` is computed from `fullDetailUntil`, and a
+    // bag that stores it leaves GET and the runtime disagreeing about whether the debug mode is on.
+    test("observability.fullDetail sent by a caller is not stored", async () => {
+      const a = await createAgent(
+        ctx(tenantC),
+        { name: "ClosedFullDetail" },
+        appDb,
+      );
+      const saved = await updateAgent(
+        ctx(tenantC),
+        BigInt(a.id),
+        {
+          settings: {
+            observability: { logToolValues: true, fullDetail: true },
+          },
+        },
+        appDb,
+      );
+      const obs = (saved.settings as Record<string, Record<string, unknown>>)
+        .observability;
+      expect(obs?.logToolValues).toBe(true);
+      expect(obs && "fullDetail" in obs).toBe(false);
+    });
+  });
 });

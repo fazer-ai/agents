@@ -183,8 +183,11 @@ const vision = z.looseObject({
   model: modelId(),
   credentialRef: credentialRef(),
   baseURL: baseURL(),
+  // Nullable because the reader honours null as "the default prompt" and the console sends exactly that
+  // on every Behavior save; this schema's rule is that a value the reader honours must parse (#622).
   extractionPrompt: z
     .string()
+    .nullable()
     .optional()
     .describe("what the vision model is asked to extract"),
 });

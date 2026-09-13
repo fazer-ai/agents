@@ -1,0 +1,137 @@
+{
+  "split": {
+    "enabled": false,
+    "maxChars": 600,
+    "typingWpm": 250,
+    "maxDelayMs": 8000
+  },
+  "signature": {
+    "enabled": true,
+    "text": "Alex",
+    "position": "top",
+    "frequency": "all",
+    "separator": "blank"
+  },
+  "availability": {
+    "enabled": false,
+    "awayMessage": ""
+  },
+  "debounce": {
+    "enabled": true,
+    "windowSeconds": 15,
+    "maxMessagesPerBurst": 20,
+    "maxWindowSeconds": 60
+  },
+  "stt": {
+    "enabled": true,
+    "provider": "openai",
+    "model": "",
+    "language": "pt",
+    "credentialRef": null,
+    "baseURL": null
+  },
+  "contactAuth": {
+    "enabled": false,
+    "url": null,
+    "credentialRef": null,
+    "timeoutMs": 5000,
+    "noticeCooldownSeconds": 60,
+    "includeMessageText": false,
+    "denyMessage": null,
+    "mode": "perMessage",
+    "grantTtlSeconds": 86400,
+    "handoffEnabled": true,
+    "handoffTeamId": null,
+    "handoffTeamInstanceId": null
+  },
+  "tts": {
+    "mode": "never",
+    "provider": "openai",
+    "model": "",
+    "voice": "",
+    "credentialRef": null,
+    "baseURL": null,
+    "normalize": true,
+    "normalizeProvider": null,
+    "normalizeModel": null,
+    "normalizeCredentialRef": null,
+    "normalizeBaseURL": null,
+    "stability": null,
+    "similarityBoost": null,
+    "style": null,
+    "speed": null,
+    "speakerBoost": null
+  },
+  "serviceWindow": {
+    "enabled": true,
+    "windowHours": 24,
+    "templateName": null,
+    "templateLanguage": "pt_BR",
+    "templateCategory": "UTILITY",
+    "templateParams": [],
+    "templateContent": null
+  },
+  "followUp": {
+    "enabled": false,
+    "pauseWhileAppointment": true,
+    "steps": [
+      {
+        "delayValue": 30,
+        "delayUnit": "minutes",
+        "instructions": ""
+      }
+    ]
+  },
+  "vision": {
+    "enabled": false,
+    "provider": "openai",
+    "model": "",
+    "credentialRef": null,
+    "baseURL": null,
+    "extractionPrompt": null
+  },
+  "limits": {
+    "maxToolCalls": 10,
+    "maxHistoryTokens": null
+  },
+  "observability": {
+    "logToolValues": false,
+    "fullDetailUntil": null
+  },
+  "memory": {
+    "compaction": {
+      "enabled": true,
+      "provider": null,
+      "model": null,
+      "credentialRef": null,
+      "baseURL": null
+    }
+  },
+  "modelFallback": {
+    "provider": null,
+    "model": null,
+    "credentialRef": null,
+    "baseURL": null
+  },
+  "monitoring": {
+    "analysis": "incremental",
+    "window": {
+      "messages": 20
+    },
+    "debounce": {
+      "windowSeconds": 20,
+      "maxWindowSeconds": 60
+    }
+  },
+  "attributeContext": {
+    "conversation": [],
+    "contact": [],
+    "task": []
+  },
+  "takeover": {
+    "onHumanReply": true
+  },
+  "sendImage": {
+    "allowedHosts": []
+  }
+}

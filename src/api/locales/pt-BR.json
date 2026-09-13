@@ -128,6 +128,7 @@
     "invalidRequest": "A requisição não é válida.",
     "invalidRequestValue": "O valor enviado em {{field}} não é válido.",
     "invalidSecretType": "Este tipo de segredo não é válido.",
+    "invalidSettingsValue": "`{{field}}` espera {{expected}}, não {{got}}. O agente ignoraria esse valor e usaria o padrão, então ele não é gravado.",
     "invalidSetupToken": "Token de configuração inválido ou ausente",
     "invalidSignatureChoice": "`signature.{{field}}` tem que ser um de {{allowed}}, não {{got}}. Mande o bloco inteiro da assinatura para mudá-lo.",
     "invalidSignatureSwitch": "`signature.enabled` tem que ser true ou false, não {{got}}. Mande o bloco inteiro da assinatura para mudá-lo.",

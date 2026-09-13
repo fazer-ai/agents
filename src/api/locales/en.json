@@ -128,6 +128,7 @@
     "invalidRequest": "The request is not valid.",
     "invalidRequestValue": "The value sent in {{field}} is not valid.",
     "invalidSecretType": "That secret type is not valid.",
+    "invalidSettingsValue": "`{{field}}` expects {{expected}}, not {{got}}. The agent would ignore that value and use its default, so it is not stored.",
     "invalidSetupToken": "Invalid or missing setup token",
     "invalidSignatureChoice": "`signature.{{field}}` must be one of {{allowed}}, not {{got}}. Send the whole signature block to change it.",
     "invalidSignatureSwitch": "`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.",

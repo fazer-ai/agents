@@ -575,6 +575,12 @@ describe("MCP tool descriptions", () => {
   // one of them, which is the question the first version of the block got wrong. The reasoning (why
   // repetition is the same decision as position, and why the default is read off it) is in
   // `docs/signature.md`, where it costs no tokens on every tools/list. 57,150 measured, same 16.
+  //
+  // RAISED AGAIN to 57,194 by `vision.extractionPrompt` becoming nullable (#622), 28 characters and no
+  // description. The reader honours null as "the default prompt" and the console sends exactly that on
+  // every Behavior save, so by this schema's own rule the value must parse; REST now asks this schema,
+  // and without the null the editor's own save would be refused on its first write. 57,178 measured,
+  // same 16.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -584,7 +590,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_432);
-    expect(schema).toBeLessThanOrEqual(57_166);
+    expect(schema).toBeLessThanOrEqual(57_194);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

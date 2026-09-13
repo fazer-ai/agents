@@ -25,6 +25,7 @@ import {
   grantSetChanged,
 } from "@/modules/agents/audit-projection";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import {
@@ -608,6 +609,106 @@ export function assertSettingsProtectedLabels(
 // IN PLACE, on the object the caller is about to write, the way `clampProtectedLabelsInPlace` does:
 // these two asserts run on the settings the write stores, so removing the key here is what keeps a
 // value the migration just cleared from being written straight back by an old console.
+// A CLOSED SETTINGS VALUE THE READER WOULD THROW AWAY, refused on REST (#622). #612, #616 and #618
+// closed this one field at a time; the rest of the bag had the same hole. REST parsed `settings` as a
+// record of unknown, the block's reader replaced an unknown value with its default, the runtime acted
+// on the default, and GET echoed what was sent: two answers to one question, the API's the wrong one.
+//
+// MCP never had it. `BEHAVIOR_PATCH_SHAPE` states the exact question in its own header: a value the
+// reader would throw away is declared, a value it honours after measuring (a clamp, a cap) must still
+// parse, and the blocks are loose so a key no schema knows reaches the reader as before. So this does
+// not write a second list of domains; it asks REST the question MCP already asks.
+export class InvalidSettingsValueError extends AppError {
+  constructor(path: string, expected: string, got: string) {
+    super(
+      `settings.${path} expects ${expected}, got ${got}`,
+      400,
+      "errors.invalidSettingsValue",
+      { field: path, expected, got },
+      path,
+    );
+  }
+}
+
+function plainObject(v: unknown): Record<string, unknown> | undefined {
+  return v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : undefined;
+}
+
+function valueAt(root: unknown, path: readonly PropertyKey[]): unknown {
+  let cur: unknown = root;
+  for (const seg of path) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    if (!Object.hasOwn(cur, seg)) return undefined;
+    cur = (cur as Record<PropertyKey, unknown>)[seg];
+  }
+  return cur;
+}
+
+function describeGot(v: unknown): string {
+  if (v === null) return "null";
+  if (typeof v === "string") return JSON.stringify(v);
+  if (Array.isArray(v)) return "array";
+  return typeof v;
+}
+
+function describeExpected(issue: z.core.$ZodIssue): string {
+  if (issue.code === "invalid_value")
+    return `one of ${issue.values.map((v) => JSON.stringify(v)).join(", ")}`;
+  if (issue.code === "invalid_type") return issue.expected;
+  if (issue.code === "invalid_format" && "pattern" in issue && issue.pattern)
+    return `a value matching ${issue.pattern}`;
+  return "a valid value";
+}
+
+export function assertSettingsClosedValues(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const bag = plainObject(settings);
+  if (!bag) return;
+  const storedBag = plainObject(stored);
+  for (const [block, schema] of Object.entries(BEHAVIOR_PATCH_SHAPE)) {
+    if (!Object.hasOwn(bag, block)) continue;
+    const value = bag[block];
+    // A block NAMED as null is an edit of it (#619): the reader answers it with its defaults, and GET
+    // echoing `null` claims nothing the runtime reads differently.
+    if (value === null) continue;
+    const parsed = schema.safeParse(value);
+    if (parsed.success) continue;
+    for (const issue of parsed.error.issues) {
+      // `never` is the schema saying "the runtime does not read this key here" (the reply-only
+      // guardrail checks and generation prompt under `input`). MCP refuses them so a caller cannot
+      // store configuration that does nothing; REST cannot, because the console's own Guardrails save
+      // sends the reader's output for the block and that output materialises them (measured on the
+      // base: refusing them refuses the editor on an agent that never had guardrails).
+      if (issue.code === "invalid_type" && issue.expected === "never") continue;
+      // ONLY WHAT THIS WRITE INTRODUCES OR CHANGES, by value and per path, so a legacy row re-sent
+      // untouched saves and a list element is judged field by field. Path by index: a value that moved
+      // to another index is a change, and naming its new path is what lets the caller find it.
+      const next = valueAt(value, issue.path);
+      if (isDeepStrictEqual(next, valueAt(storedBag?.[block], issue.path)))
+        continue;
+      const path = [block, ...issue.path.map(String)].join(".");
+      throw new InvalidSettingsValueError(
+        path,
+        describeExpected(issue),
+        describeGot(next),
+      );
+    }
+  }
+}
+
+// DERIVED, never stored: `observability.fullDetail` is computed from `fullDetailUntil` (docs/logs.md),
+// and a bag that stores it leaves GET and the runtime disagreeing about whether the debug mode is on.
+// The MCP path already writes the storable projection; REST drops the key on the way in, which also
+// cleans a legacy row the next time it is saved. Dropped rather than refused, so that row keeps saving.
+export function stripDerivedFullDetailInPlace(settings: unknown): void {
+  const obs = plainObject(plainObject(settings)?.observability);
+  if (obs && Object.hasOwn(obs, "fullDetail")) delete obs.fullDetail;
+}
+
 export function stripRetiredNoteFlagInPlace(settings: unknown): boolean {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return false;
@@ -1141,7 +1242,11 @@ export async function updateAgent(
     assertSettingsToolPreconditions(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
+    stripDerivedFullDetailInPlace(rest.settings);
     assertSettingsProtectedLabels(rest.settings, before?.settings);
+    // LAST of the settings rules, after both strips: the dedicated rules above answer their fields
+    // with their own sentences, and a retired or derived key is gone before the schema is asked.
+    assertSettingsClosedValues(rest.settings, before?.settings);
     // NOTE: An OBSERVER of an inbox (issue #476) is a monitoring agent by construction — the route it
     // holds answers nothing whatever the mode says — so the mode is not this agent's to leave while
     // it observes. Refused rather than kept silently on the observer's path: an operator promoting a
@@ -1363,7 +1468,9 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsToolPreconditions(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
+  stripDerivedFullDetailInPlace(input.settings);
   assertSettingsProtectedLabels(input.settings, undefined);
+  assertSettingsClosedValues(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   // NOTE: the two schedule ids are parsed HERE and handed back, not left to the caller. They are a

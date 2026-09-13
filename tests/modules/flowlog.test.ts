@@ -192,6 +192,39 @@ describe.skipIf(!dbUp)("flowlog", () => {
     expect(after2[0]?.count).toBe(2);
   });
 
+  // Issue #610: the ledger row is what the worker posts, so the body has to be right THERE, not only
+  // in the function that builds it.
+  test("a delivery for a line with no error text carries why it was raised", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantB),
+      {
+        name: "why",
+        type: "discord",
+        url: outboundUrl("/api/webhooks/why"),
+        minLevel: "warn",
+      },
+      appDb,
+    );
+    await dispatchAlertsForEvent(
+      flow(tenantB),
+      {
+        stage: "observe",
+        level: "warn",
+        status: "skipped",
+        provider: "openai",
+        detail: { reason: "burst", skipped: "superseded", messagesRead: 4 },
+      },
+      appDb,
+    );
+    const rows = await suDb.alertDelivery.findMany({
+      where: { tenantId: tenantB, channelId: BigInt(ch.id) },
+      select: { summary: true },
+    });
+    expect(rows.map((r) => r.summary)).toEqual([
+      "[observe via openai] skipped: superseded",
+    ]);
+  });
+
   test("listExecutionLogs: source default, filters and keyset pagination", async () => {
     await suDb.executionLog.createMany({
       data: [

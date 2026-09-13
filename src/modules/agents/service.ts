@@ -805,6 +805,31 @@ const IMPORT_READING_CHECKS = 256;
 // window comes from the list the removal was in, so trying every list of a bag that has thousands of
 // them spends the whole budget before the useful answer is reached.
 const IMPORT_POP_LISTS = 8;
+// How many paths the pass carries back. The import names a handful and counts the rest, and a bundle
+// can hold a million unusable entries in one list: an array of a million paths is neither answerable
+// nor readable (review round 5 hit `RangeError` spreading one).
+const IMPORT_PATHS_KEPT = 64;
+
+// The paths taken out, bounded, beside how many there were.
+interface ImportTaken {
+  paths: string[];
+  count: number;
+}
+
+function newTaken(): ImportTaken {
+  return { paths: [], count: 0 };
+}
+
+function takePath(taken: ImportTaken, path: string): void {
+  taken.count += 1;
+  if (taken.paths.length < IMPORT_PATHS_KEPT) taken.paths.push(path);
+}
+
+function absorbTaken(into: ImportTaken, from: ImportTaken): void {
+  for (const path of from.paths) takePath(into, path);
+  // `takePath` counted only what it kept; the rest are counted here.
+  into.count += from.count - from.paths.length;
+}
 
 type ImportFix =
   | { kind: "trim"; path: PropertyKey[]; trimmed: string }
@@ -819,9 +844,9 @@ function applyImportFixes(
   block: string,
   sameReading: (candidate: unknown) => boolean,
   budget: { left: number },
-): { next: unknown; taken: string[] } | null {
+): { next: unknown; taken: ImportTaken } | null {
   const trial = structuredClone(value);
-  const taken: string[] = [];
+  const taken = newTaken();
   for (const fix of fixes) {
     if (fix.kind === "trim") setAt(trial, fix.path, fix.trimmed);
   }
@@ -849,11 +874,11 @@ function applyImportFixes(
       };
       list.drop.add(Number(last));
       lists.set(key, list);
-      taken.push([block, ...fix.path.map(String)].join("."));
+      takePath(taken, [block, ...fix.path.map(String)].join("."));
       continue;
     }
     if (removeAt(trial, fix.path))
-      taken.push([block, ...fix.path.map(String)].join("."));
+      takePath(taken, [block, ...fix.path.map(String)].join("."));
   }
   // Deepest list first, for the same reason: an inner list is addressed through its element's index.
   const byDepth = [...lists.values()].sort((a, b) => b.at.length - a.at.length);
@@ -866,7 +891,7 @@ function applyImportFixes(
       list.kept.push(i);
     });
     arr.length = 0;
-    arr.push(...kept);
+    for (const element of kept) arr.push(element);
   }
   // A list the reader cuts to a window BEFORE it filters: what slid into the window from past it is an
   // element the reader ignored, and taking that too is what keeps the window's contents. Named by its
@@ -877,13 +902,18 @@ function applyImportFixes(
     listsTried += 1;
     if (sameReading(trial)) break;
     const arr = list.arr;
-    const floor = Math.min(...list.drop);
+    let floor = Number.POSITIVE_INFINITY;
+    for (const i of list.drop) floor = Math.min(floor, i);
+    // Only when the window could be reached by the cuts this is willing to make. A list the reader does
+    // not window at all is every list but a few, and trying the tail on a long one costs a read of the
+    // whole block per element for nothing (review round 5 measured 12s on a list of fifteen thousand).
+    if (arr.length - floor > IMPORT_POP_LIMIT) continue;
     // Tried on THIS list and undone when it does not settle it: the difference may belong to another
     // list entirely, and popping here would take an element no reader ignores (a valid label off a
     // step, measured while fixing review round 3).
     const before = [...arr];
     const keptBefore = [...list.kept];
-    const takenBefore = taken.length;
+    const takenBefore = { paths: [...taken.paths], count: taken.count };
     let pops = 0;
     while (
       pops < IMPORT_POP_LIMIT &&
@@ -891,7 +921,8 @@ function applyImportFixes(
       (list.kept[list.kept.length - 1] ?? -1) > floor &&
       !sameReading(trial)
     ) {
-      taken.push(
+      takePath(
+        taken,
         [block, ...list.at.map(String), String(list.kept.pop())].join("."),
       );
       arr.pop();
@@ -899,9 +930,10 @@ function applyImportFixes(
     }
     if (sameReading(trial)) continue;
     arr.length = 0;
-    arr.push(...before);
+    for (const element of before) arr.push(element);
     list.kept = keptBefore;
-    taken.length = takenBefore;
+    taken.paths = takenBefore.paths;
+    taken.count = takenBefore.count;
   }
   return sameReading(trial) ? { next: trial, taken } : null;
 }
@@ -911,20 +943,20 @@ function applyImportFixes(
 // protected-label list for that reason); it takes the unusable value out, so the reader's default
 // applies and GET agrees with the runtime, and hands back the paths so the import can say what it
 // took. Asked by the same predicates the write boundary refuses on, never by a second copy of them.
-// Returns the dropped paths, in the order they were found.
+// Returns the paths taken out, bounded, beside how many there were.
 export function dropUnusableImportedSettingsInPlace(
   settings: unknown,
-): string[] {
+): ImportTaken {
   const bag = plainObject(settings);
-  if (!bag) return [];
-  const dropped: string[] = [];
+  if (!bag) return newTaken();
+  const dropped = newTaken();
   // Derived from `fullDetailUntil`, and dropped as create drops it. Named here, unlike on create: the
   // bundle's author wrote the flag believing the debug mode was on, and an import is the one door
   // where nobody is at the editor to see that it is not.
   const obs = plainObject(bag.observability);
   if (obs && Object.hasOwn(obs, "fullDetail")) {
     stripDerivedFullDetailInPlace(bag);
-    dropped.push("observability.fullDetail");
+    takePath(dropped, "observability.fullDetail");
   }
   // A guard that cannot parse guards nothing, and the reader drops it WHOLE; the import says so. Asked
   // the READER's question, not the write boundary's: a rule keyed by a custom tool (a bundled HTTP tool
@@ -941,7 +973,7 @@ export function dropUnusableImportedSettingsInPlace(
   for (const [name, raw] of Object.entries(guards ?? {})) {
     if (raw === null || parseToolPrecondition(raw) !== null) continue;
     delete (guards as Record<string, unknown>)[name];
-    dropped.push(`toolPreconditions.${name}`);
+    takePath(dropped, `toolPreconditions.${name}`);
   }
   // THE INVARIANT: what the runtime reads does not change. A closed value the reader throws away is
   // taken out, which by definition leaves the block's reading as it was; a change the reader would
@@ -977,7 +1009,7 @@ export function dropUnusableImportedSettingsInPlace(
     if (issues.some((i) => i.path.length === 0)) {
       if (sameReading(undefined)) {
         delete bag[block];
-        dropped.push(block);
+        takePath(dropped, block);
       }
       continue;
     }
@@ -1021,7 +1053,7 @@ export function dropUnusableImportedSettingsInPlace(
     );
     if (batch) {
       bag[block] = batch.next;
-      dropped.push(...batch.taken);
+      absorbTaken(dropped, batch.taken);
       continue;
     }
     // One padding the reader does not honour would otherwise cost the block its whole pass, and with it
@@ -1041,7 +1073,7 @@ export function dropUnusableImportedSettingsInPlace(
       );
       if (second) {
         bag[block] = second.next;
-        dropped.push(...second.taken);
+        absorbTaken(dropped, second.taken);
         continue;
       }
     }
@@ -1050,7 +1082,7 @@ export function dropUnusableImportedSettingsInPlace(
     // names the position the bundle wrote. Bounded, because this is the quadratic path.
     if (fixes.length > IMPORT_ONE_BY_ONE_MAX) continue;
     const accepted: ImportFix[] = [];
-    let best: { next: unknown; taken: string[] } | null = null;
+    let best: { next: unknown; taken: ImportTaken } | null = null;
     for (const fix of fixes) {
       if (budget.left <= 0) break;
       const withTrim = applyImportFixes(
@@ -1082,7 +1114,7 @@ export function dropUnusableImportedSettingsInPlace(
     }
     if (best) {
       bag[block] = best.next;
-      dropped.push(...best.taken);
+      absorbTaken(dropped, best.taken);
     }
   }
   // Half a fallback is no fallback to the runtime (`hasModelFallback`), and a stored half is what the
@@ -1098,7 +1130,7 @@ export function dropUnusableImportedSettingsInPlace(
       const fb = bag.modelFallback as Record<string, unknown>;
       delete fb.provider;
       delete fb.model;
-      dropped.push("modelFallback");
+      takePath(dropped, "modelFallback");
     }
   }
   return dropped;

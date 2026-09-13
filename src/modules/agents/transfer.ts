@@ -1394,15 +1394,15 @@ export async function importAgent(
     // entries in one list, and a warning apiece would be the whole response.
     const unusable = dropUnusableImportedSettingsInPlace(storable);
     let named = 0;
-    for (const field of unusable) {
+    for (const field of unusable.paths) {
       if (named >= SETTINGS_DROPPED_NAMED) break;
       warnings.push({ code: "settingsValueDropped", params: { field } });
       named += 1;
     }
-    if (unusable.length > named) {
+    if (unusable.count > named) {
       warnings.push({
         code: "settingsValuesDroppedMore",
-        params: { count: unusable.length - named },
+        params: { count: unusable.count - named },
       });
     }
     const created = await db.agent.create({

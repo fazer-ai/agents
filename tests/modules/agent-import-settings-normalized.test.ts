@@ -92,12 +92,53 @@ describe("the reader comparisons a bag can cost", () => {
     const started = Date.now();
     const dropped = dropUnusableImportedSettingsInPlace(bag);
     expect(Date.now() - started).toBeLessThan(3_000);
-    expect(dropped).toHaveLength(5_000);
-    expect(dropped[0]).toBe("followUp.steps.0.delayUnit");
+    expect(dropped.count).toBe(5_000);
+    expect(dropped.paths[0]).toBe("followUp.steps.0.delayUnit");
     // The pass answers a normalized copy of the block, so the bag is what to read.
     const first = (bag.followUp as { steps: { delayUnit?: string }[] })
       .steps[0];
     expect(first?.delayUnit).toBeUndefined();
+  });
+  // The tail cut is for a list the reader cuts to a window, and no cut reaches past what it is willing
+  // to take: trying it on a long list read the whole block once per element for nothing (review round 5
+  // measured 12s on fifteen thousand labels).
+  test("a long list is not walked from the tail for a difference that is not its own", () => {
+    const bag = {
+      followUp: {
+        enabled: true,
+        steps: [
+          {
+            delayValue: 1,
+            delayUnit: " hours ",
+            assignLabels: [
+              1,
+              ...Array.from({ length: 15_000 }, (_, i) => `l${i}`),
+            ],
+          },
+        ],
+      },
+    };
+    const started = Date.now();
+    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(dropped.count).toBe(2);
+    expect(dropped.paths).toEqual([
+      "followUp.steps.0.delayUnit",
+      "followUp.steps.0.assignLabels.0",
+    ]);
+  });
+
+  // A bundle's list is caller-sized, and the paths taken out are answered bounded and counted: spreading
+  // a million of them threw `RangeError` and took the import and its preview with it.
+  test("a million unusable entries answer a bounded list of paths and their count", () => {
+    const bag = { guardrails: { competitors: Array(1_000_000).fill(1) } };
+    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    expect(dropped.count).toBe(1_000_000);
+    expect(dropped.paths.length).toBeLessThanOrEqual(64);
+    expect(dropped.paths[0]).toBe("guardrails.competitors.0");
+    expect((bag.guardrails as { competitors: unknown[] }).competitors).toEqual(
+      [],
+    );
   });
 });
 

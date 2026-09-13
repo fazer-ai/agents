@@ -235,12 +235,12 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     });
   });
 
-  test("observability.fullDetail is derived: it is not stored, and nothing configured was lost to warn about", async () => {
+  test("observability.fullDetail is derived: it is not stored, and the warning names it", async () => {
     const { stored, dropped } = await importWith({
-      observability: { fullDetail: true },
+      observability: { fullDetail: true, logToolValues: true },
     });
-    expect(dropped).toEqual([]);
-    expect(stored?.observability).toEqual({});
+    expect(dropped).toEqual(["observability.fullDetail"]);
+    expect(stored?.observability).toEqual({ logToolValues: true });
   });
 
   test("what create accepts is imported untouched, with no warning", async () => {

@@ -802,8 +802,14 @@ export function dropUnusableImportedSettingsInPlace(
   const bag = plainObject(settings);
   if (!bag) return [];
   const dropped: string[] = [];
-  // Derived, dropped silently as on create: nothing the operator configured is lost.
-  stripDerivedFullDetailInPlace(bag);
+  // Derived from `fullDetailUntil`, and dropped as create drops it. Named here, unlike on create: the
+  // bundle's author wrote the flag believing the debug mode was on, and an import is the one door
+  // where nobody is at the editor to see that it is not.
+  const obs = plainObject(bag.observability);
+  if (obs && Object.hasOwn(obs, "fullDetail")) {
+    stripDerivedFullDetailInPlace(bag);
+    dropped.push("observability.fullDetail");
+  }
   // A guard that cannot parse guards nothing, and the reader drops it WHOLE; the import says so. Asked
   // the READER's question, not the write boundary's: a rule keyed by a custom tool (a bundled HTTP tool
   // named `assign_label`, one renamed to `set_labels_2`) is refused by create, which only offers the

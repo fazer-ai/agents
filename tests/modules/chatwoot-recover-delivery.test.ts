@@ -1033,6 +1033,64 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect((await ledger(rowId)).status).toBe("PROCESSED");
   });
 
+  // ISSUE #620, PR review round 2. The sweep still arms this replay for an observer's transcription
+  // on an inbox with no responder of ours, because a stranded row cannot tell "owed nothing" from a
+  // failed arm a previous build wrote down. So the replay is what has to settle the harmless kind:
+  // the route reports that it has no reader, and the row closes instead of retrying.
+  test("an observer's transcription replay on an inbox with no responder closes without remembering", async () => {
+    const convId = 8990;
+    const messageId = 9490;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 9,
+        inboxId: observedInboxDbId,
+        threadId: threadOf(convId),
+        lastEventAt: new Date((SENT_AT - 600) * 1000),
+        contactInboxId: 71_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      event: "message_updated",
+      routeAgentBotId: OBSERVER_BOT_ID,
+      routeObserved: true,
+      receivedAgoMs: 20 * 60 * 1000,
+    });
+    const stub = stubChatwoot({
+      conv: { status: "open", assigneeType: "User", assigneeId: 9 },
+      page: audioPageWith(
+        [{ id: messageId, transcript: "queria remarcar meu ingresso" }],
+        OBSERVED_INBOX,
+      ),
+    });
+
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(stub.sent).toEqual([]);
+    const armed = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "INGEST_MESSAGE" },
+      select: { payload: true },
+    });
+    expect(
+      armed.filter((j) =>
+        JSON.stringify(j.payload).includes(String(messageId)),
+      ),
+    ).toEqual([]);
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
+  });
+
   // An inbox that still NAMES a responder while its bot is gone from Chatwoot — the state the console
   // shows as "missing". The watcher is then the only memory the inbox has, so its ingestion is what
   // strands the delivery, and the recorded route is the only thing that names it.

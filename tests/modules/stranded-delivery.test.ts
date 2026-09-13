@@ -257,36 +257,16 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "owed-transcription",
     },
     {
-      // ISSUE #620. An observer on an inbox with no responder of ours folds nothing into memory, and
-      // its claim says so. The transcription was the append, so there is nothing to replay, and a
-      // recovery armed for it would only reach the same answer after a warning about a gap.
-      name: "a transcription strand on an observer's route that remembers nothing owes nothing",
+      // ISSUE #620, PR review round 2. An observer's `false` is NOT read on a transcription: a failed
+      // arm writes it and then throws, leaving the row owing the append, and a row a previous build
+      // stranded that way looks exactly like one that owed nothing. The replay settles the second
+      // kind by itself; closing both here would lose the first.
+      name: "a transcription strand on an observer's route still owes it, whatever the claim said",
       ageMs: STALE_MS * 3,
       event: "message_updated",
       inboundMessageId: 902,
       routeObserved: true,
       routeRemembers: false,
-      expected: "no-message",
-    },
-    {
-      // ...and only the observer's: a responder's `false` is a test agent or a failed arm, which is
-      // the replay this verdict exists for.
-      name: "the same strand on the responder's route still owes its transcription",
-      ageMs: STALE_MS * 3,
-      event: "message_updated",
-      inboundMessageId: 903,
-      routeObserved: false,
-      routeRemembers: false,
-      expected: "owed-transcription",
-    },
-    {
-      // ...and an observer's row that DID promise the append, beside a responder, still owes it.
-      name: "an observer's transcription strand that promised the append still owes it",
-      ageMs: STALE_MS * 3,
-      event: "message_updated",
-      inboundMessageId: 904,
-      routeObserved: true,
-      routeRemembers: true,
       expected: "owed-transcription",
     },
     {

@@ -62,11 +62,16 @@ export interface StrandedDeliveryRow {
   // never as evidence about a customer message.
   routeObserved: boolean | null;
   // WHETHER THAT ROUTE FOLDS INTO MEMORY what it does not answer, as its own claim stated it (issue
-  // #540, window 3). Read only on an OBSERVER's row, and only to close as benign what that route
-  // owed nothing to: since issue #620 an observer on an inbox with no responder of ours remembers
-  // nothing, and a switched-off one never did, so a strand there lost no memory. `false` on an
-  // observer's row means exactly that, because the receiver never writes it down after an attempt
-  // on that route. Null is a row the claim never reached, which states nothing.
+  // #540, window 3). Read only on an OBSERVER's row carrying a colleague's reply, to close as benign
+  // a reply that route owed nothing to: since issue #620 an observer on an inbox with no responder
+  // of ours remembers nothing, and a switched-off one never did. A reply's failed arm writes `false`
+  // too, but that path settles the row itself and reports the loss, so a stranded reply row reading
+  // `false` is the claim's statement. Null is a row the claim never reached, which states nothing.
+  //
+  // NOT read on a transcription row (PR review, round 2): there a failed arm writes `false` and then
+  // THROWS, leaving the row for this sweep still owing the append, and a row a previous build
+  // stranded that way is indistinguishable from one that owed nothing. The replay settles the
+  // second kind on its own, by reporting that the route has no reader.
   routeRemembers: boolean | null;
 }
 
@@ -203,13 +208,7 @@ export function classifyStrandedDelivery(
   // itself proof this build wrote it, so its nulls are recorded and there is nothing for the fence
   // to protect. Asked after it, a transcription row stranded on PROCESSING without a stamp would be
   // called `lost` — the one answer it must never get, since no customer is waiting on a reply.
-  if (bears === "transcription") {
-    // NOTE: AN OBSERVER'S ROUTE THAT OWED NO MEMORY (issue #620). The transcription is the append,
-    // and a watcher on an inbox with no responder of ours, or a switched-off one, makes none: its
-    // claim recorded as much. Replayed, the delivery path reaches the same answer and closes, having
-    // spent a recovery job and a warning about a gap that is not there.
-    return observerOwedNoMemory(row) ? "no-message" : "owed-transcription";
-  }
+  if (bears === "transcription") return "owed-transcription";
   // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
   // the literal way, every message the previous release lost would be closed as carrying none — the
   // exact silence this sweep exists to remove, on the rows a deploy is most likely to strand, since

@@ -2663,10 +2663,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   // ISSUE #620. The same two strands on an observer whose claim recorded that its route remembers
-  // nothing, which is an observer on an inbox with no responder of ours. It owed no takeover and no
-  // append, so neither the gap warning nor a replay has anything to be about: both rows close as
-  // carrying nothing, and no recovery of either kind is armed.
-  test("an observer's strands on a route that remembers nothing are closed, not reported or replayed", async () => {
+  // nothing, which is an observer on an inbox with no responder of ours. The colleague's reply owed
+  // no takeover and no append, so it closes with no gap warning and nothing armed. The transcription
+  // is still replayed (PR review, round 2): its `false` cannot be told from a failed arm a previous
+  // build wrote down before throwing, and the replay is what settles the harmless kind.
+  test("an observer's reply on a route that remembers nothing is closed, and its transcription is still replayed", async () => {
     const replyConv = 8910;
     const transcriptionConv = 8911;
     await seedConversation(replyConv);
@@ -2690,26 +2691,30 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
 
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
-    expect(counts.closed).toBe(2);
+    expect(counts.closed).toBe(1);
     expect(counts.observerStrands).toBe(0);
-    expect(counts.owedTranscription).toBe(0);
+    expect(counts.owedTranscription).toBe(1);
     expect(counts.lost).toBe(0);
     expect((await statusOf(replyRow)).status).toBe("PROCESSED");
-    expect((await statusOf(transcriptionRow)).status).toBe("PROCESSED");
+    expect((await statusOf(transcriptionRow)).status).toBe("DEAD");
     expect(
       await suDb.schedulerJob.count({
         where: {
           tenantId,
-          kind: { in: ["DELIVERY_RECOVERY", "TAKEOVER_RECOVERY"] },
-          dedupeKey: {
-            in: [
-              deliveryRecoveryDedupeKey(transcriptionRow),
-              takeoverRecoveryDedupeKey(replyRow),
-            ],
-          },
+          kind: "TAKEOVER_RECOVERY",
+          dedupeKey: takeoverRecoveryDedupeKey(replyRow),
         },
       }),
     ).toBe(0);
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(transcriptionRow),
+        },
+      }),
+    ).toBe(1);
 
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [replyRow, transcriptionRow] } },

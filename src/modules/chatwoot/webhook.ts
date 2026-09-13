@@ -6310,14 +6310,7 @@ export async function processChatwootDelivery(
     // the same reason its twin above is: this delivery's own work is done, and failing it here to
     // report a stale sibling fact would trade a message the observer can still save for one nobody
     // does.
-    // NOT ON AN OBSERVER'S ROW (issue #620): nothing reads that row as a sibling, and the stranded
-    // sweep reads its `false` as "this route owed no memory". A late transcription whose arm failed
-    // throws below and leaves the row for that sweep, still owing the append, so writing the promise
-    // down there would close the replay as benign.
-    if (
-      (ingested === "failed" || ingested === "no-thread") &&
-      observer === null
-    ) {
+    if (ingested === "failed" || ingested === "no-thread") {
       await runScopedOn(base, sysCtx(params.tenantId), (db) =>
         db.chatwootWebhookDelivery.updateMany({
           where: { id: params.deliveryRowId, routeRemembers: true },

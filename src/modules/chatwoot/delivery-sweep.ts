@@ -784,9 +784,14 @@ async function record(
       // WHAT THIS LINE MAY CLAIM, and it is less than the first draft of it claimed (issue #476
       // review, round 30). Beside a responder of ours, that responder's own delivery of the same
       // reply folds it into the shared memory and owes the takeover, so the row lost nothing. With
-      // none, the route's own claim records that it remembers nothing (issue #620) and the row is
-      // closed benign before it gets here; one that still arrives was claimed by an earlier build,
-      // which promised the append, and nothing will replay it.
+      // none, the observer's memory is the only one the inbox has and this reply is simply not in
+      // it, and nothing will replay it.
+      //
+      // ...UNLESS THE ROUTE REMEMBERS NOTHING (issue #620): an observer on an inbox with no responder
+      // of ours folds nothing in, and its claim records `route_remembers = false`. That value is
+      // also what a failed arm writes down before the row settles, so it cannot close the row
+      // benign (PR review, round 3); what it can do is keep this line from asserting a loss the
+      // claim says was never owed. The line names both readings and stays a `warn`.
       //
       // The question is about RECEIPT TIME and this runs half an hour later, so the binding read
       // here is evidence and not an answer: an inbox bound in between reads as covered when it was
@@ -797,10 +802,13 @@ async function record(
       // page an operator for the ordinary shared inbox; an `info` would file the real gap where
       // nobody looks.
       logger.warn(
-        "chatwoot delivery sweep: %s stranded on an observer's route carrying a colleague's reply (%s) on conversation %s; the watcher never folded it into its memory and nothing can replay it. The inbox %s NOW, which is not what it had when the event arrived",
+        "chatwoot delivery sweep: %s stranded on an observer's route carrying a colleague's reply (%s) on conversation %s; %s. The inbox %s NOW, which is not what it had when the event arrived",
         label,
         String(row.humanReplyShape),
         String(row.conversationId),
+        row.routeRemembers === false
+          ? "its claim recorded that the route remembers nothing (no responder of ours on the inbox, or the watcher switched off), so nothing was owed unless an arm failed after the claim"
+          : "the watcher never folded it into its memory and nothing can replay it",
         mirror === null
           ? "could not be read"
           : mirror.responderHasRoute === true

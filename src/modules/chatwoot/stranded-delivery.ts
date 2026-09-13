@@ -61,18 +61,6 @@ export interface StrandedDeliveryRow {
   // `humanReplyShape` already decided the row owed a side effect, to say WHICH side effect that is —
   // never as evidence about a customer message.
   routeObserved: boolean | null;
-  // WHETHER THAT ROUTE FOLDS INTO MEMORY what it does not answer, as its own claim stated it (issue
-  // #540, window 3). Read only on an OBSERVER's row carrying a colleague's reply, to close as benign
-  // a reply that route owed nothing to: since issue #620 an observer on an inbox with no responder
-  // of ours remembers nothing, and a switched-off one never did. A reply's failed arm writes `false`
-  // too, but that path settles the row itself and reports the loss, so a stranded reply row reading
-  // `false` is the claim's statement. Null is a row the claim never reached, which states nothing.
-  //
-  // NOT read on a transcription row (PR review, round 2): there a failed arm writes `false` and then
-  // THROWS, leaving the row for this sweep still owing the append, and a row a previous build
-  // stranded that way is indistinguishable from one that owed nothing. The replay settles the
-  // second kind on its own, by reporting that the route has no reader.
-  routeRemembers: boolean | null;
 }
 
 export interface StrandedDeliveryPolicy {
@@ -239,10 +227,6 @@ export function classifyStrandedDelivery(
     // the claim is the statement, and a row it never reached carries a null that records nothing.
     // True of every build, not only this one — a PENDING row is unclaimed whoever wrote it.
     if (row.claimedAt === null) return "role-unstated";
-    // NOTE: THE WATCHER'S REPLY WITH NO MEMORY TO KEEP IT (issue #620). What an observer's row owed
-    // was the ingestion, and a claim that recorded none owed nothing: no takeover, no append, and so
-    // no gap line saying the observer's memory lost a reply it was never going to hold.
-    if (observerOwedNoMemory(row)) return "no-message";
     // The ROLE decides which of the two, and it is read only here: a takeover is the responder's to
     // owe, and arming one for an observer's row spends a job that answers `not-owed` and reports
     // nothing (issue #476 review, round 27). Null HERE is a row the claim reached without stating a
@@ -251,13 +235,6 @@ export function classifyStrandedDelivery(
     return row.routeObserved === true ? "observer-strand" : "owed-takeover";
   }
   return "lost";
-}
-
-// An observer's row whose claim stated that the route folds nothing into memory (issue #620). Both
-// halves are the claim's own statement, so an unclaimed row, whose nulls record nothing, never
-// qualifies, and neither does a responder's row, which this reading is not about.
-function observerOwedNoMemory(row: StrandedDeliveryRow): boolean {
-  return row.routeObserved === true && row.routeRemembers === false;
 }
 
 // WHETHER THIS ROW COULD HAVE OWED A CUSTOMER AN ANSWER, from the two columns every build writes in

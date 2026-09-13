@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -2663,11 +2664,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   // ISSUE #620. The same two strands on an observer whose claim recorded that its route remembers
-  // nothing, which is an observer on an inbox with no responder of ours. The colleague's reply owed
-  // no takeover and no append, so it closes with no gap warning and nothing armed. The transcription
-  // is still replayed (PR review, round 2): its `false` cannot be told from a failed arm a previous
-  // build wrote down before throwing, and the replay is what settles the harmless kind.
-  test("an observer's reply on a route that remembers nothing is closed, and its transcription is still replayed", async () => {
+  // nothing, which is an observer on an inbox with no responder of ours. Neither is closed as benign
+  // on that value (PR review, rounds 2 and 3): a failed arm writes the same `false`, before the row
+  // settles, so a strand cannot tell "owed nothing" from "failed". The reply keeps its verdict and
+  // its line, which now says what the claim recorded instead of asserting a loss; the transcription
+  // is still replayed, and the replay is what settles the harmless kind.
+  test("an observer's strands on a route that remembers nothing are still reported and replayed, and the reply's line says what the claim recorded", async () => {
     const replyConv = 8910;
     const transcriptionConv = 8911;
     await seedConversation(replyConv);
@@ -2690,13 +2692,29 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       routeRemembers: false,
     });
 
-    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
-    expect(counts.closed).toBe(1);
-    expect(counts.observerStrands).toBe(0);
+    const warn = spyOn(logger, "warn");
+    let counts: Awaited<ReturnType<typeof sweepStrandedDeliveries>>;
+    let said: string[];
+    try {
+      counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+      said = warn.mock.calls.map((c) => JSON.stringify(c));
+    } finally {
+      warn.mockRestore();
+    }
+    expect(counts.observerStrands).toBe(1);
     expect(counts.owedTranscription).toBe(1);
+    expect(counts.closed).toBe(0);
     expect(counts.lost).toBe(0);
     expect((await statusOf(replyRow)).status).toBe("PROCESSED");
     expect((await statusOf(transcriptionRow)).status).toBe("DEAD");
+    const replyLines = said.filter(
+      (c) =>
+        c.includes("stranded on an observer's route") &&
+        c.includes(`"${replyConv}"`),
+    );
+    expect(replyLines).toHaveLength(1);
+    expect(replyLines[0]).toContain("the route remembers nothing");
+    expect(replyLines[0]).not.toContain("never folded it into its memory");
     expect(
       await suDb.schedulerJob.count({
         where: {

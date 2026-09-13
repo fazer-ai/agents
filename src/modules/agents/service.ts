@@ -820,7 +820,7 @@ function applyImportFixes(
   // elements first would renumber the list under the paths still to be applied.
   const lists = new Map<
     string,
-    { at: PropertyKey[]; drop: Set<number>; kept: number[] }
+    { at: PropertyKey[]; drop: Set<number>; kept: number[]; arr: unknown[] }
   >();
   for (const fix of fixes) {
     if (fix.kind !== "remove") continue;
@@ -829,7 +829,15 @@ function applyImportFixes(
     const parent = valueAt(trial, at);
     if (Array.isArray(parent) && last !== undefined) {
       const key = at.map(String).join(".");
-      const list = lists.get(key) ?? { at, drop: new Set<number>(), kept: [] };
+      const list = lists.get(key) ?? {
+        at,
+        drop: new Set<number>(),
+        kept: [],
+        // The ARRAY ITSELF, kept from here on. A nested list is addressed through its element's index,
+        // so once an outer element is out the path that found it names something else, or nothing
+        // (review round 3: resolving it again threw and took the import and its preview down).
+        arr: parent,
+      };
       list.drop.add(Number(last));
       lists.set(key, list);
       taken.push([block, ...fix.path.map(String)].join("."));
@@ -841,7 +849,7 @@ function applyImportFixes(
   // Deepest list first, for the same reason: an inner list is addressed through its element's index.
   const byDepth = [...lists.values()].sort((a, b) => b.at.length - a.at.length);
   for (const list of byDepth) {
-    const arr = valueAt(trial, list.at) as unknown[];
+    const arr = list.arr;
     const kept: unknown[] = [];
     arr.forEach((element, i) => {
       if (list.drop.has(i)) return;
@@ -856,8 +864,14 @@ function applyImportFixes(
   // own index in the bundle, which is why the kept indices are carried here.
   for (const list of byDepth) {
     if (sameReading(trial)) break;
-    const arr = valueAt(trial, list.at) as unknown[];
+    const arr = list.arr;
     const floor = Math.min(...list.drop);
+    // Tried on THIS list and undone when it does not settle it: the difference may belong to another
+    // list entirely, and popping here would take an element no reader ignores (a valid label off a
+    // step, measured while fixing review round 3).
+    const before = [...arr];
+    const keptBefore = [...list.kept];
+    const takenBefore = taken.length;
     let pops = 0;
     while (
       pops < IMPORT_POP_LIMIT &&
@@ -871,6 +885,11 @@ function applyImportFixes(
       arr.pop();
       pops += 1;
     }
+    if (sameReading(trial)) continue;
+    arr.length = 0;
+    arr.push(...before);
+    list.kept = keptBefore;
+    taken.length = takenBefore;
   }
   return sameReading(trial) ? { next: trial, taken } : null;
 }

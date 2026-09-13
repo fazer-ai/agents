@@ -228,6 +228,37 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     expect(stored?.followUp).toEqual({ enabled: true, steps });
   });
 
+  // A nested list is addressed through its element's index, so once an outer element is out that path
+  // names something else. Resolving it a second time threw and took the import down (review round 3).
+  test("a bad label inside a step survives an outer element leaving the list before it", async () => {
+    const step = (i: number) => ({
+      delayValue: i + 1,
+      delayUnit: "minutes",
+      instructions: `s${i}`,
+    });
+    const withLabels = { ...step(1), assignLabels: [1, "vip"] };
+    const { stored, dropped } = await importWith({
+      followUp: {
+        enabled: true,
+        steps: [
+          "x",
+          withLabels,
+          ...Array.from({ length: 8 }, (_, i) => step(i + 2)),
+          step(10),
+        ],
+      },
+    });
+    expect(dropped).toEqual([
+      "followUp.steps.0",
+      "followUp.steps.1.assignLabels.0",
+      "followUp.steps.10",
+    ]);
+    const kept = stored?.followUp as
+      | { steps?: { assignLabels?: string[] }[] }
+      | undefined;
+    expect(kept?.steps?.[0]?.assignLabels).toEqual(["vip"]);
+  });
+
   test("half a model fallback is no fallback: the pair goes, the rest of the block stays", async () => {
     const half = await importWith({
       modelFallback: { provider: "openai", baseURL: "https://llm.example" },

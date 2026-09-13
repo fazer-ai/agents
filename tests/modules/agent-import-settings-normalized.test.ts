@@ -159,6 +159,11 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     expect(half.stored?.modelFallback).toEqual({
       baseURL: "https://llm.example",
     });
+
+    // The other half: a model with no provider names no destination either.
+    const modelOnly = await importWith({ modelFallback: { model: "gpt-4o" } });
+    expect(modelOnly.dropped).toEqual(["modelFallback"]);
+    expect(modelOnly.stored?.modelFallback).toEqual({});
   });
 
   // Whole, never one field of it: taking out only the `equals` of the wrong type would turn "the
@@ -183,6 +188,15 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     const shape = await importWith({ toolPreconditions: "x" });
     expect(shape.dropped).toEqual(["toolPreconditions"]);
     expect(shape.stored?.toolPreconditions).toBeUndefined();
+
+    // A `null` rule is a removal create accepts and the reader ignores: nothing to take out or warn about.
+    const tombstone = await importWith({
+      toolPreconditions: { handoff_to_human: null },
+    });
+    expect(tombstone.dropped).toEqual([]);
+    expect(tombstone.stored?.toolPreconditions).toEqual({
+      handoff_to_human: null,
+    });
   });
 
   test("observability.fullDetail is derived: it is not stored, and nothing configured was lost to warn about", async () => {
@@ -209,6 +223,8 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
         steps: [{ delayValue: 3, delayUnit: "days" }],
       },
       memory: {},
+      // No fallback named at all is not half of one.
+      modelFallback: {},
       somethingNew: { a: 1 },
     };
     const { stored, dropped } = await importWith(structuredClone(settings));

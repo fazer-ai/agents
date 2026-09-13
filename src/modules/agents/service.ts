@@ -790,20 +790,14 @@ export function dropUnusableImportedSettingsInPlace(
   // would otherwise take one field out of a rule: an `equals` of the wrong type removed alone turns "the
   // attribute must be X", which the runtime ignores, into "the attribute must exist", a guard nobody
   // wrote.
-  const guards = bag.toolPreconditions;
-  if (guards !== undefined && guards !== null) {
-    if (typeof guards !== "object" || Array.isArray(guards)) {
-      delete bag.toolPreconditions;
-      dropped.push("toolPreconditions");
-    } else {
-      for (const [name, raw] of Object.entries(
-        guards as Record<string, unknown>,
-      )) {
-        if (raw === null || parseToolPrecondition(raw) !== null) continue;
-        delete (guards as Record<string, unknown>)[name];
-        dropped.push(`toolPreconditions.${name}`);
-      }
-    }
+  // A bag that is not an object at all is the closed values' business below (the block's own schema
+  // refuses it at its root); only the rules inside one are judged here. A `null` rule is a removal
+  // create accepts and the reader ignores, so it stays.
+  const guards = plainObject(bag.toolPreconditions);
+  for (const [name, raw] of Object.entries(guards ?? {})) {
+    if (raw === null || parseToolPrecondition(raw) !== null) continue;
+    delete (guards as Record<string, unknown>)[name];
+    dropped.push(`toolPreconditions.${name}`);
   }
   // Last issue first: zod reports a list in index order, so removing from the end never moves the
   // path of an element still to be removed.

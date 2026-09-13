@@ -850,6 +850,18 @@ export async function runObserve(
     threadId,
     base,
   };
+  // WHAT THE OBSERVATION WROTE, so the line can say it (issue #635). A watching agent's entire output
+  // is its labels, and this line said `acted: true` and stopped: which label it applied, and which
+  // one that replaced, lived only in Chatwoot, which keeps no history of a label write. Collected
+  // from the tool itself, already filtered to the operator's own vocabulary (label-writes.ts),
+  // because the `tool` line beside this one carries the ARGUMENT'S SHAPE unless the agent has
+  // `logToolValues` on — and that switch would log every other tool's arguments too.
+  const labelWrites: LabelWrite[] = [];
+  // Declared HERE, above `line`, because every exit after a write has to carry it: a label commits
+  // and the model call that follows can still fail, and a fence can still refuse the turn. Neither is
+  // retried (at-most-once for the effects), so a line without the write is the write lost for good
+  // (review round 1). Empty on every exit that runs before a tool could write, where the key is
+  // simply absent.
   const line = (
     status: "ok" | "error" | "skipped",
     detail: Record<string, unknown>,
@@ -861,7 +873,11 @@ export async function runObserve(
       status,
       provider: cfg.mc.provider,
       model: cfg.mc.model,
-      detail: { reason, ...detail },
+      detail: {
+        reason,
+        ...detail,
+        ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
+      },
     });
 
   // A RESOLVE VERDICT IS ABOUT A CONVERSATION THAT IS RESOLVED, and that is asked BEFORE anything is
@@ -1144,13 +1160,6 @@ export async function runObserve(
     return true;
   };
 
-  // WHAT THE OBSERVATION WROTE, so the line can say it (issue #635). A watching agent's entire output
-  // is its labels, and this line said `acted: true` and stopped: which label it applied, and which
-  // one that replaced, lived only in Chatwoot, which keeps no history of a label write. Collected
-  // from the tool itself, already filtered to the operator's own vocabulary (label-writes.ts),
-  // because the `tool` line beside this one carries the ARGUMENT'S SHAPE unless the agent has
-  // `logToolValues` on — and that switch would log every other tool's arguments too.
-  const labelWrites: LabelWrite[] = [];
   // ...AND IT COVERS DISCOVERY, which is the one call that can hang forever: `buildToolset` contacts
   // every MCP server the agent has, and an SSE server that opens the stream and never emits its
   // endpoint waits with no timeout of its own.
@@ -1480,6 +1489,7 @@ export async function runObserve(
         failed: "model_call",
         toolCalls: toolsRan - noEffect,
         ...(committed ? { retried: false } : {}),
+        ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
       },
       errorMessage: msg,
     });

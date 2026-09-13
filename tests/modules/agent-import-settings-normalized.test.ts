@@ -128,6 +128,55 @@ describe("the reader comparisons a bag can cost", () => {
     ]);
   });
 
+  // AND THE BUDGET IS THE BAG'S, not the block's: a list the cut cannot reach is not only slow, it
+  // spends comparisons the blocks after it needed. Two invalid steps leave this block unsettleable at
+  // any price, and without the length gate the attempts walk eight lists of a hundred labels for
+  // nothing, after which everything below is judged with nothing left: the nine values here come out
+  // with the gate and none without it (measured while reading the mutation battery).
+  test("a list too long for the tail cut does not spend the comparisons another block needs", () => {
+    const labels = Array.from({ length: 100 }, (_, i) => `l${i}`);
+    const steps: unknown[] = ["x", "x"];
+    for (let i = 0; i < 8; i++) {
+      steps.push({
+        delayValue: 1,
+        delayUnit: "minutes",
+        assignLabels: [1, ...labels],
+      });
+    }
+    for (let i = 0; i < 191; i++) {
+      steps.push({ delayValue: 1, delayUnit: "minutes" });
+    }
+    const bag = {
+      followUp: { enabled: true, steps },
+      guardrails: { competitors: [1] },
+    };
+    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    expect(dropped.paths).toContain("followUp.steps.2.assignLabels.0");
+    expect(dropped.paths).toContain("guardrails.competitors.0");
+    expect(dropped.count).toBe(9);
+    // The invalid steps themselves stay: taking one out moves the reader's ten-step window, which is
+    // the difference no cut of this list can undo.
+    expect(steps.length).toBe(201);
+  });
+
+  // The one-by-one path is the quadratic one, and its ceiling is the same promise: past it the block's
+  // values stay where they are, and the bag's remaining comparisons go to the blocks that can use them.
+  // Without the ceiling this block takes two hundred and fifty-five of its own values out and leaves
+  // the one below it untouched.
+  test("a block past the one-by-one ceiling does not spend the comparisons another block needs", () => {
+    const steps: unknown[] = [];
+    for (let i = 0; i < 500; i++) {
+      steps.push(i < 300 ? "x" : { delayValue: 1, delayUnit: "minutes" });
+    }
+    const bag = {
+      followUp: { enabled: true, steps },
+      guardrails: { competitors: [1] },
+    };
+    const dropped = dropUnusableImportedSettingsInPlace(bag);
+    expect(dropped.paths).toEqual(["guardrails.competitors.0"]);
+    expect(steps.length).toBe(500);
+  });
+
   // The reader this pass compares with is the one every TURN runs, and its label de-dupe scanned what it
   // had kept for each entry: a hundred thousand labels cost about ten seconds per read, so one
   // comparison overran the import's transaction however few comparisons were made (review round 6).
@@ -171,7 +220,8 @@ describe("the reader comparisons a bag can cost", () => {
     };
     const started = Date.now();
     dropUnusableImportedSettingsInPlace(bag);
-    expect(Date.now() - started).toBeLessThan(3_000);
+    // Eight times what the pass costs with the allowance (118ms measured here, 1.7s without it).
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 
   // A bundle's list is caller-sized, and the paths taken out are answered bounded and counted: spreading

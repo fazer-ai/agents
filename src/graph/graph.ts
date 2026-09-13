@@ -2,7 +2,6 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import {
   AIMessage,
   type BaseMessage,
-  HumanMessage,
   type MessageContent,
   SystemMessage,
 } from "@langchain/core/messages";
@@ -355,6 +354,19 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
 // it round-trips its own reasoning inside a single call.
 const REPLAYS_OWN_BLOCKS: ReadonlySet<string> = new Set(["anthropic"]);
 
+// The providers that take a system message AFTER the history, and keep it where it was put. Read by
+// the tool budget's wrap-up instruction (issue #628), which is the one system message the node sends
+// anywhere but first.
+//
+// Membership is earned the same way as above, by what the vendor accepts and not by what it is
+// likely to accept. `openai` is in because both of its adapter paths (Completions and Responses) keep
+// the message in place and send it as `developer` on a GPT-5 model, the API accepts that role at the
+// end, and the round still read the cache (gpt-5.6-luna through OpenRouter pinned to OpenAI, 8 of
+// 8). And because the provider has no endpoint of its own to point elsewhere: `openai` ignores
+// `baseURL`. The Google and Anthropic adapters throw on it before a request is made; `openai-compatible` and `openrouter` reach servers whose
+// rules this cannot know, and absence is the safe answer — the instruction stays in the prompt.
+const LATE_SYSTEM_MESSAGE: ReadonlySet<string> = new Set(["openai"]);
+
 function isEmptyAssistantTurn(
   m: BaseMessage,
   destinations: ReadonlySet<string>,
@@ -437,6 +449,10 @@ export function buildAgentGraph({
       (p): p is string => typeof p === "string" && p.length > 0,
     ),
   );
+  // EVERY destination, for the same reason as above: the fallback is handed the same messages.
+  const lateSystemAccepted =
+    destinations.size > 0 &&
+    [...destinations].every((d) => LATE_SYSTEM_MESSAGE.has(d));
 
   // ONCE THE FALLBACK HAS THE TURN, IT KEEPS IT.
   //
@@ -477,7 +493,8 @@ export function buildAgentGraph({
     // Exactly one system message, and it must be first: prepend the configured prompt and drop any
     // system message that leaked into the history (e.g. a proactive nudge persisted as a
     // SystemMessage by an older build). Providers like Google reject a second one outright with
-    // "System messages are only permitted as the first passed message".
+    // "System messages are only permitted as the first passed message". The one exception is sent,
+    // never persisted, and only where it is accepted: see `LATE_SYSTEM_MESSAGE`.
     const full = state.messages.filter(
       (m) => m.getType() !== "system" && !isEmptyAssistantTurn(m, destinations),
     );
@@ -528,28 +545,30 @@ export function buildAgentGraph({
       !staySilent &&
       toolCalls >= Math.max(1, max - 2);
 
-    // THE WRAP-UP GOES AFTER THE HISTORY, NEVER INTO THE SYSTEM PROMPT (issue #628).
+    // WHERE THE WRAP-UP TRAVELS (issue #628): after the history where every destination takes a
+    // system message there, inside the system prompt everywhere else, and in a human message never.
     //
-    // Providers cache a request by its exact prefix, and the system prompt is the first thing in
-    // every request. A line appended to it changes the prefix at the first message, so the round the
-    // instruction lands on cannot read the cache the round before it wrote and pays for the whole
-    // prompt again — on GPT-5.6 that is a cache WRITE, billed at 1.25x input, instead of a read at
-    // 0.1x. Measured on one install: calls carrying the instruction read the cache 8 times in 311,
-    // calls without it 399 in 1003, and an observer at `maxToolCalls: 3` gets it on every second
-    // call. After the history, everything before it is byte for byte what the last round sent.
+    // After the history is what the cache wants. Providers cache a request by its exact prefix and
+    // the system prompt opens every request, so a line appended to it changes the prefix at the first
+    // message: the round it lands on cannot read what the round before wrote, and on GPT-5.6 it pays
+    // a cache WRITE (1.25x input) on the whole prompt where a read (0.1x) was available. Measured on
+    // one install: calls carrying the instruction read the cache 8 times in 311, calls without it
+    // 399 in 1003.
     //
-    // A HUMAN message, because the node sends exactly one system message and it must be first
-    // (Google and Anthropic reject a second one). SENT, never persisted: it is not in the channel, so
-    // the count above never reads it as the customer's turn. And a tool result that ends in a human
-    // message is not a new shape for any provider: it is what every turn after a silent one sends,
-    // once `isEmptyAssistantTurn` drops the empty assistant message between them.
-    const wrapUp = softLimit
-      ? [
-          new HumanMessage(
-            `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`,
-          ),
-        ]
-      : [];
+    // A SYSTEM message is what keeps it an instruction. The role is the one thing a customer cannot
+    // forge: anyone can type "[Sistema] ..." into a chat, and it arrives in a human message. Sent in
+    // a human message too, the real instruction would teach the model that such a line is to be
+    // obeyed, and the customer's copy would be indistinguishable from it.
+    //
+    // So the late system message only goes where it is accepted, and the prompt keeps it everywhere
+    // else — the cache miss those providers pay today, and nothing new.
+    const wrapUpText = `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
+    const prompt =
+      softLimit && !lateSystemAccepted
+        ? `${systemPrompt}\n\n${wrapUpText}`
+        : systemPrompt;
+    const wrapUp =
+      softLimit && lateSystemAccepted ? [new SystemMessage(wrapUpText)] : [];
     if (hardLimit) {
       reportToolLimit({ maxToolCalls: max, toolCalls });
     }
@@ -584,7 +603,7 @@ export function buildAgentGraph({
     const sent = narration.length
       ? history.map((m) => narration.find((n) => n.id === m.id) ?? m)
       : history;
-    const messages = [new SystemMessage(systemPrompt), ...sent, ...wrapUp];
+    const messages = [new SystemMessage(prompt), ...sent, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
     const second =

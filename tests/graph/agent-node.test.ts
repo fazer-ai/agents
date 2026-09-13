@@ -1550,14 +1550,30 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(model.boundRounds.map(carriesWrapUp)).toEqual([false, true, true]);
   });
 
-  // Issue #628. A provider caches a request by its exact prefix, so the instruction must not touch
-  // anything a previous round already sent: not the system prompt, and not the history. It rides as
-  // the LAST message, is gone from the round after it, and never reaches the thread.
-  test("the wrap-up instruction is the last message, and everything before it is what the previous round sent", async () => {
+  // Issue #628. The wrap-up is an instruction, so it travels in a role a customer cannot type into:
+  // "[Sistema] ..." in a chat message arrives as a human message, and a real instruction sent the
+  // same way would be indistinguishable from it. Checked on every path below, whatever else differs.
+  const humanCarriesWrapUp = (round: BaseMessage[]) =>
+    carriesWrapUp(round.filter((m) => m.getType() === "human"));
+
+  const runToTheCap = async (
+    threadId: string,
+    primary: string,
+    fallbackProvider?: string,
+  ) => {
     const model = new ToolLoopModel();
     const graph = buildAgentGraph({
-      primary: { provider: "openai", model: "test-model" },
+      primary: { provider: primary, model: "test-model" },
       model: model as unknown as BaseChatModel,
+      ...(fallbackProvider
+        ? {
+            fallback: {
+              model: new ToolLoopModel() as unknown as BaseChatModel,
+              provider: fallbackProvider,
+              modelId: "fallback-model",
+            },
+          }
+        : {}),
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
       tools: [noopTool],
@@ -1565,22 +1581,33 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     });
     const result = await graph.invoke(
       { messages: [new HumanMessage("faça muitas coisas")] },
-      { configurable: { thread_id: "limit-prefix" } },
+      { configurable: { thread_id: threadId } },
     );
-    const rounds = model.boundRounds;
+    return { rounds: model.boundRounds, result };
+  };
+
+  // Where every destination takes a system message after the history, the instruction goes there,
+  // because a provider caches a request by its exact prefix: nothing a previous round sent may
+  // change, not the system prompt and not the history.
+  test("on openai the wrap-up is a system message after the history, and everything before it is what the previous round sent", async () => {
+    const { rounds, result } = await runToTheCap("limit-prefix", "openai");
     expect(rounds).toHaveLength(3);
     const shape = (m: BaseMessage) =>
       `${m.getType()}:${contentToText(m.content)}`;
     for (const [i, round] of rounds.entries()) {
       // The system prompt is the same bytes on every round, instruction or not.
-      expect(round.filter((m) => m.getType() === "system")).toHaveLength(1);
       expect(round[0]?.getType()).toBe("system");
       expect(round[0]?.content).toBe("PROMPT");
-      // Where the instruction is sent, it is the last message and a human one.
+      expect(humanCarriesWrapUp(round)).toBe(false);
+      const systems = round.filter((m) => m.getType() === "system");
       if (carriesWrapUp(round)) {
-        expect(round.at(-1)?.getType()).toBe("human");
+        // The last message, a system one, and the only place the instruction is.
+        expect(round.at(-1)?.getType()).toBe("system");
         expect(contentToText(round.at(-1)?.content ?? "")).toContain(WRAP_UP);
         expect(carriesWrapUp(round.slice(0, -1))).toBe(false);
+        expect(systems).toHaveLength(2);
+      } else {
+        expect(systems).toHaveLength(1);
       }
       // Everything this round sent before its instruction opens the next round, message for message.
       const next = rounds[i + 1];
@@ -1591,6 +1618,38 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     // Sent, not persisted: the thread the next turn loads carries no instruction.
     expect(carriesWrapUp(result.messages)).toBe(false);
   });
+
+  // Anywhere else the late system message is refused before a request is made (Google, Anthropic) or
+  // reaches a server whose rules are unknown, so the instruction stays inside the system prompt —
+  // including when only the FALLBACK is such a provider, because it is handed the same messages.
+  test.each([
+    { label: "an anthropic agent", primary: "anthropic" },
+    { label: "a google agent", primary: "google" },
+    { label: "an openrouter agent", primary: "openrouter" },
+    {
+      label: "an openai agent whose fallback is google",
+      primary: "openai",
+      fallback: "google",
+    },
+  ])(
+    "on $label the wrap-up stays inside the one system prompt",
+    async ({ primary, fallback }) => {
+      const { rounds, result } = await runToTheCap(
+        `limit-prompt-${primary}-${fallback ?? "none"}`,
+        primary,
+        fallback,
+      );
+      expect(rounds.map(carriesWrapUp)).toEqual([false, true, true]);
+      for (const round of rounds) {
+        expect(round.filter((m) => m.getType() === "system")).toHaveLength(1);
+        expect(round[0]?.getType()).toBe("system");
+        expect(round.at(-1)?.getType()).not.toBe("system");
+        expect(humanCarriesWrapUp(round)).toBe(false);
+      }
+      expect(contentToText(rounds[1]?.[0]?.content ?? "")).toContain(WRAP_UP);
+      expect(carriesWrapUp(result.messages)).toBe(false);
+    },
+  );
 });
 
 // The ceiling is wired through the node, so what it is worth is measured where it matters: in the

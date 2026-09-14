@@ -404,6 +404,27 @@ describe("the notes the conversation already carries", () => {
       ]);
     });
 
+    // ROUND 18: `escopo="janela-lida"` says where the block looked, not that everything it found is
+    // in it. A conversation with more changes than the cap in one window is the oscillation this
+    // block exists for, and showing the newest eight as if they were all of them is the same false
+    // completeness as dropping them silently.
+    test("what the cap removes is counted, not dropped quietly", () => {
+      const history = labelHistoryFromRows(
+        Array.from({ length: 11 }, (_, i) =>
+          row({
+            id: i + 1,
+            messageType: "activity",
+            content: `Classificador SAC adicionou ${i % 2 ? "cancelamento" : "compra-de-ingresso"}`,
+          }),
+        ),
+        vocab,
+        undefined,
+        8,
+      );
+      expect(history.lines).toHaveLength(8);
+      expect(history.omitted).toBe(3);
+    });
+
     test("drops the narration that is not about a label", () => {
       expect(
         labelHistoryFromRows(

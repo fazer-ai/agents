@@ -688,7 +688,7 @@ export function labelHistoryFromRows(
   // guard is checked FIRST and stays silent: its promise is that the string does not reach the
   // model, and a count that only appears on conversations carrying a guarded label reports it.
   let unread = 0;
-  const changes = rows
+  const recognised = rows
     .filter((m) => {
       if (m.messageType !== "activity" || m.private) return false;
       if (m.activityType !== null) return false;
@@ -707,7 +707,14 @@ export function labelHistoryFromRows(
       // And ONE reading whose titles this account actually has is what makes the line a change.
       return readings.some((ts) => ts.every((t) => known.has(t)));
     })
-    .sort((a, b) => a.id - b.id)
+    .sort((a, b) => a.id - b.id);
+  // THE CAP HIDES CHANGES TOO (round 18). `escopo="janela-lida"` says where the block looked, not
+  // that everything it found is in it, and a conversation with more than `limit` changes in one
+  // window is the oscillation this whole block exists for. Showing the newest eight as if they were
+  // all of them is the same false completeness a silent drop would be, so what the cap removes is
+  // counted like everything else nobody could show.
+  const capped = Math.max(0, recognised.length - limit);
+  const changes = recognised
     .slice(-limit)
     .map((m) =>
       stripFences(m.content)
@@ -721,7 +728,7 @@ export function labelHistoryFromRows(
   // which is worse than not knowing. So an over-long line is left out and counted, and the count is
   // what stops the block from reporting the window as quiet.
   const lines = changes.filter((t) => t.length <= LABEL_CHANGE_MAX_CHARS);
-  return { lines, omitted: changes.length - lines.length + unread };
+  return { lines, omitted: changes.length - lines.length + unread + capped };
 }
 
 // The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —

@@ -1104,6 +1104,15 @@ function pieces(template: string): Piece[] {
 // The walk enumerates OCCURRENCES OF THE LITERALS (there is always one between two placeholders),
 // so it costs the number of times the template's own words appear in the line, not the line's
 // length. A value is never empty: Chatwoot rendered something there.
+// WHAT THE CAP COSTS, AND WHY IT IS THE RIGHT COST (round 18). A value repeating one of the
+// template's own literals more than 32 times exhausts the budget before the walk reaches the last
+// boundary, which for a suffix template is the genuine one — so a crafted actor name carrying
+// " added " 32 times makes a real "… added vip" unreadable. That is a MISS, and a miss is the
+// direction this module fails in on purpose: the line is not shown, no decision is invented, and
+// the guard still holds because `namesGuardedTitle` scans the raw sentence independently of any
+// reading. Raising the number moves the crafted case rather than removing it, and removing the cap
+// makes the walk unbounded on a line somebody else writes. Reached only by a crafted value: no
+// Chatwoot-rendered sentence repeats its own literal.
 const SPLITS_MAX = 32;
 
 function readings(template: Piece[], line: string): string[] {

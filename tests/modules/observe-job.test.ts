@@ -2981,7 +2981,24 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // both a contradiction to reason from and the invitation the guard exists to withdraw (round 12).
   test("a guarded label is absent from the prompt, and survives the write", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
-    const client = stubClient([message(1, "quero cancelar")], [], log);
+    __resetChatwootVocabCache();
+    // ISSUE #642, ROUND 1: the third model-facing place is the label HISTORY, and it is the one
+    // that would name the guarded label in Chatwoot's own sentence. The vocabulary knows
+    // `agente-off`, so a line about it is recognisable — and has to drop out all the same.
+    const client = stubClientWithVocab(
+      [
+        message(1, "quero cancelar"),
+        message(2, "Fulano adicionou agente-off", "incoming", {
+          message_type: 2,
+        }),
+        message(3, "Fulano adicionou cancelamento", "incoming", {
+          message_type: 2,
+        }),
+      ],
+      [],
+      log,
+      ["cancelamento", "compra-de-ingresso", "agente-off"],
+    );
     (client as { getConversationLabels: unknown }).getConversationLabels =
       async () => ["agente-off", "compra-de-ingresso"];
     let prompt = "";
@@ -3042,8 +3059,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         },
       );
       expect(res).toEqual({ outcome: "done" });
-      // Neither the labels block in the prompt nor the tool's own description names it.
+      // Neither the labels block in the prompt, nor the history block, nor the tool's own
+      // description names it — while the change beside it is there, so the line dropped for being
+      // about the guarded label and not for the block being empty.
       expect(prompt).toContain("compra-de-ingresso");
+      expect(prompt).toContain("Fulano adicionou cancelamento");
       expect(prompt).not.toContain("agente-off");
       const labelsTool = seenTools.find((d) => d.includes("current_labels"));
       expect(labelsTool).toBeDefined();

@@ -560,6 +560,42 @@ export function observeTurnText(
   ].join("\n");
 }
 
+// A line longer than this is not the template with a handful of titles in it, and refusing to scan
+// it is also what keeps the pattern below off text nobody bounded.
+const ACTIVITY_SCAN_MAX_CHARS = 2_000;
+
+// THE RUN OF LABEL TITLES, as Chatwoot writes it: `labels.join(", ")`, interpolated into a localized
+// sentence. Two positions are accepted, and between them they cover every locale the fork ships that
+// does not bury the run mid-sentence: at the EDGE of the line (`"%{user_name} added %{labels}"`, and
+// its Portuguese, Spanish, French, German, Russian and twenty-odd siblings), or inside QUOTES
+// (Japanese writes `がラベル "%{labels}" を追加しました`).
+//
+// The alternative to anchoring is `content.includes(title)`, and that is not a test for a label
+// change at all: an account with a label titled like an agent turns every assignment line into
+// "history", a two-letter title matches inside an unrelated word, and each false positive evicts a
+// real change from the window's cap. Anchoring inverts the failure: a locale that puts the run in
+// the middle (Bengali, Korean, Persian, Nepali) recognises nothing and the block reports the window
+// as quiet, which is exactly what the tick showed before this block existed. A miss costs the model
+// evidence it never had; a false positive hands it a decision that was never made.
+//
+// The pattern is literal alternation with no nested quantifier — Chatwoot's separator is exactly
+// `", "` — so it cannot backtrack catastrophically on a line somebody wrote to make it.
+function labelRunPattern(known: readonly string[]): RegExp | null {
+  if (known.length === 0) return null;
+  // Longest first, so a title that contains another one wins the match instead of leaving a tail
+  // that fails the anchor.
+  const alt = known
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const run = `(?:${alt})(?:, (?:${alt}))*`;
+  return new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])${run}[.。！!]?$|^${run}(?![\\p{L}\\p{N}])|["“「]${run}["”」]`,
+    "u",
+  );
+}
+
 // WHAT WAS ALREADY DECIDED ON THIS CONVERSATION, in Chatwoot's own words (issue #642).
 //
 // A tick is stateless on purpose, and the frame says so: what the agent already did is in what is
@@ -571,29 +607,46 @@ export function observeTurnText(
 // conversations going A to B and back to A, and 42% of the conversations that changed ending in the
 // category they started in.
 //
-// VERBATIM, NEVER PARSED. The activity row carries no sender and no `content_attributes` (measured:
+// SHOWN VERBATIM. The activity row carries no sender and no `content_attributes` (measured:
 // `message_type=2`, `content_type=0`, `sender_id` null) — the only thing there is the sentence
-// Chatwoot localized ("Fulano adicionou cancelamento"). Anything we would extract would come from
-// grammar in the account's language; forwarded whole, the actor, the verb and the label survive in
-// every language, and a human's change reads as a human's.
+// Chatwoot localized ("Fulano adicionou cancelamento"). Rewriting it would mean composing grammar in
+// the account's language; forwarded whole, the actor, the verb and the label survive in every
+// language, and a human's change reads as a human's.
 //
-// SELECTED BY THE ACCOUNT'S OWN LABELS, so assignment, status and every other narration stays out.
-// A line that names no known label is not about a label.
+// SELECTED BY THE ONE THING THE TEMPLATE GUARANTEES, which is not the grammar around the labels but
+// the LABELS THEMSELVES: Chatwoot renders `"…labels…"` as the account's titles joined by `", "`
+// (`LabelActivityMessageHandler#create_label_change_activity`), and every locale interpolates that
+// same run into its own sentence. So the test is for the RUN, delimited, at the edge of the line or
+// in quotes — see `labelRunPattern` — and never for a title appearing loose in the text, which is
+// what an assignment line naming an agent called like a label would satisfy.
+//
+// THE GUARDED LABELS ARE SUBTRACTED FIRST, the way they are everywhere else the model can see
+// (`modelVisibleLabels`, `set_labels`). A line that changed one is then unrecognisable and drops out
+// whole, which is the right answer twice over: the guard's own list stays out of the prompt, and a
+// change nobody asked the model to make is not history it should reason from. The ceiling on that
+// list does NOT apply here — 40 is how many titles may be SHOWN, while this only has to RECOGNISE
+// one in a sentence, and a label past the fortieth still gets put on conversations.
 export function labelHistoryFromRows(
   rows: ChatwootMessageRow[],
   vocabulary: readonly string[] | null,
+  guarded: readonly string[] | undefined,
   limit: number,
 ): string[] {
   if (vocabulary === null) return [];
-  const known = vocabulary.map((l) => l.trim()).filter((l) => l.length > 0);
-  if (known.length === 0) return [];
+  const guard = new Set(guarded ?? []);
+  const known = vocabulary
+    .filter((l) => !guard.has(l))
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const pattern = labelRunPattern(known);
+  if (pattern === null) return [];
   return rows
     .filter(
       (m) =>
         m.messageType === "activity" &&
         !m.private &&
-        m.content.trim().length > 0 &&
-        known.some((l) => m.content.includes(l)),
+        m.content.length <= ACTIVITY_SCAN_MAX_CHARS &&
+        pattern.test(m.content.trim()),
     )
     .sort((a, b) => a.id - b.id)
     .slice(-limit)
@@ -1083,6 +1136,7 @@ export async function runObserve(
   const labelChanges = labelHistoryFromRows(
     rows,
     vocabLabels,
+    cfg.protectedLabels,
     LABEL_CHANGES_MAX,
   );
 

@@ -1603,9 +1603,18 @@ export async function runObserve(
                 transcript,
                 currentForPrompt,
                 notes,
-                // "(não foi possível ler)" only when NEITHER list was read: with one of them in
-                // hand the block's emptiness is a claim we can stand behind.
-                vocabLabels === null && current === null ? null : labelChanges,
+                // EMPTY IS A CLAIM, so it is only made when BOTH lists were read (round 8). Each
+                // one recognises changes the other cannot — the catalog knows a label removed
+                // during the window, which is gone from the conversation's set, and the
+                // conversation knows a title the model invented, which is in no catalog — so with
+                // one of them missing, "nothing changed here" is exactly the sentence a stateless
+                // observer would take as licence to decide again. Lines that WERE recognised are
+                // still shown: those are read, whatever else was not.
+                labelChanges.length > 0
+                  ? labelChanges
+                  : vocabLabels !== null && current !== null
+                    ? labelChanges
+                    : null,
               ),
             ),
           ],

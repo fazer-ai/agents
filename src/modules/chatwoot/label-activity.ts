@@ -1066,8 +1066,12 @@ function readings(template: Piece[], line: string): string[] {
   return out;
 }
 
-const LABEL_ACTIVITY_PIECES: readonly Piece[][] =
-  LABEL_ACTIVITY_TEMPLATES.map(pieces);
+// Trimmed for the same reason the refusal is: the line is, and a template carrying a space the line
+// no longer has matches nothing. None of the 74 does today; this keeps the two sides from drifting
+// apart the next time the fork is regenerated.
+const LABEL_ACTIVITY_PIECES: readonly Piece[][] = LABEL_ACTIVITY_TEMPLATES.map(
+  (t) => pieces(t.trim()),
+);
 
 // The refusal side only has to answer WHETHER some split matches, which a regex already does by
 // backtracking, so it stays one anchored pattern per template.
@@ -1080,10 +1084,17 @@ const LABEL_ACTIVITY_PIECES: readonly Piece[][] =
 // decision the model never made. A WhatsApp group name reaches `%{value}` the same way, and that one
 // is written by whoever is in the group. The value stays NON-EMPTY on both sides: Chatwoot rendered
 // something into every placeholder, and the walk requires at least one character there too.
+// TRIMMED like the line it is matched against (round 16). The two Malayalam assignment templates
+// end in a space, and the caller compares against `content.trim()`, so an anchored pattern built
+// from the raw template could never match its OWN sentence: "John added vip-നെ നിയുക്തനാക്കി " was
+// refused by nothing and then read by the English label template as the label
+// "vip-നെ നിയുക്തനാക്കി". The table stays as the fork spells it, so the extraction script still
+// reproduces it; the trim happens here, where the comparison does.
 const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = OTHER_ACTIVITY_TEMPLATES.map(
   (t) =>
     new RegExp(
       `^${t
+        .trim()
         .split(/(%\{\w+\})/g)
         .map((part) =>
           /^%\{\w+\}$/.test(part)

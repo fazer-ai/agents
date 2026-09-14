@@ -653,12 +653,22 @@ export function labelHistoryFromRows(
     vocabulary.map((l) => l.trim()).filter((l) => l !== ""),
   );
   if (known.size === 0) return { lines: [], omitted: 0 };
+  // A row too long to SCAN is a row nobody read, so it is counted like the one too long to SHOW
+  // (round 16). `set_labels` takes an unbounded list, so a batch big enough to push its own activity
+  // sentence past the scan limit is something this application produces, and dropping it quietly let
+  // the block report `(nenhuma nesta janela)` over the very change the model had just made. The
+  // guard is checked FIRST and stays silent: its promise is that the string does not reach the
+  // model, and a count that only appears on conversations carrying a guarded label reports it.
+  let unread = 0;
   const changes = rows
     .filter((m) => {
       if (m.messageType !== "activity" || m.private) return false;
       if (m.activityType !== null) return false;
-      if (m.content.length > ACTIVITY_SCAN_MAX_CHARS) return false;
       if (namesGuardedTitle(m.content, guard)) return false;
+      if (m.content.length > ACTIVITY_SCAN_MAX_CHARS) {
+        unread += 1;
+        return false;
+      }
       const readings = labelsNarrated(m.content);
       if (readings.length === 0) return false;
       // ANY reading naming a guarded label refuses the line: the guard's promise is about the
@@ -683,7 +693,7 @@ export function labelHistoryFromRows(
   // which is worse than not knowing. So an over-long line is left out and counted, and the count is
   // what stops the block from reporting the window as quiet.
   const lines = changes.filter((t) => t.length <= LABEL_CHANGE_MAX_CHARS);
-  return { lines, omitted: changes.length - lines.length };
+  return { lines, omitted: changes.length - lines.length + unread };
 }
 
 // The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —

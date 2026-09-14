@@ -973,6 +973,66 @@ describe("the notes the conversation already carries", () => {
       ).toEqual(["Ana adicionou vip"]);
     });
 
+    // ROUND 16: the line is trimmed before it is matched, and two of the vendored templates end in
+    // a space, so their anchored refusal could never match their own sentence. The table stays as
+    // the fork spells it; the trim happens where the comparison does.
+    test("a template that ends in a space still refuses its own sentence", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "John added vip-നെ നിയുക്തനാക്കി ",
+            }),
+          ],
+          ["vip-നെ നിയുക്തനാക്കി"],
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+    });
+
+    // ROUND 16: a row too long to SCAN is a row nobody read, and `set_labels` takes an unbounded
+    // list, so a batch big enough to push its own sentence past the scan limit is something this
+    // application produces. Dropped quietly, the block reported the window as quiet over the very
+    // change the model had just made.
+    test("a line too long to scan is counted, not dropped quietly", () => {
+      const history = labelHistoryFromRows(
+        [
+          row({
+            id: 1,
+            messageType: "activity",
+            content: `Ana adicionou ${Array.from({ length: 200 }, (_, i) => `etiqueta-${i}`).join(", ")}`,
+          }),
+        ],
+        ["vip"],
+        undefined,
+        8,
+      );
+      expect(history.lines).toEqual([]);
+      expect(history.omitted).toBe(1);
+    });
+
+    // And the guard stays silent: a count that only shows up on conversations carrying a guarded
+    // label is a report of the guarded label.
+    test("a guarded line too long to scan is not counted", () => {
+      const history = labelHistoryFromRows(
+        [
+          row({
+            id: 1,
+            messageType: "activity",
+            content: `Ana adicionou agente-off, ${Array.from({ length: 200 }, (_, i) => `etiqueta-${i}`).join(", ")}`,
+          }),
+        ],
+        ["vip"],
+        ["agente-off"],
+        8,
+      );
+      expect(history.lines).toEqual([]);
+      expect(history.omitted).toBe(0);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

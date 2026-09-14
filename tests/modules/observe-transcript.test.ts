@@ -660,8 +660,9 @@ describe("the notes the conversation already carries", () => {
     });
 
     // ROUND 3: `set_labels` sends the model's own strings and Chatwoot creates the tag, so a title
-    // really can end in punctuation. Taking a final `!` off as the sentence's would lose this line,
-    // or credit it to a plain `urgente` that happens to exist beside it.
+    // really can end in punctuation, and the template hands back exactly what it interpolated —
+    // `urgente!` is the label, while a trailing period no template writes makes the captured title
+    // one this account does not have, which is a miss and not a wrong reading.
     test("punctuation that belongs to the title is not the sentence's", () => {
       expect(
         labelHistoryFromRows(
@@ -681,7 +682,82 @@ describe("the notes the conversation already carries", () => {
           undefined,
           8,
         ),
-      ).toEqual(["Ana adicionou urgente!", "Ana adicionou cancelamento."]);
+      ).toEqual(["Ana adicionou urgente!"]);
+    });
+
+    // ROUND 5: the locales that put the run in the MIDDLE of the sentence. Guessing at the position
+    // dropped every label change in German and Turkish, and the quoted form Japanese needs accepted
+    // any other activity that quotes a value.
+    test("a change is read in every locale Chatwoot ships", () => {
+      const lines = labelHistoryFromRows(
+        [
+          row({
+            id: 1,
+            messageType: "activity",
+            content: "Hans hat vip hinzugefügt",
+          }),
+          row({ id: 2, messageType: "activity", content: "Ayşe, vip ekledi" }),
+          row({
+            id: 3,
+            messageType: "activity",
+            content: 'Kenji がラベル "vip" を追加しました',
+          }),
+          row({
+            id: 4,
+            messageType: "activity",
+            content: "김민준님이 vip을(를) 추가했습니다",
+          }),
+          row({ id: 5, messageType: "activity", content: "Ana adicionou vip" }),
+          row({ id: 6, messageType: "activity", content: "Ann added vip" }),
+        ],
+        ["vip"],
+        undefined,
+        8,
+      );
+      expect(lines).toHaveLength(6);
+    });
+
+    // The template is anchored at BOTH ends: a sentence that merely contains one, with its own text
+    // after the run, was rendered from something else.
+    test("a sentence that only starts like a template is not one", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Hans hat vip hinzugefügt und dann etwas anderes",
+            }),
+          ],
+          ["vip"],
+          undefined,
+          8,
+        ),
+      ).toEqual([]);
+    });
+
+    test("another activity that quotes a label is not a label change", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            // A group rename and a Japanese priority change: no `activityType`, a quoted value, and
+            // nothing to do with labels.
+            row({
+              id: 1,
+              messageType: "activity",
+              content: 'Ana changed the group name to "vip"',
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: 'Kenji が優先度を "vip" に変更しました',
+            }),
+          ],
+          ["vip"],
+          undefined,
+          8,
+        ),
+      ).toEqual([]);
     });
 
     // ROUND 2: the one structural field an activity row has. A label change never sets it, so a row

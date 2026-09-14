@@ -35,6 +35,7 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
+import { labelsNarrated } from "@/modules/chatwoot/label-activity";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
@@ -560,129 +561,31 @@ export function observeTurnText(
   ].join("\n");
 }
 
-// A line longer than this is not the template with a handful of titles in it, and refusing to scan
-// it is also what keeps the pattern below off text nobody bounded.
+// A line longer than this is not one of Chatwoot's sentences with a handful of titles in it, and
+// refusing to scan it is also what keeps 74 patterns off text nobody bounded.
 const ACTIVITY_SCAN_MAX_CHARS = 2_000;
 
-// A TITLE INDEX, and deliberately not one regular expression built from the vocabulary (review round
-// 2). An alternation of every title, repeated for each accepted position, is a pattern whose SIZE is
-// the account's label count: Bun refuses to compile one at around fifty thousand short titles, and
-// the throw would land above the graph's own `try`, failing and re-queueing every observation on
-// that account forever. A set plus the distinct title LENGTHS answers the same question in lookups
-// bounded by how many different lengths exist, whatever the vocabulary's size.
-interface TitleIndex {
-  titles: Set<string>;
-  // Longest first, so a title that ends with another one is tried before its own suffix.
-  lengths: number[];
-}
-
-function titleIndex(titles: readonly string[]): TitleIndex {
-  const set = new Set<string>();
-  for (const t of titles) {
-    const trimmed = t.trim();
-    if (trimmed.length > 0) set.add(trimmed);
-  }
-  return {
-    titles: set,
-    lengths: [...new Set([...set].map((t) => t.length))].sort((a, b) => b - a),
-  };
-}
-
-// A character that cannot be part of a title's own word, which is what makes a match a WORD and not
-// a fragment of one.
-function isDelimiter(ch: string | undefined): boolean {
-  return ch !== undefined && !/[\p{L}\p{N}]/u.test(ch);
-}
-
-// Does this text end with a known title that has something before it? The "something" matters: a
-// label-change line is `%{user_name} <verb> %{labels}`, so the run ALWAYS has narration in front of
-// it, and a line that is nothing but titles is not one Chatwoot wrote.
-function endsWithTitle(text: string, index: TitleIndex): boolean {
-  for (const len of index.lengths) {
-    if (len >= text.length) continue;
-    if (!index.titles.has(text.slice(text.length - len))) continue;
-    if (isDelimiter(text[text.length - len - 1])) return true;
-  }
-  return false;
-}
-
-// Every segment of `", "`-joined text is a known title (the shape of a run with no narration in it).
-function allTitles(text: string, index: TitleIndex): boolean {
-  const parts = text.split(", ");
-  return parts.length > 0 && parts.every((p) => index.titles.has(p));
-}
-
-// DOES THIS LINE NAME A GUARDED LABEL ANYWHERE IN IT, as a word rather than as a fragment. The run
-// rule alone already drops the mixed line whose chain the guarded title breaks, but only because
-// that title sits between the narration and the end; asked directly, the invariant does not depend
-// on where in the sentence Chatwoot put it.
-function namesGuardedTitle(text: string, guardIndex: TitleIndex): boolean {
-  if (guardIndex.titles.size === 0) return false;
-  for (let start = 0; start < text.length; start++) {
-    if (start > 0 && !isDelimiter(text[start - 1])) continue;
-    for (const len of guardIndex.lengths) {
-      if (start + len > text.length) continue;
-      if (!guardIndex.titles.has(text.slice(start, start + len))) continue;
-      if (start + len === text.length || isDelimiter(text[start + len])) {
+// DOES THIS LINE NAME A GUARDED LABEL ANYWHERE IN IT, as a word and not as a fragment. Asked beside
+// the titles the template names, because the two are different questions: a title can also land in
+// the ACTOR's half of the sentence (an agent whose display name is the guarded label), and the
+// guard's promise is that the model never sees the string, not that it never sees it in one
+// position. The list is at most 50 titles (`settings.setLabels.protected`).
+function namesGuardedTitle(text: string, guard: ReadonlySet<string>): boolean {
+  const boundary = (ch: string | undefined) =>
+    ch === undefined || !/[\p{L}\p{N}]/u.test(ch);
+  for (const title of guard) {
+    if (title.length === 0) continue;
+    for (
+      let at = text.indexOf(title);
+      at >= 0;
+      at = text.indexOf(title, at + 1)
+    ) {
+      if (boundary(text[at - 1]) && boundary(text[at + title.length])) {
         return true;
       }
     }
   }
   return false;
-}
-
-// IS THIS LINE A LABEL CHANGE, by the one thing the template guarantees: Chatwoot renders the labels
-// as `labels.join(", ")` and every locale interpolates that same RUN into its own sentence. Two
-// positions are accepted, and between them they cover every locale the fork ships that does not bury
-// the run mid-sentence: at the END of the line (`"%{user_name} added %{labels}"`, and its
-// Portuguese, Spanish, French, German, Russian and twenty-odd siblings), or inside QUOTES (Japanese
-// writes `がラベル "%{labels}" を追加しました`).
-//
-// The run has to be CONTIGUOUS from the narration to the end, which is what makes a mixed line fail:
-// with `agente-off` guarded out of the index, "Fulano adicionou agente-off, cancelamento" breaks the
-// chain at the segment the index does not know, and the line drops whole instead of carrying the
-// guarded title into the prompt (round 2).
-//
-// The alternative to anchoring is `content.includes(title)`, and that is not a test for a label
-// change at all: an account with a label titled like an agent turns every assignment line into
-// "history", a two-letter title matches inside an unrelated word, and each false positive evicts a
-// real change from the window's cap. Anchoring inverts the failure: a locale that puts the run in
-// the middle (Bengali, Korean, Persian, Nepali) recognises nothing and the block reports the window
-// as quiet, which is exactly what the tick showed before this block existed. A miss costs the model
-// evidence it never had; a false positive hands it a decision that was never made.
-//
-// WHAT IS LEFT, stated rather than implied: a label titled EXACTLY like the display name that ends
-// an assignment line ("Atribuído a %{assignee_name} por %{user_name}") is still read as a change.
-// Status narration cannot do this any more — those rows declare `activity.type` and are refused
-// before their text is read — but assignment, team, priority and SLA rows carry no bag at all.
-function isLabelChangeLine(text: string, index: TitleIndex): boolean {
-  const asWritten = text.trim();
-  if (asWritten.length === 0) return false;
-  // THE LINE AS WRITTEN FIRST, and only then the line with a final `.`/`!` taken off as the
-  // sentence's. `set_labels` sends the model's own strings and Chatwoot creates the tag, so a title
-  // really can end in punctuation — trimming first would cut `urgente!` down to `urgente` and either
-  // lose the line or credit it to a different label that happens to exist (round 3).
-  if (matchesRun(asWritten, index)) return true;
-  const trimmed = asWritten.replace(/[.。!！]$/u, "");
-  return trimmed !== asWritten && matchesRun(trimmed, index);
-}
-
-function matchesRun(line: string, index: TitleIndex): boolean {
-  const quoted = line.match(/["“「]([^"”」]+)["”」]/u);
-  if (
-    quoted?.[1] !== undefined &&
-    quoted.index !== undefined &&
-    quoted.index > 0 &&
-    allTitles(quoted[1], index)
-  ) {
-    return true;
-  }
-  const segments = line.split(", ");
-  let i = segments.length - 1;
-  // Walk back over the segments that are titles and nothing else, then ask the one before them for
-  // narration + a title at its end.
-  while (i >= 1 && index.titles.has(segments[i] ?? "")) i--;
-  return endsWithTitle(segments[i] ?? "", index);
 }
 
 // WHAT WAS ALREADY DECIDED ON THIS CONVERSATION, in Chatwoot's own words (issue #642).
@@ -702,28 +605,33 @@ function matchesRun(line: string, index: TitleIndex): boolean {
 // the account's language; forwarded whole, the actor, the verb and the label survive in every
 // language, and a human's change reads as a human's.
 //
-// SELECTED BY THE ONE THING THE TEMPLATE GUARANTEES, which is not the grammar around the labels but
-// the LABELS THEMSELVES — see `isLabelChangeLine` for the rule and for what it still lets through.
+// SELECTED BY THE TEMPLATE CHATWOOT RENDERED IT FROM, and never by a guess about where the labels
+// sit in the sentence (round 5). `labelsNarrated` (chatwoot/label-activity.ts) holds the 74 strings
+// `conversations.activity.labels.added` and `.removed` take across every locale the fork ships, and
+// answers which titles a line names, or that no template rendered it. Guessing at the position is
+// what the rounds before it kept paying for: a run of known titles at the edge of the line misses
+// German and Turkish, which put it in the middle, and the quoted form that Japanese needs accepts
+// any other activity that quotes a value, a priority change or a group rename among them.
 //
-// RECOGNISED AGAINST THE ACCOUNT'S CATALOG **AND** THE CONVERSATION'S OWN TAGS, which in Chatwoot
-// are two different tables: `/labels` answers from `Label`, filled by an operator in Settings, while
-// a tag attached through `set_labels` goes through acts_as_taggable_on and creates no row there. A
-// title the model invented is therefore in no catalog at any TTL, and the conversation carrying it
-// is the only place it can be recognised from (round 4).
+// THE TITLES IT NAMES STILL HAVE TO BE LABELS THIS ACCOUNT HAS, so a display name carrying a
+// template's own words ("João adicionou vip" as somebody's name) cannot narrate a change that never
+// happened. The check is against the account's catalog AND the conversation's own tags, which in
+// Chatwoot are two different tables: `/labels` answers from `Label`, filled by an operator in
+// Settings, while a tag attached through `set_labels` goes through acts_as_taggable_on and creates
+// no row there. A title the model invented is therefore in no catalog at any TTL, and the
+// conversation carrying it is the only place it can be recognised from (round 4).
 //
 // A ROW THAT DECLARES ITS OWN KIND IS NOT READ AT ALL. `content_attributes.activity.type` is the
 // only structural field an activity row has, and a label change never sets it: the label, assignee,
 // team, priority and SLA handlers all pass the sentence with no bag, while a status change writes
-// `conversation_status_changed`. So "Conversation was marked resolved by Fulano" is refused on the
-// bag, whatever an account named its labels (round 2).
+// `conversation_status_changed` (round 2).
 //
-// THE GUARDED LABELS ARE SUBTRACTED FIRST, the way they are everywhere else the model can see
-// (`modelVisibleLabels`, `set_labels`), and a line that NAMES one is then refused outright rather
-// than left to the run rule — the guard's own list may not reach the prompt in Chatwoot's sentence
-// any more than in the block above it, and a change nobody asked the model to make is not history it
-// should reason from. The ceiling on that list does NOT apply here: 40 is how many titles may be
-// SHOWN, while this only has to RECOGNISE one in a sentence, and a label past the fortieth still
-// gets put on conversations.
+// THE GUARDED LABELS ARE SUBTRACTED, the way they are everywhere else the model can see
+// (`modelVisibleLabels`, `set_labels`): a line that names one is refused whole rather than edited,
+// because the guard's list may not reach the prompt in Chatwoot's sentence any more than in the
+// block above it, and a change nobody asked the model to make is not history it should reason from.
+// The ceiling on that list does NOT apply here: 40 is how many titles may be SHOWN, while this only
+// has to RECOGNISE them, and a label past the fortieth still gets put on conversations.
 export function labelHistoryFromRows(
   rows: ChatwootMessageRow[],
   vocabulary: readonly string[] | null,
@@ -732,19 +640,20 @@ export function labelHistoryFromRows(
 ): string[] {
   if (vocabulary === null) return [];
   const guard = new Set(guarded ?? []);
-  const index = titleIndex(vocabulary.filter((l) => !guard.has(l)));
-  if (index.titles.size === 0) return [];
-  const guardIndex = titleIndex([...guard]);
+  const known = new Set(
+    vocabulary.map((l) => l.trim()).filter((l) => l !== ""),
+  );
+  if (known.size === 0) return [];
   return rows
-    .filter(
-      (m) =>
-        m.messageType === "activity" &&
-        !m.private &&
-        m.activityType === null &&
-        m.content.length <= ACTIVITY_SCAN_MAX_CHARS &&
-        !namesGuardedTitle(m.content, guardIndex) &&
-        isLabelChangeLine(m.content, index),
-    )
+    .filter((m) => {
+      if (m.messageType !== "activity" || m.private) return false;
+      if (m.activityType !== null) return false;
+      if (m.content.length > ACTIVITY_SCAN_MAX_CHARS) return false;
+      if (namesGuardedTitle(m.content, guard)) return false;
+      const titles = labelsNarrated(m.content);
+      if (titles === null || titles.length === 0) return false;
+      return titles.every((t) => known.has(t));
+    })
     .sort((a, b) => a.id - b.id)
     .slice(-limit)
     .map((m) =>

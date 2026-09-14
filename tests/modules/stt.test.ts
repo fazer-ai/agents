@@ -261,6 +261,7 @@ describe.skipIf(!dbUp)("stt", () => {
         attachmentName: null,
         inReplyTo: null,
         isReaction: false,
+        activityType: null,
         location: null,
       },
     ];
@@ -319,6 +320,7 @@ describe.skipIf(!dbUp)("stt", () => {
         attachmentName: null,
         inReplyTo: null,
         isReaction: false,
+        activityType: null,
         location: null,
       },
     ];

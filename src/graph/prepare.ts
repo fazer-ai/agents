@@ -961,6 +961,7 @@ export interface ToolBuildDeps {
       handoff?: HandoffConfig;
       handoffTargets?: HandoffTargets;
       tenantId?: bigint;
+      instanceId?: bigint;
       base?: PrismaClient;
       contactDbId?: bigint | null;
       conversationDbId?: bigint | null;
@@ -1297,6 +1298,7 @@ export async function buildToolset(
       handoff: effectiveHandoff,
       handoffTargets,
       tenantId: ctx.tenantId,
+      instanceId: ctx.instanceId,
       base: ctx.base,
       contactDbId: cfg.contactDbId,
       conversationDbId: cfg.conversationDbId,

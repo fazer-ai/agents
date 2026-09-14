@@ -26,6 +26,7 @@ import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   attributesForModel,
   type ChatwootVocab,
+  invalidateChatwootVocab,
 } from "@/modules/chatwoot/vocab";
 import {
   type ObservedConversation,
@@ -198,6 +199,9 @@ export interface ToolCtx {
   // For set_voice_preference (a DB write to Contact.voiceReply, RLS-scoped). Absent on paths
   // without a mirrored contact (the tool then no-ops with a message).
   tenantId?: bigint;
+  // NOTE: With `tenantId`, the key this turn's vocabulary is cached under — so a write that creates
+  // a label Chatwoot did not have can drop the entry it just made wrong (issue #642, round 3).
+  instanceId?: bigint;
   base?: PrismaClient;
   contactDbId?: bigint | null;
   // NOTE: Our Conversation row id, for the write-through that keeps the mirrored attribute bags in
@@ -980,6 +984,20 @@ function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
   return parts.length ? ` Currently set — ${parts.join("; ")}.` : "";
 }
 
+// A LABEL THE ACCOUNT DID NOT HAVE MAKES THE CACHED CATALOG WRONG, not stale-but-usable: Chatwoot
+// CREATES the tag `set_labels` sends, so the title the model just invented is now a real label that
+// every reader of this cache would go on denying for up to a minute. Dropped only when a written
+// title is absent from the vocabulary this turn was built with, which is the only case where we can
+// PROVE the catalog moved — a write of titles it already lists costs no extra read (issue #642,
+// round 3). Cache-only: it never touches Chatwoot, and the next reader pays one list.
+function dropStaleVocab(ctx: ToolCtx, added: readonly string[]): void {
+  if (ctx.tenantId === undefined || ctx.instanceId === undefined) return;
+  if (added.length === 0 || ctx.vocab === undefined) return;
+  const listed = new Set(ctx.vocab.labels);
+  if (added.every((l) => listed.has(l))) return;
+  invalidateChatwootVocab(`${ctx.tenantId}:${ctx.instanceId}`);
+}
+
 function setLabelsTool(ctx: ToolCtx) {
   // THE ACCOUNT'S VOCABULARY IS FILTERED TOO, and this is the half that hiding `shownLabels` does
   // not cover: `<existing_labels>` advertises every label the account has as a value the model may
@@ -1089,6 +1107,7 @@ function setLabelsTool(ctx: ToolCtx) {
           return labelWriteReport("kanban card", added, removed, visible);
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
+        dropStaleVocab(ctx, added);
         ctx.onLabelsWritten?.(describeLabelWrite("task", added, removed, next));
         // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
         // the same turn would otherwise diff against the set before this write and put back what it
@@ -1139,6 +1158,7 @@ function setLabelsTool(ctx: ToolCtx) {
           return "Could not set the contact labels (the run was called off while this write waited).";
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
+        dropStaleVocab(ctx, added);
         ctx.onLabelsWritten?.(
           describeLabelWrite("contact", added, removed, next),
         );
@@ -1180,6 +1200,7 @@ function setLabelsTool(ctx: ToolCtx) {
             return "Could not set the labels (the run was called off while this write waited its turn).";
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
+          dropStaleVocab(ctx, added);
           ctx.onLabelsWritten?.(
             describeLabelWrite("conversation", added, removed, next),
           );

@@ -31,8 +31,46 @@ describe("parseChatwootMessages", () => {
       location: null,
       inReplyTo: null,
       isReaction: false,
+      activityType: null,
     });
     expect(rows[1]?.messageType).toBe("outgoing");
+  });
+
+  // ISSUE #642: the one structural field an activity row has. Chatwoot sets it on the activities
+  // that declare what they narrate (a status change writes `conversation_status_changed`), and never
+  // on a label change, which ships as a localized sentence and nothing else.
+  test("reads the activity type a row declares, and only as a string", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 1,
+          content: "Conversa resolvida",
+          message_type: 2,
+          content_attributes: {
+            activity: { type: "conversation_status_changed", status: "open" },
+          },
+        },
+        { id: 2, content: "Fulano adicionou vip", message_type: 2 },
+        {
+          id: 3,
+          content: "x",
+          message_type: 2,
+          content_attributes: { activity: { type: { not: "a string" } } },
+        },
+        {
+          id: 4,
+          content: "x",
+          message_type: 2,
+          content_attributes: { activity: "not a bag" },
+        },
+      ],
+    });
+    expect(rows.map((r) => r.activityType)).toEqual([
+      "conversation_status_changed",
+      null,
+      null,
+      null,
+    ]);
   });
 
   test("accepts a bare array and tolerates the webhook string form", () => {

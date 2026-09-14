@@ -839,6 +839,24 @@ export function emailSubjectFrom(
   return subject.trim() ? subject : null;
 }
 
+// WHAT KIND OF ACTIVITY THIS ROW DECLARES ITSELF TO BE, from `content_attributes.activity.type`
+// (Chatwoot's `status_change_activity` writes `conversation_status_changed`, and Linear's service
+// writes its own). It is the only structural thing an activity row carries: the label, assignee,
+// team, priority and SLA handlers all pass `activity_message_params(content)` with no bag at all.
+// So a row that declares a type is narration about something ELSE, which is what the observer's
+// label history needs to rule out (issue #642, review round 2) — read as a string and nothing else,
+// like every other key in a bag shared with whatever an operator's automation writes there.
+export function activityTypeFrom(
+  contentAttributes: Record<string, unknown> | null | undefined,
+): string | null {
+  const activity = isRecord(contentAttributes?.activity)
+    ? contentAttributes.activity
+    : null;
+  const type = activity?.type;
+  if (typeof type !== "string") return null;
+  return type.trim() ? type : null;
+}
+
 export function firstLocationAttachment(
   attachments:
     | Array<

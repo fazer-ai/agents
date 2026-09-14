@@ -43,6 +43,16 @@ export function attributesForModel(
   return (vocab?.attributes ?? []).filter((a) => a.model === model);
 }
 
+// DROP ONE INSTANCE'S ENTRY, because the catalog we are holding is provably wrong: `set_labels`
+// sends the model's own strings and Chatwoot CREATES a tag its label list does not have, so the
+// moment a write names a title this cache never listed, every reader of it is describing an account
+// that no longer exists. Waiting out the TTL is up to a minute of a label that cannot be recognised
+// anywhere — in the tool's own suggestion list, and in the observer's label history, where a change
+// invisible for a minute is exactly the churn the history exists to show (issue #642, round 3).
+export function invalidateChatwootVocab(cacheKey: string): void {
+  cache.delete(cacheKey);
+}
+
 // Test-only: drop all cached entries so cases don't leak TTL state into one another.
 export function __resetChatwootVocabCache(): void {
   cache.clear();

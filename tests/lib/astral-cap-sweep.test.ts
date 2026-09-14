@@ -501,9 +501,12 @@ const BARE_SLICES: Record<
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
-  // Four: the transcript window, the notes window, the label-change window and the page walk. Every
-  // one is a slice of an ARRAY of rows, so none can land inside a surrogate pair.
-  "src/modules/observe/job.ts": [4, "array"],
+  // Five. Four are slices of an ARRAY of rows — the transcript window, the notes window, the
+  // label-change window and the page walk — so none can land inside a surrogate pair. The fifth
+  // (`endsWithTitle`) cuts a STRING by a label title's length, and the cut is READ and never shown:
+  // a slice that split a surrogate pair equals no title, so the line is simply not read as a label
+  // change. What the block shows is the row's own text, clipped by `clipText`, which is astral-safe.
+  "src/modules/observe/job.ts": [5, "array + parse-only"],
   "src/modules/playground/service.ts": [1, "array"],
   // The balloon's own LINES, cut from the array `split("\n")` returned, to ask whether the run at
   // either end of it is the model's copy of the signature. An array of strings, never a string, so

@@ -31,6 +31,7 @@ function row(
     location: null,
     inReplyTo: null,
     isReaction: false,
+    activityType: null,
     emailSubject: null,
     // Required on `ChatwootMessageRow` since this branch was cut; defaulted here for the same
     // reason every other field is.
@@ -239,6 +240,7 @@ describe("what the transcript sees", () => {
       messageType,
       private: false,
       isReaction: false,
+      activityType: null,
       transcribedText: null,
       imageDescription: null,
       extractedText: null,
@@ -596,6 +598,132 @@ describe("the notes the conversation already carries", () => {
           8,
         ),
       ).toEqual(["Fulano adicionou cancelamento"]);
+    });
+
+    // ROUND 2: subtracting the title from what is RECOGNISED is not the same as refusing the line.
+    // With the guarded one first, the visible suffix still reads as a run, and the line that carries
+    // `agente-off` into the prompt is the whole original sentence.
+    test("a guarded label first in the run does not smuggle the line in", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Fulano adicionou agente-off, cancelamento",
+            }),
+          ],
+          [...vocab, "agente-off"],
+          ["agente-off"],
+          8,
+        ),
+      ).toEqual([]);
+    });
+
+    // ROUND 2: the run rule drops the mixed line because the guarded title breaks the chain between
+    // the narration and the end. Asked directly, the invariant stops depending on where in the
+    // sentence Chatwoot put it — here it is the actor's own name.
+    test("a guarded label in the narration refuses the line too", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "agente-off adicionou cancelamento",
+            }),
+          ],
+          [...vocab, "agente-off"],
+          ["agente-off"],
+          8,
+        ),
+      ).toEqual([]);
+    });
+
+    // Every template is `%{user_name} <verb> %{labels}`, so a run with nothing in front of it is not
+    // a sentence Chatwoot wrote.
+    test("a line that is nothing but titles is not a change", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "cancelamento, compra-de-ingresso",
+            }),
+          ],
+          vocab,
+          undefined,
+          8,
+        ),
+      ).toEqual([]);
+    });
+
+    // ROUND 3: `set_labels` sends the model's own strings and Chatwoot creates the tag, so a title
+    // really can end in punctuation. Taking a final `!` off as the sentence's would lose this line,
+    // or credit it to a plain `urgente` that happens to exist beside it.
+    test("punctuation that belongs to the title is not the sentence's", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Ana adicionou urgente!",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "Ana adicionou cancelamento.",
+            }),
+          ],
+          [...vocab, "urgente!", "urgente"],
+          undefined,
+          8,
+        ),
+      ).toEqual(["Ana adicionou urgente!", "Ana adicionou cancelamento."]);
+    });
+
+    // ROUND 2: the one structural field an activity row has. A label change never sets it, so a row
+    // that declares what it narrates is refused before its text is read, whatever the account named
+    // its labels.
+    test("a row that declares its own kind is not label history", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              activityType: "conversation_status_changed",
+              content: "Conversa marcada como resolvida por cancelamento",
+            }),
+          ],
+          vocab,
+          undefined,
+          8,
+        ),
+      ).toEqual([]);
+    });
+
+    // ROUND 2: the recognition used to compile one regular expression out of the whole vocabulary,
+    // and Bun refuses that pattern at around fifty thousand titles — a throw that lands above the
+    // graph's own try, so every observation on such an account fails and is re-queued forever.
+    test("an account with a huge label catalog is read, not thrown at", () => {
+      const many = Array.from({ length: 60_000 }, (_, i) => `etiqueta-${i}`);
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Fulano adicionou etiqueta-59999",
+            }),
+          ],
+          many,
+          undefined,
+          8,
+        ),
+      ).toEqual(["Fulano adicionou etiqueta-59999"]);
     });
 
     test("the block tells apart nothing changed from could not be read", () => {

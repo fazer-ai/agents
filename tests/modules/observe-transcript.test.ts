@@ -1021,12 +1021,25 @@ describe("the notes the conversation already carries", () => {
               content: "Alice hat einen Teilnehmer hinzugefügt",
             }),
             row({ id: 4, messageType: "activity", content: "Ana adicionou a" }),
+            // ROUND 19: the tail the builder appends is ": ", with the space. A label named
+            // `a participant:vip` renders a REAL change that a colon-only tail swallowed.
+            row({
+              id: 5,
+              messageType: "activity",
+              content: "Alice added a participant:vip",
+            }),
           ],
-          ["a participant", "a participant: veja isso aqui", "Teilnehmer", "a"],
+          [
+            "a participant",
+            "a participant: veja isso aqui",
+            "Teilnehmer",
+            "a",
+            "a participant:vip",
+          ],
           undefined,
           8,
         ).lines,
-      ).toEqual(["Ana adicionou a"]);
+      ).toEqual(["Ana adicionou a", "Alice added a participant:vip"]);
     });
 
     // ROUND 17: requiring a `%{` dropped 98 sentences from the refusal set. None of them is readable

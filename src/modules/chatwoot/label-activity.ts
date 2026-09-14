@@ -1320,7 +1320,9 @@ const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = [
   // The imported part's own body, appended by `append_body` as `": <body>"`. OPTIONAL, because the
   // builder skips the append when the body is blank or already inside the sentence, and required to
   // start with ": " when it is there, which is what keeps the tail from being a wildcard.
-  ...IMPORT_ACTIVITY_TEMPLATES.map((t) => refusalPattern(t, "(?::[\\s\\S]+)?")),
+  ...IMPORT_ACTIVITY_TEMPLATES.map((t) =>
+    refusalPattern(t, "(?:: [\\s\\S]+)?"),
+  ),
 ];
 
 // EVERY READING OF THIS LINE AS A LABEL CHANGE, not the first one (round 7). Two locales can render

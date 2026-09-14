@@ -479,8 +479,15 @@ export class ChatwootClient {
   }
 
   // Transfer-with-summary posts the summary as a private note BEFORE the human takes over.
-  sendPrivateNote(conversationId: number, content: string): Promise<unknown> {
-    return this.sendMessage(conversationId, content, { private: true });
+  sendPrivateNote(
+    conversationId: number,
+    content: string,
+    opts: { sendId?: string } = {},
+  ): Promise<unknown> {
+    return this.sendMessage(conversationId, content, {
+      private: true,
+      sendId: opts.sendId,
+    });
   }
 
   // Sends an audio reply as a WhatsApp voice note (multipart; bot token). `is_recorded_audio` makes

@@ -3118,6 +3118,26 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // ISSUE #642, ROUND 21. `reset_at_message_id` is the id of the command's own MESSAGE and the
+    // cleanup that follows is a dozen un-serialized calls, so every row the command wrote carries a
+    // higher id and looks like the erased episode's history to whoever reads the conversation next.
+    // The acknowledgement is posted only once every step has run, so its id is the end of that
+    // stretch — but only if it is findable, which is what this name is for (constants.ts).
+    test("the acknowledgement carries the name that says where the cleanup ended", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const acks = ackCalls(cw.calls);
+      expect(acks).toHaveLength(1);
+      const body = acks[0]?.body as {
+        content_attributes?: { fazer_ai_send_id?: unknown };
+      } | null;
+      expect(body?.content_attributes?.fazer_ai_send_id).toBe(
+        `reset-ack:${9000 + deliverySeq}`,
+      );
+    });
+
     test("a partial reset is not announced as a full one", async () => {
       const cw = fakeChatwoot(/\/custom_attributes$/);
       globalThis.fetch = cw.impl;

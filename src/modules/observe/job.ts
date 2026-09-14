@@ -30,6 +30,7 @@ import { isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow } from "@/modules/agents/speaks";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { resetAckSendId } from "@/modules/chatwoot/constants";
 import {
   type LoadChatwootClientDeps,
   loadAgentBot,
@@ -676,23 +677,29 @@ export interface LabelHistory {
 // the erased episode's labels, named, and read by a stateless observer as a reason not to put that
 // label back, which is the opposite of what the operator was told happened.
 //
-// The cut is the FIRST ROW THAT IS NOT NARRATION after the boundary: `/reset` acknowledges itself
-// only once every cleanup step has run (`webhook.ts`, so the ack can name what failed), so
-// everything the command wrote sits before that row and nothing this episode did sits before it. A
-// human who changed a label in that same gap loses their line too, which is a miss, the direction
-// this block fails in on purpose.
+// The cut is the ACKNOWLEDGEMENT'S OWN ROW, found by the name the command wrote into it
+// (`resetAckSendId`, constants.ts). `/reset` acknowledges itself only once every cleanup step has
+// run, so its id is the exact end of that stretch. The first version of this cut used the first row
+// that was not narration, and a customer message landing inside the cleanup — a dozen
+// un-serialized calls — takes that place and lets the label removal through (round 21). It also
+// never stopped applying: once the window had slid past the reset entirely, it went on dropping the
+// legitimate activity rows sitting before the window's oldest message.
+//
+// NO MARKER, NO CUT. A reset performed before this name existed, or one whose acknowledgement never
+// landed, leaves nothing that says where its cleanup ended, and a guess there is what round 21 was
+// about. Those conversations read the way they did before this block existed.
+//
+// A human who changed a label between the command and its acknowledgement loses their line too,
+// which is a miss, the direction this block fails in on purpose.
 export function afterResetNarration(
   rows: ChatwootMessageRow[],
   resetBoundary: number | null,
 ): ChatwootMessageRow[] {
   if (resetBoundary === null) return rows;
-  const ordered = [...rows].sort((a, b) => a.id - b.id);
-  const firstReal = ordered.find((r) => r.messageType !== "activity");
-  if (firstReal === undefined)
-    return ordered.filter((r) => r.messageType !== "activity");
-  return ordered.filter(
-    (r) => r.messageType !== "activity" || r.id > firstReal.id,
-  );
+  const marker = resetAckSendId(resetBoundary);
+  const ack = rows.find((r) => r.sendId === marker);
+  if (ack === undefined) return rows;
+  return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
 }
 
 export function labelHistoryFromRows(
@@ -720,7 +727,13 @@ export function labelHistoryFromRows(
       if (m.activityType !== null) return false;
       if (namesGuardedTitle(m.content, guard)) return false;
       if (m.content.length > ACTIVITY_SCAN_MAX_CHARS) {
-        unread += 1;
+        // ...AND ONLY IF IT COULD HAVE BEEN ONE (round 21). Recognition needs EVERY title the line
+        // names to be a label this account has, so a sentence carrying none of them cannot be a
+        // change under any reading — an imported activity with a long body is the ordinary case.
+        // Counting it made the block announce a hidden label change over a row where no label
+        // moved. The substring test is looser than the reading that would follow, which is the
+        // right direction: it over-counts rather than claiming a quiet window.
+        if ([...known].some((t) => m.content.includes(t))) unread += 1;
         return false;
       }
       const readings = labelsNarrated(m.content);

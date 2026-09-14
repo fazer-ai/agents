@@ -32,3 +32,18 @@ export const CHATWOOT_AUTH_HEADER = "api-access-token";
 // Namespaced because the bag is shared with Chatwoot's own keys (`in_reply_to`, `is_reaction`) and
 // with anything the operator's own automations write there.
 export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
+
+// THE NAME `/reset` PUTS ON ITS OWN ACKNOWLEDGEMENT, so a later reader can tell where the command's
+// cleanup ENDED (issue #642, round 21).
+//
+// `reset_at_message_id` is the id of the command's own MESSAGE, and the cleanup that follows is a
+// dozen un-serialized Chatwoot calls, so every row the command wrote — the label removal above all
+// — carries an id ABOVE that boundary and looks like history of the episode the reset just erased.
+// The acknowledgement is posted only once every cleanup step has run, so its own id is the end of
+// that stretch, exactly, and a customer message racing the cleanup cannot be mistaken for it.
+//
+// Carries the command's message id so a reader holding one boundary matches that reset's ack and no
+// other. `content_attributes` is written by whoever posts the message, which is this build.
+export function resetAckSendId(commandMessageId: number): string {
+  return `reset-ack:${commandMessageId}`;
+}

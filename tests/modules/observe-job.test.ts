@@ -4059,7 +4059,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
             message_type: 2,
             sender: null,
           }),
-          message(702, "🧪 Conversa limpa.", "outgoing"),
+          // The acknowledgement carries the name the command wrote into it, which is what says
+          // where the cleanup ended (round 21).
+          message(702, "🧪 Conversa limpa.", "outgoing", {
+            content_attributes: { fazer_ai_send_id: "reset-ack:700" },
+          }),
           message(703, "quero cancelar"),
           // And a change this episode actually made.
           message(704, "Classificador SAC adicionou cancelamento", "incoming", {

@@ -133,6 +133,7 @@ import {
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { ChatwootClient } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
+import { resetAckSendId } from "./constants";
 import {
   conversationOwnershipNow,
   openForHumanQueue,
@@ -2708,7 +2709,10 @@ async function maybeConsumeCommandOrGate(params: {
   // (test-mode notice, its reminder, the redirect link, the away message) ask the same question and
   // none of them was asking it. Private notes are deliberately exempt: only the operator sees one, and
   // a note that lands after a handoff explains the silence instead of talking over anybody.
-  const postPublicMessage = async (text: string): Promise<boolean> => {
+  const postPublicMessage = async (
+    text: string,
+    sendId?: string,
+  ): Promise<boolean> => {
     // Inside the try, deliberately: a fence that cannot answer must report "not sent" like any other
     // failure. Thrown, it would skip the away branch's release and burn the day it just claimed on a
     // message the customer never got.
@@ -2738,7 +2742,7 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return false;
       }
-      await client.sendMessage(conversationId, text);
+      await client.sendMessage(conversationId, text, { sendId });
       return true;
     } catch (err) {
       logger.warn(
@@ -2759,9 +2763,12 @@ async function maybeConsumeCommandOrGate(params: {
   // The fallback is a PRIVATE note rather than a bypass: it reaches the operator, stays invisible to
   // the customer, and does not put a bot message into a conversation a human is handling — the same
   // trade the test-mode notice already makes.
-  const postAcknowledgement = async (text: string): Promise<void> => {
-    if (await postPublicMessage(text)) return;
-    await postPrivateNote(text);
+  const postAcknowledgement = async (
+    text: string,
+    sendId?: string,
+  ): Promise<void> => {
+    if (await postPublicMessage(text, sendId)) return;
+    await postPrivateNote(text, sendId);
   };
 
   // Private note (operator-only, invisible to the customer) posted as the persona bot. Used for the
@@ -2770,10 +2777,13 @@ async function maybeConsumeCommandOrGate(params: {
   // per conversation, and a stamp on a note that never arrived spends the only shot the operator gets.
   // The fence does NOT apply here — a note that lands after a handoff explains the silence to whoever
   // took over instead of talking over them.
-  const postPrivateNote = async (text: string): Promise<boolean> => {
+  const postPrivateNote = async (
+    text: string,
+    sendId?: string,
+  ): Promise<boolean> => {
     try {
       const client = await personaClient();
-      await client.sendPrivateNote(conversationId, text);
+      await client.sendPrivateNote(conversationId, text, { sendId });
       return true;
     } catch (err) {
       logger.warn(
@@ -3612,6 +3622,10 @@ async function maybeConsumeCommandOrGate(params: {
       distinctFailed.length === 0
         ? `🔄 Memória, preferência de áudio e etiquetas/atributos desta conversa foram limpos.${heldBack}`
         : `⚠️ Reset parcial: não consegui limpar ${distinctFailed.join(", ")}. O restante foi limpo.${heldBack}`,
+      // NAMED, because this row is where the command's cleanup ends and a later reader has no other
+      // way to find that point: the boundary it holds is the command's own message, and everything
+      // the cleanup wrote sits between the two (constants.ts).
+      commandMessageId === null ? undefined : resetAckSendId(commandMessageId),
     );
     logger.info(
       "chatwoot: /reset (conv=%s failed=%s)",

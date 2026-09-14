@@ -437,7 +437,15 @@ describe("the notes the conversation already carries", () => {
           messageType: "activity",
           content: "Fulano removeu compra-de-ingresso",
         }),
-        row({ id: 12, messageType: "outgoing", content: "Conversa limpa." }),
+        // ROUND 21: a customer message racing the cleanup used to take the cut's place and let the
+        // removal above through. The cut is the acknowledgement's own row now, found by name.
+        row({ id: 11.5, content: "oi, mais uma coisa" }),
+        row({
+          id: 12,
+          messageType: "outgoing",
+          content: "Conversa limpa.",
+          sendId: "reset-ack:10",
+        }),
         row({
           id: 13,
           messageType: "activity",
@@ -460,21 +468,49 @@ describe("the notes the conversation already carries", () => {
         "Fulano removeu compra-de-ingresso",
         "Classificador SAC adicionou cancelamento",
       ]);
+      // And a reset whose acknowledgement is not in the window leaves the rows alone: a guess about
+      // where the cleanup ended is what round 21 was about.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            rows.filter((r) => r.sendId === null),
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Fulano removeu compra-de-ingresso",
+        "Classificador SAC adicionou cancelamento",
+      ]);
     });
 
-    // And a reset with nothing said since: every row is the command's own narration.
+    // And a reset with nothing said since: the acknowledgement is the last row, so every activity
+    // before it is the command's own narration.
     test("a window that is only the reset's narration reads as empty", () => {
       expect(
-        afterResetNarration(
-          [
-            row({
-              id: 11,
-              messageType: "activity",
-              content: "Fulano removeu compra-de-ingresso",
-            }),
-          ],
-          10,
-        ),
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 12,
+                messageType: "outgoing",
+                content: "Conversa limpa.",
+                sendId: "reset-ack:10",
+              }),
+            ],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
       ).toEqual([]);
     });
 
@@ -1138,8 +1174,16 @@ describe("the notes the conversation already carries", () => {
             messageType: "activity",
             content: `Ana adicionou ${Array.from({ length: 200 }, (_, i) => `etiqueta-${i}`).join(", ")}`,
           }),
+          // ROUND 21: and one that is oversized but names no label this account has, so no label can
+          // have moved in it under any reading. Counting it made the block announce a hidden change
+          // over a row where nothing label-related happened.
+          row({
+            id: 2,
+            messageType: "activity",
+            content: `Ana added a participant: ${"x".repeat(3000)}`,
+          }),
         ],
-        ["vip"],
+        ["etiqueta-7"],
         undefined,
         8,
       );

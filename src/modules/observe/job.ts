@@ -650,9 +650,15 @@ export function labelHistoryFromRows(
       if (m.activityType !== null) return false;
       if (m.content.length > ACTIVITY_SCAN_MAX_CHARS) return false;
       if (namesGuardedTitle(m.content, guard)) return false;
-      const titles = labelsNarrated(m.content);
-      if (titles === null || titles.length === 0) return false;
-      return titles.every((t) => known.has(t));
+      const readings = labelsNarrated(m.content);
+      if (readings.length === 0) return false;
+      // ANY reading naming a guarded label refuses the line: the guard's promise is about the
+      // string reaching the model, and a locale that glues a particle onto the title (Korean writes
+      // `vip을(를)`) puts it out of reach of the scan above, which asks for a word boundary the
+      // sentence does not have (round 7).
+      if (readings.some((ts) => ts.some((t) => guard.has(t)))) return false;
+      // And ONE reading whose titles this account actually has is what makes the line a change.
+      return readings.some((ts) => ts.every((t) => known.has(t)));
     })
     .sort((a, b) => a.id - b.id)
     .slice(-limit)

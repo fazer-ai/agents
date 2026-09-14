@@ -193,18 +193,31 @@ const AMBIGUOUS_ACTIVITY_PATTERNS: readonly RegExp[] = compile(
   AMBIGUOUS_ACTIVITY_TEMPLATES,
 );
 
-// The titles a label-change sentence names, or `null` when no template rendered this line. The
-// SEPARATOR is Chatwoot's own `", "`, so a title containing a comma and a space is split here and
-// then fails the catalog check below, which is a miss and not a wrong reading.
-export function labelsNarrated(content: string): string[] | null {
+// EVERY READING OF THIS LINE AS A LABEL CHANGE, not the first one (round 7). Two locales can render
+// sentences that differ only by a word the other one puts inside `%{labels}`: Portuguese ships both
+// "%{user_name} removeu %{labels}" (pt_BR) and "%{user_name} removeu a %{labels}" (pt), so "Ana
+// removeu a vip" parses as the label "a vip" under one and "vip" under the other. Returning the
+// first match hid every Portuguese removal behind a title no account has. The caller decides which
+// reading is real by asking its own catalog, which is the only thing that can tell them apart.
+//
+// Empty when no template rendered this line. The SEPARATOR is Chatwoot's own `", "`, so a title
+// containing a comma and a space is split here and then fails the caller's catalog check, which is
+// a miss and not a wrong reading.
+export function labelsNarrated(content: string): string[][] {
   const line = content.trim();
-  if (line.length === 0) return null;
-  if (AMBIGUOUS_ACTIVITY_PATTERNS.some((re) => re.test(line))) return null;
+  if (line.length === 0) return [];
+  if (AMBIGUOUS_ACTIVITY_PATTERNS.some((re) => re.test(line))) return [];
+  const readings: string[][] = [];
+  const seen = new Set<string>();
   for (const re of LABEL_ACTIVITY_PATTERNS) {
     const m = line.match(re);
     if (m?.[1] === undefined) continue;
     const titles = m[1].split(", ").map((t) => t.trim());
-    if (titles.every((t) => t.length > 0)) return titles;
+    if (!titles.every((t) => t.length > 0)) continue;
+    const key = titles.join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    readings.push(titles);
   }
-  return null;
+  return readings;
 }

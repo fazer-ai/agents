@@ -762,6 +762,50 @@ describe("the notes the conversation already carries", () => {
       ).toEqual(["Ana added vip"]);
     });
 
+    // ROUND 7: pt and pt_BR ship sentences that differ by a word the other puts inside the run, so
+    // "Ana removeu a vip" parses as the label "a vip" under one and "vip" under the other. Reading
+    // only the first hid every Portuguese removal behind a title no account has.
+    test("two locales that read the same line differently are both tried", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Ana removeu a vip",
+            }),
+          ],
+          ["vip"],
+          undefined,
+          8,
+        ),
+      ).toEqual(["Ana removeu a vip"]);
+    });
+
+    // ROUND 7: Korean glues a particle onto the title (`vip을(를)`), so the word-boundary scan over
+    // the sentence cannot see the guarded label. What the template reads back can.
+    test("a guarded label is refused in a locale that glues a particle to it", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "김민준님이 vip을(를) 추가했습니다",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "김민준님이 cancelamento을(를) 추가했습니다",
+            }),
+          ],
+          ["vip", "cancelamento"],
+          ["vip"],
+          8,
+        ),
+      ).toEqual(["김민준님이 cancelamento을(를) 추가했습니다"]);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

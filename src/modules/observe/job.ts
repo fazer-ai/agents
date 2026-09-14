@@ -705,6 +705,12 @@ function matchesRun(line: string, index: TitleIndex): boolean {
 // SELECTED BY THE ONE THING THE TEMPLATE GUARANTEES, which is not the grammar around the labels but
 // the LABELS THEMSELVES — see `isLabelChangeLine` for the rule and for what it still lets through.
 //
+// RECOGNISED AGAINST THE ACCOUNT'S CATALOG **AND** THE CONVERSATION'S OWN TAGS, which in Chatwoot
+// are two different tables: `/labels` answers from `Label`, filled by an operator in Settings, while
+// a tag attached through `set_labels` goes through acts_as_taggable_on and creates no row there. A
+// title the model invented is therefore in no catalog at any TTL, and the conversation carrying it
+// is the only place it can be recognised from (round 4).
+//
 // A ROW THAT DECLARES ITS OWN KIND IS NOT READ AT ALL. `content_attributes.activity.type` is the
 // only structural field an activity row has, and a label change never sets it: the label, assignee,
 // team, priority and SLA handlers all pass the sentence with no bag, while a status change writes
@@ -1224,9 +1230,19 @@ export async function runObserve(
   )
     .then((v) => v.labels)
     .catch(() => null);
+  // THE CONVERSATION'S OWN LABELS JOIN THE INDEX, and they are not a nicety (round 4). The account
+  // catalog and the conversation's tags are two different tables in Chatwoot: `/labels` answers from
+  // `Label`, which an operator fills in Settings, while a tag attached through `set_labels` goes
+  // through acts_as_taggable_on and creates NO row there. So a title the model invented is never in
+  // the catalog, at any TTL — the only place it shows up is the conversation carrying it, which this
+  // tick has already read. Union, so an invented label's own history is recognisable while it is
+  // standing; a title invented, applied and taken off between two ticks is in neither list and its
+  // lines are not read, which is the miss this block chooses over inventing a decision.
   const labelChanges = labelHistoryFromRows(
     rows,
-    vocabLabels,
+    vocabLabels === null && current === null
+      ? null
+      : [...(vocabLabels ?? []), ...(current ?? [])],
     cfg.protectedLabels,
     LABEL_CHANGES_MAX,
   );
@@ -1660,7 +1676,9 @@ export async function runObserve(
                 transcript,
                 currentForPrompt,
                 notes,
-                vocabLabels === null ? null : labelChanges,
+                // "(não foi possível ler)" only when NEITHER list was read: with one of them in
+                // hand the block's emptiness is a claim we can stand behind.
+                vocabLabels === null && current === null ? null : labelChanges,
               ),
             ),
           ],

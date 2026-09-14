@@ -11,10 +11,6 @@ import {
 } from "@/graph/tools/native";
 import { applyToolPreconditions } from "@/graph/tools/precondition";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import {
-  __resetChatwootVocabCache,
-  loadChatwootVocab,
-} from "@/modules/chatwoot/vocab";
 
 function recordingClient() {
   const calls: Array<[string, unknown[]]> = [];
@@ -699,49 +695,6 @@ describe("native tools", () => {
     );
     expect(setCalls).toEqual([[9, ["vip", "lead"]]]);
     expect(out).toContain("lead");
-  });
-
-  // ISSUE #642, ROUND 3. Chatwoot CREATES the tag `set_labels` sends, so a title the account did not
-  // have makes the cached catalog wrong rather than merely old — and every reader of it, the tool's
-  // own suggestion list and the observer's label history among them, would go on denying that label
-  // for up to a minute. A minute is longer than the median gap between two classifications.
-  test("a label the account did not have drops the cached vocabulary", async () => {
-    __resetChatwootVocabCache();
-    let lists = 0;
-    const client = {
-      getConversationLabels: async () => [],
-      setConversationLabels: async () => ({}),
-      listLabels: async () => {
-        lists++;
-        return ["vip"];
-      },
-      listCustomAttributeDefinitions: async () => [],
-    } as unknown as ChatwootClient;
-    const key = "7:9";
-    const vocab = await loadChatwootVocab(client, key);
-    expect(lists).toBe(1);
-    // A write of a title the catalog already lists costs no extra read.
-    const known = buildNativeTools({
-      client,
-      conversationId: 9,
-      tenantId: 7n,
-      instanceId: 9n,
-      vocab,
-    });
-    await byName(known, "set_labels").invoke({ labels: ["vip"] });
-    await loadChatwootVocab(client, key);
-    expect(lists).toBe(1);
-    // One the catalog does not have does: the account moved, and we can prove it.
-    const invented = buildNativeTools({
-      client,
-      conversationId: 9,
-      tenantId: 7n,
-      instanceId: 9n,
-      vocab,
-    });
-    await byName(invented, "set_labels").invoke({ labels: ["vip", "novo"] });
-    await loadChatwootVocab(client, key);
-    expect(lists).toBe(2);
   });
 
   test("set_labels removes a label the model was shown and left out", async () => {

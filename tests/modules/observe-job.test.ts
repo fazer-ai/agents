@@ -3860,6 +3860,71 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(prompt).toContain("quero cancelar");
   });
 
+  // ISSUE #642, ROUND 4. The account catalog and the conversation's tags are two different tables:
+  // `/labels` answers from `Label`, which an operator fills in Settings, and a tag `set_labels`
+  // attaches goes through acts_as_taggable_on without creating a row there. So a title the model
+  // invented is in no catalog at any TTL, and the conversation carrying it is the only place its own
+  // history can be recognised from.
+  test("a label the catalog never had is recognised from the conversation", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let prompt = "";
+    const client = stubClientWithVocab(
+      [
+        message(1, "quero cancelar"),
+        message(
+          2,
+          "Classificador SAC adicionou inventada-pelo-modelo",
+          "incoming",
+          {
+            message_type: 2,
+          },
+        ),
+      ],
+      ["inventada-pelo-modelo"],
+      log,
+      // The catalog does not have it, and never will.
+      ["cancelamento"],
+    );
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => client,
+        makeModel: () => {
+          const m = new SilentModel() as unknown as BaseChatModel;
+          const bind = (m as unknown as { bindTools: (t: unknown) => unknown })
+            .bindTools;
+          (m as unknown as { bindTools: (t: unknown) => unknown }).bindTools = (
+            tools: unknown,
+          ) => {
+            const bound = bind.call(m, tools) as {
+              invoke: (msgs: unknown) => Promise<unknown>;
+            };
+            const inner = bound.invoke.bind(bound);
+            bound.invoke = async (msgs: unknown) => {
+              prompt = JSON.stringify(msgs);
+              return inner(msgs);
+            };
+            return bound;
+          };
+          return m;
+        },
+      },
+    );
+    expect(prompt).toContain(
+      "Classificador SAC adicionou inventada-pelo-modelo",
+    );
+  });
+
   // The vocabulary is a REQUEST, and every exit above the turn is an exit that costs nothing today.
   // Reading it beside the notes would put a Chatwoot round trip on a cold cache in front of a tick
   // that is about to throw the answer away (issue #642).

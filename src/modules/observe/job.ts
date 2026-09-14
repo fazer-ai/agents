@@ -46,7 +46,10 @@ import {
   renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
-import { loadChatwootVocab } from "@/modules/chatwoot/vocab";
+import {
+  loadChatwootLabels,
+  loadChatwootVocab,
+} from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
@@ -1143,8 +1146,9 @@ export async function runObserve(
   // AND IT FALLS BACK TO THE CATALOG ALONE, because that cached read is two requests under one
   // `Promise.all` — the labels and the custom attribute DEFINITIONS — so an attribute endpoint that
   // fails takes a perfectly good label catalog down with it (round 6). This block needs only the
-  // labels, so it asks for them directly rather than inheriting the other read's failure. Off the
-  // cache, and only on the path that already failed.
+  // labels, so it asks for them directly rather than inheriting the other read's failure. Cached on
+  // its own (round 9): a failed combined read caches nothing, and an attribute endpoint that stays
+  // down would otherwise mean a fresh `/labels` on every tick of every conversation.
   const vocabLabels = await loadChatwootVocab(
     client,
     `${tenantId}:${instanceId}`,
@@ -1152,7 +1156,7 @@ export async function runObserve(
     .then((v) => v.labels)
     .catch(async () => {
       try {
-        return await client.listLabels();
+        return await loadChatwootLabels(client, `${tenantId}:${instanceId}`);
       } catch {
         return null;
       }

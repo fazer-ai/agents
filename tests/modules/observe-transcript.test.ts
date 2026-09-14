@@ -806,6 +806,37 @@ describe("the notes the conversation already carries", () => {
       ).toEqual(["김민준님이 cancelamento을(를) 추가했습니다"]);
     });
 
+    // ROUND 9: the placeholder is where somebody ELSE's text goes. A WhatsApp group name is written
+    // by whoever is in the group, and an agent's display name by an admin, so a sentence that ends
+    // in a label template's words is not an accident anybody has to wait for. Every rendering
+    // matches its own template, which is what closes the class.
+    test("a crafted name inside another activity is not a label change", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: 'Ana alterou o nome do grupo para "Fulano adicionou vip',
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "Assigned to Gi by John added vip",
+            }),
+            row({
+              id: 3,
+              messageType: "activity",
+              content: "Ana adicionou vip",
+            }),
+          ],
+          ["vip"],
+          undefined,
+          8,
+        ),
+      ).toEqual(["Ana adicionou vip"]);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

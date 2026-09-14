@@ -3,6 +3,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   __resetChatwootVocabCache,
   attributesForModel,
+  loadChatwootLabels,
   loadChatwootVocab,
 } from "@/modules/chatwoot/vocab";
 
@@ -76,5 +77,37 @@ describe("loadChatwootVocab", () => {
       attributesForModel(vocab, "contact_attribute").map((d) => d.key),
     ).toEqual(["b"]);
     expect(attributesForModel(undefined, "contact_attribute")).toEqual([]);
+  });
+});
+
+// ISSUE #642, ROUND 9. The combined read is two requests under one `Promise.all`, so an attribute
+// endpoint that stays down means the caller that needs ONLY the labels re-asks forever: a failed
+// combined read caches nothing.
+describe("the labels on their own", () => {
+  test("a failing attribute endpoint costs one label read, not one per call", async () => {
+    const counter = { labels: 0, defs: 0 };
+    const client = {
+      listLabels: async () => {
+        counter.labels++;
+        return ["lead", "vip"];
+      },
+      listCustomAttributeDefinitions: async () => {
+        counter.defs++;
+        throw new Error("definitions are down");
+      },
+    } as unknown as ChatwootClient;
+    for (let i = 0; i < 3; i++) {
+      await loadChatwootVocab(client, "t:i").catch(() => null);
+      expect(await loadChatwootLabels(client, "t:i")).toEqual(["lead", "vip"]);
+    }
+    expect(counter.labels).toBe(4);
+  });
+
+  test("a warm combined entry answers without a read of its own", async () => {
+    const counter = { labels: 0, defs: 0 };
+    const client = fakeClient(counter);
+    await loadChatwootVocab(client, "t:i");
+    expect(await loadChatwootLabels(client, "t:i")).toEqual(["lead", "vip"]);
+    expect(counter.labels).toBe(1);
   });
 });

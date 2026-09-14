@@ -43,7 +43,30 @@ export function attributesForModel(
   return (vocab?.attributes ?? []).filter((a) => a.model === model);
 }
 
+// THE LABELS ALONE, for a caller that needs no attribute definitions (the observer's label history,
+// issue #642, round 9). The combined read above is two requests under one `Promise.all`, so an
+// attribute endpoint that is down takes a perfectly good label catalog with it — and a caller that
+// just re-asked would pay a fresh `/labels` on every tick, since a failed combined read caches
+// nothing. This reads the combined entry when it is warm, keeps its own otherwise, and never fetches
+// the definitions.
+const labelCache = new Map<string, { value: string[]; expires: number }>();
+
+export async function loadChatwootLabels(
+  client: ChatwootClient,
+  cacheKey: string,
+  now: number = Date.now(),
+): Promise<string[]> {
+  const vocabHit = cache.get(cacheKey);
+  if (vocabHit && vocabHit.expires > now) return vocabHit.value.labels;
+  const hit = labelCache.get(cacheKey);
+  if (hit && hit.expires > now) return hit.value;
+  const labels = await client.listLabels();
+  labelCache.set(cacheKey, { value: labels, expires: now + TTL_MS });
+  return labels;
+}
+
 // Test-only: drop all cached entries so cases don't leak TTL state into one another.
 export function __resetChatwootVocabCache(): void {
   cache.clear();
+  labelCache.clear();
 }

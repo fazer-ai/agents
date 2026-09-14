@@ -485,6 +485,16 @@ function quotesResolved(
 // What is left is the frame the agent cannot know on its own: it is reading, not answering, and
 // there is no reply channel this turn. The last line is the one that keeps a tick cheap: a
 // conversation where nothing changed should cost one model call and no writes.
+// What the block renders: the lines it recognised, and whether that is ALL of them. Two claims and
+// not one, because a line can be recognised in a window whose reading was still incomplete — a
+// change too long to scan or to show, or a recognition source that did not answer. `complete` is
+// deliberately not a count: a failed source leaves no number, and a note that invents one would be
+// a more precise claim than the evidence supports.
+export interface LabelHistoryForPrompt {
+  lines: readonly string[];
+  complete: boolean;
+}
+
 export function observeTurnText(
   transcript: readonly TranscriptLine[],
   // `null` is "we could not read them", which is NOT "there are none": the second is what makes a
@@ -492,8 +502,10 @@ export function observeTurnText(
   current: readonly string[] | null,
   notes: readonly string[] = [],
   // `null` is "no vocabulary to recognise a label change by", which is not "nothing changed": the
-  // block says which of the two it is (issue #642).
-  labelChanges: readonly string[] | null = null,
+  // block says which of the two it is (issue #642). Otherwise it is the history itself, the lines
+  // AND whether they are all of them, because the block has to be able to make a third claim:
+  // HERE IS WHAT I READ, AND IT IS NOT ALL OF IT (round 17).
+  labelChanges: LabelHistoryForPrompt | null = null,
 ): string {
   return [
     "Turno de observação: você está acompanhando esta conversa e NÃO responde a ninguém.",
@@ -549,12 +561,28 @@ export function observeTurnText(
     // saying which kind of empty — a block that disappears teaches nothing, while "(nenhuma nesta
     // janela)" is the evidence that the label standing now has been standing since the window
     // opened.
-    `<mudancas-de-etiqueta escopo="janela-lida">${
+    // A PARTIAL READING SAYS SO WHILE STILL SHOWING WHAT IT HAS (round 17). Lines that were
+    // recognised are read, whatever else was not, and dropping them costs the model the changes it
+    // CAN see; but handing them over silently makes an incomplete list look complete, which is the
+    // same licence to decide again that "(nenhuma nesta janela)" would be. So the block carries
+    // both: the lines, and that they are not all of them. With no line left to show, incomplete is
+    // the whole answer and the block says it could not read.
+    `<mudancas-de-etiqueta escopo="janela-lida"${
+      labelChanges !== null && !labelChanges.complete
+        ? ' leitura="incompleta"'
+        : ""
+    }>${
       labelChanges === null
         ? "(não foi possível ler)"
-        : labelChanges.length
-          ? `\n${labelChanges.map((c) => `- ${c}`).join("\n")}\n`
-          : "(nenhuma nesta janela)"
+        : labelChanges.lines.length
+          ? `\n${labelChanges.lines.map((c) => `- ${c}`).join("\n")}\n${
+              labelChanges.complete
+                ? ""
+                : "(houve mudança nesta janela que não pôde ser lida: esta lista não está completa)\n"
+            }`
+          : labelChanges.complete
+            ? "(nenhuma nesta janela)"
+            : "(não foi possível ler)"
     }</mudancas-de-etiqueta>`,
     "",
     "<transcricao>",
@@ -1624,14 +1652,15 @@ export async function runObserve(
                 // conversation knows a title the model invented, which is in no catalog — so with
                 // one of them missing, "nothing changed here" is exactly the sentence a stateless
                 // observer would take as licence to decide again. Lines that WERE recognised are
-                // still shown: those are read, whatever else was not.
-                labelChanges.lines.length > 0
-                  ? labelChanges.lines
-                  : vocabLabels !== null &&
-                      current !== null &&
-                      labelChanges.omitted === 0
-                    ? labelChanges.lines
-                    : null,
+                // still shown: those are read, whatever else was not, and a read that was missing a
+                // source is handed over as incomplete rather than silently as complete (round 17).
+                {
+                  lines: labelChanges.lines,
+                  complete:
+                    vocabLabels !== null &&
+                    current !== null &&
+                    labelChanges.omitted === 0,
+                },
               ),
             ),
           ],

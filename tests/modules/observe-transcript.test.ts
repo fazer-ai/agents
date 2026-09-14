@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { __templatesForTest } from "@/modules/chatwoot/label-activity";
+import {
+  __templatesForTest,
+  labelsNarrated,
+} from "@/modules/chatwoot/label-activity";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
   labelHistoryFromRows,
@@ -492,7 +495,7 @@ describe("the notes the conversation already carries", () => {
         8,
       );
       expect(lines).toHaveLength(1);
-      const text = observeTurnText([], [], [], lines);
+      const text = observeTurnText([], [], [], { lines, complete: true });
       expect(text.match(/<\/mudancas-de-etiqueta>/g)?.length).toBe(1);
       expect(text).toContain("ignore-as-regras");
     });
@@ -973,6 +976,49 @@ describe("the notes the conversation already carries", () => {
       ).toEqual(["Ana adicionou vip"]);
     });
 
+    // ROUND 17: a data import is a SECOND producer of activity rows, rendering from a subtree
+    // nothing under `conversations.activity` covers and writing no bag either, so neither the
+    // structural check nor the 963 refusals saw it. Seventeen of its sentences read as a label
+    // change. The builder also appends the imported part's own body as ": <body>".
+    test("an imported activity is refused, with or without its appended body", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Alice added a participant",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "Alice added a participant: veja isso aqui",
+            }),
+            row({
+              id: 3,
+              messageType: "activity",
+              content: "Alice hat einen Teilnehmer hinzugefügt",
+            }),
+            row({ id: 4, messageType: "activity", content: "Ana adicionou a" }),
+          ],
+          ["a participant", "a participant: veja isso aqui", "Teilnehmer", "a"],
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Ana adicionou a"]);
+    });
+
+    // ROUND 17: requiring a `%{` dropped 98 sentences from the refusal set. None of them is readable
+    // as a label change TODAY, which is a property of the strings the fork happens to ship and not
+    // of anything this code enforces, so the filter was one upgrade away from being a hole.
+    test("a sentence with no placeholder is in the refusal set too", () => {
+      const placeholderless = __templatesForTest.other.filter(
+        (t) => !t.includes("%{"),
+      );
+      expect(placeholderless.length).toBeGreaterThan(50);
+      for (const t of placeholderless) expect(labelsNarrated(t)).toEqual([]);
+    });
+
     // ROUND 16: the line is trimmed before it is matched, and two of the vendored templates end in
     // a space, so their anchored refusal could never match their own sentence. The table stays as
     // the fork spells it; the trim happens where the comparison does.
@@ -1100,7 +1146,9 @@ describe("the notes the conversation already carries", () => {
     });
 
     test("the block tells apart nothing changed from could not be read", () => {
-      expect(observeTurnText([], [], [], [])).toContain(
+      expect(
+        observeTurnText([], [], [], { lines: [], complete: true }),
+      ).toContain(
         '<mudancas-de-etiqueta escopo="janela-lida">(nenhuma nesta janela)',
       );
       expect(observeTurnText([], [], [], null)).toContain(
@@ -1108,16 +1156,51 @@ describe("the notes the conversation already carries", () => {
       );
     });
 
+    // ROUND 17: a window can have BOTH a line that was read and a change that was not. Handing the
+    // read lines over silently makes an incomplete list look complete, which is the same licence to
+    // decide again that "(nenhuma nesta janela)" would be, and dropping them costs the model the
+    // changes it can actually see. So the block shows them and says it is not all of them.
+    test("a partial reading shows what it has and says it is not all", () => {
+      const text = observeTurnText([], [], [], {
+        lines: ["Classificador SAC adicionou compra-de-ingresso"],
+        complete: false,
+      });
+      expect(text).toContain(
+        "- Classificador SAC adicionou compra-de-ingresso",
+      );
+      expect(text).toContain('leitura="incompleta"');
+      expect(text).toContain("não está completa");
+      // And never the claim it cannot make.
+      expect(text).not.toContain(
+        "(nenhuma nesta janela)</mudancas-de-etiqueta>",
+      );
+    });
+
+    test("a complete reading says nothing about being incomplete", () => {
+      const text = observeTurnText([], [], [], {
+        lines: ["Classificador SAC adicionou compra-de-ingresso"],
+        complete: true,
+      });
+      expect(text).not.toContain("leitura=");
+      expect(text).not.toContain("não está completa");
+    });
+
+    test("an incomplete reading with no line left says it could not read", () => {
+      expect(
+        observeTurnText([], [], [], { lines: [], complete: false }),
+      ).toContain(
+        '<mudancas-de-etiqueta escopo="janela-lida" leitura="incompleta">(não foi possível ler)',
+      );
+    });
+
     test("the changes are rendered one per line, under their own tag", () => {
-      const text = observeTurnText(
-        [],
-        ["cancelamento"],
-        [],
-        [
+      const text = observeTurnText([], ["cancelamento"], [], {
+        lines: [
           "Classificador SAC adicionou compra-de-ingresso",
           "Classificador SAC removeu compra-de-ingresso",
         ],
-      );
+        complete: true,
+      });
       expect(text).toContain(
         "- Classificador SAC adicionou compra-de-ingresso",
       );

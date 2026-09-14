@@ -27,6 +27,13 @@ if (!dir) {
 
 const labels = new Set<string>();
 const other = new Set<string>();
+// A SECOND PRODUCER OF ACTIVITY ROWS (round 17). `DataImports::Intercom::ActivityContentBuilder`
+// writes `message_type: activity` with `content_attributes: {}` — no bag to tell it apart — and
+// renders from `data_imports.<vendor>.activities.*`, a subtree nothing under `conversations.activity`
+// covers. "%{actor} added a participant" is then read by the English label template as the label
+// `a participant`. Kept apart from the others because that builder appends the Intercom part's own
+// body as `"<sentence>: <body>"`, so these have to be refused with that tail as well.
+const imports = new Set<string>();
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -54,14 +61,21 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith(".yml"))) {
   for (const root of Object.values(doc)) {
     if (!isRecord(root)) continue;
     const conversations = root.conversations;
-    if (!isRecord(conversations)) continue;
-    walk(conversations.activity, [], (path, value) => {
-      if (!value.includes("%{")) return;
-      if (path.startsWith("labels.")) {
-        if (value.includes("%{labels}")) labels.add(value);
-      } else {
-        other.add(value);
-      }
+    if (isRecord(conversations))
+      // A SENTENCE WITH NO PLACEHOLDER IS STILL A SENTENCE TO REFUSE. Requiring `%{` dropped 98 of
+      // them; none is readable as a label change today, but that is a property of the strings the
+      // fork happens to ship and not of anything this code enforces, so the filter was one upgrade
+      // away from being a hole. Only the LABEL side needs a placeholder, and a specific one: a
+      // template with no `%{labels}` has nothing to read back (round 17).
+      walk(conversations.activity, [], (path, value) => {
+        if (path.startsWith("labels.")) {
+          if (value.includes("%{labels}")) labels.add(value);
+        } else {
+          other.add(value);
+        }
+      });
+    walk(root.data_imports, [], (path, value) => {
+      if (path.includes(".activities.")) imports.add(value);
     });
   }
 }
@@ -76,3 +90,5 @@ console.log(`// LABEL_ACTIVITY_TEMPLATES (${labels.size})`);
 console.log(render(labels));
 console.log(`\n// OTHER_ACTIVITY_TEMPLATES (${other.size})`);
 console.log(render(other));
+console.log(`\n// IMPORT_ACTIVITY_TEMPLATES (${imports.size})`);
+console.log(render(imports));

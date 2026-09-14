@@ -879,6 +879,26 @@ describe("the notes the conversation already carries", () => {
       ).toEqual([]);
     });
 
+    // ROUND 13: a placeholder holds somebody's text, and that text can carry the very words the
+    // template puts around it. Only the earliest split was being read, so an agent named like the
+    // sentence hid the real label behind a title no account has.
+    test("an actor named like the template does not hide the label", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "John added Smith added vip",
+            }),
+          ],
+          ["vip"],
+          undefined,
+          8,
+        ),
+      ).toEqual(["John added Smith added vip"]);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

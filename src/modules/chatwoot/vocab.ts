@@ -31,14 +31,20 @@ export async function loadChatwootVocab(
   // tick reads the labels alone and `buildToolset` asks for the pair moments later, so without this
   // the same catalog is fetched twice per TTL, sequentially, inside the same observation deadline.
   const warm = labelCache.get(cacheKey);
+  const borrowed = warm !== undefined && warm.expires > now;
   const [labels, attributes] = await Promise.all([
-    warm && warm.expires > now
-      ? Promise.resolve(warm.value)
-      : client.listLabels(),
+    borrowed ? Promise.resolve(warm.value) : client.listLabels(),
     client.listCustomAttributeDefinitions(),
   ]);
   const value: ChatwootVocab = { labels, attributes };
-  cache.set(cacheKey, { value, expires: now + TTL_MS });
+  // BORROWED LABELS KEEP THE EXPIRY THEY CAME WITH (round 13). Stamping a fresh TTL onto a catalog
+  // read most of a window ago is how a label created in between stays invisible for nearly two
+  // windows instead of one — and the attribute endpoint recovering after a spell of failures is
+  // exactly when that entry is oldest.
+  cache.set(cacheKey, {
+    value,
+    expires: borrowed ? Math.min(now + TTL_MS, warm.expires) : now + TTL_MS,
+  });
   return value;
 }
 

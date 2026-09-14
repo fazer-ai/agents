@@ -117,6 +117,20 @@ describe("the labels on their own", () => {
     expect(counter.defs).toBe(1);
   });
 
+  // ROUND 13: a catalog read most of a window ago does not become fresh by being copied into
+  // another entry. Stamping a new TTL on it hides a label created in between for nearly two windows.
+  test("borrowed labels keep the expiry they came with", async () => {
+    const counter = { labels: 0, defs: 0 };
+    const client = fakeClient(counter);
+    await loadChatwootLabels(client, "t:i", 0);
+    // 50s later the combined read borrows those labels; its entry may not outlive them.
+    await loadChatwootVocab(client, "t:i", 50_000);
+    expect(counter.labels).toBe(1);
+    // At 61s both are out of date, so the next combined read asks again.
+    await loadChatwootVocab(client, "t:i", 61_000);
+    expect(counter.labels).toBe(2);
+  });
+
   test("a warm combined entry answers without a read of its own", async () => {
     const counter = { labels: 0, defs: 0 };
     const client = fakeClient(counter);

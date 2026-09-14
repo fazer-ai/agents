@@ -983,33 +983,103 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "대화가 %{user_name}에 의해 해결됨으로 표시되었습니다: %{reason}",
 ];
 
-// `%{user_name}` and every other placeholder is somebody's name, which we never need; `%{labels}` is
-// the run. Anchored at both ends, so a sentence that merely CONTAINS a template's words does not
-// match it.
-function compile(templates: readonly string[]): RegExp[] {
-  return templates.map(
-    (t) =>
-      new RegExp(
-        `^${t
-          .split(/(%\{\w+\})/g)
-          .map((part) =>
-            part === "%{labels}"
-              ? "(.+)"
-              : /^%\{\w+\}$/.test(part)
-                ? "(?:.+?)"
-                : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-          )
-          .join("")}$`,
-        "u",
-      ),
-  );
+// A TEMPLATE, SPLIT INTO WHAT IS FIXED AND WHAT IS SOMEBODY'S TEXT. The literals are the only thing
+// Chatwoot wrote; every placeholder is a value, and `%{labels}` is the one we want back.
+type Piece = { literal: string } | { placeholder: string };
+
+function pieces(template: string): Piece[] {
+  return template
+    .split(/(%\{\w+\})/g)
+    .filter((part) => part !== "")
+    .map((part) =>
+      /^%\{\w+\}$/.test(part) ? { placeholder: part } : { literal: part },
+    );
 }
 
-const LABEL_ACTIVITY_PATTERNS: readonly RegExp[] = compile(
-  LABEL_ACTIVITY_TEMPLATES,
-);
-const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = compile(
-  OTHER_ACTIVITY_TEMPLATES,
+// EVERY WAY THIS LINE COULD HAVE BEEN RENDERED FROM THIS TEMPLATE, and not just the first (round
+// 13). A placeholder holds somebody's text, and that text can contain the very words the template
+// puts around it: an agent called "John added Smith" renders "John added Smith added vip" from
+// "%{user_name} added %{labels}", and the earliest split reads the label as "Smith added vip",
+// which no account has. Reading only that split dropped a real change; the caller's catalog is what
+// picks the right one, so it is handed all of them.
+//
+// The walk enumerates OCCURRENCES OF THE LITERALS (there is always one between two placeholders),
+// so it costs the number of times the template's own words appear in the line, not the line's
+// length. A value is never empty: Chatwoot rendered something there.
+const SPLITS_MAX = 32;
+
+function readings(template: Piece[], line: string): string[] {
+  const out: string[] = [];
+  const walk = (index: number, at: number, labels: string | null): void => {
+    if (out.length >= SPLITS_MAX) return;
+    const piece = template[index];
+    if (piece === undefined) {
+      if (at === line.length && labels !== null) out.push(labels);
+      return;
+    }
+    if ("literal" in piece) {
+      if (index === 0) {
+        if (line.startsWith(piece.literal))
+          walk(1, piece.literal.length, labels);
+        return;
+      }
+      for (
+        let found = line.indexOf(piece.literal, at);
+        found >= 0;
+        found = line.indexOf(piece.literal, found + 1)
+      ) {
+        walk(index + 1, found + piece.literal.length, labels);
+        if (out.length >= SPLITS_MAX) return;
+      }
+      return;
+    }
+    // A placeholder runs up to wherever the NEXT literal is found; the last one runs to the end.
+    const next = template[index + 1];
+    if (next === undefined || !("literal" in next)) {
+      if (at < line.length) {
+        walk(
+          index + 1,
+          line.length,
+          piece.placeholder === "%{labels}" ? line.slice(at) : labels,
+        );
+      }
+      return;
+    }
+    for (
+      let found = line.indexOf(next.literal, at + 1);
+      found >= 0;
+      found = line.indexOf(next.literal, found + 1)
+    ) {
+      walk(
+        index + 1,
+        at,
+        piece.placeholder === "%{labels}" ? line.slice(at, found) : labels,
+      );
+      if (out.length >= SPLITS_MAX) return;
+    }
+  };
+  walk(0, 0, null);
+  return out;
+}
+
+const LABEL_ACTIVITY_PIECES: readonly Piece[][] =
+  LABEL_ACTIVITY_TEMPLATES.map(pieces);
+
+// The refusal side only has to answer WHETHER some split matches, which a regex already does by
+// backtracking, so it stays one anchored pattern per template.
+const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = OTHER_ACTIVITY_TEMPLATES.map(
+  (t) =>
+    new RegExp(
+      `^${t
+        .split(/(%\{\w+\})/g)
+        .map((part) =>
+          /^%\{\w+\}$/.test(part)
+            ? "(?:.+?)"
+            : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        )
+        .join("")}$`,
+      "u",
+    ),
 );
 
 // EVERY READING OF THIS LINE AS A LABEL CHANGE, not the first one (round 7). Two locales can render
@@ -1026,19 +1096,19 @@ export function labelsNarrated(content: string): string[][] {
   const line = content.trim();
   if (line.length === 0) return [];
   if (OTHER_ACTIVITY_PATTERNS.some((re) => re.test(line))) return [];
-  const readings: string[][] = [];
+  const out: string[][] = [];
   const seen = new Set<string>();
-  for (const re of LABEL_ACTIVITY_PATTERNS) {
-    const m = line.match(re);
-    if (m?.[1] === undefined) continue;
-    const titles = m[1].split(", ").map((t) => t.trim());
-    if (!titles.every((t) => t.length > 0)) continue;
-    const key = titles.join("\u0000");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    readings.push(titles);
+  for (const template of LABEL_ACTIVITY_PIECES) {
+    for (const run of readings(template, line)) {
+      const titles = run.split(", ").map((t) => t.trim());
+      if (!titles.every((t) => t.length > 0)) continue;
+      const key = titles.join("\u0000");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(titles);
+    }
   }
-  return readings;
+  return out;
 }
 
 // Test-only: the templates exactly as this module compiles them, so a test can assert that what is

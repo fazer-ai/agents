@@ -854,6 +854,31 @@ describe("the notes the conversation already carries", () => {
       );
     });
 
+    // ROUND 11: reading only the first level of the locale tree missed 105 leaves, the mute and the
+    // group member add/remove sentences among them. One template left out is one sentence nothing
+    // refuses, and the placeholder in it is where somebody else's text goes.
+    test("a nested activity template refuses like every other", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Ann added vip has muted the conversation",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "Ana adicionou Fulano ao grupo",
+            }),
+          ],
+          ["vip has muted the conversation", "Fulano ao grupo"],
+          undefined,
+          8,
+        ),
+      ).toEqual([]);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

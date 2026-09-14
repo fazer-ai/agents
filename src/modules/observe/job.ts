@@ -46,10 +46,7 @@ import {
   renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
-import {
-  loadChatwootLabels,
-  loadChatwootVocab,
-} from "@/modules/chatwoot/vocab";
+import { loadChatwootLabels } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
@@ -1138,29 +1135,20 @@ export async function runObserve(
 
   // WHAT ALREADY CHANGED, beside what is standing now, and read here rather than beside `notes`
   // because this is a request: every exit above it (no customer message, agent off, window empty)
-  // would pay for a Chatwoot round trip on a cold cache and then throw the answer away. The read is
-  // the SAME one the toolset makes, under the same key, so a tick that also builds `set_labels` pays
-  // for it once (vocab.ts caches per instance). Best-effort like the labels above: `null` makes the
-  // block say it could not be read, rather than claim that nothing ever changed.
+  // would pay for a Chatwoot round trip on a cold cache and then throw the answer away.
   //
-  // AND IT FALLS BACK TO THE CATALOG ALONE, because that cached read is two requests under one
-  // `Promise.all` — the labels and the custom attribute DEFINITIONS — so an attribute endpoint that
-  // fails takes a perfectly good label catalog down with it (round 6). This block needs only the
-  // labels, so it asks for them directly rather than inheriting the other read's failure. Cached on
-  // its own (round 9): a failed combined read caches nothing, and an attribute endpoint that stays
-  // down would otherwise mean a fresh `/labels` on every tick of every conversation.
-  const vocabLabels = await loadChatwootVocab(
+  // THE LABELS ALONE, and not the vocabulary the toolset reads (round 10). That one is two requests
+  // under a single `Promise.all` — the labels and the custom attribute DEFINITIONS — so an attribute
+  // endpoint that is down fails the pair, caches nothing, and would make every tick of every
+  // conversation wait out its timeout before this block could look at a catalog that answered fine.
+  // `loadChatwootLabels` answers from the combined entry while it is warm and keeps its own
+  // otherwise, so the toolset still pays for its read once and this pays for nothing twice.
+  // Best-effort like the labels above: `null` makes the block say it could not be read, rather than
+  // claim that nothing ever changed.
+  const vocabLabels = await loadChatwootLabels(
     client,
     `${tenantId}:${instanceId}`,
-  )
-    .then((v) => v.labels)
-    .catch(async () => {
-      try {
-        return await loadChatwootLabels(client, `${tenantId}:${instanceId}`);
-      } catch {
-        return null;
-      }
-    });
+  ).catch(() => null);
   // THE CONVERSATION'S OWN LABELS JOIN THE INDEX, and they are not a nicety (round 4). The account
   // catalog and the conversation's tags are two different tables in Chatwoot: `/labels` answers from
   // `Label`, which an operator fills in Settings, while a tag attached through `set_labels` goes

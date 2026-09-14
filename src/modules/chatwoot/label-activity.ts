@@ -14,84 +14,86 @@
 // where the labels are in every locale, and say it exactly.
 //
 // COPIED FROM THE FORK, `config/locales/*.yml` of fazer-ai/chatwoot, on 14/set/2026: 74 distinct
-// strings across every locale it ships. A template that drifts stops matching, and a line nobody
+// strings across every locale it ships, as YAML DECODES them and not as the file spells them — a
+// single-quoted scalar escapes an apostrophe by doubling it, and a pattern built from the raw
+// spelling waits for two apostrophes Chatwoot never writes (round 10). A template that drifts stops matching, and a line nobody
 // matches is simply not read — the same miss this block already chooses over inventing a decision,
 // and never a false positive.
 const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
-  "%{user_name} %{labels} যোগ করেছেন", // bn.added
-  "%{user_name} %{labels} সরিয়ে দিয়েছেন", // bn.removed
-  "%{user_name} a ajouté %{labels}", // fr.added
-  "%{user_name} a következő cimkéket adta hozzá: %{labels}", // hu.added
-  "%{user_name} a supprimé %{labels}", // fr.removed
-  "%{user_name} acrescentou %{labels}", // pt.added
-  "%{user_name} added %{labels}", // am.added, az.added, bg.added, en.added (+16)
-  "%{user_name} adicionou %{labels}", // pt_BR.added
-  "%{user_name} adăugat %{labels}", // ro.added
-  "%{user_name} agregó %{labels}", // es.added
-  "%{user_name} dodal %{labels}", // sl.added
-  "%{user_name} dodał/a %{labels}", // pl.added
-  "%{user_name} eliminat %{labels}", // ro.removed
-  "%{user_name} eliminó a %{labels}", // es.removed
-  "%{user_name} fjernede %{labels}", // da.removed
-  "%{user_name} fjernet %{labels}", // no.removed
-  "%{user_name} ha afegit %{labels}", // ca.added
-  "%{user_name} ha aggiunto %{labels}", // it.added
-  "%{user_name} ha eliminat %{labels}", // ca.removed
-  "%{user_name} ha rimosso %{labels}", // it.removed
-  "%{user_name} har lagt till %{labels}", // sv.added
-  "%{user_name} hat %{labels} entfernt", // de.removed
-  "%{user_name} hat %{labels} hinzugefügt", // de.added
-  "%{user_name} je dodao %{labels}", // sr.added
-  "%{user_name} je uklonio %{labels}", // sr.removed
-  "%{user_name} la til %{labels}", // no.added
-  "%{user_name} leszedte a következő cimkéket %{labels}", // hu.removed
-  "%{user_name} lisäsi tunnisteet %{labels}", // fi.added
-  "%{user_name} menambahkan %{labels}", // id.added
-  "%{user_name} menghapus %{labels}", // id.removed
-  "%{user_name} noņēma %{labels}", // lv.removed
-  "%{user_name} odebral/a %{labels}", // cs.removed
-  "%{user_name} odobral %{labels}", // sk.removed
-  "%{user_name} odstranil %{labels}", // sl.removed
-  "%{user_name} odstranil/a %{labels}", // cs.added
-  "%{user_name} pašalino %{labels}", // lt.removed
-  "%{user_name} pievienoja %{labels}", // lv.added
-  "%{user_name} poisti tunnisteet %{labels}", // fi.removed
-  "%{user_name} pridal %{labels}", // sk.added
-  "%{user_name} pridėjo %{labels}", // lt.added
-  "%{user_name} removed %{labels}", // am.removed, az.removed, bg.removed, en.removed (+16)
-  "%{user_name} removeu %{labels}", // pt_BR.removed
-  "%{user_name} removeu a %{labels}", // pt.removed
-  "%{user_name} thêm %{labels}", // vi.added
-  "%{user_name} tilføjede %{labels}", // da.added
-  "%{user_name} tog bort %{labels}", // sv.removed
-  "%{user_name} usunął/a %{labels}", // pl.removed
-  "%{user_name} xoá %{labels}", // vi.removed
-  "%{user_name} видалив %{labels}", // uk.removed
-  "%{user_name} добавил %{labels}", // ru.added
-  "%{user_name} додав %{labels}", // uk.added
-  "%{user_name} удалил %{labels}", // ru.removed
-  "%{user_name} הוסיף %{labels}", // he.added
-  "%{user_name} הסיר %{labels}", // he.removed
-  "%{user_name} أزال %{labels}", // ar.removed
-  "%{user_name} أضاف %{labels}", // ar.added
-  "%{user_name} ले %{labels} थपे", // ne.added
-  "%{user_name} ले %{labels} हटाए", // ne.removed
-  '%{user_name} がラベル "%{labels}" を削除しました', // ja.removed
-  '%{user_name} がラベル "%{labels}" を追加しました', // ja.added
-  "%{user_name} 新增了 %{labels}", // zh_TW.added
-  "%{user_name} 添加 %{labels}", // zh.added, zh_CN.added
-  "%{user_name} 移除 %{labels}", // zh.removed, zh_CN.removed
-  "%{user_name} 移除了 %{labels}", // zh_TW.removed
-  "%{user_name}, %{labels} ekledi", // tr.added
-  "%{user_name}, %{labels} kaldırdı", // tr.removed
-  "%{user_name}، %{labels} را اضافه کرد", // fa.added
-  "%{user_name}، %{labels} را حذف کرد", // fa.removed
-  "%{user_name}님이 %{labels}을(를) 제거했습니다", // ko.removed
-  "%{user_name}님이 %{labels}을(를) 추가했습니다", // ko.added
-  "Idinagdag ni %{user_name} ang %{labels}", // tl.added
-  "Tinanggal ni %{user_name} ang %{labels}", // tl.removed
-  "Ο %{user_name} αφαίρεσε τις ετικέτες %{labels}", // el.removed
-  "Ο %{user_name} πρόσθεσε ετικέτες %{labels}", // el.added
+  "%{user_name} %{labels} যোগ করেছেন",
+  "%{user_name} %{labels} সরিয়ে দিয়েছেন",
+  "%{user_name} a ajouté %{labels}",
+  "%{user_name} a következő cimkéket adta hozzá: %{labels}",
+  "%{user_name} a supprimé %{labels}",
+  "%{user_name} acrescentou %{labels}",
+  "%{user_name} added %{labels}",
+  "%{user_name} adicionou %{labels}",
+  "%{user_name} adăugat %{labels}",
+  "%{user_name} agregó %{labels}",
+  "%{user_name} dodal %{labels}",
+  "%{user_name} dodał/a %{labels}",
+  "%{user_name} eliminat %{labels}",
+  "%{user_name} eliminó a %{labels}",
+  "%{user_name} fjernede %{labels}",
+  "%{user_name} fjernet %{labels}",
+  "%{user_name} ha afegit %{labels}",
+  "%{user_name} ha aggiunto %{labels}",
+  "%{user_name} ha eliminat %{labels}",
+  "%{user_name} ha rimosso %{labels}",
+  "%{user_name} har lagt till %{labels}",
+  "%{user_name} hat %{labels} entfernt",
+  "%{user_name} hat %{labels} hinzugefügt",
+  "%{user_name} je dodao %{labels}",
+  "%{user_name} je uklonio %{labels}",
+  "%{user_name} la til %{labels}",
+  "%{user_name} leszedte a következő cimkéket %{labels}",
+  "%{user_name} lisäsi tunnisteet %{labels}",
+  "%{user_name} menambahkan %{labels}",
+  "%{user_name} menghapus %{labels}",
+  "%{user_name} noņēma %{labels}",
+  "%{user_name} odebral/a %{labels}",
+  "%{user_name} odobral %{labels}",
+  "%{user_name} odstranil %{labels}",
+  "%{user_name} odstranil/a %{labels}",
+  "%{user_name} pašalino %{labels}",
+  "%{user_name} pievienoja %{labels}",
+  "%{user_name} poisti tunnisteet %{labels}",
+  "%{user_name} pridal %{labels}",
+  "%{user_name} pridėjo %{labels}",
+  "%{user_name} removed %{labels}",
+  "%{user_name} removeu %{labels}",
+  "%{user_name} removeu a %{labels}",
+  "%{user_name} thêm %{labels}",
+  "%{user_name} tilføjede %{labels}",
+  "%{user_name} tog bort %{labels}",
+  "%{user_name} usunął/a %{labels}",
+  "%{user_name} xoá %{labels}",
+  "%{user_name} видалив %{labels}",
+  "%{user_name} добавил %{labels}",
+  "%{user_name} додав %{labels}",
+  "%{user_name} удалил %{labels}",
+  "%{user_name} הוסיף %{labels}",
+  "%{user_name} הסיר %{labels}",
+  "%{user_name} أزال %{labels}",
+  "%{user_name} أضاف %{labels}",
+  "%{user_name} ले %{labels} थपे",
+  "%{user_name} ले %{labels} हटाए",
+  '%{user_name} がラベル "%{labels}" を削除しました',
+  '%{user_name} がラベル "%{labels}" を追加しました',
+  "%{user_name} 新增了 %{labels}",
+  "%{user_name} 添加 %{labels}",
+  "%{user_name} 移除 %{labels}",
+  "%{user_name} 移除了 %{labels}",
+  "%{user_name}, %{labels} ekledi",
+  "%{user_name}, %{labels} kaldırdı",
+  "%{user_name}، %{labels} را اضافه کرد",
+  "%{user_name}، %{labels} را حذف کرد",
+  "%{user_name}님이 %{labels}을(를) 제거했습니다",
+  "%{user_name}님이 %{labels}을(를) 추가했습니다",
+  "Idinagdag ni %{user_name} ang %{labels}",
+  "Tinanggal ni %{user_name} ang %{labels}",
+  "Ο %{user_name} αφαίρεσε τις ετικέτες %{labels}",
+  "Ο %{user_name} πρόσθεσε ετικέτες %{labels}",
 ];
 
 // EVERY OTHER ACTIVITY SENTENCE CHATWOOT CAN WRITE (round 9), all 760 of them across every locale
@@ -101,11 +103,10 @@ const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
 //
 // It started as the 58 that collide when their own placeholders hold ORDINARY values ("Ana added
 // SLA policy Gold" reads as a label on an account that has one), and that was not enough, because
-// the placeholder is where somebody else's text goes: a WhatsApp group renamed to "Fulano adicionou
-// vip" renders "Ana alterou o nome do grupo para \"Fulano adicionou vip", which the Portuguese label
-// template parses as the label `vip`. A group name is written by whoever is in the group, so the
-// collision is not an accident somebody has to wait for. Every rendering matches its OWN template,
-// so holding all of them is what makes that class closed.
+// the placeholder is where somebody ELSE's text goes: an agent display name of "John added vip"
+// renders "Assigned to Gi by John added vip", which the English label template parses as the label
+// `vip`, and a WhatsApp group name reaches a template the same way. Every rendering matches its OWN
+// template, so holding all of them is what makes that class closed.
 //
 // The drift cuts the other way here, and it is the one thing to know when upgrading the fork: a
 // label template that drifts stops matching and the line is missed, while an activity template we
@@ -116,9 +117,9 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{author_name} activó la aprobación del administrador para unirse a este grupo",
   "%{author_name} alterou a descrição do grupo",
   "%{author_name} alterou a imagem do grupo",
-  '%{author_name} alterou o nome do grupo para "%{value}',
+  '%{author_name} alterou o nome do grupo para "%{value}"',
   "%{author_name} ativou a autorização de admins para entrar neste grupo",
-  '%{author_name} cambió el nombre del grupo a "%{value}',
+  '%{author_name} cambió el nombre del grupo a "%{value}"',
   "%{author_name} cambió la configuración de este grupo para que solo los administradores puedan añadir a otras personas",
   "%{author_name} cambió la configuración de este grupo para que solo los administradores puedan enviar mensajes",
   "%{author_name} cambió la configuración de este grupo para que todos los miembros puedan añadir a otras personas",
@@ -129,7 +130,7 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{author_name} cambió la imagen del grupo",
   "%{author_name} changed the group description",
   "%{author_name} changed the group image",
-  '%{author_name} changed the group name to "%{value}',
+  '%{author_name} changed the group name to "%{value}"',
   "%{author_name} changed the settings so all members can edit the group settings",
   "%{author_name} changed the settings so only admins can edit the group settings",
   "%{author_name} changed this group's setting to allow all members to add others to this group",
@@ -152,7 +153,7 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{author_name} restableció el enlace de invitación de este grupo",
   "%{author_name} turned off admin approval to join this group",
   "%{author_name} turned on admin approval to join this group",
-  "%{contact_name} a accepté la demande d''autorisation d''appel.",
+  "%{contact_name} a accepté la demande d'autorisation d'appel.",
   "%{contact_name} accepted the call permission request.",
   "%{contact_name} aceitou a solicitação de permissão de chamada.",
   "%{contact_name} atrisināja sarunu",
@@ -226,7 +227,7 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{user_name} ha posposat la conversa",
   "%{user_name} ha rimosso la policy SLA %{sla_name}",
   "%{user_name} ha rimosso la priorità",
-  "%{user_name} ha tret l''assignació de la conversa",
+  "%{user_name} ha tret l'assignació de la conversa",
   "%{user_name} har tilldelat sig denna konversation",
   "%{user_name} hat SLA-Richtlinie %{sla_name} entfernt",
   "%{user_name} hat SLA-Richtlinie %{sla_name} hinzugefügt",
@@ -282,8 +283,8 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{user_name} removeu a prioridade",
   "%{user_name} ráosztotta a beszélgetést: %{assignee_name}",
   "%{user_name} ráosztotta a beszélgetést: %{team_name}",
-  "%{user_name} s''est auto-assigné cette conversation",
-  "%{user_name} s''ha auto assignat aquesta conversa",
+  "%{user_name} s'est auto-assigné cette conversation",
+  "%{user_name} s'ha auto assignat aquesta conversa",
   "%{user_name} sarunu atzīmēja kā atrisinātu",
   "%{user_name} sarunu atzīmēja kā neapstiprinātu",
   "%{user_name} sau priskyrė šį pokalbį",
@@ -466,7 +467,7 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "A conversa foi marcada como resolvida por %{user_name}: %{reason}",
   'A conversa foi marcada como resolvida porque a tarefa vinculada "%{task_title}" no funil "%{board_name}" foi ganha',
   "A conversa foi resolvida por %{contact_name}",
-  "A envoyé une demande d''autorisation d''appel à %{contact_name}.",
+  "A envoyé une demande d'autorisation d'appel à %{contact_name}.",
   "Ang pag-uusap ay tinakdang bukas ni %{user_name}",
   "Ang pag-uusap ay tinakdang tapos ng sistema dahil sa %{count} araw ng hindi pagkilos",
   "Ang pag-uusap ay tinakdang tapos ng sistema dahil sa %{count} minuto ng hindi pagkilos",
@@ -565,7 +566,7 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "Dodeljeno %{user_name} s strani %{assignee_name}",
   "Dodeljeno%{assignee_name} preko %{team_name} s strani %{user_name}",
   "Eine Anfrage zur Anrufberechtigung wurde an %{contact_name} gesendet.",
-  "El sistema ha marcat que la conversa s''ha resolt a causa de %{count} dies d''inactivitat",
+  "El sistema ha marcat que la conversa s'ha resolt a causa de %{count} dies d'inactivitat",
   "Entfernt aus %{team_name} von %{user_name}",
   "Envió una solicitud de permiso de llamada a %{contact_name}.",
   "Gesprek niet toegewezen door %{user_name}",
@@ -628,14 +629,14 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "La conversación fue reabierta por %{user_name}",
   'La conversación se marcó como resuelta porque la tarea vinculada "%{task_title}" del embudo "%{board_name}" se ganó',
   "La conversation a été marquée comme en attente par %{user_name}",
-  "La conversation a été marquée comme résolue par le système en raison de %{count} heures d''inactivité",
-  "La conversation a été marquée comme résolue par le système en raison de %{count} jours d''inactivité",
-  "La conversation a été marquée comme résolue par le système en raison de %{count} minutes d''inactivité",
+  "La conversation a été marquée comme résolue par le système en raison de %{count} heures d'inactivité",
+  "La conversation a été marquée comme résolue par le système en raison de %{count} jours d'inactivité",
+  "La conversation a été marquée comme résolue par le système en raison de %{count} minutes d'inactivité",
   "La conversation a été marquée ouverte par %{user_name}",
   "La conversation a été marquée ouverte par %{user_name} (%{reason})",
   "La conversation a été marquée résolue par %{user_name}",
   "La conversation a été marquée résolue par %{user_name} (%{reason})",
-  "La conversation a été marquée résolue par %{user_name} en raison de l''inactivité",
+  "La conversation a été marquée résolue par %{user_name} en raison de l'inactivité",
   "La conversation a été marquée résolue par %{user_name}: %{reason}",
   "La conversation a été reportée par %{user_name}",
   "La conversation a été ré-ouverte par %{user_name}",
@@ -643,9 +644,9 @@ const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "La conversazione è stata aperta da %{user_name} (%{reason})",
   "La conversazione è stata contrassegnata come in attesa da %{user_name}",
   "La conversazione è stata contrassegnata come risolta da %{user_name}",
-  "La conversazione è stata contrassegnata come risolta dal sistema a causa di %{count} giorni d''inattività",
-  "La conversazione è stata contrassegnata come risolta dal sistema a causa di %{count} minuti d''inattività",
-  "La conversazione è stata contrassegnata come risolta dal sistema a causa di %{count} ore d''inattività",
+  "La conversazione è stata contrassegnata come risolta dal sistema a causa di %{count} giorni d'inattività",
+  "La conversazione è stata contrassegnata come risolta dal sistema a causa di %{count} minuti d'inattività",
+  "La conversazione è stata contrassegnata come risolta dal sistema a causa di %{count} ore d'inattività",
   "La conversazione è stata posticipata da %{user_name}",
   "La conversazione è stata riaperta da %{user_name}",
   "La conversazione è stata risolta da %{contact_name}",
@@ -931,3 +932,11 @@ export function labelsNarrated(content: string): string[][] {
   }
   return readings;
 }
+
+// Test-only: the templates exactly as this module compiles them, so a test can assert that what is
+// vendored here is what Chatwoot renders — an apostrophe escaped by doubling it in a single-quoted
+// YAML scalar is the shape that reaches here wrong and shows up nowhere else (round 10).
+export const __templatesForTest = {
+  labels: LABEL_ACTIVITY_TEMPLATES,
+  other: OTHER_ACTIVITY_TEMPLATES,
+};

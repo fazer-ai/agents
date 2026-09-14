@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { __templatesForTest } from "@/modules/chatwoot/label-activity";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
   labelHistoryFromRows,
@@ -817,7 +818,8 @@ describe("the notes the conversation already carries", () => {
             row({
               id: 1,
               messageType: "activity",
-              content: 'Ana alterou o nome do grupo para "Fulano adicionou vip',
+              content:
+                'Ana alterou o nome do grupo para "Fulano adicionou vip"',
             }),
             row({
               id: 2,
@@ -835,6 +837,21 @@ describe("the notes the conversation already carries", () => {
           8,
         ),
       ).toEqual(["Ana adicionou vip"]);
+    });
+
+    // ROUND 10: the table is COPIED from the fork's locale files, and a single-quoted YAML scalar
+    // escapes an apostrophe by doubling it. A pattern built from the file's spelling waits for two
+    // apostrophes Chatwoot never writes, so its sentence stops being refused — and nothing else in
+    // this suite would notice, because no template that carries an apostrophe collides for ordinary
+    // values. It is the crafted placeholder that would have walked through the hole.
+    test("no vendored template carries YAML's own escaping", () => {
+      const all = [...__templatesForTest.labels, ...__templatesForTest.other];
+      expect(all.filter((t) => t.includes("''"))).toEqual([]);
+      expect(all.filter((t) => t.includes('\\"'))).toEqual([]);
+      // And the French self-assignment is in there with ONE apostrophe, as it renders.
+      expect(all).toContain(
+        "%{user_name} s'est auto-assigné cette conversation",
+      );
     });
 
     test("another activity that quotes a label is not a label change", () => {

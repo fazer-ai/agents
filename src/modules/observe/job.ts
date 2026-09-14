@@ -678,12 +678,22 @@ export interface LabelHistory {
 // label back, which is the opposite of what the operator was told happened.
 //
 // The cut is the ACKNOWLEDGEMENT'S OWN ROW, found by the name the command wrote into it
-// (`resetAckSendId`, constants.ts). `/reset` acknowledges itself only once every cleanup step has
-// run, so its id is the exact end of that stretch. The first version of this cut used the first row
-// that was not narration, and a customer message landing inside the cleanup — a dozen
-// un-serialized calls — takes that place and lets the label removal through (round 21). It also
-// never stopped applying: once the window had slid past the reset entirely, it went on dropping the
-// legitimate activity rows sitting before the window's oldest message.
+// (`resetAckSendId`, constants.ts). `/reset` posts it only once every cleanup step has run, so it
+// is the latest point in the command this side can name. The first version cut at the first row
+// that was not narration, and a customer message landing inside the cleanup takes that place and
+// lets the removal through; it also never stopped applying, so once the window had slid past the
+// reset it went on dropping legitimate activity rows before the window's oldest message (round 21).
+//
+// BEST-EFFORT, AND THE LIMIT IS CHATWOOT'S, NOT THIS CUT'S (round 22). The label-change activity is
+// not written by the labels request: `LabelActivityMessageHandler#create_label_change_activity`
+// hands it to `Conversations::ActivityMessageJob.perform_later`, so the row appears whenever that
+// Sidekiq job runs. Normally that is well inside the dozen calls still ahead of the acknowledgement;
+// on an install whose queues are backed up (which this one has been) the job can land after it, and
+// then the row keeps an id above the ack and this filter does not see it. Nothing on the row says
+// who caused it — a label change writes no `content_attributes` at all — so no ordering and no
+// content test separates the two. What is left showing is a TRUE sentence about a label that really
+// was removed, on a conversation in test mode, and the residual is written down in the PR and in
+// docs/chatwoot.md rather than papered over with a time window.
 //
 // NO MARKER, NO CUT. A reset performed before this name existed, or one whose acknowledgement never
 // landed, leaves nothing that says where its cleanup ended, and a guess there is what round 21 was

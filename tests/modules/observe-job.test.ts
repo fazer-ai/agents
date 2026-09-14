@@ -4038,6 +4038,82 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(prompt.match(/\(nenhuma nesta janela\)/g)?.length).toBe(1);
   });
 
+  // ISSUE #642, ROUND 20. The reset's boundary is the /reset MESSAGE's id, and the command clears
+  // the labels a dozen Chatwoot calls later, so the removal activity lands ABOVE it and survives the
+  // filter the transcript is protected by. The next tick would read the erased episode's labels,
+  // named, as a reason not to put them back.
+  test("the reset's own label cleanup never reaches the prompt", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let prompt = "";
+    await suDb.conversation.update({
+      where: { id: convRowId },
+      data: { resetAtMessageId: 700 },
+    });
+    try {
+      const client = stubClientWithVocab(
+        [
+          // The reset's own cleanup: above the boundary, before anything was said since.
+          message(701, "Fulano removeu compra-de-ingresso", "incoming", {
+            message_type: 2,
+            sender: null,
+          }),
+          message(702, "🧪 Conversa limpa.", "outgoing"),
+          message(703, "quero cancelar"),
+          // And a change this episode actually made.
+          message(704, "Classificador SAC adicionou cancelamento", "incoming", {
+            message_type: 2,
+            sender: null,
+          }),
+        ],
+        [],
+        log,
+        ["compra-de-ingresso", "cancelamento"],
+      );
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: 704,
+        },
+        appDb,
+        {
+          makeClient: async () => client,
+          makeModel: () => {
+            const m = new SilentModel() as unknown as BaseChatModel;
+            const bind = (
+              m as unknown as { bindTools: (t: unknown) => unknown }
+            ).bindTools;
+            (m as unknown as { bindTools: (t: unknown) => unknown }).bindTools =
+              (tools: unknown) => {
+                const bound = bind.call(m, tools) as {
+                  invoke: (msgs: unknown) => Promise<unknown>;
+                };
+                const inner = bound.invoke.bind(bound);
+                bound.invoke = async (msgs: unknown) => {
+                  prompt = JSON.stringify(msgs);
+                  return inner(msgs);
+                };
+                return bound;
+              };
+            return m;
+          },
+        },
+      );
+      expect(prompt).toContain("Classificador SAC adicionou cancelamento");
+      expect(prompt).not.toContain("Fulano removeu compra-de-ingresso");
+    } finally {
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { resetAtMessageId: null },
+      });
+    }
+  });
+
   // ISSUE #642, ROUND 17. The mixed window: the catalog is down, so the reading is incomplete, but
   // the conversation's own labels still recognise a change. Dropping the line costs the model the
   // change it CAN see; handing it over silently makes an incomplete list look complete, which is

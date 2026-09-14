@@ -669,6 +669,32 @@ export interface LabelHistory {
   omitted: number;
 }
 
+// THE RESET'S OWN CLEANUP IS NOT THIS EPISODE'S HISTORY (round 20). `reset_at_message_id` is the id
+// of the `/reset` MESSAGE, and the command clears the labels a dozen Chatwoot calls later, so the
+// removal activity Chatwoot writes for that clear lands ABOVE the boundary and survives the filter
+// every other block is protected by. The next tick then reads "Fulano removeu compra-de-ingresso" —
+// the erased episode's labels, named, and read by a stateless observer as a reason not to put that
+// label back, which is the opposite of what the operator was told happened.
+//
+// The cut is the FIRST ROW THAT IS NOT NARRATION after the boundary: `/reset` acknowledges itself
+// only once every cleanup step has run (`webhook.ts`, so the ack can name what failed), so
+// everything the command wrote sits before that row and nothing this episode did sits before it. A
+// human who changed a label in that same gap loses their line too, which is a miss, the direction
+// this block fails in on purpose.
+export function afterResetNarration(
+  rows: ChatwootMessageRow[],
+  resetBoundary: number | null,
+): ChatwootMessageRow[] {
+  if (resetBoundary === null) return rows;
+  const ordered = [...rows].sort((a, b) => a.id - b.id);
+  const firstReal = ordered.find((r) => r.messageType !== "activity");
+  if (firstReal === undefined)
+    return ordered.filter((r) => r.messageType !== "activity");
+  return ordered.filter(
+    (r) => r.messageType !== "activity" || r.id > firstReal.id,
+  );
+}
+
 export function labelHistoryFromRows(
   rows: ChatwootMessageRow[],
   vocabulary: readonly string[] | null,
@@ -1216,7 +1242,8 @@ export async function runObserve(
   // standing; a title invented, applied and taken off between two ticks is in neither list and its
   // lines are not read, which is the miss this block chooses over inventing a decision.
   const labelChanges = labelHistoryFromRows(
-    rows,
+    // Minus the reset's own cleanup, which lands above the boundary the filter above uses.
+    afterResetNarration(rows, resetBoundary),
     vocabLabels === null && current === null
       ? null
       : [...(vocabLabels ?? []), ...(current ?? [])],

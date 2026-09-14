@@ -5,6 +5,7 @@ import {
 } from "@/modules/chatwoot/label-activity";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
+  afterResetNarration,
   labelHistoryFromRows,
   notesFromRows,
   observeTurnText,
@@ -423,6 +424,58 @@ describe("the notes the conversation already carries", () => {
       );
       expect(history.lines).toHaveLength(8);
       expect(history.omitted).toBe(3);
+    });
+
+    // ROUND 20: `reset_at_message_id` is the id of the /reset MESSAGE, and the command clears the
+    // labels a dozen Chatwoot calls later, so the removal activity lands ABOVE the boundary and
+    // survives the filter every other block is protected by. The next tick would read the erased
+    // episode's labels, named, as a reason not to put them back.
+    test("the reset's own cleanup is not read as this episode's history", () => {
+      const rows = [
+        row({
+          id: 11,
+          messageType: "activity",
+          content: "Fulano removeu compra-de-ingresso",
+        }),
+        row({ id: 12, messageType: "outgoing", content: "Conversa limpa." }),
+        row({
+          id: 13,
+          messageType: "activity",
+          content: "Classificador SAC adicionou cancelamento",
+        }),
+      ];
+      expect(
+        labelHistoryFromRows(afterResetNarration(rows, 10), vocab, undefined, 8)
+          .lines,
+      ).toEqual(["Classificador SAC adicionou cancelamento"]);
+      // With no reset on the conversation, nothing is cut.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(rows, null),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Fulano removeu compra-de-ingresso",
+        "Classificador SAC adicionou cancelamento",
+      ]);
+    });
+
+    // And a reset with nothing said since: every row is the command's own narration.
+    test("a window that is only the reset's narration reads as empty", () => {
+      expect(
+        afterResetNarration(
+          [
+            row({
+              id: 11,
+              messageType: "activity",
+              content: "Fulano removeu compra-de-ingresso",
+            }),
+          ],
+          10,
+        ),
+      ).toEqual([]);
     });
 
     test("drops the narration that is not about a label", () => {

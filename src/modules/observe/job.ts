@@ -131,9 +131,11 @@ const NOTES_MAX_CHARS = 8_000;
 // ...and no single note may eat the whole budget, so one operator who pasted a log cannot hide every
 // note around it. `clipText` keeps the START, which for a note is where it says what it is about.
 const NOTE_MAX_CHARS = 2_000;
-// A label-change line is "<somebody> <verb> <label>", and each of the three is short. The cap is the
-// ROW's, not the sentence's: this block rides on every observation of a conversation whose label has
-// moved, and a tick costs about US$ 0.0005 today (issue #642).
+// A label-change line is "<somebody> <verb> <label>", and each of the three is short. This block
+// rides on every observation of a conversation whose label has moved and a tick costs about
+// US$ 0.0005 today, so the line has a size it must fit in — but it is a REFUSAL and not a cut
+// (issue #642, round 14): a clipped sentence loses the later labels of a multi-label change, and in
+// a verb-final language it loses the verb.
 const LABEL_CHANGE_MAX_CHARS = 200;
 const LABEL_CHANGES_MAX = 8;
 // NOTE: `notas-internas` joined the list when the notes block was added (issue #568, review round
@@ -632,19 +634,26 @@ function namesGuardedTitle(text: string, guard: ReadonlySet<string>): boolean {
 // block above it, and a change nobody asked the model to make is not history it should reason from.
 // The ceiling on that list does NOT apply here: 40 is how many titles may be SHOWN, while this only
 // has to RECOGNISE them, and a label past the fortieth still gets put on conversations.
+export interface LabelHistory {
+  lines: string[];
+  // Lines that ARE changes and could not be shown whole. Non-zero means the block may not claim the
+  // window was quiet, for the same reason a failed read may not (round 14).
+  omitted: number;
+}
+
 export function labelHistoryFromRows(
   rows: ChatwootMessageRow[],
   vocabulary: readonly string[] | null,
   guarded: readonly string[] | undefined,
   limit: number,
-): string[] {
-  if (vocabulary === null) return [];
+): LabelHistory {
+  if (vocabulary === null) return { lines: [], omitted: 0 };
   const guard = new Set(guarded ?? []);
   const known = new Set(
     vocabulary.map((l) => l.trim()).filter((l) => l !== ""),
   );
-  if (known.size === 0) return [];
-  return rows
+  if (known.size === 0) return { lines: [], omitted: 0 };
+  const changes = rows
     .filter((m) => {
       if (m.messageType !== "activity" || m.private) return false;
       if (m.activityType !== null) return false;
@@ -663,14 +672,18 @@ export function labelHistoryFromRows(
     .sort((a, b) => a.id - b.id)
     .slice(-limit)
     .map((m) =>
-      clipText(
-        stripFences(m.content)
-          .trim()
-          .replace(/\s*\n\s*/g, " "),
-        LABEL_CHANGE_MAX_CHARS,
-      ),
+      stripFences(m.content)
+        .trim()
+        .replace(/\s*\n\s*/g, " "),
     )
     .filter((t) => t.length > 0);
+  // WHOLE OR NOT AT ALL (round 14). Clipping a sentence to its first 200 characters drops the later
+  // labels of a multi-label change, and in a verb-final language it drops the VERB: "Hans hat vip,
+  // …, x hinzugefügt" cut short says somebody did something to those labels and not which thing,
+  // which is worse than not knowing. So an over-long line is left out and counted, and the count is
+  // what stops the block from reporting the window as quiet.
+  const lines = changes.filter((t) => t.length <= LABEL_CHANGE_MAX_CHARS);
+  return { lines, omitted: changes.length - lines.length };
 }
 
 // The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —
@@ -1602,10 +1615,12 @@ export async function runObserve(
                 // one of them missing, "nothing changed here" is exactly the sentence a stateless
                 // observer would take as licence to decide again. Lines that WERE recognised are
                 // still shown: those are read, whatever else was not.
-                labelChanges.length > 0
-                  ? labelChanges
-                  : vocabLabels !== null && current !== null
-                    ? labelChanges
+                labelChanges.lines.length > 0
+                  ? labelChanges.lines
+                  : vocabLabels !== null &&
+                      current !== null &&
+                      labelChanges.omitted === 0
+                    ? labelChanges.lines
                     : null,
               ),
             ),

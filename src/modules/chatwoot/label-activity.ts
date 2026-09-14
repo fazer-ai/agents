@@ -1050,9 +1050,13 @@ function readings(template: Piece[], line: string): string[] {
       found >= 0;
       found = line.indexOf(next.literal, found + 1)
     ) {
+      // PAST THE OCCURRENCE THIS VALUE ENDED AT, and never back to the literal node with the old
+      // position: that node would rescan and could settle on a LATER occurrence, pairing a value
+      // with a boundary it was not measured against. "Hans hat vip hinzugefügt junk hinzugefügt"
+      // then reads as the label "vip hinzugefügt junk" beside the real "vip" (round 14).
       walk(
-        index + 1,
-        at,
+        index + 2,
+        found + next.literal.length,
         piece.placeholder === "%{labels}" ? line.slice(at, found) : labels,
       );
       if (out.length >= SPLITS_MAX) return;

@@ -941,6 +941,38 @@ describe("the notes the conversation already carries", () => {
       ).toEqual([]);
     });
 
+    // ROUND 15: the two sides have to read a value the same way. The label walk uses `indexOf`,
+    // which crosses a line break without noticing; the refusal used `.`, which stops at one. So a
+    // value carrying a newline walked past every one of the 865 refusals and was then read as a
+    // label change by a template that does cross it. A WhatsApp group name reaches `%{value}` the
+    // same way, written by whoever is in the group.
+    test("a value carrying a line break is still refused", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Assigned to Gi by John\n added vip",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: 'Ana alterou o nome do grupo para "x\n adicionou vip"',
+            }),
+            row({
+              id: 3,
+              messageType: "activity",
+              content: "Ana adicionou vip",
+            }),
+          ],
+          ["vip"],
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Ana adicionou vip"]);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

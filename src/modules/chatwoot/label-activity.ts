@@ -1071,6 +1071,15 @@ const LABEL_ACTIVITY_PIECES: readonly Piece[][] =
 
 // The refusal side only has to answer WHETHER some split matches, which a regex already does by
 // backtracking, so it stays one anchored pattern per template.
+//
+// `[\s\S]` AND NOT `.`, because the two sides have to read a value the same way (round 15). The
+// label side walks its literals with `indexOf`, which crosses a line break without noticing; `.`
+// stops at one. So a value carrying a newline slipped past the refusal and was then read as a label
+// change by a template that does cross it: "Assigned to Gi by John\n added vip" is an assignment
+// that the English label template parses as the label `vip`, and an account that has a `vip` gets a
+// decision the model never made. A WhatsApp group name reaches `%{value}` the same way, and that one
+// is written by whoever is in the group. The value stays NON-EMPTY on both sides: Chatwoot rendered
+// something into every placeholder, and the walk requires at least one character there too.
 const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = OTHER_ACTIVITY_TEMPLATES.map(
   (t) =>
     new RegExp(
@@ -1078,7 +1087,7 @@ const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = OTHER_ACTIVITY_TEMPLATES.map(
         .split(/(%\{\w+\})/g)
         .map((part) =>
           /^%\{\w+\}$/.test(part)
-            ? "(?:.+?)"
+            ? "(?:[\\s\\S]+?)"
             : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
         )
         .join("")}$`,

@@ -94,23 +94,103 @@ const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
   "Ο %{user_name} πρόσθεσε ετικέτες %{labels}", // el.added
 ];
 
-// `%{user_name}` is somebody's display name, which we never need; `%{labels}` is the run. Anchored
-// at both ends, so a sentence that merely CONTAINS a template's words does not match it.
-const LABEL_ACTIVITY_PATTERNS: readonly RegExp[] = LABEL_ACTIVITY_TEMPLATES.map(
-  (t) =>
-    new RegExp(
-      `^${t
-        .split(/(%\{user_name\}|%\{labels\})/g)
-        .map((part) =>
-          part === "%{user_name}"
-            ? "(?:.+?)"
-            : part === "%{labels}"
+// EVERY OTHER ACTIVITY SENTENCE A LABEL TEMPLATE WOULD ALSO PARSE (round 6), and no more than
+// those: of the 760 non-label templates the fork ships, these 58 are the ones whose rendered text a
+// label pattern matches — an SLA policy added ("Ana added SLA policy Gold" reads as the label "SLA
+// policy Gold" on an account that has one), a priority removed, an assignment cleared, a WhatsApp
+// group description removed. None of them sets `activity.type`, so the bag cannot tell them apart
+// either. Asked FIRST, and a line that matches one is not a label change whatever it names.
+//
+// The list is computed, not curated: a non-label template is in it exactly when rendering it with
+// any value produces a string one of the label patterns accepts.
+const AMBIGUOUS_ACTIVITY_TEMPLATES: readonly string[] = [
+  "%{author_name} removed the group description", // groups_update.description_removed
+  "%{author_name} removeu a descrição do grupo", // groups_update.description_removed
+  "%{user_name} SLA নীতি %{sla_name} যোগ করেছেন", // sla.added
+  "%{user_name} a ajouté la politique de SLA %{sla_name}", // sla.added
+  "%{user_name} a supprimé la politique de SLA %{sla_name}", // sla.removed
+  "%{user_name} a supprimé la priorité", // priority.removed
+  "%{user_name} added SLA policy %{sla_name}", // sla.added
+  "%{user_name} adicionou política de SLA %{sla_name}", // sla.added
+  "%{user_name} adicionou uma política de SLA %{sla_name}", // sla.added
+  "%{user_name} agregó la política de SLA %{sla_name}", // sla.added
+  "%{user_name} eliminat prioritatea", // priority.removed
+  "%{user_name} fjernet tildelingen til samtalen", // assignee.removed
+  "%{user_name} ha afegit la política de SLA %{sla_name}", // sla.added
+  "%{user_name} ha aggiunto la policy SLA %{sla_name}", // sla.added
+  "%{user_name} ha eliminat la política de SLA %{sla_name}", // sla.removed
+  "%{user_name} ha eliminat la prioritat", // priority.removed
+  "%{user_name} ha rimosso la policy SLA %{sla_name}", // sla.removed
+  "%{user_name} ha rimosso la priorità", // priority.removed
+  "%{user_name} hat SLA-Richtlinie %{sla_name} entfernt", // sla.removed
+  "%{user_name} hat SLA-Richtlinie %{sla_name} hinzugefügt", // sla.added
+  "%{user_name} hat die Priorität entfernt", // priority.removed
+  "%{user_name} je dodal politiko SLA %{sla_name}", // sla.added
+  "%{user_name} je odstranil politiko SLA %{sla_name}", // sla.removed
+  "%{user_name} je odstranil prednost", // priority.removed
+  "%{user_name} menghapus prioritasnya", // priority.removed
+  "%{user_name} noņēma SLA politiku %{sla_name}", // sla.removed
+  "%{user_name} noņēma piešķiršanu", // assignee.removed
+  "%{user_name} noņēma piešķiršanu %{team_name}", // team.removed
+  "%{user_name} noņēma prioritāti", // priority.removed
+  "%{user_name} pašalino prioritetą", // priority.removed
+  "%{user_name} pievienoja SLA politiku %{sla_name}", // sla.added
+  "%{user_name} removed SLA policy %{sla_name}", // sla.removed
+  "%{user_name} removed the priority", // priority.removed
+  "%{user_name} removeu a política de SLA %{sla_name}", // sla.removed
+  "%{user_name} removeu a política de SLA de %{sla_name}", // sla.removed
+  "%{user_name} removeu a prioridade", // priority.removed
+  "%{user_name} видалив політику SLA %{sla_name}", // sla.removed
+  "%{user_name} видалив пріоритет", // priority.removed
+  "%{user_name} добавил политику SLA %{sla_name}", // sla.added
+  "%{user_name} додав політику SLA %{sla_name}", // sla.added
+  "%{user_name} удалил политику SLA %{sla_name}", // sla.removed
+  "%{user_name} удалил приоритет", // priority.removed
+  "%{user_name} הוסיף מדיניות SLA %{sla_name}", // sla.added
+  "%{user_name} הסיר את העדיפות", // priority.removed
+  "%{user_name} הסיר מדיניות SLA %{sla_name}", // sla.removed
+  "%{user_name} أزال الأولوية", // priority.removed
+  "%{user_name} أزال سياسة مستوى الخدمة %{sla_name}", // sla.removed
+  "%{user_name} أضاف سياسة مستوى الخدمة %{sla_name}", // sla.added
+  "%{user_name} ले SLA नीति %{sla_name} हटाए", // sla.removed
+  "%{user_name} ले प्राथमिकता हटाए", // priority.removed
+  "%{user_name} 新增了 SLA 政策 %{sla_name}", // sla.added
+  "%{user_name} 移除了 SLA 政策 %{sla_name}", // sla.removed
+  "%{user_name} 移除了 SLA 策略 %{sla_name}", // sla.removed
+  "%{user_name}, %{sla_name} adlı SLA politikasını kaldırdı", // sla.removed
+  "%{user_name}님이 SLA 정책 %{sla_name}을(를) 제거했습니다", // sla.removed
+  "%{user_name}님이 SLA 정책 %{sla_name}을(를) 추가했습니다", // sla.added
+  "Idinagdag ni %{user_name} ang patakaran ng SLA na %{sla_name}", // sla.added
+  "Samtale fjernet tildeling af %{user_name}", // assignee.removed
+];
+
+// `%{user_name}` and every other placeholder is somebody's name, which we never need; `%{labels}` is
+// the run. Anchored at both ends, so a sentence that merely CONTAINS a template's words does not
+// match it.
+function compile(templates: readonly string[]): RegExp[] {
+  return templates.map(
+    (t) =>
+      new RegExp(
+        `^${t
+          .split(/(%\{\w+\})/g)
+          .map((part) =>
+            part === "%{labels}"
               ? "(.+)"
-              : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-        )
-        .join("")}$`,
-      "u",
-    ),
+              : /^%\{\w+\}$/.test(part)
+                ? "(?:.+?)"
+                : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+          )
+          .join("")}$`,
+        "u",
+      ),
+  );
+}
+
+const LABEL_ACTIVITY_PATTERNS: readonly RegExp[] = compile(
+  LABEL_ACTIVITY_TEMPLATES,
+);
+const AMBIGUOUS_ACTIVITY_PATTERNS: readonly RegExp[] = compile(
+  AMBIGUOUS_ACTIVITY_TEMPLATES,
 );
 
 // The titles a label-change sentence names, or `null` when no template rendered this line. The
@@ -119,6 +199,7 @@ const LABEL_ACTIVITY_PATTERNS: readonly RegExp[] = LABEL_ACTIVITY_TEMPLATES.map(
 export function labelsNarrated(content: string): string[] | null {
   const line = content.trim();
   if (line.length === 0) return null;
+  if (AMBIGUOUS_ACTIVITY_PATTERNS.some((re) => re.test(line))) return null;
   for (const re of LABEL_ACTIVITY_PATTERNS) {
     const m = line.match(re);
     if (m?.[1] === undefined) continue;

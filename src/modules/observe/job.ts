@@ -1133,12 +1133,24 @@ export async function runObserve(
   // the SAME one the toolset makes, under the same key, so a tick that also builds `set_labels` pays
   // for it once (vocab.ts caches per instance). Best-effort like the labels above: `null` makes the
   // block say it could not be read, rather than claim that nothing ever changed.
+  //
+  // AND IT FALLS BACK TO THE CATALOG ALONE, because that cached read is two requests under one
+  // `Promise.all` — the labels and the custom attribute DEFINITIONS — so an attribute endpoint that
+  // fails takes a perfectly good label catalog down with it (round 6). This block needs only the
+  // labels, so it asks for them directly rather than inheriting the other read's failure. Off the
+  // cache, and only on the path that already failed.
   const vocabLabels = await loadChatwootVocab(
     client,
     `${tenantId}:${instanceId}`,
   )
     .then((v) => v.labels)
-    .catch(() => null);
+    .catch(async () => {
+      try {
+        return await client.listLabels();
+      } catch {
+        return null;
+      }
+    });
   // THE CONVERSATION'S OWN LABELS JOIN THE INDEX, and they are not a nicety (round 4). The account
   // catalog and the conversation's tags are two different tables in Chatwoot: `/labels` answers from
   // `Label`, which an operator fills in Settings, while a tag attached through `set_labels` goes

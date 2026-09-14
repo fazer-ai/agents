@@ -736,6 +736,32 @@ describe("the notes the conversation already carries", () => {
       ).toEqual([]);
     });
 
+    // ROUND 6: the other activities a label template would ALSO parse. None of them declares a type,
+    // so the bag cannot tell them apart either, and on an account with a label named "SLA policy
+    // Gold" the SLA sentence reads as a label change that never happened.
+    test("an activity another template explains is refused before the label one", () => {
+      expect(
+        labelHistoryFromRows(
+          [
+            row({
+              id: 1,
+              messageType: "activity",
+              content: "Ana added SLA policy Gold",
+            }),
+            row({
+              id: 2,
+              messageType: "activity",
+              content: "Ana removeu a prioridade",
+            }),
+            row({ id: 3, messageType: "activity", content: "Ana added vip" }),
+          ],
+          ["SLA policy Gold", "a prioridade", "vip"],
+          undefined,
+          8,
+        ),
+      ).toEqual(["Ana added vip"]);
+    });
+
     test("another activity that quotes a label is not a label change", () => {
       expect(
         labelHistoryFromRows(

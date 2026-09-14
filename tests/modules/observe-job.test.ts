@@ -3925,6 +3925,66 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
+  // ISSUE #642, ROUND 6. The cached vocabulary is two requests under one `Promise.all`: the labels
+  // and the custom attribute DEFINITIONS. An attribute endpoint that fails took a perfectly good
+  // label catalog down with it, and this block needs only the labels.
+  test("an attribute endpoint that fails does not cost the label catalog", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let prompt = "";
+    const client = {
+      ...stubClient(
+        [
+          message(1, "quero cancelar"),
+          message(2, "Classificador SAC adicionou cancelamento", "incoming", {
+            message_type: 2,
+          }),
+        ],
+        [],
+        log,
+      ),
+      listLabels: async () => ["cancelamento"],
+      listCustomAttributeDefinitions: async () => {
+        throw new Error("attribute definitions are down");
+      },
+    } as unknown as ChatwootClient;
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () => client,
+        makeModel: () => {
+          const m = new SilentModel() as unknown as BaseChatModel;
+          const bind = (m as unknown as { bindTools: (t: unknown) => unknown })
+            .bindTools;
+          (m as unknown as { bindTools: (t: unknown) => unknown }).bindTools = (
+            tools: unknown,
+          ) => {
+            const bound = bind.call(m, tools) as {
+              invoke: (msgs: unknown) => Promise<unknown>;
+            };
+            const inner = bound.invoke.bind(bound);
+            bound.invoke = async (msgs: unknown) => {
+              prompt = JSON.stringify(msgs);
+              return inner(msgs);
+            };
+            return bound;
+          };
+          return m;
+        },
+      },
+    );
+    expect(prompt).toContain("Classificador SAC adicionou cancelamento");
+  });
+
   // The vocabulary is a REQUEST, and every exit above the turn is an exit that costs nothing today.
   // Reading it beside the notes would put a Chatwoot round trip on a cold cache in front of a tick
   // that is about to throw the answer away (issue #642).

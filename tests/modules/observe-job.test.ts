@@ -3758,4 +3758,124 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       });
     }
   });
+
+  // ISSUE #642. The label changes are activity rows, which the transcript drops on purpose; without
+  // them the model cannot tell a label that never moved from one it has already flipped twice.
+  test("the tick shows the model the label changes already recorded on the conversation", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    let prompt = "";
+    await runObserve(
+      tenantId,
+      {
+        instanceId,
+        conversationId: CONV,
+        agentId,
+        reason: "burst",
+        atMessageId: null,
+      },
+      appDb,
+      {
+        makeClient: async () =>
+          stubClientWithVocab(
+            [
+              message(1, "quero cancelar"),
+              message(
+                2,
+                "Classificador SAC adicionou compra-de-ingresso",
+                "incoming",
+                {
+                  message_type: 2,
+                },
+              ),
+              message(
+                3,
+                "Assigned to Gi - Agente IA by Automation System",
+                "incoming",
+                {
+                  message_type: 2,
+                },
+              ),
+              message(
+                4,
+                "Classificador SAC removeu compra-de-ingresso",
+                "incoming",
+                {
+                  message_type: 2,
+                },
+              ),
+            ],
+            ["cancelamento"],
+            log,
+            ["cancelamento", "compra-de-ingresso"],
+          ),
+        makeModel: () => {
+          const m = new SilentModel() as unknown as BaseChatModel;
+          const bind = (m as unknown as { bindTools: (t: unknown) => unknown })
+            .bindTools;
+          (m as unknown as { bindTools: (t: unknown) => unknown }).bindTools = (
+            tools: unknown,
+          ) => {
+            const bound = bind.call(m, tools) as {
+              invoke: (msgs: unknown) => Promise<unknown>;
+            };
+            const inner = bound.invoke.bind(bound);
+            bound.invoke = async (msgs: unknown) => {
+              prompt = JSON.stringify(msgs);
+              return inner(msgs);
+            };
+            return bound;
+          };
+          return m;
+        },
+      },
+    );
+    expect(prompt).toContain("mudancas-de-etiqueta");
+    expect(prompt).toContain("Classificador SAC adicionou compra-de-ingresso");
+    expect(prompt).toContain("Classificador SAC removeu compra-de-ingresso");
+    // The narration that is not about a label stays out.
+    expect(prompt).not.toContain("Automation System");
+    // And the transcript still counts messages, not activity.
+    expect(prompt).toContain("quero cancelar");
+  });
+
+  // The vocabulary is a REQUEST, and every exit above the turn is an exit that costs nothing today.
+  // Reading it beside the notes would put a Chatwoot round trip on a cold cache in front of a tick
+  // that is about to throw the answer away (issue #642).
+  test("a tick that ends before the turn never reads the vocabulary", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    __resetChatwootVocabCache();
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const vocab = { n: 0 };
+    expect(
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () =>
+            ({
+              ...stubClient([message(1, "Olá!", "outgoing")], [], log),
+              listLabels: async () => {
+                vocab.n++;
+                return ["cancelamento"];
+              },
+              listCustomAttributeDefinitions: async () => [],
+            }) as unknown as ChatwootClient,
+          makeModel: () => new SilentModel() as unknown as BaseChatModel,
+        },
+      ),
+    ).toEqual({ outcome: "done" });
+    expect(detailOf(await observeLines(), -1).skipped).toBe(
+      "no_customer_message",
+    );
+    expect(vocab.n).toBe(0);
+  });
 });

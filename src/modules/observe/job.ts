@@ -45,6 +45,7 @@ import {
   renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
+import { loadChatwootVocab } from "@/modules/chatwoot/vocab";
 import { underSignal } from "@/modules/contact-auth/check";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
@@ -129,13 +130,21 @@ const NOTES_MAX_CHARS = 8_000;
 // ...and no single note may eat the whole budget, so one operator who pasted a log cannot hide every
 // note around it. `clipText` keeps the START, which for a note is where it says what it is about.
 const NOTE_MAX_CHARS = 2_000;
+// A label-change line is "<somebody> <verb> <label>", and each of the three is short. The cap is the
+// ROW's, not the sentence's: this block rides on every observation of a conversation whose label has
+// moved, and a tick costs about US$ 0.0005 today (issue #642).
+const LABEL_CHANGE_MAX_CHARS = 200;
+const LABEL_CHANGES_MAX = 8;
 // NOTE: `notas-internas` joined the list when the notes block was added (issue #568, review round
 // 24), and it is the one whose content is WRITTEN BY PEOPLE — a colleague pasting a prompt they were
 // debugging, or a note that quoted a customer. A closing tag inside it ends the block early and
 // everything after it reads as if it were outside the notes, which is the same escape the transcript
 // closed on day one.
+// NOTE: `mudancas-de-etiqueta` joined it with the label-history block (issue #642): its content is
+// Chatwoot's own sentence around a LABEL, and a label is a string the model wrote (the tag list
+// accepts what the account's catalog would refuse), so the closing tag can arrive inside it.
 const FENCE_TAG =
-  /<\s*\/?\s*(transcricao|etiquetas-atuais|notas-internas)[^>]*>/gi;
+  /<\s*\/?\s*(transcricao|etiquetas-atuais|notas-internas|mudancas-de-etiqueta)[^>]*>/gi;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -479,6 +488,9 @@ export function observeTurnText(
   // model clear a conversation it never saw the labels of (review round 33).
   current: readonly string[] | null,
   notes: readonly string[] = [],
+  // `null` is "no vocabulary to recognise a label change by", which is not "nothing changed": the
+  // block says which of the two it is (issue #642).
+  labelChanges: readonly string[] | null = null,
 ): string {
   return [
     "Turno de observação: você está acompanhando esta conversa e NÃO responde a ninguém.",
@@ -529,10 +541,71 @@ export function observeTurnText(
         : "(nenhuma nesta janela)"
     }</notas-internas>`,
     "",
+    // WHAT ALREADY CHANGED ON THIS CONVERSATION, for the same reason the two blocks above exist: a
+    // decision the model cannot see is a decision it makes again. Rendered even when empty, and
+    // saying which kind of empty — a block that disappears teaches nothing, while "(nenhuma nesta
+    // janela)" is the evidence that the label standing now has been standing since the window
+    // opened.
+    `<mudancas-de-etiqueta escopo="janela-lida">${
+      labelChanges === null
+        ? "(não foi possível ler)"
+        : labelChanges.length
+          ? `\n${labelChanges.map((c) => `- ${c}`).join("\n")}\n`
+          : "(nenhuma nesta janela)"
+    }</mudancas-de-etiqueta>`,
+    "",
     "<transcricao>",
     renderTranscript(transcript),
     "</transcricao>",
   ].join("\n");
+}
+
+// WHAT WAS ALREADY DECIDED ON THIS CONVERSATION, in Chatwoot's own words (issue #642).
+//
+// A tick is stateless on purpose, and the frame says so: what the agent already did is in what is
+// RECORDED on the conversation. The labels standing right now are recorded and the model gets them.
+// The CHANGES are recorded too — Chatwoot writes one activity line per label added or removed — and
+// those were dropped from the window with the rest of the system's narration, so the model could not
+// tell a label that has been there since the first message from one it has already put on and taken
+// off twice in four minutes. Measured on one install over 12 hours: 676 category changes, 161
+// conversations going A to B and back to A, and 42% of the conversations that changed ending in the
+// category they started in.
+//
+// VERBATIM, NEVER PARSED. The activity row carries no sender and no `content_attributes` (measured:
+// `message_type=2`, `content_type=0`, `sender_id` null) — the only thing there is the sentence
+// Chatwoot localized ("Fulano adicionou cancelamento"). Anything we would extract would come from
+// grammar in the account's language; forwarded whole, the actor, the verb and the label survive in
+// every language, and a human's change reads as a human's.
+//
+// SELECTED BY THE ACCOUNT'S OWN LABELS, so assignment, status and every other narration stays out.
+// A line that names no known label is not about a label.
+export function labelHistoryFromRows(
+  rows: ChatwootMessageRow[],
+  vocabulary: readonly string[] | null,
+  limit: number,
+): string[] {
+  if (vocabulary === null) return [];
+  const known = vocabulary.map((l) => l.trim()).filter((l) => l.length > 0);
+  if (known.length === 0) return [];
+  return rows
+    .filter(
+      (m) =>
+        m.messageType === "activity" &&
+        !m.private &&
+        m.content.trim().length > 0 &&
+        known.some((l) => m.content.includes(l)),
+    )
+    .sort((a, b) => a.id - b.id)
+    .slice(-limit)
+    .map((m) =>
+      clipText(
+        stripFences(m.content)
+          .trim()
+          .replace(/\s*\n\s*/g, " "),
+        LABEL_CHANGE_MAX_CHARS,
+      ),
+    )
+    .filter((t) => t.length > 0);
 }
 
 // The private notes already on the conversation, oldest first, newest `limit`. Written by anyone —
@@ -995,6 +1068,24 @@ export async function runObserve(
   const currentForPrompt =
     current === null ? null : modelVisibleLabels(current, cfg.protectedLabels);
 
+  // WHAT ALREADY CHANGED, beside what is standing now, and read here rather than beside `notes`
+  // because this is a request: every exit above it (no customer message, agent off, window empty)
+  // would pay for a Chatwoot round trip on a cold cache and then throw the answer away. The read is
+  // the SAME one the toolset makes, under the same key, so a tick that also builds `set_labels` pays
+  // for it once (vocab.ts caches per instance). Best-effort like the labels above: `null` makes the
+  // block say it could not be read, rather than claim that nothing ever changed.
+  const vocabLabels = await loadChatwootVocab(
+    client,
+    `${tenantId}:${instanceId}`,
+  )
+    .then((v) => v.labels)
+    .catch(() => null);
+  const labelChanges = labelHistoryFromRows(
+    rows,
+    vocabLabels,
+    LABEL_CHANGES_MAX,
+  );
+
   // THE TURN ITSELF, and from here on this is the ordinary graph (issue #568). What used to sit in
   // these lines was a classifier: one model call with a JSON schema built from the operator's label
   // groups, then a deterministic apply that wrote the verdict. It existed because `loadAgentConfig`
@@ -1420,7 +1511,12 @@ export async function runObserve(
         {
           messages: [
             new HumanMessage(
-              observeTurnText(transcript, currentForPrompt, notes),
+              observeTurnText(
+                transcript,
+                currentForPrompt,
+                notes,
+                vocabLabels === null ? null : labelChanges,
+              ),
             ),
           ],
         },

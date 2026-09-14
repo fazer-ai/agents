@@ -501,9 +501,9 @@ const BARE_SLICES: Record<
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
-  // Three: the transcript window, the notes window and the page walk. Every one is a slice of an
-  // ARRAY of rows, so none can land inside a surrogate pair.
-  "src/modules/observe/job.ts": [3, "array"],
+  // Four: the transcript window, the notes window, the label-change window and the page walk. Every
+  // one is a slice of an ARRAY of rows, so none can land inside a surrogate pair.
+  "src/modules/observe/job.ts": [4, "array"],
   "src/modules/playground/service.ts": [1, "array"],
   // The balloon's own LINES, cut from the array `split("\n")` returned, to ask whether the run at
   // either end of it is the model's copy of the signature. An array of strings, never a string, so

@@ -9,26 +9,15 @@
 // nothing refuses, and a placeholder is where somebody else's text goes — a WhatsApp group name, a
 // contact's push name — so a missing one is a hole somebody can aim at. Reading the tree by hand
 // missed 105 leaves the first time (review round 11), all of them nested deeper than the level that
-// was being read.
+// was being read, and a hand-rolled unquote left YAML's own escaping in 13 more (round 10).
 //
-// TWO THINGS THE PARSER HAS TO GET RIGHT, and both have already been got wrong:
-//   - EVERY leaf under `conversations.activity`, at any depth, not just the first level.
-//   - The value as YAML DECODES it: a single-quoted scalar escapes an apostrophe by doubling it, and
-//     a pattern built from the file's spelling waits for two apostrophes Chatwoot never writes.
+// So the file is PARSED, by `Bun.YAML`, and the tree is walked to every leaf. Decoding scalars by
+// hand is the bug this had twice: a single-quoted scalar doubles an apostrophe, a double-quoted one
+// can carry `\n`, `\t` or `\uXXXX`, and a pattern built from the file's spelling waits for text
+// Chatwoot never writes (round 12).
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
-function unquote(raw: string): string {
-  const v = raw.trim();
-  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
-    return v.slice(1, -1).replaceAll("''", "'");
-  }
-  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
-    return v.slice(1, -1).replaceAll('\\"', '"').replaceAll("\\\\", "\\");
-  }
-  return v;
-}
 
 const dir = process.argv[2];
 if (!dir) {
@@ -39,36 +28,41 @@ if (!dir) {
 const labels = new Set<string>();
 const other = new Set<string>();
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Every string leaf under `node`, with the dotted path it sits at.
+function walk(
+  node: unknown,
+  path: string[],
+  out: (p: string, v: string) => void,
+) {
+  if (typeof node === "string") {
+    out(path.join("."), node);
+    return;
+  }
+  if (!isRecord(node)) return;
+  for (const [key, value] of Object.entries(node))
+    walk(value, [...path, key], out);
+}
+
 for (const file of readdirSync(dir).filter((f) => f.endsWith(".yml"))) {
-  const text = readFileSync(join(dir, file), "utf8");
-  // The `conversations.activity` subtree, up to the next key at its own level.
-  // `$(?![\s\S])` is end-of-input: JS has no `\Z`, and writing one matches a literal "Z", which
-  // truncates the subtree at the first Z in the file.
-  const block = text.match(
-    /^ {4}activity:\n([\s\S]*?)(?=^ {4}\w|$(?![\s\S]))/m,
-  )?.[1];
-  if (block === undefined) continue;
-  let path: string[] = [];
-  for (const line of block.split("\n")) {
-    if (line.trim() === "" || line.trim().startsWith("#")) continue;
-    const indent = line.length - line.trimStart().length;
-    const depth = Math.floor((indent - 6) / 2);
-    path = path.slice(0, Math.max(depth, 0));
-    const key = line.match(/^\s*([\w.-]+):\s*$/);
-    if (key?.[1] !== undefined) {
-      path.push(key[1]);
-      continue;
-    }
-    const leaf = line.match(/^\s*([\w.-]+): (.+)$/);
-    if (leaf?.[1] === undefined || leaf[2] === undefined) continue;
-    const full = [...path, leaf[1]].join(".");
-    const value = unquote(leaf[2]);
-    if (!value.includes("%{")) continue;
-    if (full.startsWith("labels.")) {
-      if (value.includes("%{labels}")) labels.add(value);
-    } else {
-      other.add(value);
-    }
+  const doc = Bun.YAML.parse(readFileSync(join(dir, file), "utf8"));
+  if (!isRecord(doc)) continue;
+  // Each locale file is `<locale>: { conversations: { activity: … } }`.
+  for (const root of Object.values(doc)) {
+    if (!isRecord(root)) continue;
+    const conversations = root.conversations;
+    if (!isRecord(conversations)) continue;
+    walk(conversations.activity, [], (path, value) => {
+      if (!value.includes("%{")) return;
+      if (path.startsWith("labels.")) {
+        if (value.includes("%{labels}")) labels.add(value);
+      } else {
+        other.add(value);
+      }
+    });
   }
 }
 

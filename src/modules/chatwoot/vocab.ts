@@ -15,6 +15,7 @@ export interface ChatwootVocab {
 // attribute definitions on every turn, but an operator who adds one sees it within the window.
 const TTL_MS = 60_000;
 const cache = new Map<string, { value: ChatwootVocab; expires: number }>();
+const labelCache = new Map<string, { value: string[]; expires: number }>();
 
 // Fetches (and caches) the account's labels + custom attribute definitions. `cacheKey` identifies the
 // Chatwoot instance (e.g. `${tenantId}:${instanceId}`); `now` is injectable for tests. Does NOT
@@ -26,8 +27,14 @@ export async function loadChatwootVocab(
 ): Promise<ChatwootVocab> {
   const hit = cache.get(cacheKey);
   if (hit && hit.expires > now) return hit.value;
+  // A LABELS-ONLY ENTRY STILL IN DATE ANSWERS THE LABELS HALF (issue #642, round 12). The observation
+  // tick reads the labels alone and `buildToolset` asks for the pair moments later, so without this
+  // the same catalog is fetched twice per TTL, sequentially, inside the same observation deadline.
+  const warm = labelCache.get(cacheKey);
   const [labels, attributes] = await Promise.all([
-    client.listLabels(),
+    warm && warm.expires > now
+      ? Promise.resolve(warm.value)
+      : client.listLabels(),
     client.listCustomAttributeDefinitions(),
   ]);
   const value: ChatwootVocab = { labels, attributes };
@@ -48,9 +55,8 @@ export function attributesForModel(
 // attribute endpoint that is down takes a perfectly good label catalog with it — and a caller that
 // just re-asked would pay a fresh `/labels` on every tick, since a failed combined read caches
 // nothing. This reads the combined entry when it is warm, keeps its own otherwise, and never fetches
-// the definitions.
-const labelCache = new Map<string, { value: string[]; expires: number }>();
-
+// the definitions. The sharing goes BOTH ways: the combined read above answers its labels half from
+// this entry rather than asking twice.
 export async function loadChatwootLabels(
   client: ChatwootClient,
   cacheKey: string,

@@ -100,7 +100,21 @@ describe("the labels on their own", () => {
       await loadChatwootVocab(client, "t:i").catch(() => null);
       expect(await loadChatwootLabels(client, "t:i")).toEqual(["lead", "vip"]);
     }
-    expect(counter.labels).toBe(4);
+    // Two: the combined read's own first attempt, and the labels-only read that cached. From then
+    // on both answer from that entry, including the combined one (round 12).
+    expect(counter.labels).toBe(2);
+  });
+
+  // ROUND 12: the sharing goes both ways. The tick reads the labels alone and `buildToolset` asks
+  // for the pair moments later, so without this the same catalog is fetched twice per TTL,
+  // sequentially, inside one observation deadline.
+  test("a warm labels-only entry answers the combined read's labels half", async () => {
+    const counter = { labels: 0, defs: 0 };
+    const client = fakeClient(counter);
+    expect(await loadChatwootLabels(client, "t:i")).toEqual(["lead", "vip"]);
+    await loadChatwootVocab(client, "t:i");
+    expect(counter.labels).toBe(1);
+    expect(counter.defs).toBe(1);
   });
 
   test("a warm combined entry answers without a read of its own", async () => {

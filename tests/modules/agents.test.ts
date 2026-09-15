@@ -403,7 +403,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     const a = await createAgent(ctx(tenantC), { name: "Defaulted" }, appDb);
     expect(a.modelConfig).toEqual({
       provider: "openai",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.6-luna",
       temperature: 0.7,
     });
     expect(a.mode).toBe("test");

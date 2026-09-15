@@ -10,11 +10,11 @@
 // Deliberately import-free: the client bundle reads this table too, and must not pull server code
 // in to get it. Ids age with provider releases; revisit alongside DEFAULT_MODEL_CONFIG.
 export const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
-  openai: "gpt-5.4-mini",
+  openai: "gpt-5.6-luna",
   anthropic: "claude-sonnet-4-6",
   google: "gemini-3.5-flash",
   deepseek: "deepseek-chat",
-  openrouter: "openai/gpt-5.4-mini",
+  openrouter: "openai/gpt-5.6-luna",
   "openai-compatible": "",
 };
 

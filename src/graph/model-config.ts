@@ -115,7 +115,7 @@ export type ModelConfig = z.infer<typeof modelConfigSchema>;
 // (the operator still needs to pick a credential before the agent can run).
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   provider: "openai",
-  model: "gpt-5.4-mini",
+  model: "gpt-5.6-luna",
   temperature: 0.7,
 };
 

@@ -38,7 +38,7 @@ describe("ModelPicker placeholder", () => {
   });
 
   test("names the OpenAI default on OpenAI", () => {
-    expect(shownFor("openai")).toContain("gpt-5.4-mini");
+    expect(shownFor("openai")).toContain("gpt-5.6-luna");
   });
 
   // Empty is a real choice here (single-model servers ignore the requested name), so naming a model

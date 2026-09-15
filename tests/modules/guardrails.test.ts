@@ -133,11 +133,11 @@ describe("readGuardrailsConfig", () => {
   // as the code proves nothing about which model is actually sent.
   test("an empty model resolves to the provider's default", () => {
     const cases: [string, string][] = [
-      ["openai", "gpt-5.4-mini"],
+      ["openai", "gpt-5.6-luna"],
       ["anthropic", "claude-sonnet-4-6"],
       ["google", "gemini-3.5-flash"],
       ["deepseek", "deepseek-chat"],
-      ["openrouter", "openai/gpt-5.4-mini"],
+      ["openrouter", "openai/gpt-5.6-luna"],
     ];
     for (const [provider, expected] of cases) {
       const c = readGuardrailsConfig({
@@ -151,7 +151,7 @@ describe("readGuardrailsConfig", () => {
     const c = readGuardrailsConfig({
       guardrails: { enabled: true, provider: "openai", model: "   " },
     });
-    expect(c.model).toBe("gpt-5.4-mini");
+    expect(c.model).toBe("gpt-5.6-luna");
   });
 
   test("openai-compatible keeps the empty model, where it means the server's own", () => {
@@ -172,7 +172,7 @@ describe("readGuardrailsConfig", () => {
   // the editor has to be misused for it to happen.
   test("the shipped default provider resolves to a usable model", () => {
     const c = readGuardrailsConfig({ guardrails: { enabled: true } });
-    expect([c.provider, c.model]).toEqual(["openai", "gpt-5.4-mini"]);
+    expect([c.provider, c.model]).toEqual(["openai", "gpt-5.6-luna"]);
   });
 });
 

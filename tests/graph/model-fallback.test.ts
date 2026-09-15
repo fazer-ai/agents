@@ -17,6 +17,7 @@ import {
   PRIMARY_TIMEOUT_MS,
 } from "@/graph/model-fallback";
 import { runModelCall } from "@/graph/model-limit";
+import { planOpenAITransport } from "@/graph/openai-reasoning";
 import {
   assertSettingsModelFallback,
   type SettingsWriteMode,
@@ -640,6 +641,36 @@ describe("hasModelFallback reads the repo's own model rule", () => {
   test("the predicate agrees with the default-model table", () => {
     for (const [provider, def] of Object.entries(PROVIDER_DEFAULT_MODEL)) {
       expect(modelOptionalFor(provider)).toBe(def === "");
+    }
+  });
+
+  // WHAT PICKING A DEFAULT COMMITS US TO, and the reason this fence sits next to the table rather
+  // than in the reasoning module: the table is the one place an id is chosen for somebody who chose
+  // nothing, so a default that the transport policy does not cover is a 400 on the FIRST turn of
+  // every new agent, on the path nobody configured.
+  //
+  // The gpt-5.6 family is exactly that case and it is why the fence exists: its server-side default
+  // effort refuses function tools on /v1/chat/completions (issue #66, measured in
+  // ./openai-reasoning), so a default from that family is only safe because `planOpenAITransport`
+  // pins `toolEffort: "none"` for it. Asserted through the PLAN and never against a list of ids, so
+  // the next default is checked by the same rule instead of being added to a second copy of it.
+  test("every declared default is a model the transport policy covers", () => {
+    for (const [provider, def] of Object.entries(PROVIDER_DEFAULT_MODEL)) {
+      if (def === "") continue;
+      const plan = planOpenAITransport(def, undefined);
+      // An operator who chose nothing must reach a tool-bound call that the endpoint accepts:
+      // either the effort is pinned for the tool-bound model, or the family never needed pinning.
+      const safeForTools =
+        plan.toolEffort === "none" ||
+        !/^(?:ft:)?(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i.test(def);
+      expect({ provider, def, safeForTools }).toEqual({
+        provider,
+        def,
+        safeForTools: true,
+      });
+      // ...and nothing is silently routed to /v1/responses for somebody who asked for no effort:
+      // that endpoint stores for 30 days by default, which is a data-retention change nobody chose.
+      expect(plan.responses).toBe(false);
     }
   });
 });

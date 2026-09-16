@@ -150,6 +150,17 @@ export type RunAgentTurnOutcome =
   // with the thread". Reading one bit for both questions is how a caller ends up re-arming work the
   // operator just cancelled.
   | "stale"
+  // THE THREAD WAS ALREADY OCCUPIED when this turn took the claim, and the caller asked to stand
+  // down on that (`standDownIfThreadHeld`). Nothing was written: no divider, no marker, no invoke,
+  // and the claim this turn took is released on the way out. Distinct from "stale", which says the
+  // burst was withdrawn and must not be re-armed, and from "superseded", which says a newer message
+  // will re-answer it: this one says the same burst is still owed, by whoever can come back to it.
+  //
+  // It exists because a READ cannot tell two simultaneous starts apart. Both replicas ask whether
+  // anyone holds the thread before either acquires, and both are told no; the acquiring statement in
+  // ../graph/thread-claim.ts is the only step that sees the other one, and it reports it in
+  // `heldBefore`. Issue #593.
+  | "thread-busy"
   | "superseded"
   | "blocked";
 
@@ -313,6 +324,17 @@ export interface RunLoadedTurnParams {
   // a future caller the question. `null` is the honest answer for a turn that arrives straight from
   // a webhook: there is no job to call it off, and nothing else names this run.
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
+  // Stand down, without writing anything, when the claim this turn takes reports that ANOTHER invoke
+  // was already reading the thread (`heldBefore` from ../graph/thread-claim.ts). The outcome is
+  // "thread-busy" and the burst stays owed.
+  //
+  // OPTIONAL BECAUSE ONLY ONE CALLER HAS SOMEWHERE TO DEFER TO. The debounce flush can put the burst
+  // back on the scheduler and come back; a turn arriving from a webhook, a nudge and the operator's
+  // re-engage button cannot, and for them a stand-down would be a silent no-op — which is also why
+  // the exclusion is not inside `markTurnOwning`: the claim COUNTS on purpose, two turns legitimately
+  // overlap on one thread (a nudge beside a reactive turn, two deliveries racing with debounce off),
+  // and `clearTurnOwning` releases one holder at a time for exactly that reason (issue #593).
+  standDownIfThreadHeld?: boolean;
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -1265,6 +1287,9 @@ async function runTurnBody(
   // Set inside the `ingest:` lock when the ask below says this run was called off. A flag and not a
   // throw: the lock's transaction has to commit and release before this function can return.
   let calledOff = false;
+  // Set only by the stand-down inside the `ingest:` lock below, and read out where that section has
+  // committed, beside `calledOff`, because both say the same thing about what was written: nothing.
+  let threadBusy = false;
   // What the turn produced, kept when the TOKEN silenced it, and consumed in the `finally` once the
   // in-flight flag the rollback refuses on has been released. The messages travel rather than a
   // boolean because the rollback runs outside the scope that has them.
@@ -1361,6 +1386,17 @@ async function runTurnBody(
           const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
           graphHold = await markTurnOwning(owner, base);
           graphOwner = owner;
+          // THE ONLY STEP THAT SEES A SIMULTANEOUS START. The caller's own check ran before this
+          // claim, and two replicas starting together both pass it: each asks whether anyone holds
+          // the thread while neither does yet. The acquiring statement above is a single UPDATE, so
+          // of two of them exactly one comes back with `heldBefore` false, and the other one is
+          // reading a channel somebody else is about to overwrite. Nothing has been written at this
+          // point — the divider, the marker and the invoke are all below — and the `finally` releases
+          // the claim, so standing down here costs the burst a reschedule and nothing else.
+          if (params.standDownIfThreadHeld && graphHold.heldBefore) {
+            threadBusy = true;
+            return null;
+          }
           // ASKED AGAIN, because the claim above can WAIT. The ask before it is still the right
           // first ask (a run already retired takes no claim it would have to release), but
           // `markTurnOwning` blocks on an append's lease and on the row lock /reset itself takes,
@@ -1525,6 +1561,14 @@ async function runTurnBody(
       );
       // Out here, where the lock's transaction has committed: nothing was claimed, nothing was
       // written, and the thread stays as the command left it.
+      if (threadBusy) {
+        logger.info(
+          "turn: thread %s was already held by another invoke when this turn claimed it (conv=%s), standing down without writing",
+          graphThreadId,
+          String(conversationId),
+        );
+        return "thread-busy";
+      }
       if (calledOff) {
         logger.info(
           "turn: the run was retired while it worked (conv=%s), standing down",

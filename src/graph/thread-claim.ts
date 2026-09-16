@@ -317,17 +317,42 @@ export async function turnOwnsThread(
   owner: ThreadOwner,
   base: PrismaClient,
 ): Promise<boolean> {
-  if (isTurnInFlight(owner.graphThreadId)) return true;
+  return (await readTurnClaim(owner, base)).held;
+}
+
+// WHAT THE ROW SAYS ABOUT THE CLAIM, which is one question more than `turnOwnsThread` projects. A
+// caller that can RECOVER from a dead holder needs to tell "nobody has this" from "somebody had this
+// and their lease lapsed": the two look identical through the boolean, and issue #593 names the cost
+// of that — "there is no durable claim to find expired, so there is no recovery to log". Expiry
+// lands on exactly the Map's behaviour (the writer proceeds), so the recovery is not a new
+// permission; what it lacked was a way to be reported.
+export interface TurnClaimState {
+  // Is an invoke reading this thread's channel right now, here or on another replica.
+  held: boolean;
+  // Holders the row still carries under a lease that has ALREADY lapsed: a process that died mid
+  // turn. Zero whenever the claim is live, because then the holders are real and `held` reports them.
+  staleHolders: number;
+}
+
+// The same read `turnOwnsThread` does, projected whole. Fail-closed like the boolean it replaces:
+// an unreadable row answers "held", for the reason the comment above `turnOwnsThread` gives, and
+// reports no stale holders, since a read that failed saw no lapsed lease either.
+export async function readTurnClaim(
+  owner: ThreadOwner,
+  base: PrismaClient,
+): Promise<TurnClaimState> {
+  if (isTurnInFlight(owner.graphThreadId))
+    return { held: true, staleHolders: 0 };
   try {
     return await runScopedOn(base, sysCtx(owner.tenantId), (db) =>
-      turnOwnsThreadOn(db, owner),
+      readTurnClaimOn(db, owner),
     );
   } catch (err) {
     logger.warn(
       { err, thread: owner.graphThreadId },
       "could not read the durable turn claim; treating the thread as held",
     );
-    return true;
+    return { held: true, staleHolders: 0 };
   }
 }
 
@@ -340,16 +365,32 @@ export async function turnOwnsThreadOn(
   db: ScopedDb,
   owner: ThreadOwner,
 ): Promise<boolean> {
-  if (isTurnInFlight(owner.graphThreadId)) return true;
-  const rows = await db.$queryRaw<{ held: boolean }[]>`
-    SELECT true AS held
+  return (await readTurnClaimOn(db, owner)).held;
+}
+
+// ONE query behind both projections, so the liveness predicate cannot drift between the question
+// "does anyone hold this" and the question "did somebody die holding it". The clock is Postgres's,
+// like every other predicate here.
+export async function readTurnClaimOn(
+  db: ScopedDb,
+  owner: ThreadOwner,
+): Promise<TurnClaimState> {
+  if (isTurnInFlight(owner.graphThreadId))
+    return { held: true, staleHolders: 0 };
+  const rows = await db.$queryRaw<{ holders: number; live: boolean }[]>`
+    SELECT turn_holders AS holders,
+           (turn_held_until IS NOT NULL AND turn_held_until > now()) AS live
       FROM agent_threads
      WHERE tenant_id = ${owner.tenantId}
        AND chatwoot_instance_id = ${owner.instanceId}
-       AND contact_inbox_id = ${owner.contactInboxId}
-       AND turn_holders > 0
-       AND turn_held_until > now()`;
-  return rows.length > 0;
+       AND contact_inbox_id = ${owner.contactInboxId}`;
+  const row = rows[0];
+  // No row is not "busy": nothing can own a thread nothing has ever touched.
+  if (!row) return { held: false, staleHolders: 0 };
+  const holders = Number(row.holders);
+  return row.live
+    ? { held: holders > 0, staleHolders: 0 }
+    : { held: false, staleHolders: holders };
 }
 
 // A row to lock, even when the thread has none. `SELECT ... FOR UPDATE` locks the rows it MATCHES,

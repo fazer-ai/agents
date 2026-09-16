@@ -15,7 +15,7 @@ import {
   type RuntimeDeps,
   runLoadedTurn,
 } from "@/graph/runtime";
-import { turnOwnsThread } from "@/graph/thread-claim";
+import { readTurnClaim } from "@/graph/thread-claim";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
@@ -150,6 +150,10 @@ export interface CoalesceTurnContext {
   // which asks it inside the `ingest:` lock and again before each post. REQUIRED and nullable so a
   // future caller has to answer it: `null` says "nothing queued this, nothing can call it off".
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
+  // Handed straight to `runLoadedTurn`: stand down without writing when the claim reports another
+  // invoke was already reading this thread. Only the flush passes it, because only the flush can put
+  // the burst back on the scheduler and come back to it; see the field on `RunLoadedTurnParams`.
+  standDownIfThreadHeld?: boolean;
   // How far the handled watermark may have moved and this caller's claim still stand — see
   // `claimReply` on RunLoadedTurnParams. Computed per burst, so the caller hands down a function of
   // the target rather than a value it would have to keep in step with the burst selection. Null is
@@ -397,6 +401,7 @@ export async function coalesceAndRunTurn(
       }
     },
     stillWanted: ctx.stillWanted,
+    standDownIfThreadHeld: ctx.standDownIfThreadHeld,
     loaded,
     authContext: ctx.authContext,
     tenantId,
@@ -446,9 +451,19 @@ export async function coalesceAndRunTurn(
   // caller reads the agent again — an observer's ingestion marks the burst once it HAS it, and a
   // switched-off agent's burst waits for the switch, as it does when the config refuses before a
   // turn. Marked here, a failed hand-over would leave it below the mark with nothing remembering it.
+  // "thread-busy" stays put for a third reason, and it is the strongest of the three: the turn stood
+  // down BEFORE writing anything at all, so nothing in the world has seen these messages. The burst
+  // is owed to whoever comes back for it, and this caller is the one that will (the flush reschedules
+  // on this word). Marking it here would declare handled a burst that was never even read, which is
+  // the "gone and marked done" shape the durable claim exists to prevent (issue #593).
+  //
+  // AND THE LIST IS BY EXCLUSION, which is why this line is not optional: a word the condition does
+  // not name advances the watermark by default. Measured while adding it — the flush correctly
+  // answered nothing and rescheduled, and the mark moved to the end of the burst anyway.
   if (
     outcome !== "superseded" &&
     outcome !== "stale" &&
+    outcome !== "thread-busy" &&
     outcome !== "agent-unavailable"
   ) {
     await advanceHandledWatermark({
@@ -1784,10 +1799,10 @@ export async function flushDebounceJob(
   // thread when the contact inbox is unknown, and that key has no `agent_threads` row to hold, so
   // there the Map stays the whole answer at the cost issue #203 measured and accepted. Asking the
   // row for it would read "free" forever and add a query per flush for nothing.
-  const heldElsewhere =
+  const durableClaim =
     ctx.contactInboxId === null
-      ? false
-      : await turnOwnsThread(
+      ? { held: false, staleHolders: 0 }
+      : await readTurnClaim(
           {
             tenantId,
             instanceId,
@@ -1796,10 +1811,23 @@ export async function flushDebounceJob(
           },
           base,
         );
+  // A LAPSED LEASE MEANS A HOLDER DIED MID-TURN, and this flush is the recovery. It proceeds, which
+  // is what expiry has always meant here, and says so: nothing else on this path would report that
+  // a replica went down holding a customer's thread, and issue #593 asks for the line by name
+  // ("there is no durable claim to find expired, so there is no recovery to log").
+  if (durableClaim.staleHolders > 0) {
+    logger.warn(
+      "debounce flush: the claim on thread %s is stale (%s holder(s), lease already expired); recovering the burst on conversation %s",
+      graphThreadId,
+      String(durableClaim.staleHolders),
+      String(conversationId),
+    );
+  }
+  let pastDeferralCeiling = false;
   if (
     isTurnInFlight(graphThreadId) ||
     isFlushHeld(graphThreadId) ||
-    heldElsewhere
+    durableClaim.held
   ) {
     const now = Date.now();
     // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
@@ -1849,6 +1877,7 @@ export async function flushDebounceJob(
       graphThreadId,
       String(conversationId),
     );
+    pastDeferralCeiling = true;
   }
   // RESERVED IN THE SAME TURN OF THE EVENT LOOP as the check above, with no await between them, and
   // that adjacency is the whole point. A turn marks itself deep inside `runLoadedTurn`, several
@@ -1922,6 +1951,13 @@ export async function flushDebounceJob(
           !(await (strict
             ? jobRetiredStrict(job, base)
             : jobRetired(job, base))),
+        // The half of the exclusion a read cannot do. The check above closed the window "a turn
+        // already owns this thread"; this one closes "two flushes started in the same instant", which
+        // only the acquiring statement can see (`heldBefore`, ../../graph/thread-claim.ts). Off once
+        // this flush has already decided to answer past the deferral ceiling: there the choice was
+        // made deliberately, an unanswered customer being worse than a duplicated line in memory, and
+        // standing down would put the burst back in the queue the ceiling exists to get it out of.
+        standDownIfThreadHeld: !pastDeferralCeiling,
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
@@ -1941,6 +1977,21 @@ export async function flushDebounceJob(
         chatwootConversationId: conversationId,
         base,
       });
+    }
+    // NOTHING WAS WRITTEN and the burst is still owed: the turn found the thread occupied by another
+    // invoke at the moment it claimed it (issue #593, two replicas flushing the same graph thread).
+    // Same treatment as the deferral above, and for the same reason it is not a `fail`: the burst's
+    // only problem is that it arrived in the same instant as another one, and the deferral stamp is
+    // what keeps the ceiling honest so a thread that stays occupied is answered anyway.
+    if (outcome === "thread-busy") {
+      const now = Date.now();
+      const since =
+        readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? now;
+      await stampDeferral({ tenantId, threadId, since, base });
+      return {
+        outcome: "reschedule",
+        runAt: new Date(now + DEFER_ON_TURN_MS),
+      };
     }
     // The turn stood down because the operator silenced it while it ran (issue #209 review,
     // rounds 6 and 9). `coalesceAndRunTurn` left the burst UNMARKED, as it does for a withdrawn

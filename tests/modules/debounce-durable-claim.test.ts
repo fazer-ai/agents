@@ -1,12 +1,14 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { turnOwnsThread } from "@/graph/thread-claim";
+import { clearTurnInFlight } from "@/graph/inflight";
+import { markTurnOwning, turnOwnsThread } from "@/graph/thread-claim";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -49,6 +51,10 @@ const CONV_HELD = 8810;
 const CONV_FREE = 8820;
 const CONV_OTHER = 8830;
 const CONV_NO_CI = 8840;
+const CI_RACE = 884;
+const CONV_RACE = 8850;
+const CI_STALE = 885;
+const CONV_STALE = 8860;
 const CHATWOOT_INBOX_ID = 7;
 
 let tenantId = 0n;
@@ -70,13 +76,27 @@ function countingModel(calls: { n: number }) {
   return model as unknown as BaseChatModel;
 }
 
-function stub(sent: Array<[number, string]>) {
+function stub(
+  sent: Array<[number, string]>,
+  duringFetch?: () => Promise<void>,
+) {
   const client = {
-    getMessages: async () => ({
-      payload: [
-        { id: 100, content: "quanto custa?", message_type: 0, private: false },
-      ],
-    }),
+    getMessages: async () => {
+      // THE WINDOW, entered deterministically. The flush reads the claim before this fetch and the
+      // turn takes it after, so a hook here lands exactly where the other replica's acquisition
+      // lands in production: too late for the read to see it, in time for the claim to.
+      await duringFetch?.();
+      return {
+        payload: [
+          {
+            id: 100,
+            content: "quanto custa?",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      };
+    },
     sendMessage: async (conversationId: number, content: string) => {
       sent.push([conversationId, content]);
       return {};
@@ -104,6 +124,25 @@ async function holdThread(contactInboxId: number, graphThreadId: string) {
   );
 }
 
+// A claim a process died holding: holders on the row and a lease that lapsed a minute ago. Expiry has
+// always meant "the writer proceeds" here; what this shape exercises is whether the recovery is
+// REPORTED, which is the half issue #593 closes with its last paragraph.
+async function holdThreadStale(contactInboxId: number, graphThreadId: string) {
+  await suDb.$executeRawUnsafe(
+    `INSERT INTO agent_threads
+       (tenant_id, chatwoot_instance_id, contact_inbox_id, thread_id,
+        turn_holders, turn_epoch, turn_held_until, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, 1, 1, now() - interval '1 minute', now(), now())
+     ON CONFLICT (tenant_id, chatwoot_instance_id, contact_inbox_id)
+       DO UPDATE SET turn_holders = 1,
+                     turn_held_until = now() - interval '1 minute'`,
+    tenantId,
+    instanceId,
+    contactInboxId,
+    graphThreadId,
+  );
+}
+
 function jobFor(convId: number): ClaimedJob {
   return {
     id: jobId,
@@ -119,7 +158,7 @@ function jobFor(convId: number): ClaimedJob {
   };
 }
 
-async function runFlush(convId: number) {
+async function runFlush(convId: number, duringFetch?: () => Promise<void>) {
   const calls = { n: 0 };
   const sent: Array<[number, string]> = [];
   const out = await flushDebounceJob({
@@ -127,7 +166,7 @@ async function runFlush(convId: number) {
     base: appDb,
     deps: {
       makeModel: () => countingModel(calls),
-      makeClient: stub(sent),
+      makeClient: stub(sent, duringFetch),
       checkpointer: new MemorySaver(),
     },
   });
@@ -200,6 +239,8 @@ describe.skipIf(!dbUp)(
         [CONV_HELD, CI_HELD],
         [CONV_FREE, CI_FREE],
         [CONV_OTHER, CI_OTHER],
+        [CONV_RACE, CI_RACE],
+        [CONV_STALE, CI_STALE],
         [CONV_NO_CI, null],
       ] as Array<[number, number | null]>)
         await suDb.conversation.create({
@@ -297,6 +338,68 @@ describe.skipIf(!dbUp)(
     test("a conversation with no contact inbox is still answered", async () => {
       const { calls } = await runFlush(CONV_NO_CI);
       expect(calls).toBe(1);
+    });
+
+    // s3: TWO FLUSHES STARTING TOGETHER, which no read can separate. The claim lands while this
+    // flush is fetching messages — after its own check, before its turn claims the thread — which is
+    // where the other replica's acquisition lands in production. Only the acquiring UPDATE sees it.
+    test("a claim taken after the check and before the turn's own still stands the flush down", async () => {
+      const graphThreadId = contactInboxThreadId(tenantId, instanceId, CI_RACE);
+      let stop: (() => void) | undefined;
+      const { out, calls, sent } = await runFlush(CONV_RACE, async () => {
+        // The other replica's turn, taken through the product's own acquisition so the state is the
+        // one production produces. The registry entry it leaves in THIS process is then dropped: a
+        // foreign holder is a row without a Map, and leaving the Map would let the in-process check
+        // answer the question the row is supposed to answer.
+        const hold = await markTurnOwning(
+          {
+            tenantId,
+            instanceId,
+            contactInboxId: CI_RACE,
+            graphThreadId,
+          },
+          suDb,
+        );
+        stop = hold.stopRenewal;
+        clearTurnInFlight(graphThreadId);
+      });
+      stop?.();
+      expect(calls).toBe(0);
+      expect(sent).toEqual([]);
+      // Owed, not withdrawn: the burst goes back on the scheduler instead of being recorded as
+      // answered, which is what separates this from "stale".
+      expect(out.outcome).toBe("reschedule");
+      const conv = await suDb.conversation.findFirst({
+        where: { tenantId, chatwootConversationId: CONV_RACE },
+        select: { lastHandledMessageId: true },
+      });
+      expect(conv?.lastHandledMessageId).toBeNull();
+    });
+
+    // s4: a holder that died mid-turn. The customer is answered, as expiry has always meant here,
+    // and the recovery says so instead of being silent.
+    test("an expired claim is recovered, and the stale holder is named in the log", async () => {
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        CI_STALE,
+      );
+      await holdThreadStale(CI_STALE, graphThreadId);
+      const warn = spyOn(logger, "warn");
+      let said: string[];
+      let result: Awaited<ReturnType<typeof runFlush>>;
+      try {
+        result = await runFlush(CONV_STALE);
+        said = warn.mock.calls.map((c) => JSON.stringify(c));
+      } finally {
+        warn.mockRestore();
+      }
+      expect(result.calls).toBe(1);
+      expect(result.sent).toEqual([[CONV_STALE, "resposta"]]);
+      const line = said.filter(
+        (c) => c.includes("stale") && c.includes(graphThreadId),
+      );
+      expect(line.length).toBe(1);
     });
   },
 );

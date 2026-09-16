@@ -122,7 +122,23 @@ export const HighlightedTemplateField = forwardRef<
       b.scrollTop = el.scrollTop;
       b.scrollLeft = el.scrollLeft;
     };
-    const sharedText = cn(FIELD_BASE, pad, textClassName, wrapCls);
+    // Both layers reserve the scrollbar's gutter, so their content boxes stay the same width
+    // whether or not the control is showing a scrollbar. Without it the two wrap at different
+    // columns wherever a scrollbar takes layout space: the textarea is a scroll container and its
+    // bar eats its content box, the backdrop is `overflow: hidden` and keeps the full width, and
+    // `mirror()` then assigns a scrollTop the shorter backdrop clamps. The caret lands lines away
+    // from the glyph the operator sees, by more the further the prompt is scrolled (#649: 612px
+    // against 622px of content, one line of drift at the end of a 16k-character prompt, measured in
+    // Chromium/Linux).
+    // What decides it is the SCROLLBAR, not the OS, and the same binary answers both ways: with
+    // "show scroll bars: always" a macOS Chromium reserves 15px for a plain `overflow: auto` and
+    // this field measures 598px of content in both layers; with "when scrolling" it reserves 0 and
+    // the field measures 620px in both. Windows and Linux are the first case by default. The
+    // reservation is free in the second, because an overlay scrollbar takes no space and the
+    // gutter of a scroll container that has none is zero.
+    // Multiline only: the single-line control scrolls its text internally and shows no scrollbar.
+    const gutter = multiline ? "[scrollbar-gutter:stable]" : "";
+    const sharedText = cn(FIELD_BASE, pad, textClassName, wrapCls, gutter);
     // Raw length, the same thing the browser enforces `maxLength` against and the same thing the
     // reader clamps. `maxLength` stops new typing at the wall; what it cannot show is a value
     // ALREADY past it — pasted before the cap existed, imported, or written through the API — which

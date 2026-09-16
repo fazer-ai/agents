@@ -32,13 +32,23 @@ jobs:
           set -uo pipefail
           case "${{ github.event_name }}" in
             pull_request)
-              # BOTH paths of a rename. The API reports the destination in `filename` and the source
-              # in `previous_filename`, so reading only the first calls `src/config.ts` ->
-              # `docs/config.ts` a docs-only change and publishes green checks over a module that
-              # left the tree.
-              files=$(gh api --paginate \
+              # ONE ROW PER FILE, carrying BOTH paths of a rename. The API reports the destination
+              # in `filename` and the source in `previous_filename`, so reading only the first calls
+              # `src/config.ts` -> `docs/config.ts` a docs-only change and publishes green checks
+              # over a module that left the tree. The row shape is what makes the files COUNTABLE:
+              # one line each, whether or not there is a second path.
+              rows=$(gh api --paginate \
                 "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-                --jq '.[] | .filename, (.previous_filename // empty)') || files=""
+                --jq '.[] | [.filename, (.previous_filename // "")] | @tsv') || rows=""
+              # `--paginate` stops at 3000 files, the same blind spot the compare has at 300: the
+              # entries that do not come back are exactly the ones nothing can classify.
+              count=$(printf '%s\n' "$rows" | grep -c . || true)
+              if [ "$count" -ge 3000 ]; then
+                echo "code=true" >> "$GITHUB_OUTPUT"
+                echo "the PR file list hit its 3000-file cap: running everything"
+                exit 0
+              fi
+              files=$(printf '%s' "$rows" | tr '\t' '\n')
               ;;
             push)
               cmp=$(gh api \

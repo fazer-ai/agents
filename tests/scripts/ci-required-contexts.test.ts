@@ -150,10 +150,21 @@ describe("the workflows always start", () => {
     const shared = readFileSync(".github/workflows/changed-code.yml", "utf8");
     // Asked of the two jq expressions rather than of the file's word count: the comment above them
     // names the field too, and counting mentions would pass on the explanation alone.
-    expect(shared).toContain(".[] | .filename, (.previous_filename // empty)");
+    expect(shared).toContain(
+      '.[] | [.filename, (.previous_filename // "")] | @tsv',
+    );
     expect(shared).toContain(
       ".files[]? | .filename, (.previous_filename // empty)",
     );
+  });
+
+  test("a file list that hit its cap runs everything", () => {
+    // Both APIs truncate, at 3000 files for a PR and 300 for a compare, and the entries that do not
+    // come back are exactly the ones nothing can classify. Round 2 of the review caught the PR half
+    // missing while the compare half was already guarded.
+    const shared = readFileSync(".github/workflows/changed-code.yml", "utf8");
+    expect(shared).toContain('[ "$count" -ge 3000 ]');
+    expect(shared).toContain('[ "$count" -ge 300 ]');
   });
 
   test("a push that is not a fast-forward runs everything", () => {

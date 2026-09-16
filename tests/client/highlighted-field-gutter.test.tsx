@@ -8,14 +8,15 @@ import { HighlightedTemplateField } from "@/client/components/HighlightedTemplat
 // tokens colored. The caret and the selection are the textarea's geometry; the glyphs the operator
 // sees are the backdrop's. They only agree while both layers break lines at the same column.
 //
-// They stop agreeing on any platform whose scrollbars take layout space (Windows, Linux): the
-// textarea is a scroll container and its scrollbar eats its content box, while the backdrop is
-// `overflow: hidden` and keeps the full width. Different width, different wrapping, different
-// scrollHeight — and `mirror()` assigns a scrollTop the backdrop clamps, so the drift grows as the
-// prompt is scrolled. Measured on the real component in Chromium/Linux before the fix: 612px of
-// content in the textarea against 622px in the backdrop, 241.8 against 240.8 lines, one line of
-// drift at the end of a 16k-character prompt. Zero on macOS, whose scrollbars are overlay, which is
-// why this only ever reproduced for operators on Windows (#649).
+// They stop agreeing wherever a scrollbar takes layout space: the textarea is a scroll container
+// and its scrollbar eats its content box, while the backdrop is `overflow: hidden` and keeps the
+// full width. Different width, different wrapping, different scrollHeight — and `mirror()` assigns
+// a scrollTop the backdrop clamps, so the drift grows as the prompt is scrolled. Measured on the
+// real component in Chromium/Linux before the fix: 612px of content in the textarea against 622px
+// in the backdrop, 241.8 against 240.8 lines, one line of drift at the end of a 16k-character
+// prompt. Windows and Linux take that space by default, and so does macOS when the system is set to
+// always show scroll bars, which is why the first report came from Windows and the team's overlay
+// scrollbars showed nothing (#649).
 //
 // happy-dom computes no layout, so what is checked here is the RESERVATION: `scrollbar-gutter:
 // stable` puts the gutter in the box whether or not a scrollbar is showing, which is what keeps the

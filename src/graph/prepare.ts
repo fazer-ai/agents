@@ -16,7 +16,7 @@ import {
   unmatchedPreconditionEvent,
 } from "@/graph/tools/precondition";
 import { parseDbId } from "@/lib/db-id";
-import type { ScopedDb, TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
 import {
@@ -1137,6 +1137,16 @@ export async function buildToolset(
     // null on the playground (no mirrored contact) → such tools fail closed.
     contactDbId: cfg.contactDbId,
     resolveCredential,
+    // Read at call time, like every other resolver here: a turn that sends no email pays no query.
+    resolveContactEmail: async () => {
+      const id = cfg.contactDbId;
+      if (id == null) return null;
+      const row = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+        db.contact.findUnique({ where: { id }, select: { email: true } }),
+      );
+      const email = row?.email?.trim();
+      return email ? email : null;
+    },
     resolveBusinessHours,
     appointmentBooked: appointmentBookedFn,
     cancelAppointment: cancelAppointmentFn,

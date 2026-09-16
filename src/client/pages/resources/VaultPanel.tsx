@@ -47,6 +47,7 @@ type VaultEntry = NonNullable<
 // t('vault.secretType.openai_compatible', 'OpenAI-compatible')
 // t('vault.secretType.elevenlabs', 'ElevenLabs')
 // t('vault.secretType.asaas', 'Asaas')
+// t('vault.secretType.resend', 'Resend')
 // t('vault.secretType.google_oauth', 'Google OAuth2')
 // t('vault.secretType.mcp_oauth', 'MCP OAuth2')
 // t('vault.secretType.mcp_env', 'MCP env var')

@@ -85,6 +85,43 @@ One clinic calendar serves MANY WhatsApp contacts, so every event the agent crea
 
 **Deploy gotcha:** `registerToolpack` runs at **import time**, so a hot-reload may keep an old toolpack build in memory. A stale process (pre-isolation code still running) is what masked the isolation in an early live test — **restart the process on deploy**, do not rely on hot-reload for toolpack changes (see `docs/deploy.md`).
 
+## Resend toolpack: who the agent may write to (`src/modules/integrations/toolpacks/resend.ts`)
+
+The pack sends transactional email (`resend_send_email`) and reads a delivery status back
+(`resend_email_status`). It is the first tool here where the model picks an external **destination**:
+Asaas writes to nobody, and `drive_send_file` delivers inside the Chatwoot conversation. So the two
+halves of the identity are both bound outside the model.
+
+- **Sender** is the instance config's `from` / `replyTo`, never a tool arg. A blank `from` fails
+  closed.
+- **Recipient** is the contact in scope (resolved from our own mirror through
+  `ToolpackCtx.resolveContactEmail`, keyed by `contactDbId`) or an address the operator listed in
+  `config.allowedRecipients`. An entry is a whole address or a domain written `@example.com`; the
+  `@` is required, since a bare `example.com` also matches `notexample.com`. With neither, the send
+  refuses, because "no contact in scope" is the playground and a nudge off a conversation, and reading it
+  as "any address" turns a test turn into an open relay.
+- **`resend_send_email` declares `deliversToCustomer`**, so the observer's muted turn is never
+  offered it. Its delivery does not pass the Chatwoot transport where a muted turn's refusal sits.
+- **`resend_email_status` answers only for an id this thread sent**, checked against the
+  `IntegrationExternalRef` the send wrote. The projection returns `to` and `subject`, so an id from
+  another conversation would be one customer's correspondence read out in another's.
+- **The read cap clears the send's own ceiling** (64k against 20k of HTML): `GET /emails/{id}` echoes
+  the body back, and a capped read leaves a JSON prefix that does not parse. A truncated or
+  unparseable answer is reported as a failure, never projected as `{}`.
+
+- **The key's scope depends on which tools are granted, and the credential test cannot warn about
+  it.** Measured against the live API: a key with Resend's *Sending access* sends fine and answers
+  `401` to `GET /emails/{id}`. *Sending access* is therefore the right scope while only
+  `resend_send_email` is granted, and the wrong one the moment `resend_email_status` is, which needs
+  *Full access*. The save-time probe passes the sending-only key **on purpose** (`secret-types.ts`
+  reads `restricted_api_key` as "valid key, restricted scope", because it still sends), so this is
+  the one misconfiguration an operator reaches with a green credential. The status tool's refusal
+  names it; `HTTP 401` alone sends them looking at the id. An unusable key is a different answer,
+  `400` with "API key is invalid", and the probe rejects that at save time.
+
+The credential reaches only the `Authorization` header, never the URL, the body, the model-visible
+return or the log.
+
 ## Positioning: an external CRM is a bridge, never a second funnel
 
 Chatwoot's Kanban is the **native sales funnel and the source of truth**. An external CRM is the bridge to the system of record the customer already runs, and must not become a second funnel competing with the Kanban. Where the operator has no external CRM, the Kanban IS the CRM; where they already run one, the agent syncs to it and the funnel stays here.

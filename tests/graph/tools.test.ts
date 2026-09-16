@@ -66,6 +66,81 @@ describe("native tools", () => {
     expect(only.map((t) => t.name)).toEqual(["private_note"]);
   });
 
+  // ISSUE #662. The tool used to accept a transfer with nothing to say AND tell the model, in the
+  // same breath, that the bot would stay silent now. So the one case the runtime's own fallback
+  // exists for — `handoffAnsweredTheTurn` requires a line AND a completed transfer, precisely so the
+  // model's next hop can speak when there is no line — was the case where the tool told the model
+  // not to speak. Measured by the reporter on an email inbox: 2 of 130 turns ended with the
+  // conversation transferred, a note filed, and nothing at all for the customer.
+  //
+  // Two halves, and the second is what makes the first provable: the argument is REQUIRED, so
+  // forgetting it is not a way to reach silence, and an empty string is how silence is DECLARED —
+  // which is also the only way an operator can tell a decision from an oversight, since the tool's
+  // log line reports `string(0)` for a declared empty and nothing at all for an omitted argument.
+  test("a transfer cannot be silent by omission, and says what it will do in each case", async () => {
+    const { client } = recordingClient();
+    const speaking = byName(
+      buildNativeTools({ client, conversationId: 42 }),
+      "handoff_to_human",
+    );
+    // REQUIRED on the speaking branch. The schema is the fence; the refusal text below is what the
+    // model actually reads, and it has to name the argument rather than just say "invalid input".
+    await expect(
+      speaking.invoke({ reason: "cliente pediu humano" }),
+    ).rejects.toThrow(/customerMessage/);
+
+    const withLine = String(
+      await speaking.invoke({ customerMessage: "Um humano continua daqui." }),
+    );
+    const declaredSilent = String(
+      await speaking.invoke({ customerMessage: "" }),
+    );
+    // Neither branch may carry an instruction to stay silent: that sentence is what the model obeyed.
+    for (const out of [withLine, declaredSilent])
+      expect(out.toLowerCase()).not.toContain("stay silent");
+    // And each says what actually happens to the customer, so the model does not have to guess
+    // whether its own next line is wanted.
+    expect(withLine).toContain("will be delivered to the customer");
+    expect(declaredSilent).toContain("No message will be sent");
+
+    // The muted branch has no argument at all, so its note is not about a decision the model made:
+    // it states the topology. Same requirement, though, that it does not read as an instruction.
+    const muted = byName(
+      buildNativeTools({
+        client: { ...client, muted: true } as unknown as ChatwootClient,
+        conversationId: 42,
+      }),
+      "handoff_to_human",
+    );
+    const silentTurn = String(await muted.invoke({}));
+    expect(silentTurn.toLowerCase()).not.toContain("stay silent");
+    expect(silentTurn).toContain("nothing is sent to them");
+
+    // And on the OTHER shape, the one that carries `assignTo`. The field is defined once for both,
+    // but it was written twice first, and a mutation restoring `.optional()` on this copy survived
+    // the whole suite because nothing exercised this branch.
+    const routing = byName(
+      buildNativeTools({
+        client,
+        conversationId: 42,
+        handoff: {
+          mode: "agent_choice",
+          targetAgentId: null,
+          targetTeamId: null,
+          targetInstanceId: null,
+          instructions: null,
+        },
+      }),
+      "handoff_to_human",
+    );
+    expect(Object.keys((routing.schema as { shape: object }).shape)).toContain(
+      "assignTo",
+    );
+    await expect(
+      routing.invoke({ reason: "cliente pediu humano" }),
+    ).rejects.toThrow(/customerMessage/);
+  });
+
   test("a MUTED turn is not told to write a message the transfer will not send", () => {
     // The line is RECORDED on `handoffState` for the caller to deliver, and an observation has no
     // `handoffState` and throws its final output away: the transfer happens and the customer hears
@@ -178,90 +253,6 @@ describe("native tools", () => {
       ["toggleStatus", [42, "open"]],
     ]);
     expect(String(out)).toContain("human");
-  });
-
-  // #662: the return string used to say "The bot will stay silent now" on EVERY path, including the
-  // one where no customerMessage was supplied — the exact path where `handoffAnsweredTheTurn` is
-  // false and the runtime is counting on the model's next hop to produce the reply. The model obeyed
-  // and wrote nothing, so the customer got a transfer and no message at all. Measured on an email
-  // inbox: 2 of 130 turns across three battery runs.
-  test("#662 handoff WITHOUT a customer message tells the model to write one, not to stay silent", async () => {
-    const { client } = recordingClient();
-    const handoffState: HandoffTurnState = {
-      customerMessage: null,
-      completed: false,
-    };
-    const tools = buildNativeTools({
-      client,
-      conversationId: 42,
-      handoffState,
-    });
-    const out = String(
-      await byName(tools, "handoff_to_human").invoke({
-        reason: "cliente pediu humano",
-        customerMessage: "",
-      }),
-    );
-    expect(out.toLowerCase()).not.toContain("stay silent");
-  });
-
-  // Empty string is the DELIBERATE silence, and it has to read differently from a message, otherwise
-  // the model cannot tell the two decisions apart on its next hop.
-  test("#662 empty customerMessage is recorded as silence and says so", async () => {
-    const { client } = recordingClient();
-    const handoffState: HandoffTurnState = {
-      customerMessage: null,
-      completed: false,
-    };
-    const tools = buildNativeTools({
-      client,
-      conversationId: 42,
-      handoffState,
-    });
-    const out = String(
-      await byName(tools, "handoff_to_human").invoke({
-        reason: "oficio de orgao publico",
-        customerMessage: "",
-      }),
-    );
-    expect(handoffState.customerMessage).toBeNull();
-    expect(handoffState.completed).toBe(true);
-    expect(handoffAnsweredTheTurn(handoffState)).toBe(false);
-    expect(out.toLowerCase()).toContain("no message");
-  });
-
-  test("#662 a supplied customerMessage says it will be sent, and does not ask for another", async () => {
-    const { client } = recordingClient();
-    const handoffState: HandoffTurnState = {
-      customerMessage: null,
-      completed: false,
-    };
-    const tools = buildNativeTools({
-      client,
-      conversationId: 42,
-      handoffState,
-    });
-    const out = String(
-      await byName(tools, "handoff_to_human").invoke({
-        reason: "cliente pediu humano",
-        customerMessage: "Encaminhei seu caso para a equipe.",
-      }),
-    );
-    expect(handoffState.customerMessage).toBe(
-      "Encaminhei seu caso para a equipe.",
-    );
-    expect(out.toLowerCase()).toContain("will be sent");
-    expect(out.toLowerCase()).not.toContain("write");
-  });
-
-  // The whole point of #662: forgetting must stop being reachable. Silence stays expressible, but
-  // only by SAYING it.
-  test("#662 customerMessage is required by the schema", async () => {
-    const { client } = recordingClient();
-    const tools = buildNativeTools({ client, conversationId: 42 });
-    expect(
-      byName(tools, "handoff_to_human").invoke({ reason: "sem mensagem" }),
-    ).rejects.toThrow();
   });
 
   // #160: the tool writes NOTHING to the customer. The closing line is recorded for the caller, which

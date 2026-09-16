@@ -292,6 +292,9 @@ export class HandoffRetryModel {
           return new AIMessage({
             content: "",
             tool_calls: [
+              // Declares silence rather than omitting the argument, which is the only way to reach
+              // this shape since issue #662: the second attempt promises the customer nothing, and
+              // the model's own recovery text is what goes out.
               {
                 name: "handoff_to_human",
                 args: { customerMessage: "" },

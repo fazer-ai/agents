@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { withoutComments } from "@/../tests/utils/source-text";
 
 // The branch rule on `main` requires a set of status-check CONTEXTS, and a context that never gets
 // published blocks the merge exactly as a red one does. Nothing in this repo connected the two
@@ -25,6 +26,14 @@ const WORKFLOWS = [
 ] as const;
 
 const SHARED = ".github/workflows/changed-code.yml";
+
+// Where the suite actually lives. `bunfig.toml` roots discovery here, so a sweep hard-coded to
+// "tests" would go quietly blind the day that changes — and it is not hypothetical: `src/` already
+// holds two `.test.ts` files that never run for exactly this reason.
+const SUITE_ROOT = (
+  readFileSync("bunfig.toml", "utf8").match(/^\s*root\s*=\s*"([^"]+)"/m)?.[1] ??
+  "./tests"
+).replace(/^\.\//, "");
 
 // The contexts the `main` ruleset of fazer-ai/agents requires. Until the rule is edited this is the
 // list this PR INSTALLS, not the one live: the rule still names `test (1/4)`..`test (4/4)`, and it
@@ -69,24 +78,91 @@ for (const f of files) {
     allJobs.set(id, { job, path: f.path });
 }
 
-/** Every `docs/...` path the suite opens and asserts on. Derived, never listed by hand. */
-function docsReadByTests(): string[] {
+/**
+ * THE CLASSIFIER'S OWN ANSWER, not a guess at it.
+ *
+ * An earlier version of this fence looked for literal text in the YAML (`docs/deploy.md) echo "test
+ * input:`). That reads a correct classifier as broken the moment anyone reorders the alternatives
+ * inside an arm, which the shell treats as the same program, or groups two paths into one arm, which
+ * is the natural shape of the second entry. A fence that cries wolf is the one people learn to
+ * delete, so this runs the arms instead of matching them.
+ *
+ * It also cannot be replaced by a glob library: in shell `case`, `*` crosses `/`, so `.claude/*`
+ * matches `.claude/rules/prisma.md`. minimatch and Bun.Glob do not, and swapping them in would
+ * silently stop covering a case this already covers.
+ */
+function extractCase(): { variable: string; arms: string } {
+  const run = String(
+    parse(readFileSync(SHARED, "utf8")).jobs.detect.steps[0].run ?? "",
+  );
+  // Anchored on the LOOP, so renaming `$f` cannot leave this reading the wrong `case`. The first
+  // `case` in the step is the one over `github.event_name`, whose `*)` matches everything.
+  const loop = run.match(
+    /while\s+IFS=\s*read\s+-r\s+(\w+)\s*;\s*do([\s\S]*?)\bdone\b/,
+  );
+  if (!loop?.[1] || !loop[2])
+    throw new Error("ci fence: no `while read` loop in changed-code.yml");
+  const variable = loop[1];
+  const block = loop[2].match(
+    new RegExp(`case\\s+"\\$${variable}"\\s+in([\\s\\S]*?)\\besac\\b`),
+  );
+  if (!block?.[1])
+    throw new Error(`ci fence: no \`case "$${variable}"\` inside the loop`);
+  return { variable, arms: block[1] };
+}
+
+const CASE = extractCase();
+
+/** What the classifier answers for one path: `true` means the suite runs for it. */
+function classify(path: string): boolean {
+  // The arms print their reasoning; only `$code` is the answer, so their stdout goes nowhere.
+  const script = `code=false\n${CASE.variable}="$1"\n{ case "$${CASE.variable}" in\n${CASE.arms}\nesac ; } >/dev/null 2>&1\nprintf '%s' "$code"`;
+  const out = Bun.spawnSync(["sh", "-c", script, "sh", path]);
+  const answer = out.stdout.toString().trim();
+  if (answer !== "true" && answer !== "false") {
+    throw new Error(
+      `ci fence: the classifier answered ${JSON.stringify(answer)} for ${path}`,
+    );
+  }
+  return answer === "true";
+}
+
+/**
+ * Every file the suite OPENS and asserts on, whatever its extension.
+ *
+ * Comments are stripped first (`withoutComments` keeps string bodies, which is exactly what reading a
+ * path out of a literal needs): after this round the fence's own prose names `CLAUDE.md`, and a
+ * sweep over raw text would report itself.
+ *
+ * A path held in a `const` counts, because that is the idiom already in the tree
+ * (tests/prisma/rls-policy-split-migration.test.ts). DYNAMIC reads do not: a path built by `join`, a
+ * template with a variable, or `new URL` is not resolvable by reading the file, and there are 30-odd
+ * of them in `tests/`. That is a declared gap rather than an oversight — the ones that matter here
+ * are documentation a person edits by hand, and nobody reaches those through a computed path.
+ */
+function filesReadByTests(): string[] {
   const hits = new Set<string>();
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir)) {
       const p = join(dir, entry);
       if (statSync(p).isDirectory()) walk(p);
       else if (/\.tsx?$/.test(p)) {
-        for (const m of readFileSync(p, "utf8").matchAll(
-          /(?:Bun\.file|readFileSync)\(\s*"(docs\/[^"]+)"/g,
+        const src = withoutComments(readFileSync(p, "utf8"));
+        const consts = new Map<string, string>();
+        for (const m of src.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"\n]+)"/g)) {
+          if (m[1] && m[2]) consts.set(m[1], m[2]);
+        }
+        for (const m of src.matchAll(
+          /(?:Bun\.file|readFileSync)\(\s*(?:"([^"\n]+)"|(\w+))/g,
         )) {
-          const doc = m[1];
-          if (doc) hits.add(doc);
+          const literal = m[1] ?? (m[2] ? consts.get(m[2]) : undefined);
+          if (literal && !literal.startsWith("/") && !literal.includes("${"))
+            hits.add(literal);
         }
       }
     }
   };
-  walk("tests");
+  walk(SUITE_ROOT);
   return [...hits].sort();
 }
 
@@ -193,32 +269,58 @@ describe("the workflows always start", () => {
 });
 
 describe("what counts as documentation", () => {
-  test("a doc the suite reads as input is classified as code", () => {
-    // `docs/` is not prose by definition. Three tests open `docs/deploy.md` and assert on it, so an
-    // edit there can turn the suite red; letting it skip the suite would land that red on the next
-    // code PR, charged to whoever did not cause it. Measured: replacing `stop the old process`
-    // inside the migration note takes native-tool-names-renamed-by-migration from 2 pass to 1 pass
-    // 1 fail, while the untouched tree passes.
+  test("the classifier's arms were actually found", () => {
+    // A text extractor that matches nothing returns nothing, and "no pattern skips anything" then
+    // reads as "everything is fine". Every derivation below is worthless without this one, so it
+    // asserts the shapes are non-empty rather than trusting that they were.
+    expect(`loop variable: ${CASE.variable}`).not.toBe("loop variable: ");
+    expect(`arms found: ${CASE.arms.trim().length > 0}`).toBe(
+      "arms found: true",
+    );
+    expect(`suite root: ${SUITE_ROOT}`).toBe("suite root: tests");
+    expect(`files read by the suite: ${filesReadByTests().length}`).not.toBe(
+      "files read by the suite: 0",
+    );
+  });
+
+  test("every file the suite reads is classified as code", () => {
+    // `docs/` is not prose by definition, and neither is any other skippable path. Three tests open
+    // `docs/deploy.md` and assert on it, so an edit there can turn the suite red; letting it skip the
+    // suite would land that red on the next code PR, charged to whoever did not cause it. Measured:
+    // replacing `stop the old process` inside the migration note takes
+    // native-tool-names-renamed-by-migration from 2 pass to 1 pass 1 fail.
     //
-    // The list is DERIVED from the tests, so a test that starts reading another doc turns this red
-    // instead of silently reopening the hole.
-    const read = docsReadByTests();
-    expect(`docs read by tests: ${read.length}`).not.toBe(
-      "docs read by tests: 0",
-    );
-    const catchAll = shared.indexOf("docs/*|");
-    expect(`the docs catch-all exists: ${catchAll > -1}`).toBe(
-      "the docs catch-all exists: true",
-    );
-    for (const doc of read) {
-      const arm = shared.indexOf(`${doc}) echo "test input:`);
-      expect(`${doc} has a test-input arm: ${arm > -1}`).toBe(
-        `${doc} has a test-input arm: true`,
+    // The sweep covers EVERY skippable set, not just `docs/`: `*.md` reaches CLAUDE.md and README.md
+    // at the root, and a test reading one of those would reopen the hole this closed (#676).
+    for (const file of filesReadByTests()) {
+      expect(`${file} runs the suite: ${classify(file)}`).toBe(
+        `${file} runs the suite: true`,
       );
-      // Shell `case` takes the FIRST match, so the exception is worthless below the catch-all.
-      expect(
-        `${doc} arm before the catch-all: ${arm > -1 && arm < catchAll}`,
-      ).toBe(`${doc} arm before the catch-all: true`);
+    }
+  });
+
+  test("a path nothing reads is still allowed to skip the suite", () => {
+    // The other half: a fence that answers `code` for everything protects nothing and costs every
+    // docs-only PR the full suite.
+    for (const doc of [
+      "docs/mcp.md",
+      "docs/ui.md",
+      ".claude/rules/prisma.md",
+      "README.md",
+    ]) {
+      expect(`${doc} runs the suite: ${classify(doc)}`).toBe(
+        `${doc} runs the suite: false`,
+      );
+    }
+    for (const code of [
+      "package.json",
+      "src/config.ts",
+      "prisma/schema.prisma",
+      "openapi.json",
+    ]) {
+      expect(`${code} runs the suite: ${classify(code)}`).toBe(
+        `${code} runs the suite: true`,
+      );
     }
   });
 

@@ -2017,7 +2017,24 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // The predicate still has two conditions, for the transfer that THREW: nothing was recorded, the
   // conversation is still ours, and the recovery text the model writes is the customer's only reply.
   test("a handoff that declared silence sends nothing, not even the model's own next line", async () => {
-    await seedConversation(9702, null);
+    const contactInboxId = 7702;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9702,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9702`,
+        lastEventAt: new Date(),
+      },
+    });
+    const saver = new MemorySaver();
     const calls: Array<[string, number, string]> = [];
     const client = {
       sendMessage: async (c: number, content: string) => {
@@ -2037,7 +2054,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       tenantId,
       instanceId,
       agentBotId: 9,
-      event: incoming({ conversationId: 9702 }),
+      event: incoming({ conversationId: 9702, contactInboxId }),
       base: appDb,
       deps: {
         makeModel: () =>
@@ -2046,7 +2063,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             "Já chamei alguém, um instante.",
           ) as unknown as BaseChatModel,
         makeClient: async () => client,
-        checkpointer: new MemorySaver(),
+        checkpointer: saver,
       },
     });
     // The transfer happened and the note was filed; nothing at all went to the customer.
@@ -2055,6 +2072,26 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["toggleStatus", 9702, "open"],
     ]);
     expect(outcome).toBe("empty");
+
+    // AND THE WORDS ARE OUT OF THE THREAD (review round 3). The text was checkpointed by the invoke
+    // that produced it, the thread is shared per contact-inbox, and a later turn reading it would
+    // believe the customer was answered. The transfer itself stays: the tool call and its result are
+    // the record of what actually happened.
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((
+      cp?.channel_values as { messages?: BaseMessage[] } | undefined
+    )?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content).includes("Já chamei alguém")),
+    ).toBe(false);
+    expect(
+      messages.some(
+        (m) =>
+          (m as AIMessage).tool_calls?.some(
+            (t) => t.name === "handoff_to_human",
+          ) ?? false,
+      ),
+    ).toBe(true);
   });
 
   // Both fields are recorded from the invocation that is running, so a second successful transfer

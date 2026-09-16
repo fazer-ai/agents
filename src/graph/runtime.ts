@@ -1931,6 +1931,13 @@ async function runTurnBody(
       // reply together with every caption and document field, and a caption that trips it writes the
       // safe reply back into `reply` — so a queue left standing would put the declared silence back
       // on the wire as a moderation replacement (review round 2).
+      // AND THE WORDS COME OUT OF THE THREAD, through the same deferred rollback the silence
+      // sentinel uses (armed here, run in the `finally`, for the reason written there: called inline
+      // it reads this turn's own claim and does nothing). `graph.invoke` has already checkpointed
+      // the text, the thread is shared per contact-inbox, and a later turn reading it would believe
+      // the customer was answered. The reactive plan takes only the trailing assistant text, so the
+      // transfer's own tool call and its result stay where they are (review round 3).
+      if (reply) silenceProduced = result.messages as BaseMessage[];
       reply = "";
       const dropped = turnState.pendingAttachments.length;
       turnState.pendingAttachments.length = 0;

@@ -140,26 +140,34 @@ function classify(path: string): boolean {
  * of them in `tests/`. That is a declared gap rather than an oversight — the ones that matter here
  * are documentation a person edits by hand, and nobody reaches those through a computed path.
  */
+export function readsIn(source: string): string[] {
+  // Comments first: after this round the fence's own prose names `CLAUDE.md`, so a sweep over raw
+  // text would report itself. `withoutComments` keeps string bodies, which is exactly what reading
+  // a path out of a literal needs.
+  const src = withoutComments(source);
+  const consts = new Map<string, string>();
+  for (const m of src.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"\n]+)"/g)) {
+    if (m[1] && m[2]) consts.set(m[1], m[2]);
+  }
+  const hits = new Set<string>();
+  for (const m of src.matchAll(
+    /(?:Bun\.file|readFileSync)\(\s*(?:"([^"\n]+)"|(\w+))/g,
+  )) {
+    const literal = m[1] ?? (m[2] ? consts.get(m[2]) : undefined);
+    if (literal && !literal.startsWith("/") && !literal.includes("${"))
+      hits.add(literal);
+  }
+  return [...hits].sort();
+}
+
 function filesReadByTests(): string[] {
   const hits = new Set<string>();
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir)) {
       const p = join(dir, entry);
       if (statSync(p).isDirectory()) walk(p);
-      else if (/\.tsx?$/.test(p)) {
-        const src = withoutComments(readFileSync(p, "utf8"));
-        const consts = new Map<string, string>();
-        for (const m of src.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"\n]+)"/g)) {
-          if (m[1] && m[2]) consts.set(m[1], m[2]);
-        }
-        for (const m of src.matchAll(
-          /(?:Bun\.file|readFileSync)\(\s*(?:"([^"\n]+)"|(\w+))/g,
-        )) {
-          const literal = m[1] ?? (m[2] ? consts.get(m[2]) : undefined);
-          if (literal && !literal.startsWith("/") && !literal.includes("${"))
-            hits.add(literal);
-        }
-      }
+      else if (/\.tsx?$/.test(p))
+        for (const hit of readsIn(readFileSync(p, "utf8"))) hits.add(hit);
     }
   };
   walk(SUITE_ROOT);
@@ -295,6 +303,60 @@ describe("what counts as documentation", () => {
     for (const file of filesReadByTests()) {
       expect(`${file} runs the suite: ${classify(file)}`).toBe(
         `${file} runs the suite: true`,
+      );
+    }
+  });
+
+  test("the sweep reads the shapes the tree uses, and refuses the ones it cannot resolve", () => {
+    // Fixtures rather than the tree, so each rule is exercised on its own: every real read in the
+    // tree today is a plain literal, so dropping the comment strip or the const lookup would pass
+    // unnoticed.
+    //
+    // THE FIXTURES NAME A PATH THE CLASSIFIER ALREADY RUNS THE SUITE FOR, and that is forced rather
+    // than arbitrary. This fence sweeps its own file, `withoutComments` keeps string bodies on
+    // purpose (that is how it reads a path out of a literal), so a call spelled inside a fixture
+    // string is indistinguishable from a real one and counts. Spelling a skippable path here would
+    // make the fence demand an arm for a file nothing actually reads. It fails loudly rather than
+    // silently, which is the right direction, but the fixture has no business raising it.
+    const cases: Array<[string, string, string[]]> = [
+      [
+        "a plain literal",
+        'readFileSync("docs/deploy.md", "utf8");',
+        ["docs/deploy.md"],
+      ],
+      [
+        "Bun.file",
+        'await Bun.file("docs/deploy.md").text();',
+        ["docs/deploy.md"],
+      ],
+      // Outside `docs/` on purpose: the point of #676 is that the sweep is not a directory check,
+      // so a fixture set that only ever named `docs/…` would pass on a sweep narrowed back to it.
+      [
+        "a literal outside docs/",
+        'readFileSync("package.json", "utf8");',
+        ["package.json"],
+      ],
+      // The idiom already in the tree (tests/prisma/rls-policy-split-migration.test.ts).
+      [
+        "a path held in a const",
+        'const DOC = "docs/deploy.md";\nreadFileSync(DOC, "utf8");',
+        ["docs/deploy.md"],
+      ],
+      // A fence may not oblige anyone to stop naming files in prose.
+      [
+        "a mention in a comment only",
+        '// it did readFileSync("docs/deploy.md", "utf8") once\nconst x = 1;',
+        [],
+      ],
+      // Declared gap: not resolvable by reading the file, and thirty-odd of these exist in tests/.
+      // Written as a template with an escaped `${` so the fixture really contains the two
+      // characters the sweep looks for; a plain quoted string spelling them is what
+      // `noTemplateCurlyInString` exists to catch, and it is right that it would.
+      ["a computed path", `readFileSync(\`\${dir}/deploy.md\`, "utf8");`, []],
+    ];
+    for (const [what, source, expected] of cases) {
+      expect(`${what}: ${JSON.stringify(readsIn(source))}`).toBe(
+        `${what}: ${JSON.stringify(expected)}`,
       );
     }
   });

@@ -55,6 +55,8 @@ const CI_RACE = 884;
 const CONV_RACE = 8850;
 const CI_STALE = 885;
 const CONV_STALE = 8860;
+const CI_OVERDUE = 886;
+const CONV_OVERDUE = 8870;
 const CHATWOOT_INBOX_ID = 7;
 
 let tenantId = 0n;
@@ -143,7 +145,9 @@ async function holdThreadStale(contactInboxId: number, graphThreadId: string) {
   );
 }
 
-function jobFor(convId: number): ClaimedJob {
+// `deferringSince` is what the flush measures the ceiling from, and a burst is only past the ceiling
+// because it has been waiting: stamping it is how a test gets there without waiting five minutes.
+function jobFor(convId: number, deferringSince?: number): ClaimedJob {
   return {
     id: jobId,
     tenantId,
@@ -152,17 +156,22 @@ function jobFor(convId: number): ClaimedJob {
       threadId: `${tenantId}:${instanceId}:${convId}`,
       agentBotId: 9,
       burstStartedAt: Date.now(),
+      ...(deferringSince === undefined ? {} : { deferringSince }),
     },
     attempts: 0,
     claimSeq: 0,
   };
 }
 
-async function runFlush(convId: number, duringFetch?: () => Promise<void>) {
+async function runFlush(
+  convId: number,
+  duringFetch?: () => Promise<void>,
+  deferringSince?: number,
+) {
   const calls = { n: 0 };
   const sent: Array<[number, string]> = [];
   const out = await flushDebounceJob({
-    job: jobFor(convId),
+    job: jobFor(convId, deferringSince),
     base: appDb,
     deps: {
       makeModel: () => countingModel(calls),
@@ -241,6 +250,7 @@ describe.skipIf(!dbUp)(
         [CONV_OTHER, CI_OTHER],
         [CONV_RACE, CI_RACE],
         [CONV_STALE, CI_STALE],
+        [CONV_OVERDUE, CI_OVERDUE],
         [CONV_NO_CI, null],
       ] as Array<[number, number | null]>)
         await suDb.conversation.create({
@@ -400,6 +410,41 @@ describe.skipIf(!dbUp)(
         (c) => c.includes("stale") && c.includes(graphThreadId),
       );
       expect(line.length).toBe(1);
+    });
+
+    // THE CEILING BINDS BOTH EXCLUSION PATHS. Round 3 of review found that the deadline was computed
+    // inside the busy-thread branch, which the acquisition race never enters: the thread reads FREE
+    // there. A burst already past its deadline would be stood down again on every race, which is the
+    // starvation the ceiling exists to stop — the customer waiting forever is worse than a duplicated
+    // line in the agent's memory, and that choice is already made for the other path.
+    test("a burst past the deferral ceiling is answered even when it loses the claim race", async () => {
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        CI_OVERDUE,
+      );
+      let stop: (() => void) | undefined;
+      const { calls, sent } = await runFlush(
+        CONV_OVERDUE,
+        async () => {
+          const hold = await markTurnOwning(
+            {
+              tenantId,
+              instanceId,
+              contactInboxId: CI_OVERDUE,
+              graphThreadId,
+            },
+            suDb,
+          );
+          stop = hold.stopRenewal;
+          clearTurnInFlight(graphThreadId);
+        },
+        // Six minutes of waiting, against a five-minute ceiling.
+        Date.now() - 6 * 60_000,
+      );
+      stop?.();
+      expect(calls).toBe(1);
+      expect(sent).toEqual([[CONV_OVERDUE, "resposta"]]);
     });
   },
 );

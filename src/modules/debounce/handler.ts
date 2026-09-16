@@ -1823,32 +1823,39 @@ export async function flushDebounceJob(
       String(conversationId),
     );
   }
-  let pastDeferralCeiling = false;
+  // THE DEADLINE IS THE BURST'S, NOT THE BRANCH'S, and it is computed out here for that reason.
+  // There are TWO exclusion paths now and they have to honour one ceiling: this branch, reached when
+  // the thread already reads busy, and the stand-down at acquisition time, reached when the thread
+  // reads FREE and somebody takes it in the window before the turn's own claim. Round 3 of review
+  // found the asymmetry: a flag set only inside this branch is false on the other path by
+  // construction, so a burst already past its deadline could be stood down again on every
+  // acquisition race and never be answered — the exact starvation the ceiling exists to stop.
+  const nowMs = Date.now();
+  // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
+  // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and
+  // a deferral loop never reaches DEAD. A counter carried in the payload is worse: `armDebounce`
+  // re-arms with a full payload and `upsertJobRow` treats a present payload as authoritative, so
+  // the next message the customer types ERASES it — the counter would vanish in exactly the case
+  // it exists for, a customer who keeps writing at a thread that is stuck.
+  //
+  // `burstStartedAt` survives because `armDebounce` reads it back off the row and rewrites it
+  // while the burst continues, which is the same anchor its own anti-starvation cap uses.
+  //
+  // `deferringSince` is stamped on the FIRST deferral and carried by `armDebounce` across every
+  // re-arm of a live row. `burstStartedAt` alone was not enough and review of this change is what
+  // showed it: a message arriving while the flush is CLAIMED opens a new burst by design, taking a
+  // fresh `burstStartedAt` with it, so a customer who kept typing at a wedged thread pushed the
+  // deadline forward on every arrival and was never answered. It falls back to `burstStartedAt`
+  // for the first pass, before any stamp exists.
+  const deferringSince =
+    readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? nowMs;
+  const pastDeferralCeiling = nowMs >= deferringSince + DEFER_CEILING_MS;
   if (
     isTurnInFlight(graphThreadId) ||
     isFlushHeld(graphThreadId) ||
     durableClaim.held
   ) {
-    const now = Date.now();
-    // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
-    // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and
-    // a deferral loop never reaches DEAD. A counter carried in the payload is worse: `armDebounce`
-    // re-arms with a full payload and `upsertJobRow` treats a present payload as authoritative, so
-    // the next message the customer types ERASES it — the counter would vanish in exactly the case
-    // it exists for, a customer who keeps writing at a thread that is stuck.
-    //
-    // `burstStartedAt` survives because `armDebounce` reads it back off the row and rewrites it
-    // while the burst continues, which is the same anchor its own anti-starvation cap uses.
-    //
-    // `deferringSince` is stamped on the FIRST deferral and carried by `armDebounce` across every
-    // re-arm of a live row. `burstStartedAt` alone was not enough and review of this change is what
-    // showed it: a message arriving while the flush is CLAIMED opens a new burst by design, taking a
-    // fresh `burstStartedAt` with it, so a customer who kept typing at a wedged thread pushed the
-    // deadline forward on every arrival and was never answered. It falls back to `burstStartedAt`
-    // for the first pass, before any stamp exists.
-    const since =
-      readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? now;
-    if (now < since + DEFER_CEILING_MS) {
+    if (!pastDeferralCeiling) {
       logger.info(
         "debounce flush: a turn is in flight (thread=%s), deferring the burst on conversation %s",
         graphThreadId,
@@ -1862,10 +1869,15 @@ export async function flushDebounceJob(
       // patch rides `rescheduleJob`, whose CAS requires the row to still be CLAIMED, and the window
       // the stamp has to survive is exactly the one where a message re-armed it to PENDING and the
       // CAS fails. See `stampDeferral`.
-      await stampDeferral({ tenantId, threadId, since, base });
+      await stampDeferral({
+        tenantId,
+        threadId,
+        since: deferringSince,
+        base,
+      });
       return {
         outcome: "reschedule",
-        runAt: new Date(now + DEFER_ON_TURN_MS),
+        runAt: new Date(nowMs + DEFER_ON_TURN_MS),
       };
     }
     // PAST THE DEADLINE WE RUN ANYWAY, which is a choice and not an oversight. A turn that never
@@ -1877,7 +1889,6 @@ export async function flushDebounceJob(
       graphThreadId,
       String(conversationId),
     );
-    pastDeferralCeiling = true;
   }
   // RESERVED IN THE SAME TURN OF THE EVENT LOOP as the check above, with no await between them, and
   // that adjacency is the whole point. A turn marks itself deep inside `runLoadedTurn`, several
@@ -1984,13 +1995,15 @@ export async function flushDebounceJob(
     // only problem is that it arrived in the same instant as another one, and the deferral stamp is
     // what keeps the ceiling honest so a thread that stays occupied is answered anyway.
     if (outcome === "thread-busy") {
-      const now = Date.now();
-      const since =
-        readDeferringSince(job.payload) ?? readBurstStart(job.payload) ?? now;
-      await stampDeferral({ tenantId, threadId, since, base });
+      await stampDeferral({
+        tenantId,
+        threadId,
+        since: deferringSince,
+        base,
+      });
       return {
         outcome: "reschedule",
-        runAt: new Date(now + DEFER_ON_TURN_MS),
+        runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
       };
     }
     // The turn stood down because the operator silenced it while it ran (issue #209 review,

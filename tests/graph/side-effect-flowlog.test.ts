@@ -61,8 +61,11 @@ class HandoffThenReplyModel {
               content: "",
               tool_calls: [
                 {
+                  // A line, not the empty string: since issue #662 an empty `customerMessage` is a
+                  // DECLARED silence and the runtime sends nothing, which would make this turn
+                  // `empty` and say nothing about the assignment failure this test is about.
                   name: "handoff_to_human",
-                  args: { customerMessage: "" },
+                  args: { customerMessage: self.reply },
                   id: "call_h1",
                 },
               ],

@@ -782,6 +782,7 @@ export async function runAgentNudge(
   const handoffState = {
     customerMessage: null as string | null,
     completed: false,
+    declinedToSpeak: false,
   };
 
   // Asked once before the send and once after moderation, which is why it is a closure and not two

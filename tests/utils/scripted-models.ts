@@ -263,6 +263,82 @@ export class HandoffThenThrowModel {
 // Hands off twice: the first attempt carries a closing line and fails inside the tool, the second
 // carries none and succeeds, and the model then writes its own recovery text. The shape that tells a
 // line bound to the transfer that HAPPENED apart from one recorded by an attempt that did not.
+// Transfers TWICE in the same turn, both successfully: the first call promises a line, the second
+// declares silence. The later decision is the model's current one, and the tool records both fields
+// from the invocation it is in, so the promise does not outlive the call that made it.
+export class HandoffTwiceModel {
+  constructor(
+    private firstLine: string,
+    private afterText: string,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.afterText);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: self.firstLine },
+                id: "call_handoff_a",
+              },
+            ],
+          });
+        if (n === 2)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: "" },
+                id: "call_handoff_b",
+              },
+            ],
+          });
+        return new AIMessage(self.afterText);
+      },
+    };
+  }
+}
+
+// Transfers DECLARING silence (`customerMessage: ""`, issue #662) and then writes its own text
+// anyway, which is what the live battery caught a real model doing once in 18 turns of deliberate
+// silence. The declaration has to win: the tool told the model nothing would be sent.
+export class HandoffDeclaredSilenceModel {
+  constructor(private afterText: string) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.afterText);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { reason: "notificação formal", customerMessage: "" },
+                id: "call_handoff_silent",
+              },
+            ],
+          });
+        return new AIMessage(self.afterText);
+      },
+    };
+  }
+}
+
 export class HandoffRetryModel {
   constructor(
     private firstMessage: string,
@@ -292,12 +368,14 @@ export class HandoffRetryModel {
           return new AIMessage({
             content: "",
             tool_calls: [
-              // Declares silence rather than omitting the argument, which is the only way to reach
-              // this shape since issue #662: the second attempt promises the customer nothing, and
-              // the model's own recovery text is what goes out.
+              // The second attempt carries its OWN line, which is what a retry looks like since
+              // issue #662 made the argument required: the recovery text the model would have
+              // written goes through the tool, and the first attempt's promise is discarded with the
+              // attempt that failed to keep it. Declaring silence here instead is a different case,
+              // and it has its own test (a declared silence sends nothing at all).
               {
                 name: "handoff_to_human",
-                args: { customerMessage: "" },
+                args: { customerMessage: self.recovery },
                 id: "call_handoff_2",
               },
             ],

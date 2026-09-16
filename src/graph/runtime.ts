@@ -99,6 +99,7 @@ import type { McpLoadDeps } from "./tools/mcp";
 import {
   buildNativeTools,
   handoffAnsweredTheTurn,
+  handoffDeclaredSilence,
   type TurnState,
 } from "./tools/native";
 import type { UsagePersist } from "./usage";
@@ -872,6 +873,7 @@ async function runTurnBody(
   const handoffState = {
     customerMessage: null as string | null,
     completed: false,
+    declinedToSpeak: false,
   };
   // The SAME reading every send makes, handed down whole (issue #209 review, round 5). A fence
   // derived from `params.stillWanted` alone let a tool call run — the label write, and the slow-tool
@@ -1915,6 +1917,19 @@ async function runTurnBody(
     // duplicate of anything, and its caption is model-written customer-facing text the output
     // guardrail has to screen.
     if (handedOff) reply = "";
+    // The model DECLARED that this case receives no reply (issue #662's empty string), and the tool
+    // told it in as many words that nothing would be sent. Its own next line is not a fallback
+    // here: the fallback exists for a transfer that had nothing to say, and this transfer said it.
+    // So the text is dropped the same way the duplicate above is, leaving every other gate below
+    // untouched. The proactive path needs nothing: the conversation reads `open` by now, so its
+    // ownership probe already refuses to post.
+    else if (handoffDeclaredSilence(handoffState)) {
+      reply = "";
+      logger.info(
+        "turn: the handoff declared silence (conv=%s), so nothing goes to the customer",
+        String(conversationId),
+      );
+    }
     await deliverHandoffPromise();
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during

@@ -76,6 +76,22 @@ export type MirrorHolder = "ours" | "not-ours" | "not-asked";
 // requires `sender.is_a?(User)` or an external echo from the paired device — an AgentBot never sets
 // it, so that half means a PERSON spoke. The OR is load-bearing: of 168 conversations measured on the
 // reporting inbox 7 had only that half, and a thread the operator answered by hand keeps its ladder.
+//
+// WHAT THESE TWO MARKS DO NOT SEE, stated rather than implied, because both make this answer "no"
+// for a conversation somebody did speak in — and a false "no" costs a follow-up that should have
+// gone out, never a message that should not have:
+//
+//   - `POST /conversations/:id/reply` and the `conversation_reply` MCP tool send with the BOT token
+//     and never take `claimReplyBurst`, so neither mark records them. Nothing in `src/client/` calls
+//     either one; they are being removed (issue #655), and with them gone every remaining way our
+//     side speaks writes one of these two marks, which is what makes this predicate complete rather
+//     than approximately complete.
+//   - A reply from before the claim column existed (migration `20260831000000_reply_burst_claim`,
+//     which adds no backfill). It heals on use — the next reply writes the claim, and any human
+//     reply re-mirrors `first_reply_created_at`, which Chatwoot recomputes and ships on every
+//     conversation payload — but a conversation that goes quiet before either happens keeps its
+//     ladder closed. Accepted deliberately: the alternative fences the fix out of exactly the
+//     backlog the report measured it on.
 export function ourSideHasSpoken(c: {
   lastRepliedMessageId: number | null;
   chatwootFirstReplyAt: Date | null;

@@ -130,11 +130,12 @@ export const HighlightedTemplateField = forwardRef<
     // from the glyph the operator sees, by more the further the prompt is scrolled (#649: 612px
     // against 622px of content, one line of drift at the end of a 16k-character prompt, measured in
     // Chromium/Linux).
-    // What decides it is the SCROLLBAR, not the OS: Windows and Linux take the space by default,
-    // and so does macOS whenever the system is set to always show scroll bars (measured here: a
-    // headed macOS Chromium reserves 15px for a plain `overflow: auto`). Only the overlay
-    // configuration is unaffected, and it is the one where this reservation costs a column of text
-    // and buys nothing.
+    // What decides it is the SCROLLBAR, not the OS, and the same binary answers both ways: with
+    // "show scroll bars: always" a macOS Chromium reserves 15px for a plain `overflow: auto` and
+    // this field measures 598px of content in both layers; with "when scrolling" it reserves 0 and
+    // the field measures 620px in both. Windows and Linux are the first case by default. The
+    // reservation is free in the second, because an overlay scrollbar takes no space and the
+    // gutter of a scroll container that has none is zero.
     // Multiline only: the single-line control scrolls its text internally and shows no scrollbar.
     const gutter = multiline ? "[scrollbar-gutter:stable]" : "";
     const sharedText = cn(FIELD_BASE, pad, textClassName, wrapCls, gutter);

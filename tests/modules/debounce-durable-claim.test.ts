@@ -219,23 +219,30 @@ describe.skipIf(!dbUp)(
     });
 
     afterAll(async () => {
-      if (!tenantId) return;
-      for (const table of [
-        "agent_threads",
-        "scheduler_jobs",
-        "llm_usage",
-        "conversations",
-        "inboxes",
-        "agents",
-        "vault_entries",
-        "chatwoot_instances",
-      ])
+      if (tenantId) {
+        for (const table of [
+          "agent_threads",
+          "scheduler_jobs",
+          "llm_usage",
+          "conversations",
+          "inboxes",
+          "agents",
+          "vault_entries",
+          "chatwoot_instances",
+        ])
+          await suDb.$executeRawUnsafe(
+            `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+          );
         await suDb.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+          `DELETE FROM tenants WHERE id = ${tenantId}`,
         );
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM tenants WHERE id = ${tenantId}`,
-      );
+      }
+      // NOTE: the shard is one process for every file in it, so a pool left open here is still open
+      // 33 files later. Measured on run 35116422422: without these two, `scheduler-lanes` claims
+      // fewer jobs than it asks for and fails on the count, with `Timed out fetching a new
+      // connection from the connection pool` in the same shard's log.
+      await suDb.$disconnect();
+      await appDb.$disconnect();
     });
 
     // s1: the core of issue #593. Another replica owns the graph thread; this process knows nothing.

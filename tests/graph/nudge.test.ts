@@ -46,6 +46,7 @@ import { flowLogRows } from "../utils/flowlog";
 import {
   EmptyThenReplyModel,
   guardrailModel,
+  HandoffDeclaredSilenceModel,
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   ResolveThenReplyModel,
@@ -956,6 +957,40 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // The transfer lands before the line now, because the caller cannot deliver until the tool call
     // returns. Chatwoot never shows a status change to the customer.
     expect(s.order).toEqual(["resolve", "message", "label"]);
+  });
+
+  // THE SAME LAG, AND THE OTHER DECISION (review round 2 of the #662 PR). The transfer above spoke,
+  // so the mirror reading stale costs nothing: the closing line was going out either way. Here the
+  // transfer DECLARED that this case receives no reply, and the probe that was supposed to stop the
+  // model's own proactive text reads that same stale mirror: `toggleStatus` does not write it, and
+  // only a caller passing `requireLiveBotOwnership` asks Chatwoot instead. Two of the three callers
+  // do not (`channel-redirect/followup.ts` and `appointments/reminders.ts`), so without this the
+  // declared silence would hold on the reactive path and leak on the proactive one.
+  test("a nudge whose handoff declared silence sends nothing, even with the mirror still bot-owned", async () => {
+    await seedConv(9991, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9991`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffDeclaredSilenceModel(
+            "Encaminhado para a equipe responsável.",
+          ) as never,
+        // stub() does not mirror toggleStatus, so the row still says the bot owns it.
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    // The label still applies, the same way it does on every other silent end, and the resolve
+    // still falls with the transfer.
+    expect(s.labelSets).toEqual([["follow-up"]]);
   });
 
   test("invokes on the per-contact-inbox memory thread, not the per-conversation thread (unification)", async () => {

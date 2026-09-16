@@ -2134,6 +2134,38 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
+  // AND THE QUEUE FALLS WITH THE DECLARED SILENCE, which is the one case where the rule above flips
+  // (review round 2 of the #662 PR). A photo is not a second copy of a closing line, so a transfer
+  // that spoke still delivers it; a transfer that declared "no reply at all" cannot mean "no text,
+  // plus the photo you queued two hops ago". The caption is the sharper half: it rides into the
+  // output guardrail with the reply, and a trip writes the safe reply BACK into the reply that was
+  // just blanked, which would put the declared silence on the wire as a moderation replacement.
+  test("a handoff that declared silence drops the image queued earlier in the same turn", async () => {
+    await allowImageHost();
+    await seedConversation(9981, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9981 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageThenHandoffModel(
+            IMG_URL,
+            "",
+            "Camiseta azul",
+          ) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([["toggleStatus", 9981, "open"]]);
+  });
+
   // The deferred resolve falls with the TRANSFER, and with nothing else. The hardest case for that
   // rule is a closing line that fails to reach the customer: the conversation is a human's either
   // way, so resolving it would close an open request out from under them, and a customer who heard

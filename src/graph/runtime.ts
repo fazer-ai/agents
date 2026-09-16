@@ -1924,10 +1924,20 @@ async function runTurnBody(
     // untouched. The proactive path needs nothing: the conversation reads `open` by now, so its
     // ownership probe already refuses to post.
     else if (handoffDeclaredSilence(handoffState)) {
+      // AND THE QUEUE GOES WITH IT, which the duplicate branch above deliberately keeps: a photo is
+      // not a second copy of a closing line, but it IS something the customer reads, and "no reply
+      // at all" cannot mean "no text, plus the document you queued two hops ago". Dropped here
+      // rather than at the delivery below for a second reason: the output guardrail screens the
+      // reply together with every caption and document field, and a caption that trips it writes the
+      // safe reply back into `reply` — so a queue left standing would put the declared silence back
+      // on the wire as a moderation replacement (review round 2).
       reply = "";
+      const dropped = turnState.pendingAttachments.length;
+      turnState.pendingAttachments.length = 0;
       logger.info(
-        "turn: the handoff declared silence (conv=%s), so nothing goes to the customer",
+        "turn: the handoff declared silence (conv=%s), so nothing goes to the customer (attachments dropped=%d)",
         String(conversationId),
+        dropped,
       );
     }
     await deliverHandoffPromise();

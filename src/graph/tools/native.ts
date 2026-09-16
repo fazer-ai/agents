@@ -126,11 +126,20 @@ export interface HandoffTurnState {
   customerMessage: string | null;
   // The conversation left `pending`, so the human queue owns it and the bot is done talking.
   completed: boolean;
+  // The model was OFFERED the argument and passed it EMPTY, which since issue #662 is how it says
+  // "this case receives no reply at all". Distinct from `customerMessage === null`, which is also
+  // what a muted turn and a transfer that threw leave behind: this one is a decision, and the
+  // runtime honours it by sending nothing rather than falling back to the model's own next text.
+  // Optional because the turn-state shape is spelled out by hand at five call sites that build the
+  // toolset, and absent is exactly what it means: nobody declared anything.
+  declinedToSpeak?: boolean;
 }
 
 // Whether the handoff supplies this turn's customer-facing text, which is the ONE question both
-// runtimes ask. Two conditions and not one, because a transfer with nothing to say leaves the
-// model's own final text as the only thing the customer would get, and that text is still theirs.
+// runtimes ask. Two conditions and not one, because a transfer that THREW leaves the model's own
+// final text as the only thing the customer would get, and that text is still theirs. A transfer
+// that SUCCEEDED with nothing to say is a different case since issue #662, and it has its own
+// predicate below: the model declared the silence, so there is no fallback to fall back to.
 //
 // A transfer that threw halfway answers false, and has to. sendPrivateNote and toggleStatus are not
 // best-effort, so either can throw AFTER the model composed a line promising a human; the
@@ -146,6 +155,20 @@ export function handoffAnsweredTheTurn(
   state: HandoffTurnState | undefined,
 ): state is HandoffTurnState & { customerMessage: string } {
   return !!state && !!state.customerMessage && state.completed;
+}
+
+// The other half of the same question, and the reason it is a separate one: a transfer that left
+// nothing to say used to mean "the model said nothing", and the runtime answered that by letting the
+// model's own final text through (the fallback `handoffAnsweredTheTurn` is written around). Since
+// issue #662 the model cannot reach that state by forgetting, so reaching it means it CHOSE
+// silence, and the tool now tells it so, in as many words. Delivering its next line anyway would
+// make that
+// sentence false, which is the defect #662 was: measured once in 18 live turns of declared silence,
+// on a credit-bureau notice, as `Encaminhado para a equipe responsável.` sent to the customer.
+export function handoffDeclaredSilence(
+  state: HandoffTurnState | undefined,
+): boolean {
+  return !!state && state.completed && !!state.declinedToSpeak;
 }
 
 export interface PendingAttachment {
@@ -353,8 +376,28 @@ function handoffTool(ctx: ToolCtx) {
   // write a message that goes nowhere is not, and the argument goes with the sentence.
   const speaks = !ctx.client?.muted;
   const baseDescription = speaks
-    ? `${coreDescription} Before transferring, set \`customerMessage\` to a brief reply to the customer (e.g. that a human will continue) so they are not left without an answer.`
+    ? `${coreDescription} \`customerMessage\` is REQUIRED: write the reply the customer will read (e.g. that a human will continue). Pass an EMPTY STRING only when this case must receive no reply at all — a formal or legal notice, an automated platform notification, or a customer already being handled by a human elsewhere.`
     : `${coreDescription} This turn does NOT answer the customer, so the transfer is silent to them: there is no message to write and none is sent.`;
+  const reasonField = z
+    .string()
+    .optional()
+    .describe("Short private-note summary for the human taking over.");
+  // REQUIRED, and that is the fix for issue #662: an omitted argument and a deliberate silence were
+  // the same call, so the customer could be left with nothing by a model that simply forgot, and no
+  // record could tell the two apart. Declared empty, the silence is a decision the model made,
+  // visible in the tool's own log line (`describeShape` reports `string(0)`, while an omitted
+  // argument does not appear at all). Measured: a call without it is refused by the schema with a
+  // text that NAMES the argument ("at customerMessage") and instructs no silence, so the model's
+  // next attempt has both options in front of it.
+  const customerMessageField = speaks
+    ? {
+        customerMessage: z
+          .string()
+          .describe(
+            "The message the CUSTOMER receives, sent before the transfer (e.g. that a human will continue). Pass an EMPTY STRING only when this case must receive no reply at all (formal/legal notice, automated platform notification, customer already being handled by a human elsewhere).",
+          ),
+      }
+    : {};
   return tool(
     async ({
       reason,
@@ -363,6 +406,8 @@ function handoffTool(ctx: ToolCtx) {
     }: {
       reason?: string;
       assignTo?: string;
+      // Required on a speaking turn and absent from the schema on a muted one, so `undefined` here
+      // means the muted branch and never a model that forgot (see the schema below).
       customerMessage?: string;
     }) => {
       // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
@@ -399,9 +444,12 @@ function handoffTool(ctx: ToolCtx) {
       // pacing every other reply gets (#160). The cost is ordering — the customer reads it just
       // after the transfer instead of just before, which Chatwoot never shows them.
       if (ctx.handoffState) {
-        if (customerMessage?.trim()) {
-          ctx.handoffState.customerMessage = customerMessage.trim();
-        }
+        // BOTH fields come from THIS invocation, so a second successful call cannot leave the first
+        // one's promise standing next to its own silence: the turn would then be holding a line to
+        // deliver and a declaration not to, and whichever the runtime asked about first would win.
+        const spoken = customerMessage?.trim() ?? "";
+        ctx.handoffState.customerMessage = spoken || null;
+        ctx.handoffState.declinedToSpeak = speaks && !spoken;
         ctx.handoffState.completed = true;
       }
 
@@ -460,7 +508,24 @@ function handoffTool(ctx: ToolCtx) {
           err: e,
         });
       }
-      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned} The bot will stay silent now.`;
+      // WHAT THE MODEL READS AFTER TRANSFERRING, and it used to read the same sentence in all three
+      // cases: "The bot will stay silent now." On the branch where the model had supplied no line
+      // that sentence was an INSTRUCTION, and the model obeyed it: the runtime's fallback for a
+      // transfer with nothing to say existed precisely so the model's next hop could speak, and the
+      // tool was telling it not to. Measured on an email inbox: 2 of 130 turns ended transferred,
+      // with a private note filed, and nothing at all for the customer (issue #662). It protected
+      // nothing on the other branch either: when a line IS supplied, `runtime.ts` blanks the model's
+      // own text, which is the duplicate-reply guard from issue #158, and never depended on this
+      // sentence.
+      //
+      // Each of the three sentences below is a promise the product keeps: the declared silence is
+      // enforced by `handoffDeclaredSilence` above, so "no message will be sent" is not advice.
+      const silenceNote = !speaks
+        ? " This turn does not answer the customer, so nothing is sent to them."
+        : customerMessage?.trim()
+          ? " The message you wrote will be delivered to the customer; do not repeat it."
+          : " No message will be sent to the customer, as you indicated.";
+      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`;
     },
     {
       // From the catalog, because the hand-back decision matches results by this exact name
@@ -472,24 +537,13 @@ function handoffTool(ctx: ToolCtx) {
         "handoff_to_human",
         targetsXml,
       ),
+      // The two shapes differ ONLY by `assignTo`, and the shared fields are defined once above:
+      // written twice, a mutation that restored `.optional()` on the `agent_choice` copy survived
+      // the whole suite, because the test exercises the other shape (issue #662).
       schema: agentChoice
         ? z.object({
-            reason: z
-              .string()
-              .optional()
-              .describe(
-                "Short private-note summary for the human taking over.",
-              ),
-            ...(speaks
-              ? {
-                  customerMessage: z
-                    .string()
-                    .optional()
-                    .describe(
-                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
-                    ),
-                }
-              : {}),
+            reason: reasonField,
+            ...customerMessageField,
             assignTo: z
               .string()
               .optional()
@@ -497,24 +551,7 @@ function handoffTool(ctx: ToolCtx) {
                 "Name of the agent or team to route to; see the tool description for the valid names. Omit to use default routing.",
               ),
           })
-        : z.object({
-            reason: z
-              .string()
-              .optional()
-              .describe(
-                "Short private-note summary for the human taking over.",
-              ),
-            ...(speaks
-              ? {
-                  customerMessage: z
-                    .string()
-                    .optional()
-                    .describe(
-                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
-                    ),
-                }
-              : {}),
-          }),
+        : z.object({ reason: reasonField, ...customerMessageField }),
     },
   );
 }

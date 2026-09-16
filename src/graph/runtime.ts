@@ -99,6 +99,7 @@ import type { McpLoadDeps } from "./tools/mcp";
 import {
   buildNativeTools,
   handoffAnsweredTheTurn,
+  handoffDeclaredSilence,
   type TurnState,
 } from "./tools/native";
 import type { UsagePersist } from "./usage";
@@ -872,6 +873,7 @@ async function runTurnBody(
   const handoffState = {
     customerMessage: null as string | null,
     completed: false,
+    declinedToSpeak: false,
   };
   // The SAME reading every send makes, handed down whole (issue #209 review, round 5). A fence
   // derived from `params.stillWanted` alone let a tool call run — the label write, and the slow-tool
@@ -1915,6 +1917,36 @@ async function runTurnBody(
     // duplicate of anything, and its caption is model-written customer-facing text the output
     // guardrail has to screen.
     if (handedOff) reply = "";
+    // The model DECLARED that this case receives no reply (issue #662's empty string), and the tool
+    // told it in as many words that nothing would be sent. Its own next line is not a fallback
+    // here: the fallback exists for a transfer that had nothing to say, and this transfer said it.
+    // So the text is dropped the same way the duplicate above is, leaving every other gate below
+    // untouched. The proactive path needs nothing: the conversation reads `open` by now, so its
+    // ownership probe already refuses to post.
+    else if (handoffDeclaredSilence(handoffState)) {
+      // AND THE QUEUE GOES WITH IT, which the duplicate branch above deliberately keeps: a photo is
+      // not a second copy of a closing line, but it IS something the customer reads, and "no reply
+      // at all" cannot mean "no text, plus the document you queued two hops ago". Dropped here
+      // rather than at the delivery below for a second reason: the output guardrail screens the
+      // reply together with every caption and document field, and a caption that trips it writes the
+      // safe reply back into `reply` — so a queue left standing would put the declared silence back
+      // on the wire as a moderation replacement (review round 2).
+      // AND THE WORDS COME OUT OF THE THREAD, through the same deferred rollback the silence
+      // sentinel uses (armed here, run in the `finally`, for the reason written there: called inline
+      // it reads this turn's own claim and does nothing). `graph.invoke` has already checkpointed
+      // the text, the thread is shared per contact-inbox, and a later turn reading it would believe
+      // the customer was answered. The reactive plan takes only the trailing assistant text, so the
+      // transfer's own tool call and its result stay where they are (review round 3).
+      if (reply) silenceProduced = result.messages as BaseMessage[];
+      reply = "";
+      const dropped = turnState.pendingAttachments.length;
+      turnState.pendingAttachments.length = 0;
+      logger.info(
+        "turn: the handoff declared silence (conv=%s), so nothing goes to the customer (attachments dropped=%d)",
+        String(conversationId),
+        dropped,
+      );
+    }
     await deliverHandoffPromise();
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during

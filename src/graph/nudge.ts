@@ -91,7 +91,11 @@ import {
   type TurnHold,
 } from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
-import { buildNativeTools, handoffAnsweredTheTurn } from "./tools/native";
+import {
+  buildNativeTools,
+  handoffAnsweredTheTurn,
+  handoffDeclaredSilence,
+} from "./tools/native";
 
 // agentNudge consumption: an inbound domain event (correlated to a conversation thread) is
 // injected into that thread as a NORMALIZED system turn (never the raw external JSON — injection
@@ -782,6 +786,7 @@ export async function runAgentNudge(
   const handoffState = {
     customerMessage: null as string | null,
     completed: false,
+    declinedToSpeak: false,
   };
 
   // Asked once before the send and once after moderation, which is why it is a closure and not two
@@ -1815,9 +1820,24 @@ export async function runAgentNudge(
     return promised;
   }
 
+  // THE DECLARED SILENCE REACHES HERE TOO, and the ownership probe above is not what enforces it.
+  // Without `requireLiveBotOwnership` that probe reads the MIRROR, and `toggleStatus` does not write
+  // the mirror: the assignment webhook can be seconds late or lost, so the row still says the bot
+  // owns a conversation the transfer just handed over, and the model's own proactive text would go
+  // out over a silence it declared (review round 2). Blanked rather than returned on, so the
+  // deterministic post-actions still fire and `takeBackUndeliveredSilence` still takes the unread
+  // sentence out of the thread the next turn reads.
+  const declaredSilence = handoffDeclaredSilence(handoffState);
+  if (declaredSilence && reply) {
+    logger.info(
+      "nudge: the handoff declared silence (conv=%s), so the proactive text is not sent",
+      String(conversationId),
+    );
+  }
+
   // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
   // the final follow-up: label + resolve").
-  if (silent || !reply) {
+  if (silent || !reply || declaredSilence) {
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     await applyPostActions({ canMessage: canMessagePost });

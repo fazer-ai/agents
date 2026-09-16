@@ -146,7 +146,11 @@ describe("guardedTool under ToolNode", () => {
         new AIMessage({
           content: "",
           tool_calls: [
-            { id: "call_1", name: "handoff_to_human", args: { reason: "2" } },
+            {
+              id: "call_1",
+              name: "handoff_to_human",
+              args: { reason: "2", customerMessage: "" },
+            },
           ],
         }),
       ],
@@ -166,7 +170,13 @@ describe("guardedTool under ToolNode", () => {
       messages: [
         new AIMessage({
           content: "",
-          tool_calls: [{ id: "c", name: "handoff_to_human", args: {} }],
+          tool_calls: [
+            {
+              id: "c",
+              name: "handoff_to_human",
+              args: { customerMessage: "" },
+            },
+          ],
         }),
       ],
     })) as { messages: ToolMessage[] };

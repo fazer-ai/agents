@@ -50,9 +50,11 @@ import { flowLogRow, flowLogRows } from "../utils/flowlog";
 import {
   EmptyThenReplyModel,
   guardrailModel,
+  HandoffDeclaredSilenceModel,
   HandoffRetryModel,
   HandoffThenReplyModel,
   HandoffThenThrowModel,
+  HandoffTwiceModel,
   ResolveThenReplyModel,
   SendDocumentThenReplyModel,
   SendImageAndResolveModel,
@@ -2003,16 +2005,44 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // The other half of the predicate, and the reason it is two conditions and not one. A transfer with
-  // nothing to say does not own the turn's text, so the model's own final message is the only thing
-  // the customer would get and it still has to go out. Reading `completed` alone here would drop it
-  // and leave the customer transferred in silence.
-  test("a handoff that supplies no closing line still delivers the model's final text", async () => {
-    await seedConversation(9702, null);
+  // THIS TEST USED TO ASSERT THE OPPOSITE, and the reason it changed is issue #662. An empty
+  // `customerMessage` was what a model that FORGOT the argument left behind, so the model's own final
+  // text was the only thing the customer would get and it had to go out. The argument is required
+  // now, so an empty one is the model SAYING this case receives no reply, and the tool answers it
+  // with "No message will be sent to the customer, as you indicated", a sentence the product has to
+  // keep. Measured once in 18 live turns of deliberate silence (`gpt-5.2`, three runs): the model
+  // declared the silence and then wrote `Encaminhado para a equipe responsável.`, which reached the
+  // customer on a credit-bureau notice.
+  //
+  // The predicate still has two conditions, for the transfer that THREW: nothing was recorded, the
+  // conversation is still ours, and the recovery text the model writes is the customer's only reply.
+  test("a handoff that declared silence sends nothing, not even the model's own next line", async () => {
+    const contactInboxId = 7702;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9702,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9702`,
+        lastEventAt: new Date(),
+      },
+    });
+    const saver = new MemorySaver();
     const calls: Array<[string, number, string]> = [];
     const client = {
       sendMessage: async (c: number, content: string) => {
         calls.push(["sendMessage", c, content]);
+        return {};
+      },
+      sendPrivateNote: async (c: number, content: string) => {
+        calls.push(["sendPrivateNote", c, content]);
         return {};
       },
       toggleStatus: async (c: number, status: string) => {
@@ -2024,24 +2054,86 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       tenantId,
       instanceId,
       agentBotId: 9,
-      event: incoming({ conversationId: 9702 }),
+      event: incoming({ conversationId: 9702, contactInboxId }),
       base: appDb,
       deps: {
         makeModel: () =>
-          // Empty customerMessage: the tool records nothing, so the handoff supplies no text.
-          new HandoffThenReplyModel(
+          // Declares the silence and then writes anyway, which is what the live model did.
+          new HandoffDeclaredSilenceModel(
             "Já chamei alguém, um instante.",
-            "",
+          ) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: saver,
+      },
+    });
+    // The transfer happened and the note was filed; nothing at all went to the customer.
+    expect(calls).toEqual([
+      ["sendPrivateNote", 9702, "notificação formal"],
+      ["toggleStatus", 9702, "open"],
+    ]);
+    expect(outcome).toBe("empty");
+
+    // AND THE WORDS ARE OUT OF THE THREAD (review round 3). The text was checkpointed by the invoke
+    // that produced it, the thread is shared per contact-inbox, and a later turn reading it would
+    // believe the customer was answered. The transfer itself stays: the tool call and its result are
+    // the record of what actually happened.
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((
+      cp?.channel_values as { messages?: BaseMessage[] } | undefined
+    )?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content).includes("Já chamei alguém")),
+    ).toBe(false);
+    expect(
+      messages.some(
+        (m) =>
+          (m as AIMessage).tool_calls?.some(
+            (t) => t.name === "handoff_to_human",
+          ) ?? false,
+      ),
+    ).toBe(true);
+  });
+
+  // Both fields are recorded from the invocation that is running, so a second successful transfer
+  // cannot leave the first one's promise standing next to its own silence. The turn would then hold
+  // a line to deliver AND a declaration not to, and whichever the runtime asked about first would
+  // win. It is the same rule the retry above follows, stated for two calls that both worked.
+  test("a second transfer declaring silence does not deliver the first one's promise", async () => {
+    await seedConversation(963, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 963 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffTwiceModel(
+            "Um humano já vai te atender.",
+            "Encaminhado.",
           ) as unknown as BaseChatModel,
         makeClient: async () => client,
         checkpointer: new MemorySaver(),
       },
     });
-    expect(outcome).toBe("posted");
     expect(calls).toEqual([
-      ["toggleStatus", 9702, "open"],
-      ["sendMessage", 9702, "Já chamei alguém, um instante."],
+      ["toggleStatus", 963, "open"],
+      ["toggleStatus", 963, "open"],
     ]);
+    expect(outcome).toBe("empty");
   });
 
   // A photo the model queued earlier in the same turn is not a second copy of the closing line, and
@@ -2077,6 +2169,38 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["sendMessage", 998, "Segue a foto. Vou te passar para um humano."],
       ["sendFileAttachment", 998, "imagem.png"],
     ]);
+  });
+
+  // AND THE QUEUE FALLS WITH THE DECLARED SILENCE, which is the one case where the rule above flips
+  // (review round 2 of the #662 PR). A photo is not a second copy of a closing line, so a transfer
+  // that spoke still delivers it; a transfer that declared "no reply at all" cannot mean "no text,
+  // plus the photo you queued two hops ago". The caption is the sharper half: it rides into the
+  // output guardrail with the reply, and a trip writes the safe reply BACK into the reply that was
+  // just blanked, which would put the declared silence on the wire as a moderation replacement.
+  test("a handoff that declared silence drops the image queued earlier in the same turn", async () => {
+    await allowImageHost();
+    await seedConversation(9981, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9981 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageThenHandoffModel(
+            IMG_URL,
+            "",
+            "Camiseta azul",
+          ) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([["toggleStatus", 9981, "open"]]);
   });
 
   // The deferred resolve falls with the TRANSFER, and with nothing else. The hardest case for that
@@ -2505,8 +2629,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    // The second attempt promised nothing, so the turn is an ordinary one: the model's own text goes
-    // out, and the line the failed attempt wrote never does.
+    // The line delivered is the second attempt's own, and the first attempt's promise never goes
+    // out. Since issue #662 the retry has to carry a line (or declare silence), so this is the
+    // shape a real retry takes.
     expect(calls).toEqual([
       ["toggleStatus", 961, "open"],
       ["sendMessage", 961, "Pronto, te transferi."],
@@ -3487,7 +3612,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           new HumanMessage("quero falar com uma pessoa"),
           new AIMessage({
             content: "",
-            tool_calls: [{ name: "handoff_to_human", args: {}, id: "h1" }],
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: "" },
+                id: "h1",
+              },
+            ],
           }),
           new ToolMessage({
             content: `${HANDOFF_DONE_PREFIX} (status set to open).`,

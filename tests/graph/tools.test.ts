@@ -66,6 +66,81 @@ describe("native tools", () => {
     expect(only.map((t) => t.name)).toEqual(["private_note"]);
   });
 
+  // ISSUE #662. The tool used to accept a transfer with nothing to say AND tell the model, in the
+  // same breath, that the bot would stay silent now. So the one case the runtime's own fallback
+  // exists for — `handoffAnsweredTheTurn` requires a line AND a completed transfer, precisely so the
+  // model's next hop can speak when there is no line — was the case where the tool told the model
+  // not to speak. Measured by the reporter on an email inbox: 2 of 130 turns ended with the
+  // conversation transferred, a note filed, and nothing at all for the customer.
+  //
+  // Two halves, and the second is what makes the first provable: the argument is REQUIRED, so
+  // forgetting it is not a way to reach silence, and an empty string is how silence is DECLARED —
+  // which is also the only way an operator can tell a decision from an oversight, since the tool's
+  // log line reports `string(0)` for a declared empty and nothing at all for an omitted argument.
+  test("a transfer cannot be silent by omission, and says what it will do in each case", async () => {
+    const { client } = recordingClient();
+    const speaking = byName(
+      buildNativeTools({ client, conversationId: 42 }),
+      "handoff_to_human",
+    );
+    // REQUIRED on the speaking branch. The schema is the fence; the refusal text below is what the
+    // model actually reads, and it has to name the argument rather than just say "invalid input".
+    await expect(
+      speaking.invoke({ reason: "cliente pediu humano" }),
+    ).rejects.toThrow(/customerMessage/);
+
+    const withLine = String(
+      await speaking.invoke({ customerMessage: "Um humano continua daqui." }),
+    );
+    const declaredSilent = String(
+      await speaking.invoke({ customerMessage: "" }),
+    );
+    // Neither branch may carry an instruction to stay silent: that sentence is what the model obeyed.
+    for (const out of [withLine, declaredSilent])
+      expect(out.toLowerCase()).not.toContain("stay silent");
+    // And each says what actually happens to the customer, so the model does not have to guess
+    // whether its own next line is wanted.
+    expect(withLine).toContain("will be delivered to the customer");
+    expect(declaredSilent).toContain("No message will be sent");
+
+    // The muted branch has no argument at all, so its note is not about a decision the model made:
+    // it states the topology. Same requirement, though, that it does not read as an instruction.
+    const muted = byName(
+      buildNativeTools({
+        client: { ...client, muted: true } as unknown as ChatwootClient,
+        conversationId: 42,
+      }),
+      "handoff_to_human",
+    );
+    const silentTurn = String(await muted.invoke({}));
+    expect(silentTurn.toLowerCase()).not.toContain("stay silent");
+    expect(silentTurn).toContain("nothing is sent to them");
+
+    // And on the OTHER shape, the one that carries `assignTo`. The field is defined once for both,
+    // but it was written twice first, and a mutation restoring `.optional()` on this copy survived
+    // the whole suite because nothing exercised this branch.
+    const routing = byName(
+      buildNativeTools({
+        client,
+        conversationId: 42,
+        handoff: {
+          mode: "agent_choice",
+          targetAgentId: null,
+          targetTeamId: null,
+          targetInstanceId: null,
+          instructions: null,
+        },
+      }),
+      "handoff_to_human",
+    );
+    expect(Object.keys((routing.schema as { shape: object }).shape)).toContain(
+      "assignTo",
+    );
+    await expect(
+      routing.invoke({ reason: "cliente pediu humano" }),
+    ).rejects.toThrow(/customerMessage/);
+  });
+
   test("a MUTED turn is not told to write a message the transfer will not send", () => {
     // The line is RECORDED on `handoffState` for the caller to deliver, and an observation has no
     // `handoffState` and throws its final output away: the transfer happens and the customer hears
@@ -171,6 +246,7 @@ describe("native tools", () => {
     const tools = buildNativeTools({ client, conversationId: 42 });
     const out = await byName(tools, "handoff_to_human").invoke({
       reason: "cliente pediu humano",
+      customerMessage: "",
     });
     expect(calls).toEqual([
       ["sendPrivateNote", [42, "cliente pediu humano"]],
@@ -261,7 +337,7 @@ describe("native tools", () => {
   test("handoff without a reason only sets status open", async () => {
     const { client, calls } = recordingClient();
     const tools = buildNativeTools({ client, conversationId: 42 });
-    await byName(tools, "handoff_to_human").invoke({});
+    await byName(tools, "handoff_to_human").invoke({ customerMessage: "" });
     expect(calls).toEqual([["toggleStatus", [42, "open"]]]);
   });
 
@@ -272,7 +348,10 @@ describe("native tools", () => {
       conversationId: 42,
       transferWithSummary: false,
     });
-    await byName(tools, "handoff_to_human").invoke({ reason: "summary text" });
+    await byName(tools, "handoff_to_human").invoke({
+      reason: "summary text",
+      customerMessage: "",
+    });
     expect(calls).toEqual([["toggleStatus", [42, "open"]]]);
   });
 
@@ -283,7 +362,10 @@ describe("native tools", () => {
       conversationId: 42,
       transferWithSummary: true,
     });
-    await byName(tools, "handoff_to_human").invoke({ reason: "summary text" });
+    await byName(tools, "handoff_to_human").invoke({
+      reason: "summary text",
+      customerMessage: "",
+    });
     expect(calls).toEqual([
       ["sendPrivateNote", [42, "summary text"]],
       ["toggleStatus", [42, "open"]],
@@ -492,7 +574,10 @@ describe("native tools", () => {
       stillWanted: async () => false,
     });
     const out = String(
-      await byName(tools, "handoff_to_human").invoke({ reason: "resumo" }),
+      await byName(tools, "handoff_to_human").invoke({
+        reason: "resumo",
+        customerMessage: "",
+      }),
     );
     expect(calls.map((c) => c[0])).toEqual(["sendPrivateNote"]);
     expect(out).toContain("called off");
@@ -508,7 +593,7 @@ describe("native tools", () => {
       conversationId: 7,
       stillWanted: async () => false,
     });
-    await byName(tools, "handoff_to_human").invoke({});
+    await byName(tools, "handoff_to_human").invoke({ customerMessage: "" });
     expect(calls.map((c) => c[0])).toContain("toggleStatus");
   });
 
@@ -1235,7 +1320,7 @@ describe("handoff targeting", () => {
         instructions: null,
       },
     });
-    await byName(tools, "handoff_to_human").invoke({});
+    await byName(tools, "handoff_to_human").invoke({ customerMessage: "" });
     expect(calls.map((c) => c[0])).toEqual(["toggleStatus"]);
   });
 
@@ -1252,7 +1337,7 @@ describe("handoff targeting", () => {
         instructions: null,
       },
     });
-    await byName(tools, "handoff_to_human").invoke({});
+    await byName(tools, "handoff_to_human").invoke({ customerMessage: "" });
     expect(calls).toContainEqual(["assignToAgent", [5, 7]]);
   });
 
@@ -1269,7 +1354,7 @@ describe("handoff targeting", () => {
         instructions: null,
       },
     });
-    await byName(tools, "handoff_to_human").invoke({});
+    await byName(tools, "handoff_to_human").invoke({ customerMessage: "" });
     expect(calls).toContainEqual(["assignTeam", [5, 3]]);
   });
 
@@ -1289,7 +1374,10 @@ describe("handoff targeting", () => {
         instructions: null,
       },
     });
-    await byName(tools, "handoff_to_human").invoke({ assignTo: "maria" });
+    await byName(tools, "handoff_to_human").invoke({
+      assignTo: "maria",
+      customerMessage: "",
+    });
     expect(calls).toContainEqual(["assignToAgent", [5, 9]]);
   });
 
@@ -1309,7 +1397,10 @@ describe("handoff targeting", () => {
         instructions: null,
       },
     });
-    await byName(tools, "handoff_to_human").invoke({ assignTo: "Vendas" });
+    await byName(tools, "handoff_to_human").invoke({
+      assignTo: "Vendas",
+      customerMessage: "",
+    });
     expect(calls).toContainEqual(["assignTeam", [5, 2]]);
   });
 
@@ -1326,7 +1417,10 @@ describe("handoff targeting", () => {
         instructions: null,
       },
     });
-    await byName(tools, "handoff_to_human").invoke({ assignTo: "Ninguém" });
+    await byName(tools, "handoff_to_human").invoke({
+      assignTo: "Ninguém",
+      customerMessage: "",
+    });
     expect(
       calls.some((c) => c[0] === "assignToAgent" || c[0] === "assignTeam"),
     ).toBe(false);
@@ -1389,7 +1483,10 @@ describe("handoff targeting", () => {
       },
       handoffTargets: { agents: [{ id: 9, name: "Maria" }], teams: [] },
     });
-    await byName(tools, "handoff_to_human").invoke({ assignTo: "maria" });
+    await byName(tools, "handoff_to_human").invoke({
+      assignTo: "maria",
+      customerMessage: "",
+    });
     expect(calls).toContainEqual(["assignToAgent", [5, 9]]);
   });
 
@@ -1407,7 +1504,10 @@ describe("handoff targeting", () => {
       },
       handoffTargets: { agents: [{ id: 9, name: "Maria" }], teams: [] },
     });
-    await byName(tools, "handoff_to_human").invoke({ assignTo: "Ninguém" });
+    await byName(tools, "handoff_to_human").invoke({
+      assignTo: "Ninguém",
+      customerMessage: "",
+    });
     expect(
       calls.some((c) => c[0] === "assignToAgent" || c[0] === "assignTeam"),
     ).toBe(false);
@@ -1520,7 +1620,9 @@ describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
       },
       onSideEffectError: (e) => effects.push(e),
     });
-    const out = String(await byName(tools, "handoff_to_human").invoke({}));
+    const out = String(
+      await byName(tools, "handoff_to_human").invoke({ customerMessage: "" }),
+    );
     expect(out).toContain("Handed off to a human");
     expect(calls).toContain("toggleStatus");
     expect(effects).toHaveLength(1);
@@ -1977,7 +2079,11 @@ describe("the fence rule, over every native tool", () => {
     args: object;
     ctx?: Record<string, unknown>;
   }> = [
-    { tool: "handoff_to_human", label: "com nota", args: { reason: "resumo" } },
+    {
+      tool: "handoff_to_human",
+      label: "com nota",
+      args: { reason: "resumo", customerMessage: "" },
+    },
     { tool: "private_note", label: "", args: { content: "nota" } },
     {
       tool: "set_custom_attribute",

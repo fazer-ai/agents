@@ -143,6 +143,28 @@ describe("the workflows always start", () => {
     }
   });
 
+  test("a rename is judged by both of its paths", () => {
+    // The API reports a rename's destination in `filename` and its source in `previous_filename`.
+    // Reading only the first calls `src/config.ts` -> `docs/config.ts` a docs-only change and
+    // publishes green required checks over a module that left the tree. Round 1 of the review.
+    const shared = readFileSync(".github/workflows/changed-code.yml", "utf8");
+    // Asked of the two jq expressions rather than of the file's word count: the comment above them
+    // names the field too, and counting mentions would pass on the explanation alone.
+    expect(shared).toContain(".[] | .filename, (.previous_filename // empty)");
+    expect(shared).toContain(
+      ".files[]? | .filename, (.previous_filename // empty)",
+    );
+  });
+
+  test("a push that is not a fast-forward runs everything", () => {
+    // `compare` answers from the MERGE BASE, so on a force push to a divergent history it never
+    // mentions what the old side had and the new one dropped, and the docs-only list it does return
+    // would skip the suite. Round 1 of the review.
+    const shared = readFileSync(".github/workflows/changed-code.yml", "utf8");
+    expect(shared).toContain('.status // "unknown"');
+    expect(shared).toContain('[ "$status" != ahead ]');
+  });
+
   test("every workflow asks the shared job what changed", () => {
     for (const f of files) {
       expect(`${f.path}: ${f.jobs.changes?.uses ?? "absent"}`).toBe(

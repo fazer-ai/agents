@@ -32,14 +32,34 @@ jobs:
           set -uo pipefail
           case "${{ github.event_name }}" in
             pull_request)
+              # BOTH paths of a rename. The API reports the destination in `filename` and the source
+              # in `previous_filename`, so reading only the first calls `src/config.ts` ->
+              # `docs/config.ts` a docs-only change and publishes green checks over a module that
+              # left the tree.
               files=$(gh api --paginate \
                 "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-                --jq '.[].filename') || files=""
+                --jq '.[] | .filename, (.previous_filename // empty)') || files=""
               ;;
             push)
-              files=$(gh api \
-                "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" \
-                --jq '.files[].filename') || files=""
+              cmp=$(gh api \
+                "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}") || cmp=""
+              # `compare` is a THREE-dot comparison: it answers from the merge base, so on a force
+              # push to a divergent history it never mentions what the old side had and the new one
+              # dropped. `status` is how it says so, and anything but a plain fast-forward means the
+              # list below is not the change. The 300-file cap is the same problem by another route.
+              status=$(printf '%s' "$cmp" | jq -r '.status // "unknown"')
+              count=$(printf '%s' "$cmp" | jq -r '.files | length' 2>/dev/null || echo 0)
+              if [ "$status" != ahead ] && [ "$status" != identical ]; then
+                echo "code=true" >> "$GITHUB_OUTPUT"
+                echo "compare says '$status': not a fast-forward, so running everything"
+                exit 0
+              fi
+              if [ "$count" -ge 300 ]; then
+                echo "code=true" >> "$GITHUB_OUTPUT"
+                echo "compare hit its 300-file cap: running everything"
+                exit 0
+              fi
+              files=$(printf '%s' "$cmp" | jq -r '.files[]? | .filename, (.previous_filename // empty)')
               ;;
             *)
               # schedule, workflow_dispatch: no diff to speak of, so the suite runs.

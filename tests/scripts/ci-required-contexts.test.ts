@@ -24,8 +24,11 @@ const WORKFLOWS = [
   ".github/workflows/test.yml",
 ] as const;
 
-// Mirrors the `main` ruleset of fazer-ai/agents. Changing this list means changing that rule in the
-// same round, and the PR body says so.
+// The contexts the `main` ruleset of fazer-ai/agents requires. Until the rule is edited this list is
+// the one this PR INSTALLS, not the one live: the rule still names `test (1/4)`..`test (4/4)`, and it
+// cannot be changed first because no open PR publishes `tests` yet and every one of them would block.
+// The order is merge, then edit the rule, and this list is what the edit must produce. Changing it
+// later without changing the rule is the drift the file exists to make loud.
 const REQUIRED = ["lint", "type-check", "tests"] as const;
 
 // The paths a docs-only change is allowed to touch. They live in changed-code.yml and MUST NOT come
@@ -141,6 +144,16 @@ describe("the workflows always start", () => {
         `${f.path} repeats the list: false`,
       );
     }
+  });
+
+  test("the shared job's name is never a required context", () => {
+    // `changes` publishes one check-run per workflow, all three under the same name, so GitHub would
+    // take whichever reported last if the rule ever named it. That is the twin-workflow trap the
+    // issue rejected, reached by another road. The three do the same work, so it costs nothing today
+    // and would cost everything as a required context.
+    expect(
+      `REQUIRED includes changes: ${REQUIRED.includes("changes" as never)}`,
+    ).toBe("REQUIRED includes changes: false");
   });
 
   test("a rename is judged by both of its paths", () => {

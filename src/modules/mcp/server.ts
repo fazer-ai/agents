@@ -372,7 +372,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         "This server administers a fazer.ai agents workspace (tenant): its AI " +
         "customer-service agents and their system prompts, behavior settings, granted tools and " +
         "knowledge bases; the Chatwoot channels (instances/inboxes) they answer on; live " +
-        "conversations (read, reply, hand off, re-engage); plus integrations, A/B experiments, " +
+        "conversations (read, hand off, re-engage); plus integrations, A/B experiments, " +
         "business hours, branding, vault credentials (referenced by name/id — secrets are never " +
         "returned), API keys, webhooks, alert channels, and audit/metrics/logs.\n\n" +
         "Access is scoped by the caller's granted scopes: mcp:read for reads, mcp:write for " +

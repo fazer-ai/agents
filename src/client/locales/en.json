@@ -1409,6 +1409,8 @@
     "signaturePreviewBody": "Hi {{primeiro_nome}}, all set here.",
     "signaturePreviewBody2": "Any questions, just ask.",
     "signaturePreviewHint": "An example reply, as the customer receives it. Your agent and company names are the real ones; the contact details are examples.",
+    "signaturePreviewMessageN": "Message {{n}} of {{total}}",
+    "signaturePreviewSplitHint": "The reply arrives as more than one message because “{{section}}” is on.",
     "signatureSeparator": "Separator",
     "signatureSeparatorHint": "What sits between the message and the signature.",
     "signatureSepBlank": "A blank line",

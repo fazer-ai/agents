@@ -1448,6 +1448,8 @@
     "signaturePreviewBody": "Oi, {{primeiro_nome}}! Tudo certo por aqui.",
     "signaturePreviewBody2": "Qualquer dúvida, é só chamar.",
     "signaturePreviewHint": "Um exemplo de resposta, como o cliente recebe. O nome do agente e o da empresa são os seus; os dados do contato são exemplos.",
+    "signaturePreviewMessageN": "Mensagem {{n}} de {{total}}",
+    "signaturePreviewSplitHint": "A resposta chega em mais de uma mensagem porque “{{section}}” está ligada.",
     "signatureSeparator": "Separador",
     "signatureSeparatorHint": "O que fica entre a mensagem e a assinatura.",
     "signatureSepBlank": "Uma linha em branco",

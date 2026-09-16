@@ -2780,10 +2780,32 @@ export function BehaviorTab({
                 </div>
                 <FormField
                   label={t("editor.signaturePreview", "Preview")}
-                  description={t(
-                    "editor.signaturePreviewHint",
-                    "An example reply, as the customer receives it. Your agent and company names are the real ones; the contact details are examples.",
-                  )}
+                  // THE SECOND SENTENCE ONLY WHEN THERE IS A SECOND BALLOON, and it names the
+                  // setting that put it there. Two stacked boxes under a label reading "an example
+                  // reply", singular, look like the same preview rendered twice, and were reported
+                  // as exactly that: a duplicated section. The split section's own label is
+                  // interpolated rather than retyped, so renaming that section cannot leave this
+                  // sentence pointing at a control nobody can find.
+                  description={[
+                    t(
+                      "editor.signaturePreviewHint",
+                      "An example reply, as the customer receives it. Your agent and company names are the real ones; the contact details are examples.",
+                    ),
+                    ...(split.enabled
+                      ? [
+                          t(
+                            "editor.signaturePreviewSplitHint",
+                            "The reply arrives as more than one message because “{{section}}” is on.",
+                            {
+                              section: t(
+                                "editor.split",
+                                "Reply in multiple messages",
+                              ),
+                            },
+                          ),
+                        ]
+                      : []),
+                  ].join(" ")}
                 >
                   {/* ONE bubble with the separator drawn inside it, not a single Markdown string.
                   Rendering the whole thing at once made `blank` and `--` look almost alike: a blank
@@ -2797,26 +2819,41 @@ export function BehaviorTab({
                       signatureVars,
                       signaturePreviewOpts,
                       split.enabled,
-                    ).map((parts) => (
+                    ).map((parts, msgIndex, msgs) => (
                       <div
                         key={parts.join("\u0000")}
-                        className="rounded-lg border border-border bg-bg-tertiary px-3 py-2"
+                        className="flex flex-col gap-1"
                       >
-                        {parts.map((part, i) => (
-                          <div key={part}>
-                            {i > 0 &&
-                              (signature.separator === "--" ? (
-                                <div className="py-1 font-mono text-sm text-text-secondary">
-                                  {/* Not translatable: these are the bytes the separator puts on
-                                  the wire, the same two `DELIMITERS` writes. */}
-                                  {"--"}
-                                </div>
-                              ) : (
-                                <div className="h-5" aria-hidden="true" />
-                              ))}
-                            <Markdown>{part}</Markdown>
-                          </div>
-                        ))}
+                        {/* Numbered only when there is more than one, because "message 1 of 1" is
+                        noise on a delivery with no repetition to show. Under `once` the number is
+                        also the answer to WHICH balloon carries the signature, the half of that
+                        rule the per-message preview exists to make readable (#616). */}
+                        {msgs.length > 1 && (
+                          <span className="text-text-muted text-xs">
+                            {t(
+                              "editor.signaturePreviewMessageN",
+                              "Message {{n}} of {{total}}",
+                              { n: msgIndex + 1, total: msgs.length },
+                            )}
+                          </span>
+                        )}
+                        <div className="rounded-lg border border-border bg-bg-tertiary px-3 py-2">
+                          {parts.map((part, i) => (
+                            <div key={part}>
+                              {i > 0 &&
+                                (signature.separator === "--" ? (
+                                  <div className="py-1 font-mono text-sm text-text-secondary">
+                                    {/* Not translatable: these are the bytes the separator puts on
+                                    the wire, the same two `DELIMITERS` writes. */}
+                                    {"--"}
+                                  </div>
+                                ) : (
+                                  <div className="h-5" aria-hidden="true" />
+                                ))}
+                              <Markdown>{part}</Markdown>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>

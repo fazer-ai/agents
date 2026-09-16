@@ -93,7 +93,12 @@ const REPLY = "Olá! Como posso ajudar?";
 
 // JSON-safe value type for seeding the agent's `settings` (a Prisma Json column).
 type JsonValue =
-  string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [k: string]: JsonValue };
 
 function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
@@ -816,7 +821,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const human = [...first]
       .reverse()
       .find((m) => (m as { getType(): string }).getType() === "human") as
-      { content: unknown } | undefined;
+      | { content: unknown }
+      | undefined;
     expect(String(human?.content ?? "")).toContain(
       '<localização latitude="-23.5505" longitude="-46.6333" titulo="Padaria do Zé">',
     );

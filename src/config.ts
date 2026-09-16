@@ -630,3 +630,5 @@ if (config.env === "production") {
 }
 
 export default config;
+
+// sonda #643 (reexecucao do holdout s3/s4): esta linha sai junto com a branch.

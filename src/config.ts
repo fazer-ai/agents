@@ -630,3 +630,5 @@ if (config.env === "production") {
 }
 
 export default config;
+
+// holdout #643 s3/s4 probe marker: this line exists only to make the diff touch src/**.

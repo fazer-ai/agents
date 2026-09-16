@@ -8,7 +8,6 @@ import {
   assertConversationReturnable,
   getConversationDetail,
   handoffConversation,
-  replyToConversation,
   returnConversationToAgent,
   setConversationStatus,
 } from "@/modules/conversations/service";
@@ -24,7 +23,7 @@ import {
 
 // MCP conversation-control write tools. These have EXTERNAL effect: they post real messages
 // to / change the state of a live customer conversation in Chatwoot. dry-run by default previews the
-// action (conversation_reply shows the exact text that would be sent); applying is NOT reversible —
+// action; applying is NOT reversible —
 // the trade-off is the MCP client's per-call approval plus an audit row on every apply.
 //
 // The row is no longer written HERE (#398). Each service records its own, so the same guard covers
@@ -34,45 +33,6 @@ import {
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
   throw e;
-}
-
-export async function conversationReply(
-  principal: VerifiedToken,
-  args: {
-    conversation_id: string;
-    content: string;
-    private?: boolean;
-    dry_run?: boolean;
-  },
-  deps: WriteDeps = {},
-): Promise<WriteResult> {
-  const base = deps.base ?? basePrisma;
-  const ctx = gate(principal);
-  if ("ok" in ctx) return ctx;
-  const id = parseMcpId(args.conversation_id, "conversation_id");
-  if (typeof id !== "bigint") return id;
-  const isPrivate = args.private ?? false;
-  const target = `conversation:${id}`;
-  try {
-    // Tenant-fence + existence check (DB only).
-    await getConversationDetail(ctx, id, base);
-    if (args.dry_run !== false) {
-      return ok({
-        dryRun: true,
-        action: "reply",
-        target,
-        private: isPrivate,
-        content: args.content,
-        note: isPrivate
-          ? "Would post a PRIVATE note (not visible to the customer)."
-          : "Would send this message to the CUSTOMER (not reversible).",
-      });
-    }
-    await replyToConversation(ctx, id, args.content, isPrivate, {}, base);
-    return ok({ dryRun: false, applied: true, target, private: isPrivate });
-  } catch (e) {
-    return failOf(e);
-  }
 }
 
 export async function conversationHandoff(

@@ -5,7 +5,6 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   conversationHandoff,
-  conversationReply,
   conversationStatus,
 } from "@/modules/mcp/write-conversations";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -27,10 +26,12 @@ function principal(over: Partial<VerifiedToken>): VerifiedToken {
 }
 
 describe("MCP conversation-control gate (no DB)", () => {
-  test("conversation_reply without mcp:write → insufficient_scope", async () => {
-    const r = await conversationReply(principal({ scopes: ["mcp:read"] }), {
+  // A mesma afirmação de sempre, noutra tool: a #655 removeu conversation_reply, que era a única
+  // cobertura deste portão neste arquivo.
+  test("conversation_status without mcp:write → insufficient_scope", async () => {
+    const r = await conversationStatus(principal({ scopes: ["mcp:read"] }), {
       conversation_id: "1",
-      content: "hi",
+      status: "open",
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("insufficient_scope");
@@ -117,20 +118,6 @@ describe.skipIf(!dbUp)("MCP conversation-control tools (DB)", () => {
     await appDb.$disconnect();
   });
 
-  test("conversation_reply dry-run previews the exact text (no send)", async () => {
-    const r = await conversationReply(
-      principal({ tenantId: tenantA }),
-      { conversation_id: String(convA), content: "Olá, tudo bem?" },
-      { base: appDb },
-    );
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.data.dryRun).toBe(true);
-      expect(r.data.content).toBe("Olá, tudo bem?");
-      expect(r.data.private).toBe(false);
-    }
-  });
-
   test("conversation_status dry-run previews current → new", async () => {
     const r = await conversationStatus(
       principal({ tenantId: tenantA }),
@@ -158,10 +145,12 @@ describe.skipIf(!dbUp)("MCP conversation-control tools (DB)", () => {
     }
   });
 
-  test("conversation_reply cross-tenant → not found", async () => {
-    const r = await conversationReply(
+  // Idem: a cerca entre tenants numa APLICAÇÃO de verdade (dry_run false) só era exercitada pelo
+  // reply. `status` é a vizinha que também escreve no Chatwoot.
+  test("conversation_status cross-tenant → not found", async () => {
+    const r = await conversationStatus(
       principal({ tenantId: tenantB }),
-      { conversation_id: String(convA), content: "evil", dry_run: false },
+      { conversation_id: String(convA), status: "resolved", dry_run: false },
       { base: appDb },
     );
     expect(r.ok).toBe(false);

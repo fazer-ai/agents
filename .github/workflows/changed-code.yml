@@ -1,0 +1,71 @@
+# Does this change touch anything the suite can actually judge?
+#
+# THE PATH LIST LIVES HERE AND NOWHERE ELSE. It used to be a `paths-ignore` block copied into the
+# `pull_request` and `push` triggers of lint.yml, build-check.yml and test.yml — six copies of one
+# fact, which is the shape this repo keeps paying for. Worse, `paths-ignore` skips the WORKFLOW, and
+# a workflow that never starts leaves its required contexts absent, which GitHub blocks exactly as it
+# blocks a red one: two docs-only PRs in a row (#602, #641) needed a human `--admin` merge that the
+# ship gate's T0 exists to avoid. Now the workflows always start and ask this job what changed.
+name: Changed code
+
+on:
+  workflow_call:
+    outputs:
+      code:
+        description: 'true when the change touches anything outside the docs-only paths'
+        value: ${{ jobs.detect.outputs.code }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      # NO CHECKOUT. The file list comes from the API, which answers in one request what a shallow
+      # clone cannot answer at all (the PR's merge base is not in a depth-1 fetch) and a full clone
+      # answers by downloading the repo.
+      - name: Decide whether the suite has anything to judge
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              files=$(gh api --paginate \
+                "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+                --jq '.[].filename') || files=""
+              ;;
+            push)
+              files=$(gh api \
+                "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" \
+                --jq '.files[].filename') || files=""
+              ;;
+            *)
+              # schedule, workflow_dispatch: no diff to speak of, so the suite runs.
+              echo 'code=true' >> "$GITHUB_OUTPUT"
+              echo "event ${{ github.event_name }} has no diff: running everything"
+              exit 0
+              ;;
+          esac
+
+          # Empty means the request failed or the range is degenerate (a force push, a first push).
+          # Either way we do not KNOW that nothing changed, and the safe answer to not knowing is to
+          # run the suite: a false `true` costs runner minutes, a false `false` merges untested code.
+          if [ -z "$files" ]; then
+            echo 'code=true' >> "$GITHUB_OUTPUT"
+            echo 'could not read the changed files: running everything'
+            exit 0
+          fi
+
+          code=false
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              docs/*|.claude/*|licensing/*|.github/ISSUE_TEMPLATE/*|*.md) ;;
+              *) echo "code file: $f"; code=true ;;
+            esac
+          done <<< "$files"
+
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          [ "$code" = true ] || echo 'docs-only change: the suite is skipped and its checks report green'

@@ -5,7 +5,7 @@ A closing line the operator configures once and the agent never writes: `Alex, M
 It exists because asking the model for it does not work. Measured over three rounds of the same twelve real customer emails, `gpt-5.6-luna` with a prompt asking for a fixed two-line closing:
 
 - **Glued to the last sentence** in 2 of 10 replies in the first round and 1 of 9 in the third. A prompt rewrite moved the failure without removing it.
-- **Absent from every handoff**, 3 of 3. `handoff_to_human`'s schema asks for "a brief reply to the customer", and the schema wins over the system prompt. That is the worst case rather than a cosmetic one: the model's own final text is blanked when a handoff ran (#158), so the tool's `customerMessage` **is** the message the customer receives.
+- **Absent from every handoff**, 3 of 3. `handoff_to_human`'s schema describes the reply the customer receives, and the schema wins over the system prompt (the wording was "a brief reply to the customer" when this was measured; #662 made the argument required and rewrote it). That is the worst case rather than a cosmetic one: the model's own final text is blanked when a handoff ran (#158), so the tool's `customerMessage` **is** the message the customer receives.
 
 A signature is also the kind of text that has to be identical every time, and anything the model writes varies.
 

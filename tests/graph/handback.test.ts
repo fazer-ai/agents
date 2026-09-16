@@ -14,7 +14,9 @@ import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 const handoff = () => [
   new AIMessage({
     content: "",
-    tool_calls: [{ name: "handoff_to_human", args: {}, id: "1" }],
+    tool_calls: [
+      { name: "handoff_to_human", args: { customerMessage: "" }, id: "1" },
+    ],
   }),
   new ToolMessage({
     content: `${HANDOFF_DONE_PREFIX} (status set to open). The bot will stay silent now.`,
@@ -26,7 +28,9 @@ const handoff = () => [
 const handoffRefused = () => [
   new AIMessage({
     content: "",
-    tool_calls: [{ name: "handoff_to_human", args: {}, id: "9" }],
+    tool_calls: [
+      { name: "handoff_to_human", args: { customerMessage: "" }, id: "9" },
+    ],
   }),
   new ToolMessage({
     content:
@@ -170,7 +174,13 @@ describe("does the turn owe a hand-back note", () => {
         new HumanMessage("quero uma pessoa"),
         new AIMessage({
           content: "",
-          tool_calls: [{ name: "handoff_to_human", args: {}, id: "4" }],
+          tool_calls: [
+            {
+              name: "handoff_to_human",
+              args: { customerMessage: "" },
+              id: "4",
+            },
+          ],
         }),
         new ToolMessage({
           content: "Error: Chatwoot returned 502\n Please fix your mistakes.",

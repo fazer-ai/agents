@@ -292,7 +292,11 @@ export class HandoffRetryModel {
           return new AIMessage({
             content: "",
             tool_calls: [
-              { name: "handoff_to_human", args: {}, id: "call_handoff_2" },
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: "" },
+                id: "call_handoff_2",
+              },
             ],
           });
         return new AIMessage(self.recovery);

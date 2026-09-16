@@ -60,7 +60,11 @@ class HandoffThenReplyModel {
           ? new AIMessage({
               content: "",
               tool_calls: [
-                { name: "handoff_to_human", args: {}, id: "call_h1" },
+                {
+                  name: "handoff_to_human",
+                  args: { customerMessage: "" },
+                  id: "call_h1",
+                },
               ],
             })
           : new AIMessage(self.reply);

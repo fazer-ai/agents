@@ -471,7 +471,9 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       }),
       new AIMessage({
         content: "",
-        tool_calls: [{ name: "handoff_to_human", args: {}, id: "h1" }],
+        tool_calls: [
+          { name: "handoff_to_human", args: { customerMessage: "" }, id: "h1" },
+        ],
       }),
       new ToolMessage({
         content: `${HANDOFF_DONE_PREFIX} (status set to open).`,

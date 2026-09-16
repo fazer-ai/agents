@@ -353,7 +353,7 @@ function handoffTool(ctx: ToolCtx) {
   // write a message that goes nowhere is not, and the argument goes with the sentence.
   const speaks = !ctx.client?.muted;
   const baseDescription = speaks
-    ? `${coreDescription} Before transferring, set \`customerMessage\` to a brief reply to the customer (e.g. that a human will continue) so they are not left without an answer.`
+    ? `${coreDescription} \`customerMessage\` is REQUIRED: it is the reply the customer receives with the transfer. Pass an empty string ONLY when this case must receive no reply at all.`
     : `${coreDescription} This turn does NOT answer the customer, so the transfer is silent to them: there is no message to write and none is sent.`;
   return tool(
     async ({
@@ -398,10 +398,14 @@ function handoffTool(ctx: ToolCtx) {
       // rule-bound message of the turn outside the output guardrail, outside TTS and outside the
       // pacing every other reply gets (#160). The cost is ordering — the customer reads it just
       // after the transfer instead of just before, which Chatwoot never shows them.
+      // An EMPTY customerMessage is the model SAYING "this case gets no reply" (#662), and it leaves
+      // `customerMessage` null exactly as the old omission did: `handoffAnsweredTheTurn` still reads
+      // false and the runtime still posts whatever the model writes next. What changed is that the
+      // two decisions are distinguishable HERE, so the closing line below can answer each one
+      // correctly instead of telling both to stay quiet.
+      const spoken = customerMessage?.trim() ?? "";
       if (ctx.handoffState) {
-        if (customerMessage?.trim()) {
-          ctx.handoffState.customerMessage = customerMessage.trim();
-        }
+        if (spoken) ctx.handoffState.customerMessage = spoken;
         ctx.handoffState.completed = true;
       }
 
@@ -460,7 +464,19 @@ function handoffTool(ctx: ToolCtx) {
           err: e,
         });
       }
-      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned} The bot will stay silent now.`;
+      // #662: this used to end in "The bot will stay silent now" on EVERY path. With a message that
+      // is merely redundant, because `runtime.ts` already blanks the model's final text once the
+      // handoff answered the turn (#158) — the duplicate cannot happen whatever this string says.
+      // WITHOUT one it was the defect: `handoffAnsweredTheTurn` is false, the runtime falls back to
+      // the model's NEXT hop for the customer's reply, and this sentence talked it out of writing
+      // that hop. Measured on an email inbox: 2 of 130 turns ended transferred, with a structured
+      // private note, and no customer-facing message at all.
+      const closing = !speaks
+        ? "The bot will stay silent now."
+        : spoken
+          ? "Your customerMessage will be sent to the customer; do not repeat it."
+          : "No message will be sent to the customer, as you indicated with an empty customerMessage.";
+      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned} ${closing}`;
     },
     {
       // From the catalog, because the hand-back decision matches results by this exact name
@@ -484,9 +500,8 @@ function handoffTool(ctx: ToolCtx) {
               ? {
                   customerMessage: z
                     .string()
-                    .optional()
                     .describe(
-                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
+                      "The message the CUSTOMER receives with the transfer (e.g. that a human will continue). Pass an EMPTY STRING only when this case must receive no reply at all: a formal or legal notice, an automated platform notification, or a customer already being handled by a human elsewhere. Required, so that leaving someone without an answer is always a decision and never an oversight.",
                     ),
                 }
               : {}),
@@ -508,9 +523,8 @@ function handoffTool(ctx: ToolCtx) {
               ? {
                   customerMessage: z
                     .string()
-                    .optional()
                     .describe(
-                      "A short message to the CUSTOMER, sent before the transfer (e.g. that a human will continue). Strongly recommended so they are not left without a reply.",
+                      "The message the CUSTOMER receives with the transfer (e.g. that a human will continue). Pass an EMPTY STRING only when this case must receive no reply at all: a formal or legal notice, an automated platform notification, or a customer already being handled by a human elsewhere. Required, so that leaving someone without an answer is always a decision and never an oversight.",
                     ),
                 }
               : {}),

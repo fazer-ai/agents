@@ -41,7 +41,10 @@ import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
-import { isFollowUpLive } from "@/modules/followups/eligibility";
+import {
+  isFollowUpLive,
+  ourSideHasSpoken,
+} from "@/modules/followups/eligibility";
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
   isNewFollowUpEpisode,
@@ -571,6 +574,8 @@ async function loadConvRef(
   testActivatedAt: Date | null;
   contactId: bigint | null;
   lastFollowUpAt: Date | null;
+  lastRepliedMessageId: number | null;
+  chatwootFirstReplyAt: Date | null;
   inbox: {
     id: bigint;
     name: string;
@@ -601,6 +606,8 @@ async function loadConvRef(
         testActivatedAt: true,
         contactId: true,
         lastFollowUpAt: true,
+        lastRepliedMessageId: true,
+        chatwootFirstReplyAt: true,
         inbox: {
           select: {
             id: true,
@@ -1044,6 +1051,9 @@ export async function getConversationDetail(
           (conv.assigneeId == null || ourAgentBotId == null);
         return unverifiableBot ? "not-ours" : "ours";
       })(),
+      // The half of #72 that the sweep's newest arm opened: a conversation nobody ever answered is
+      // no longer selected, so a countdown here would promise a re-engagement that cannot happen.
+      ourSideHasSpoken: ourSideHasSpoken(conv),
     });
     const isRedirectWidgetConv =
       redirectCfg.enabled &&

@@ -670,6 +670,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         status: row?.status ?? null,
         assigneeType: "AgentBot",
         mirrorHolder: "ours",
+        // TRUE on purpose, and it is what this conversation actually is: the device reply above is an
+        // `external_echo`, which Chatwoot counts as a first reply. Passing the honest value keeps the
+        // takeover axis the only thing that can make this false.
+        ourSideHasSpoken: true,
       }),
     ).toBe(false);
   });

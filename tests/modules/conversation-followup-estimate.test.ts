@@ -63,6 +63,8 @@ let convForeignBotArmed = 0n;
 let convOurBotArmed = 0n;
 let convForeignBotEstimate = 0n;
 let convOurBotEstimate = 0n;
+let convNobodySpoke = 0n;
+let convOnlyHumanSpoke = 0n;
 let convUnidentifiedBotArmed = 0n;
 let convStepOptOutEstimate = 0n;
 let convStepOptOutArmedStep1 = 0n;
@@ -149,6 +151,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:300`,
+        lastRepliedMessageId: 1,
         lastEventAt: LAST_EVENT_AT,
         lastInboundAt: REPLY_AT,
         lastFollowUpAt: FOLLOW_UP_AT,
@@ -165,6 +168,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:301`,
+        lastRepliedMessageId: 1,
         lastEventAt: FOLLOW_UP_AT,
         lastInboundAt: new Date("2026-06-18T23:00:00Z"),
         lastFollowUpAt: FOLLOW_UP_AT,
@@ -216,6 +220,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:302`,
+        lastRepliedMessageId: 1,
         lastEventAt: BH_LAST_EVENT_AT,
         lastInboundAt: BH_LAST_EVENT_AT,
         lastFollowUpAt: null,
@@ -237,6 +242,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:303`,
+        lastRepliedMessageId: 1,
         lastEventAt: BH_LAST_EVENT_AT,
         lastInboundAt: BH_LAST_EVENT_AT,
         lastFollowUpAt: null,
@@ -294,6 +300,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:304`,
+        lastRepliedMessageId: 1,
         lastEventAt: activatedAt,
         lastInboundAt: null,
         lastFollowUpAt: null,
@@ -312,6 +319,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:305`,
+        lastRepliedMessageId: 1,
         lastEventAt: postReplyAt,
         lastInboundAt: postReplyAt,
         lastFollowUpAt: null,
@@ -374,6 +382,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:306`,
+        lastRepliedMessageId: 1,
         lastEventAt: freshEpisode,
         lastInboundAt: freshEpisode,
         lastFollowUpAt: null,
@@ -390,6 +399,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:307`,
+        lastRepliedMessageId: 1,
         lastEventAt: freshEpisode,
         lastInboundAt: freshEpisode,
         lastFollowUpAt: null,
@@ -421,6 +431,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:308`,
+        lastRepliedMessageId: 1,
         lastEventAt: freshEpisode,
         lastInboundAt: freshEpisode,
         lastFollowUpAt: null,
@@ -660,6 +671,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
           assigneeType: conv.assigneeType ?? null,
           ...(conv.assigneeId != null ? { assigneeId: conv.assigneeId } : {}),
           threadId: `${tenant}:${inst}:${chatwootId}`,
+          lastRepliedMessageId: 1,
           lastEventAt: LAST_EVENT_AT,
           lastInboundAt: REPLY_AT,
           lastFollowUpAt: FOLLOW_UP_AT,
@@ -697,6 +709,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "resolved",
         assigneeType: null,
         threadId: `${tenant}:${inst}:323`,
+        lastRepliedMessageId: 1,
         lastEventAt: LAST_EVENT_AT,
         lastInboundAt: REPLY_AT,
         lastFollowUpAt: FOLLOW_UP_AT,
@@ -751,7 +764,12 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     // itself. A gate placed on the armed-job branch alone leaves this one promising the countdown.
     async function seedEstimateConv(
       chatwootId: number,
-      conv: { assigneeType: string; assigneeId: number },
+      conv: {
+        assigneeType: string;
+        assigneeId: number;
+        lastRepliedMessageId?: number | null;
+        chatwootFirstReplyAt?: Date | null;
+      },
     ): Promise<bigint> {
       const c = await suDb.conversation.create({
         data: {
@@ -763,6 +781,11 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
           assigneeType: conv.assigneeType,
           assigneeId: conv.assigneeId,
           threadId: `${tenant}:${inst}:${chatwootId}`,
+          lastRepliedMessageId:
+            conv.lastRepliedMessageId === undefined
+              ? 1
+              : conv.lastRepliedMessageId,
+          chatwootFirstReplyAt: conv.chatwootFirstReplyAt ?? null,
           lastEventAt: LAST_EVENT_AT,
           lastInboundAt: REPLY_AT,
           lastFollowUpAt: FOLLOW_UP_AT,
@@ -790,6 +813,20 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       assigneeType: "AgentBot",
       assigneeId: OUR_BOT_ID,
     });
+    // Issue #652. Byte a byte a mesma semente de `convOurBotEstimate` — mesma inbox, mesmo agente,
+    // mesmo dono, mesmos instantes — menos quem já falou. Só esse par responde se é a marca que
+    // decide, e não alguma outra diferença de fixture.
+    convNobodySpoke = await seedEstimateConv(340, {
+      assigneeType: "AgentBot",
+      assigneeId: OUR_BOT_ID,
+      lastRepliedMessageId: null,
+    });
+    convOnlyHumanSpoke = await seedEstimateConv(341, {
+      assigneeType: "AgentBot",
+      assigneeId: OUR_BOT_ID,
+      lastRepliedMessageId: null,
+      chatwootFirstReplyAt: REPLY_AT,
+    });
   });
 
   // A live appointment is the sweep's own fence (followUp.pauseWhileAppointment, on by default): it
@@ -815,6 +852,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: conv.status ?? "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:${chatwootId}`,
+        lastRepliedMessageId: 1,
         lastEventAt: conv.lastEventAt ?? LAST_EVENT_AT,
         lastInboundAt: conv.lastInboundAt ?? REPLY_AT,
         ...(conv.lastFollowUpAt ? { lastFollowUpAt: conv.lastFollowUpAt } : {}),
@@ -1218,6 +1256,31 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).not.toBeNull();
   });
 
+  // Issue #652, no segundo leitor. A cláusula nova vive na varredura, que é SQL, e o indicador não a
+  // enxergaria: ele continuaria desenhando a contagem regressiva de um follow-up que não pode mais
+  // sair. É a #72 de novo, no eixo que a #72 não tinha — e é por isso que a regra mora no predicado
+  // compartilhado e não na consulta.
+  test("nobody on our side ever spoke → no countdown (the sweep will never pick it up)", async () => {
+    const d = await getConversationDetail(ctx(tenant), convNobodySpoke, appDb);
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+    // Não é a pausa de compromisso dizendo isso: é a conversa nunca ter tido uma primeira tentativa
+    // a continuar.
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+  });
+
+  // A outra metade do OR, do lado do console: o operador respondeu à mão, o agente nunca falou, e a
+  // escada é dele.
+  test("only a human ever spoke → the countdown stands", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convOnlyHumanSpoke,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).not.toBeNull();
+  });
+
   // The distinction the flag exists for: a sequence whose last step is configured to resolve the
   // conversation ends with the bot no longer owning it. That is a COMPLETED sequence, and the console
   // still has to draw its completion marker — liveness alone cannot tell it from an abandoned one.
@@ -1277,6 +1340,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
           contactId: contact.id,
           status: "pending",
           threadId: `${tenant}:${inst}:${chatwootConversationId}`,
+          lastRepliedMessageId: 1,
           lastEventAt: at,
           testActivatedAt: stamp,
         },

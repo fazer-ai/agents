@@ -151,8 +151,13 @@ async function seedConversation(
     status?: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
+    // Issue #652: o default é o agente já ter respondido uma vez aqui, que é o estado de uma conversa
+    // que chega a merecer follow-up. Nulo explícito é a conversa em que ninguém do nosso lado falou.
+    lastRepliedMessageId?: number | null;
   } = {},
 ) {
+  const lastRepliedMessageId =
+    over.lastRepliedMessageId === undefined ? 1 : over.lastRepliedMessageId;
   // Two minutes ago so the inactivity threshold (1min delay agent) is exceeded.
   const lastEventAt = over.lastEventAt ?? new Date(Date.now() - 2 * 60_000);
   await suDb.conversation.upsert({
@@ -179,6 +184,7 @@ async function seedConversation(
           : new Date(Date.now() - 3 * 60_000),
       lastFollowUpAt:
         over.lastFollowUpAt !== undefined ? over.lastFollowUpAt : null,
+      lastRepliedMessageId,
     },
     update: {
       lastEventAt,
@@ -191,6 +197,7 @@ async function seedConversation(
       status: over.status ?? "pending",
       assigneeType: over.assigneeType ?? null,
       assigneeId: over.assigneeId ?? null,
+      lastRepliedMessageId,
     },
   });
 }
@@ -366,6 +373,51 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     const wm = await lastFollowUpOf(1002);
     expect(wm).not.toBeNull();
     expect((wm as Date).getTime()).toBeGreaterThan(followedUp.getTime());
+  });
+
+  // Issue #652, o lado que a cláusula da varredura não alcança: um job ARMADO pela varredura antiga,
+  // numa conversa em que ninguém do nosso lado nunca falou, já está PENDING no banco no instante do
+  // deploy. A varredura nova não o re-enfileira, mas ela também não o apaga — quem o encontra é o
+  // handler, que é exatamente o que o re-check dele existe para pegar ("um job enfileirado ANTES de a
+  // configuração mudar por baixo dele"; uma mudança de código é o caso extremo disso).
+  test("(b2) um follow-up já armado antes do conserto é DESCARTADO se ninguém nunca falou ali", async () => {
+    await seedConversation(1060, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+      lastRepliedMessageId: null,
+    });
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1060), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    // E sem stamp: o episódio não foi "tratado", ele nunca foi elegível. Um stamp aqui mentiria para
+    // o console, que lê a mesma coluna para desenhar a sequência como encerrada.
+    expect(await lastFollowUpOf(1060)).toBeNull();
+  });
+
+  // Controle positivo do par acima, mudando UMA coluna: a mesma conversa, o mesmo job, com o agente
+  // tendo falado ali uma vez.
+  test("(b3) o mesmo job armado dispara quando o agente já tinha falado ali", async () => {
+    await seedConversation(1061, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+      lastRepliedMessageId: 42,
+    });
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1061), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent.length).toBeGreaterThan(0);
+    expect(await lastFollowUpOf(1061)).not.toBeNull();
   });
 
   test("(c) watermark is written even when nudge silences (no message sent)", async () => {

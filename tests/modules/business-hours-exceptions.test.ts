@@ -161,6 +161,8 @@ async function seedConversation(
       chatwootConversationId: convId,
       status: "pending",
       threadId: threadOf(convId),
+      // O agente já respondeu aqui uma vez: sem isso não há follow-up nenhum a adiar (issue #652).
+      lastRepliedMessageId: 1,
       // Two minutes idle, so the 1-minute follow-up step is due.
       lastEventAt: new Date(Date.now() - 2 * 60_000),
       lastInboundAt: new Date(Date.now() - 3 * 60_000),

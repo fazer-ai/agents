@@ -58,9 +58,30 @@ export interface FollowUpLiveness {
   //                  repairs it from the live snapshot), and refusing on a stale value drops a
   //                  follow-up the customer should have received.
   mirrorHolder: MirrorHolder;
+  // Whether anybody on our side has ever spoken here (`ourSideHasSpoken` below) — the precondition a
+  // SECOND attempt was always assuming. `skip_reply` is how the agent's own correct decision became a
+  // send: it ends the turn leaving the conversation exactly as the sweep selects it, pending and
+  // bot-owned. Measured on one production inbox over 45 days (issue #652): 19 of 245 conversations
+  // re-engaged with nothing ever sent, and reading all 19 the silence was right every time.
+  ourSideHasSpoken: boolean;
 }
 
 export type MirrorHolder = "ours" | "not-ours" | "not-asked";
+
+// The two marks that answer it, both already on the conversation row. Every reader calls THIS rather
+// than writing the same idea a second time, which is how two definitions of one predicate diverge
+// (issue #473).
+//
+// `chatwootFirstReplyAt` mirrors Chatwoot's `first_reply_created_at`, and `Message#valid_first_reply?`
+// requires `sender.is_a?(User)` or an external echo from the paired device — an AgentBot never sets
+// it, so that half means a PERSON spoke. The OR is load-bearing: of 168 conversations measured on the
+// reporting inbox 7 had only that half, and a thread the operator answered by hand keeps its ladder.
+export function ourSideHasSpoken(c: {
+  lastRepliedMessageId: number | null;
+  chatwootFirstReplyAt: Date | null;
+}): boolean {
+  return c.lastRepliedMessageId !== null || c.chatwootFirstReplyAt !== null;
+}
 
 export function isFollowUpLive(s: FollowUpLiveness): boolean {
   return (
@@ -70,6 +91,7 @@ export function isFollowUpLive(s: FollowUpLiveness): boolean {
     !isMonitoring(s.agentMode) &&
     !isTestSilenced(s.agentMode, s.testActivatedAt) &&
     s.mirrorHolder !== "not-ours" &&
+    s.ourSideHasSpoken &&
     shouldBotHandle({ status: s.status, assigneeType: s.assigneeType })
   );
 }

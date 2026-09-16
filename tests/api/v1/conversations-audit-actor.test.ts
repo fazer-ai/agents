@@ -92,17 +92,6 @@ const readReengageCtx = () => reengageCtx;
 
 mock.module("@/modules/conversations/service", () => ({
   ...realConversations,
-  replyToConversation: mock(
-    (ctx: TenantContext, id: bigint, content: string, isPrivate: boolean) =>
-      realConversations.replyToConversation(
-        ctx,
-        id,
-        content,
-        isPrivate,
-        { makeClient },
-        app,
-      ),
-  ),
   handoffConversation: mock(
     (ctx: TenantContext, id: bigint, assigneeId: number | null) =>
       realConversations.handoffConversation(
@@ -289,10 +278,9 @@ describe.skipIf(!dbUp)(
       await app?.$disconnect();
     });
 
-    test("a reply, a handoff, a hand-back and a status change each name the operator", async () => {
+    test("a handoff, a hand-back and a status change each name the operator", async () => {
       await clearAudit();
       for (const [path, body] of [
-        ["reply", { content: "bom dia" }],
         ["handoff", { assigneeId: 77 }],
         ["return", undefined],
         ["status", { status: "resolved" }],
@@ -308,7 +296,6 @@ describe.skipIf(!dbUp)(
 
       const r = await rows();
       expect(r.map((x) => x.action)).toEqual([
-        "conversation.reply",
         "conversation.handoff",
         "conversation.return",
         "conversation.status",
@@ -323,20 +310,39 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    test("a reply with no session is refused before anything is sent or recorded", async () => {
+    // Mesma afirmação de antes (#655 tirou a rota de reply em que ela morava): a sessão é conferida
+    // ANTES de qualquer efeito, então um pedido sem ela não chega ao Chatwoot nem deixa linha.
+    test("an action with no session is refused before anything is sent or recorded", async () => {
       await clearAudit();
       chatwootCalls.length = 0;
       const res = await server.handle(
         new BunRequest(
-          `http://localhost/api/v1/conversations/${convDbId}/reply`,
+          `http://localhost/api/v1/conversations/${convDbId}/handoff`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ content: "não autorizado" }),
+            body: JSON.stringify({ assigneeId: 77 }),
           },
         ),
       );
       expect(res.status).toBe(401);
+      expect(chatwootCalls).toEqual([]);
+      expect(await rows()).toEqual([]);
+    });
+
+    // A cerca da remoção (#655). Uma rota que volta a existir é a lacuna que a #654 declarou voltando
+    // junto: ela manda com o token do bot e nenhuma das duas marcas de engajamento registra o envio.
+    // Autenticada de propósito — sem sessão, um 401 não distinguiria "não existe" de "não pode".
+    test("the reply route is gone, and stays gone", async () => {
+      await clearAudit();
+      chatwootCalls.length = 0;
+      const res = await server.handle(
+        req(`/conversations/${convDbId}/reply`, {
+          method: "POST",
+          body: JSON.stringify({ content: "bom dia" }),
+        }),
+      );
+      expect(res.status).toBe(404);
       expect(chatwootCalls).toEqual([]);
       expect(await rows()).toEqual([]);
     });

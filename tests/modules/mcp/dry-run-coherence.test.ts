@@ -162,12 +162,6 @@ const TABLE: Record<string, Row> = {
     pastOwnership:
       'measured, and it DIVERGED: an inbox with nothing bound to it. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
-  conversation_reply: {
-    args: { conversation_id: NOPE, content: "x" },
-    why: "conversation does not exist",
-    pastOwnership:
-      "read, not measurable here: `replyToConversation` posts, and decides nothing locally past the existence check.",
-  },
   conversation_return: {
     args: { conversation_id: NOPE },
     why: "conversation does not exist",

@@ -126,7 +126,6 @@ import {
 import {
   conversationHandoff,
   conversationReengage,
-  conversationReply,
   conversationReturn,
   conversationStatus,
 } from "./write-conversations";
@@ -2948,31 +2947,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
     );
 
     // ── conversation control (mcp:write; EXTERNAL effect — sends real messages / changes state) ──
-
-    registerTenantTool(
-      server,
-      principal,
-      "conversation_reply",
-      {
-        description:
-          "Reply in a conversation. dry_run (default) previews the EXACT text that would be sent; with dry_run false it sends a real message to the customer (private true posts an internal note instead). Not reversible.",
-        inputSchema: {
-          conversation_id: z.string(),
-          content: z.string(),
-          private: z.boolean().optional(),
-          dry_run: z.boolean().optional(),
-        },
-      },
-      async (
-        args: {
-          conversation_id: string;
-          content: string;
-          private?: boolean;
-          dry_run?: boolean;
-        },
-        eff,
-      ) => writeContent(await conversationReply(eff, args)),
-    );
 
     registerTenantTool(
       server,

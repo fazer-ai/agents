@@ -29,7 +29,6 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
 import {
   type LoadChatwootClientDeps,
-  loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
 import {
@@ -634,28 +633,6 @@ async function loadConvRef(
     );
   }
   return conv;
-}
-
-// The persona bot token the console acts AS for a conversation = the bot of the inbox's bound agent.
-// undefined when the inbox has no agent bound (the bot-token actions below then have no identity to
-// act as — an edge case: console actions normally target bot-handled conversations).
-async function convBotToken(
-  tenantId: bigint,
-  conv: {
-    chatwootInstanceId: bigint;
-    inbox: { agentId: bigint | null } | null;
-  },
-  base: PrismaClient,
-): Promise<string | undefined> {
-  const agentId = conv.inbox?.agentId;
-  if (agentId == null) return undefined;
-  const bot = await loadAgentBot(
-    tenantId,
-    conv.chatwootInstanceId,
-    agentId,
-    base,
-  );
-  return bot?.accessToken;
 }
 
 async function updateMirror(
@@ -1520,35 +1497,6 @@ export async function getConversationMedia(
   };
 }
 
-export async function replyToConversation(
-  ctx: TenantContext,
-  id: bigint,
-  content: string,
-  isPrivate: boolean,
-  deps: LoadChatwootClientDeps = {},
-  base: PrismaClient = basePrisma,
-): Promise<void> {
-  const tenantId = requireTenant(ctx);
-  const conv = await loadConvRef(ctx, id, base);
-  const client = await loadChatwootClient(tenantId, conv.chatwootInstanceId, {
-    ...deps,
-    base,
-    botToken: await convBotToken(tenantId, conv, base),
-  });
-  await client.sendMessage(conv.chatwootConversationId, content, {
-    private: isPrivate,
-  });
-  // NOTE: The TEXT, and it is the one projection in this repo that keeps a message body. The rule it bends
-  // was written for configuration rows, where the body of a customer conversation has no business
-  // being; here the text IS the mutation, authored by the actor and sent by them to a customer, and
-  // a row saying only "somebody replied" cannot answer the question this family exists for. Nothing
-  // the CUSTOMER wrote is ever recorded, on any path.
-  await recordConversationAction(ctx, base, id, {
-    action: "conversation.reply",
-    after: { private: isPrivate, content },
-  });
-}
-
 // Handoff: optionally assign a specific human, then set status open so the attribution gate stops
 // the bot. assigneeId is the Chatwoot agent id.
 export async function handoffConversation(
@@ -1691,7 +1639,6 @@ export async function handoffConversation(
 // status === "pending" and assignee_type !== "User"). A live probe against the chatwoot-pro fork
 // confirmed that toggle_status → pending does NOT clear the assignee, so unassigning is mandatory —
 // otherwise the next inbound message still carries assignee_type "User" and the bot stays silent.
-// The optional reengage prompt is a separate proactive message the caller sends via replyToConversation.
 //
 // STATUS FIRST, and that ordering is chosen for the failure, not for the success: the two calls are
 // separate requests and either can fail. Unassigning first and then failing leaves a conversation

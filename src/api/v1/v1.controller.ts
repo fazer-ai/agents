@@ -27,7 +27,6 @@ import {
   getConversationMessages,
   handoffConversation,
   listConversations,
-  replyToConversation,
   returnConversationToAgent,
   setConversationStatus,
 } from "@/modules/conversations/service";
@@ -427,48 +426,6 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ...doc(
           "Stream conversation media",
           "Proxies a conversation attachment (voice note, image, or file) from the tenant's Chatwoot through our origin for CSP-clean in-app playback.",
-        ),
-        tags: ["Conversations"],
-      },
-      response: errors(400, 401, 404, 422),
-    },
-  )
-  .post(
-    "/conversations/:id/reply",
-    async ({ tenantContext, params, body }) => {
-      await replyToConversation(
-        ctxOrThrow(tenantContext),
-        requireDbId(params.id),
-        body.content,
-        body.private ?? false,
-      );
-      return { instance: instanceIdentity, success: true };
-    },
-    {
-      requireAuth: true,
-      params: t.Object({
-        id: t.String({
-          description:
-            "Conversation primary key (BigInt serialized as a decimal string).",
-        }),
-      }),
-      body: t.Object({
-        content: t.String({
-          minLength: 1,
-          maxLength: 50_000,
-          description: "Message body to send (1 to 50000 characters).",
-        }),
-        private: t.Optional(
-          t.Boolean({
-            description:
-              "When true, posts a private note visible only to agents instead of a customer-facing reply.",
-          }),
-        ),
-      }),
-      detail: {
-        ...doc(
-          "Reply to conversation",
-          "Posts a message to the conversation as a public reply or a private note.",
         ),
         tags: ["Conversations"],
       },

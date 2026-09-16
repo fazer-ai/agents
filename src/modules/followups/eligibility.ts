@@ -77,15 +77,12 @@ export type MirrorHolder = "ours" | "not-ours" | "not-asked";
 // it, so that half means a PERSON spoke. The OR is load-bearing: of 168 conversations measured on the
 // reporting inbox 7 had only that half, and a thread the operator answered by hand keeps its ladder.
 //
-// WHAT THESE TWO MARKS DO NOT SEE, stated rather than implied, because both make this answer "no"
-// for a conversation somebody did speak in — and a false "no" costs a follow-up that should have
-// gone out, never a message that should not have:
+// WHAT THESE TWO MARKS DO NOT SEE. One case is left, and it makes this answer "no" for a conversation
+// somebody did speak in — a false "no" costs a follow-up that should have gone out, never a message
+// that should not have. The other two paths that used to be here, the v1 reply route and the
+// `conversation_reply` MCP tool, sent with the bot token and wrote neither mark; #655 removed them,
+// so every remaining way our side speaks to the customer writes one of these two.
 //
-//   - `POST /conversations/:id/reply` and the `conversation_reply` MCP tool send with the BOT token
-//     and never take `claimReplyBurst`, so neither mark records them. Nothing in `src/client/` calls
-//     either one; they are being removed (issue #655), and with them gone every remaining way our
-//     side speaks writes one of these two marks, which is what makes this predicate complete rather
-//     than approximately complete.
 //   - A reply from before the claim column existed (migration `20260831000000_reply_burst_claim`,
 //     which adds no backfill). It heals on use — the next reply writes the claim, and any human
 //     reply re-mirrors `first_reply_created_at`, which Chatwoot recomputes and ships on every

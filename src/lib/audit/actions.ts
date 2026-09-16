@@ -44,7 +44,6 @@ export const AUDIT_ACTIONS = [
   "code_tool.update",
   "conversation.handoff",
   "conversation.reengage",
-  "conversation.reply",
   "conversation.reset",
   "conversation.return",
   // Written by a ternary rather than a literal (`logoKey === null ? … : …`), which is the shape

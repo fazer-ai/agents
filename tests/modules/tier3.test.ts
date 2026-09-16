@@ -26,7 +26,6 @@ import {
   getConversationMedia,
   getConversationMessages,
   handoffConversation,
-  replyToConversation,
   requireAnsweringResponder,
   returnConversationToAgent,
 } from "@/modules/conversations/service";
@@ -1018,21 +1017,6 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
     expect(thread.messagesUnavailable).toBe(true);
     expect(thread.messages).toEqual([]);
-  });
-
-  test("reply sends a message via the client", async () => {
-    const stub = makeStub();
-    await replyToConversation(
-      ctx(tenant),
-      convId,
-      "thanks!",
-      false,
-      { makeClient: stub.makeClient },
-      appDb,
-    );
-    expect(stub.calls.sendMessage).toEqual([
-      { content: "thanks!", isPrivate: false },
-    ]);
   });
 
   test("handoff assigns + opens + updates the mirror", async () => {

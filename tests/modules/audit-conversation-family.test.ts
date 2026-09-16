@@ -7,18 +7,17 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
   handoffConversation,
-  replyToConversation,
   returnConversationToAgent,
   setConversationStatus,
 } from "@/modules/conversations/service";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
-import { conversationReply } from "@/modules/mcp/write-conversations";
+import { conversationHandoff } from "@/modules/mcp/write-conversations";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // THE CONVERSATION-CONTROL FAMILY, WHOSE TRAIL WAS WRITTEN BY THE MCP TRANSPORT AND BY NOTHING ELSE.
 //
 // Issue #398, the last of #306's service families. What separates it from the five configuration
-// families (#399) is that the mutation is not ours: reply, handoff, return, status and reengage all
+// families (#399) is that the mutation is not ours: handoff, return, status and reengage all
 // change state inside somebody else's system, so "the row shares the mutation's transaction" is not
 // available here and the row follows the effect instead. That is the invariant this file pins from
 // both sides: a call Chatwoot accepted leaves a row, and a call it refused leaves none.
@@ -295,47 +294,6 @@ describe.skipIf(!dbUp)(
       }
       await su?.$disconnect();
       await app?.$disconnect();
-    });
-
-    test("a reply from the console records what was sent, and to whom", async () => {
-      await clearAudit();
-      const id = await seedConversation(4001);
-      const stub = stubClient();
-      await replyToConversation(
-        ctx(),
-        id,
-        "já te ajudo",
-        false,
-        { makeClient: stub.makeClient },
-        appDb,
-      );
-      expect(stub.calls).toEqual(["sendMessage"]);
-      const [row, ...rest] = await rows();
-      expect(rest).toEqual([]);
-      expect(row?.action).toBe("conversation.reply");
-      expect(row?.target).toBe(`conversation:${id}`);
-      expect(row?.actorId).toBe(USER);
-      expect(row?.actorType).toBe("user");
-      expect(row?.after).toEqual({ private: false, content: "já te ajudo" });
-    });
-
-    test("a private note is recorded as one", async () => {
-      await clearAudit();
-      const id = await seedConversation(4002);
-      const stub = stubClient();
-      await replyToConversation(
-        ctx(),
-        id,
-        "cliente já reclamou disso antes",
-        true,
-        { makeClient: stub.makeClient },
-        appDb,
-      );
-      const [row] = await rows();
-      expect(row?.after).toEqual({
-        private: true,
-        content: "cliente já reclamou disso antes",
-      });
     });
 
     test("a handoff names who it went to, and the status it left behind", async () => {
@@ -658,18 +616,17 @@ describe.skipIf(!dbUp)(
     // row at all.
     test("a call Chatwoot refused leaves no row", async () => {
       await clearAudit();
-      const id = await seedConversation(4006);
+      const id = await seedConversation(4006, { status: "pending" });
       const stub = stubClient({
-        sendMessage: async () => {
-          throw new Error("Chatwoot API 422 for POST /messages");
+        assignToAgent: async () => {
+          throw new Error("Chatwoot API 422 for POST /assignments");
         },
       });
       await expect(
-        replyToConversation(
+        handoffConversation(
           ctx(),
           id,
-          "não vai sair",
-          false,
+          77,
           { makeClient: stub.makeClient },
           appDb,
         ),
@@ -687,17 +644,16 @@ describe.skipIf(!dbUp)(
     // the erase has happened and leaves the ledger row stranded.
     test("a row that cannot be written does not undo, or repeat, what already happened", async () => {
       await clearAudit();
-      const id = await seedConversation(4016);
+      const id = await seedConversation(4016, { status: "pending" });
       const stub = stubClient();
-      await replyToConversation(
+      await handoffConversation(
         ctx(),
         id,
-        "chegou ao cliente",
-        false,
+        77,
         { makeClient: stub.makeClient },
         auditFailingBase(appDb),
       );
-      expect(stub.calls).toEqual(["sendMessage"]);
+      expect(stub.calls).toContain("assignToAgent");
       expect(await rows()).toEqual([]);
     });
 
@@ -814,18 +770,17 @@ describe.skipIf(!dbUp)(
 
     test("the door is carried by the actor, not by the action", async () => {
       await clearAudit();
-      const id = await seedConversation(4007);
+      const id = await seedConversation(4007, { status: "pending" });
       const stub = stubClient();
-      await replyToConversation(
+      await handoffConversation(
         ctx({ actorType: "api_key" }),
         id,
-        "via chave",
-        false,
+        77,
         { makeClient: stub.makeClient },
         appDb,
       );
       const [row] = await rows();
-      expect(row?.action).toBe("conversation.reply");
+      expect(row?.action).toBe("conversation.handoff");
       expect(row?.actorType).toBe("api_key");
     });
 
@@ -853,11 +808,11 @@ describe.skipIf(!dbUp)(
         });
       }) as typeof fetch;
       try {
-        const r = await conversationReply(
+        const r = await conversationHandoff(
           principal(),
           {
             conversation_id: String(id),
-            content: "oi pelo mcp",
+            assignee_id: 77,
             dry_run: false,
           },
           { base: appDb },
@@ -866,10 +821,10 @@ describe.skipIf(!dbUp)(
       } finally {
         globalThis.fetch = realFetch;
       }
-      expect(seen.some((u) => u.includes("/messages"))).toBe(true);
+      expect(seen.some((u) => u.includes("/assignments"))).toBe(true);
       const all = await rows();
       expect(all.length).toBe(1);
-      expect(all[0]?.action).toBe("conversation.reply");
+      expect(all[0]?.action).toBe("conversation.handoff");
       expect(all[0]?.actorType).toBe("mcp");
     });
   },

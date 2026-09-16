@@ -4,20 +4,8 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - '.claude/**'
-      - 'licensing/**'
-      - '.github/ISSUE_TEMPLATE/**'
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - '.claude/**'
-      - 'licensing/**'
-      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
 # A newer push on the same ref supersedes the run in progress: with 10-20 pushes a day per PR, the
@@ -27,13 +15,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  type-check:
+  # WHAT CHANGED, asked instead of filtered. `paths-ignore` used to sit on the two triggers above and
+  # skip the WORKFLOW, and a workflow that never starts leaves its required contexts absent, which
+  # GitHub blocks exactly as it blocks a red one (issue #643). The path list itself lives in
+  # changed-code.yml, once, instead of in six trigger blocks.
+  #
+  # The `if` is the SAME question the real job used to ask, hoisted to the top of the graph: when
+  # this repo and this event do not want the suite, nothing below runs and the mirror push stays
+  # free. Leaving it on the real job would have charged agents-pro two runners per workflow on all
+  # 267 of its monthly mirror pushes, which is the bill that condition exists to avoid.
+  changes:
+    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push')
+    uses: ./.github/workflows/changed-code.yml
+
+  type-check-run:
     # agents-pro only ever receives mirror pushes of a tree this master already tested, and the
     # stripped Pro tree is lint + build-checked by `check:editions` before it is mirrored, so this
     # job is skipped there on push (see test.yml). agents (public, free) keeps running on push.
     # No CI while the PR is a draft: the autonomous loop opens its PRs as drafts and marks them ready
     # once the review loop is clean, so the suite runs on the final HEAD, not on every fix push.
-    if: (github.event_name != 'pull_request' || !github.event.pull_request.draft) && !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push')
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -83,3 +85,22 @@ jobs:
 
       - name: Check openapi.json is up-to-date
         run: bun run openapi:check
+
+  # WHY A SEPARATE JOB HOLDS THE REQUIRED NAME. A job skipped by its own `if` reports the conclusion
+  # `skipped`, and whether a required context accepts that is a GitHub behaviour this repo has never
+  # measured. This job always RUNS, so the gate never rests on that question, and a docs-only PR ends
+  # up with at least one check that actually executed rather than an absence of evidence.
+  type-check:
+    needs: [changes, type-check-run]
+    # `always()` so it still reports when the real job was skipped. PULL REQUESTS ONLY, because
+    # publishing a required context is the entire reason this job exists and only a PR has one: on
+    # push it would be a runner a time that nothing reads, and on the private repos those are paid.
+    if: always() && github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when the work this vouches for did not pass
+        # `skipped` passes on purpose: a docs-only change skips the real job, and that is not a
+        # verdict against the code. A failure in `changes` itself is NOT passed over: not knowing
+        # what changed is not evidence that nothing did.
+        if: needs.type-check-run.result == 'failure' || needs.type-check-run.result == 'cancelled' || needs.changes.result != 'success'
+        run: exit 1

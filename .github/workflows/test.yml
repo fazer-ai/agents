@@ -4,20 +4,8 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - '.claude/**'
-      - 'licensing/**'
-      - '.github/ISSUE_TEMPLATE/**'
   push:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
-      - '.claude/**'
-      - 'licensing/**'
-      - '.github/ISSUE_TEMPLATE/**'
   # Nightly full run; only agents-pro acts on it (see the job's `if`).
   schedule:
     - cron: '0 6 * * *'
@@ -30,6 +18,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # WHAT CHANGED, asked instead of filtered. `paths-ignore` used to sit on the two triggers above and
+  # skip the WORKFLOW, and a workflow that never starts leaves its required contexts absent, which
+  # GitHub blocks exactly as it blocks a red one (issue #643). The path list itself lives in
+  # changed-code.yml, once, instead of in six trigger blocks.
+  #
+  # The `if` is the SAME question the suite below used to ask, hoisted to the top of the graph: when
+  # this repo and this event do not want the suite, nothing here runs and the mirror push stays free.
+  # Leaving it on the suite would have charged agents-pro two runners per workflow on all 267 of its
+  # monthly mirror pushes, which is the bill that condition exists to avoid.
+  changes:
+    if: >-
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+      && ((github.event_name == 'schedule' && github.repository == 'fazer-ai/agents-pro')
+          || (github.event_name != 'schedule' && !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push')))
+    uses: ./.github/workflows/changed-code.yml
+
   test:
     # agents-pro only ever receives mirror pushes of a tree this master already tested, and the
     # stripped Pro tree is lint + build-checked by `check:editions` before it is mirrored. Its own
@@ -38,10 +42,8 @@ jobs:
     # agents (public, free) keeps running on push as the visible proof of green.
     # No CI while the PR is a draft: the autonomous loop opens its PRs as drafts and marks them ready
     # once the review loop is clean, so the suite runs on the final HEAD, not on every fix push.
-    if: >-
-      (github.event_name != 'pull_request' || !github.event.pull_request.draft)
-      && ((github.event_name == 'schedule' && github.repository == 'fazer-ai/agents-pro')
-          || (github.event_name != 'schedule' && !(github.repository == 'fazer-ai/agents-pro' && github.event_name == 'push')))
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
 
     strategy:
@@ -148,3 +150,28 @@ jobs:
 
       - name: Run Tests
         run: bun test --shard=${{ matrix.shard }}/4
+
+  # THE REQUIRED CONTEXT IS THIS JOB, NOT THE SHARDS, and that is measurement rather than taste.
+  # On agents-pro, where the condition above already skips this matrix on push, a skipped MATRIX job
+  # does not expand its matrix: it publishes ONE check named `test (${{ matrix.shard }}/4)`,
+  # uninterpolated. So `test (1/4)`..`test (4/4)` would be absent on every skipped run, and an absent
+  # required context blocks the merge exactly as a red one does — the bug issue #643 set out to fix
+  # would have survived the fix.
+  #
+  # Requiring one name instead of four also unties the branch rule from the shard COUNT. Before this,
+  # changing `shard: [1, 2, 3, 4]` to six would have blocked every merge in the repo until somebody
+  # edited the rule, with nothing in the diff saying so.
+  tests:
+    needs: [changes, test]
+    # `always()` so it still reports when the suite was skipped. PULL REQUESTS ONLY, because
+    # publishing a required context is the entire reason this job exists and only a PR has one.
+    if: always() && github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a shard did not pass
+        # `skipped` passes on purpose: a docs-only change skips the suite, and that is not a verdict
+        # against the code. A failure in `changes` itself is NOT passed over: not knowing what
+        # changed is not evidence that nothing did. `failure` covers ANY red shard, because
+        # `fail-fast: false` lets all four report.
+        if: needs.test.result == 'failure' || needs.test.result == 'cancelled' || needs.changes.result != 'success'
+        run: exit 1

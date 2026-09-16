@@ -1,0 +1,110 @@
+# Does this change touch anything the suite can actually judge?
+#
+# THE PATH LIST LIVES HERE AND NOWHERE ELSE. It used to be a `paths-ignore` block copied into the
+# `pull_request` and `push` triggers of lint.yml, build-check.yml and test.yml — six copies of one
+# fact. Worse, `paths-ignore` skips the WORKFLOW, and a workflow that never starts leaves its
+# required contexts absent, which GitHub blocks exactly as it blocks a red one: two docs-only PRs in
+# a row (#602, #641) needed a human `--admin` merge that the ship gate's T0 exists to avoid. The
+# workflows now always start and ask this job what moved.
+name: Changed code
+
+on:
+  workflow_call:
+    outputs:
+      code:
+        description: 'true when the change touches anything the suite could judge'
+        value: ${{ jobs.detect.outputs.code }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      # NO CHECKOUT. The file list comes from the API, which answers in one request what a shallow
+      # clone cannot answer at all (the PR's merge base is not in a depth-1 fetch) and a full clone
+      # answers by downloading the repo.
+      - name: Decide whether the suite has anything to judge
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              # ONE ROW PER FILE, carrying BOTH paths of a rename. The API reports a rename's
+              # destination in `filename` and its source in `previous_filename`, so reading only the
+              # first calls `src/config.ts` -> `docs/config.ts` a docs-only change and skips the
+              # suite over a module that left the tree. The row shape is what makes the files
+              # COUNTABLE: one line each, whether or not there is a second path.
+              rows=$(gh api --paginate \
+                "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+                --jq '.[] | [.filename, (.previous_filename // "")] | @tsv') || rows=""
+              # `--paginate` stops at 3000 files, the same blind spot the compare has at 300: the
+              # entries that do not come back are exactly the ones nothing can classify.
+              count=$(printf '%s\n' "$rows" | grep -c . || true)
+              if [ "$count" -ge 3000 ]; then
+                echo "code=true" >> "$GITHUB_OUTPUT"
+                echo "the PR file list hit its 3000-file cap: running everything"
+                exit 0
+              fi
+              files=$(printf '%s' "$rows" | tr '\t' '\n')
+              ;;
+            push)
+              cmp=$(gh api \
+                "repos/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}") || cmp=""
+              # `compare` is a THREE-dot comparison: it answers from the merge base, so on a force
+              # push to a divergent history it never mentions what the old side had and the new one
+              # dropped. `status` is how it says so, and anything but a plain fast-forward means the
+              # list below is not the change.
+              status=$(printf '%s' "$cmp" | jq -r '.status // "unknown"')
+              count=$(printf '%s' "$cmp" | jq -r '.files | length' 2>/dev/null || echo 0)
+              if [ "$status" != ahead ] && [ "$status" != identical ]; then
+                echo "code=true" >> "$GITHUB_OUTPUT"
+                echo "compare says '$status': not a fast-forward, so running everything"
+                exit 0
+              fi
+              if [ "$count" -ge 300 ]; then
+                echo "code=true" >> "$GITHUB_OUTPUT"
+                echo "compare hit its 300-file cap: running everything"
+                exit 0
+              fi
+              files=$(printf '%s' "$cmp" | jq -r '.files[]? | .filename, (.previous_filename // empty)')
+              ;;
+            *)
+              # schedule, workflow_dispatch: no diff to speak of, so the suite runs.
+              echo 'code=true' >> "$GITHUB_OUTPUT"
+              echo "event ${{ github.event_name }} has no diff: running everything"
+              exit 0
+              ;;
+          esac
+
+          # Empty means the request failed or the range is degenerate (a force push, a first push).
+          # Either way we do not KNOW that nothing changed, and the safe answer to not knowing is to
+          # run the suite: a false `true` costs runner minutes, a false `false` merges untested code.
+          if [ -z "$files" ]; then
+            echo 'code=true' >> "$GITHUB_OUTPUT"
+            echo 'could not read the changed files: running everything'
+            exit 0
+          fi
+
+          code=false
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              # DOCUMENTATION THE SUITE READS AS INPUT, and therefore not documentation for this
+              # question. Three tests open `docs/deploy.md` and assert on its prose, so editing it
+              # can turn the suite red; classifying it as skippable would let that red reach `main`
+              # and surface on the next code PR, charged to whoever did not cause it. Measured:
+              # replacing `stop the old process` inside the migration note takes
+              # native-tool-names-renamed-by-migration from 2 pass to 1 pass 1 fail.
+              # tests/scripts/ci-required-contexts.test.ts derives this list from the tests
+              # themselves, so a test that starts reading another doc turns that fence red.
+              docs/deploy.md) echo "test input: $f"; code=true ;;
+              docs/*|.claude/*|licensing/*|.github/ISSUE_TEMPLATE/*|*.md) ;;
+              *) echo "code file: $f"; code=true ;;
+            esac
+          done <<< "$files"
+
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          [ "$code" = true ] || echo 'docs-only change: the suite is skipped and its checks report green'

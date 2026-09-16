@@ -196,6 +196,94 @@ export class ResolveThenReplyModel {
   }
 }
 
+// Transfers declaring silence and then asks to RESOLVE, which on a PROACTIVE turn is the pair that
+// was actually reaching production: no `turnState` there, so `resolve_conversation` closes inside the
+// call, where the follow-up step's own `allowResolve` cannot reach it (issue #671).
+export class SilentHandoffThenResolveModel {
+  constructor(private afterText: string) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.afterText);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { reason: "notificação formal", customerMessage: "" },
+                id: "call_handoff",
+              },
+            ],
+          });
+        if (n === 2)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              { name: "resolve_conversation", args: {}, id: "call_resolve" },
+            ],
+          });
+        return new AIMessage(self.afterText);
+      },
+    };
+  }
+}
+
+// Asks to RESOLVE and then transfers, which is the pair issue #671 is about: the conversation ends
+// up in a human's queue and closed, so the customer has no reply and nobody is looking. The order is
+// a parameter because it decides the outcome: a resolve AFTER the transfer closes a conversation
+// that was just set to `open`, while one BEFORE it is overwritten by the transfer's own toggle.
+//
+// ONE fixture for the scenario and for its boundary (the transfer that throws), so a green test
+// cannot come from the resolve never having been asked for: the same script runs against a client
+// whose `open` toggle works and against one whose `open` toggle fails, and the two must differ.
+export class ResolveAndHandoffModel {
+  constructor(
+    private reply: string,
+    private opts: {
+      customerMessage?: string;
+      reason?: string;
+      resolveFirst?: boolean;
+    } = {},
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    const resolveCall = {
+      name: "resolve_conversation",
+      args: {},
+      id: "call_resolve",
+    };
+    const handoffCall = {
+      name: "handoff_to_human",
+      args: {
+        ...(self.opts.reason ? { reason: self.opts.reason } : {}),
+        customerMessage: self.opts.customerMessage ?? "",
+      },
+      id: "call_handoff",
+    };
+    const first = self.opts.resolveFirst === false ? handoffCall : resolveCall;
+    const second = self.opts.resolveFirst === false ? resolveCall : handoffCall;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) return new AIMessage({ content: "", tool_calls: [first] });
+        if (n === 2)
+          return new AIMessage({ content: "", tool_calls: [second] });
+        return new AIMessage(self.reply);
+      },
+    };
+  }
+}
+
 // Calls handoff_to_human with a customer-facing closing line, then also returns a final reply.
 // Reproduces the double-send when the handoff's mirror event lands after generation.
 export class HandoffThenReplyModel {

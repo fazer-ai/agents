@@ -50,6 +50,7 @@ import {
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   ResolveThenReplyModel,
+  SilentHandoffThenResolveModel,
 } from "../utils/scripted-models";
 
 describe("renderNudge (prompt-injection boundary)", () => {
@@ -240,6 +241,63 @@ function retireOn(
     return inner?.(...args);
   }) as (...a: never[]) => unknown;
   return async () => wanted;
+}
+
+// The `stub()` below counts toggles and throws the STATUS away, which is exactly the fact issue
+// #671 is about: "the conversation was closed" and "the conversation was handed over" are both a
+// `toggleStatus` call and differ only in the argument. This one keeps it, and can make the transfer's
+// own toggle fail so the boundary case (nothing handed over, so the close still stands) shares the
+// fixture with the case it bounds.
+function statusClient(opts: { failOn?: string } = {}) {
+  const messages: Array<[number, string]> = [];
+  const notes: Array<[number, string]> = [];
+  const statuses: Array<[number, string]> = [];
+  const labelSets: string[][] = [];
+  const templates: Array<[number, string]> = [];
+  let currentLabels: string[] = [];
+  const client = {
+    sendMessage: async (c: number, t: string) => {
+      messages.push([c, t]);
+      return {};
+    },
+    sendPrivateNote: async (c: number, t: string) => {
+      notes.push([c, t]);
+      return {};
+    },
+    getConversationLabels: async () => currentLabels,
+    setConversationLabels: async (_c: number, labels: string[]) => {
+      currentLabels = labels;
+      labelSets.push(labels);
+      return {};
+    },
+    getConversation: async (c: number) => ({
+      id: c,
+      status: "open",
+      meta: {},
+    }),
+    toggleStatus: async (c: number, status: string) => {
+      if (opts.failOn === status) {
+        statuses.push([c, `${status}-THREW`]);
+        throw new Error("chatwoot 500");
+      }
+      statuses.push([c, status]);
+      return {};
+    },
+    sendTemplate: async (c: number, payload: { name: string }) => {
+      templates.push([c, payload.name]);
+      return {};
+    },
+    toggleTyping: async () => ({}),
+  } as unknown as ChatwootClient;
+  return {
+    client,
+    makeClient: async () => client,
+    messages,
+    notes,
+    statuses,
+    labelSets,
+    templates,
+  };
 }
 
 function stub() {
@@ -2127,6 +2185,116 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     });
     const row = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: 9941 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBeNull();
+  });
+
+  // ISSUE #671, the proactive half, and it is where the rule was actually broken. The three below
+  // share one client because the `stub()` above throws the status away (it counts toggles), and the
+  // whole question here is WHICH status was written.
+  //
+  // The deterministic `postActions.resolve` of the follow-up step already fell with the transfer
+  // (`allowResolve: !handoffState.completed`), and the mirror reading stale is what makes that worth
+  // asserting: `toggleStatus` does not write the mirror, so the row still says the bot owns a
+  // conversation the transfer just handed over, and every gate downstream of that reading is the one
+  // that was supposed to stop the close.
+  test("a nudge whose handoff declared silence does not let the step resolve the conversation", async () => {
+    await seedConv(6714, null);
+    const st = statusClient();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:6714`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffDeclaredSilenceModel(
+            "Encaminhado para a equipe responsável.",
+          ) as never,
+        makeClient: st.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    // Nothing to the customer, and the only status written is the transfer's own.
+    expect(st.messages).toEqual([]);
+    expect(st.templates).toEqual([]);
+    expect(st.statuses).toEqual([[6714, "open"]]);
+    expect(st.labelSets).toEqual([["follow-up"]]);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 6714 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBeNull();
+  });
+
+  // THE BOUNDARY on this path too: the transfer's own toggle fails, so nothing was handed over, the
+  // conversation is still ours, the proactive text goes out, and the step's resolve STANDS. Without
+  // it the case above passes even if the step's resolve was never armed.
+  test("a nudge whose handoff threw keeps the step's resolve", async () => {
+    await seedConv(6715, null);
+    const st = statusClient({ failOn: "open" });
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:6715`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffDeclaredSilenceModel(
+            "Encaminhado para a equipe responsável.",
+          ) as never,
+        makeClient: st.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(st.messages).toEqual([
+      [6715, "Encaminhado para a equipe responsável."],
+    ]);
+    expect(st.statuses).toEqual([
+      [6715, "open-THREW"],
+      [6715, "resolved"],
+    ]);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 6715 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBe("followup_abandonment");
+  });
+
+  // AND THE ONE THE PRODUCT WAS GETTING WRONG. No `postActions` at all, so nothing deterministic is
+  // trying to close anything: the close comes from the MODEL calling `resolve_conversation`, and on a
+  // nudge turn that tool takes the immediate branch and toggles inside the call, where the step's
+  // `allowResolve` cannot reach it. Measured before the fix: `toggleStatus open` then
+  // `toggleStatus resolved`, zero messages, `resolvedBy = 'agent'` — the customer got nothing by the
+  // model's own declaration and the conversation left the queue that declaration handed it to.
+  test("a nudge cannot close what its own silent transfer just handed over", async () => {
+    await seedConv(6716, null);
+    const st = statusClient();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:6716`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SilentHandoffThenResolveModel("Encaminhado.") as never,
+        makeClient: st.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(st.messages).toEqual([]);
+    expect(st.statuses).toEqual([[6716, "open"]]);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 6716 },
       select: { resolvedBy: true },
     });
     expect(row?.resolvedBy).toBeNull();

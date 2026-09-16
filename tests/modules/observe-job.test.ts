@@ -19,7 +19,10 @@ import {
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
-import { UsageReportingModel } from "../utils/scripted-models";
+import {
+  ResolveAndHandoffModel,
+  UsageReportingModel,
+} from "../utils/scripted-models";
 
 // The OBSERVE job end to end (issue #477): a burst arms one row per conversation, the tick reads
 // Chatwoot, asks the model once, writes the label set deterministically, posts one private note
@@ -3157,6 +3160,69 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     } finally {
       await suDb.agentToolSelection.deleteMany({ where: { id: sel.id } });
       await suDb.toolDefinition.deleteMany({ where: { id: def.id } });
+    }
+  });
+
+  // A WATCHER THAT TRANSFERRED AND THEN TRIED TO CLOSE (issue #671). An observation hands no
+  // `turnState` down, so `resolve_conversation` takes its immediate branch: the transfer had just
+  // put the conversation in the human queue and the close took it straight back out, with nothing
+  // said to the customer (a muted turn says nothing by construction). The tool can only see the
+  // transfer because this tick puts a `handoffState` in the toolset's context, and an observation
+  // is the only turn shape that proves that line.
+  test("an observation that transferred does not then close the conversation", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const statuses: string[] = [];
+    // `muted: true`, unlike the rest of this file: production builds this client with `mute: true`,
+    // and the transfer's own schema reads it (a muted turn is never asked for a customer-facing
+    // line). The status toggles are recorded here because they are the whole assertion.
+    const client = {
+      ...stubClient([message(52, "quero falar com uma pessoa")], [], log),
+      muted: true,
+      toggleStatus: async (_id: number, status: string) => {
+        statuses.push(status);
+        return {};
+      },
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "open",
+        updated_at: 1_788_000_002.5,
+      }),
+    } as unknown as ChatwootClient;
+    try {
+      const res = await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async () => client,
+          makeModel: () =>
+            new ResolveAndHandoffModel("acompanhando", {
+              reason: "cliente pediu atendimento humano",
+              resolveFirst: false,
+            }) as unknown as BaseChatModel,
+        },
+      );
+      expect(res).toEqual({ outcome: "done" });
+      // The transfer did happen (its private note is filed), and nothing closed after it.
+      expect(log.notes).toContain("cliente pediu atendimento humano");
+      expect(statuses).toEqual(["open"]);
+      expect(log.publicSends).toBe(0);
+      const conv = await suDb.conversation.findUnique({
+        where: { id: convRowId },
+        select: { resolvedBy: true },
+      });
+      expect(conv?.resolvedBy).toBeNull();
+    } finally {
+      await suDb.conversation.update({
+        where: { id: convRowId },
+        data: { resolvedBy: null, resolvedByAt: null },
+      });
     }
   });
 

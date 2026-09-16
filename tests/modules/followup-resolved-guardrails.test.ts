@@ -202,6 +202,11 @@ async function seedConversation(
     // O que o ESPELHO diz sobre quem detém a conversa. Default: ninguém.
     assigneeType?: string | null;
     assigneeId?: number | null;
+    // Quem já falou aqui (issue #652). O default é o agente já ter respondido uma vez, porque é o
+    // estado normal de uma conversa que chega a merecer follow-up; os dois nulos são o caso que a
+    // #652 descreve e se pedem explicitamente.
+    lastRepliedMessageId?: number | null;
+    chatwootFirstReplyAt?: Date | null;
   },
 ) {
   await suDb.conversation.create({
@@ -217,6 +222,9 @@ async function seedConversation(
       lastEventAt: over.lastEventAt,
       lastInboundAt: over.lastInboundAt,
       lastFollowUpAt: over.lastFollowUpAt ?? null,
+      lastRepliedMessageId:
+        over.lastRepliedMessageId === undefined ? 1 : over.lastRepliedMessageId,
+      chatwootFirstReplyAt: over.chatwootFirstReplyAt ?? null,
     },
   });
 }
@@ -866,6 +874,70 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     );
     expect(threads).toContain(threadOf(POST));
     expect(threads).not.toContain(threadOf(PRE));
+  });
+
+  // (7) Issue #652: o relato da comunidade. Um agente que decide, corretamente, não responder (um
+  // relatório DMARC, uma notificação de pagamento, uma newsletter) chama `skip_reply`, que encerra o
+  // turno e deixa a conversa exatamente como a varredura a seleciona: pending, do bot, silenciosa.
+  // Dias depois a escada abre a mesma conversa e escreve uma cutucada comercial nela. Medido pelo
+  // relator numa inbox de produção em 45 dias: 19 de 245 conversas, todas sem nada enviado.
+  //
+  // As três abaixo são elegíveis por TODO o resto (mesma inbox, mesmo agente, pós-arm, mesmo
+  // silêncio): a única coisa que as separa é quem já falou.
+  test("(7) sweep: sem ninguém do nosso lado ter falado não entra; com o bot OU com o humano, entra", async () => {
+    const SILENT = 4350;
+    const BOT_SPOKE = 4351;
+    const HUMAN_SPOKE = 4352;
+    const quiet = {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+    };
+    await seedConversation(SILENT, inboxAId, {
+      ...quiet,
+      lastRepliedMessageId: null,
+      chatwootFirstReplyAt: null,
+    });
+    await seedConversation(BOT_SPOKE, inboxAId, {
+      ...quiet,
+      lastRepliedMessageId: 77,
+      chatwootFirstReplyAt: null,
+    });
+    // Só a metade humana: `first_reply_created_at` do Chatwoot, que o `Message#valid_first_reply?`
+    // só escreve para um `sender.is_a?(User)`. É a razão do OR — o operador respondeu à mão e a
+    // conversa está viva, mesmo sem o agente nunca ter falado.
+    await seedConversation(HUMAN_SPOKE, inboxAId, {
+      ...quiet,
+      lastRepliedMessageId: null,
+      chatwootFirstReplyAt: new Date(Date.now() - 3 * HOUR),
+    });
+
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    if (!sweep) throw new Error("unreachable");
+    await sweep(
+      {
+        id: phantomJobId,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "FOLLOWUP", status: "PENDING" },
+      select: { payload: true },
+    });
+    const threads = jobs.map(
+      (j) => (j.payload as { threadId?: string }).threadId,
+    );
+    expect(threads).not.toContain(threadOf(SILENT));
+    // Controle positivo, e é ele que separa "a cláusula funciona" de "a varredura não rodou": as
+    // duas conversas engajadas passam pelos mesmos arms, na mesma passada.
+    expect(threads).toContain(threadOf(BOT_SPOKE));
+    expect(threads).toContain(threadOf(HUMAN_SPOKE));
   });
 
   test("(5) fora da janela sem template: UMA nota explicada e a sequência ENCERRA (sem step 2)", async () => {

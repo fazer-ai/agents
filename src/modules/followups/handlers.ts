@@ -15,7 +15,10 @@ import {
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
-import { isFollowUpLive } from "@/modules/followups/eligibility";
+import {
+  isFollowUpLive,
+  ourSideHasSpoken,
+} from "@/modules/followups/eligibility";
 import {
   type ClaimedJob,
   enqueueJob,
@@ -163,6 +166,13 @@ async function sweepHandler(
         AND (a.mode <> 'test' OR c.test_activated_at IS NOT NULL)
         AND c.last_event_at < ${cutoff}
         AND c.last_inbound_at IS NOT NULL
+        -- Mirrors ourSideHasSpoken (issue #652), whose header carries the measurement and why the OR
+        -- is not redundancy. Asked here as well because this is the SELECTION: a conversation that
+        -- can never be sent to must not hold a slot of the LIMIT below.
+        AND (
+          c.last_replied_message_id IS NOT NULL
+          OR c.chatwoot_first_reply_at IS NOT NULL
+        )
         AND (
           c.last_follow_up_at IS NULL
           OR c.last_inbound_at > c.last_follow_up_at
@@ -297,6 +307,8 @@ export async function followUpHandler(
         lastFollowUpAt: true,
         inboxId: true,
         testActivatedAt: true,
+        lastRepliedMessageId: true,
+        chatwootFirstReplyAt: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -345,6 +357,10 @@ export async function followUpHandler(
         // stale assignee and refuses to send before any model spend. Answering from the mirror here
         // would drop a follow-up the probe was about to allow (issue #214).
         mirrorHolder: "not-asked",
+        // Alcançável pelo motivo que este bloco inteiro existe: um FOLLOWUP armado pela varredura
+        // ANTIGA, numa conversa nunca respondida, já está PENDING no banco no instante do deploy, e
+        // a cláusula nova não o apaga — só deixa de re-enfileirá-lo. Quem o descarta é este arm.
+        ourSideHasSpoken: ourSideHasSpoken(conv),
       })
     ) {
       return null;

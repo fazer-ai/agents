@@ -19,6 +19,7 @@ const LIVE: FollowUpLiveness = {
   status: "pending",
   assigneeType: null,
   mirrorHolder: "ours",
+  ourSideHasSpoken: true,
 };
 
 const cases: Array<{
@@ -108,6 +109,21 @@ const cases: Array<{
     // two independent terms, so neither reader depends on the other being right.
     name: "a human holds it, reported on the holder axis too",
     patch: { assigneeType: "User", mirrorHolder: "not-ours" },
+    live: false,
+  },
+  // ── The engagement axis (issue #652). Every other arm above asks whether the sequence may
+  //    CONTINUE; this one asks whether it ever started. A conversation the agent deliberately stayed
+  //    out of with `skip_reply` passes all of them — pending, bot-owned, agent on, customer silent —
+  //    and is exactly the row the sweep was selecting.
+  {
+    name: "nobody on our side has ever spoken in this conversation",
+    patch: { ourSideHasSpoken: false },
+    live: false,
+  },
+  {
+    // Every other term is a reason to be dead, and this one does not rescue any of them.
+    name: "somebody spoke here AND a human took the conversation",
+    patch: { ourSideHasSpoken: true, assigneeType: "User" },
     live: false,
   },
 ];

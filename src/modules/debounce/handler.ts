@@ -15,6 +15,7 @@ import {
   type RuntimeDeps,
   runLoadedTurn,
 } from "@/graph/runtime";
+import { turnOwnsThread } from "@/graph/thread-claim";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
@@ -1773,7 +1774,33 @@ export async function flushDebounceJob(
     conversationId,
     ctx.contactInboxId,
   );
-  if (isTurnInFlight(graphThreadId) || isFlushHeld(graphThreadId)) {
+  // THE MAPS ARE THIS PROCESS ONLY, and every other writer on this thread already knows it: ingest,
+  // the reset gate, the delivery recovery and compaction all ask `turnOwnsThread`, which reads the
+  // claim in the thread's own row. The flush was the one writer left asking only the registry, so on
+  // the topology docs/deploy.md §4 sanctions it invoked a thread another replica was running
+  // (issue #593, measured: 1 model call and 1 send where both had to be 0).
+  //
+  // ONLY FOR THE KEY THAT HAS A ROW. `resolveGraphThreadId` falls back to the per-conversation
+  // thread when the contact inbox is unknown, and that key has no `agent_threads` row to hold, so
+  // there the Map stays the whole answer at the cost issue #203 measured and accepted. Asking the
+  // row for it would read "free" forever and add a query per flush for nothing.
+  const heldElsewhere =
+    ctx.contactInboxId === null
+      ? false
+      : await turnOwnsThread(
+          {
+            tenantId,
+            instanceId,
+            contactInboxId: ctx.contactInboxId,
+            graphThreadId,
+          },
+          base,
+        );
+  if (
+    isTurnInFlight(graphThreadId) ||
+    isFlushHeld(graphThreadId) ||
+    heldElsewhere
+  ) {
     const now = Date.now();
     // THE CEILING IS A DEADLINE, NOT A COUNTER, and both obvious counters are already ruled out.
     // `rescheduleJob` writes `attempts = 0`, so the scheduler's own retry budget never runs down and

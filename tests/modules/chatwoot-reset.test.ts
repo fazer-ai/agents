@@ -2836,7 +2836,10 @@ describe.skipIf(!dbUp)(
               const sql = ((args as { strings?: string[] }).strings ?? []).join(
                 " ",
               );
-              if (sql.includes("AS held")) {
+              // The claim read, by the projection only it has (`readTurnClaimOn`, issue #593 renamed
+              // it from `AS held` when the row's answer grew a second field). Matched on the SQL
+              // because faking a broken read is the whole point of this fixture.
+              if (sql.includes("AS holders")) {
                 refused += 1;
                 throw new Error("connection reset");
               }

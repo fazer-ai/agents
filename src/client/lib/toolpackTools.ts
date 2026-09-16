@@ -9,6 +9,8 @@ import {
   FileSearch,
   Link,
   type LucideIcon,
+  Mail,
+  MailCheck,
   QrCode,
   Receipt,
   Send,
@@ -32,6 +34,8 @@ export const TOOLPACK_TOOL_ICONS: Record<string, LucideIcon> = {
   calendar_confirm_appointment: CalendarCheck2,
   drive_find_file: FileSearch,
   drive_send_file: Send,
+  resend_send_email: Mail,
+  resend_email_status: MailCheck,
 };
 
 // An operator-only note about one ARGUMENT, shown on that argument's pill in the console.
@@ -206,6 +210,24 @@ export function toolpackToolMeta(name: string, t: TFunction): ToolpackToolMeta {
         description: t(
           "toolpackTools.drive_send_file.desc",
           "Send a Drive file to the customer as an attachment.",
+        ),
+      };
+    case "resend_send_email":
+      return {
+        icon,
+        label: t("toolpackTools.resend_send_email.label", "Send email"),
+        description: t(
+          "toolpackTools.resend_send_email.desc",
+          "Send an email to the customer (confirmation, reminder, follow-up). The sender address comes from the integration settings.",
+        ),
+      };
+    case "resend_email_status":
+      return {
+        icon,
+        label: t("toolpackTools.resend_email_status.label", "Email status"),
+        description: t(
+          "toolpackTools.resend_email_status.desc",
+          "Check whether an email sent with Send email was delivered or bounced.",
         ),
       };
     default:

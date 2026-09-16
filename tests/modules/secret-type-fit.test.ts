@@ -31,6 +31,7 @@ const TABLE: [string, boolean, boolean][] = [
   ["openai_compatible", true, true],
   ["elevenlabs", true, true],
   ["asaas", true, true],
+  ["resend", true, true],
   ["chatwoot_api_token", true, true],
   // Multi-field: the value is `{ clientId, clientSecret }` and the tokens the consent flow merges in.
   // Injectable because `resolveInjectableCredentialEntry` refreshes an access token from it; never an

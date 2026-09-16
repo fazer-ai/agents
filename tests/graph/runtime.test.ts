@@ -55,6 +55,7 @@ import {
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   HandoffTwiceModel,
+  ResolveAndHandoffModel,
   ResolveThenReplyModel,
   SendDocumentThenReplyModel,
   SendImageAndResolveModel,
@@ -2211,6 +2212,171 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // The failure is a warn and not a failed turn (#160): the transfer succeeded, so stamping
   // lastError and announcing "a human has to take over" would point an operator at a thread that
   // already has one. Same rule the queued image follows below.
+  // ISSUE #671, and the three below are one scenario with its boundary. The pair the contract of
+  // #662 made expressable is the worst outcome it can produce: the customer gets nothing BY THE
+  // MODEL'S OWN DECLARATION, and the conversation leaves the queue that declaration handed it to, so
+  // nobody is looking either. Worse than the silence by omission #662 removed, which at least left
+  // the conversation open.
+  //
+  // The rule is old ("a conversation the human queue now owns is not ours to close", #159) and the
+  // reactive runtime keeps it by dropping the DEFERRED intent. What was missing is a test that says
+  // the forbidden pair is this pair: the one red case a mutation of that line produced was about a
+  // closing line that FAILS to send, and narrowing the condition from `completed` to
+  // `handoffAnsweredTheTurn` (which a declared silence makes false) survived the whole suite.
+  test("a resolve asked in the same turn as a silent transfer does not close the conversation", async () => {
+    await seedConversation(6711, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      // Recorded because the script asks for a private note: a client without it throws inside the
+      // tool BEFORE the status toggle, which measures the boundary below by accident.
+      sendPrivateNote: async (c: number, t: string) => {
+        calls.push(["sendPrivateNote", c, t]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 6711 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveAndHandoffModel("Encaminhado.", {
+            reason: "notificação formal",
+            customerMessage: "",
+          }) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([
+      ["sendPrivateNote", 6711, "notificação formal"],
+      ["toggleStatus", 6711, "open"],
+    ]);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 6711 },
+      select: { resolvedBy: true },
+    });
+    expect(row.resolvedBy).toBeNull();
+  });
+
+  // The ORDER does not save it, and it is the half that looks safe: a resolve asked BEFORE the
+  // transfer is overwritten by the transfer's own `open`, so the conversation ends in the right
+  // state by accident. The intent still has to fall, or the next change to the delivery order
+  // resurrects the close.
+  test("the resolve falls whether it was asked before or after the silent transfer", async () => {
+    await seedConversation(6713, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      sendPrivateNote: async (c: number, t: string) => {
+        calls.push(["sendPrivateNote", c, t]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 6713 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveAndHandoffModel("Encaminhado.", {
+            reason: "notificação formal",
+            customerMessage: "",
+            resolveFirst: false,
+          }) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([
+      ["sendPrivateNote", 6713, "notificação formal"],
+      ["toggleStatus", 6713, "open"],
+    ]);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 6713 },
+      select: { resolvedBy: true },
+    });
+    expect(row.resolvedBy).toBeNull();
+  });
+
+  // THE BOUNDARY, and it is what makes the two above provable. Same script, same tools, same order:
+  // only the transfer's own `open` toggle fails. Nothing was filed, the conversation is still ours,
+  // and the customer reads the recovery text the model wrote instead, so the resolve it asked for
+  // STANDS. Without this case the two above stay green even if the resolve was never armed at all
+  // (a revoked tool, a renamed one, a swallowed step): there would have been no `resolved` to
+  // suppress, and the assertion would be measuring nothing.
+  test("a transfer that threw does not take the resolve with it", async () => {
+    await seedConversation(6712, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      sendPrivateNote: async (c: number, t: string) => {
+        calls.push(["sendPrivateNote", c, t]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        if (status === "open") {
+          calls.push(["toggleStatus-THREW", c, status]);
+          throw new Error("chatwoot 500");
+        }
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 6712 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveAndHandoffModel("Tive um problema aqui, já estou vendo.", {
+            reason: "notificação formal",
+            customerMessage: "Um humano já te atende.",
+          }) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    // The promise of the attempt that failed never goes out; the recovery text does, and the close
+    // the model asked for happens after it.
+    expect(calls).toEqual([
+      ["sendPrivateNote", 6712, "notificação formal"],
+      ["toggleStatus-THREW", 6712, "open"],
+      ["sendMessage", 6712, "Tive um problema aqui, já estou vendo."],
+      ["toggleStatus", 6712, "resolved"],
+    ]);
+  });
+
   test("a handoff whose closing line fails to send neither resolves nor errors the turn", async () => {
     await seedConversation(9977, null);
     const calls: Array<[string, number, string]> = [];

@@ -1257,6 +1257,19 @@ function resolveConversationTool(ctx: ToolCtx) {
   const deferred = ctx.turnState !== undefined;
   return tool(
     async () => {
+      // THE TRANSFER OF THIS TURN ALREADY HAPPENED, so the conversation belongs to the human queue
+      // and closing it is not ours to do. The reactive runtime has said this since issue #159, but
+      // it says it about the DEFERRED intent (`if (handoffState.completed) resolveRequested = false`)
+      // and this tool closes IMMEDIATELY whenever no `turnState` was handed down, which is every
+      // proactive turn and every observation. Measured on a nudge (issue #671): a transfer declaring
+      // silence followed by this tool left `toggleStatus open` then `toggleStatus resolved`, so the
+      // customer got nothing by the model's own declaration AND the conversation left the queue the
+      // transfer had just put it in. Asked before both branches because the answer is the same in
+      // both, and because the model should read what happened rather than a schedule that gets
+      // cancelled out of sight.
+      if (ctx.handoffState?.completed) {
+        return "Did not resolve: this turn transferred the conversation to a human, so it is theirs to close, not yours.";
+      }
       const ts = ctx.turnState;
       if (ts) {
         // Deferred: the runtime toggles the status after the final reply is delivered. The

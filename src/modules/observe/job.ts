@@ -1468,6 +1468,12 @@ export async function runObserve(
             if (counted.has(toolName)) noEffect++;
           },
           observed: conv ? { status: conv.status, statusAt: null } : undefined,
+          // Not for delivering anything (a muted client cannot, and this turn throws its final
+          // output away): it is what lets `resolve_conversation` see that THIS turn transferred the
+          // conversation, and refuse to close what the human queue now owns. Without it the tool's
+          // guard reads `undefined` and the observer closes a conversation it had just escalated
+          // (issue #671).
+          handoffState: { customerMessage: null, completed: false },
           // Absent when the read failed, so the toolset asks Chatwoot itself and applies its own
           // degradation if that fails too — one extra request on the failing path only.
           ...(current === null ? {} : { conversationLabels: current }),

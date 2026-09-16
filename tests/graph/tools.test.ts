@@ -610,6 +610,38 @@ describe("native tools", () => {
     expect(calls.map((c) => c[0])).toContain("toggleStatus");
   });
 
+  // ISSUE #671. The tool has two modes and the rule was written in only one of them: with a
+  // `turnState` the intent is deferred and the reactive runtime drops it when a transfer completed
+  // ("a conversation the human queue now owns is not ours to close", #159), and WITHOUT one the tool
+  // closes inside the call, which is every proactive turn and every observation. Asked here, on the
+  // tool, because that is the one place both modes pass through, and because the observer builds its
+  // own toolset: a guard written in either runtime would leave it out.
+  //
+  // Both directions matter. A transfer that completed blocks the close AND says so, so the model
+  // reads what happened; a turn with no transfer at all still closes, which is the ordinary case and
+  // what a guard written too wide would break.
+  test("resolve_conversation refuses to close what this turn transferred", async () => {
+    const { client, calls } = recordingClient();
+    const handoffState = {
+      customerMessage: null as string | null,
+      completed: false,
+      declinedToSpeak: false,
+    };
+    const tools = buildNativeTools({ client, conversationId: 7, handoffState });
+    // No transfer yet: the legacy immediate close is untouched.
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls.map((c) => c[0])).toContain("toggleStatus");
+
+    calls.length = 0;
+    await byName(tools, "handoff_to_human").invoke({ customerMessage: "" });
+    expect(handoffState.completed).toBe(true);
+    calls.length = 0;
+    const out = String(await byName(tools, "resolve_conversation").invoke({}));
+    expect(calls).toEqual([]);
+    expect(out).toMatch(/[Dd]id not resolve/);
+    expect(out).toContain("transferred");
+  });
+
   test("resolve_conversation with turnState defers (no client call, flags the state)", async () => {
     const { client, calls } = recordingClient();
     const turnState = {

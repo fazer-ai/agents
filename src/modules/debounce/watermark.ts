@@ -69,6 +69,29 @@ export async function advanceHandledWatermark(
 ): Promise<boolean> {
   const base = params.base ?? basePrisma;
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    // THE PARENT ROW FIRST, WHENEVER THIS CALL WILL WRITE A CHILD (PR review, round 2). Both tables
+    // below carry a foreign key to `conversations`, so inserting into them takes a `KEY SHARE` lock
+    // on that conversation row — and `claimReplyBurst` holds `FOR UPDATE` on it, which conflicts.
+    //
+    // The CAS below usually takes the row lock on the way past, so the orders agree by accident. It
+    // does not when the watermark ALREADY covers `toMessageId`: the `updateMany` matches nothing and
+    // locks nothing, and this call then goes straight for the child. A claimant holding the parent
+    // and waiting for the child's unique-index entry, against this holding that entry and waiting
+    // for the parent, is a deadlock — and Postgres resolves it by killing one of the two, so a
+    // customer's reply is aborted rather than refused, with an error instead of an outcome.
+    //
+    // Taking it explicitly costs the lock only in the case the CAS loses it, which is the stale
+    // advance: rare, and already the cheapest path here. `kind: "claimed"` writes no child and needs
+    // nothing.
+    if (
+      (params.dispensed.kind === "messages" &&
+        params.dispensed.messageIds.length > 0) ||
+      params.dispensed.kind === "range"
+    ) {
+      await db.$queryRaw`SELECT 1 FROM "conversations"
+                          WHERE "id" = ${params.conversationDbId}
+                            FOR UPDATE`;
+    }
     const cas = await db.conversation.updateMany({
       where: {
         id: params.conversationDbId,

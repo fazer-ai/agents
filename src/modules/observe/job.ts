@@ -710,7 +710,12 @@ export interface LabelHistory {
 // admits two readings of the same line ("Ana removeu a vip" is the label `a vip` under pt and `vip`
 // under pt_BR) is settled by the set rather than by a catalog that has both.
 //
-// NO SET, THE OLD CUT, AND THEN NO MARKER, NO CUT. A reset from before the column made no claim, so
+// THE TWO CUTS ARE JOINED (round 5): the set answers for the titles THIS reset removed, at any id,
+// and the acknowledgement's row answers for everything the command wrote before it, whatever the
+// titles. Only the second covers a PREVIOUS reset's removal line arriving late, which names a title
+// the newer clear no longer found standing and therefore never recorded.
+//
+// NO SET, THE OLD CUT ALONE, AND THEN NO MARKER, NO CUT. A reset from before the column made no claim, so
 // those conversations fall back to the acknowledgement's id and keep the round-20 behaviour —
 // including its miss, the colleague who changed a label between the command and the ack. A reset
 // whose acknowledgement never landed either has nothing left that says where its cleanup ended, and
@@ -747,12 +752,24 @@ export function afterResetNarration(
 ): ChatwootMessageRow[] {
   if (resetBoundary === null) return fetched;
   const rows = fetched.filter((r) => r.id > resetBoundary);
-  if (cleared === null) {
-    const marker = resetAckSendId(resetBoundary);
-    const ack = rows.find((r) => r.sendId === marker);
-    if (ack === undefined) return rows;
-    return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
-  }
+  // THE TWO CUTS ARE JOINED, not alternatives (issue #645, review round 5). The set answers for the
+  // titles THIS reset removed, at any id; the acknowledgement's row answers for everything the
+  // command wrote before it, whatever the titles. Only the second one covers a PREVIOUS reset's
+  // removal line arriving late: two commands in a row with the activity job behind them leaves the
+  // first reset's line between the second command and its acknowledgement, named with a title the
+  // second clear no longer found standing and therefore never recorded.
+  //
+  // The price is the one the order cut always had, and it comes back with it: a colleague who
+  // changed a label between the command and its acknowledgement loses that line. It is a miss, in
+  // the direction this block fails in on purpose, and it is bounded by the cleanup's own stretch.
+  const marker = resetAckSendId(resetBoundary);
+  const ack = rows.find((r) => r.sendId === marker);
+  const above =
+    ack === undefined
+      ? rows
+      : rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
+  // NO SET, NO CONTENT TEST, and then the order cut is all there is.
+  if (cleared === null) return above;
   const pending = new Set(cleared.map((t) => t.trim()).filter((t) => t !== ""));
   // WHETHER THE CLEANUP'S OWN ROW IS STILL REACHABLE. With the command in the page, everything
   // Chatwoot wrote since the reset is in it too, so the cleanup's line is somewhere in these rows
@@ -762,7 +779,7 @@ export function afterResetNarration(
   const dropped = new Set<number>();
   // In id order, because consuming a title is order-dependent; the ROWS are returned in the order
   // they came in, which is what every caller before this change received.
-  for (const r of [...rows].sort((a, b) => a.id - b.id)) {
+  for (const r of [...above].sort((a, b) => a.id - b.id)) {
     // CONSUMPTION IS A LIMITED RESOURCE, so only a row that could BE Chatwoot's own narration may
     // spend a title. A private note and a row that declares its own kind are neither (Chatwoot
     // writes the label activity public and with no `content_attributes` at all), and a title spent
@@ -797,7 +814,7 @@ export function afterResetNarration(
     for (const t of removal.titles) pending.delete(t);
     dropped.add(r.id);
   }
-  return rows.filter((r) => !dropped.has(r.id));
+  return above.filter((r) => !dropped.has(r.id));
 }
 
 export function labelHistoryFromRows(

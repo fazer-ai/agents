@@ -690,9 +690,33 @@ describe("the notes the conversation already carries", () => {
         "Fulano removeu compra-de-ingresso",
       ]);
 
-      // A CLEAR THAT REMOVED NOTHING (or that failed) hides nothing, and the difference from the
-      // order cut shows here: a colleague's own change, made while the cleanup ran, is BELOW the
-      // acknowledgement and survives, because it names a title the reset did not remove.
+      // (RODADA 5) OS DOIS CORTES SÃO SOMADOS, e é o corte por ordem que cobre a linha do reset
+      // ANTERIOR. Dois comandos seguidos com o job de atividade atrasado deixam a remoção do
+      // primeiro entre o segundo comando e o ack dele, nomeando um título que a segunda limpeza já
+      // não encontrou de pé e portanto nunca registrou: o conjunto aqui é `[]` e mesmo assim a
+      // linha não chega ao modelo.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              ack,
+            ],
+            10,
+            [],
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+      // E o preço, que é o mesmo que o corte por ordem sempre teve: a mudança de um colega feita
+      // DENTRO da limpeza se perde junto. É uma falta, na direção em que este bloco erra de
+      // propósito, e limitada ao trecho do próprio comando.
       expect(
         labelHistoryFromRows(
           afterResetNarration(
@@ -703,6 +727,27 @@ describe("the notes the conversation already carries", () => {
                 content: "Fulano adicionou cancelamento",
               }),
               ack,
+            ],
+            10,
+            [],
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+      // Acima do ack, a mesma linha do colega fica: o corte é ancorado na linha do ack e não vale
+      // para sempre (rodada 21).
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano adicionou cancelamento",
+              }),
             ],
             10,
             [],

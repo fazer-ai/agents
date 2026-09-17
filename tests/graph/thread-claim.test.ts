@@ -403,6 +403,38 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     await clearTurnOwning(o, appDb, second);
   }, 15_000);
 
+  // THE WAIT DOES NOT FEED THE THING IT IS WAITING FOR (PR review round 1). `bumpTurnHolders` pushes
+  // `turn_held_until` forward on every acquisition, so a waiter that acquired to find out whether the
+  // thread was free would renew the holder's lease twenty times a second. That is not a slow wait, it
+  // is a thread stranded for good: a holder that CRASHED stops renewing and its lease is what hands
+  // the thread to the next turn, and a waiter pushing it forever removes the only way out. Measured
+  // on the lease rather than on the crash, because the crash takes 300 seconds to show and this takes
+  // 400 milliseconds.
+  test("waiting does not push the lease of the turn being waited for", async () => {
+    const o = owner();
+    const first = await markTurnOwning(o, appDb);
+    const before = (await rowOf(o)).turnHeldUntil;
+    expect(before).not.toBeNull();
+
+    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    try {
+      const stillWaiting = Symbol("still waiting");
+      expect(
+        await Promise.race([
+          waiter,
+          new Promise<typeof stillWaiting>((r) =>
+            setTimeout(() => r(stillWaiting), 400),
+          ),
+        ]),
+      ).toBe(stillWaiting);
+      // Untouched: the only writer of this lease is the holder's own renewal.
+      expect((await rowOf(o)).turnHeldUntil?.getTime()).toBe(before?.getTime());
+    } finally {
+      await clearTurnOwning(o, appDb, first);
+      await clearTurnOwning(o, appDb, await waiter);
+    }
+  }, 15_000);
+
   // The other half, and the reason the wait is opt-in: overlap is legitimate where nobody is owed a
   // single answer, and a caller that does not ask to wait must not start waiting.
   test("a turn that did not ask to wait still joins the occupancy", async () => {

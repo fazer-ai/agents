@@ -262,23 +262,44 @@ export async function markTurnOwning(
   let seenLease: number | null = null;
   let deadline = Date.now() + TURN_WAIT_MS;
   for (;;) {
-    const hold = await acquireTurnHold(owner, base);
-    if (!hold.heldBefore) return hold;
-    // GIVEN BACK BEFORE WAITING, not held while waiting. The hold this call just took is itself an
-    // occupancy: kept, it would stop the first turn's release from reaching zero, and the thread
-    // would read busy to the append and the compaction that are allowed to run between turns. It
-    // also goes back through `clearTurnOwning` rather than a decrement of its own, so the renewal
-    // timer stops and the local Map mark goes with it.
-    await clearTurnOwning(owner, base, hold);
+    // READ FIRST, AND ACQUIRE ONLY WHEN THE READ SAYS NOBODY IS THERE (PR review, round 1).
+    // Acquiring to find out is the obvious shape and it is the one thing this wait cannot do:
+    // `bumpTurnHolders` sets `turn_held_until = now() + TURN_LEASE_SECONDS` unconditionally, so a
+    // waiter that acquired on every poll would RENEW the lease of the very holder it is waiting for,
+    // twenty times a second, and `clearTurnOwning` keeps that extension while the holder is still
+    // counted. A holder that CRASHED would then never expire and the thread would be stranded for
+    // good — strictly worse than the Map this module replaces, which a restart clears, and the exact
+    // failure the lease exists to prevent.
     const lease = await readTurnLease(owner, base);
-    if (lease !== null && lease !== seenLease) {
-      seenLease = lease;
-      deadline = Date.now() + TURN_WAIT_MS;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `a turn has held ${owner.graphThreadId} past its lease without finishing; refusing to start a second turn beside it`,
-      );
+    if (
+      !isTurnRunning(owner.graphThreadId) &&
+      (lease === null || lease <= Date.now())
+    ) {
+      // The read above is a HINT; the exclusion is still the acquiring statement, which is where two
+      // waiters that both read "free" are separated. The loser gives its hold straight back and
+      // keeps waiting — kept, that hold would stop the winner's release from reaching zero, and the
+      // thread would read busy to the append and the compaction that are allowed to run between
+      // turns. It goes back through `clearTurnOwning` rather than a decrement of its own, so the
+      // renewal timer stops and the local Map mark goes with it.
+      const hold = await acquireTurnHold(owner, base);
+      if (!hold.heldBefore) return hold;
+      await clearTurnOwning(owner, base, hold);
+    } else {
+      if (lease !== null && lease !== seenLease) {
+        seenLease = lease;
+        deadline = Date.now() + TURN_WAIT_MS;
+      }
+      // WHY A FROZEN LEASE NEVER REACHES THIS. The ceiling is for a holder that goes on renewing and
+      // never finishes; a holder that stopped renewing has to be waited OUT, not refused. It always
+      // is: a lease read at t is at most t + TURN_LEASE_SECONDS, and the deadline it sets is
+      // t + TURN_WAIT_MS, which is longer by the same slack the append wait uses. So an unrenewed
+      // lease expires first, the branch above takes the thread, and only a lease that keeps moving
+      // can outlast its own deadline.
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `a turn has held ${owner.graphThreadId} past its lease without finishing; refusing to start a second turn beside it`,
+        );
+      }
     }
     await Bun.sleep(TURN_POLL_MS);
   }

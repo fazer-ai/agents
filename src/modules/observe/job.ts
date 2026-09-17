@@ -720,10 +720,16 @@ export interface LabelHistory {
 // parser `labelHistoryFromRows` runs below, so a removal sentence no template matches is invisible
 // to the reader this filter protects.
 export function afterResetNarration(
-  rows: ChatwootMessageRow[],
+  // THE PAGE AS FETCHED, boundary and all, and this function applies the boundary filter itself
+  // (issue #645, review round 1). It needs one fact the filtered rows cannot carry: whether the
+  // window still REACHES the command. A page that stops above it was truncated, so the cleanup's
+  // own row may have aged out while the acknowledgement is still in view, and the two regimes below
+  // answer the same ambiguous pair of lines differently.
+  fetched: ChatwootMessageRow[],
   resetBoundary: number | null,
 ): ChatwootMessageRow[] {
-  if (resetBoundary === null) return rows;
+  if (resetBoundary === null) return fetched;
+  const rows = fetched.filter((r) => r.id > resetBoundary);
   const marker = resetAckSendId(resetBoundary);
   const ack = rows.find((r) => r.sendId === marker);
   if (ack === undefined) return rows;
@@ -731,6 +737,11 @@ export function afterResetNarration(
   if (cleared === null)
     return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
   const pending = new Set(cleared.map((t) => t.trim()).filter((t) => t !== ""));
+  // WHETHER THE CLEANUP'S OWN ROW IS STILL REACHABLE. With the command in the page, everything
+  // Chatwoot wrote since the reset is in it too, so the cleanup's line is somewhere in these rows
+  // and the budget has to be kept for it. With the page truncated above the command, the line may
+  // have aged out, and a budget held for a row nobody will ever read hides real removals forever.
+  const reachesCommand = fetched.some((r) => r.id <= resetBoundary);
   const dropped = new Set<number>();
   // In id order, because consuming a title is order-dependent; the ROWS are returned in the order
   // they came in, which is what every caller before this change received.
@@ -747,11 +758,26 @@ export function afterResetNarration(
     // own limit, not a second one: filtering it here would make the block report a hidden change
     // over the very cleanup this function exists to hide.
     if (r.content.length > ACTIVITY_SCAN_MAX_CHARS) continue;
-    const titles = labelsNarrated(r.content).find((ts) =>
-      ts.every((t) => pending.has(t)),
+    const readings = labelsNarrated(r.content);
+    // A TITLE PUT BACK IS NOT PENDING ANY MORE — but only where the cleanup's own line is out of
+    // reach (issue #645, review round 1). The two regimes answer the same pair of rows, `[added A,
+    // removed A]`, and the rows are IDENTICAL in both: with a truncated page the removal is
+    // somebody's real change and the reset's own line aged out, while with the command in view the
+    // removal is the reset's, delayed past an addition whose own Sidekiq job was delayed too.
+    // Nothing in the content separates them, so the page's reach decides, and each regime chooses
+    // the error that fits it: a truncated page must not hold a budget for a row it will never see,
+    // and a complete page must not spend that budget on an addition.
+    if (!reachesCommand)
+      for (const r0 of readings)
+        if (r0.kind === "added") for (const t of r0.titles) pending.delete(t);
+    // ...AND ONLY A REMOVAL CAN BE THE CLEANUP'S OWN LINE. Reading the verb is what stops an
+    // addition whose Sidekiq job landed out of order from spending the title and letting the real
+    // removal through — the finding that this asymmetry exists to answer.
+    const removal = readings.find(
+      (r0) => r0.kind === "removed" && r0.titles.every((t) => pending.has(t)),
     );
-    if (titles === undefined) continue;
-    for (const t of titles) pending.delete(t);
+    if (removal === undefined) continue;
+    for (const t of removal.titles) pending.delete(t);
     dropped.add(r.id);
   }
   return rows.filter((r) => !dropped.has(r.id));
@@ -797,9 +823,12 @@ export function labelHistoryFromRows(
       // string reaching the model, and a locale that glues a particle onto the title (Korean writes
       // `vip을(를)`) puts it out of reach of the scan above, which asks for a word boundary the
       // sentence does not have (round 7).
-      if (readings.some((ts) => ts.some((t) => guard.has(t)))) return false;
+      if (readings.some((r) => r.titles.some((t) => guard.has(t))))
+        return false;
       // And ONE reading whose titles this account actually has is what makes the line a change.
-      return readings.some((ts) => ts.every((t) => known.has(t)));
+      // The verb is not asked here: this block forwards the sentence whole, so what it needs to
+      // know is that a label MOVED, not which way.
+      return readings.some((r) => r.titles.every((t) => known.has(t)));
     })
     .sort((a, b) => a.id - b.id);
   // THE CAP HIDES CHANGES TOO (round 18). `escopo="janela-lida"` says where the block looked, not
@@ -1310,8 +1339,10 @@ export async function runObserve(
   // standing; a title invented, applied and taken off between two ticks is in neither list and its
   // lines are not read, which is the miss this block chooses over inventing a decision.
   const labelChanges = labelHistoryFromRows(
-    // Minus the reset's own cleanup, which lands above the boundary the filter above uses.
-    afterResetNarration(rows, resetBoundary),
+    // Minus the reset's own cleanup. The PAGE goes in rather than `rows`: this one applies the
+    // reset boundary itself, because whether the page still reaches the command is what decides
+    // how it reads a removal line (issue #645).
+    afterResetNarration(fetched, resetBoundary),
     vocabLabels === null && current === null
       ? null
       : [...(vocabLabels ?? []), ...(current ?? [])],

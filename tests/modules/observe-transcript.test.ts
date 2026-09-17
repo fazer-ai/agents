@@ -638,6 +638,43 @@ describe("the notes the conversation already carries", () => {
       expect(long.lines).toEqual([]);
       expect(long.omitted).toBe(1);
 
+      // ...AND CONSUMED ONCE COM A PÁGINA COMPLETA, que é onde o consumo é a única coisa que
+      // libera o título: no regime completo a adição não libera (é ela que pode ter chegado
+      // atrasada), então sem consumir a remoção da própria limpeza o reset esconderia toda remoção
+      // futura daquele título.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({ id: 10, content: "/reset" }),
+              ack(["compra-de-ingresso"]),
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                content: "Classificador SAC adicionou compra-de-ingresso",
+              }),
+              row({
+                id: 15,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+
       // A CLEAR THAT REMOVED NOTHING (or that failed) hides nothing, and the difference from the
       // order cut shows here: a colleague's own change, made while the cleanup ran, is BELOW the
       // acknowledgement and survives, because it names a title the reset did not remove.
@@ -659,6 +696,86 @@ describe("the notes the conversation already carries", () => {
           8,
         ).lines,
       ).toEqual(["Fulano adicionou cancelamento"]);
+    });
+
+    // (#645, RODADA 1 DO REVIEW) O MESMO PAR DE LINHAS, DOIS REGIMES. `[adicionou A, removeu A]` é
+    // ambíguo por construção: com a página alcançando o comando, a remoção é a do reset chegando
+    // atrasada atrás de uma adição também atrasada; com a página truncada acima do comando, a linha
+    // do reset envelheceu para fora e a remoção é de alguém. Nada no conteúdo separa as duas, então
+    // quem decide é o alcance da página, e cada regime escolhe o erro que lhe cabe.
+    test("(#645) the same two lines read differently by how far the page reaches", () => {
+      const ack = row({
+        id: 12,
+        messageType: "outgoing",
+        content: "Conversa limpa.",
+        sendId: "reset-ack:10",
+        resetClearedLabels: ["compra-de-ingresso"],
+      });
+      const added = row({
+        id: 13,
+        messageType: "activity",
+        content: "Classificador SAC adicionou compra-de-ingresso",
+      });
+      const removed = row({
+        id: 14,
+        messageType: "activity",
+        content: "Fulano removeu compra-de-ingresso",
+      });
+      // A página alcança o comando (a linha do `/reset` está nela), então tudo que o Chatwoot
+      // escreveu desde o reset está nela também: a remoção é a do próprio reset, e a adição — que
+      // é história de verdade — fica.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [row({ id: 10, content: "/reset" }), ack, added, removed],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Classificador SAC adicionou compra-de-ingresso"]);
+      // Página truncada acima do comando: a linha da limpeza pode nunca aparecer, e guardar o
+      // título para uma linha que ninguém vai ler esconderia remoções reais para sempre.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration([ack, added, removed], 10),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+      // E a linha da limpeza continua escondida no regime completo mesmo sem adição nenhuma no
+      // meio, que é o caso comum.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [row({ id: 10, content: "/reset" }), ack, removed],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+      // ...e o filtro aplica o próprio boundary: uma linha de antes do comando não entra na janela.
+      expect(
+        afterResetNarration(
+          [
+            row({
+              id: 9,
+              messageType: "activity",
+              content: "Fulano adicionou cancelamento",
+            }),
+            row({ id: 10, content: "/reset" }),
+            ack,
+          ],
+          10,
+        ).map((r) => r.id),
+      ).toEqual([12]);
     });
 
     // And a reset with nothing said since: the acknowledgement is the last row, so every activity
@@ -1133,6 +1250,28 @@ describe("the notes the conversation already carries", () => {
     // this suite would notice, because no template that carries an apostrophe collides for ordinary
     // values. It is the crafted placeholder that would have walked through the hole.
     test("no vendored template carries YAML's own escaping", () => {
+      // (#645) AND THE TWO VERBS ARE A PARTITION OF THAT TABLE. The split decides whether a line
+      // can be `/reset`'s own cleanup, so a sentence filed under the wrong leaf is a misreading
+      // with no other symptom: the union has to be the whole table and the two must not overlap.
+      expect(
+        [
+          ...__templatesForTest.labelsAdded,
+          ...__templatesForTest.labelsRemoved,
+        ].sort(),
+      ).toEqual([...__templatesForTest.labels].sort());
+      expect(
+        __templatesForTest.labelsAdded.filter((t) =>
+          __templatesForTest.labelsRemoved.includes(t),
+        ),
+      ).toEqual([]);
+      // ...and the verb reaches the reader, in a locale that puts it at each end.
+      expect(labelsNarrated("John adicionou vip")).toEqual([
+        { kind: "added", titles: ["vip"] },
+      ]);
+      expect(labelsNarrated("Hans hat vip entfernt")).toEqual([
+        { kind: "removed", titles: ["vip"] },
+      ]);
+
       const all = [...__templatesForTest.labels, ...__templatesForTest.other];
       expect(all.filter((t) => t.includes("''"))).toEqual([]);
       expect(all.filter((t) => t.includes('\\"'))).toEqual([]);

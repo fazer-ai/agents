@@ -19,12 +19,16 @@
 // spelling waits for two apostrophes Chatwoot never writes (round 10). A template that drifts stops matching, and a line nobody
 // matches is simply not read — the same miss this block already chooses over inventing a decision,
 // and never a false positive.
-const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
+// ...AND WHICH OF THE TWO VERBS IT IS (issue #645, review round 1). The subtree has exactly two
+// leaves, `added` and `removed`, and folding them into one table threw away the only thing that
+// says whether a line CAN be `/reset`'s own cleanup: the command only ever removes, so an addition
+// whose Sidekiq job lands out of order was being read as the removal and spending its budget. The
+// two tables are the same 74 strings, split by the key they came from (37 and 37, disjoint), and
+// `bun scripts/extract-chatwoot-activity-templates.ts <fork>/config/locales` prints them apart.
+const LABEL_ADDED_TEMPLATES: readonly string[] = [
   "%{user_name} %{labels} যোগ করেছেন",
-  "%{user_name} %{labels} সরিয়ে দিয়েছেন",
   "%{user_name} a ajouté %{labels}",
   "%{user_name} a következő cimkéket adta hozzá: %{labels}",
-  "%{user_name} a supprimé %{labels}",
   "%{user_name} acrescentou %{labels}",
   "%{user_name} added %{labels}",
   "%{user_name} adicionou %{labels}",
@@ -32,68 +36,79 @@ const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{user_name} agregó %{labels}",
   "%{user_name} dodal %{labels}",
   "%{user_name} dodał/a %{labels}",
+  "%{user_name} ha afegit %{labels}",
+  "%{user_name} ha aggiunto %{labels}",
+  "%{user_name} har lagt till %{labels}",
+  "%{user_name} hat %{labels} hinzugefügt",
+  "%{user_name} je dodao %{labels}",
+  "%{user_name} la til %{labels}",
+  "%{user_name} lisäsi tunnisteet %{labels}",
+  "%{user_name} menambahkan %{labels}",
+  "%{user_name} odstranil/a %{labels}",
+  "%{user_name} pievienoja %{labels}",
+  "%{user_name} pridal %{labels}",
+  "%{user_name} pridėjo %{labels}",
+  "%{user_name} thêm %{labels}",
+  "%{user_name} tilføjede %{labels}",
+  "%{user_name} добавил %{labels}",
+  "%{user_name} додав %{labels}",
+  "%{user_name} הוסיף %{labels}",
+  "%{user_name} أضاف %{labels}",
+  "%{user_name} ले %{labels} थपे",
+  '%{user_name} がラベル "%{labels}" を追加しました',
+  "%{user_name} 新增了 %{labels}",
+  "%{user_name} 添加 %{labels}",
+  "%{user_name}, %{labels} ekledi",
+  "%{user_name}، %{labels} را اضافه کرد",
+  "%{user_name}님이 %{labels}을(를) 추가했습니다",
+  "Idinagdag ni %{user_name} ang %{labels}",
+  "Ο %{user_name} πρόσθεσε ετικέτες %{labels}",
+];
+
+const LABEL_REMOVED_TEMPLATES: readonly string[] = [
+  "%{user_name} %{labels} সরিয়ে দিয়েছেন",
+  "%{user_name} a supprimé %{labels}",
   "%{user_name} eliminat %{labels}",
   "%{user_name} eliminó a %{labels}",
   "%{user_name} fjernede %{labels}",
   "%{user_name} fjernet %{labels}",
-  "%{user_name} ha afegit %{labels}",
-  "%{user_name} ha aggiunto %{labels}",
   "%{user_name} ha eliminat %{labels}",
   "%{user_name} ha rimosso %{labels}",
-  "%{user_name} har lagt till %{labels}",
   "%{user_name} hat %{labels} entfernt",
-  "%{user_name} hat %{labels} hinzugefügt",
-  "%{user_name} je dodao %{labels}",
   "%{user_name} je uklonio %{labels}",
-  "%{user_name} la til %{labels}",
   "%{user_name} leszedte a következő cimkéket %{labels}",
-  "%{user_name} lisäsi tunnisteet %{labels}",
-  "%{user_name} menambahkan %{labels}",
   "%{user_name} menghapus %{labels}",
   "%{user_name} noņēma %{labels}",
   "%{user_name} odebral/a %{labels}",
   "%{user_name} odobral %{labels}",
   "%{user_name} odstranil %{labels}",
-  "%{user_name} odstranil/a %{labels}",
   "%{user_name} pašalino %{labels}",
-  "%{user_name} pievienoja %{labels}",
   "%{user_name} poisti tunnisteet %{labels}",
-  "%{user_name} pridal %{labels}",
-  "%{user_name} pridėjo %{labels}",
   "%{user_name} removed %{labels}",
   "%{user_name} removeu %{labels}",
   "%{user_name} removeu a %{labels}",
-  "%{user_name} thêm %{labels}",
-  "%{user_name} tilføjede %{labels}",
   "%{user_name} tog bort %{labels}",
   "%{user_name} usunął/a %{labels}",
   "%{user_name} xoá %{labels}",
   "%{user_name} видалив %{labels}",
-  "%{user_name} добавил %{labels}",
-  "%{user_name} додав %{labels}",
   "%{user_name} удалил %{labels}",
-  "%{user_name} הוסיף %{labels}",
   "%{user_name} הסיר %{labels}",
   "%{user_name} أزال %{labels}",
-  "%{user_name} أضاف %{labels}",
-  "%{user_name} ले %{labels} थपे",
   "%{user_name} ले %{labels} हटाए",
   '%{user_name} がラベル "%{labels}" を削除しました',
-  '%{user_name} がラベル "%{labels}" を追加しました',
-  "%{user_name} 新增了 %{labels}",
-  "%{user_name} 添加 %{labels}",
   "%{user_name} 移除 %{labels}",
   "%{user_name} 移除了 %{labels}",
-  "%{user_name}, %{labels} ekledi",
   "%{user_name}, %{labels} kaldırdı",
-  "%{user_name}، %{labels} را اضافه کرد",
   "%{user_name}، %{labels} را حذف کرد",
   "%{user_name}님이 %{labels}을(를) 제거했습니다",
-  "%{user_name}님이 %{labels}을(를) 추가했습니다",
-  "Idinagdag ni %{user_name} ang %{labels}",
   "Tinanggal ni %{user_name} ang %{labels}",
   "Ο %{user_name} αφαίρεσε τις ετικέτες %{labels}",
-  "Ο %{user_name} πρόσθεσε ετικέτες %{labels}",
+];
+
+// The union, for every reader that only asks WHETHER a line narrates a label change.
+const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
+  ...LABEL_ADDED_TEMPLATES,
+  ...LABEL_REMOVED_TEMPLATES,
 ];
 
 // EVERY OTHER ACTIVITY SENTENCE CHATWOOT CAN WRITE (round 9), all 963 of them across every locale
@@ -1176,9 +1191,13 @@ function readings(template: Piece[], line: string): string[] {
 // Trimmed for the same reason the refusal is: the line is, and a template carrying a space the line
 // no longer has matches nothing. None of the 74 does today; this keeps the two sides from drifting
 // apart the next time the fork is regenerated.
-const LABEL_ACTIVITY_PIECES: readonly Piece[][] = LABEL_ACTIVITY_TEMPLATES.map(
-  (t) => pieces(t.trim()),
-);
+const LABEL_ACTIVITY_PIECES: readonly (readonly [LabelChangeKind, Piece[]])[] =
+  [
+    ...LABEL_ADDED_TEMPLATES.map((t) => ["added", pieces(t.trim())] as const),
+    ...LABEL_REMOVED_TEMPLATES.map(
+      (t) => ["removed", pieces(t.trim())] as const,
+    ),
+  ];
 
 // AND THE SENTENCES A DATA IMPORT WRITES (round 17), all 90 of them across every locale.
 // `DataImports::Intercom::ActivityContentBuilder` is a SECOND producer of activity rows, rendering
@@ -1335,20 +1354,31 @@ const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = [
 // Empty when no template rendered this line. The SEPARATOR is Chatwoot's own `", "`, so a title
 // containing a comma and a space is split here and then fails the caller's catalog check, which is
 // a miss and not a wrong reading.
-export function labelsNarrated(content: string): string[][] {
+export type LabelChangeKind = "added" | "removed";
+
+export interface LabelChangeReading {
+  kind: LabelChangeKind;
+  titles: string[];
+}
+
+export function labelsNarrated(content: string): LabelChangeReading[] {
   const line = content.trim();
   if (line.length === 0) return [];
   if (OTHER_ACTIVITY_PATTERNS.some((re) => re.test(line))) return [];
-  const out: string[][] = [];
+  const out: LabelChangeReading[] = [];
   const seen = new Set<string>();
-  for (const template of LABEL_ACTIVITY_PIECES) {
+  for (const [kind, template] of LABEL_ACTIVITY_PIECES) {
     for (const run of readings(template, line)) {
       const titles = run.split(", ").map((t) => t.trim());
       if (!titles.every((t) => t.length > 0)) continue;
-      const key = titles.join("\u0000");
+      // THE KIND IS PART OF THE KEY, not a property of the titles. One line can match an `added`
+      // template of one locale and a `removed` template of another the same way pt and pt_BR
+      // disagree about where the run starts, and collapsing the two would keep whichever verb was
+      // tried first — which is the reading the caller needs to choose between, not inherit.
+      const key = `${kind}\u0000${titles.join("\u0000")}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(titles);
+      out.push({ kind, titles });
     }
   }
   return out;
@@ -1359,6 +1389,8 @@ export function labelsNarrated(content: string): string[][] {
 // YAML scalar is the shape that reaches here wrong and shows up nowhere else (round 10).
 export const __templatesForTest = {
   labels: LABEL_ACTIVITY_TEMPLATES,
+  labelsAdded: LABEL_ADDED_TEMPLATES,
+  labelsRemoved: LABEL_REMOVED_TEMPLATES,
   other: OTHER_ACTIVITY_TEMPLATES,
   imports: IMPORT_ACTIVITY_TEMPLATES,
 };

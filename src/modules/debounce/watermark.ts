@@ -437,6 +437,62 @@ export async function readClaimedMessageIds(params: {
   return new Set(rows.map((r) => r.messageId));
 }
 
+// WHAT IS CLOSED ABOVE THE PER-MESSAGE FLOOR, and the floor itself (issue #690, PR review round 6).
+//
+// The claim stopped deciding by arithmetic, and this is the other half: the SELECTION has to stop
+// too, or a message nobody answered is never offered to a turn again. A competing claim writes
+// `last_replied_message_id`, which is what `readAnsweredFloor` reads, so one turn claiming message 20
+// raises the floor over 19 as well — and 19, which has no row anywhere, is excluded from every future
+// burst. That is this issue's own defect surviving in the last place that still asks a single number.
+//
+// Both kinds of row close a message here, unlike at the claim: a dispensal is only overturnable by an
+// operator's click, and this is the automatic path.
+export async function readSelectionState(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  messageIds: readonly number[];
+  base?: PrismaClient;
+}): Promise<{ floor: number | null; closed: Set<number> }> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: { id: params.conversationDbId },
+      select: { replyClaimFloorMessageId: true },
+    });
+    const floor = conv?.replyClaimFloorMessageId ?? null;
+    const ids = params.messageIds.filter((m) => floor !== null && m > floor);
+    if (floor === null || ids.length === 0) {
+      return { floor, closed: new Set<number>() };
+    }
+    const [rows, ranges] = await Promise.all([
+      db.messageReplyClaim.findMany({
+        where: {
+          conversationId: params.conversationDbId,
+          messageId: { in: [...ids] },
+        },
+        select: { messageId: true },
+      }),
+      db.replyDispensal.findMany({
+        where: { conversationId: params.conversationDbId },
+        select: { fromMessageId: true, toMessageId: true },
+      }),
+    ]);
+    const closed = new Set(rows.map((r) => r.messageId));
+    for (const id of ids) {
+      if (
+        ranges.some(
+          (r) =>
+            id <= r.toMessageId &&
+            (r.fromMessageId === null || id > r.fromMessageId),
+        )
+      ) {
+        closed.add(id);
+      }
+    }
+    return { floor, closed };
+  });
+}
+
 export type ReplyClaimOutcome =
   | { won: true }
   | {

@@ -29,6 +29,7 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
+  readSelectionState,
 } from "@/modules/debounce/watermark";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -1054,6 +1055,63 @@ describe.skipIf(!dbUp)("debounce", () => {
         where: { conversationId: id, messageId: 1003 },
       }),
     ).toBeNull();
+  });
+
+  // THE SELECTION STOPS DECIDING BY ARITHMETIC TOO (issue #690, PR review round 6). A competing
+  // claim writes `last_replied_message_id`, which is what the flush's floor reads, so one turn
+  // claiming 20 raises that floor over 19 as well — and 19, with no row anywhere, would be excluded
+  // from this burst and from every burst after it, with nothing else ever coming back for it. This
+  // asserts the state the selection reads: 20 is closed, 19 is not, and the floor says where the
+  // scalars stop answering.
+  test("a message with no row is not closed by a newer message's claim", async () => {
+    const convId = 935;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 10 },
+    });
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 20,
+        maxHandledAllowed: 19,
+        messageIds: [20],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    const state = await readSelectionState({
+      tenantId,
+      conversationDbId: id,
+      messageIds: [19, 20, 21],
+      base: appDb,
+    });
+    expect(state.floor).toBe(10);
+    expect([...state.closed].sort((a, b) => a - b)).toEqual([20]);
+
+    // A dispensal closes a message here even though the claim would let an operator overturn it:
+    // this is the automatic path, and only the click may reopen a deliberate silence.
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: id,
+        fromMessageId: 20,
+        toMessageId: 21,
+      },
+    });
+    const after = await readSelectionState({
+      tenantId,
+      conversationDbId: id,
+      messageIds: [19, 20, 21],
+      base: appDb,
+    });
+    expect([...after.closed].sort((a, b) => a - b)).toEqual([20, 21]);
   });
 
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate

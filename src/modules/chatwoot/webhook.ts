@@ -152,7 +152,6 @@ import {
   controlCommand,
   effectiveAssignee,
   firstAudioAttachment,
-  firstVisualAttachment,
   type HumanReplyRoute,
   heldByAnotherParty,
   inboundTranscriptionOnUpdate,
@@ -166,6 +165,7 @@ import {
   normalizeChatwootEvent,
   parseLiveConversation,
   shouldBotHandle,
+  visualAttachments,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
@@ -1919,8 +1919,19 @@ export async function runEagerMedia(
   }
 
   // Vision (image/document → description/extracted text). Skip if already extracted this delivery.
-  const visual = firstVisualAttachment(n);
-  if (visual && !n.message.imageDescription && !n.message.extractedText) {
+  //
+  // EVERY visual attachment, not the first (issue #691). The customer who attaches the receipt, the
+  // ID and a screenshot in one e-mail used to have one of the three read, and the reply asked for
+  // what was in the other two; on one production mailbox that was 50.6% of the conversations with
+  // an attachment. In PARALLEL, because the per-file budget is 20s for an image and 60s for a
+  // document: five of those in series is a turn nobody waits for, while five at once cost one.
+  const visuais = visualAttachments(n).slice(0, VISION_MAX_ATTACHMENTS);
+  const sobraram = visualAttachments(n).length - visuais.length;
+  if (
+    visuais.length > 0 &&
+    !n.message.imageDescription &&
+    !n.message.extractedText
+  ) {
     try {
       const visionCfg = await resolveVisionConfig(
         tenantId,
@@ -1931,27 +1942,75 @@ export async function runEagerMedia(
         { agentId: owner.agentId },
       );
       if (visionCfg) {
-        const extracted = await extractInboundFile({
-          tenantId,
-          instanceId,
-          conversationId: n.conversationId,
-          messageId: n.message.id,
-          attachmentId: visual.id,
-          dataUrl: visual.dataUrl,
-          cfg: visionCfg,
-          base,
-          flow: flow(),
-        });
-        if (extracted) {
-          if (extracted.kind === "image")
-            n.message.imageDescription = extracted.text;
-          else n.message.extractedText = extracted.text;
+        // Hoisted: the narrowing the guard above gives `n.message` does not survive into the map's
+        // closure, because a mutable property can change before a deferred callback reads it.
+        const conversationId = n.conversationId;
+        const messageId = n.message.id;
+        const extraidos = await Promise.all(
+          visuais.map((visual) =>
+            extractInboundFile({
+              tenantId,
+              instanceId,
+              conversationId,
+              messageId,
+              attachmentId: visual.id,
+              dataUrl: visual.dataUrl,
+              cfg: visionCfg,
+              base,
+              flow: flow(),
+            })
+              // One unreadable file must not cost the others: the extraction is best-effort per
+              // attachment, exactly as it was when there was only one of them.
+              .catch((err) => {
+                logger.warn(
+                  "vision failed for attachment %s (conv=%s): %s",
+                  visual.id,
+                  convLabel,
+                  errMsg(err),
+                );
+                return null;
+              })
+              .then((r) => ({ nome: visual.name, r })),
+          ),
+        );
+        const imagens: string[] = [];
+        const documentos: string[] = [];
+        for (const { nome, r } of extraidos) {
+          if (!r) continue;
+          (r.kind === "image" ? imagens : documentos).push(
+            rotulado(nome, r.text, extraidos.length),
+          );
         }
+        // The overflow is NAMED, never silently dropped: a model told "3 more files were not read"
+        // asks the customer to resend those three, while a model told nothing answers as if the
+        // message had three files fewer, which is the failure this issue is about.
+        if (sobraram > 0)
+          documentos.push(
+            `[${sobraram} anexo(s) além do limite de ${VISION_MAX_ATTACHMENTS} não foram lidos; ` +
+              `se a resposta depender deles, peça ao cliente que reenvie o que falta]`,
+          );
+        if (imagens.length > 0)
+          n.message.imageDescription = imagens.join("\n\n");
+        if (documentos.length > 0)
+          n.message.extractedText = documentos.join("\n\n");
       }
     } catch (err) {
       logger.warn("vision failed (conv=%s): %s", convLabel, errMsg(err));
     }
   }
+}
+
+// How many attachments one message may cost a vision pass. The measured mean on a production
+// mailbox is 1.98 per conversation, so this clears the real traffic with room; the tail is a
+// customer who attaches a whole album (70 in the same measurement), and there the cap is the point.
+// The overflow is reported to the model rather than dropped.
+const VISION_MAX_ATTACHMENTS = 8;
+
+// The label that keeps two files apart. Single attachment keeps the bare text, byte for byte, so
+// the common case reads exactly as it did before this change.
+function rotulado(nome: string | null, texto: string, total: number): string {
+  if (total <= 1) return texto;
+  return `[${nome ?? "anexo"}] ${texto}`;
 }
 
 // Continuous ingestion: fold into the agent's per-contact-inbox memory thread the messages a

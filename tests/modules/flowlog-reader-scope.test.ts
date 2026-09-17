@@ -238,6 +238,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/terminal-failure-announces.test.ts": 1,
   "tests/modules/tool-precondition-alerting.test.ts": 1,
   "tests/modules/tts.test.ts": 2,
+  "tests/modules/vision-every-attachment.test.ts": 1,
   "tests/modules/vision-retry.test.ts": 1,
   "tests/modules/webhooks-outbound-dead-alert.test.ts": 1,
   "tests/modules/webhooks-outbound-deliveries.test.ts": 1,

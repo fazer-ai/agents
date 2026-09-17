@@ -79,6 +79,41 @@ function metaStringFrom(attachments: unknown, key: string): string | null {
   return null;
 }
 
+// EVERY attachment that carries the key, labelled by file name when there is more than one.
+//
+// The singular reader above says it in its own comment — "the first attachment that carries it" —
+// and that was one of the three places issue #691 threw N-1 extractions away. The storage was never
+// the problem: vision writes back per attachment. Three readers collapsed it.
+//
+// One attachment returns exactly what `metaStringFrom` returned, byte for byte: the common case
+// keeps its wording, and so do the tests that pinned it. The label only appears when there is
+// something to tell apart.
+function metaJoinedFrom(attachments: unknown, key: string): string | null {
+  if (!Array.isArray(attachments)) return null;
+  const partes: { nome: string | null; texto: string }[] = [];
+  for (const a of attachments) {
+    if (!isRecord(a)) continue;
+    const meta = isRecord(a.meta) ? a.meta : null;
+    const t = meta?.[key];
+    if (typeof t === "string" && t.trim())
+      partes.push({ nome: fileNameOfUrl(a.data_url), texto: t });
+  }
+  if (partes.length === 0) return null;
+  if (partes.length === 1) return partes[0]?.texto ?? null;
+  return partes
+    .map((p, i) => `[${p.nome ?? `arquivo ${i + 1}`}] ${p.texto}`)
+    .join("\n\n");
+}
+
+// The basename of an attachment's data url, or null. Same rule as `fileNameFrom`, per attachment.
+function fileNameOfUrl(url: unknown): string | null {
+  if (typeof url !== "string" || !url) return null;
+  const path = url.split("?")[0] ?? url;
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const name = decodeURIComponent(base).trim();
+  return name.length > 0 && name.length <= 120 ? name : null;
+}
+
 // Best-effort file name of the first attachment, from its data_url basename (query stripped).
 function fileNameFrom(attachments: unknown): string | null {
   if (!Array.isArray(attachments)) return null;
@@ -165,8 +200,8 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       private: item.private === true,
       attachmentTypes: attachmentTypesFrom(item.attachments),
       transcribedText: metaStringFrom(item.attachments, "transcribed_text"),
-      imageDescription: metaStringFrom(item.attachments, "image_description"),
-      extractedText: metaStringFrom(item.attachments, "extracted_text"),
+      imageDescription: metaJoinedFrom(item.attachments, "image_description"),
+      extractedText: metaJoinedFrom(item.attachments, "extracted_text"),
       attachmentName: fileNameFrom(item.attachments),
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,

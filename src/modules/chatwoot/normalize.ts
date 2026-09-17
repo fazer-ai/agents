@@ -893,21 +893,39 @@ export function firstLocationAttachment(
   return null;
 }
 
-// The first image/file attachment (with a usable id + url), or null. Drives the eager vision pass:
-// the downloaded mime decides image vs document vs unsupported (audio/video are handled elsewhere /
+// EVERY image/file attachment (with a usable id + url). Drives the eager vision pass: the
+// downloaded mime decides image vs document vs unsupported (audio/video are handled elsewhere /
 // skipped). file_type "image" and "file" cover photos and documents (e.g. PDFs).
-export function firstVisualAttachment(e: NormalizedChatwootEvent): {
+//
+// This used to be `firstVisualAttachment`, and the name was the bug (issue #691): a customer who
+// attaches the receipt, the ID and a screenshot in one message had one of the three analyzed, and
+// the reply asked for what was in the other two. On one production mailbox 50.6% of the
+// conversations that arrive with an attachment carry more than one, so it was half the traffic.
+// The caller decides how many of these it can afford; the list is what it has to decide from.
+export function visualAttachments(e: NormalizedChatwootEvent): {
   id: number;
   dataUrl: string;
-} | null {
+  name: string | null;
+}[] {
+  const out: { id: number; dataUrl: string; name: string | null }[] = [];
   for (const a of e.message?.attachments ?? []) {
     if (
       (a.fileType === "image" || a.fileType === "file") &&
       a.id !== null &&
       a.dataUrl
     ) {
-      return { id: a.id, dataUrl: a.dataUrl };
+      out.push({ id: a.id, dataUrl: a.dataUrl, name: fileNameOf(a.dataUrl) });
     }
   }
-  return null;
+  return out;
+}
+
+// The basename of the data url, query stripped. It labels each extraction so the model can tell
+// which datum came from which file: two receipts in one message are two different orders, and a
+// blob with no boundary reads as one document that contradicts itself.
+function fileNameOf(dataUrl: string): string | null {
+  const path = dataUrl.split("?")[0] ?? dataUrl;
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const name = decodeURIComponent(base).trim();
+  return name.length > 0 && name.length <= 120 ? name : null;
 }

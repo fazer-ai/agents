@@ -128,6 +128,88 @@ describe("parseChatwootMessages", () => {
     expect(rows[0]?.inReplyTo).toBe(7);
   });
 
+  // Issue #691: `metaStringFrom` said it in its own comment — "read from the first attachment that
+  // carries it" — so a message whose three attachments were all extracted surfaced one of them.
+  test("every extracted attachment reaches the row, labelled by file name", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 10,
+          content: "",
+          message_type: 0,
+          attachments: [
+            {
+              id: 1,
+              file_type: "image",
+              data_url: "https://cw.example/blobs/pedido.png?x=1",
+              meta: { image_description: "Detalhe do Pedido 40000001" },
+            },
+            {
+              id: 2,
+              file_type: "image",
+              data_url: "https://cw.example/blobs/comprovante.jpg",
+              meta: { image_description: "Comprovante PIX de R$ 777,77" },
+            },
+            {
+              id: 3,
+              file_type: "file",
+              data_url: "https://cw.example/blobs/cnh.pdf",
+              meta: { extracted_text: "CNH do titular" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(rows[0]?.imageDescription).toBe(
+      "[pedido.png] Detalhe do Pedido 40000001\n\n[comprovante.jpg] Comprovante PIX de R$ 777,77",
+    );
+    // O documento não some porque havia imagem: são campos diferentes e os dois chegam.
+    expect(rows[0]?.extractedText).toBe("CNH do titular");
+  });
+
+  // A etiqueta só existe para separar arquivos. Com um anexo ela seria ruído, e mudaria o texto de
+  // toda mensagem que já funcionava.
+  test("a single attachment keeps the bare text, with no label", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 11,
+          content: "",
+          message_type: 0,
+          attachments: [
+            {
+              id: 1,
+              file_type: "image",
+              data_url: "https://cw.example/blobs/unico.png",
+              meta: { image_description: "Detalhe do Pedido 40000001" },
+            },
+          ],
+        },
+      ],
+    });
+    expect(rows[0]?.imageDescription).toBe("Detalhe do Pedido 40000001");
+  });
+
+  // Um anexo sem url utilizável ainda precisa ser distinguível do vizinho.
+  test("an attachment with no usable name falls back to its position", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 12,
+          content: "",
+          message_type: 0,
+          attachments: [
+            { id: 1, file_type: "image", meta: { image_description: "um" } },
+            { id: 2, file_type: "image", meta: { image_description: "dois" } },
+          ],
+        },
+      ],
+    });
+    expect(rows[0]?.imageDescription).toBe(
+      "[arquivo 1] um\n\n[arquivo 2] dois",
+    );
+  });
+
   // NOTE: Issue #45 — the debounce re-fetch path must carry the pin the same way the direct path
   // does, and the maps-URL basename ("maps") must stop leaking as a fake file name.
   test("location attachment: coordinates ride the REST row into the renderable", () => {

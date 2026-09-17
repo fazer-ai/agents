@@ -152,12 +152,16 @@ export function renderInboundMessage(
     body = tr
       ? `<mensagem-de-audio>${tr}</mensagem-de-audio>`
       : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
-  } else if (imageDescription) {
-    // Vision extracted the image content → the agent "sees" it.
-    body = withText(`<imagem>${imageDescription}</imagem>`);
-  } else if (extractedText) {
-    // Vision extracted a document's content.
-    body = withText(`<documento>${extractedText}</documento>`);
+  } else if (imageDescription || extractedText) {
+    // Vision extracted the content → the agent "sees" it. BOTH blocks, when both exist: this was an
+    // `else if`, so a message carrying a photo AND a PDF rendered only the photo and the document
+    // vanished with no trace (issue #691). One `withText` call, so the customer's own words are not
+    // repeated once per block.
+    const blocos = [
+      imageDescription ? `<imagem>${imageDescription}</imagem>` : "",
+      extractedText ? `<documento>${extractedText}</documento>` : "",
+    ].filter(Boolean);
+    body = withText(blocos.join("\n"));
   } else if (types.has("image")) {
     // No extraction (vision off/failed) → ask for text/audio, as before.
     body = withText(

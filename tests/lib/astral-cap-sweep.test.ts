@@ -469,6 +469,10 @@ const BARE_SLICES: Record<
   // NOTE: the first few offending account ids for the refusal message. A slice over an array of
   // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
   "src/modules/chatwoot/management.ts": [1, "array"],
+  // The eager vision pass capping how many ATTACHMENTS one message may cost (issue #691). It cuts
+  // the array of attachments, never a string, and the overflow is reported to the model rather than
+  // dropped.
+  "src/modules/chatwoot/webhook.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
   // The logo's one-shot download token is hex from randomUUID.

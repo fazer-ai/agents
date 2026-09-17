@@ -15,8 +15,11 @@ import {
   markTurnOwning,
   releaseIngestWrite,
   type ThreadOwner,
+  type TurnHold,
   threadBusyForResetOn,
   turnOwnsThread,
+  turnWaitDeadline,
+  waitForTurnToClear,
 } from "@/graph/thread-claim";
 import { runScopedOn } from "@/lib/tenancy";
 import { sysCtx } from "@/modules/documents/issue";
@@ -86,6 +89,20 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
   // One contact inbox per test: the module short-circuits on the in-process Map, so a key another
   // test marked would answer "held" without the row being asked at all.
   let nextInbox = 77_000;
+  // THE COMPOSITION `runLoadedTurn` USES, kept in one place here so these tests exercise the same
+  // ordering it does: wait for the thread OUTSIDE the `ingest:` queue, acquire, and — when the
+  // acquiring statement says this turn joined an occupancy anyway — give the hold back and wait
+  // again. Past the deadline it stops giving it back, which is the declared outcome of the ceiling.
+  async function waitThenTake(o: ThreadOwner): Promise<TurnHold> {
+    const until = turnWaitDeadline();
+    for (;;) {
+      await waitForTurnToClear(o, appDb, until);
+      const hold = await markTurnOwning(o, appDb);
+      if (!hold.heldBefore || Date.now() >= until) return hold;
+      await clearTurnOwning(o, appDb, hold);
+    }
+  }
+
   function owner(): ThreadOwner {
     const contactInboxId = nextInbox++;
     return {
@@ -384,7 +401,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     const first = await markTurnOwning(o, appDb);
     expect(first.heldBefore).toBe(false);
 
-    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    const waiter = waitThenTake(o);
     const stillWaiting = Symbol("still waiting");
     expect(
       await Promise.race([
@@ -421,7 +438,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     const before = (await rowOf(o)).turnHeldUntil;
     expect(before).not.toBeNull();
 
-    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    const waiter = waitThenTake(o);
     try {
       const stillWaiting = Symbol("still waiting");
       expect(
@@ -455,7 +472,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     const before = (await rowOf(o)).turnHeldUntil;
     expect(before).not.toBeNull();
 
-    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    const waiter = waitThenTake(o);
     try {
       const stillWaiting = Symbol("still waiting");
       expect(
@@ -495,7 +512,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
          AND contact_inbox_id = ${o.contactInboxId}`;
     const before = (await rowOf(o)).turnHeldUntil;
 
-    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    const waiter = waitThenTake(o);
     const stillWaiting = Symbol("still waiting");
     expect(
       await Promise.race([

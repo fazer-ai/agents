@@ -255,55 +255,55 @@ async function readWriteLease(
 
 // Take the thread for this turn, durably, and mark the Map with it so a same-process reader that
 // still asks the Map (the conversation key, ./inflight.ts) is never told less than the truth.
-export interface MarkTurnOptions {
-  // WAIT OUT AN OCCUPANCY INSTEAD OF JOINING IT (issue #658). Off by default, because overlapping
-  // turns are legitimate and the count exists to serve them: a nudge invokes on the same memory
-  // thread as a reactive turn, and two deliveries race whenever debounce is off. What this is for is
-  // the caller that must produce ONE answer to a customer and has nowhere to put the work down — a
-  // webhook turn — where joining the occupancy is the defect: each invoke is a read-modify-write of
-  // the whole channel, so the one that finishes second saves the channel it loaded and undoes the
-  // first (./inflight.ts measures the same undo against compaction).
-  //
-  // Waiting is what the caller wanted anyway: the customer is already waiting for the first answer,
-  // and after the wait this turn loads a channel that CONTAINS it, so the two messages get one reply
-  // that saw both instead of two that saw neither.
-  //
-  // It is a WAIT and not a refusal: past its ceiling the turn joins the occupancy, the way it did
-  // before this option existed. The reason is at TURN_WAIT_MS — a direct turn that throws is not
-  // retried by anything.
-  waitForTurn?: boolean;
-}
-
+//
+// IT ALWAYS JOINS, and the count is why: overlapping turns are legitimate (a nudge beside a reactive
+// turn, two deliveries racing with debounce off) and `clearTurnOwning` releases one holder at a time
+// to serve them. A caller that must NOT join — one that owes a customer a single reply — waits for
+// the thread with `waitForTurnToClear` before it gets here, and gives the hold back and waits again
+// if it still lands on an occupancy (issue #658).
 export async function markTurnOwning(
   owner: ThreadOwner,
   base: PrismaClient,
-  opts: MarkTurnOptions = {},
 ): Promise<TurnHold> {
-  if (!opts.waitForTurn) return acquireTurnHold(owner, base);
-  const deadline = Date.now() + TURN_WAIT_MS;
+  return acquireTurnHold(owner, base);
+}
+
+// WHEN A TURN THAT MUST NOT JOIN AN OCCUPANCY GIVES UP WAITING FOR IT. The caller holds the deadline
+// rather than this function, because the wait is not one call: the acquisition it guards is taken
+// under the `ingest:` queue, this wait runs OUTSIDE that queue (PR review, round 4), and a caller
+// that loses the acquiring race comes back here. One deadline across all of those attempts is the
+// bound that means anything.
+export function turnWaitDeadline(): number {
+  return Date.now() + TURN_WAIT_MS;
+}
+
+// WAIT FOR THE THREAD TO READ FREE, TAKING NOTHING (issue #658). Returns true when nobody is on it,
+// false when `deadline` ran out and the caller should proceed beside whoever is — the outcome
+// TURN_WAIT_MS describes, and never a throw.
+//
+// IT ONLY READS, and that is the whole shape of it. Acquiring to find out is the obvious
+// alternative and it is the one thing this cannot do: `bumpTurnHolders` sets
+// `turn_held_until = now() + TURN_LEASE_SECONDS` unconditionally, so a waiter that acquired on every
+// poll would RENEW the lease of the very holder it is waiting for, twenty times a second, and
+// `clearTurnOwning` keeps that extension while the holder is still counted. A holder that CRASHED
+// would then never expire and the thread would be stranded for good — strictly worse than the Map
+// this module replaces, which a restart clears, and the exact failure the lease exists to prevent.
+//
+// Taking nothing is also what lets the caller wait outside the `ingest:` queue: holding that queue
+// across the wait starves the previous turn's own rollback, which needs the same key and runs after
+// it releases the thread.
+export async function waitForTurnToClear(
+  owner: ThreadOwner,
+  base: PrismaClient,
+  deadline: number,
+): Promise<boolean> {
   for (;;) {
-    // READ FIRST, AND ACQUIRE ONLY WHEN THE READ SAYS NOBODY IS THERE (PR review, round 1).
-    // Acquiring to find out is the obvious shape and it is the one thing this wait cannot do:
-    // `bumpTurnHolders` sets `turn_held_until = now() + TURN_LEASE_SECONDS` unconditionally, so a
-    // waiter that acquired on every poll would RENEW the lease of the very holder it is waiting for,
-    // twenty times a second, and `clearTurnOwning` keeps that extension while the holder is still
-    // counted. A holder that CRASHED would then never expire and the thread would be stranded for
-    // good — strictly worse than the Map this module replaces, which a restart clears, and the exact
-    // failure the lease exists to prevent.
     if (
       !isTurnRunning(owner.graphThreadId) &&
       !(await turnLeaseIsLive(owner, base))
-    ) {
-      // The read above is a HINT; the exclusion is still the acquiring statement, which is where two
-      // waiters that both read "free" are separated. The loser gives its hold straight back and
-      // keeps waiting — kept, that hold would stop the winner's release from reaching zero, and the
-      // thread would read busy to the append and the compaction that are allowed to run between
-      // turns. It goes back through `clearTurnOwning` rather than a decrement of its own, so the
-      // renewal timer stops and the local Map mark goes with it.
-      const hold = await acquireTurnHold(owner, base);
-      if (!hold.heldBefore) return hold;
-      await clearTurnOwning(owner, base, hold);
-    } else if (Date.now() >= deadline) {
+    )
+      return true;
+    if (Date.now() >= deadline) {
       // Loud, because degrading quietly to the old behaviour is how a hung turn stops being visible:
       // the only thing that reaches this line is a holder that goes on renewing and never finishes,
       // and nothing else in the system reports it.
@@ -311,7 +311,7 @@ export async function markTurnOwning(
         { thread: owner.graphThreadId, waitedMs: TURN_WAIT_MS },
         "a turn has held this thread past its lease without finishing; starting beside it rather than leaving the message unanswered",
       );
-      return acquireTurnHold(owner, base);
+      return false;
     }
     await Bun.sleep(TURN_POLL_MS);
   }

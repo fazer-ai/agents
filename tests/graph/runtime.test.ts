@@ -35,6 +35,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
+import { withKeyedQueue } from "@/lib/locks";
 import type { TenantContext } from "@/lib/tenancy";
 import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -1040,6 +1041,68 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // deliberately stays on the previous one. A turn that records no inbound id there leaves the
   // frontier back in the previous attendance, so a delayed message from it reads as CURRENT, stamps
   // itself at the end of the channel, and the cut then reads the live conversation as closed.
+  // THE WAIT IS OUTSIDE THE `ingest:` QUEUE (PR review round 4), and this is what says so. That key
+  // is not ours alone: the PREVIOUS turn's own rollback takes it on the way out, AFTER it has
+  // released the thread, and so does continuous ingestion. A wait that held it would starve exactly
+  // that rollback — it would sit behind the wait, the thread would come free, this turn would take
+  // it, and the rollback would then find an invoke reading and KEEP what it came to undo, so this
+  // turn would load the undelivered answer or the silence token as history. Measured on the queue
+  // rather than on the rollback, because the queue is the mechanism and the rollback is one of its
+  // several victims.
+  test("while a turn waits for the thread, the ingest queue stays open to everyone else", async () => {
+    const contactInboxId = 7466;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9466,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9466`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    markTurnInFlight(graphThreadId);
+    const turn = runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9466, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStubClient([]),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    try {
+      const waiting = Symbol("still waiting");
+      expect(
+        await Promise.race([
+          turn,
+          new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+        ]),
+      ).toBe(waiting);
+      // The turn is waiting right now, and the queue it will need is free: this callback runs
+      // instead of queueing behind the wait.
+      const tookTheQueue = Symbol("took the queue");
+      expect(
+        await Promise.race([
+          withKeyedQueue(`ingest:${graphThreadId}`, async () => tookTheQueue),
+          new Promise<"blocked">((r) => setTimeout(() => r("blocked"), 1_000)),
+        ]),
+      ).toBe(tookTheQueue);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+      await turn;
+    }
+  }, 20_000);
+
   test("a turn that waited out another invoke moves the frontier with the boundary", async () => {
     const contactInboxId = 7013;
     const graphThreadId = contactInboxThreadId(

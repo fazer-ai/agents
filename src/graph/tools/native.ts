@@ -55,7 +55,7 @@ import {
   DEFAULT_TIMEZONE,
   formatHumanDateTime,
   formatWithPattern,
-  roundDownToMinutes,
+  roundDownLocalMinutes,
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
 import {
@@ -1853,7 +1853,7 @@ function getCurrentTimeTool(ctx: ToolCtx) {
       const tz = ctx.timezone || DEFAULT_TIMEZONE;
       const now =
         roundToMinutes && roundToMinutes > 0
-          ? roundDownToMinutes(new Date(), roundToMinutes)
+          ? roundDownLocalMinutes(new Date(), tz, roundToMinutes)
           : new Date();
       const iso = formatWithPattern(now, tz, "YYYY-MM-DD HH:mm");
       return `${formatHumanDateTime(now, tz)} (${iso}, ${tz})`;

@@ -53,6 +53,30 @@ export function partsInTimezone(
   };
 }
 
+// Floors to a `minutes`-wide slot ON THE LOCAL WALL CLOCK of `timezone`, which is not the same thing
+// as flooring the epoch (`roundDownToMinutes`) wherever the zone's offset is not a whole multiple of
+// the slot. Measured in Asia/Kathmandu (+05:45), rounding to the half hour: 00:05 on the 18th floors
+// to 23:45 on the 17th, so a caller that renders the result as "the current moment" states YESTERDAY
+// and anything reasoning from it is a day off (round 6 of the review on issue #685).
+//
+// The DATE is what makes this load-bearing: the rounding exists to keep a value stable inside a slot
+// for the prompt cache, and moving the local date to buy that is trading the answer for the cache.
+export function roundDownLocalMinutes(
+  date: Date,
+  timezone: string,
+  minutes: number,
+): Date {
+  if (!Number.isFinite(minutes) || minutes <= 0) return date;
+  const p = partsInTimezone(date, timezone);
+  const minute = Number(p.mm);
+  if (!Number.isFinite(minute)) return date;
+  const floored = Math.floor(minute / minutes) * minutes;
+  const wall = `${p.YYYY}-${p.MM}-${p.DD}T${p.HH}:${String(floored).padStart(2, "0")}:00`;
+  // Null only for a wall clock the zone does not have, which flooring a minute inside an existing
+  // hour cannot produce; the unrounded instant is the honest fallback either way.
+  return zonedWallClockToInstant(wall, timezone) ?? date;
+}
+
 // Substitutes the supported tokens (YYYY/MM/DD/HH/mm/ss) in a custom pattern. Tokens are distinct
 // and case-sensitive (MM = month, mm = minute), so a flat sequence of replaces is unambiguous.
 export function formatWithPattern(

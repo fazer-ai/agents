@@ -1,5 +1,5 @@
 import { TIME_ROUND_MINUTES } from "@/graph/prompt";
-import { formatWithPattern, roundDownToMinutes } from "@/graph/time";
+import { formatWithPattern, roundDownLocalMinutes } from "@/graph/time";
 import type { ScopedDb } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr } from "@/lib/xml";
@@ -180,7 +180,7 @@ export function buildAppointmentContextSection(
   // Português como o resto deste bloco, que é prosa nossa no prompt de sistema e não texto que o
   // agente copia para o cliente: a palavra que ele escreve continua sendo a do idioma da conversa.
   const agora = `Momento atual deste atendimento: ${formatWithPattern(
-    roundDownToMinutes(now, TIME_ROUND_MINUTES),
+    roundDownLocalMinutes(now, timezone, TIME_ROUND_MINUTES),
     timezone,
     "DD/MM/YYYY HH:mm",
   )} (${timezone}). É a referência para dizer se uma data acima é hoje, amanhã ou outro dia; nunca deduza isso do que já foi dito na conversa.`;

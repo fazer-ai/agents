@@ -1586,6 +1586,26 @@ describe("reminderNudge temporal grounding (#685)", () => {
     }
   });
 
+  // (rodada 6 da review) `+00:00` e `-00:00` são o `Z` com outra grafia, e estavam chegando à
+  // resposta oposta: lidos como o calendário do cliente, anunciavam um compromisso a dois dias como
+  // "amanhã". O ISO 8601 chega a dar a `-00:00` o sentido de "offset desconhecido".
+  test("a zero offset is Z under another spelling, and claims no day", () => {
+    for (const startISO of [
+      "2026-09-18T12:00:00+00:00",
+      "2026-09-18T12:00:00-00:00",
+      "2026-09-18T12:00:00Z",
+    ]) {
+      const i = at(startISO, "2026-09-16T22:30:00-03:00");
+      expect(i).not.toContain("calendar day after it");
+      expect(i).not.toContain("same calendar day");
+      expect(i).toContain("starts in about");
+    }
+    // O controle, no mesmo instante: com offset local declarado, o dia é afirmado e são dois dias.
+    expect(
+      at("2026-09-18T12:00:00-03:00", "2026-09-16T22:30:00-03:00"),
+    ).toContain("2 calendar days after it (in 2 days)");
+  });
+
   test("a start in Z says how far away it is, and nothing about the day", () => {
     // `Z` é um instante de verdade, então a distância é um fato; o dia não é, porque UTC diz onde o
     // instante está e nunca onde está quem vai ler a mensagem.

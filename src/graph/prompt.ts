@@ -9,7 +9,7 @@ import type { Schedule } from "@/modules/business-hours/hours";
 import {
   DEFAULT_TIMEZONE,
   formatWithPattern,
-  roundDownToMinutes,
+  roundDownLocalMinutes,
 } from "./time";
 
 // Runtime-owned prompt composition: grounding discipline and safe context-variable interpolation.
@@ -278,7 +278,7 @@ export function interpolatePromptVars(
       if (timeVar) {
         const now = opts.now ?? new Date();
         const when = timeVar.rounded
-          ? roundDownToMinutes(now, TIME_ROUND_MINUTES)
+          ? roundDownLocalMinutes(now, tz, TIME_ROUND_MINUTES)
           : now;
         return wrap(
           formatWithPattern(when, tz, fmt?.trim() || timeVar.defaultFormat),

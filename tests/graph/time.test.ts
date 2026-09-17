@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   formatWithPattern,
   partsInTimezone,
+  roundDownLocalMinutes,
   roundDownToMinutes,
   zonedWallClockToInstant,
 } from "@/graph/time";
@@ -81,5 +82,54 @@ describe("zonedWallClockToInstant", () => {
     expect(zonedWallClockToInstant("", "UTC")).toBeNull();
     expect(zonedWallClockToInstant("not-a-date", "UTC")).toBeNull();
     expect(zonedWallClockToInstant("2026-03-10", "UTC")).toBeNull();
+  });
+});
+
+// (#685, rodada 6 da review) Arredondar o EPOCH não é arredondar o relógio local onde o offset do
+// fuso não é múltiplo do slot. Em Asia/Kathmandu (+05:45), meia hora: 00:05 do dia 18 cai em 23:45
+// do dia 17, então quem renderiza o resultado como "o momento atual" enuncia ONTEM, e quem raciocina
+// a partir dele erra o dia. A data é o que torna isto carregador: o arredondamento existe para o
+// cache do prompt, e mover a data local para comprar cache é trocar a resposta pelo cache.
+describe("roundDownLocalMinutes", () => {
+  test("floors the local wall clock, keeping the local date", () => {
+    const now = new Date("2026-09-18T00:05:00+05:45");
+    expect(
+      formatWithPattern(
+        roundDownLocalMinutes(now, "Asia/Kathmandu", 30),
+        "Asia/Kathmandu",
+        "DD/MM/YYYY HH:mm",
+      ),
+    ).toBe("18/09/2026 00:00");
+    // O controle: o arredondamento por epoch, que é o que estava aqui, responde o dia anterior.
+    expect(
+      formatWithPattern(
+        roundDownToMinutes(now, 30),
+        "Asia/Kathmandu",
+        "DD/MM/YYYY HH:mm",
+      ),
+    ).toBe("17/09/2026 23:45");
+  });
+
+  test("floors to the slot in an ordinary zone, on both sides of the half hour", () => {
+    for (const [iso, esperado] of [
+      ["2026-09-18T14:00:00-03:00", "14:00"],
+      ["2026-09-18T14:29:59-03:00", "14:00"],
+      ["2026-09-18T14:30:00-03:00", "14:30"],
+      ["2026-09-18T14:59:00-03:00", "14:30"],
+    ] as const) {
+      expect(
+        formatWithPattern(
+          roundDownLocalMinutes(new Date(iso), "America/Sao_Paulo", 30),
+          "America/Sao_Paulo",
+          "HH:mm",
+        ),
+      ).toBe(esperado);
+    }
+  });
+
+  test("a slot of zero or less is the instant itself", () => {
+    const d = new Date("2026-09-18T14:29:00-03:00");
+    expect(roundDownLocalMinutes(d, "America/Sao_Paulo", 0)).toEqual(d);
+    expect(roundDownLocalMinutes(d, "America/Sao_Paulo", -5)).toEqual(d);
   });
 });

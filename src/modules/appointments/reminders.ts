@@ -574,7 +574,12 @@ const ALL_DAY_OR_LOCAL =
 function statedLocalOffsetMinutes(startISO: string): number | null {
   const m = /([+-])(\d{2}):?(\d{2})$/.exec(startISO);
   if (!m) return null;
-  return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+  const minutes = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+  // A ZERO offset is `Z` under another spelling, and round 6 of the review found it reaching the
+  // opposite answer: `+00:00` was read as the customer's own calendar and announced an appointment
+  // two days out as "tomorrow". ISO 8601 even makes `-00:00` mean "offset unknown" outright. A
+  // booking API that serializes UTC this way is stating an instant, not a local calendar.
+  return minutes === 0 ? null : minutes;
 }
 
 // Coarse on purpose: "about" is the register a reminder speaks in, and a distance to the minute

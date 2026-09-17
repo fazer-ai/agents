@@ -226,32 +226,60 @@ export async function claimReplyBurst(params: {
       // is evidence, because every decision taken up there wrote one.
       const floor = row.floor;
       const reachesBelowFloor = floor === null || lowest <= floor;
-      if (reachesBelowFloor) {
-        if (row.claimed !== null && row.claimed >= params.toMessageId) {
+      const overturnsSilence = params.initiatedBy === "operator";
+      if (reachesBelowFloor && row.claimed !== null) {
+        if (row.claimed >= params.toMessageId) {
           return { won: false, reason: "claimed" };
         }
-        if (
-          row.handled !== null &&
-          (params.maxHandledAllowed === null ||
-            row.handled > params.maxHandledAllowed)
-        ) {
-          return { won: false, reason: "handled" };
-        }
       }
-
-      const overturnsSilence = params.initiatedBy === "operator";
+      // THE CEILING SURVIVES THE FLOOR FOR THE OPERATOR, and only for the operator (PR review,
+      // round 1). Above the floor the scalars answer nothing, because every decision up there wrote
+      // a row and the rows are read directly — for an automatic caller that is the whole point of
+      // this change. The click is different in one specific way: it IGNORES dispensals on purpose,
+      // so a skip recorded between the moment it read the mark and the moment it claims is a
+      // decision it would walk straight over.
+      //
+      // That window is the whole of issue #452: `docs/debounce.md` requires a skip landing while the
+      // model runs to refuse the reply, and `claimHandledCeiling: () => floorAtEntry` is how the
+      // re-engage states what it read on the way in. Asked only below the floor, the ceiling stopped
+      // covering the click on any conversation whose per-message era had begun, which is every
+      // conversation a turn has run on.
+      //
+      // It is not a second answer to the same question: the rows say "this message is spoken for",
+      // and this says "something settled this tail after I looked". An automatic caller gets the
+      // first from the insert below and does not need the second; the click waives the first and
+      // still needs it.
+      if (
+        (reachesBelowFloor || overturnsSilence) &&
+        row.handled !== null &&
+        (params.maxHandledAllowed === null ||
+          row.handled > params.maxHandledAllowed)
+      ) {
+        return { won: false, reason: "handled" };
+      }
 
       // A DISPENSAL THAT COVERS ANY OF THEM CLOSES THE WHOLE SET, and the answer is all-or-nothing for
       // the same reason the insert below is: this turn speaks for its tail or for none of it, and
       // answering half a burst is the shape that makes a customer read a reply to their second message
       // and nothing about their first. Ranges are exclusive at the lower end, which is how
       // `retireCoveredDeliveries` already states the bound it calculated.
+      // MEMBERSHIP OF THE ACTUAL IDS, not overlap with the interval they span (PR review, round 1).
+      // A burst is not dense — the selection drops what renders to nothing — so `[1001, 1005]` spans
+      // four ids it does not contain, and a dispensal of `(1002, 1004]` would intersect that span
+      // while having dispensed neither message. Asked as overlap, the whole reply was suppressed as
+      // superseded over messages this turn was never speaking for.
+      //
+      // It is the same distinction the dispensal side of this change is built on, applied to the
+      // read: the hull of a set is not the set, and the gap inside it is exactly where this issue's
+      // defect lives.
       const dispensed = await db.$queryRaw<Array<{ hit: bigint }>>`
       SELECT count(*) AS "hit"
-        FROM "reply_dispensals"
-       WHERE "conversation_id" = ${params.conversationDbId}
-         AND "to_message_id" >= ${lowest}
-         AND ("from_message_id" IS NULL OR "from_message_id" < ${highest})`;
+        FROM "reply_dispensals" d
+       WHERE d."conversation_id" = ${params.conversationDbId}
+         AND EXISTS (
+               SELECT 1 FROM unnest(${ids}::int[]) AS m
+                WHERE m <= d."to_message_id"
+                  AND (d."from_message_id" IS NULL OR m > d."from_message_id"))`;
       if (!overturnsSilence && (dispensed[0]?.hit ?? 0n) > 0n) {
         return { won: false, reason: "dispensed" };
       }
@@ -333,6 +361,38 @@ export async function claimReplyBurst(params: {
     if (e instanceof LostReplyClaim) return { won: false, reason: "claimed" };
     throw e;
   });
+}
+
+// WHICH OF THESE MESSAGES A TURN HAS ALREADY SPOKEN FOR (issue #690, PR review round 1).
+//
+// Read by the operator's re-engage and by nothing else, because it is the one caller that builds its
+// burst from the CHANNEL rather than from a watermark: it takes everything after the last outgoing
+// message, and a claim whose send failed leaves a message sitting in that tail with a row on it. The
+// claim below is all-or-nothing, so one such message would roll back the whole click — including the
+// newer message beside it that nobody has answered — and it would do so on every future click, since
+// nothing ever removes that row. Before this table the newer target simply proceeded.
+//
+// CLAIMED only. A dispensal is exactly what the button exists to overturn, so a message a turn chose
+// to stay silent about stays in the tail and gets answered.
+export async function readClaimedMessageIds(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  messageIds: readonly number[];
+  base?: PrismaClient;
+}): Promise<Set<number>> {
+  if (params.messageIds.length === 0) return new Set();
+  const base = params.base ?? basePrisma;
+  const rows = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    db.messageReplyClaim.findMany({
+      where: {
+        conversationId: params.conversationDbId,
+        messageId: { in: [...params.messageIds] },
+        reason: "CLAIMED",
+      },
+      select: { messageId: true },
+    }),
+  );
+  return new Set(rows.map((r) => r.messageId));
 }
 
 export type ReplyClaimOutcome =

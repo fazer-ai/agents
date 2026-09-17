@@ -844,7 +844,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   // sequential case, as opposed to the two simultaneous deliveries of `s5`: the first turn is long
   // finished, so nothing is racing and identity is the only thing left that can refuse.
   test("a redelivery of a message already claimed is refused, turns later", async () => {
-    const convId = 887;
+    const convId = 933;
     await seedConversation(convId);
     const { id } = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
@@ -873,6 +873,110 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
 
     expect(await claim(1001, 1000)).toEqual({ won: false, reason: "claimed" });
+  });
+
+  // THE CLICK'S ENTRY-TIME CEILING SURVIVES THE FLOOR (issue #452, PR review round 1). Above the
+  // floor the scalars answer nothing for an automatic caller, because every decision up there wrote
+  // a row and the rows are read directly. The operator's click is the exception, and only because it
+  // IGNORES dispensals on purpose: a skip recorded between the moment it read the mark and the
+  // moment it claims is a decision it would otherwise walk straight over. `docs/debounce.md` requires
+  // that skip to refuse the reply.
+  test("a skip landing while the operator's model ran still refuses the click", async () => {
+    const convId = 931;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The conversation is already in the per-message era, and well above the floor.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2000,
+        maxHandledAllowed: 1999,
+        messageIds: [2000],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // The operator reads the mark at 2000 and clicks. While the model runs, a delivery of 2001
+    // settles it deliberately and the mark moves.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 2001,
+      dispensed: { kind: "messages", messageIds: [2001] },
+      base: appDb,
+    });
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2001,
+        // What it read on the way IN, which is the whole point of the ceiling.
+        maxHandledAllowed: 2000,
+        messageIds: [2001],
+        initiatedBy: "operator",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "handled" });
+  });
+
+  // A DISPENSAL IS ASKED ABOUT THE IDS, NOT ABOUT THE SPAN THEY COVER (issue #690, PR review round
+  // 1). A burst is not dense: the selection drops what renders to nothing, so `[1001, 1005]` spans
+  // four ids it does not contain. Asked as an overlap of intervals, a dispensal sitting entirely
+  // inside that gap suppressed the whole reply for messages the turn was never speaking for.
+  test("a dispensal inside a sparse burst's gap does not refuse it", async () => {
+    const convId = 932;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // A gate exit dispensed (1002, 1004] — the middle of the span, and none of the burst.
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: id,
+        fromMessageId: 1002,
+        toMessageId: 1004,
+      },
+    });
+
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1005,
+        maxHandledAllowed: 1004,
+        messageIds: [1001, 1005],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // ...and one that really does contain a member still refuses the whole set.
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: id,
+        fromMessageId: 1005,
+        toMessageId: 1007,
+      },
+    });
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1007,
+        maxHandledAllowed: 1006,
+        messageIds: [1006, 1007],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "dispensed" });
   });
 
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate

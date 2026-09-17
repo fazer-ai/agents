@@ -31,7 +31,10 @@ import {
 } from "@/modules/contact-auth/service";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { coalesceAndRunTurn } from "@/modules/debounce/handler";
-import { readHandledWatermark } from "@/modules/debounce/watermark";
+import {
+  readClaimedMessageIds,
+  readHandledWatermark,
+} from "@/modules/debounce/watermark";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import {
   announceSpendCeiling,
@@ -305,7 +308,32 @@ export async function reengageConversation(
     conversationDbId: resolved.convDbId,
     base,
   });
-  const selectPending = authCfg.enabled
+  // ALREADY SPOKEN FOR IS NOT PART OF THE TAIL (issue #690, PR review round 1). This burst comes
+  // from the channel rather than from a watermark, so a claim whose send failed leaves its message
+  // sitting in the tail with a row on it. The claim is all-or-nothing, so that one message would
+  // roll back the whole click — and take with it the newer message beside it that nobody answered,
+  // on this click and on every one after, since nothing removes the row. A dispensal is left alone:
+  // overturning those is what the button is for.
+  const dropAlreadyClaimed = async (
+    tail: ChatwootMessageRow[],
+  ): Promise<ChatwootMessageRow[]> => {
+    const spoken = await readClaimedMessageIds({
+      tenantId,
+      conversationDbId: resolved.convDbId,
+      messageIds: tail.map((m) => m.id),
+      base,
+    });
+    if (spoken.size === 0) return tail;
+    const free = tail.filter((m) => !spoken.has(m.id));
+    // UNLESS THAT LEAVES NOTHING, and then the claim answers instead of this filter. A tail whose
+    // every message is already spoken for is not an empty tail, and reporting it as one tells the
+    // operator there was nothing to answer when the truth is that something else is answering it.
+    // Handed on whole, the claim loses on the conflict and the click reports `superseded`, which is
+    // the word that names what happened. The case this filter exists for — one claimed message
+    // beside a newer free one — is unaffected.
+    return free.length === 0 ? tail : free;
+  };
+  const selectTail = authCfg.enabled
     ? async (messages: ChatwootMessageRow[]) => {
         // With the gate on, the tail drops what something else handled DURING this call, re-read at
         // the point the burst is chosen. The authorization call below is a round-trip to somebody
@@ -334,7 +362,10 @@ export async function reengageConversation(
             m.id > handled || (floorAtEntry !== null && m.id <= floorAtEntry),
         );
       }
-    : incomingAfterLastOutgoing;
+    : async (messages: ChatwootMessageRow[]) =>
+        incomingAfterLastOutgoing(messages);
+  const selectPending = async (messages: ChatwootMessageRow[]) =>
+    dropAlreadyClaimed(await selectTail(messages));
 
   // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, and the gates below are all about a TURN. A conversation
   // whose last message is ours has no tail, so this click was always going to be a no-op: reporting

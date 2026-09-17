@@ -44,7 +44,9 @@ const MAX_ATTEMPTS = 5;
 // lane at all, or in two: nothing compared them, and the shared lane's was a NOT IN, so forgetting it
 // there silently WIDENED that lane. The values are enum members from a compile-time map, never user
 // input, so embedding them is safe — same property the literals had.
-function laneFilter(
+// Exported for tests/modules/scheduler-claim-limit.test.ts, which runs the real statement and must
+// narrow it the way the lanes do rather than spell a filter of its own.
+export function laneFilter(
   lane: SchedulerLane,
   trafficProportional?: boolean,
 ): Prisma.Sql {
@@ -593,29 +595,34 @@ export async function revokeJobsByKeyPrefixOn(
   }
 }
 
-// Claims up to `limit` due jobs across ALL tenants matching `kindFilter` (FOR UPDATE SKIP LOCKED so
-// replicas/ticks do not double-claim). FIFO by run_at. attempts is NOT incremented here (a claim is
-// not a failure). The kind literals are fixed in code (never user input), so embedding them in the
-// SQL fragment is safe; Postgres coerces the literal to the enum exactly like 'PENDING'.
-async function claimWhere(
-  limit: number,
-  base: PrismaClient,
+// THE CLAIM'S STATEMENT, built here rather than inline so a test can run the exact SQL the lanes
+// run (tests/modules/scheduler-claim-limit.test.ts). Exported for that and for nothing else.
+//
+// A CTE, and `MATERIALIZED` spelled out, because the obvious form is WRONG (issue #627). Written as
+// `WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED LIMIT n)` this is a SEMI-JOIN, and a semi-join
+// keeps the UPDATE's target on the OUTER side — so the subquery is the inner one, and when the
+// planner puts no `Materialize` above it the inner side is re-executed once per outer row. Each
+// re-execution SKIPs what the one before it just locked and hands back a DIFFERENT n rows, so every
+// row the outer scan reaches ends up matching and the claim returns as many rows as are due.
+// Measured on CI inside one transaction, on the same parameters: `SELECT ... LIMIT 5` gave 5 while
+// the claim gave 10.
+//
+// It is the LIMIT that every lane's budget is made of — the traffic share, the observe cap, the
+// batch itself — so the failure is not a test's: a tick could claim the whole backlog and run it at
+// once, which is the head-of-line blocking the lanes exist to prevent.
+//
+// `MATERIALIZED` is the executor-level guarantee of ONE evaluation. A `FOR UPDATE` CTE is not
+// inlined today, so the keyword is redundant today; it stays because what this depends on is the
+// single evaluation, and saying so is what keeps a later Postgres (or a later edit that drops the
+// `FOR UPDATE`) from quietly restoring the bug.
+export function claimSql(
+  lim: number,
   now: Date,
   kindFilter: Prisma.Sql,
   tenantId?: bigint,
-  // Rows this process is already executing, kept out of the claim itself. Since `claimSeq` this is no
-  // longer what stops a stale completion — the CAS does that for every kind — so what it still buys
-  // is narrower and worth naming: it stops the same key from being EXECUTED twice at once. For a
-  // caller whose handler is expensive (a summary is a model call held for up to 60s while every
-  // attendance boundary re-arms the same key), two concurrent runs mean two model calls paid for,
-  // and only one of them can land. See src/modules/memory/worker.ts.
   excludeIds?: bigint[],
-  // Restrict to one dedupeKey prefix, and take rows whose run_at is still in the FUTURE. Both are
-  // for the barrier below, and the second is the half that matters: a job deferred for a turn sits
-  // with run_at a minute out, and those are precisely the messages a starting turn is missing.
   keyPrefix?: string,
-): Promise<ClaimedJob[]> {
-  const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
+): Prisma.Sql {
   // The prefix branch takes a row whose run_at is still in the FUTURE, and only for a row that has
   // never failed. Both halves matter and they answer different questions.
   //
@@ -650,6 +657,49 @@ async function claimWhere(
     excludeIds && excludeIds.length > 0
       ? Prisma.sql`AND id NOT IN (${Prisma.join(excludeIds)})`
       : Prisma.empty;
+  return Prisma.sql`
+    WITH due AS MATERIALIZED (
+      SELECT id FROM scheduler_jobs
+      WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
+        ${tenantClause} ${excludeClause}
+      ORDER BY run_at
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${lim}
+    )
+    UPDATE scheduler_jobs
+    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
+    FROM due
+    WHERE scheduler_jobs.id = due.id
+    RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
+              scheduler_jobs.kind, scheduler_jobs.payload,
+              scheduler_jobs.payload_secret AS "payloadSecret",
+              scheduler_jobs.dedupe_key AS "dedupeKey",
+              scheduler_jobs.attempts, scheduler_jobs.claim_seq AS "claimSeq"`;
+}
+
+// Claims up to `limit` due jobs across ALL tenants matching `kindFilter` (FOR UPDATE SKIP LOCKED so
+// replicas/ticks do not double-claim). FIFO by run_at. attempts is NOT incremented here (a claim is
+// not a failure). The kind literals are fixed in code (never user input), so embedding them in the
+// SQL fragment is safe; Postgres coerces the literal to the enum exactly like 'PENDING'.
+async function claimWhere(
+  limit: number,
+  base: PrismaClient,
+  now: Date,
+  kindFilter: Prisma.Sql,
+  tenantId?: bigint,
+  // Rows this process is already executing, kept out of the claim itself. Since `claimSeq` this is no
+  // longer what stops a stale completion — the CAS does that for every kind — so what it still buys
+  // is narrower and worth naming: it stops the same key from being EXECUTED twice at once. For a
+  // caller whose handler is expensive (a summary is a model call held for up to 60s while every
+  // attendance boundary re-arms the same key), two concurrent runs mean two model calls paid for,
+  // and only one of them can land. See src/modules/memory/worker.ts.
+  excludeIds?: bigint[],
+  // Restrict to one dedupeKey prefix, and take rows whose run_at is still in the FUTURE. Both are
+  // for the barrier below, and the second is the half that matters: a job deferred for a turn sits
+  // with run_at a minute out, and those are precisely the messages a starting turn is missing.
+  keyPrefix?: string,
+): Promise<ClaimedJob[]> {
+  const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -662,20 +712,7 @@ async function claimWhere(
         attempts: number;
         claimSeq: number;
       }>
-    >(Prisma.sql`
-      UPDATE scheduler_jobs
-      SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
-      WHERE id IN (
-        SELECT id FROM scheduler_jobs
-        WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
-          ${tenantClause} ${excludeClause}
-        ORDER BY run_at
-        FOR UPDATE SKIP LOCKED
-        LIMIT ${lim}
-      )
-      RETURNING id, tenant_id AS "tenantId", kind, payload,
-                payload_secret AS "payloadSecret", dedupe_key AS "dedupeKey",
-                attempts, claim_seq AS "claimSeq"`);
+    >(claimSql(lim, now, kindFilter, tenantId, excludeIds, keyPrefix));
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,

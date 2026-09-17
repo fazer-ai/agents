@@ -537,6 +537,11 @@ export interface ReminderNudgeArgs {
   // system never wrote to. The context block already answers the same question by emitting no
   // calendar_id for those appointments; this is the same rule on the reminder path (issue #352).
   calendarId: string | null;
+  // The clock at SEND time, injected — the same discipline `computeReminderJobs` and
+  // `minutesFromNow` keep, and required rather than optional for the reason `nudgeMessage` gives
+  // about its own conversation id: a field a future writer may forget is the field that silently
+  // takes the temporal grounding below back out of the reminder (issue #685).
+  now: Date;
   // Whether the calendar tools can actually act on THIS appointment. False for a booking that lives
   // in the operator's own system and reached the platform through a tool's declaration (issue #352):
   // there is no Google event behind it, so naming calendar_update_event at the model is pointing it
@@ -544,6 +549,82 @@ export interface ReminderNudgeArgs {
   // its own tool pointer. The discriminator is the credential: a Calendar booking cannot exist
   // without one, since the create call needs the token it resolves.
   canOperate: boolean;
+}
+
+const DAY_MS = 86_400_000;
+// The shape `parseStartMs` reads as a bare date (midnight UTC), which is how an all-day booking
+// reaches us — Google answers those with `date` instead of `dateTime`.
+const ALL_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+// The offset the start STATES, in minutes. A start with none is pinned to UTC, which is the same
+// agreement `parseStartMs` already made for those values ("UTC is arbitrary there; agreement is
+// not") — a second rule here would let the reminder and the liveness check disagree about which day
+// an appointment falls on.
+function statedOffsetMinutes(startISO: string): number {
+  const m = /(?:([Zz])|([+-])(\d{2}):?(\d{2}))$/.exec(startISO);
+  if (!m || m[1]) return 0;
+  return (m[2] === "-" ? -1 : 1) * (Number(m[3]) * 60 + Number(m[4]));
+}
+
+// Coarse on purpose: "about" is the register a reminder speaks in, and a distance to the minute
+// would invite the model to read precision into a value the scheduler does not promise (a job can
+// run late, and the retry ladder spans hours).
+function distancePhrase(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${Math.round(ms / DAY_MS)} days`;
+}
+
+// (#685) WHAT THE MODEL CANNOT WORK OUT FOR ITSELF, and the whole of this issue. The reminder turn
+// states the appointment's start TWICE (this nudge's summary and the prompt's appointment block) and
+// the current instant ZERO times: `{{data_atual}}` and its siblings only reach the prompt when the
+// operator happened to type one. With no anchor the model takes the relative word from the last
+// message that used one — which, on the 24h reminder, said "amanhã" and was right when it said it.
+// Measured against the real API before this existed: 2 of 5 replies called an appointment starting
+// in one hour "amanhã".
+//
+// THE DAY IS A FACT HERE, NEVER A WORD THERE. The issue proposed deriving "hoje" from the configured
+// `offsetHours` and instructing the model to use that word. Two things are wrong with it, and both
+// were measured: the offset describes when the reminder was ARMED, not how far the appointment is
+// when the message actually goes out (a retry lands hours later, the queue can be behind, and a
+// moved event replaces the start while the offset still says 1) — with the event moved to the next
+// day, 5 of 5 replies built that way announced it as "hoje" — and the word itself belongs to the
+// conversation, not to us: the same agent serves a tenant writing in English.
+//
+// It rides in the INSTRUCTIONS lane, not in `refs`, and that is deliberate: `nudgeOccasionKey` hashes
+// every non-null ref, so a value that moves with the clock would make each retry of one reminder a
+// different occasion, and the refusal ledger's one-line-per-occasion would become one line per
+// attempt. It is also our own derived text rather than external data, which is the boundary the two
+// lanes draw.
+//
+// Empty for a start nobody can place relative to now: unreadable (`parseStartMs` refuses to guess),
+// or already begun — the handler ends that job before it ever gets here, and asserting a day for it
+// would add a second wrong statement instead of removing one.
+export function reminderTemporalGrounding(startISO: string, now: Date): string {
+  const startMs = parseStartMs(startISO);
+  const nowMs = now.getTime();
+  if (!Number.isFinite(startMs) || startMs <= nowMs) return "";
+  const offset = statedOffsetMinutes(startISO);
+  const days =
+    Math.floor((startMs + offset * 60_000) / DAY_MS) -
+    Math.floor((nowMs + offset * 60_000) / DAY_MS);
+  const day =
+    days === 0
+      ? "on the same calendar day as now (today)"
+      : days === 1
+        ? "on the calendar day after now (tomorrow)"
+        : `${days} calendar days after now (in ${days} days)`;
+  // An ALL-DAY appointment has a date and no time of day, and a distance in hours would be a time
+  // the customer's calendar never stated: `parseStartMs` reads a bare date as midnight UTC, so
+  // "starts in about 9 hours" is that midnight talking, not the appointment. The day is still
+  // knowable and still said; the hour is not, and the model is told so rather than left to fill it
+  // in from a number we handed it.
+  if (ALL_DAY.test(startISO)) {
+    return ` This appointment falls ${day} and is an all-day appointment with no time of day: word the day in the conversation's language, from this value and never from what was said earlier in the conversation, and state no time.`;
+  }
+  return ` This appointment falls ${day}, and starts in about ${distancePhrase(startMs - nowMs)}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids
@@ -588,7 +669,9 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
       booking_system:
         a.provider === GOOGLE_CALENDAR_PROVIDER ? null : a.provider,
     },
-    instructions: `${base}${a.canOperate ? tools : noTools}`,
+    instructions: `${base}${reminderTemporalGrounding(a.startISO, a.now)}${
+      a.canOperate ? tools : noTools
+    }`,
   };
 }
 
@@ -803,6 +886,10 @@ export async function appointmentReminderHandler(
       summary,
       // The same value the start check just used, for the reason its header gives.
       startISO: authoritativeReminderStart(live, startISO),
+      // The clock HERE, not the offset the row was armed with: this is the last moment before the
+      // message is composed, and it is the only one that knows how far the appointment actually is
+      // (issue #685).
+      now: new Date(),
       eventId,
       calendarId,
     }),

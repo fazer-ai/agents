@@ -870,6 +870,12 @@ export async function appointmentReminderHandler(
   // claim ran inside an advisory-lock transaction and a second connection there would stall the lock
   // under DB_POOL_MAX=1. That claim holds no transaction any more (issue #225), so there is nothing
   // to borrow and nothing to stall.
+  // ONE CLOCK PER RUN, read through the deps seam and read FRESH on every call: production passes
+  // none and gets `new Date()` each time, which the appointment ceiling below depends on (it has to
+  // be re-evaluated across a model call that can last a minute). A test passes a fixed one and gets
+  // a deterministic day, which is the only way to assert a CALENDAR day without leaning on the hour
+  // the suite happens to run at (rounds 1 and 4 of the review, issue #685).
+  const nowMs = (): number => (deps?.now?.() ?? new Date()).getTime();
   const retired = (): Promise<boolean> => jobRetired(job, base);
   // Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
   // jobRetiredStrict). The two asks above it can afford the lenient answer.
@@ -903,7 +909,7 @@ export async function appointmentReminderHandler(
     }
   }
 
-  if (reminderAlreadyStarted(live, startISO, Date.now())) {
+  if (reminderAlreadyStarted(live, startISO, nowMs())) {
     return { outcome: "done" };
   }
 
@@ -923,7 +929,7 @@ export async function appointmentReminderHandler(
     // when the start arrives, which is precisely the message this handler must never send.
     stillWanted: async ({ strict }) =>
       !(await (strict ? retiredStrict() : retired())) &&
-      !reminderAlreadyStarted(live, startISO, Date.now()),
+      !reminderAlreadyStarted(live, startISO, nowMs()),
     nudge: reminderNudge({
       isLast,
       askConfirmation,
@@ -935,8 +941,11 @@ export async function appointmentReminderHandler(
       startISO: authoritativeReminderStart(live, startISO),
       // The clock HERE, not the offset the row was armed with: this is the last moment before the
       // message is composed, and it is the only one that knows how far the appointment actually is
-      // (issue #685).
-      now: new Date(),
+      // (issue #685). Through the deps seam that already exists for exactly this reason — the one
+      // `runAgentNudge` reads for the 24h window — because a test that leans on real time to place
+      // a calendar day passes for the wrong reason at the hours where the day is the question
+      // (round 4 of the review: the assertion went silent for the two hours around local midnight).
+      now: new Date(nowMs()),
       eventId,
       calendarId,
     }),

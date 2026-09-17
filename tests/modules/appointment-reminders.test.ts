@@ -998,24 +998,15 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // queue running behind actually leaves behind. The handler is what has to get this right: a pure
   // function can be correct and wired to nothing.
   test("the day comes from the clock, not from the offset the reminder was armed with", async () => {
-    // NOON TOMORROW IN A STATED OFFSET, and both halves of that are lessons from the review. The
+    // A FIXED CLOCK AND A STATED OFFSET, and every word of that is a lesson from the review. The
     // offset, because the day is only claimed for a start that states one (round 2) — and a real
-    // Google payload does state one, which is why this is the faithful fixture and `toISOString()`
-    // was not. Noon tomorrow, because `now + 25h` (round 1) lands TWO calendar days out when the
-    // suite runs in the last hour of the day, failing an assertion about correct behaviour; noon of
-    // the next day is one calendar day ahead from every hour, and always ahead of now, which the
-    // handler's own start check requires.
-    const wall = new Date(Date.now() - 3 * 3_600_000);
-    const day = new Date(
-      Date.UTC(
-        wall.getUTCFullYear(),
-        wall.getUTCMonth(),
-        wall.getUTCDate() + 1,
-      ),
-    )
-      .toISOString()
-      .slice(0, 10);
-    const start = `${day}T12:00:00-03:00`;
+    // Google payload does state one, which is why `toISOString()` was not the faithful fixture. The
+    // fixed clock, through the deps seam that exists for this, because the real one made this
+    // assertion fail for CORRECT behaviour twice: two calendar days out when the suite ran in the
+    // last hour of the UTC day (round 1), and then silent for the two hours around local midnight,
+    // where the day genuinely depends on an hour the module does not hold (round 4).
+    const now = new Date("2026-09-16T15:00:00-03:00");
+    const start = "2026-09-17T12:00:00-03:00";
     // The payload is an untyped JSON blob, which is why the handler guards every other field it
     // reads. The offset arrives absent (what `armed` writes, and every row armed before it existed),
     // lying (a moved event, a queue running behind, a retry hours later), and unusable — and the
@@ -1063,6 +1054,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         makeClient: s.makeClient,
         checkpointer: new MemorySaver(),
         persistUsage: async () => {},
+        now: () => now,
       });
 
       // The controls: the reminder reached the model AND went out, so the assertions below are about

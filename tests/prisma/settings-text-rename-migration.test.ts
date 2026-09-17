@@ -866,6 +866,8 @@ describe.skipIf(!dbUp)(
 
     test("re-running it rewrites nothing and writes no second line", async () => {
       const before = await updatedAtOf(id("guidance"));
+      const toolBefore = (await toolRow("tool_definitions", id("http_tool")))
+        .updated_at;
       await runMigration(sql);
       expect(
         (
@@ -878,6 +880,14 @@ describe.skipIf(!dbUp)(
       expect(await updatedAtOf(id("guidance"))).toBe(before);
       expect(await auditPaths(id("guidance"))).toEqual([
         ["toolGuidance.set_labels"],
+      ]);
+      // The tool tables too: the second pass finds no occurrence, so the row is not selected, its
+      // updated_at stands, and there is no second audit line for one change.
+      const http = await toolRow("tool_definitions", id("http_tool"));
+      expect(http.description).toBe("Use no lugar de set_labels.");
+      expect(http.updated_at).toBe(toolBefore);
+      expect(await auditPathsFor(`tool:${id("http_tool")}`)).toEqual([
+        ["description", "input_schema.*.description"],
       ]);
     });
 

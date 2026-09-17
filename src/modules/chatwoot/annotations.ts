@@ -105,8 +105,17 @@ export function overlayMediaAnnotations(
     const hit = store.get(keyOf(tenantId, instanceId, row.id));
     if (!hit || nowMs - hit.at >= TTL_MS) continue;
     row.transcribedText ??= hit.note.transcribedText ?? null;
-    row.imageDescription ??= hit.note.imageDescription ?? null;
-    row.extractedText ??= hit.note.extractedText ?? null;
+    // THE VISION FIELDS ARE AGGREGATES, and there the "meta wins" rule inverts (PR #692 review,
+    // round 2). The write-back is best-effort PER ATTACHMENT: with two images extracted and one
+    // meta write landing, the fetched page carries a non-null description built from that one
+    // attachment, and `??=` would let the partial suppress the complete. The stash is written by
+    // the pass that produced ALL of them, in one call after the loop, so when it is present it is
+    // the more complete reading of the same extraction — never a different one, since the pass is
+    // idempotent per message and the store is message-keyed with a 15-minute TTL. Absent (another
+    // process, or past the TTL), the meta still answers, which is what it is for.
+    row.imageDescription =
+      hit.note.imageDescription ?? row.imageDescription ?? null;
+    row.extractedText = hit.note.extractedText ?? row.extractedText ?? null;
     // Not `??=` on a field the fetched page never carries: the re-fetch cannot know what the eager
     // pass declined to open, so the stash is the only source and always wins here.
     if (hit.note.attachmentsSkipped)

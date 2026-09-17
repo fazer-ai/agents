@@ -253,6 +253,7 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
     transcribedText: row.transcribedText,
     imageDescription: row.imageDescription,
     extractedText: row.extractedText,
+    attachmentsSkipped: row.attachmentsSkipped,
     attachmentTypes: row.attachmentTypes,
     attachmentName: row.attachmentName,
     location: row.location,

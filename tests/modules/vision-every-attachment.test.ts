@@ -5,10 +5,15 @@ import { encryptJson } from "@/api/lib/crypto";
 import {
   clearMediaAnnotations,
   overlayMediaAnnotations,
+  stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
-import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { toRenderable } from "@/modules/chatwoot/messages";
+import {
+  incomingRenderable,
+  normalizeChatwootEvent,
+} from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -260,13 +265,12 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     // A COUNT on the event, not text glued to the extraction: that is what lets it cross the
     // debounce re-fetch, and the marker itself is the renderer's job.
     expect(n.message?.attachmentsSkipped).toBe(3);
-    expect(
-      renderInboundMessage({
-        text: "",
-        attachmentTypes: ["image"],
-        attachmentsSkipped: n.message?.attachmentsSkipped,
-      }),
-    ).toContain('<anexos-nao-lidos quantidade="3">');
+    // Through `incomingRenderable`, which is what the DIRECT path hands the renderer: handing the
+    // count straight to `renderInboundMessage` passed while neither adapter copied the field, so
+    // the marker reached no production path at all (PR #692 review, round 2).
+    expect(renderInboundMessage(incomingRenderable(n))).toContain(
+      '<anexos-nao-lidos quantidade="3">',
+    );
   });
 
   // THE DEBOUNCE FLUSH IS THE PATH THE FIRST ROUND OF THIS PR DID NOT MEASURE, and it is the path
@@ -306,9 +310,42 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     overlayMediaAnnotations(tenantId, instanceId, [row]);
 
     expect(row.attachmentsSkipped).toBe(2);
-    expect(renderInboundMessage({ ...row, text: "" })).toContain(
-      "anexos-nao-lidos",
+    // Through `toRenderable`, which is what the FLUSH hands the renderer.
+    expect(renderInboundMessage(toRenderable(row))).toContain(
+      '<anexos-nao-lidos quantidade="2">',
     );
+  });
+
+  // A meta write-back that lands for SOME attachments must not suppress the complete aggregate: it
+  // is best-effort per attachment, so a page carrying one description out of two is a partial
+  // reading of the same pass, and `??=` used to let it win (PR #692 review, round 2).
+  test("a partially written meta does not suppress the complete aggregate", () => {
+    clearMediaAnnotations();
+    const alvo = { tenantId: 1n, instanceId: 2n, messageId: 4242 };
+    stashMediaAnnotation(alvo, {
+      imageDescription: "[a.png] pedido 40000001\n\n[b.png] comprovante PIX",
+    });
+    const row = {
+      id: 4242,
+      content: "",
+      messageType: "incoming" as const,
+      private: false,
+      attachmentTypes: ["image", "image"],
+      transcribedText: null,
+      // Só o write-back do primeiro anexo chegou.
+      imageDescription: "pedido 40000001",
+      extractedText: null,
+      attachmentName: null,
+      location: null,
+      inReplyTo: null,
+      isReaction: false,
+      emailSubject: null,
+      activityType: null,
+      sendId: null,
+    } satisfies ChatwootMessageRow;
+    overlayMediaAnnotations(1n, 2n, [row]);
+
+    expect(row.imageDescription).toContain("comprovante PIX");
   });
 
   // A message within the cap must not carry the notice: it would tell the model files are missing

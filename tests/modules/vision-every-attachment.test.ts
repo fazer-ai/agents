@@ -68,11 +68,12 @@ let tenantId: bigint;
 let instanceId: bigint;
 let inboxDbId: bigint;
 
-function anexo(id: number, nome: string) {
+function anexo(id: number, nome: string, meta?: Record<string, string>) {
   return {
     id,
     file_type: "image",
     data_url: `https://chat.multi.example/blobs/${nome}`,
+    ...(meta ? { meta } : {}),
   };
 }
 
@@ -322,6 +323,29 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     expect(renderInboundMessage(toRenderable(row))).not.toContain(
       "anexos-nao-lidos",
     );
+  });
+
+  // DELIVERY RECOVERY RE-RUNS THE PASS FROM SCRATCH, and a partial re-run used to publish an
+  // aggregate poorer than the metadata it then overrode: with A and B already persisted and only B
+  // extracting again, the stash held B alone and won over the page that still had both (PR #692
+  // review, round 4). An attachment that already carries its extraction is reused instead of paid
+  // for again, which makes the aggregate complete by construction — and is also cheaper.
+  test("an attachment already extracted is reused, not paid for again", async () => {
+    clearMediaAnnotations();
+    await clearFlowLog(suDb, { tenantId });
+    const convId = CONV_ID + 4;
+    const n = await entregar(convId, [
+      anexo(601, "ja-lido.png", { image_description: "pedido 40000001" }),
+      anexo(602, "novo.png"),
+    ]);
+
+    // Só o que ainda não tinha extração custou uma chamada.
+    const linhas = await linhasDeVisao(convId);
+    const umSo = 1;
+    expect(linhas).toBeLessThan(2 * 2 * umSo);
+    // E o que já estava lá continua no agregado, com rótulo porque são dois arquivos.
+    expect(n.message?.imageDescription).toContain("pedido 40000001");
+    expect(n.message?.imageDescription).toContain("ja-lido.png");
   });
 
   // A meta write-back that lands for SOME attachments must not suppress the complete aggregate: it

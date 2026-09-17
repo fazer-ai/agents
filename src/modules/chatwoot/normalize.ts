@@ -227,6 +227,13 @@ export function normalizeChatwootEvent(
             // Audio attachments ship `transcribed_text` (empty until our write-back lands); empty
             // string normalizes to null so callers can treat "no transcription" uniformly.
             transcribedText: str(a.transcribed_text) || null,
+            // What a PREVIOUS vision pass already persisted on this attachment (fork write-back).
+            // Carried so the eager pass can reuse it instead of paying the provider again, which is
+            // also what makes the aggregate it builds COMPLETE: a delivery recovery re-runs the
+            // pass from scratch, and a partial re-run used to publish an aggregate poorer than the
+            // metadata it then overrode (PR #692 review, round 4).
+            imageDescription: metaString(a.meta, "image_description"),
+            extractedText: metaString(a.meta, "extracted_text"),
             // NOTE: Location attachments ship coordinates + place name (location_metadata);
             // null-ish on every other file_type.
             latitude: float(a.coordinates_lat),
@@ -903,19 +910,38 @@ export function firstLocationAttachment(
 // the reply asked for what was in the other two. On one production mailbox 50.6% of the
 // conversations that arrive with an attachment carry more than one, so it was half the traffic.
 // The caller decides how many of these it can afford; the list is what it has to decide from.
+// A string value on an attachment's `meta` bag, or null. The bag is shared with Chatwoot's own
+// keys and with whatever an operator's automation writes there, so a value of another shape is
+// somebody else's key that happens to collide, not ours.
+function metaString(meta: unknown, key: string): string | null {
+  if (typeof meta !== "object" || meta === null || Array.isArray(meta))
+    return null;
+  const v = (meta as Record<string, unknown>)[key];
+  return typeof v === "string" && v.trim() ? v : null;
+}
+
 export function visualAttachments(e: NormalizedChatwootEvent): {
   id: number;
   dataUrl: string;
   name: string | null;
+  // What a previous pass already extracted from THIS attachment, when the write-back landed.
+  imageDescription: string | null;
+  extractedText: string | null;
 }[] {
-  const out: { id: number; dataUrl: string; name: string | null }[] = [];
+  const out: ReturnType<typeof visualAttachments> = [];
   for (const a of e.message?.attachments ?? []) {
     if (
       (a.fileType === "image" || a.fileType === "file") &&
       a.id !== null &&
       a.dataUrl
     ) {
-      out.push({ id: a.id, dataUrl: a.dataUrl, name: fileNameOf(a.dataUrl) });
+      out.push({
+        id: a.id,
+        dataUrl: a.dataUrl,
+        name: fileNameOf(a.dataUrl),
+        imageDescription: a.imageDescription ?? null,
+        extractedText: a.extractedText ?? null,
+      });
     }
   }
   return out;

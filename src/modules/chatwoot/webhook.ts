@@ -1952,31 +1952,47 @@ export async function runEagerMedia(
         const messageId = n.message.id;
         const extraidos = await Promise.all(
           visuais.map((visual) =>
-            extractInboundFile({
-              tenantId,
-              instanceId,
-              conversationId,
-              messageId,
-              attachmentId: visual.id,
-              dataUrl: visual.dataUrl,
-              cfg: visionCfg,
-              base,
-              flow: flow(),
-              // The aggregate is stashed once after the loop; see the note there.
-              stashAnnotation: false,
-            })
-              // One unreadable file must not cost the others: the extraction is best-effort per
-              // attachment, exactly as it was when there was only one of them.
-              .catch((err) => {
-                logger.warn(
-                  "vision failed for attachment %s (conv=%s): %s",
-                  visual.id,
-                  convLabel,
-                  errMsg(err),
-                );
-                return null;
-              })
-              .then((r) => ({ nome: visual.name, r })),
+            // Already extracted on a previous pass (delivery recovery re-runs this): reuse it.
+            // Cheaper, and it is what keeps the aggregate COMPLETE — a partial re-run used to
+            // publish an aggregate poorer than the metadata it then overrode.
+            visual.imageDescription || visual.extractedText
+              ? Promise.resolve({
+                  nome: visual.name,
+                  r: visual.imageDescription
+                    ? ({
+                        kind: "image",
+                        text: visual.imageDescription,
+                      } as const)
+                    : ({
+                        kind: "document",
+                        text: visual.extractedText ?? "",
+                      } as const),
+                })
+              : extractInboundFile({
+                  tenantId,
+                  instanceId,
+                  conversationId,
+                  messageId,
+                  attachmentId: visual.id,
+                  dataUrl: visual.dataUrl,
+                  cfg: visionCfg,
+                  base,
+                  flow: flow(),
+                  // The aggregate is stashed once after the loop; see the note there.
+                  stashAnnotation: false,
+                })
+                  // One unreadable file must not cost the others: the extraction is best-effort per
+                  // attachment, exactly as it was when there was only one of them.
+                  .catch((err) => {
+                    logger.warn(
+                      "vision failed for attachment %s (conv=%s): %s",
+                      visual.id,
+                      convLabel,
+                      errMsg(err),
+                    );
+                    return null;
+                  })
+                  .then((r) => ({ nome: visual.name, r })),
           ),
         );
         const imagens: string[] = [];

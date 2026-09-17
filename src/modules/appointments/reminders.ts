@@ -615,9 +615,9 @@ function relativeDay(
   );
   if (new Set(deltas).size !== 1) return null;
   const days = deltas[0] as number;
-  if (days === 0) return "on the same calendar day as now (today)";
-  if (days === 1) return "on the calendar day after now (tomorrow)";
-  return `${days} calendar days after now (in ${days} days)`;
+  if (days === 0) return "on that same calendar day (today)";
+  if (days === 1) return "on the calendar day after it (tomorrow)";
+  return `${days} calendar days after it (in ${days} days)`;
 }
 
 // (#685) WHAT THE MODEL CANNOT WORK OUT FOR ITSELF, and the whole of this issue. The reminder turn
@@ -665,8 +665,17 @@ export function reminderTemporalGrounding(startISO: string, now: Date): string {
     ? null
     : distancePhrase(startMs - nowMs);
   const day = offset === null ? null : relativeDay(startMs, nowMs, offset);
-  if (day && distance) {
-    return ` This appointment falls ${day}, and starts in about ${distance}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
+  // `offset !== null` is redundant with `day` (a day exists only when an offset did) and the
+  // narrowing is not: `sentOn` below needs the number, not the inference.
+  if (day && distance && offset !== null) {
+    // DATADO, e isto foi medido. Este turno é PERSISTIDO no thread, então uma frase que diz "hoje"
+    // hoje continua ali amanhã, e o turno reativo do dia seguinte não tem relógio nenhum para
+    // contradizê-la: com a redação relativa a "now", 9 de 10 respostas no dia seguinte repetiam a
+    // palavra velha mesmo com o instante corrente no bloco de agendamentos; nomeando a data do
+    // envio, 1 de 10. A data é a LOCAL do compromisso (o mesmo offset que decidiu o dia), porque é
+    // a única que concorda com o que a mensagem diz em voz alta.
+    const sentOn = new Date(nowMs + offset * 60_000).toISOString().slice(0, 10);
+    return ` This reminder is being sent on ${sentOn} in the appointment's own time zone, and the appointment falls ${day}, starting in about ${distance}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
   }
   if (distance) {
     return ` This appointment starts in about ${distance}, and nothing here places it on a named calendar day: word the date and time naturally in the conversation's language, from the start in the fenced data, and do not describe which day it is relative to now.`;

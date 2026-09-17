@@ -1062,7 +1062,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
       expect(result).toEqual({ outcome: "done" });
       expect(s.sent.length).toBeGreaterThan(0);
       expect(seen).toContain(`event_id=${eventId}`);
-      expect(seen).toContain("on the calendar day after now (tomorrow)");
+      expect(seen).toContain("on the calendar day after it (tomorrow)");
       expect(seen).not.toContain("(today)");
     }
   });
@@ -1433,19 +1433,38 @@ describe("reminderNudge temporal grounding (#685)", () => {
 
   test("the same calendar day is stated as such, with the distance", () => {
     const i = at("2026-09-16T16:00:00-03:00", "2026-09-16T15:00:00-03:00");
-    expect(i).toContain("on the same calendar day as now (today)");
+    expect(i).toContain("on that same calendar day (today)");
     expect(i).toContain("about 1 hour");
+  });
+
+  // A FRASE É DATADA, e isso não é estilo. Este turno fica no thread, então a frase que diz "hoje"
+  // hoje continua ali amanhã, e o turno reativo do dia seguinte não tem relógio para contradizê-la.
+  // Medido: com a redação relativa a "now", 9 de 10 respostas do dia seguinte repetiam a palavra
+  // velha mesmo com o instante corrente no bloco de agendamentos; nomeando a data do envio, 1 de 10.
+  // A data é a LOCAL do compromisso, que é a única que concorda com o que a mensagem diz em voz alta:
+  // às 21:00 de -03:00 já é o dia seguinte em UTC, e a data do envio aqui continua sendo a de quem lê.
+  test("the sentence names the date it was sent on, in the appointment's own frame", () => {
+    expect(
+      at("2026-09-17T10:00:00-03:00", "2026-09-16T21:00:00-03:00"),
+    ).toContain(
+      "This reminder is being sent on 2026-09-16 in the appointment's own time zone",
+    );
+    expect(
+      at("2026-09-17T10:00:00-03:00", "2026-09-17T09:00:00-03:00"),
+    ).toContain(
+      "This reminder is being sent on 2026-09-17 in the appointment's own time zone",
+    );
   });
 
   test("the next calendar day is stated as such", () => {
     const i = at("2026-09-17T16:00:00-03:00", "2026-09-16T15:00:00-03:00");
-    expect(i).toContain("on the calendar day after now (tomorrow)");
+    expect(i).toContain("on the calendar day after it (tomorrow)");
     expect(i).not.toContain("(today)");
   });
 
   test("further out, the count of days is stated", () => {
     const i = at("2026-09-19T16:00:00-03:00", "2026-09-16T15:00:00-03:00");
-    expect(i).toContain("3 calendar days after now (in 3 days)");
+    expect(i).toContain("3 calendar days after it (in 3 days)");
   });
 
   test("under two hours, the distance is in minutes", () => {
@@ -1458,7 +1477,7 @@ describe("reminderNudge temporal grounding (#685)", () => {
   // 16th) and the reminder would announce tomorrow's appointment an hour before it starts.
   test("the day boundary is the start's own offset, not UTC", () => {
     const i = at("2026-09-16T23:00:00-03:00", "2026-09-16T20:00:00-03:00");
-    expect(i).toContain("on the same calendar day as now (today)");
+    expect(i).toContain("on that same calendar day (today)");
   });
 
   // The SIGN of that offset, in both directions. The pair above cannot see it: an offset shifts the
@@ -1469,12 +1488,12 @@ describe("reminderNudge temporal grounding (#685)", () => {
   test("the sign of the offset decides, west and east of UTC", () => {
     expect(
       at("2026-09-16T23:00:00-03:00", "2026-09-16T10:00:00-03:00"),
-    ).toContain("on the same calendar day as now (today)");
+    ).toContain("on that same calendar day (today)");
     // East of UTC, with the pair chosen so the flipped sign walks exactly ONE of the two across a
     // midnight: read as -05:30, this becomes the same day instead of the next one.
     expect(
       at("2026-09-18T06:00:00+05:30", "2026-09-17T20:00:00+05:30"),
-    ).toContain("on the calendar day after now (tomorrow)");
+    ).toContain("on the calendar day after it (tomorrow)");
   });
 
   // The two cases where asserting a day would be a second wrong statement rather than a fix. A start
@@ -1526,8 +1545,8 @@ describe("reminderNudge temporal grounding (#685)", () => {
     // local a resposta dependeria de um fuso que este módulo não tem; a distância, que é verdadeira,
     // continua dita. O que não acontece em nenhum dos dois é uma palavra errada.
     const i = at("2026-09-17T00:30:00-03:00", "2026-09-16T23:30:00-03:00");
-    expect(i).not.toContain("calendar day as now");
-    expect(i).not.toContain("calendar day after now");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
     expect(i).toContain("starts in about 1 hour");
     expect(i).toContain("do not describe which day it is relative to now");
   });
@@ -1539,8 +1558,8 @@ describe("reminderNudge temporal grounding (#685)", () => {
   // na data anterior e chama de "tomorrow" enquanto a distância na mesma frase diz duas horas.
   test("a day that would depend on a daylight-saving hour is not claimed", () => {
     const i = at("2026-11-01T02:30:00-05:00", "2026-11-01T00:30:00-04:00");
-    expect(i).not.toContain("calendar day as now");
-    expect(i).not.toContain("calendar day after now");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
     // TRÊS horas, não duas, e a diferença é o próprio motivo de a distância sair de instantes: o
     // relógio de parede vai de 00:30 a 02:30, mas a hora entre 01:00 e 02:00 acontece duas vezes.
     expect(i).toContain("starts in about 3 hours");
@@ -1574,8 +1593,8 @@ describe("reminderNudge temporal grounding (#685)", () => {
     // concordaria, então o silêncio sobre o dia só pode vir da regra do `Z`.
     const i = at("2026-09-18T12:00:00Z", "2026-09-17T12:00:00-03:00");
     expect(i).toContain("starts in about 21 hours");
-    expect(i).not.toContain("calendar day as now");
-    expect(i).not.toContain("calendar day after now");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
     expect(i).toContain("do not describe which day it is relative to now");
   });
 

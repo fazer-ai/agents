@@ -12,6 +12,11 @@ import {
 // is what the change bought.
 
 const FUTURE = "2026-08-08T10:00:00-03:00";
+// O relógio e o fuso do turno, que o bloco agora enuncia (#685). Fixos, porque um bloco que carrega
+// o instante corrente afirma uma data, e teste que lê o relógio da máquina afirma outra a cada
+// rodada.
+const NOW = new Date("2026-08-07T14:10:00-03:00");
+const TZ = "America/Sao_Paulo";
 
 describe("buildAppointmentContextSection", () => {
   const event = {
@@ -24,11 +29,11 @@ describe("buildAppointmentContextSection", () => {
   };
 
   test("no events → no section", () => {
-    expect(buildAppointmentContextSection([], true)).toBeNull();
+    expect(buildAppointmentContextSection([], true, NOW, TZ)).toBeNull();
   });
 
   test("carries event_id, calendar_id, label, start and summary as XML attributes", () => {
-    const s = buildAppointmentContextSection([event], true);
+    const s = buildAppointmentContextSection([event], true, NOW, TZ);
     expect(s).toContain("## Agendamentos deste atendimento");
     expect(s).toContain('event_id="ev_1"');
     expect(s).toContain('calendar_id="cal@group.calendar.google.com"');
@@ -41,16 +46,18 @@ describe("buildAppointmentContextSection", () => {
     const s = buildAppointmentContextSection(
       [{ ...event, summary: 'x"/><injected foo="bar' }],
       true,
+      NOW,
+      TZ,
     );
     expect(s).not.toContain("<injected");
     expect(s).toContain("&lt;injected");
   });
 
   test("tool affordance only when the calendar write tools are granted", () => {
-    const withTools = buildAppointmentContextSection([event], true);
+    const withTools = buildAppointmentContextSection([event], true, NOW, TZ);
     expect(withTools).toContain("calendar_update_event");
     expect(withTools).toContain("event_id");
-    const readOnly = buildAppointmentContextSection([event], false);
+    const readOnly = buildAppointmentContextSection([event], false, NOW, TZ);
     expect(readOnly).not.toContain("calendar_update_event");
   });
 
@@ -67,7 +74,7 @@ describe("buildAppointmentContextSection", () => {
   };
 
   test("a foreign appointment is never pointed at the Google tools", () => {
-    const s = buildAppointmentContextSection([foreign], true);
+    const s = buildAppointmentContextSection([foreign], true, NOW, TZ);
     expect(s).toContain('event_id="42"');
     expect(s).toContain('source="feegow"');
     // No calendar exists, so no calendar id is invented for it.
@@ -77,13 +84,13 @@ describe("buildAppointmentContextSection", () => {
   });
 
   test("a Google appointment carries no source attribute", () => {
-    const s = buildAppointmentContextSection([event], true);
+    const s = buildAppointmentContextSection([event], true, NOW, TZ);
     expect(s).not.toContain("source=");
     expect(s).not.toContain("nunca calendar_update_event");
   });
 
   test("a mixed block scopes each instruction to the appointments it can reach", () => {
-    const s = buildAppointmentContextSection([event, foreign], true);
+    const s = buildAppointmentContextSection([event, foreign], true, NOW, TZ);
     // The Google half keeps its affordance...
     expect(s).toContain("Para os agendamentos que trazem calendar_id");
     expect(s).toContain("calendar_update_event");
@@ -93,7 +100,7 @@ describe("buildAppointmentContextSection", () => {
   });
 
   test("without the calendar tools, a foreign appointment says nothing about Google", () => {
-    const s = buildAppointmentContextSection([foreign], false);
+    const s = buildAppointmentContextSection([foreign], false, NOW, TZ);
     expect(s).not.toContain("Você NÃO tem ferramentas do Google Calendar aqui");
     expect(s).toContain("outro sistema");
   });
@@ -135,5 +142,59 @@ describe("parseStartMs", () => {
     expect(Number.isNaN(parseStartMs("2024-02-29"))).toBe(false);
     // NOTE: Years below 0100 are valid — the guard must not let Date.UTC remap them to 19xx.
     expect(parseStartMs("0099-02-28")).toBe(Date.parse("0099-02-28T00:00:00Z"));
+  });
+});
+
+// (#685) O bloco enuncia datas absolutas, e o turno que as lê não sabe que dia é hoje: o instante
+// corrente só chega a um prompt quando o operador digitou `{{data_atual}}` ou uma irmã. Medido
+// contra a API real, numa thread cuja mensagem anterior dizia "amanhã" para um compromisso que
+// tinha virado hoje: 6 de 10 respostas repetiam "amanhã", e com esta linha no bloco, 0 de 10.
+describe("buildAppointmentContextSection: o instante corrente (#685)", () => {
+  const event = {
+    eventId: "ev_1",
+    calendarId: "cal@group.calendar.google.com",
+    calendarLabel: "Agenda Dra. Ana",
+    provider: "google_calendar",
+    startISO: FUTURE,
+    summary: "Consulta",
+  };
+
+  test("o bloco diz o momento atual, no fuso que recebeu", () => {
+    const s = buildAppointmentContextSection([event], true, NOW, TZ) as string;
+    expect(s).toContain("Momento atual deste atendimento: 07/08/2026 14:00");
+    expect(s).toContain("(America/Sao_Paulo)");
+    // E diz para que ele serve, que é a metade que o modelo precisa: sem isso a linha é um dado
+    // solto ao lado de outro, e a palavra relativa continua vindo do histórico.
+    expect(s).toContain("hoje, amanhã ou outro dia");
+  });
+
+  // Arredondado na mesma meia hora das variáveis de prompt, e pelo mesmo motivo que o TIME_VARS
+  // documenta: um valor que muda a cada minuto derruba o cache do prompt em todo turno. O bloco
+  // inteiro é prefixo cacheado, então aqui isso custaria em cada conversa com compromisso vivo.
+  test("o momento é arredondado na meia hora, como {{data_hora_atual}}", () => {
+    for (const [iso, esperado] of [
+      ["2026-08-07T14:00:00-03:00", "14:00"],
+      ["2026-08-07T14:29:59-03:00", "14:00"],
+      ["2026-08-07T14:30:00-03:00", "14:30"],
+      ["2026-08-07T14:59:00-03:00", "14:30"],
+    ] as const) {
+      expect(
+        buildAppointmentContextSection([event], true, new Date(iso), TZ),
+      ).toContain(`Momento atual deste atendimento: 07/08/2026 ${esperado}`);
+    }
+  });
+
+  // O fuso é o que chega, não o default: é o mesmo par (instante, fuso) que as variáveis de prompt
+  // renderizam, e duas renderizações do mesmo relógio discordando dentro de um prompt é o defeito,
+  // não o conserto.
+  test("o fuso é o do turno, não o padrão do produto", () => {
+    const s = buildAppointmentContextSection(
+      [event],
+      true,
+      new Date("2026-08-07T14:00:00-03:00"),
+      "Europe/Lisbon",
+    ) as string;
+    expect(s).toContain("Momento atual deste atendimento: 07/08/2026 18:00");
+    expect(s).toContain("(Europe/Lisbon)");
   });
 });

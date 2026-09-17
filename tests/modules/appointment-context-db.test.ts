@@ -172,6 +172,54 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("calendar_update_event");
   });
 
+  // (#685) O bloco enuncia o instante corrente, e ele tem que ser o MESMO que as variáveis de prompt
+  // renderizam: duas leituras do relógio de um turno discordando dentro de um prompt é o defeito que
+  // esta issue trata, não o conserto. Aqui as duas atravessam o caminho real (`loadAgentConfig`), com
+  // o `{{data_hora_atual}}` do operador ao lado do bloco.
+  test("the block's clock is the same one the prompt variables render", async () => {
+    await seedConversation(140);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(140),
+      eventId: "ev_clock",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(30),
+      summary: "Consulta – relógio",
+      calendarLabel: null,
+      reminders: null,
+      base: appDb,
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { systemPrompt: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { systemPrompt: "Agora é {{data_hora_atual}}." },
+    });
+    try {
+      const prompt = await promptFor(140);
+      const varRendered = /Agora é (\d{2}\/\d{2}\/\d{4} \d{2}:\d{2})\./.exec(
+        prompt,
+      );
+      const blockRendered =
+        /Momento atual deste atendimento: (\d{2}\/\d{2}\/\d{4} \d{2}:\d{2})/.exec(
+          prompt,
+        );
+      // Os controles primeiro: as duas leituras existem neste prompt, senão a igualdade abaixo é
+      // sobre dois `undefined`.
+      expect(varRendered?.[1]).toBeTruthy();
+      expect(blockRendered?.[1]).toBeTruthy();
+      expect(blockRendered?.[1]).toBe(varRendered?.[1]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { systemPrompt: before.systemPrompt },
+      });
+    }
+  });
+
   test("a record-only booking keeps the appointment AND the reminders already armed", async () => {
     // Round 16 made an observation pass `reminders: null`, which in this unit is not "arm nothing":
     // the retire runs unconditionally before that check, so it means "the policy was switched off,

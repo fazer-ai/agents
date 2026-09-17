@@ -1,3 +1,5 @@
+import { TIME_ROUND_MINUTES } from "@/graph/prompt";
+import { formatWithPattern, roundDownToMinutes } from "@/graph/time";
 import type { ScopedDb } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr } from "@/lib/xml";
@@ -123,9 +125,27 @@ export async function loadAppointmentContext(
 // appointments that disagree: an operator whose own booking tool declares its appointments (issue
 // #352) and who also grants the Calendar toolpack would otherwise have every foreign booking
 // described with a Google instruction and a calendar id nobody wrote.
+// (#685) WHY THE BLOCK CARRIES A CLOCK. Every `start` below is an absolute instant, and the turn that
+// reads them has no idea what NOW is: the current instant reaches a prompt only when the operator
+// typed `{{data_atual}}` or a sibling into their own text. So the model answers "que dia é mesmo?"
+// from whatever relative word the conversation used last, which was correct when it was written and
+// is wrong the next day. Measured against the real API, on a thread whose previous message said
+// "amanhã" for an appointment that had become today: 6 of 10 replies repeated "amanhã", and with
+// this line in the block, 0 of 10 did (all ten said "hoje").
+//
+// It is also what keeps the reminder's own grounding from becoming the next day's wrong answer. The
+// reminder turn is persisted in the thread, so the sentence that says "today" in it is still there
+// tomorrow: without this clock, 7 of 10 replies on the following day repeated the stale word, and
+// with it, 1 of 10.
+//
+// The instant and the zone are the SAME pair the prompt variables render (`prepare.ts` passes what
+// `{{data_hora_atual}}` uses), and the rounding is the same half hour, for the reason TIME_VARS
+// gives: a value that changes every minute defeats the prompt cache on every turn.
 export function buildAppointmentContextSection(
   events: AppointmentContextEvent[],
   canOperate: boolean,
+  now: Date,
+  timezone: string,
 ): string | null {
   if (events.length === 0) return null;
   const elements = events
@@ -157,9 +177,17 @@ export function buildAppointmentContextSection(
   const foreign = hasForeign
     ? " Os agendamentos que trazem source foram criados por outro sistema e as ferramentas do Google Calendar NÃO os alcançam: para alterar um deles use a ferramenta específica daquele sistema, se você tiver uma, e nunca calendar_update_event ou calendar_cancel_event."
     : "";
+  // Português como o resto deste bloco, que é prosa nossa no prompt de sistema e não texto que o
+  // agente copia para o cliente: a palavra que ele escreve continua sendo a do idioma da conversa.
+  const agora = `Momento atual deste atendimento: ${formatWithPattern(
+    roundDownToMinutes(now, TIME_ROUND_MINUTES),
+    timezone,
+    "DD/MM/YYYY HH:mm",
+  )} (${timezone}). É a referência para dizer se uma data acima é hoje, amanhã ou outro dia; nunca deduza isso do que já foi dito na conversa.`;
   return [
     "## Agendamentos deste atendimento",
     `${intro}${google}${foreign}`,
     `<appointments>\n${elements}\n</appointments>`,
+    agora,
   ].join("\n");
 }

@@ -76,7 +76,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 const LIVE_LABELS = ["compra-de-ingresso", "orcamento-enviado"] as const;
 
 function fakeChatwoot(
-  failing: RegExp | null = null,
+  // A path that answers 500. A PREDICATE when the method matters too: the label snapshot and the
+  // clear share one path, and the review round that separated them needs the GET to fail with the
+  // POST still up (issue #645).
+  failing: RegExp | ((method: string, path: string) => boolean) | null = null,
   takeoverAfterToggle: {
     type: string;
     id: number;
@@ -106,7 +109,11 @@ function fakeChatwoot(
     if (token.trim() === "") {
       return jsonResponse({ error: "Invalid Access Token" }, 401);
     }
-    if (failing?.test(url.pathname))
+    if (
+      typeof failing === "function"
+        ? failing(method, url.pathname)
+        : failing?.test(url.pathname)
+    )
       return jsonResponse({ error: "boom" }, 500);
     if (
       method === "GET" &&
@@ -3221,6 +3228,42 @@ describe.skipIf(!dbUp)(
       expect(
         String((ackCalls(cw.calls)[0]?.body as { content?: unknown })?.content),
       ).toMatch(/etiquetas/i);
+    });
+
+    // THE SNAPSHOT IS NOT THE STEP (review round 4). Reading the labels is bookkeeping for a later
+    // reader; clearing them is what the operator asked for. Awaited bare, a read that fails aborts
+    // the step and the labels stay on the conversation with the POST endpoint perfectly available.
+    test("a snapshot that failed does not stop the clear", async () => {
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_cleared_labels = NULL
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      const cw = fakeChatwoot(
+        (method, path) => method === "GET" && path.endsWith("/labels"),
+      );
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      // The clear went out anyway, with an empty set, which is the command's whole job here.
+      const post = cw.calls.find(
+        (c) => c.method === "POST" && c.path.endsWith("/labels"),
+      );
+      expect(post).toBeDefined();
+      expect((post?.body as { labels?: unknown })?.labels).toEqual([]);
+      // No claim: the observer falls back to the order cut rather than to a set nobody read. Asked
+      // as SQL, because the two nulls of a jsonb column are not the same thing: a written `'null'`
+      // reads back as `null` through the client and answers FALSE to `IS NULL`, so every later
+      // query about "no claim" would disagree with this assertion.
+      expect(
+        await suDb.$queryRaw<{ sql_null: boolean }[]>`
+          SELECT reset_cleared_labels IS NULL AS sql_null
+            FROM conversations
+           WHERE tenant_id = ${tenantId}
+             AND chatwoot_conversation_id = ${CONV_ID}`,
+      ).toEqual([{ sql_null: true }]);
+      // And the operator is not told the labels survived, because they did not.
+      expect(
+        String((ackCalls(cw.calls)[0]?.body as { content?: unknown })?.content),
+      ).not.toMatch(/Reset parcial/);
     });
 
     // A SECOND RESET DOES NOT INHERIT THE FIRST ONE'S SET. `reset_at_message_id` only moves forward

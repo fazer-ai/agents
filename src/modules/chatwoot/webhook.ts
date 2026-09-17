@@ -3541,7 +3541,22 @@ async function maybeConsumeCommandOrGate(params: {
           // which is the only kind that still has an answer when Chatwoot's activity job lands
           // after the acknowledgement. Read here and not before the queue because the answer has to
           // be the set this very write replaces.
-          const before = await client.getConversationLabels(conversationId);
+          // BEST-EFFORT, AND IT IS NOT WHAT THIS STEP IS FOR (issue #645, review round 4). The step
+          // exists to CLEAR the labels, which is what the operator asked for; naming them is
+          // bookkeeping for a later reader. Awaited bare, a read that times out aborted the step
+          // and the labels stayed on the conversation, with the POST endpoint perfectly available.
+          // A read that failed leaves the column NULL, which the observer already answers with the
+          // order cut.
+          let before: string[] | null = null;
+          try {
+            before = await client.getConversationLabels(conversationId);
+          } catch (err) {
+            logger.warn(
+              "chatwoot: /reset could not read the labels it is about to clear (conv=%s): %s",
+              String(conversationId),
+              errMsg(err),
+            );
+          }
           // As the ADMIN: /reset is a person peeling the episode's labels off, not the persona
           // deciding something, and the activity line should say so (issue #493).
           await client.setConversationLabels(conversationId, [], {
@@ -3557,16 +3572,17 @@ async function maybeConsumeCommandOrGate(params: {
           // The `WHERE` is the pair's own fence: `reset_at_message_id` moves forward with GREATEST
           // and two `/reset` deliveries are not serialized, so an older command finishing last
           // would otherwise pair a newer boundary with the set IT removed. Same row, one read.
-          await runScopedOn(
-            base,
-            sysCtx(tenantId),
-            (db) =>
-              db.$executeRaw`
-              UPDATE conversations
-                 SET reset_cleared_labels = ${JSON.stringify(before)}::jsonb
-               WHERE id = ${ctx.conv.id}
-                 AND reset_at_message_id = ${commandMessageId}`,
-          );
+          if (before !== null)
+            await runScopedOn(
+              base,
+              sysCtx(tenantId),
+              (db) =>
+                db.$executeRaw`
+                UPDATE conversations
+                   SET reset_cleared_labels = ${JSON.stringify(before)}::jsonb
+                 WHERE id = ${ctx.conv.id}
+                   AND reset_at_message_id = ${commandMessageId}`,
+            );
         }),
       );
       await step("clear custom attributes", "atributos", () =>

@@ -552,18 +552,24 @@ export interface ReminderNudgeArgs {
 }
 
 const DAY_MS = 86_400_000;
-// The shape `parseStartMs` reads as a bare date (midnight UTC), which is how an all-day booking
-// reaches us — Google answers those with `date` instead of `dateTime`.
-const ALL_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-// The offset the start STATES, in minutes. A start with none is pinned to UTC, which is the same
-// agreement `parseStartMs` already made for those values ("UTC is arbitrary there; agreement is
-// not") — a second rule here would let the reminder and the liveness check disagree about which day
-// an appointment falls on.
-function statedOffsetMinutes(startISO: string): number {
-  const m = /(?:([Zz])|([+-])(\d{2}):?(\d{2}))$/.exec(startISO);
-  if (!m || m[1]) return 0;
-  return (m[2] === "-" ? -1 : 1) * (Number(m[3]) * 60 + Number(m[4]));
+// The LOCAL offset the start states, in minutes, or null when it states none — an all-day date
+// (`2026-09-18`, which is how Google answers a booking with no time), a wall clock written without
+// one, or a value in `Z`.
+//
+// Null is not a fallback to UTC, and that distinction is the whole of round 2 of the review. This
+// offset is the only thing in the record that names the CUSTOMER'S calendar, and it is what places
+// `now` in the same frame as the start, so that "today" means their today. `parseStartMs` pins an
+// offset-less value to UTC to have ONE instant everybody agrees on, which is the right answer for
+// ordering and liveness and is not an answer about anybody's calendar day: measured, an all-day
+// booking on the 18th announced itself as "tomorrow" to a customer for whom it was the day after
+// tomorrow (21:00 on the 16th in São Paulo is already the 17th in UTC), and an offset-less
+// `2026-09-18T09:00` announced itself as "today" on their 17th. `Z` is the same mistake with a
+// stated zone: it says where the instant is, never where the person reading it is.
+function statedLocalOffsetMinutes(startISO: string): number | null {
+  const m = /([+-])(\d{2}):?(\d{2})$/.exec(startISO);
+  if (!m) return null;
+  return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
 }
 
 // Coarse on purpose: "about" is the register a reminder speaks in, and a distance to the minute
@@ -600,13 +606,18 @@ function distancePhrase(ms: number): string {
 // lanes draw.
 //
 // Empty for a start nobody can place relative to now: unreadable (`parseStartMs` refuses to guess),
-// or already begun — the handler ends that job before it ever gets here, and asserting a day for it
-// would add a second wrong statement instead of removing one.
+// already begun (the handler ends that job before it ever gets here), or carrying no local offset —
+// an all-day date, a wall clock written without one, a value in `Z`. In all of them, asserting a day
+// would add a second wrong statement instead of removing one, and the reminder goes out saying what
+// it says today: the date, which is correct. The tool boundary is what keeps new rows out of that
+// case — `tool-definitions/appointment.ts` resolves an offset-less wall clock into the agent's own
+// zone before it is ever stored, for this same reason.
 export function reminderTemporalGrounding(startISO: string, now: Date): string {
   const startMs = parseStartMs(startISO);
   const nowMs = now.getTime();
   if (!Number.isFinite(startMs) || startMs <= nowMs) return "";
-  const offset = statedOffsetMinutes(startISO);
+  const offset = statedLocalOffsetMinutes(startISO);
+  if (offset === null) return "";
   const days =
     Math.floor((startMs + offset * 60_000) / DAY_MS) -
     Math.floor((nowMs + offset * 60_000) / DAY_MS);
@@ -616,14 +627,6 @@ export function reminderTemporalGrounding(startISO: string, now: Date): string {
       : days === 1
         ? "on the calendar day after now (tomorrow)"
         : `${days} calendar days after now (in ${days} days)`;
-  // An ALL-DAY appointment has a date and no time of day, and a distance in hours would be a time
-  // the customer's calendar never stated: `parseStartMs` reads a bare date as midnight UTC, so
-  // "starts in about 9 hours" is that midnight talking, not the appointment. The day is still
-  // knowable and still said; the hour is not, and the model is told so rather than left to fill it
-  // in from a number we handed it.
-  if (ALL_DAY.test(startISO)) {
-    return ` This appointment falls ${day} and is an all-day appointment with no time of day: word the day in the conversation's language, from this value and never from what was said earlier in the conversation, and state no time.`;
-  }
   return ` This appointment falls ${day}, and starts in about ${distancePhrase(startMs - nowMs)}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
 }
 

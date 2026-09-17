@@ -998,22 +998,24 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // queue running behind actually leaves behind. The handler is what has to get this right: a pure
   // function can be correct and wired to nothing.
   test("the day comes from the clock, not from the offset the reminder was armed with", async () => {
-    // NOON ON THE NEXT UTC DAY, never `now + 25h` (round 1 of the review caught it): the start goes
-    // out as a `Z` string, so the day frame is UTC, and a suite running between 23:00 and midnight
-    // UTC would have `+25h` land TWO calendar days out and fail an assertion about correct
-    // behaviour. Noon tomorrow is one calendar day ahead from any hour of the day, and always ahead
-    // of now, which the handler's own start check requires.
-    const t = new Date();
-    const start = new Date(
+    // NOON TOMORROW IN A STATED OFFSET, and both halves of that are lessons from the review. The
+    // offset, because the day is only claimed for a start that states one (round 2) — and a real
+    // Google payload does state one, which is why this is the faithful fixture and `toISOString()`
+    // was not. Noon tomorrow, because `now + 25h` (round 1) lands TWO calendar days out when the
+    // suite runs in the last hour of the day, failing an assertion about correct behaviour; noon of
+    // the next day is one calendar day ahead from every hour, and always ahead of now, which the
+    // handler's own start check requires.
+    const wall = new Date(Date.now() - 3 * 3_600_000);
+    const day = new Date(
       Date.UTC(
-        t.getUTCFullYear(),
-        t.getUTCMonth(),
-        t.getUTCDate() + 1,
-        12,
-        0,
-        0,
+        wall.getUTCFullYear(),
+        wall.getUTCMonth(),
+        wall.getUTCDate() + 1,
       ),
-    ).toISOString();
+    )
+      .toISOString()
+      .slice(0, 10);
+    const start = `${day}T12:00:00-03:00`;
     // The payload is an untyped JSON blob, which is why the handler guards every other field it
     // reads. The offset arrives absent (what `armed` writes, and every row armed before it existed),
     // lying (a moved event, a queue running behind, a retry hours later), and unusable — and the
@@ -1529,24 +1531,26 @@ describe("reminderNudge temporal grounding (#685)", () => {
     expect(i).toContain("about 1 hour");
   });
 
-  // (s7 do holdout) Um start all-day tem data e não tem hora, e o módulo lê uma data nua como
-  // meia-noite UTC. A distância em horas seria essa meia-noite falando, não o compromisso: uma hora
-  // inventada sobre a agenda do cliente. O dia continua sabido e continua dito.
-  test("an all-day start states the day and no time at all", () => {
-    const i = at("2026-09-18", "2026-09-16T15:00:00-03:00");
-    expect(i).toContain("2 calendar days after now (in 2 days)");
-    expect(i).toContain("all-day appointment with no time of day");
-    expect(i).toContain("state no time");
-    expect(i).not.toContain("starts in about");
-  });
-
-  // (s7 do holdout) E o start sem fuso: o dia afirmado tem que CONCORDAR com a data que o mesmo
-  // turno cita, no referencial que o módulo documenta (`parseStartMs` fixa um start sem offset em
-  // UTC). Nada de Invalid Date, NaN ou undefined no lugar de uma data.
-  test("an offset-less start is placed in the frame the module documents", () => {
-    const i = at("2026-09-17T09:00", "2026-09-16T15:00:00-03:00");
-    expect(i).toContain("on the calendar day after now (tomorrow)");
-    expect(i).not.toMatch(/Invalid Date|NaN|undefined|null/);
+  // (rodada 2 da review, e s7 do holdout) Um start SEM offset local não diz em que calendário o
+  // cliente vive, e o UTC que o `parseStartMs` usa para ordenar não responde essa pergunta. Os três
+  // casos abaixo foram medidos afirmando o dia ERRADO antes desta borda existir: o all-day do dia 18
+  // se anunciando como "amanhã" para quem estava no dia 16 às 21:00 em São Paulo, e o relógio de
+  // parede sem offset e o valor em `Z` se anunciando como "hoje" na véspera. Nenhum dos três afirma
+  // dia nenhum agora, e o lembrete continua saindo com a data, que está correta.
+  test("a start with no local offset claims no day at all", () => {
+    for (const [startISO, now] of [
+      ["2026-09-18", "2026-09-16T21:00:00-03:00"],
+      ["2026-09-18", "2026-09-16T15:00:00-03:00"],
+      ["2026-09-18T09:00", "2026-09-17T21:00:00-03:00"],
+      ["2026-09-18T02:00:00Z", "2026-09-17T21:00:00-03:00"],
+    ] as const) {
+      const i = at(startISO, now);
+      expect(i).not.toContain("calendar day");
+      expect(i).not.toContain("starts in about");
+      expect(i).not.toMatch(/Invalid Date|NaN|undefined/);
+      // O controle: continua um lembrete, e continua pedindo a data e a hora.
+      expect(i).toContain("stating the date and time");
+    }
   });
 
   // WHY THE GROUNDING IS NOT A REF. `nudgeOccasionKey` hashes every non-null ref, and the refusal

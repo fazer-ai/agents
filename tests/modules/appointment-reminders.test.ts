@@ -998,7 +998,22 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // queue running behind actually leaves behind. The handler is what has to get this right: a pure
   // function can be correct and wired to nothing.
   test("the day comes from the clock, not from the offset the reminder was armed with", async () => {
-    const start = new Date(Date.now() + 25 * 3_600_000).toISOString();
+    // NOON ON THE NEXT UTC DAY, never `now + 25h` (round 1 of the review caught it): the start goes
+    // out as a `Z` string, so the day frame is UTC, and a suite running between 23:00 and midnight
+    // UTC would have `+25h` land TWO calendar days out and fail an assertion about correct
+    // behaviour. Noon tomorrow is one calendar day ahead from any hour of the day, and always ahead
+    // of now, which the handler's own start check requires.
+    const t = new Date();
+    const start = new Date(
+      Date.UTC(
+        t.getUTCFullYear(),
+        t.getUTCMonth(),
+        t.getUTCDate() + 1,
+        12,
+        0,
+        0,
+      ),
+    ).toISOString();
     // The payload is an untyped JSON blob, which is why the handler guards every other field it
     // reads. The offset arrives absent (what `armed` writes, and every row armed before it existed),
     // lying (a moved event, a queue running behind, a retry hours later), and unusable — and the
@@ -1501,6 +1516,17 @@ describe("reminderNudge temporal grounding (#685)", () => {
         expect(i).toContain("in the conversation's language");
       }
     }
+  });
+
+  // A antecedência configurada erra o dia SEM que nada dê errado, e este é o caso: com o default
+  // `[24, 1]` da própria issue, um compromisso às 00:30 tem o lembrete de 1h às 23:30 do dia
+  // ANTERIOR. A regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje; a fila estava em dia, o
+  // worker foi pontual e o payload está inteiro. Quem decide é a data de calendário, não a
+  // antecedência.
+  test("the punctual reminder for a past-midnight appointment is still the day before", () => {
+    const i = at("2026-09-17T00:30:00-03:00", "2026-09-16T23:30:00-03:00");
+    expect(i).toContain("on the calendar day after now (tomorrow)");
+    expect(i).toContain("about 1 hour");
   });
 
   // (s7 do holdout) Um start all-day tem data e não tem hora, e o módulo lê uma data nua como

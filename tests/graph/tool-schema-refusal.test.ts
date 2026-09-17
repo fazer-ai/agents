@@ -6,9 +6,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
+import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { runPlaygroundTurn } from "@/modules/playground/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -51,6 +53,7 @@ const INBOX = 7;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let agentDbId = 0n;
 
 type Call = { name: string; args: Record<string, unknown> };
 type Detail = Record<string, unknown>;
@@ -274,6 +277,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       },
       select: { id: true },
     });
+    agentDbId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -608,5 +612,57 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       "string(1)",
       "string(1)",
     ]);
+  });
+
+  // THE PLAYGROUND REPLACES TOOLS AFTER ASSEMBLY, which is the one way the wrapper can be dropped
+  // while the schema goes on refusing: `applyToolMocks` builds a fresh `tool()` from the mocked
+  // tool's own schema. So the mocked tool needs the wrapper re-applied, and the tools it left alone
+  // must not end up wrapped twice (review round 1).
+  test("a mocked playground tool records its refusal, and no tool records it twice", async () => {
+    const model = new Scripted([
+      // The operator mocked this one.
+      { name: "handoff_to_human", args: { reason: "quero humano" } },
+      // And not this one: it comes through `applyToolMocks` by identity.
+      { name: "set_custom_attribute", args: { scope: "conversation" } },
+    ]);
+    const ctx: TenantContext = { tenantId, userId: null, role: "TENANT_ADMIN" };
+    const r = await runPlaygroundTurn({
+      ctx,
+      agentId: agentDbId,
+      message: "quero falar com alguém",
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+      },
+      overrides: { toolMocks: { handoff_to_human: "transferido (simulado)" } },
+    });
+    const rows = (await flowLogRows(suDb, {
+      where: { tenantId, threadId: r.threadId },
+      orderBy: { id: "asc" },
+      select: {
+        stage: true,
+        status: true,
+        level: true,
+        turnId: true,
+        source: true,
+        agentId: true,
+        conversationId: true,
+        inboxId: true,
+        threadId: true,
+        detail: true,
+        errorMessage: true,
+      },
+    })) as Row[];
+    // Sorted, never in row order: `emitFlowEvent` is fire-and-forget, so `id` is not chronological.
+    expect(
+      refused(rows)
+        .map((x) => String(det(x).tool))
+        .sort(),
+    ).toEqual(["handoff_to_human", "set_custom_attribute"]);
+    // One line per refused call, which is what the idempotent wrap buys: a second pass over a tool
+    // that already carries the wrapper leaves it alone.
+    expect(refused(rows).length).toBe(2);
+    expect(rows.every((x) => x.source === "playground")).toBe(true);
   });
 });

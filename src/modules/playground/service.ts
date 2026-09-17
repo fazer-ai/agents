@@ -35,6 +35,7 @@ import {
 } from "@/graph/tools/catalog";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
+import { logSchemaRefusals } from "@/graph/tools/refusal-log";
 import {
   buildPlaygroundTrace,
   buildVisionTraceEntry,
@@ -385,7 +386,16 @@ async function buildPlaygroundGraph(params: {
   // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
   // below asks, and the one a name alone cannot answer.
   const protocol = inertToolsFor(loaded);
-  const mocked = applyToolMocks(rawTools, toolMocks, protocol);
+  // AND WRAPPED AGAIN AFTER THE SWAP, because `applyToolMocks` replaces a mocked tool with a fresh
+  // `tool()` built from the original schema: the schema goes on refusing bad arguments and the
+  // wrapper that records the refusal went with the tool it replaced (review round 1). Wrapping is
+  // idempotent, so the tools the operator did not mock keep the single wrapper `buildToolset` gave
+  // them and no refusal is logged twice.
+  const mocked = logSchemaRefusals(
+    applyToolMocks(rawTools, toolMocks, protocol),
+    params.flow,
+    loaded.logToolValues,
+  );
   const tools = params.silenceProtocol
     ? // Same rule production applies, on the same list: a toolset that is nothing but the protocol
       // tool belongs to an agent that is tool-less in practice, and binding it here would simulate a

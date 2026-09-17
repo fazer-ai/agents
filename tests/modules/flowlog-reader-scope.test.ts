@@ -203,7 +203,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/runtime.test.ts": 11,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/tool-flowlog.test.ts": 1,
-  "tests/graph/tool-schema-refusal.test.ts": 1,
+  "tests/graph/tool-schema-refusal.test.ts": 2,
   "tests/modules/chatwoot-command-dropped.test.ts": 2,
   "tests/modules/chatwoot-gate-trail.test.ts": 1,
   "tests/modules/chatwoot-human-reply-takeover.test.ts": 1,

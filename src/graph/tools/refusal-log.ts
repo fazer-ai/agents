@@ -182,6 +182,14 @@ function argsOf(input: unknown): Record<string, unknown> {
   return {};
 }
 
+// ALREADY WATCHED, so applying this twice is a no-op rather than two lines for one refused call.
+// It exists because one caller REPLACES tools after assembly: the playground swaps a mocked tool for
+// a fresh `tool()` carrying the original schema (`applyToolMocks`), which drops the wrapper and takes
+// the refusal line with it while the schema goes on refusing. That path has to wrap again, and the
+// tools it did NOT replace come through by identity, so the second pass must be able to tell them
+// apart. An own property on the wrapper, which the prototype carries into any later `Object.create`.
+const WATCHED = Symbol.for("fazerai.schema-refusal-logged");
+
 // Wraps each assembled tool so a call the schema refused leaves one `tool`-stage line, then rethrows
 // the refusal untouched: what the model reads, and whether the turn ends, is exactly what it was.
 export function logSchemaRefusals(
@@ -197,12 +205,16 @@ export function logSchemaRefusals(
     : (value: unknown, declared: DeclaredKeys) =>
         describeShape(value, declared);
   return tools.map((inner) => {
+    if ((inner as unknown as Record<symbol, unknown>)[WATCHED] === true) {
+      return inner;
+    }
     const d = declarationOf(inner);
     // NOTE: DELEGATION through the prototype, not a second `tool()`. See `guardedTool`'s note: the
     // prototype carries name, description and schema unchanged, only `invoke` is shadowed, and a
     // call that parses reaches exactly the run it would have had without any of this (including its
     // ToolFlowLogger line, which is what keeps a refusal and an execution countable side by side).
     const watched = Object.create(inner) as StructuredToolInterface;
+    (watched as unknown as Record<symbol, unknown>)[WATCHED] = true;
     watched.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
       try {
         return await inner.invoke(input as never, config);

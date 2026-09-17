@@ -690,35 +690,45 @@ export interface LabelHistory {
 // Sidekiq job runs. Normally that is well inside the dozen calls still ahead of the acknowledgement;
 // on an install whose queues are backed up (which this one has been) the job lands after it, the row
 // keeps an id ABOVE the ack, and an order test cannot see it — which is exactly the residual round 22
-// wrote down and this issue came back for. So the acknowledgement now NAMES the set it removed
-// (`CHATWOOT_RESET_CLEARED_LABELS_KEY`, constants.ts), and the question here is a content one: a
-// removal line whose titles are all in that set is the reset's own, whenever it arrives.
+// wrote down and this issue came back for. So the command NAMES the set it removed, on
+// `conversations.reset_cleared_labels`, and the question here is a content one: a removal line whose
+// titles are all in that set is the reset's own, whenever it arrives.
 //
-// CONSUMED, one title at a time. A cleared title leaves the set with the first line that narrates
-// it, so a label put back after the reset and moved again has its own lines read: the reset removes
-// each title exactly once, and every further mention of it is somebody else's doing. The price is
-// ORDER between two Sidekiq jobs — a re-add whose line lands BEFORE the reset's own removal line
-// spends the title, and then it is the re-add that is hidden. Both rows come from the same queue in
-// request order, so the inversion needs the removal job to be delayed past a classification the
-// reset itself cancelled (`cancelPendingJobsByPrefixUpToMessage`, webhook.ts).
+// ON OUR ROW AND NOT ON THE ACKNOWLEDGEMENT'S `content_attributes`, which is where it was until the
+// review round measured the leak (round 2): the widget renders that bag verbatim to the CONTACT
+// (`api/v1/widget/messages/index.json.jbuilder`) and `Message#push_event_data` ships the whole
+// attributes hash, so internal label names would reach the customer on a website inbox. The column
+// also frees the content test from needing the acknowledgement to have landed at all.
+//
+// CONSUMED, one title at a time, and only by a REMOVAL line (round 1). A cleared title leaves the
+// set with the removal that narrates it, so a label put back after the reset and taken off again
+// has its own lines read: the reset removes each title exactly once, and every further mention of it
+// is somebody else's doing.
 //
 // The reading is checked against the CLEARED SET and not against the account's catalog, which is
 // stricter for free: these titles were standing on this conversation seconds ago, so a locale that
 // admits two readings of the same line ("Ana removeu a vip" is the label `a vip` under pt and `vip`
 // under pt_BR) is settled by the set rather than by a catalog that has both.
 //
-// NO MARKER, NO CUT. A reset performed before this name existed, or one whose acknowledgement never
-// landed, leaves nothing that says where its cleanup ended, and a guess there is what round 21 was
-// about. Those conversations read the way they did before this block existed.
-//
-// NO SET, THE OLD CUT. An acknowledgement from a build before this key still answers the order
-// question, so those conversations keep the round-20 behaviour instead of losing the filter
-// entirely — including its miss, the human who changed a label between the command and the ack.
-// With a set present that miss is gone: their line names a title the reset did not remove.
+// NO SET, THE OLD CUT, AND THEN NO MARKER, NO CUT. A reset from before the column made no claim, so
+// those conversations fall back to the acknowledgement's id and keep the round-20 behaviour —
+// including its miss, the colleague who changed a label between the command and the ack. A reset
+// whose acknowledgement never landed either has nothing left that says where its cleanup ended, and
+// a guess there is what round 21 was about: it reads the way it did before this block existed. With
+// a set present neither applies, and that miss is gone: the colleague's line names a title the reset
+// did not remove.
 //
 // A line nothing can READ is not filtered here, and does not have to be: recognition is the same
 // parser `labelHistoryFromRows` runs below, so a removal sentence no template matches is invisible
 // to the reader this filter protects.
+// An array of strings or nothing. A single element of another type disqualifies the whole value
+// rather than being dropped: a column value this build did not write cannot be repaired into one it
+// did, and a set read half-right would hide the lines of the titles that survived.
+export function stringArrayOrNull(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  return v.every((e) => typeof e === "string") ? (v as string[]) : null;
+}
+
 export function afterResetNarration(
   // THE PAGE AS FETCHED, boundary and all, and this function applies the boundary filter itself
   // (issue #645, review round 1). It needs one fact the filtered rows cannot carry: whether the
@@ -727,15 +737,22 @@ export function afterResetNarration(
   // answer the same ambiguous pair of lines differently.
   fetched: ChatwootMessageRow[],
   resetBoundary: number | null,
+  // WHAT THE RESET SAYS IT REMOVED, from `conversations.reset_cleared_labels` and not from any row
+  // in the page (issue #645, review round 2). It rode the acknowledgement's own `content_attributes`
+  // first, which hands it to the CONTACT on a website inbox, so the set lives on our side of the
+  // fence now — and it no longer needs the acknowledgement to have landed at all. NULL is a reset
+  // that made no claim (one from before the column, or one whose clear never returned), which is
+  // the only case that still falls back to the order cut below.
+  cleared: string[] | null,
 ): ChatwootMessageRow[] {
   if (resetBoundary === null) return fetched;
   const rows = fetched.filter((r) => r.id > resetBoundary);
-  const marker = resetAckSendId(resetBoundary);
-  const ack = rows.find((r) => r.sendId === marker);
-  if (ack === undefined) return rows;
-  const cleared = ack.resetClearedLabels;
-  if (cleared === null)
+  if (cleared === null) {
+    const marker = resetAckSendId(resetBoundary);
+    const ack = rows.find((r) => r.sendId === marker);
+    if (ack === undefined) return rows;
     return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
+  }
   const pending = new Set(cleared.map((t) => t.trim()).filter((t) => t !== ""));
   // WHETHER THE CLEANUP'S OWN ROW IS STILL REACHABLE. With the command in the page, everything
   // Chatwoot wrote since the reset is in it too, so the cleanup's line is somewhere in these rows
@@ -1072,6 +1089,9 @@ export async function runObserve(
         inboxId: true,
         status: true,
         resetAtMessageId: true,
+        // Read with the boundary, from the same row: the pair is what the label filter needs, and
+        // reading them apart would let a second `/reset` land between the two queries (issue #645).
+        resetClearedLabels: true,
       },
     });
     const cfg = await loadAgentConfig(
@@ -1259,6 +1279,10 @@ export async function runObserve(
   // the opposite of what the operator was told happened. Applied before the quote resolver is
   // built, so a reply quoting a pre-reset message does not reintroduce its text either.
   const resetBoundary = conv?.resetAtMessageId ?? null;
+  // A `Json?` column, so it arrives as `unknown` and is READ rather than trusted: NULL is a reset
+  // that made no claim, and anything that is not an array of strings is a row nothing this build
+  // wrote (issue #645).
+  const resetCleared = stringArrayOrNull(conv?.resetClearedLabels);
   const rows =
     resetBoundary === null
       ? fetched
@@ -1342,7 +1366,7 @@ export async function runObserve(
     // Minus the reset's own cleanup. The PAGE goes in rather than `rows`: this one applies the
     // reset boundary itself, because whether the page still reaches the command is what decides
     // how it reads a removal line (issue #645).
-    afterResetNarration(fetched, resetBoundary),
+    afterResetNarration(fetched, resetBoundary, resetCleared),
     vocabLabels === null && current === null
       ? null
       : [...(vocabLabels ?? []), ...(current ?? [])],

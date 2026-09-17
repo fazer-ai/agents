@@ -2835,10 +2835,6 @@ async function maybeConsumeCommandOrGate(params: {
   const postPublicMessage = async (
     text: string,
     sendId?: string,
-    // What this message says about itself beyond its name (issue #645). Trailing and optional
-    // because `postPublicMessage` is also handed to other units as `(text, sendId) => …`, and the
-    // one caller that has something to declare is the `/reset` acknowledgement.
-    extra?: { resetClearedLabels?: string[] },
   ): Promise<boolean> => {
     // Inside the try, deliberately: a fence that cannot answer must report "not sent" like any other
     // failure. Thrown, it would skip the away branch's release and burn the day it just claimed on a
@@ -2869,10 +2865,7 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return false;
       }
-      await client.sendMessage(conversationId, text, {
-        sendId,
-        resetClearedLabels: extra?.resetClearedLabels,
-      });
+      await client.sendMessage(conversationId, text, { sendId });
       return true;
     } catch (err) {
       logger.warn(
@@ -2896,14 +2889,9 @@ async function maybeConsumeCommandOrGate(params: {
   const postAcknowledgement = async (
     text: string,
     sendId?: string,
-    extra?: { resetClearedLabels?: string[] },
   ): Promise<void> => {
-    if (await postPublicMessage(text, sendId, extra)) return;
-    // The fallback carries the declaration too: the private note is the SAME row for every reader
-    // downstream — it is the one the observer finds by name — and a note that says nothing about
-    // the labels would send that reader back to the order test on the conversations where the
-    // public post was withheld.
-    await postPrivateNote(text, sendId, extra);
+    if (await postPublicMessage(text, sendId)) return;
+    await postPrivateNote(text, sendId);
   };
 
   // Private note (operator-only, invisible to the customer) posted as the persona bot. Used for the
@@ -2915,14 +2903,10 @@ async function maybeConsumeCommandOrGate(params: {
   const postPrivateNote = async (
     text: string,
     sendId?: string,
-    extra?: { resetClearedLabels?: string[] },
   ): Promise<boolean> => {
     try {
       const client = await personaClient();
-      await client.sendPrivateNote(conversationId, text, {
-        sendId,
-        resetClearedLabels: extra?.resetClearedLabels,
-      });
+      await client.sendPrivateNote(conversationId, text, { sendId });
       return true;
     } catch (err) {
       logger.warn(
@@ -3509,9 +3493,6 @@ async function maybeConsumeCommandOrGate(params: {
       "etiquetas, atributos e card do kanban",
       personaClient,
     );
-    // The labels the clear below removed, handed to the acknowledgement (issue #645). Null while no
-    // clear has returned, which includes the reset that never reached a Chatwoot client at all.
-    let clearedLabels: string[] | null = null;
     if (client) {
       // ...AND THE VERDICTS THAT WOULD PUT THEM BACK (issue #477 review, round 5). A watcher's tick
       // is armed on a window that outlives this command, and it reads the conversation from Chatwoot
@@ -3542,23 +3523,37 @@ async function maybeConsumeCommandOrGate(params: {
         // In the conversation's label queue like every other writer, so a clear cannot land in the
         // middle of somebody's read-modify-write (issue #477 review, round 3).
         withConversationLabels(params.tenantId, conversationId, async () => {
-          // WHAT THIS CLEAR REMOVES, READ INSIDE THE QUEUE (issue #645). The acknowledgement below
-          // carries this set, and the observer uses it to tell the reset's own removal line from
-          // real history — a question about CONTENT, which is the only kind that still has an
-          // answer when Chatwoot's activity job lands after the acknowledgement. Read here and not
-          // before the queue because the answer has to be the set this very write replaces.
+          // WHAT THIS CLEAR REMOVES, READ INSIDE THE QUEUE (issue #645). The observer uses this set
+          // to tell the reset's own removal line from real history — a question about CONTENT,
+          // which is the only kind that still has an answer when Chatwoot's activity job lands
+          // after the acknowledgement. Read here and not before the queue because the answer has to
+          // be the set this very write replaces.
           const before = await client.getConversationLabels(conversationId);
           // As the ADMIN: /reset is a person peeling the episode's labels off, not the persona
           // deciding something, and the activity line should say so (issue #493).
           await client.setConversationLabels(conversationId, [], {
             asAdmin: true,
           });
-          // Assigned only after the write RETURNS. A read that succeeded and a clear that threw
-          // leaves those labels standing, and naming them as removed would tell the observer to
-          // hide activity lines that describe the conversation's live state. The ambiguous case —
-          // the POST applied and the response was lost — leaks the removal line, which is the same
-          // direction this whole block fails in: a true sentence showing.
-          clearedLabels = before;
+          // WRITTEN ONLY AFTER THE CLEAR RETURNS, and only by the reset that still OWNS the
+          // boundary. A read that succeeded and a clear that threw leaves those labels standing,
+          // and naming them as removed would tell the observer to hide activity lines that describe
+          // the conversation's live state; the ambiguous case (the POST applied and the response
+          // was lost) leaves the column NULL and lets the removal line show, which is the direction
+          // this whole block fails in on purpose.
+          //
+          // The `WHERE` is the pair's own fence: `reset_at_message_id` moves forward with GREATEST
+          // and two `/reset` deliveries are not serialized, so an older command finishing last
+          // would otherwise pair a newer boundary with the set IT removed. Same row, one read.
+          await runScopedOn(
+            base,
+            sysCtx(tenantId),
+            (db) =>
+              db.$executeRaw`
+              UPDATE conversations
+                 SET reset_cleared_labels = ${JSON.stringify(before)}::jsonb
+               WHERE id = ${ctx.conv.id}
+                 AND reset_at_message_id = ${commandMessageId}`,
+          );
         }),
       );
       await step("clear custom attributes", "atributos", () =>
@@ -3782,14 +3777,6 @@ async function maybeConsumeCommandOrGate(params: {
       // way to find that point: the boundary it holds is the command's own message, and everything
       // the cleanup wrote sits between the two (constants.ts).
       commandMessageId === null ? undefined : resetAckSendId(commandMessageId),
-      // AND WHAT THE CLEANUP TOOK OFF, on the same row and for the same reader. Only alongside the
-      // name: without one nobody can find this row, and a key written for nobody to read is the
-      // debt this repository asks callers not to leave behind. `[]` when the clear failed or never
-      // ran is the honest answer — no label was removed — and it is what keeps a colleague's own
-      // label change, made during the cleanup, from being hidden by an order test.
-      commandMessageId === null
-        ? undefined
-        : { resetClearedLabels: clearedLabels ?? [] },
     );
     logger.info(
       "chatwoot: /reset (conv=%s failed=%s)",

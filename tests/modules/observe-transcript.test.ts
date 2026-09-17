@@ -10,6 +10,7 @@ import {
   notesFromRows,
   observeTurnText,
   renderTranscript,
+  stringArrayOrNull,
   transcriptFromRows,
 } from "@/modules/observe/job";
 import {
@@ -41,7 +42,6 @@ function row(
     // Required on `ChatwootMessageRow` since this branch was cut; defaulted here for the same
     // reason every other field is.
     sendId: null,
-    resetClearedLabels: null,
     ...p,
   };
 }
@@ -441,8 +441,8 @@ describe("the notes the conversation already carries", () => {
         // ROUND 21: a customer message racing the cleanup used to take the cut's place and let the
         // removal above through. The cut is the acknowledgement's own row now, found by name.
         row({ id: 11.5, content: "oi, mais uma coisa" }),
-        // NO SET on this acknowledgement, which is what a reset from a build before #645 looks
-        // like: this test is the one that keeps that fallback honest.
+        // The reset made NO CLAIM (third argument `null`), which is what one from a build before
+        // #645 looks like: this test is the one that keeps that fallback honest.
         row({
           id: 12,
           messageType: "outgoing",
@@ -456,13 +456,17 @@ describe("the notes the conversation already carries", () => {
         }),
       ];
       expect(
-        labelHistoryFromRows(afterResetNarration(rows, 10), vocab, undefined, 8)
-          .lines,
+        labelHistoryFromRows(
+          afterResetNarration(rows, 10, null),
+          vocab,
+          undefined,
+          8,
+        ).lines,
       ).toEqual(["Classificador SAC adicionou cancelamento"]);
       // With no reset on the conversation, nothing is cut.
       expect(
         labelHistoryFromRows(
-          afterResetNarration(rows, null),
+          afterResetNarration(rows, null, null),
           vocab,
           undefined,
           8,
@@ -478,6 +482,7 @@ describe("the notes the conversation already carries", () => {
           afterResetNarration(
             rows.filter((r) => r.sendId === null),
             10,
+            null,
           ),
           vocab,
           undefined,
@@ -496,16 +501,17 @@ describe("the notes the conversation already carries", () => {
     // que é um teste de ORDEM e por isso não a vê. O observador então lê as etiquetas que o reset
     // acabou de apagar, nomeadas, como motivo para não recolocá-las.
     test("(#645) the cleanup's line above the ack is still not this episode's history", () => {
-      const ack = (cleared: string[] | null) =>
-        row({
-          id: 12,
-          messageType: "outgoing",
-          content: "Conversa limpa.",
-          sendId: "reset-ack:10",
-          resetClearedLabels: cleared,
-        });
+      // O ack não carrega mais o conjunto: ele vive em `conversations.reset_cleared_labels`, e
+      // aqui entra pelo terceiro argumento, que é como o job o lê.
+      const ack = row({
+        id: 12,
+        messageType: "outgoing",
+        content: "Conversa limpa.",
+        sendId: "reset-ack:10",
+      });
+      const cleared = ["compra-de-ingresso"];
       const rows = [
-        ack(["compra-de-ingresso"]),
+        ack,
         // O job do Sidekiq rodou depois do ack: mesma remoção, id acima do corte.
         row({
           id: 13,
@@ -519,8 +525,12 @@ describe("the notes the conversation already carries", () => {
         }),
       ];
       expect(
-        labelHistoryFromRows(afterResetNarration(rows, 10), vocab, undefined, 8)
-          .lines,
+        labelHistoryFromRows(
+          afterResetNarration(rows, 10, cleared),
+          vocab,
+          undefined,
+          8,
+        ).lines,
       ).toEqual(["Classificador SAC adicionou cancelamento"]);
 
       // CONSUMED ONCE. The title is put back after the reset and taken off again, and both lines
@@ -530,7 +540,7 @@ describe("the notes the conversation already carries", () => {
         labelHistoryFromRows(
           afterResetNarration(
             [
-              ack(["compra-de-ingresso"]),
+              ack,
               row({
                 id: 13,
                 messageType: "activity",
@@ -548,6 +558,7 @@ describe("the notes the conversation already carries", () => {
               }),
             ],
             10,
+            cleared,
           ),
           vocab,
           undefined,
@@ -566,7 +577,7 @@ describe("the notes the conversation already carries", () => {
         labelHistoryFromRows(
           afterResetNarration(
             [
-              ack(["compra-de-ingresso"]),
+              ack,
               row({
                 id: 13,
                 messageType: "activity",
@@ -574,6 +585,7 @@ describe("the notes the conversation already carries", () => {
               }),
             ],
             10,
+            cleared,
           ),
           vocab,
           undefined,
@@ -588,7 +600,7 @@ describe("the notes the conversation already carries", () => {
         labelHistoryFromRows(
           afterResetNarration(
             [
-              ack(["compra-de-ingresso"]),
+              ack,
               row({
                 id: 13,
                 messageType: "activity",
@@ -608,6 +620,7 @@ describe("the notes the conversation already carries", () => {
               }),
             ],
             10,
+            cleared,
           ),
           vocab,
           undefined,
@@ -622,7 +635,7 @@ describe("the notes the conversation already carries", () => {
       const long = labelHistoryFromRows(
         afterResetNarration(
           [
-            ack(many),
+            ack,
             row({
               id: 13,
               messageType: "activity",
@@ -630,6 +643,7 @@ describe("the notes the conversation already carries", () => {
             }),
           ],
           10,
+          many,
         ),
         [...vocab, ...many],
         undefined,
@@ -647,7 +661,7 @@ describe("the notes the conversation already carries", () => {
           afterResetNarration(
             [
               row({ id: 10, content: "/reset" }),
-              ack(["compra-de-ingresso"]),
+              ack,
               row({
                 id: 13,
                 messageType: "activity",
@@ -665,6 +679,7 @@ describe("the notes the conversation already carries", () => {
               }),
             ],
             10,
+            cleared,
           ),
           vocab,
           undefined,
@@ -687,15 +702,32 @@ describe("the notes the conversation already carries", () => {
                 messageType: "activity",
                 content: "Fulano adicionou cancelamento",
               }),
-              ack([]),
+              ack,
             ],
             10,
+            [],
           ),
           vocab,
           undefined,
           8,
         ).lines,
       ).toEqual(["Fulano adicionou cancelamento"]);
+    });
+
+    // (#645) A COLUNA É LIDA, NÃO ACREDITADA. `reset_cleared_labels` é `Json?`, então chega como
+    // `unknown`: um elemento fora do formato desqualifica o valor inteiro, porque um conjunto lido
+    // pela metade esconderia as linhas dos títulos que sobraram, e "não sei" cai no corte por ordem
+    // em vez de inventar um conjunto.
+    test("(#645) the cleared set is read as an array of strings or not at all", () => {
+      expect(stringArrayOrNull(["vip", "cancelamento"])).toEqual([
+        "vip",
+        "cancelamento",
+      ]);
+      expect(stringArrayOrNull([])).toEqual([]);
+      expect(stringArrayOrNull(["vip", 7])).toBeNull();
+      expect(stringArrayOrNull("vip")).toBeNull();
+      expect(stringArrayOrNull(null)).toBeNull();
+      expect(stringArrayOrNull({ "0": "vip" })).toBeNull();
     });
 
     // (#645, RODADA 1 DO REVIEW) O MESMO PAR DE LINHAS, DOIS REGIMES. `[adicionou A, removeu A]` é
@@ -709,8 +741,8 @@ describe("the notes the conversation already carries", () => {
         messageType: "outgoing",
         content: "Conversa limpa.",
         sendId: "reset-ack:10",
-        resetClearedLabels: ["compra-de-ingresso"],
       });
+      const cleared = ["compra-de-ingresso"];
       const added = row({
         id: 13,
         messageType: "activity",
@@ -729,6 +761,7 @@ describe("the notes the conversation already carries", () => {
           afterResetNarration(
             [row({ id: 10, content: "/reset" }), ack, added, removed],
             10,
+            cleared,
           ),
           vocab,
           undefined,
@@ -739,7 +772,7 @@ describe("the notes the conversation already carries", () => {
       // título para uma linha que ninguém vai ler esconderia remoções reais para sempre.
       expect(
         labelHistoryFromRows(
-          afterResetNarration([ack, added, removed], 10),
+          afterResetNarration([ack, added, removed], 10, cleared),
           vocab,
           undefined,
           8,
@@ -755,6 +788,7 @@ describe("the notes the conversation already carries", () => {
           afterResetNarration(
             [row({ id: 10, content: "/reset" }), ack, removed],
             10,
+            cleared,
           ),
           vocab,
           undefined,
@@ -774,6 +808,7 @@ describe("the notes the conversation already carries", () => {
             ack,
           ],
           10,
+          cleared,
         ).map((r) => r.id),
       ).toEqual([12]);
     });
@@ -798,6 +833,7 @@ describe("the notes the conversation already carries", () => {
               }),
             ],
             10,
+            ["compra-de-ingresso"],
           ),
           vocab,
           undefined,

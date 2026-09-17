@@ -3152,45 +3152,92 @@ describe.skipIf(!dbUp)(
 
     // ISSUE #645. The name above answers an ORDER question — where did the cleanup end — and the
     // label-change activity is written by `Conversations::ActivityMessageJob.perform_later`, so on a
-    // backed-up queue it lands AFTER the acknowledgement and no order can reach it. The same row
-    // therefore names the SET the clear removed, which turns the observer's question into a content
-    // one: a removal line whose titles are all in this set is the reset's own, at any id.
-    test("the acknowledgement declares the labels the cleanup took off", async () => {
+    // backed-up queue it lands AFTER the acknowledgement and no order can reach it. The command
+    // therefore records the SET it removed, which turns the observer's question into a content one:
+    // a removal line whose titles are all in that set is the reset's own, at any id.
+    //
+    // ON OUR OWN ROW, and the review round measured why it cannot ride the acknowledgement's
+    // `content_attributes`: the widget renders that bag verbatim to the CONTACT
+    // (`api/v1/widget/messages/index.json.jbuilder`) and `Message#push_event_data` ships the whole
+    // attributes hash, so internal label names would reach the customer on a website inbox.
+    test("the reset records the labels it took off, on the conversation row", async () => {
       const cw = fakeChatwoot();
       globalThis.fetch = cw.impl;
       await sendReset();
 
-      const body = ackCalls(cw.calls)[0]?.body as {
-        content_attributes?: Record<string, unknown>;
-      } | null;
-      expect(body?.content_attributes?.fazer_ai_reset_cleared).toEqual([
-        ...LIVE_LABELS,
-      ]);
-      // ...ON THE SAME BAG as the name. `content_attributes` is one object, so a second write would
-      // have overwritten the first, and the reader of either key would find nothing.
-      expect(body?.content_attributes?.fazer_ai_send_id).toBe(
-        `reset-ack:${9000 + deliverySeq}`,
-      );
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetClearedLabels: true, resetAtMessageId: true },
+      });
+      expect(conv.resetClearedLabels).toEqual([...LIVE_LABELS]);
+      // Paired with the boundary of the command that removed them: read apart, a second reset
+      // landing between the two queries would hand the observer one reset's boundary and the
+      // other's set.
+      expect(conv.resetAtMessageId).toBe(9000 + deliverySeq);
       // And the set is the one this very write replaced: read inside the label queue, before the
       // POST that empties it.
-      const labelCalls = cw.calls.filter((c) => c.path.endsWith("/labels"));
-      expect(labelCalls.map((c) => c.method)).toEqual(["GET", "POST"]);
+      expect(
+        cw.calls.filter((c) => c.path.endsWith("/labels")).map((c) => c.method),
+      ).toEqual(["GET", "POST"]);
+      // THE PUBLIC MESSAGE SAYS NOTHING ABOUT THE ACCOUNT'S OWN STATE. Its bag carries the name of
+      // the send and nothing else, which is what keeps the contact out of this.
+      const bag = (
+        ackCalls(cw.calls)[0]?.body as {
+          content_attributes?: Record<string, unknown>;
+        } | null
+      )?.content_attributes;
+      expect(Object.keys(bag ?? {})).toEqual(["fazer_ai_send_id"]);
     });
 
-    // A clear that never returned removed nothing this side can name, and `[]` says exactly that:
+    // A clear that never returned removed nothing this side can name, and NULL says exactly that:
     // the labels are still standing, so their activity lines are still true and must not be hidden.
-    test("a clear that failed declares no labels instead of claiming them", async () => {
+    test("a clear that failed records no set instead of claiming one", async () => {
+      // The row is shared by every test in this suite, so the column starts where this assertion
+      // can see a write: a leftover set from a healthy reset would satisfy nothing here.
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_cleared_labels = NULL
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
       const cw = fakeChatwoot(/\/labels$/);
       globalThis.fetch = cw.impl;
       await sendReset();
 
-      const body = ackCalls(cw.calls)[0]?.body as {
-        content_attributes?: Record<string, unknown>;
-      } | null;
-      expect(body?.content_attributes?.fazer_ai_reset_cleared).toEqual([]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetClearedLabels: true },
+      });
+      expect(conv.resetClearedLabels).toBeNull();
       expect(
         String((ackCalls(cw.calls)[0]?.body as { content?: unknown })?.content),
       ).toMatch(/etiquetas/i);
+    });
+
+    // A SECOND RESET DOES NOT INHERIT THE FIRST ONE'S SET. `reset_at_message_id` only moves forward
+    // (GREATEST), and two deliveries are dispatched detached, so the write is fenced on owning the
+    // current boundary: an older command finishing last must not pair a newer boundary with its own
+    // set.
+    test("the set belongs to the reset that owns the boundary", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+      const first = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetAtMessageId: true },
+      });
+      // The boundary jumps ahead of the next command's own message id, the way a newer reset would
+      // have left it, and then the reset runs with nothing standing on the conversation.
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_at_message_id = ${(first.resetAtMessageId ?? 0) + 10_000}
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_cleared_labels = '["de-antes"]'::jsonb
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetClearedLabels: true },
+      });
+      expect(conv.resetClearedLabels).toEqual(["de-antes"]);
     });
 
     test("a partial reset is not announced as a full one", async () => {

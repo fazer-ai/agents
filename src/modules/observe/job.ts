@@ -764,12 +764,15 @@ export function afterResetNarration(
   // the direction this block fails in on purpose, and it is bounded by the cleanup's own stretch.
   const marker = resetAckSendId(resetBoundary);
   const ack = rows.find((r) => r.sendId === marker);
-  const above =
-    ack === undefined
-      ? rows
-      : rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
+  // ...AND THE ORDER CUT IS APPLIED LAST, after the walk below has read every row past the boundary
+  // (round 6). In the ORDINARY case the cleanup's removal line sits BELOW the acknowledgement, so
+  // cutting first hid it from the walk, its titles were never spent, and the next genuine removal
+  // of one of them was dropped in its place — the miss this filter exists to avoid, on the common
+  // path rather than on a rare one.
+  const orderCut = (r: ChatwootMessageRow) =>
+    ack === undefined || r.messageType !== "activity" || r.id > ack.id;
   // NO SET, NO CONTENT TEST, and then the order cut is all there is.
-  if (cleared === null) return above;
+  if (cleared === null) return rows.filter(orderCut);
   const pending = new Set(cleared.map((t) => t.trim()).filter((t) => t !== ""));
   // WHETHER THE CLEANUP'S OWN ROW IS STILL REACHABLE. With the command in the page, everything
   // Chatwoot wrote since the reset is in it too, so the cleanup's line is somewhere in these rows
@@ -779,7 +782,7 @@ export function afterResetNarration(
   const dropped = new Set<number>();
   // In id order, because consuming a title is order-dependent; the ROWS are returned in the order
   // they came in, which is what every caller before this change received.
-  for (const r of [...above].sort((a, b) => a.id - b.id)) {
+  for (const r of [...rows].sort((a, b) => a.id - b.id)) {
     // CONSUMPTION IS A LIMITED RESOURCE, so only a row that could BE Chatwoot's own narration may
     // spend a title. A private note and a row that declares its own kind are neither (Chatwoot
     // writes the label activity public and with no `content_attributes` at all), and a title spent
@@ -814,7 +817,7 @@ export function afterResetNarration(
     for (const t of removal.titles) pending.delete(t);
     dropped.add(r.id);
   }
-  return above.filter((r) => !dropped.has(r.id));
+  return rows.filter((r) => !dropped.has(r.id) && orderCut(r));
 }
 
 export function labelHistoryFromRows(

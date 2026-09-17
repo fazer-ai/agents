@@ -690,6 +690,44 @@ describe("the notes the conversation already carries", () => {
         "Fulano removeu compra-de-ingresso",
       ]);
 
+      // (RODADA 6) O CAMINHO COMUM: a linha da limpeza chega ABAIXO do ack. O corte por ordem a
+      // pega, e se ele rodasse ANTES da varredura o título nunca seria gasto — a etiqueta voltaria
+      // a ser posta e a remoção seguinte, essa legítima, cairia no lugar da linha do reset. A
+      // varredura lê todas as linhas depois do boundary; o corte por ordem é o último passo.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({ id: 10, content: "/reset" }),
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Classificador SAC adicionou compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+
       // (RODADA 5) OS DOIS CORTES SÃO SOMADOS, e é o corte por ordem que cobre a linha do reset
       // ANTERIOR. Dois comandos seguidos com o job de atividade atrasado deixam a remoção do
       // primeiro entre o segundo comando e o ack dele, nomeando um título que a segunda limpeza já

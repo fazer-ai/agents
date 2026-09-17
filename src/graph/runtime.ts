@@ -1311,9 +1311,6 @@ async function runTurnBody(
   // Set only by the stand-down inside the `ingest:` lock below, and read out where that section has
   // committed, beside `calledOff`, because both say the same thing about what was written: nothing.
   let threadBusy = false;
-  // Same shape again, for the window the WAIT opens (issue #658): read out below, where the section
-  // has committed and nothing was written.
-  let takenOver = false;
   // What the turn produced, kept when the TOKEN silenced it, and consumed in the `finally` once the
   // in-flight flag the rollback refuses on has been released. The messages travel rather than a
   // boolean because the rollback runs outside the scope that has them.
@@ -1472,21 +1469,6 @@ async function runTurnBody(
               !(await params.stillWanted({ strict: true }))
             ) {
               calledOff = true;
-              return null;
-            }
-            // AND WHO OWNS THE CONVERSATION, for the same reason and over a longer window (PR
-            // review, round 5). The webhook's gate answered before the wait, and a wait for another
-            // turn can last the whole ceiling; `stillWanted` does not cover this, it answers about
-            // the RUN being retired. Everything past this point invokes the model and runs its
-            // tools, and the recheck that already exists sits AFTER generation — it suppresses the
-            // send and cannot take back a tool that mutated something, nor an input-guardrail
-            // replacement that sends before it. So the question is asked here, at the last moment
-            // where standing down is still free.
-            //
-            // Only on the path that WAITED. Every other caller reaches this line as promptly as it
-            // ever did, and widening the gate for them is a different decision with its own tests.
-            if (turnWaitUntil !== null && !(await botOwnsItNow())) {
-              takenOver = true;
               return null;
             }
             // READ AFTER THE CLAIM, never before it. `markTurnOwning` can wait out an append that is
@@ -1672,13 +1654,6 @@ async function runTurnBody(
           String(conversationId),
         );
         return "stale";
-      }
-      if (takenOver) {
-        logger.info(
-          "turn: a person took conversation %s over while this turn waited for the thread, standing down before the invoke",
-          String(conversationId),
-        );
-        return "taken-over";
       }
       if (closedConversationId !== null) {
         // Outside the lock: this opens its own transaction, and nesting one inside an advisory-lock

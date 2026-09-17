@@ -443,6 +443,81 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(busy)).status).toBe("PENDING");
   });
 
+  // ISSUE #681. `SKIP LOCKED` is the half of the claim that nothing measured: mutating it away left
+  // the whole suite green, because every other claim test runs with nobody else holding a row. What
+  // it buys is that a second tick, or a second replica, walks PAST a row the first one is holding
+  // instead of queueing behind it — and the worker's non-overlap guard turns a queued claim into a
+  // tick that never starts the next one, for every lane and every tenant, since the claim is
+  // cross-tenant by design.
+  //
+  // The lock is real and held from another connection, which is the only way the difference exists
+  // at all: `FOR UPDATE` and `FOR UPDATE SKIP LOCKED` are the same statement until something else is
+  // already holding the row. The deadline is the assertion, like the concurrent-drain test in
+  // scheduler-lanes: without SKIP LOCKED this claim blocks on the lock instead of failing an
+  // expectation, so what has to be asserted is that it came back at all.
+  test("the claim walks past a row another holder has, instead of queueing behind it", async () => {
+    const held = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-contention-held",
+      // Older, which is the shape contention actually takes: the claim is FIFO on run_at, so the row
+      // two ticks reach together is the oldest one. The discrimination does NOT depend on it, and
+      // that was measured rather than assumed — with SKIP LOCKED mutated away the test goes red with
+      // the held row armed either older or newer, because a claim whose limit exceeds the due rows
+      // scans every one of them and blocks on whichever is held.
+      runAt: new Date(Date.now() - 120_000),
+      base: appDb,
+    });
+    const free = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-contention-free",
+      runAt: past(),
+      base: appDb,
+    });
+
+    let holding!: () => void;
+    const isHeld = new Promise<void>((r) => {
+      holding = r;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    // A separate client, so the lock is held by another SESSION: the same connection would not
+    // contend with itself, and the test would prove nothing.
+    const holder = suDb.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM scheduler_jobs WHERE id = ${held} FOR UPDATE`;
+        holding();
+        await released;
+      },
+      { timeout: 20_000 },
+    );
+
+    try {
+      await isHeld;
+      const timedOut = Symbol("timeout");
+      const outcome = await Promise.race([
+        claimDueJobs(10, appDb, new Date(), tenantId),
+        new Promise<typeof timedOut>((r) =>
+          setTimeout(() => r(timedOut), 4_000),
+        ),
+      ]);
+      expect(outcome).not.toBe(timedOut);
+      const ids = (outcome as ClaimedJob[]).map((j) => j.id);
+      expect(ids).toContain(free);
+      expect(ids).not.toContain(held);
+      // And the row somebody else holds is LEFT ALONE, not stamped CLAIMED by this claim.
+      expect((await statusOf(held)).status).toBe("PENDING");
+    } finally {
+      release();
+      await holder;
+    }
+  }, 30_000);
+
   test("claim → complete", async () => {
     const id = await enqueueJob({
       rearm: "same-work",

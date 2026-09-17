@@ -159,6 +159,9 @@ export interface CoalesceTurnContext {
   // the target rather than a value it would have to keep in step with the burst selection. Null is
   // a ceiling of its own ("this caller read no mark"), never the absence of one.
   claimHandledCeiling: (targetWatermark: number) => number | null;
+  // Whether this caller is the operator's own re-engage, which is the only one entitled to answer
+  // over a silence something chose deliberately (issue #452).
+  initiatedBy: "automatic" | "operator";
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -270,6 +273,10 @@ export async function selectAnswerableBurst(
     await advanceHandledWatermark({
       tenantId,
       conversationDbId: convDbId,
+      // BY ID, not by span: this exit has already fetched the burst, so the members are known and
+      // the exact fact is available. A range here would put an approximation on a path that had the
+      // truth in hand (issue #690).
+      dispensed: { kind: "messages", messageIds: pending.map((m) => m.id) },
       toMessageId: targetWatermark,
       base,
     });
@@ -428,6 +435,13 @@ export async function coalesceAndRunTurn(
       conversationDbId: convDbId,
       toMessageId: targetWatermark,
       maxHandledAllowed: ctx.claimHandledCeiling(targetWatermark),
+      // THE MESSAGES THE TURN'S INPUT ACTUALLY CARRIED, which is `inTurn` and not `pending`
+      // (issue #690). The two differ by exactly the members that reached the burst without reaching
+      // the model — a voice note still waiting on its transcription renders to nothing — and
+      // claiming one of those would close a message the reply never read, which is the defect this
+      // list exists to remove rather than relocate.
+      messageIds: inTurn.map((m) => m.id),
+      initiatedBy: ctx.initiatedBy,
     },
   });
   // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
@@ -470,6 +484,25 @@ export async function coalesceAndRunTurn(
       tenantId,
       conversationDbId: convDbId,
       toMessageId: targetWatermark,
+      // THE MIXED CASE, and it is why the parameter is a calculated set rather than a word
+      // (issue #690). A turn that answered `[1003,1004,1005]` while the cap dropped `[1001,1002]`
+      // closes five messages with two different reasons: the three it answered are already in
+      // `message_reply_claims` from the claim it took before sending, and the two it dropped are
+      // named here. Said as one word — "this path posted, write nothing" — the dropped pair would
+      // be left with no record at all, which reads as open, and something answers them later.
+      //
+      // On a NON-posting outcome the whole burst is consumed the same way, so `pending` joins them:
+      // no claim was taken, so nothing else speaks for those messages. `inTurn` is deliberately not
+      // used — a member that reached the burst without reaching the model (a voice note still
+      // waiting on its transcription) is not dispensed, it is waiting, and its write-back arms the
+      // ingest that answers it.
+      dispensed: {
+        kind: "messages",
+        messageIds:
+          outcome === "posted" || outcome === "posted-partial"
+            ? dropped.map((m) => m.id)
+            : [...pending, ...dropped].map((m) => m.id),
+      },
       base,
     });
     // And say so on the LEDGER, for the messages this burst actually contained. A burst re-fetched
@@ -809,6 +842,9 @@ async function ingestObservedBurst(args: {
     return "unread";
   }
   let newest = armedLast;
+  // HOISTED so the watermark advance at the tail can name what it closed (issue #690). Filled by the
+  // fetch loop below, one id per message this route folded into memory.
+  const handedIds: number[] = [];
   let inboxChatwootId: number | null = null;
   {
     const contactInboxId = ctx.contactInboxId;
@@ -892,7 +928,6 @@ async function ingestObservedBurst(args: {
       );
       const compactionEnabled = readMemoryConfig(ctx.settings).compaction
         .enabled;
-      const handedIds: number[] = [];
       for (const m of burst) {
         const text = renderInboundMessage(toRenderable(m), { resolveQuoted });
         if (!text.trim()) continue;
@@ -1015,6 +1050,16 @@ async function ingestObservedBurst(args: {
       tenantId,
       conversationDbId: ctx.convDbId,
       toMessageId: newest,
+      // Handed to ingestion rather than answered: the words are remembered and no reply is coming,
+      // which is a dispensal, and this exit fetched the burst so it names its members (issue #690).
+      //
+      // EMPTY WHERE THE FETCH DID NOT HAPPEN, and that is left as it is rather than widened. `newest`
+      // starts at `armedLast`, which the arm supplies without a fetch, so this tail can be reached
+      // with no list — and the span that would cover it has no lower bound here (this function is
+      // handed no watermark), so a range would reach back over the whole conversation and close
+      // messages this decision never touched. Naming nothing leaves those messages as they were
+      // before this table existed; naming everything would close a history on a guess.
+      dispensed: { kind: "messages", messageIds: handedIds },
       base,
     });
   }
@@ -1257,6 +1302,12 @@ export async function flushDebounceJob(
         tenantId,
         conversationDbId: ctx.convDbId,
         toMessageId: last,
+        // A GATE EXIT, which is the one caller that cannot name its members: it decides before any
+        // Chatwoot fetch, so the burst is not known message by message — only the span it advances
+        // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
+        // The decision was taken over the span ("this is not ours to answer now"), so the span is
+        // the fact rather than a hull of one (issue #690).
+        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
         base,
       });
       await settleGateExit({
@@ -1596,6 +1647,12 @@ export async function flushDebounceJob(
         tenantId,
         conversationDbId: ctx.convDbId,
         toMessageId: last,
+        // A GATE EXIT, which is the one caller that cannot name its members: it decides before any
+        // Chatwoot fetch, so the burst is not known message by message — only the span it advances
+        // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
+        // The decision was taken over the span ("this is not ours to answer now"), so the span is
+        // the fact rather than a hull of one (issue #690).
+        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
         base,
       });
       await settleGateExit({
@@ -1676,6 +1733,9 @@ export async function flushDebounceJob(
           tenantId,
           conversationDbId: ctx.convDbId,
           toMessageId: last,
+          // Same gate exit, same reason as the one above: the span is what this decision was taken
+          // over, and its members are not known here (issue #690).
+          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
           base,
         });
         await settleGateExit({
@@ -1741,6 +1801,9 @@ export async function flushDebounceJob(
           tenantId,
           conversationDbId: ctx.convDbId,
           toMessageId: last,
+          // Same gate exit, same reason as the one above: the span is what this decision was taken
+          // over, and its members are not known here (issue #690).
+          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
           base,
         });
         await settleGateExit({
@@ -1975,6 +2038,7 @@ export async function flushDebounceJob(
         // The flush answers messages ABOVE the mark, so a mark at or past its target says something
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
+        initiatedBy: "automatic",
         label: "debounce flush",
         coalesceStage: "debounce",
       },

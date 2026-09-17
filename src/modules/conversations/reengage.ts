@@ -556,6 +556,9 @@ export async function reengageConversation(
         // is the case with the least evidence the tail is unanswered, so a mark appearing under a
         // running model refuses it there too.
         claimHandledCeiling: () => floorAtEntry,
+        // THE ONE OPERATOR-INITIATED PATH. A person looked at the conversation and asked for the
+        // tail to be answered, which is the only thing allowed to overturn a deliberate silence.
+        initiatedBy: "operator",
         label: "reengage",
       },
       base,

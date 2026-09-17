@@ -120,6 +120,8 @@ model Tenant {
   contactAuthGrants             ContactAuthGrant[]
   inboxObservers                InboxObserver[]
   conversations                 Conversation[]
+  messageReplyClaims            MessageReplyClaim[]
+  replyDispensals               ReplyDispensal[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
   agents                        Agent[]
@@ -926,17 +928,131 @@ model Conversation {
   // and states that as an explicit null on the payload rather than by omitting the key — which is
   // why the mirror distinguishes a stated null from an absent key (`normalize.ts`).
   redirectOriginDisplayId  Int?      @map("redirect_origin_display_id")
+  // WHERE THE PER-MESSAGE ERA BEGINS ON THIS CONVERSATION (issue #690), and it is a VALUE rather
+  // than "does this conversation have any claim rows yet". Written once, at the moment the first row
+  // is written for it, holding `lastHandledMessageId` as it stood then.
+  //
+  // The inferred form is a trap with a delayed fuse: an old conversation that receives ONE new
+  // message gets its first row, joins the per-message era, and every message it already had becomes
+  // "above the era with no row", which the reader reads as unanswered. That is the release landing
+  // one conversation at a time, weeks apart, on conversations nobody is watching — strictly worse to
+  // diagnose than landing everywhere at once. With a value, everything at or below it keeps today's
+  // scalar behaviour forever, and "no row" can only mean "open" above it.
+  //
+  // Null on every conversation that has never had a row, which is every conversation until a turn
+  // runs on it. Read as "the per-message era has not started here", NOT as zero.
+  //
+  // AND IT IS WHAT PRUNING HAS TO MOVE. The claim tables grow one row per inbound message with no
+  // bound; whoever prunes them first will delete old rows, and a deleted row above this floor turns
+  // back into "no row above the floor", which is "open" — the pruned messages reopen and the bot
+  // answers a year-old burst. Pruning above this floor requires moving it forward past what was
+  // pruned, in the same transaction. Nothing prunes today; this is the rule the table is born with.
+  replyClaimFloorMessageId Int?      @map("reply_claim_floor_message_id")
   createdAt                DateTime  @default(now()) @map("created_at")
   updatedAt                DateTime  @updatedAt @map("updated_at")
 
-  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
-  inbox    Inbox?           @relation(fields: [inboxId], references: [id], onDelete: SetNull)
-  contact  Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance        ChatwootInstance    @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  inbox           Inbox?              @relation(fields: [inboxId], references: [id], onDelete: SetNull)
+  contact         Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  replyClaims     MessageReplyClaim[]
+  replyDispensals ReplyDispensal[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
   @@map("conversations")
+}
+
+// WHY A MESSAGE WILL NEVER BE ANSWERED AGAIN, and the two words are deliberately both terminal
+// (issue #690). The decision asks only whether a row EXISTS — both close the message — so this
+// column steers nothing. It exists because the question that arrives in production is "why did this
+// message never get a reply", and without it the answer is "cannot tell": a claim that was made and
+// a deliberate skip look identical once both are a row.
+enum ReplyClaimReason {
+  // A turn was one statement from sending and named this message as what it answers.
+  CLAIMED
+  // Something closed this message on purpose without answering it: the cap dropping it out of a
+  // burst, a turn that ran and said nothing.
+  DISPENSED
+}
+
+// ONE OWNER PER MESSAGE, which is the fact `conversations.last_replied_message_id` cannot hold
+// (issue #690). That column is a single number, so a turn claiming 1002 closes 1001 by arithmetic
+// even when 1001 reached nobody — the reported bug, measured 30 of 60 runs. Here the unit is the
+// message, so two turns holding disjoint tails both win and neither closes the other's.
+//
+// THE EXCLUSION IS THE UNIQUE INDEX, not a comparison. Claimants insert their ids with
+// `ON CONFLICT DO NOTHING` and compare the returned count with what they asked for: fewer means
+// somebody else owns part of the tail, and the caller rolls back inside the same transaction having
+// sent nothing, which is the contract `runLoadedTurn` already documents. Written this way, first
+// writer wins in BOTH orders without a line of logic: a dispensal cannot overwrite a claim (the
+// message is already spoken for) and a claim cannot overwrite a dispensal (what was deliberately
+// skipped is not answered).
+//
+// ONLY WHAT THE CALLER CALCULATED, never the complement of a range. A turn that answers
+// `[1003,1004,1005]` while the cap dropped `[1001,1002]` writes five rows with the two words, not
+// three rows and a gap: the gap is exactly the hole this issue is about, and filling it by
+// subtraction rebuilds the same conflation one level down. What a caller could not enumerate goes in
+// `ReplyDispensal` instead, with the bounds it did calculate.
+//
+// APPEND-ONLY. Nothing updates or deletes a row here; see `Conversation.replyClaimFloorMessageId`
+// for why deleting one is not free.
+model MessageReplyClaim {
+  id             BigInt           @id @default(autoincrement())
+  tenantId       BigInt           @map("tenant_id")
+  // The MIRROR's row id, which is the key the claim is already locked on
+  // (`claimReplyBurst`), and not the Chatwoot display id. Message ids are numbered per Chatwoot
+  // account, so keying on the display id alone would collide across two accounts of one tenant.
+  conversationId BigInt           @map("conversation_id")
+  // Chatwoot's message id, the same number `last_replied_message_id` holds.
+  messageId      Int              @map("message_id")
+  reason         ReplyClaimReason
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  // THE WHOLE EXCLUSION, and the reason this table exists rather than a column.
+  @@unique([conversationId, messageId])
+  @@index([tenantId])
+  @@map("message_reply_claims")
+}
+
+// THE DISPENSAL THAT CANNOT NAME ITS MESSAGES (issue #690). A gate exit decides before any Chatwoot
+// fetch — `settleGateExit` says so of itself: "the burst is not known message by message — what IS
+// known is the watermark they advance" — so it has no ids to insert above, only the two ends it
+// calculated. Both ends, never one: reaching back below the watermark it read would close messages
+// an earlier decision already spoke for, or never saw.
+//
+// A RANGE HERE IS NOT THE RANGE THIS ISSUE REFUTED. What #690 is about is a range read AFTERWARDS as
+// if it were coverage — the hull of what a turn saw, which includes messages it did not. This one is
+// written AT the decision by the actor taking it, and it is exactly the set that decision closed,
+// with no holes by construction: the gate dispensed everything between the mark and the last
+// message, that being what a gate exit does. Same distinction `delivery-sweep.ts` draws about its own
+// range write.
+//
+// Kept separate from `MessageReplyClaim` so the unique index there stays expressible: "one owner per
+// message" cannot be stated over ranges without an exclusion constraint and `btree_gist`, which
+// would trade a guarantee that comes free from a plain index for an extension in a migration.
+model ReplyDispensal {
+  id             BigInt   @id @default(autoincrement())
+  tenantId       BigInt   @map("tenant_id")
+  conversationId BigInt   @map("conversation_id")
+  // EXCLUSIVE lower bound, inclusive upper: the same shape `retireCoveredDeliveries` already takes
+  // (`afterMessageId`/`upToMessageId`), so a caller that has both for one write has them for the
+  // other. Null lower bound means the conversation had no watermark, so the dispensal genuinely
+  // reaches back to the beginning.
+  fromMessageId  Int?     @map("from_message_id")
+  toMessageId    Int      @map("to_message_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  // Covering the one question asked of this table: does any range on this conversation contain M.
+  @@index([conversationId, toMessageId])
+  @@index([tenantId])
+  @@map("reply_dispensals")
 }
 
 // Per-graph-thread state, one row per (tenant, instance, contactInboxId) — the same key the graph

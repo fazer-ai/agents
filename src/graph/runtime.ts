@@ -295,6 +295,15 @@ export interface RunLoadedTurnParams {
   claimReply: {
     conversationDbId: bigint;
     toMessageId: number;
+    // THE IDS THIS TURN ANSWERS, one row each, which is what replaces the arithmetic that closed a
+    // message no reply had read (issue #690). `toMessageId` stays beside it because the two say
+    // different things: the number is where the scalar column moves to, for every reader below the
+    // per-message floor; the list is what this turn is exclusive over, and disjoint lists no longer
+    // exclude each other.
+    messageIds: readonly number[];
+    // WHO ASKED, forwarded verbatim to the claim. Only the operator's own re-engage may overturn a
+    // deliberate silence, and only because a person asked for it (issue #452).
+    initiatedBy: "automatic" | "operator";
     // HOW FAR THE HANDLED WATERMARK MAY HAVE MOVED and this claim still stand — the second question
     // the claim settles, under the same row lock, because a skip landing between a separate read of
     // the watermark and the claim is exactly the window the CAS this replaced used to close for
@@ -643,6 +652,8 @@ export async function runLoadedTurn(
       conversationDbId: target.conversationDbId,
       toMessageId: target.toMessageId,
       maxHandledAllowed: target.maxHandledAllowed,
+      messageIds: target.messageIds,
+      initiatedBy: target.initiatedBy,
       base,
     });
     if (!claim.won) {
@@ -650,7 +661,9 @@ export async function runLoadedTurn(
         "turn: %s (conv=%s target=%s), deferring",
         claim.reason === "handled"
           ? "the burst was already handled"
-          : "another turn holds the reply claim",
+          : claim.reason === "dispensed"
+            ? "the burst was deliberately dispensed"
+            : "another turn holds the reply claim",
         String(params.conversationId),
         String(target.toMessageId),
       );
@@ -2636,6 +2649,11 @@ export async function runAgentTurn(
         ? {
             conversationDbId: convDbId,
             toMessageId: triggerId,
+            // One message, its own trigger — the same thing the comment above says, now stated to
+            // the claim rather than implied by a single number that also had to serve as a bound.
+            messageIds: [triggerId],
+            // A webhook delivery is never a person pressing a button.
+            initiatedBy: "automatic",
             // Nothing at or past this message may have been handled: this turn answers that one
             // message, so a mark that already covers it means somebody else settled it.
             maxHandledAllowed: triggerId - 1,
@@ -2670,6 +2688,16 @@ export async function runAgentTurn(
         tenantId,
         conversationDbId: loaded.conversationDbId,
         toMessageId: n.message.id,
+        // WHAT THIS TURN CLOSED WITHOUT ANSWERING, and on this path it is all or nothing because the
+        // path answers exactly one message (issue #690). A turn that posted already wrote its claim
+        // row before the send, so there is nothing left to say; every other outcome that reaches
+        // here consumed the customer's message deliberately — an empty reply, a guardrail going
+        // silent, a human taking the conversation mid-turn — and that message has to say so itself,
+        // by id, or it is left with no record, read as open, and answered a second time later.
+        dispensed:
+          outcome === "posted" || outcome === "posted-partial"
+            ? { kind: "claimed" }
+            : { kind: "messages", messageIds: [n.message.id] },
         base,
       });
     } catch (e) {

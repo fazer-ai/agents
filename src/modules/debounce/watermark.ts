@@ -21,11 +21,44 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// WHAT THIS ADVANCE CLOSED WITHOUT ANSWERING, named by the caller and never inferred here
+// (issue #690).
+//
+// It has to be a parameter and it has to be REQUIRED, for the reason the `kind` of `undoRefusedTurn`
+// is: a call site that must name it cannot inherit the wrong one by omission, and a path added later
+// that forgets to dispense does not fail — it answers the customer a second time, quietly, months
+// from now. The compiler asking the question is the only thing that scales to the next call site.
+//
+// AND IT IS WHAT THE CALLER CALCULATED, never the complement of the range it advanced over. The
+// posting path passes through here too: it moves the mark from 1000 to 1002 having answered only
+// 1002, so writing "dispensed" across the span would close 1001 with the fix's own hand — the exact
+// defect this issue is about, one level down.
+export type WatermarkDispensal =
+  // Nothing to dispense: this turn's claim rows already speak for every message it closed. The
+  // posting path, whose messages are in `message_reply_claims` before the send.
+  | { kind: "claimed" }
+  // The messages this decision consumed, by id. Every caller that has fetched the burst uses this,
+  // including the ones that also post: a turn that answered `[1003,1004]` while the cap dropped
+  // `[1001,1002]` names the two it dropped, and the two words live side by side on the same table.
+  | { kind: "messages"; messageIds: readonly number[] }
+  // The span this decision consumed, for the callers that genuinely cannot name its members: a gate
+  // exit decides BEFORE any Chatwoot fetch, so the burst is not known message by message. Bounded at
+  // both ends, the lower one exclusive — reaching back past the mark it read would close messages an
+  // earlier decision already spoke for.
+  //
+  // A range is sound here and only here, and the discriminator is worth stating: it is sound when
+  // the DECISION was taken over the span ("this conversation is not ours to answer right now", true
+  // of every message inside it), and an approximation when the decision was taken over messages and
+  // the span is merely their hull — which is the shape that reconstructs this very bug. A caller
+  // that has the ids uses `messages`.
+  | { kind: "range"; afterMessageId: number | null };
+
 export interface AdvanceHandledWatermarkParams {
   tenantId: bigint;
   conversationDbId: bigint;
   // Chatwoot id of the newest message now considered handled.
   toMessageId: number;
+  dispensed: WatermarkDispensal;
   base?: PrismaClient;
 }
 
@@ -46,6 +79,34 @@ export async function advanceHandledWatermark(
       },
       data: { lastHandledMessageId: params.toMessageId },
     });
+    // WRITTEN WHETHER OR NOT THE MARK MOVED, and the asymmetry with the CAS is deliberate. A stale
+    // advance loses silently because somebody else's decision is further along; the DECISION this
+    // call reports still happened, and a message it deliberately left unanswered is still one no
+    // reader above the floor may treat as open. Losing the CAS and writing nothing would leave
+    // exactly that message with no record at all.
+    const d = params.dispensed;
+    if (d.kind === "messages" && d.messageIds.length > 0) {
+      const ids = [...new Set(d.messageIds)].sort((a, b) => a - b);
+      // ON CONFLICT DO NOTHING is what makes first writer win in BOTH orders: a message some turn
+      // already claimed stays claimed (it is spoken for, and this call is not about it), and a
+      // message dispensed here cannot later be claimed. Neither needs a branch.
+      await db.$executeRaw`
+        INSERT INTO "message_reply_claims"
+               ("tenant_id", "conversation_id", "message_id", "reason")
+        SELECT ${params.tenantId}, ${params.conversationDbId}, m, 'DISPENSED'::"ReplyClaimReason"
+          FROM unnest(${ids}::int[]) AS m
+         ORDER BY m
+            ON CONFLICT ("conversation_id", "message_id") DO NOTHING`;
+    } else if (d.kind === "range") {
+      await db.replyDispensal.create({
+        data: {
+          tenantId: params.tenantId,
+          conversationId: params.conversationDbId,
+          fromMessageId: d.afterMessageId,
+          toMessageId: params.toMessageId,
+        },
+      });
+    }
     return cas.count > 0;
   });
 }
@@ -92,38 +153,196 @@ export async function claimReplyBurst(params: {
   conversationDbId: bigint;
   toMessageId: number;
   maxHandledAllowed: number | null;
+  // EXACTLY THE MESSAGES THIS TURN ANSWERS, and the whole fix for issue #690 rests on this list being
+  // what the turn actually read rather than what it set out to read. The direct path answers ONE
+  // message, its own trigger; a flush answers the burst it rendered. Neither is "everything in the
+  // channel": a turn that loaded `[MSG-B, RESP-B, MSG-A]` answers MSG-A, and saying otherwise would
+  // close MSG-B a second time.
+  //
+  // The caller filters this list by its own reading of the channel before it gets here, which is
+  // where the asymmetric rule lives: an outgoing message that is NOT ours closes everything before
+  // it, because we cannot know what a colleague's reply addressed, while an outgoing of ours closes
+  // only the ids it claimed. Shaping the SET is how that reading reaches this function — never a
+  // boolean, which is a fail-open read wearing a parameter.
+  messageIds: readonly number[];
+  // WHO ASKED FOR THIS REPLY, and the only value that changes anything is the operator's own click
+  // (issue #452, kept honest by issue #690).
+  //
+  // A dispensal is the record of a deliberate silence, and the button exists to overturn one: the
+  // flush that answered nothing, the guardrail that went quiet, the human-owned stretch that ended.
+  // Refusing the click on the strength of that record would take away the product's only escape from
+  // a turn that said nothing, and answer a person pressing a button with "superseded".
+  //
+  // DECLARED, AND NOT DERIVED FROM THE NUMBERS, which is a correction of the first shape this took.
+  // The re-engage is recognisable by answering a tail the mark already covers — and so is a delayed
+  // REDELIVERY of a message answered long ago, which reaches the direct path with a target below the
+  // mark and is exactly what must not be answered twice. The two are indistinguishable by arithmetic
+  // and opposite in kind, so the caller says which it is. Required rather than defaulted, for the
+  // reason every other required word in this change is: a path added later that inherits "operator"
+  // by omission posts over a silence somebody chose on purpose.
+  initiatedBy: "automatic" | "operator";
   base?: PrismaClient;
-}): Promise<{ won: true } | { won: false; reason: "claimed" | "handled" }> {
+}): Promise<ReplyClaimOutcome> {
   const base = params.base ?? basePrisma;
-  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    const locked = await db.$queryRaw<
-      Array<{ claimed: number | null; handled: number | null }>
-    >`SELECT "last_replied_message_id" AS "claimed",
-             "last_handled_message_id" AS "handled"
+  // ASCENDING, AND NOT FOR TIDINESS: two turns inserting overlapping sets in opposite orders wait on
+  // each other's uncommitted rows, one per direction, which is a deadlock Postgres resolves by
+  // killing one of them. Inserting in one agreed order makes the loser wait and then lose cleanly.
+  // De-duplicated because a burst can carry the same id twice through a re-fetch, and a repeat would
+  // make the count below disagree with the set for a reason that is not contention.
+  const ids = [...new Set(params.messageIds)].sort((a, b) => a - b);
+  const lowest = ids[0];
+  const highest = ids[ids.length - 1];
+  if (lowest === undefined || highest === undefined) {
+    // NOTHING LEFT TO ANSWER once the caller's own reading has filtered the tail — a colleague
+    // replied under the turn, and every message it was going to speak for is closed by that. Not an
+    // error and not contention: the turn stands down exactly as it does on a lost claim.
+    return { won: false, reason: "claimed" };
+  }
+  return runScopedOn(
+    base,
+    sysCtx(params.tenantId),
+    async (db): Promise<ReplyClaimOutcome> => {
+      const locked = await db.$queryRaw<
+        Array<{
+          claimed: number | null;
+          handled: number | null;
+          floor: number | null;
+        }>
+      >`SELECT "last_replied_message_id" AS "claimed",
+             "last_handled_message_id" AS "handled",
+             "reply_claim_floor_message_id" AS "floor"
         FROM "conversations"
        WHERE "id" = ${params.conversationDbId}
          FOR UPDATE`;
-    const row = locked[0];
-    // No row is not this function's to explain: the conversation was deleted under a running turn,
-    // and nothing may be posted for it.
-    if (row === undefined) return { won: false, reason: "claimed" };
-    if (row.claimed !== null && row.claimed >= params.toMessageId) {
-      return { won: false, reason: "claimed" };
-    }
-    if (
-      row.handled !== null &&
-      (params.maxHandledAllowed === null ||
-        row.handled > params.maxHandledAllowed)
-    ) {
-      return { won: false, reason: "handled" };
-    }
-    await db.conversation.update({
-      where: { id: params.conversationDbId },
-      data: { lastRepliedMessageId: params.toMessageId },
-    });
-    return { won: true };
+      const row = locked[0];
+      // No row is not this function's to explain: the conversation was deleted under a running turn,
+      // and nothing may be posted for it.
+      if (row === undefined) return { won: false, reason: "claimed" };
+
+      // THE FLOOR DECIDES WHICH ERA ANSWERS, and it answers per message rather than per conversation.
+      // At or below it there are no rows and there never will be, so the scalars are the only thing
+      // that knows anything and they answer in full — unrelaxed, which is what keeps a redelivery of a
+      // message from before this table from being answered a second time. Above it, absence of a row
+      // is evidence, because every decision taken up there wrote one.
+      const floor = row.floor;
+      const reachesBelowFloor = floor === null || lowest <= floor;
+      if (reachesBelowFloor) {
+        if (row.claimed !== null && row.claimed >= params.toMessageId) {
+          return { won: false, reason: "claimed" };
+        }
+        if (
+          row.handled !== null &&
+          (params.maxHandledAllowed === null ||
+            row.handled > params.maxHandledAllowed)
+        ) {
+          return { won: false, reason: "handled" };
+        }
+      }
+
+      const overturnsSilence = params.initiatedBy === "operator";
+
+      // A DISPENSAL THAT COVERS ANY OF THEM CLOSES THE WHOLE SET, and the answer is all-or-nothing for
+      // the same reason the insert below is: this turn speaks for its tail or for none of it, and
+      // answering half a burst is the shape that makes a customer read a reply to their second message
+      // and nothing about their first. Ranges are exclusive at the lower end, which is how
+      // `retireCoveredDeliveries` already states the bound it calculated.
+      const dispensed = await db.$queryRaw<Array<{ hit: bigint }>>`
+      SELECT count(*) AS "hit"
+        FROM "reply_dispensals"
+       WHERE "conversation_id" = ${params.conversationDbId}
+         AND "to_message_id" >= ${lowest}
+         AND ("from_message_id" IS NULL OR "from_message_id" < ${highest})`;
+      if (!overturnsSilence && (dispensed[0]?.hit ?? 0n) > 0n) {
+        return { won: false, reason: "dispensed" };
+      }
+
+      // THE EXCLUSION ITSELF, and it is the unique index rather than a comparison. Overlapping sets
+      // collide there, atomically, with no lock written by hand; disjoint sets both pass, which is
+      // exactly what issue #690 asks for and what a single number could never express.
+      const inserted = overturnsSilence
+        ? // THE ONE WRITE THAT OVERTURNS A ROW, and the condition on the update is what keeps it
+          // narrow: a DISPENSED row becomes CLAIMED because an operator decided the silence was
+          // wrong, and a CLAIMED row is left exactly as it is, because another turn is speaking for
+          // that message and no button may take it away. The row that fails the condition is not
+          // returned, so the count below still refuses the whole claim.
+          //
+          // This is the only place `reason` is read to decide anything, and deliberately on the WRITE
+          // side. A decision that branched on it would reopen every message the cap dropped and every
+          // turn that chose silence, which is the defect this table was built to close.
+          await db.$queryRaw<Array<{ message_id: number }>>`
+          INSERT INTO "message_reply_claims"
+                 ("tenant_id", "conversation_id", "message_id", "reason")
+          SELECT ${params.tenantId}, ${params.conversationDbId}, m, 'CLAIMED'::"ReplyClaimReason"
+            FROM unnest(${ids}::int[]) AS m
+           ORDER BY m
+              ON CONFLICT ("conversation_id", "message_id") DO UPDATE
+                 SET "reason" = 'CLAIMED'::"ReplyClaimReason"
+               WHERE "message_reply_claims"."reason" = 'DISPENSED'::"ReplyClaimReason"
+           RETURNING "message_id"`
+        : await db.$queryRaw<Array<{ message_id: number }>>`
+          INSERT INTO "message_reply_claims"
+                 ("tenant_id", "conversation_id", "message_id", "reason")
+          SELECT ${params.tenantId}, ${params.conversationDbId}, m, 'CLAIMED'::"ReplyClaimReason"
+            FROM unnest(${ids}::int[]) AS m
+           ORDER BY m
+              ON CONFLICT ("conversation_id", "message_id") DO NOTHING
+           RETURNING "message_id"`;
+      if (inserted.length !== ids.length) {
+        // ALL OR NOTHING. Fewer rows back means somebody else owns part of this tail, and a turn that
+        // owns part of it owns none: the rollback takes the partial inserts with it, and the caller is
+        // one statement short of a send that has not happened yet, which is the contract
+        // `runLoadedTurn` documents and this preserves word for word.
+        throw new LostReplyClaim();
+      }
+
+      await db.conversation.update({
+        where: { id: params.conversationDbId },
+        data: {
+          // MONOTONIC, AND THAT IS NOT FREE ANY MORE. It used to be a consequence of the guard
+          // above: a claim behind the mark was refused, so the write could only move forward. Above
+          // the floor that guard no longer runs — the whole point of issue #690 being that a turn
+          // may legitimately claim a message BELOW the newest claim — and an unconditional write
+          // would drag the column backwards. Everything reading it as "answered up to here" then
+          // reopens what the newer turn answered: `readAnsweredFloor` lowers, and the next flush
+          // coalesces an answered message into its burst and answers it a second time.
+          ...(row.claimed === null || params.toMessageId > row.claimed
+            ? { lastRepliedMessageId: params.toMessageId }
+            : {}),
+          // THE ERA STARTS HERE, once, at the highest message the old era had already decided —
+          // which is the MAX of the two scalars and not either alone, the same floor
+          // `readAnsweredFloor` computes below and for the same reason: one of them carries
+          // deliberate skips and the other carries claims, and a message closed by either is
+          // closed. Taking `handled` alone would leave a message some turn had already claimed
+          // sitting ABOVE the floor, where "no row" reads as open and the bot answers it again.
+          //
+          // Written only when it is null, so a later claim cannot move a floor that has already
+          // decided which messages belong to which era.
+          ...(floor === null
+            ? {
+                replyClaimFloorMessageId: Math.max(
+                  row.handled ?? 0,
+                  row.claimed ?? 0,
+                ),
+              }
+            : {}),
+        },
+      });
+      return { won: true };
+    },
+  ).catch((e): ReplyClaimOutcome => {
+    if (e instanceof LostReplyClaim) return { won: false, reason: "claimed" };
+    throw e;
   });
 }
+
+export type ReplyClaimOutcome =
+  | { won: true }
+  | { won: false; reason: "claimed" | "handled" | "dispensed" };
+
+// The rollback signal for the all-or-nothing insert above. A thrown error is what aborts the
+// interactive transaction — returning early would COMMIT the partial rows, which is the one outcome
+// that must not happen: they would close messages for a turn that then sends nothing.
+class LostReplyClaim extends Error {}
 
 // WHAT A FLUSH MUST NOT RE-ANSWER, which is not the watermark alone (issue #452). The claim is
 // written immediately before the send and the watermark only after the turn returns, so between the

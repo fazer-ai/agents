@@ -89,7 +89,6 @@ import {
   advanceHandledWatermark,
   readAnsweredFloor,
   readClaimedMessageIds,
-  readSelectionState,
 } from "./watermark";
 
 // How long a flush waits before asking again whether the thread is free. Matched to the debounce
@@ -1410,30 +1409,7 @@ export async function flushDebounceJob(
     const armed = ctx.watermark;
     const floor =
       fresh === null ? armed : armed === null ? fresh : Math.max(fresh, armed);
-    // AND ABOVE THE PER-MESSAGE FLOOR THE SCALAR DOES NOT DECIDE (issue #690, PR review round 6).
-    //
-    // A competing claim writes `last_replied_message_id`, which is exactly what the floor above
-    // reads, so one turn claiming message 20 raises it over 19 too — and 19, with no row anywhere,
-    // would be excluded from this burst and from every burst after it. Nothing else ever comes back
-    // for it: this is the selection doing by arithmetic what the claim stopped doing, which is this
-    // issue's defect in the last place that still asks a single number.
-    //
-    // Below the floor the scalars answer in full and unrelaxed, because there are no rows down there
-    // and never will be. Above it, absence of a row is evidence — every decision taken up there
-    // writes one — so a message is offered unless a claim or a dispensal says otherwise. A dispensal
-    // closes it here, unlike at the claim: only an operator's click may overturn one, and this is
-    // the automatic path.
-    const candidates = pendingIncoming(messages, null);
-    const { floor: perMessage, closed } = await readSelectionState({
-      tenantId,
-      conversationDbId: ctx.convDbId,
-      messageIds: candidates.map((m) => m.id),
-      base,
-    });
-    if (perMessage === null) return pendingIncoming(messages, floor);
-    return candidates.filter((m) =>
-      m.id > perMessage ? !closed.has(m.id) : floor === null || m.id > floor,
-    );
+    return pendingIncoming(messages, floor);
   };
 
   // The operator flipped the agent to monitoring during one of this flush's waits (issue #209

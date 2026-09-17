@@ -813,7 +813,7 @@ export function incomingRenderable(
     transcribedText: n.message?.transcribedText,
     imageDescription: n.message?.imageDescription,
     extractedText: n.message?.extractedText,
-    attachmentsSkipped: n.message?.attachmentsSkipped,
+    attachmentsUnread: n.message?.attachmentsUnread,
     attachmentTypes: (n.message?.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),

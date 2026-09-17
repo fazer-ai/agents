@@ -1934,7 +1934,7 @@ export async function runEagerMedia(
     !n.message.extractedText &&
     // Also a mark that this event has been through the pass: without it, a message whose every
     // extraction failed pays the whole provider bill again at the second call site.
-    !n.message.attachmentsSkipped
+    !n.message.attachmentsUnread
   ) {
     try {
       const visionCfg = await resolveVisionConfig(
@@ -1962,6 +1962,8 @@ export async function runEagerMedia(
               cfg: visionCfg,
               base,
               flow: flow(),
+              // The aggregate is stashed once after the loop; see the note there.
+              stashAnnotation: false,
             })
               // One unreadable file must not cost the others: the extraction is best-effort per
               // attachment, exactly as it was when there was only one of them.
@@ -1979,18 +1981,28 @@ export async function runEagerMedia(
         );
         const imagens: string[] = [];
         const documentos: string[] = [];
+        let falharam = 0;
         for (const { nome, r } of extraidos) {
-          if (!r) continue;
+          // A file that could not be read is NOT a file that was not sent. With one attachment the
+          // renderer had a marker for it; with several, a readable neighbour used to bypass that
+          // marker and the unreadable one vanished (PR #692 review, round 3). Counted with the
+          // over-the-cap ones because the model's move is the same: name what is missing and ask
+          // for it again.
+          if (!r) {
+            falharam++;
+            continue;
+          }
           (r.kind === "image" ? imagens : documentos).push(
             rotulado(nome, r.text, extraidos.length),
           );
         }
+        const naoLidos = sobraram + falharam;
         // The overflow is NAMED, never silently dropped: a model told "3 more files were not read"
         // asks the customer to resend those three, while a model told nothing answers as if the
         // message had three files fewer, which is the failure this issue is about.
         // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch: glued
         // onto the extracted text it existed only on this event, which the flush discards.
-        if (sobraram > 0) n.message.attachmentsSkipped = sobraram;
+        if (naoLidos > 0) n.message.attachmentsUnread = naoLidos;
         const descricao = imagens.length > 0 ? imagens.join("\n\n") : null;
         const documento =
           documentos.length > 0 ? documentos.join("\n\n") : null;
@@ -2002,13 +2014,13 @@ export async function runEagerMedia(
         // parallel extractions left only whichever finished last — and on upstream Chatwoot, where
         // the meta write-back route does not exist, that store is the debounce flush's ONLY reader.
         // The joined value would have lived solely on this event (PR #692 review, round 1).
-        if (descricao || documento || sobraram > 0)
+        if (descricao || documento || naoLidos > 0)
           stashMediaAnnotation(
             { tenantId, instanceId, messageId },
             {
               ...(descricao ? { imageDescription: descricao } : {}),
               ...(documento ? { extractedText: documento } : {}),
-              ...(sobraram > 0 ? { attachmentsSkipped: sobraram } : {}),
+              ...(naoLidos > 0 ? { attachmentsUnread: naoLidos } : {}),
             },
           );
       }

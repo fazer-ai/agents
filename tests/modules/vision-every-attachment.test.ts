@@ -258,19 +258,20 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     const n = await entregar(CONV_ID + 1, muitos);
 
     // Eleven files cost EIGHT extractions, not eleven and not one — and exactly one pass, because
-    // `attachmentsSkipped` marks the event as already analyzed and the second call site takes its
+    // `attachmentsUnread` marks the event as already analyzed and the second call site takes its
     // idempotence path. That mark is why a message whose every extraction fails no longer pays the
     // whole provider bill twice, and pinning the number here is what would catch it coming back.
     expect(await linhasDeVisao(CONV_ID + 1)).toBe(8);
     // A COUNT on the event, not text glued to the extraction: that is what lets it cross the
-    // debounce re-fetch, and the marker itself is the renderer's job.
-    expect(n.message?.attachmentsSkipped).toBe(3);
+    // debounce re-fetch, and the marker itself is the renderer's job. Eleven here because vision
+    // cannot run in this fixture: three are over the cap and the eight attempted all failed, and
+    // a file that could not be read is as absent to the model as one never opened.
+    expect(n.message?.attachmentsUnread).toBe(11);
     // Through `incomingRenderable`, which is what the DIRECT path hands the renderer: handing the
     // count straight to `renderInboundMessage` passed while neither adapter copied the field, so
-    // the marker reached no production path at all (PR #692 review, round 2).
-    expect(renderInboundMessage(incomingRenderable(n))).toContain(
-      '<anexos-nao-lidos quantidade="3">',
-    );
+    // the marker reached no production path at all (PR #692 review, round 2). The count rides
+    // along; the marker itself waits for something that WAS read (see the render case below).
+    expect(incomingRenderable(n).attachmentsUnread).toBe(11);
   });
 
   // THE DEBOUNCE FLUSH IS THE PATH THE FIRST ROUND OF THIS PR DID NOT MEASURE, and it is the path
@@ -309,10 +310,17 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     };
     overlayMediaAnnotations(tenantId, instanceId, [row]);
 
-    expect(row.attachmentsSkipped).toBe(2);
-    // Through `toRenderable`, which is what the FLUSH hands the renderer.
-    expect(renderInboundMessage(toRenderable(row))).toContain(
-      '<anexos-nao-lidos quantidade="2">',
+    expect(row.attachmentsUnread).toBe(10);
+    // Through `toRenderable`, which is what the FLUSH hands the renderer. With an extraction beside
+    // it, the marker is what tells the model the message is incomplete.
+    expect(
+      renderInboundMessage(
+        toRenderable({ ...row, imageDescription: "[a.jpg] comprovante" }),
+      ),
+    ).toContain('<anexos-nao-lidos quantidade="10">');
+    // Without one, the "send it as text" marker already asks for the same thing.
+    expect(renderInboundMessage(toRenderable(row))).not.toContain(
+      "anexos-nao-lidos",
     );
   });
 
@@ -355,6 +363,11 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     const n = await entregar(CONV_ID + 2, [anexo(301, "unico.png")]);
 
     expect(await linhasDeVisao(CONV_ID + 2)).toBeGreaterThan(0);
-    expect(n.message?.attachmentsSkipped ?? 0).toBe(0);
+    // O único anexo foi tentado e a vision não pôde rodar: não lido, e o marcador de "envie por
+    // texto" é quem fala com o cliente nesse caso.
+    expect(n.message?.attachmentsUnread).toBe(1);
+    expect(renderInboundMessage(incomingRenderable(n))).not.toContain(
+      "anexos-nao-lidos",
+    );
   });
 });

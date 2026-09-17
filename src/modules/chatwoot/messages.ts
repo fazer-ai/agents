@@ -36,7 +36,7 @@ export interface ChatwootMessageRow {
   // How many attachments the eager vision pass did not open (over the per-message cap). OPTIONAL
   // because the fetched page can never carry it: `overlayMediaAnnotations` fills it from the
   // in-process stash, which is why the notice is a COUNT here and a marker only at render time.
-  attachmentsSkipped?: number | null;
+  attachmentsUnread?: number | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
   // NOTE: The first usable location attachment's content (coordinates/title), for the
@@ -253,7 +253,7 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
     transcribedText: row.transcribedText,
     imageDescription: row.imageDescription,
     extractedText: row.extractedText,
-    attachmentsSkipped: row.attachmentsSkipped,
+    attachmentsUnread: row.attachmentsUnread,
     attachmentTypes: row.attachmentTypes,
     attachmentName: row.attachmentName,
     location: row.location,

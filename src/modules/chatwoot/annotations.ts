@@ -15,10 +15,11 @@ export interface MediaAnnotation {
   transcribedText?: string;
   imageDescription?: string;
   extractedText?: string;
-  // How many attachments the eager pass did NOT analyze, because the message carried more than the
-  // per-message cap. A COUNT, never text: it crosses the debounce re-fetch, where the notice this
-  // becomes is phrased by the renderer like every other marker (PR #692 review, round 1).
-  attachmentsSkipped?: number;
+  // How many attachments the eager pass did NOT read: over the per-message cap, or attempted and
+  // failed. One count because the model's move is the same for both — name what is missing and ask
+  // for it again. A COUNT, never text: it crosses the debounce re-fetch, where the notice this
+  // becomes is phrased by the renderer like every other marker (PR #692 review, rounds 1 and 3).
+  attachmentsUnread?: number;
 }
 
 const TTL_MS = 15 * 60 * 1000;
@@ -118,8 +119,8 @@ export function overlayMediaAnnotations(
     row.extractedText = hit.note.extractedText ?? row.extractedText ?? null;
     // Not `??=` on a field the fetched page never carries: the re-fetch cannot know what the eager
     // pass declined to open, so the stash is the only source and always wins here.
-    if (hit.note.attachmentsSkipped)
-      row.attachmentsSkipped = hit.note.attachmentsSkipped;
+    if (hit.note.attachmentsUnread)
+      row.attachmentsUnread = hit.note.attachmentsUnread;
   }
 }
 

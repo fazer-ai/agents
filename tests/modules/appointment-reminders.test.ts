@@ -7,7 +7,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { DATA_FENCE, renderNudge } from "@/graph/nudge";
+import { DATA_FENCE, nudgeOccasionKey, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { recordAppointment } from "@/modules/appointments/record";
 import {
@@ -123,6 +123,9 @@ describe("reminderNudge", () => {
   const args = {
     summary: "Consulta",
     startISO: "2026-06-25T10:00:00-03:00",
+    // A clock, because the nudge is grounded in one (issue #685). A day out, so these cases read the
+    // reminder they were written for and the grounding is exercised on the side.
+    now: new Date("2026-06-24T10:00:00-03:00"),
     eventId: "ev_1",
     calendarId: "primary",
     provider: "google_calendar",
@@ -243,6 +246,7 @@ describe("reminderNudge event identity", () => {
     askConfirmation: true,
     summary: "Consulta",
     startISO: "2026-06-25T10:00:00-03:00",
+    now: new Date("2026-06-24T10:00:00-03:00"),
     eventId: "ev_identity_1",
     calendarId: "cal@group.calendar.google.com",
     provider: "google_calendar",
@@ -988,6 +992,81 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(seen).not.toContain("calendar_id");
   });
 
+  // (#685) The day the customer hears is computed from the CLOCK and the authoritative start, never
+  // from the offset the row was armed with. This row carries `offsetHours: 1` — which is what the
+  // issue proposed translating into "hoje" — and a start a day out, which is what a moved event or a
+  // queue running behind actually leaves behind. The handler is what has to get this right: a pure
+  // function can be correct and wired to nothing.
+  test("the day comes from the clock, not from the offset the reminder was armed with", async () => {
+    // A FIXED CLOCK AND A STATED OFFSET, and every word of that is a lesson from the review. The
+    // offset, because the day is only claimed for a start that states one (round 2) — and a real
+    // Google payload does state one, which is why `toISOString()` was not the faithful fixture. The
+    // fixed clock, through the deps seam that exists for this, because the real one made this
+    // assertion fail for CORRECT behaviour twice: two calendar days out when the suite ran in the
+    // last hour of the UTC day (round 1), and then silent for the two hours around local midnight,
+    // where the day genuinely depends on an hour the module does not hold (round 4).
+    const now = new Date("2026-09-16T15:00:00-03:00");
+    const start = "2026-09-17T12:00:00-03:00";
+    // The payload is an untyped JSON blob, which is why the handler guards every other field it
+    // reads. The offset arrives absent (what `armed` writes, and every row armed before it existed),
+    // lying (a moved event, a queue running behind, a retry hours later), and unusable — and the
+    // customer hears the right day in all four, because none of them is consulted.
+    for (const [name, extra] of [
+      ["absent", {}],
+      ["lying", { offsetHours: 1 }],
+      ["a string", { offsetHours: "1" }],
+      ["zero", { offsetHours: 0 }],
+    ] as const) {
+      const eventId = `evt-offset-${name.replace(/\s/g, "-")}`;
+      const job = await armed(`reminder:${eventId}:60`, {
+        isLast: true,
+        eventId,
+        startISO: start,
+        ...extra,
+      });
+      const s = stubClient();
+      let seen = "";
+      class Capturing extends BaseChatModel {
+        constructor() {
+          super({});
+        }
+        _llmType() {
+          return "capturing-offset";
+        }
+        async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+          seen += messages
+            .map((m) =>
+              typeof m.content === "string"
+                ? m.content
+                : JSON.stringify(m.content),
+            )
+            .join("\n");
+          return {
+            generations: [
+              { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+            ],
+          };
+        }
+      }
+
+      const result = await appointmentReminderHandler(job, appDb, {
+        makeModel: () => new Capturing(),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        now: () => now,
+      });
+
+      // The controls: the reminder reached the model AND went out, so the assertions below are about
+      // a prompt that exists and a message the customer got.
+      expect(result).toEqual({ outcome: "done" });
+      expect(s.sent.length).toBeGreaterThan(0);
+      expect(seen).toContain(`event_id=${eventId}`);
+      expect(seen).toContain("on the calendar day after it (tomorrow)");
+      expect(seen).not.toContain("(today)");
+    }
+  });
+
   test("a cancel landing during the retry survives the reschedule", async () => {
     const eventId = `evt-cancel-race-${process.pid}`;
     const row = await suDb.schedulerJob.create({
@@ -1326,5 +1405,256 @@ describe("appointmentBooked, when a record-only reschedule cannot clean up", () 
     const seen: string[] = [];
     await appointmentBooked({ ...args, base: fakeBase(seen, null) });
     expect(seen).toEqual(["record"]);
+  });
+});
+
+// (#685) A reminder that fires on the day of the appointment used to tell the customer it was
+// "amanhã". Nothing in the turn said what NOW is: the nudge carries the start as an ISO, the prompt's
+// appointment block carries the same ISO, and the current instant only reaches the model when the
+// operator happened to type {{data_atual}} into their own prompt. With no anchor, the model takes the
+// relative word from the previous message in the conversation, which is where "amanhã" was correct.
+//
+// Measured against the real API (gpt-5-mini, 5 runs per cell): as it stood, 2/5 replies said "amanhã"
+// for an appointment starting in one hour. With the day and the distance computed here and stated in
+// the instructions lane, 5/5 said "hoje", and on an appointment that had been MOVED to the next day
+// 5/5 said "amanhã".
+describe("reminderNudge temporal grounding (#685)", () => {
+  const base = {
+    isLast: false,
+    askConfirmation: false,
+    summary: "Consulta",
+    eventId: "ev_1",
+    calendarId: "primary",
+    provider: "google_calendar",
+    canOperate: true,
+  };
+  const at = (startISO: string, now: string) =>
+    reminderNudge({ ...base, startISO, now: new Date(now) }).instructions ?? "";
+
+  test("the same calendar day is stated as such, with the distance", () => {
+    const i = at("2026-09-16T16:00:00-03:00", "2026-09-16T15:00:00-03:00");
+    expect(i).toContain("on that same calendar day (today)");
+    expect(i).toContain("about 1 hour");
+  });
+
+  // A FRASE É DATADA, e isso não é estilo. Este turno fica no thread, então a frase que diz "hoje"
+  // hoje continua ali amanhã, e o turno reativo do dia seguinte não tem relógio para contradizê-la.
+  // Medido: com a redação relativa a "now", 9 de 10 respostas do dia seguinte repetiam a palavra
+  // velha mesmo com o instante corrente no bloco de agendamentos; nomeando a data do envio, 1 de 10.
+  // A data é a LOCAL do compromisso, que é a única que concorda com o que a mensagem diz em voz alta:
+  // às 21:00 de -03:00 já é o dia seguinte em UTC, e a data do envio aqui continua sendo a de quem lê.
+  test("the sentence names the date it was sent on, in the appointment's own frame", () => {
+    expect(
+      at("2026-09-17T10:00:00-03:00", "2026-09-16T21:00:00-03:00"),
+    ).toContain(
+      "This reminder is being sent on 2026-09-16 in the appointment's own time zone",
+    );
+    expect(
+      at("2026-09-17T10:00:00-03:00", "2026-09-17T09:00:00-03:00"),
+    ).toContain(
+      "This reminder is being sent on 2026-09-17 in the appointment's own time zone",
+    );
+  });
+
+  test("the next calendar day is stated as such", () => {
+    const i = at("2026-09-17T16:00:00-03:00", "2026-09-16T15:00:00-03:00");
+    expect(i).toContain("on the calendar day after it (tomorrow)");
+    expect(i).not.toContain("(today)");
+  });
+
+  test("further out, the count of days is stated", () => {
+    const i = at("2026-09-19T16:00:00-03:00", "2026-09-16T15:00:00-03:00");
+    expect(i).toContain("3 calendar days after it (in 3 days)");
+  });
+
+  test("under two hours, the distance is in minutes", () => {
+    const i = at("2026-09-16T16:00:00-03:00", "2026-09-16T15:15:00-03:00");
+    expect(i).toContain("about 45 minutes");
+  });
+
+  // The boundary that decides "today" is the appointment's OWN offset, which is the zone the customer
+  // reads the time in. In UTC this pair straddles midnight (02:00Z on the 17th against 23:00Z on the
+  // 16th) and the reminder would announce tomorrow's appointment an hour before it starts.
+  test("the day boundary is the start's own offset, not UTC", () => {
+    const i = at("2026-09-16T23:00:00-03:00", "2026-09-16T20:00:00-03:00");
+    expect(i).toContain("on that same calendar day (today)");
+  });
+
+  // The SIGN of that offset, in both directions. The pair above cannot see it: an offset shifts the
+  // start and now by the same amount, so a flipped sign only changes the answer when it walks one of
+  // the two across a midnight and not the other. These two do exactly that — the morning reminder
+  // for a late-evening appointment west of UTC, and its mirror east of it — and this is the shape
+  // the issue's own example has (the 24h reminder fired at 23:47).
+  test("the sign of the offset decides, west and east of UTC", () => {
+    expect(
+      at("2026-09-16T23:00:00-03:00", "2026-09-16T10:00:00-03:00"),
+    ).toContain("on that same calendar day (today)");
+    // East of UTC, with the pair chosen so the flipped sign walks exactly ONE of the two across a
+    // midnight: read as -05:30, this becomes the same day instead of the next one.
+    expect(
+      at("2026-09-18T06:00:00+05:30", "2026-09-17T20:00:00+05:30"),
+    ).toContain("on the calendar day after it (tomorrow)");
+  });
+
+  // The two cases where asserting a day would be a second wrong statement rather than a fix. A start
+  // already past never reaches here on the real path (`reminderAlreadyStarted` ends the job first),
+  // and an unreadable one is exactly what `parseStartMs` refuses to guess about.
+  test("a start that cannot be placed relative to now says nothing about the day", () => {
+    for (const [startISO, now] of [
+      ["2026-09-16T10:00:00-03:00", "2026-09-16T15:00:00-03:00"],
+      ["not-a-date", "2026-09-16T15:00:00-03:00"],
+      ["2026-02-31T10:00:00-03:00", "2026-01-01T15:00:00-03:00"],
+    ] as const) {
+      const i = at(startISO, now);
+      expect(i).not.toContain("calendar day");
+      expect(i).not.toContain("starts in about");
+      // The control: it is still a reminder, and it still asks for the date and time.
+      expect(i).toContain("stating the date and time");
+    }
+  });
+
+  // The issue proposed deriving the word from the configured offset and writing "hoje" into the
+  // instructions. The word is the conversation's, not ours: the same agent serves a tenant writing in
+  // English, and the operator's prompt is what decides the language. Nothing here names a word.
+  test("the day is a fact, never a word the reply has to use", () => {
+    for (const isLast of [true, false]) {
+      for (const askConfirmation of [true, false]) {
+        const i =
+          reminderNudge({
+            ...base,
+            isLast,
+            askConfirmation,
+            startISO: "2026-09-16T16:00:00-03:00",
+            now: new Date("2026-09-16T15:00:00-03:00"),
+          }).instructions ?? "";
+        expect(i).not.toMatch(/hoje|amanh/i);
+        expect(i).toContain("in the conversation's language");
+      }
+    }
+  });
+
+  // A antecedência configurada erra o dia SEM que nada dê errado, e este é o caso: com o default
+  // `[24, 1]` da própria issue, um compromisso às 00:30 tem o lembrete de 1h às 23:30 do dia
+  // ANTERIOR. A regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje; a fila estava em dia, o
+  // worker foi pontual e o payload está inteiro. Quem decide é a data de calendário, não a
+  // antecedência.
+  test("the punctual reminder for a past-midnight appointment claims no day, and still says how far", () => {
+    // Com o default `[24, 1]` da própria issue, um compromisso às 00:30 tem o lembrete de 1h às
+    // 23:30 do dia ANTERIOR, e a regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje com a fila
+    // em dia, o worker pontual e o payload inteiro. Aqui o dia cala, porque a uma hora da meia-noite
+    // local a resposta dependeria de um fuso que este módulo não tem; a distância, que é verdadeira,
+    // continua dita. O que não acontece em nenhum dos dois é uma palavra errada.
+    const i = at("2026-09-17T00:30:00-03:00", "2026-09-16T23:30:00-03:00");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
+    expect(i).toContain("starts in about 1 hour");
+    expect(i).toContain("do not describe which day it is relative to now");
+  });
+
+  // (rodada 3 da review) O offset que o start declara é o do fuso NO INSTANTE DO COMPROMISSO, e
+  // `now` pode estar do outro lado de uma virada de horário de verão, onde o mesmo fuso está a uma
+  // hora dele. Medido: em America/New_York, um start `2026-11-01T02:30:00-05:00` com agora
+  // `00:30:00-04:00` está a duas horas no MESMO dia local, e o offset declarado sozinho põe o agora
+  // na data anterior e chama de "tomorrow" enquanto a distância na mesma frase diz duas horas.
+  test("a day that would depend on a daylight-saving hour is not claimed", () => {
+    const i = at("2026-11-01T02:30:00-05:00", "2026-11-01T00:30:00-04:00");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
+    // TRÊS horas, não duas, e a diferença é o próprio motivo de a distância sair de instantes: o
+    // relógio de parede vai de 00:30 a 02:30, mas a hora entre 01:00 e 02:00 acontece duas vezes.
+    expect(i).toContain("starts in about 3 hours");
+  });
+
+  // (rodada 10 da review) E a hora não é o único tamanho de virada. Antarctica/Troll anda DUAS
+  // (+00 no inverno, +02 no verão), e enquanto a sonda testava só ±60 este par se anunciava como
+  // "hoje" com a data local do envio ainda no dia 28. A sonda hoje vai a ±120 e passa pela meia hora
+  // de Lord Howe no caminho; o preço é uma faixa um pouco mais larga em volta da meia-noite onde o
+  // dia não é afirmado e a frase sai só com a distância, que é a troca desta função.
+  test("a shift of two hours is as unguessable as one, and silences the day too", () => {
+    const i = at("2026-03-29T10:00:00+02:00", "2026-03-28T23:30:00Z");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
+    expect(i).toContain("starts in about");
+    // O controle: o MESMO compromisso, com o envio longe de qualquer meia-noite, volta a ter dia.
+    expect(at("2026-03-29T10:00:00+02:00", "2026-03-28T12:00:00Z")).toContain(
+      "calendar day after it (tomorrow)",
+    );
+  });
+
+  test("a start whose instant is invented says nothing at all", () => {
+    // All-day e relógio de parede sem offset: o instante que o `parseStartMs` produz é um marcador
+    // para ordenar, então nem o dia nem a distância são fatos sobre o compromisso. Os dois foram
+    // medidos afirmando o dia ERRADO antes desta borda existir — o all-day do dia 18 se anunciando
+    // como "amanhã" para quem estava no dia 16 às 21:00 em São Paulo, e o relógio de parede sem
+    // offset se anunciando como "hoje" na véspera.
+    for (const [startISO, now] of [
+      ["2026-09-18", "2026-09-16T21:00:00-03:00"],
+      ["2026-09-18", "2026-09-16T15:00:00-03:00"],
+      ["2026-09-18T09:00", "2026-09-17T21:00:00-03:00"],
+      ["2026-09-18T09:00:00", "2026-09-17T12:00:00-03:00"],
+    ] as const) {
+      const i = at(startISO, now);
+      expect(i).not.toContain("calendar day");
+      expect(i).not.toContain("starts in about");
+      expect(i).not.toMatch(/Invalid Date|NaN|undefined/);
+      // O controle: continua um lembrete, e continua pedindo a data e a hora.
+      expect(i).toContain("stating the date and time");
+    }
+  });
+
+  // (rodada 6 da review) `+00:00` e `-00:00` são o `Z` com outra grafia, e estavam chegando à
+  // resposta oposta: lidos como o calendário do cliente, anunciavam um compromisso a dois dias como
+  // "amanhã". O ISO 8601 chega a dar a `-00:00` o sentido de "offset desconhecido".
+  test("a zero offset is Z under another spelling, and claims no day", () => {
+    for (const startISO of [
+      "2026-09-18T12:00:00+00:00",
+      "2026-09-18T12:00:00-00:00",
+      "2026-09-18T12:00:00Z",
+    ]) {
+      // O par é de meio-dia nas duas pontas de propósito (rodada 10): a sonda de horário de verão
+      // cala o dia dentro de duas horas de qualquer meia-noite, então um `now` às 22:30 silenciaria
+      // este teste sozinho e ele passaria sem medir a regra do offset zero.
+      const i = at(startISO, "2026-09-16T12:00:00-03:00");
+      expect(i).not.toContain("calendar day after it");
+      expect(i).not.toContain("same calendar day");
+      expect(i).toContain("starts in about");
+    }
+    // O controle, no mesmo instante: com offset local declarado, o dia é afirmado e são dois dias.
+    expect(
+      at("2026-09-18T12:00:00-03:00", "2026-09-16T12:00:00-03:00"),
+    ).toContain("2 calendar days after it (in 2 days)");
+  });
+
+  test("a start in Z says how far away it is, and nothing about the day", () => {
+    // `Z` é um instante de verdade, então a distância é um fato; o dia não é, porque UTC diz onde o
+    // instante está e nunca onde está quem vai ler a mensagem.
+    // O par é de meio-dia de propósito: longe de qualquer meia-noite, a sonda de horário de verão
+    // concordaria, então o silêncio sobre o dia só pode vir da regra do `Z`.
+    const i = at("2026-09-18T12:00:00Z", "2026-09-17T12:00:00-03:00");
+    expect(i).toContain("starts in about 21 hours");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
+    expect(i).toContain("do not describe which day it is relative to now");
+  });
+
+  // WHY THE GROUNDING IS NOT A REF. `nudgeOccasionKey` hashes every non-null ref, and the refusal
+  // ledger's "one line per occasion" rests on that key being the same string across a retry of the
+  // SAME reminder. A value that moves with the clock would make every retry a new occasion, so the
+  // second refusal of one appointment would write a second row and raise a second alert.
+  test("the occasion key does not move with the clock", () => {
+    const key = (now: string) =>
+      nudgeOccasionKey(
+        7n,
+        42,
+        reminderNudge({
+          ...base,
+          isLast: true,
+          startISO: "2026-09-17T16:00:00-03:00",
+          now: new Date(now),
+        }),
+      );
+    expect(key("2026-09-16T15:00:00-03:00")).toBe(
+      key("2026-09-17T14:59:00-03:00"),
+    );
   });
 });

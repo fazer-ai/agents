@@ -746,6 +746,11 @@ export async function loadAgentConfig(
           chatwootThreadId(args.tenantId, args.instanceId, args.conversationId),
         ),
         canOperate,
+        // The SAME instant and zone the prompt variables render, for the reason promptOpts states
+        // above: two renderings of one turn's clock that disagree is the defect, not the cure. The
+        // playground's time simulation therefore reaches this block too (issue #685).
+        promptOpts.now,
+        timezone,
       );
     } catch (e) {
       // NOTE: Optional context fails OPEN — a read error here must not silence the whole turn.

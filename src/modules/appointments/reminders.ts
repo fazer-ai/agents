@@ -537,6 +537,11 @@ export interface ReminderNudgeArgs {
   // system never wrote to. The context block already answers the same question by emitting no
   // calendar_id for those appointments; this is the same rule on the reminder path (issue #352).
   calendarId: string | null;
+  // The clock at SEND time, injected — the same discipline `computeReminderJobs` and
+  // `minutesFromNow` keep, and required rather than optional for the reason `nudgeMessage` gives
+  // about its own conversation id: a field a future writer may forget is the field that silently
+  // takes the temporal grounding below back out of the reminder (issue #685).
+  now: Date;
   // Whether the calendar tools can actually act on THIS appointment. False for a booking that lives
   // in the operator's own system and reached the platform through a tool's declaration (issue #352):
   // there is no Google event behind it, so naming calendar_update_event at the model is pointing it
@@ -544,6 +549,155 @@ export interface ReminderNudgeArgs {
   // its own tool pointer. The discriminator is the credential: a Calendar booking cannot exist
   // without one, since the create call needs the token it resolves.
   canOperate: boolean;
+}
+
+const DAY_MS = 86_400_000;
+
+// The LOCAL offset the start states, in minutes, or null when it states none — an all-day date
+// (`2026-09-18`, which is how Google answers a booking with no time), a wall clock written without
+// one, or a value in `Z`.
+//
+// Null is not a fallback to UTC, and that distinction is the whole of round 2 of the review. This
+// offset is the only thing in the record that names the CUSTOMER'S calendar, and it is what places
+// `now` in the same frame as the start, so that "today" means their today. `parseStartMs` pins an
+// offset-less value to UTC to have ONE instant everybody agrees on, which is the right answer for
+// ordering and liveness and is not an answer about anybody's calendar day: measured, an all-day
+// booking on the 18th announced itself as "tomorrow" to a customer for whom it was the day after
+// tomorrow (21:00 on the 16th in São Paulo is already the 17th in UTC), and an offset-less
+// `2026-09-18T09:00` announced itself as "today" on their 17th. `Z` is the same mistake with a
+// stated zone: it says where the instant is, never where the person reading it is.
+// An all-day date (`2026-09-18`) or a wall clock written without an offset: the two shapes whose
+// instant `parseStartMs` invents in UTC.
+const ALL_DAY_OR_LOCAL =
+  /^\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)?$/;
+
+function statedLocalOffsetMinutes(startISO: string): number | null {
+  const m = /([+-])(\d{2}):?(\d{2})$/.exec(startISO);
+  if (!m) return null;
+  const minutes = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+  // A ZERO offset is `Z` under another spelling, and round 6 of the review found it reaching the
+  // opposite answer: `+00:00` was read as the customer's own calendar and announced an appointment
+  // two days out as "tomorrow". ISO 8601 even makes `-00:00` mean "offset unknown" outright. A
+  // booking API that serializes UTC this way is stating an instant, not a local calendar.
+  return minutes === 0 ? null : minutes;
+}
+
+// Coarse on purpose: "about" is the register a reminder speaks in, and a distance to the minute
+// would invite the model to read precision into a value the scheduler does not promise (a job can
+// run late, and the retry ladder spans hours).
+function distancePhrase(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${Math.round(ms / DAY_MS)} days`;
+}
+
+// WHICH CALENDAR DAY, and empty when that answer would depend on an hour we do not hold. The offset
+// the start states is the zone's offset AT THE APPOINTMENT'S instant, and `now` may sit on the other
+// side of a daylight-saving transition, where the same zone is an hour away from it. The payload
+// carries an offset and not an IANA zone, so there is nothing here to ask — and round 3 of the
+// review found the case that makes the difference customer-facing: in America/New_York, a start of
+// `2026-11-01T02:30:00-05:00` with now at `00:30:00-04:00` is THREE hours away on the SAME local
+// day — the wall clock reads 00:30 then 02:30, and the hour between 01:00 and 02:00 happens twice,
+// which is the same reason the distance is taken from instants and not from the clock face — and
+// the stated offset alone puts now on the previous date and calls it "tomorrow" while the distance
+// in the same sentence says hours.
+//
+// So the day is claimed only when it does NOT depend on that hour: the difference is taken with the
+// stated offset and with an hour either side of it, and a disagreement means we say nothing about
+// the day and let the distance carry the sentence. It costs the relative word within an hour of
+// local midnight, which is a slice of the day when almost nothing is reminded, and it never states
+// a day that is wrong.
+// How far the zone's offset at `now` may sit from the offset the START states, which is the whole
+// uncertainty `relativeDay` refuses to guess through. An hour is the usual daylight-saving step and
+// was all this covered until round 10 of the review, which found the zones that move TWO: in
+// Antarctica/Troll (+00 in winter, +02 in summer), now at `2026-03-28T23:30Z` against an appointment
+// at `2026-03-29T10:00+02:00` was confidently called "today" while the local sending date was still
+// the 28th. Lord Howe moves by thirty minutes, so the half hour is in here too. The cost of each
+// value is a slightly wider band around midnight where the day goes unclaimed and the sentence
+// carries the distance alone, which is the trade this function is built on.
+const DST_SKEWS_MINUTES = [-120, -60, -30, 0, 30, 60, 120] as const;
+
+function relativeDay(
+  startMs: number,
+  nowMs: number,
+  offset: number,
+): string | null {
+  const dayOf = (ms: number, off: number) =>
+    Math.floor((ms + off * 60_000) / DAY_MS);
+  const start = dayOf(startMs, offset);
+  const deltas = DST_SKEWS_MINUTES.map(
+    (skew) => start - dayOf(nowMs, offset + skew),
+  );
+  if (new Set(deltas).size !== 1) return null;
+  const days = deltas[0] as number;
+  if (days === 0) return "on that same calendar day (today)";
+  if (days === 1) return "on the calendar day after it (tomorrow)";
+  return `${days} calendar days after it (in ${days} days)`;
+}
+
+// (#685) WHAT THE MODEL CANNOT WORK OUT FOR ITSELF, and the whole of this issue. The reminder turn
+// states the appointment's start TWICE (this nudge's summary and the prompt's appointment block) and
+// the current instant ZERO times: `{{data_atual}}` and its siblings only reach the prompt when the
+// operator happened to type one. With no anchor the model takes the relative word from the last
+// message that used one — which, on the 24h reminder, said "amanhã" and was right when it said it.
+// Measured against the real API before this existed: 2 of 5 replies called an appointment starting
+// in one hour "amanhã".
+//
+// THE DAY IS A FACT HERE, NEVER A WORD THERE. The issue proposed deriving "hoje" from the configured
+// `offsetHours` and instructing the model to use that word. Two things are wrong with it, and both
+// were measured: the offset describes when the reminder was ARMED, not how far the appointment is
+// when the message actually goes out (a retry lands hours later, the queue can be behind, and a
+// moved event replaces the start while the offset still says 1) — with the event moved to the next
+// day, 5 of 5 replies built that way announced it as "hoje" — and the word itself belongs to the
+// conversation, not to us: the same agent serves a tenant writing in English.
+//
+// It rides in the INSTRUCTIONS lane, not in `refs`, and that is deliberate: `nudgeOccasionKey` hashes
+// every non-null ref, so a value that moves with the clock would make each retry of one reminder a
+// different occasion, and the refusal ledger's one-line-per-occasion would become one line per
+// attempt. It is also our own derived text rather than external data, which is the boundary the two
+// lanes draw.
+//
+// TWO FACTS, EACH SAID ONLY WHEN IT IS KNOWN. The distance needs a real instant; the calendar day
+// needs a local frame to place `now` in, and that is strictly more than the instant. So a start in
+// `Z` gets the distance and no day (UTC says where the instant is, never where the person reading it
+// is), an all-day date and a wall clock written without an offset get neither (their instant is a
+// placeholder `parseStartMs` invents for ordering), and a start already begun or unreadable gets
+// nothing at all — the handler ends that job before it reaches here, and a day asserted about it
+// would add a second wrong statement instead of removing one. The reminder still goes out in every
+// one of those cases, saying the date, which is correct. The tool boundary is what keeps new rows
+// out of the offset-less case: `tool-definitions/appointment.ts` resolves a bare wall clock into the
+// agent's own zone before it is ever stored, for this same reason.
+export function reminderTemporalGrounding(startISO: string, now: Date): string {
+  const startMs = parseStartMs(startISO);
+  const nowMs = now.getTime();
+  if (!Number.isFinite(startMs) || startMs <= nowMs) return "";
+  const offset = statedLocalOffsetMinutes(startISO);
+  // The distance is knowable whenever the start names a real INSTANT — a stated offset, `Z`
+  // included. It is not knowable for an all-day date or a wall clock written without one, where the
+  // instant `parseStartMs` produces is a placeholder for ordering: "starts in about 9 hours" there
+  // would be that placeholder talking, not the appointment.
+  const distance = ALL_DAY_OR_LOCAL.test(startISO)
+    ? null
+    : distancePhrase(startMs - nowMs);
+  const day = offset === null ? null : relativeDay(startMs, nowMs, offset);
+  // `offset !== null` is redundant with `day` (a day exists only when an offset did) and the
+  // narrowing is not: `sentOn` below needs the number, not the inference.
+  if (day && distance && offset !== null) {
+    // DATADO, e isto foi medido. Este turno é PERSISTIDO no thread, então uma frase que diz "hoje"
+    // hoje continua ali amanhã, e o turno reativo do dia seguinte não tem relógio nenhum para
+    // contradizê-la: com a redação relativa a "now", 9 de 10 respostas no dia seguinte repetiam a
+    // palavra velha mesmo com o instante corrente no bloco de agendamentos; nomeando a data do
+    // envio, 1 de 10. A data é a LOCAL do compromisso (o mesmo offset que decidiu o dia), porque é
+    // a única que concorda com o que a mensagem diz em voz alta.
+    const sentOn = new Date(nowMs + offset * 60_000).toISOString().slice(0, 10);
+    return ` This reminder is being sent on ${sentOn} in the appointment's own time zone, and the appointment falls ${day}, starting in about ${distance}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
+  }
+  if (distance) {
+    return ` This appointment starts in about ${distance}, and nothing here places it on a named calendar day: word the date and time naturally in the conversation's language, from the start in the fenced data, and do not describe which day it is relative to now.`;
+  }
+  return "";
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids
@@ -588,7 +742,9 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
       booking_system:
         a.provider === GOOGLE_CALENDAR_PROVIDER ? null : a.provider,
     },
-    instructions: `${base}${a.canOperate ? tools : noTools}`,
+    instructions: `${base}${reminderTemporalGrounding(a.startISO, a.now)}${
+      a.canOperate ? tools : noTools
+    }`,
   };
 }
 
@@ -740,6 +896,12 @@ export async function appointmentReminderHandler(
   // claim ran inside an advisory-lock transaction and a second connection there would stall the lock
   // under DB_POOL_MAX=1. That claim holds no transaction any more (issue #225), so there is nothing
   // to borrow and nothing to stall.
+  // ONE CLOCK PER RUN, read through the deps seam and read FRESH on every call: production passes
+  // none and gets `new Date()` each time, which the appointment ceiling below depends on (it has to
+  // be re-evaluated across a model call that can last a minute). A test passes a fixed one and gets
+  // a deterministic day, which is the only way to assert a CALENDAR day without leaning on the hour
+  // the suite happens to run at (rounds 1 and 4 of the review, issue #685).
+  const nowMs = (): number => (deps?.now?.() ?? new Date()).getTime();
   const retired = (): Promise<boolean> => jobRetired(job, base);
   // Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
   // jobRetiredStrict). The two asks above it can afford the lenient answer.
@@ -773,7 +935,7 @@ export async function appointmentReminderHandler(
     }
   }
 
-  if (reminderAlreadyStarted(live, startISO, Date.now())) {
+  if (reminderAlreadyStarted(live, startISO, nowMs())) {
     return { outcome: "done" };
   }
 
@@ -793,7 +955,7 @@ export async function appointmentReminderHandler(
     // when the start arrives, which is precisely the message this handler must never send.
     stillWanted: async ({ strict }) =>
       !(await (strict ? retiredStrict() : retired())) &&
-      !reminderAlreadyStarted(live, startISO, Date.now()),
+      !reminderAlreadyStarted(live, startISO, nowMs()),
     nudge: reminderNudge({
       isLast,
       askConfirmation,
@@ -803,6 +965,13 @@ export async function appointmentReminderHandler(
       summary,
       // The same value the start check just used, for the reason its header gives.
       startISO: authoritativeReminderStart(live, startISO),
+      // The clock HERE, not the offset the row was armed with: this is the last moment before the
+      // message is composed, and it is the only one that knows how far the appointment actually is
+      // (issue #685). Through the deps seam that already exists for exactly this reason — the one
+      // `runAgentNudge` reads for the 24h window — because a test that leans on real time to place
+      // a calendar day passes for the wrong reason at the hours where the day is the question
+      // (round 4 of the review: the assertion went silent for the two hours around local midnight).
+      now: new Date(nowMs()),
       eventId,
       calendarId,
     }),

@@ -53,9 +53,10 @@ import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import {
   DEFAULT_TIMEZONE,
-  formatHumanDateTime,
-  formatWithPattern,
-  roundDownToMinutes,
+  flooredLocalParts,
+  formatParts,
+  formatPartsHuman,
+  partsInTimezone,
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
 import {
@@ -1851,12 +1852,15 @@ function getCurrentTimeTool(ctx: ToolCtx) {
   return tool(
     async ({ roundToMinutes }: { roundToMinutes?: number }) => {
       const tz = ctx.timezone || DEFAULT_TIMEZONE;
-      const now =
+      const now = new Date();
+      // One read of the clock, rendered twice from the SAME parts: the sentence and the ISO beside it
+      // disagreeing by a minute is the kind of thing a model reads as two different times.
+      const when =
         roundToMinutes && roundToMinutes > 0
-          ? roundDownToMinutes(new Date(), roundToMinutes)
-          : new Date();
-      const iso = formatWithPattern(now, tz, "YYYY-MM-DD HH:mm");
-      return `${formatHumanDateTime(now, tz)} (${iso}, ${tz})`;
+          ? flooredLocalParts(now, tz, roundToMinutes)
+          : partsInTimezone(now, tz);
+      const iso = formatParts(when, "YYYY-MM-DD HH:mm");
+      return `${formatPartsHuman(when)} (${iso}, ${tz})`;
     },
     {
       name: "get_current_time",

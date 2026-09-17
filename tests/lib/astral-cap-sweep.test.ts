@@ -450,6 +450,10 @@ const BARE_SLICES: Record<
   // of titles, never characters.
   "src/modules/agents/transfer.ts": [3, "array"],
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
+  // The date the reminder says it was sent on, cut from `toISOString()` (issue #685): a fixed-width
+  // ASCII `YYYY-MM-DD` that the runtime produces itself, so the cut cannot land inside a code point
+  // and the piece is never operator or customer text.
+  "src/modules/appointments/reminders.ts": [1, "ascii"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page

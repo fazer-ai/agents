@@ -74,15 +74,22 @@ async function seedConversation(convId: number) {
   });
 }
 
-async function promptFor(convId: number): Promise<string> {
+async function promptFor(
+  convId: number,
+  overrides?: { promptNow?: string },
+): Promise<string> {
   const cfg = await runScopedOn(appDb, sysCtx(), (db) =>
-    loadAgentConfig(db, {
-      tenantId,
-      instanceId,
-      conversationId: convId,
-      agentId,
-      threadId: threadOf(convId),
-    }),
+    loadAgentConfig(
+      db,
+      {
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        agentId,
+        threadId: threadOf(convId),
+      },
+      overrides ? { overrides } : undefined,
+    ),
   );
   expect(cfg).not.toBeNull();
   return cfg?.systemPrompt ?? "";
@@ -170,6 +177,99 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).toContain('summary="Consulta – Ana"');
     // No GOOGLE_CALENDAR tool grant on this agent ⇒ the block is read-only (no tool pointer).
     expect(prompt).not.toContain("calendar_update_event");
+  });
+
+  // (#685) O bloco enuncia o instante corrente, e ele tem que ser o MESMO que as variáveis de prompt
+  // renderizam: duas leituras do relógio de um turno discordando dentro de um prompt é o defeito que
+  // esta issue trata, não o conserto. Aqui as duas atravessam o caminho real (`loadAgentConfig`), com
+  // o `{{data_hora_atual}}` do operador ao lado do bloco.
+  test("the block's clock is the same one the prompt variables render", async () => {
+    await seedConversation(140);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(140),
+      eventId: "ev_clock",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(30),
+      summary: "Consulta – relógio",
+      calendarLabel: null,
+      reminders: null,
+      base: appDb,
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { systemPrompt: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { systemPrompt: "Agora é {{data_hora_atual}}." },
+    });
+    try {
+      const prompt = await promptFor(140);
+      const varRendered = /Agora é (\d{2}\/\d{2}\/\d{4} \d{2}:\d{2})\./.exec(
+        prompt,
+      );
+      const blockRendered =
+        /Momento atual deste atendimento: (\d{2}\/\d{2}\/\d{4} \d{2}:\d{2})/.exec(
+          prompt,
+        );
+      // Os controles primeiro: as duas leituras existem neste prompt, senão a igualdade abaixo é
+      // sobre dois `undefined`.
+      expect(varRendered?.[1]).toBeTruthy();
+      expect(blockRendered?.[1]).toBeTruthy();
+      expect(blockRendered?.[1]).toBe(varRendered?.[1]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { systemPrompt: before.systemPrompt },
+      });
+    }
+  });
+
+  // E a cerca acima passa com o relógio REAL nas duas pontas, que é justamente o caso em que trocar
+  // `promptOpts.now` por um `new Date()` próprio não muda nada: sem simulação os dois valores
+  // coincidem e a meia hora de arredondamento engole a diferença. Quem discrimina é o playground, a
+  // ferramenta com que o operador valida este conserto: com a simulação de tempo ligada, o bloco tem
+  // que responder a PAREDE simulada, senão o operador vê as variáveis em 23:00 e o bloco no relógio
+  // do servidor, que é o defeito desta issue dentro de um único prompt. O sobrevivente de mutação que
+  // pediu este teste veio do verificador.
+  test("the playground's simulated clock reaches the block, not just the variables", async () => {
+    await seedConversation(141);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(141),
+      eventId: "ev_sim",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(30),
+      summary: "Consulta – simulação",
+      calendarLabel: null,
+      reminders: null,
+      base: appDb,
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { systemPrompt: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { systemPrompt: "Agora é {{data_hora_atual}}." },
+    });
+    try {
+      // Parede no fuso do agente (America/Sao_Paulo por default), longe do relógio do servidor em
+      // qualquer dia do ano, e num minuto que o arredondamento de meia hora preserva.
+      const prompt = await promptFor(141, { promptNow: "2026-03-10T23:00" });
+      expect(prompt).toContain("Agora é 10/03/2026 23:00.");
+      expect(prompt).toContain(
+        "Momento atual deste atendimento: 10/03/2026 23:00 (America/Sao_Paulo)",
+      );
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { systemPrompt: before.systemPrompt },
+      });
+    }
   });
 
   test("a record-only booking keeps the appointment AND the reminders already armed", async () => {

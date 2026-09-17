@@ -107,12 +107,10 @@ async function toolRow(
   toolId: bigint,
 ): Promise<{
   description: string | null;
-  // The whole spec per field, not just its description: two cases assert that a field the walk must
-  // step over comes back with its shape intact.
-  input_schema: Record<
-    string,
-    { description?: unknown } & Record<string, unknown>
-  >;
+  // Deliberately loose: the one column holds the compact field map, standard JSON Schema, and the
+  // pathological field literally named `properties`, and a case below asserts what each shape keeps.
+  // The per-field spec comes out through `fieldOf`.
+  input_schema: Record<string, unknown>;
   ack_message?: string | null;
   updated_at: string;
 }> {
@@ -122,6 +120,14 @@ async function toolRow(
     [String(toolId)],
   );
   return { ...r.rows[0], updated_at: String(r.rows[0].updated_at) };
+}
+
+// One field's spec out of an input_schema of any shape.
+function fieldOf(
+  schema: Record<string, unknown>,
+  name: string,
+): { description?: unknown; type?: unknown } {
+  return (schema[name] ?? {}) as { description?: unknown; type?: unknown };
 }
 
 async function auditPathsFor(target: string): Promise<string[][]> {
@@ -452,6 +458,33 @@ describe.skipIf(!dbUp)(
         },
       );
       await toolDef("tool_glued", "tool_definitions", "xassign_labelx", {});
+      // A LEGACY ROW IN STANDARD JSON SCHEMA. The runtime still supports it (`normalizeToolShapes`
+      // converts on read and copies each property's `description` across), so the model receives
+      // these hints verbatim and a one-level walk would leave every one of them stale.
+      await toolDef("tool_legacy", "tool_definitions", "legado", {
+        type: "object",
+        required: ["etiqueta"],
+        properties: {
+          etiqueta: {
+            type: "string",
+            description: "a que assign_label aplicaria",
+          },
+          sem_hint: { type: "string" },
+        },
+      });
+      // The pathological compact field literally NAMED `properties`, which the runtime's own shape
+      // test is written to protect: its sub-values are the strings of its FieldSpec, not fields.
+      await toolDef(
+        "tool_props_field",
+        "code_tool_definitions",
+        "campo chamado properties",
+        {
+          properties: {
+            type: "object",
+            description: "o que assign_label recebia",
+          },
+        },
+      );
 
       serializedBefore = String(
         (
@@ -764,7 +797,7 @@ describe.skipIf(!dbUp)(
     test("the operator's OWN tools are prose too, description and argument hints alike", async () => {
       const http = await toolRow("tool_definitions", id("http_tool"));
       expect(http.description).toBe("Use no lugar de set_labels.");
-      expect(http.input_schema.etiqueta?.description).toBe(
+      expect(fieldOf(http.input_schema, "etiqueta").description).toBe(
         "a etiqueta que set_labels aplicaria",
       );
       // A field with no description, and one whose description is not a string: both survive.
@@ -779,7 +812,9 @@ describe.skipIf(!dbUp)(
 
       const code = await toolRow("code_tool_definitions", id("code_tool"));
       expect(code.description).toBe("Faz o que set_labels fazia.");
-      expect(code.input_schema.campo?.description).toBe("idem set_labels");
+      expect(fieldOf(code.input_schema, "campo").description).toBe(
+        "idem set_labels",
+      );
 
       expect(await auditPathsFor(`tool:${id("http_tool")}`)).toEqual([
         ["description", "input_schema.*.description"],
@@ -787,6 +822,35 @@ describe.skipIf(!dbUp)(
       expect(await auditPathsFor(`code_tool:${id("code_tool")}`)).toEqual([
         ["description", "input_schema.*.description"],
       ]);
+    });
+
+    test("a legacy JSON Schema row has its argument hints rewritten too", async () => {
+      const legacy = await toolRow("tool_definitions", id("tool_legacy"));
+      const props = legacy.input_schema.properties as Record<string, unknown>;
+      expect(fieldOf(props, "etiqueta").description).toBe(
+        "a que set_labels aplicaria",
+      );
+      // The shape survives: the keyword keys are still keywords, and a property with no hint is
+      // left exactly as it was.
+      expect(legacy.input_schema.type).toBe("object");
+      expect(legacy.input_schema.required).toEqual(["etiqueta"]);
+      expect(props.sem_hint).toEqual({ type: "string" });
+      expect(await auditPathsFor(`tool:${id("tool_legacy")}`)).toEqual([
+        ["input_schema.*.description"],
+      ]);
+    });
+
+    test("a compact field literally named `properties` keeps its own description", async () => {
+      const row = await toolRow(
+        "code_tool_definitions",
+        id("tool_props_field"),
+      );
+      // ONE rewrite, of that field's own description, and no invented nesting: the nested walk only
+      // descends into an object, and `type`/`description` here are strings.
+      expect(row.input_schema.properties).toEqual({
+        type: "object",
+        description: "o que set_labels recebia",
+      });
     });
 
     test("a tool whose occurrence is glued to a word character is not touched at all", async () => {

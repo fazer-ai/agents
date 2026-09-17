@@ -29,9 +29,10 @@
 -- AND PROSE DOES NOT ALL LIVE IN THE BAG. Two more surfaces are COLUMNS on the tool definition
 -- tables, which `text-caps.ts` knows nothing about: `tool_definitions.description` and
 -- `code_tool_definitions.description`, which the model receives as those tools' descriptions, plus
--- the per-argument `description` inside each `input_schema`, which it receives as the argument's
--- hint. This file rewrites them too; the block that does it is at the bottom, with the ambiguity
--- they raise stated there. `tests/utils/operator-text-classes.ts` classifies every String column of
+-- the per-argument `description` inside each `input_schema`, in BOTH shapes that column can hold
+-- (the compact map and legacy JSON Schema), which it receives as the argument's hint. This file
+-- rewrites them too; the block that does it is at the bottom, with the ambiguity they raise stated
+-- there. `tests/utils/operator-text-classes.ts` classifies every String column of
 -- those two tables so a new one cannot arrive unclassified.
 --
 -- DELIBERATELY NOT REWRITTEN, and the reason is the same for the first group: the text is read by a
@@ -216,11 +217,21 @@ CREATE OR REPLACE FUNCTION pg_temp.renamed(t text) RETURNS text
     SELECT regexp_replace($1, '\yassign_label\y', 'set_labels', 'g')
   $fn$;
 
--- The per-argument descriptions, one level deep: `input_schema` is `{ <field>: { type, description?,
--- … } }` and nothing else in it is prose. A field whose `description` is not a string is left alone,
--- and so is a schema that is not an object; an empty object would make `jsonb_object_agg` return
--- NULL, hence the COALESCE.
-CREATE OR REPLACE FUNCTION pg_temp.renamed_schema(s jsonb) RETURNS jsonb
+-- The per-argument descriptions, in BOTH stored shapes. `input_schema` is normally the compact map
+-- `{ <field>: { type, description?, … } }`, but a legacy row can hold standard JSON Schema
+-- (`{ type, required, properties: { <field>: { description? } } }`), which the runtime still
+-- supports: `normalizeToolShapes` converts it on read and `compactFromJsonSchema` copies the
+-- property's `description` across verbatim, so the model receives it either way. Measured in review
+-- round 2 of PR #687 by building the zod schema from a legacy row and reading the description back
+-- out of it. A one-level walk would have left every legacy row advertising the old name.
+--
+-- Both walks run unconditionally, which needs no shape predicate and cannot damage either shape: the
+-- nested walk only descends into `properties.<k>` when that value is an OBJECT, so a compact field
+-- literally named `properties` (whose sub-values are the strings of its own FieldSpec) is untouched
+-- by it, while the top-level walk has already rewritten that field's own description. A `description`
+-- that is not a string is left alone in both, and an empty object would make `jsonb_object_agg`
+-- return NULL, hence the COALESCE.
+CREATE OR REPLACE FUNCTION pg_temp.renamed_descriptions(s jsonb) RETURNS jsonb
   LANGUAGE sql IMMUTABLE AS $fn$
     SELECT CASE
       WHEN jsonb_typeof($1) <> 'object' THEN $1
@@ -239,6 +250,27 @@ CREATE OR REPLACE FUNCTION pg_temp.renamed_schema(s jsonb) RETURNS jsonb
                   END)
            FROM jsonb_each($1) AS e),
         $1)
+    END
+  $fn$;
+
+CREATE OR REPLACE FUNCTION pg_temp.renamed_schema(s jsonb) RETURNS jsonb
+  LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT CASE
+      WHEN jsonb_typeof($1) <> 'object' THEN $1
+      -- NESTED FIRST, then the top level over the RESULT. The other order looks equivalent and is
+      -- not: `jsonb_set(top_level(x), '{properties}', nested(x -> 'properties'))` replaces the
+      -- properties value with a walk of the ORIGINAL, discarding what the top-level walk had already
+      -- rewritten there. Measured by the case in the test file that seeds a compact field literally
+      -- named `properties`: it came back with the old name.
+      WHEN jsonb_typeof($1 -> 'properties') = 'object'
+        THEN pg_temp.renamed_descriptions(
+               jsonb_set(
+                 $1,
+                 '{properties}',
+                 pg_temp.renamed_descriptions($1 -> 'properties')
+               )
+             )
+      ELSE pg_temp.renamed_descriptions($1)
     END
   $fn$;
 

@@ -27,6 +27,13 @@ import { lastStampedConversationId } from "./markers";
 //      wrote it" would advance for good, spending the one chance to write it. So a boundary crossed
 //      while another invoke is in flight is NOT consumed here: the marker stays put and the next
 //      writer lands the divider with nothing in the way.
+//
+//      WHO STILL ARRIVES HERE WITH THIS TRUE, since issue #658: the nudge, continuous ingestion, and
+//      the debounce flush past its deferral ceiling. The direct webhook turn does NOT — it waits the
+//      other invoke out and acquires alone, so it claims the boundary in its own turn. What keeps
+//      that turn from writing a SECOND divider is no longer this case, it is `previous ===
+//      conversationId` above: the turn it waited for has already moved the marker. Measured on the
+//      holdout scenario s4 of that issue, six runs, one divider.
 //   2. THE ATTENDANCE HAS ALREADY STARTED. A boundary deferred by case 1 leaves the marker on the OLD
 //      conversation, so the next writer of the SAME conversation still sees a boundary — by which
 //      time messages of this attendance are already in the thread. A divider can only be APPENDED, so

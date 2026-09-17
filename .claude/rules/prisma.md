@@ -68,8 +68,10 @@ senão o próximo `migrate dev` gera um `RENAME INDEX`.
 
 A rename is not done when the keys move. Operator-authored prose names tools too, and it lives in
 eleven sites of one walker (`src/modules/agents/text-caps.ts`, which says of itself that it is the
-one place that knows where that text lives). Six of those sites reach a model that has tools, and
-those are the ones a rename has to rewrite:
+one place that knows where that text lives). Six of those sites carry text where a tool name MEANS
+the agent's toolset, and those are the ones a rename has to rewrite. The axis is not "the reader has
+tools": the first four below are read by the tool-calling model itself, and the two guardrail ones by
+a model with no tools at all, but they are rules ABOUT what the agent may call.
 
 ```
 toolGuidance.<tool>                 appended to that tool's description
@@ -99,8 +101,10 @@ lost and no capability broke, which is exactly why nobody noticed (issue #604).
 The five sites NOT to rewrite are read by a person (`availability.awayMessage`,
 `contactAuth.denyMessage`, the two `guardrails.*.templateMessage`, `signature.text`): `set_labels`
 means no more to a customer than the old name did, so rewriting them edits a message a customer
-reads and fixes nothing. `vision.extractionPrompt` is out for a different reason: that model is
-handed no tools, so a tool name in it names nothing in either spelling.
+reads and fixes nothing. `vision.extractionPrompt` is out for a different reason: it instructs the vision
+model to read an image and is not a rule about the agent either, so a tool name in it refers to
+nothing. What separates it from the two guardrail prompts is not that its reader lacks tools, since
+neither reader has any.
 
 The list is not maintained by memory: `tests/modules/operator-text-surface.test.ts` classifies every
 site the walker has AND every `String` column of the two tool definition models, and fails on one it

@@ -6,8 +6,8 @@ import {
 } from "@/modules/agents/text-caps";
 import {
   CLASSIFIED,
-  MODEL_WITH_TOOLS,
-  MODEL_WITHOUT_TOOLS,
+  NAMES_AGENT_TOOLS,
+  NO_TOOL_MEANING,
   PERSON_FACING,
   TOOL_COLUMNS,
 } from "../utils/operator-text-classes";
@@ -125,7 +125,7 @@ describe("the operator-text surface a rename has to follow", () => {
 
   test("the tool columns a rename rewrites are exactly the two descriptions", () => {
     const rewritten = Object.entries(TOOL_COLUMNS)
-      .filter(([, c]) => c === "model_with_tools")
+      .filter(([, c]) => c === "names_agent_tools")
       .map(([k]) => k);
     expect(rewritten.sort()).toEqual([
       "CodeToolDefinition.description",
@@ -135,8 +135,8 @@ describe("the operator-text surface a rename has to follow", () => {
 
   test("the three classes are disjoint, so no site is both", () => {
     expect(new Set(CLASSIFIED).size).toBe(CLASSIFIED.length);
-    for (const site of MODEL_WITH_TOOLS) {
-      expect([...MODEL_WITHOUT_TOOLS, ...PERSON_FACING]).not.toContain(site);
+    for (const site of NAMES_AGENT_TOOLS) {
+      expect([...NO_TOOL_MEANING, ...PERSON_FACING]).not.toContain(site);
     }
   });
 });

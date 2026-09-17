@@ -4,7 +4,7 @@ import { buildNativeTools } from "@/graph/tools/native";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 import { readHandoffConfig } from "@/modules/handoff/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
-import { classOf, MODEL_WITH_TOOLS } from "../utils/operator-text-classes";
+import { classOf, NAMES_AGENT_TOOLS } from "../utils/operator-text-classes";
 
 // Runs the ACTUAL migration file, for the reason the sibling file gives: a copy pasted here would
 // drift, and `$executeRawUnsafe` rejects multiple statements.
@@ -746,10 +746,10 @@ describe.skipIf(!dbUp)(
       // from the registry the surface fence asserts is complete, so a site added later cannot slip
       // past both files.
       for (const path of changed) {
-        expect(classOf(siteOf(path))).toBe("model_with_tools");
+        expect(classOf(siteOf(path))).toBe("names_agent_tools");
       }
       const shouldChange = Object.keys(before).filter(
-        (k) => classOf(siteOf(k)) === "model_with_tools",
+        (k) => classOf(siteOf(k)) === "names_agent_tools",
       );
       expect(changed.sort()).toEqual(shouldChange.sort());
       // The control: the seed really did carry the old name in every path, so "unchanged" is a
@@ -757,7 +757,7 @@ describe.skipIf(!dbUp)(
       expect(
         Object.values(before).every((v) => v.includes("assign_label")),
       ).toBeTrue();
-      expect(shouldChange.length).toBe(MODEL_WITH_TOOLS.length);
+      expect(shouldChange.length).toBe(NAMES_AGENT_TOOLS.length);
     });
 
     test("a note whose only occurrence follows a newline is still rewritten", async () => {

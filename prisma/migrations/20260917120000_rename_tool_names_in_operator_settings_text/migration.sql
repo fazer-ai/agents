@@ -13,8 +13,12 @@
 -- THE SURFACE, counted rather than assumed. Operator-authored free text lives in
 -- `agents.system_prompt` and in twelve kinds of field inside `agents.settings`
 -- (`src/modules/agents/text-caps.ts` walks all twelve, and says of itself that it is the one place
--- that knows where that text lives). SIX of those twelve reach a model that has tools, and those
--- six are what this file rewrites:
+-- that knows where that text lives). SIX of those twelve carry text where a tool name MEANS the
+-- agent's toolset, and those six are what this file rewrites. That is the axis, and it is not "the
+-- reader has tools": the first four are read by the tool-calling model itself, and the two guardrail
+-- ones are read by a model that has no tools at all (`analyze.ts` uses `withStructuredOutput` and
+-- says so twice) yet are rules ABOUT what the agent may call, so a stale name there is a policy
+-- pointed at a tool that no longer exists.
 --
 --   toolGuidance.<tool>                 appended to that tool's description
 --   handoff.instructions                appended to handoff_to_human's description
@@ -42,9 +46,10 @@
 --   availability.awayMessage, contactAuth.denyMessage,
 --   guardrails.input.templateMessage, guardrails.output.templateMessage, signature.text
 --
--- And `vision.extractionPrompt` is out for a different reason: it is the instruction sent to the
--- vision model, which is handed no tools at all (`src/modules/vision/service.ts`), so a tool name in
--- it names nothing in either spelling.
+-- And `vision.extractionPrompt` is out for a different reason: it instructs the vision model to read
+-- an image, and it is not a rule about the agent's behaviour either, so a tool name in it means
+-- nothing in either spelling. What separates it from the two guardrail prompts is NOT that its
+-- reader lacks tools (neither reader has any); it is that a tool name there refers to nothing.
 --
 -- EVERY FOLLOW-UP STEP, INCLUDING THE ONES PAST THE READER'S CUT. `readFollowUpConfig` keeps the
 -- first ten steps and `text-caps.ts` stops walking there for a stated reason ("text in a step the

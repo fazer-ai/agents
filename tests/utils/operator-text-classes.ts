@@ -6,9 +6,14 @@
 // tool and the guardrails loop writes one per direction. A rename cannot treat two paths of one
 // `add()` call differently, so collapsing them loses no resolution. `*` stands for one segment.
 
-// Rewritten by a rename: the text is appended to a tool description or folded into a prompt handed
-// to a model that can call tools, so a stale name there is a rule about a tool that does not exist.
-export const MODEL_WITH_TOOLS = [
+// Rewritten by a rename, because a tool name in this text MEANS the agent's toolset. That is the
+// axis, and it is not "the reader has tools": four of these are read by the tool-calling model
+// itself, and the two guardrail ones are read by a model that has none (`analyze.ts` calls
+// `withStructuredOutput` and says so twice) yet are rules ABOUT what the agent may call, so a stale
+// name there is a policy pointed at a tool that no longer exists. The round's blind holdout caught
+// this: the first version of this file called the class `model_with_tools`, which was false for two
+// of its six members.
+export const NAMES_AGENT_TOOLS = [
   "followUp.steps[*].instructions",
   "guardrails.customPolicy",
   // The walker writes this one inside its per-direction loop, under `if (dir === "output")`, so the
@@ -19,9 +24,11 @@ export const MODEL_WITH_TOOLS = [
   "toolGuidance.*",
 ];
 
-// Reaches a model, but one that is handed no tools at all, so a tool name in it names nothing in
-// either spelling (`src/modules/vision/service.ts` builds no toolset).
-export const MODEL_WITHOUT_TOOLS = ["vision.extractionPrompt"];
+// Reaches a model AND names nothing: the vision extraction prompt instructs a model that is handed
+// no toolset (`src/modules/vision/service.ts`) to read an image, and it is not a rule about the
+// agent's behaviour either, so a tool name in it means nothing in either spelling. This is what
+// separates it from the two guardrail prompts above, which no `has tools` test can tell apart.
+export const NO_TOOL_MEANING = ["vision.extractionPrompt"];
 
 // Read by a PERSON. `set_labels` means no more to a customer than `assign_label` did, so a rename
 // here would edit a message a customer reads and fix nothing.
@@ -43,11 +50,11 @@ export const PERSON_FACING = [
 // is the case worth stopping.
 export const TOOL_COLUMNS: Record<
   string,
-  "model_with_tools" | "person" | "not_prose"
+  "names_agent_tools" | "person" | "not_prose"
 > = {
   // The model receives these as the tool's description and as each argument's hint.
-  "ToolDefinition.description": "model_with_tools",
-  "CodeToolDefinition.description": "model_with_tools",
+  "ToolDefinition.description": "names_agent_tools",
+  "CodeToolDefinition.description": "names_agent_tools",
   // The identifier and the display name the operator typed. NOT rewritten by a rename of a NATIVE
   // name: `20260903120000` already moved any tool that answered to a native's name, per tenant and
   // to a derived `<name>_N`, so there is no global replacement to make here.
@@ -67,8 +74,8 @@ export const TOOL_COLUMNS: Record<
 };
 
 export const CLASSIFIED = [
-  ...MODEL_WITH_TOOLS,
-  ...MODEL_WITHOUT_TOOLS,
+  ...NAMES_AGENT_TOOLS,
+  ...NO_TOOL_MEANING,
   ...PERSON_FACING,
 ];
 
@@ -82,11 +89,11 @@ export function matchesSite(site: string, path: string): boolean {
 // Which class a stored path belongs to, or null when nothing claims it.
 export function classOf(
   path: string,
-): "model_with_tools" | "model_without_tools" | "person" | null {
-  if (MODEL_WITH_TOOLS.some((s) => matchesSite(s, path)))
-    return "model_with_tools";
-  if (MODEL_WITHOUT_TOOLS.some((s) => matchesSite(s, path)))
-    return "model_without_tools";
+): "names_agent_tools" | "no_tool_meaning" | "person" | null {
+  if (NAMES_AGENT_TOOLS.some((s) => matchesSite(s, path)))
+    return "names_agent_tools";
+  if (NO_TOOL_MEANING.some((s) => matchesSite(s, path)))
+    return "no_tool_meaning";
   if (PERSON_FACING.some((s) => matchesSite(s, path))) return "person";
   return null;
 }

@@ -1056,6 +1056,116 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toBeNull();
   });
 
+  // THE FLOOR IS THE MAX OF BOTH SCALARS, and a conversation where the CLAIM is ahead of the
+  // watermark is what proves it (issue #690, mutation m6). That state is not hypothetical: the claim
+  // is written before the send and the watermark after the turn, so a reply whose watermark write was
+  // lost leaves exactly this (issue #452). Taking `handled` alone would put every message between the
+  // two above the floor, where "no row" reads as open — and the bot answers a stretch it already
+  // replied to.
+  test("the floor starts at the highest of the two scalars, not at the watermark", async () => {
+    const convId = 936;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { lastRepliedMessageId: 50, lastHandledMessageId: 10 },
+    });
+
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 60,
+        maxHandledAllowed: 59,
+        messageIds: [60],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { replyClaimFloorMessageId: true },
+        })
+      ).replyClaimFloorMessageId,
+    ).toBe(50);
+    // ...and 20, which the lost watermark write left between the two, is still the scalars' to
+    // answer for: it is at or below the floor, so the unrelaxed rule refuses it.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 20,
+        maxHandledAllowed: 19,
+        messageIds: [20],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "claimed" });
+  });
+
+  // AND THE FLUSH COMES BACK FOR WHAT IT COULD NOT CLAIM (issue #690, mutation m8). The selection
+  // drops what is already spoken for at the moment it reads, so the only way into a partial conflict
+  // is a claim landing INSIDE the turn — which is what the model's side effect does here. Every other
+  // `superseded` completes the job, because a newer message's own flush is armed; this one has
+  // nothing coming for the messages nobody claimed, and rescheduling is the only thing that brings a
+  // turn back to them.
+  test("a partial claim conflict reschedules the flush instead of completing it", async () => {
+    const convId = 937;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    // Another turn claims message 2 while this one is at the model, so the burst `[1, 2]` reaches the
+    // claim with one member taken and one free.
+    const stealTwo = new SideEffectModel(async () => {
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        maxHandledAllowed: 1,
+        messageIds: [2],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+    });
+
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => stealTwo,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "tudo bem?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    // Nothing was sent, and the job comes back rather than completing.
+    expect(sent).toEqual([]);
+    expect(out.outcome).toBe("reschedule");
+    // Message 1 is still nobody's: the retry is what will speak for it.
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1 },
+      }),
+    ).toBeNull();
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.

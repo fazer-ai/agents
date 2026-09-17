@@ -1478,8 +1478,10 @@ describe("reminderNudge temporal grounding (#685)", () => {
     expect(
       at("2026-09-16T23:00:00-03:00", "2026-09-16T10:00:00-03:00"),
     ).toContain("on the same calendar day as now (today)");
+    // East of UTC, with the pair chosen so the flipped sign walks exactly ONE of the two across a
+    // midnight: read as -05:30, this becomes the same day instead of the next one.
     expect(
-      at("2026-09-17T01:00:00+05:30", "2026-09-16T23:00:00+05:30"),
+      at("2026-09-18T06:00:00+05:30", "2026-09-17T20:00:00+05:30"),
     ).toContain("on the calendar day after now (tomorrow)");
   });
 
@@ -1525,24 +1527,44 @@ describe("reminderNudge temporal grounding (#685)", () => {
   // ANTERIOR. A regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje; a fila estava em dia, o
   // worker foi pontual e o payload está inteiro. Quem decide é a data de calendário, não a
   // antecedência.
-  test("the punctual reminder for a past-midnight appointment is still the day before", () => {
+  test("the punctual reminder for a past-midnight appointment claims no day, and still says how far", () => {
+    // Com o default `[24, 1]` da própria issue, um compromisso às 00:30 tem o lembrete de 1h às
+    // 23:30 do dia ANTERIOR, e a regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje com a fila
+    // em dia, o worker pontual e o payload inteiro. Aqui o dia cala, porque a uma hora da meia-noite
+    // local a resposta dependeria de um fuso que este módulo não tem; a distância, que é verdadeira,
+    // continua dita. O que não acontece em nenhum dos dois é uma palavra errada.
     const i = at("2026-09-17T00:30:00-03:00", "2026-09-16T23:30:00-03:00");
-    expect(i).toContain("on the calendar day after now (tomorrow)");
-    expect(i).toContain("about 1 hour");
+    expect(i).not.toContain("calendar day as now");
+    expect(i).not.toContain("calendar day after now");
+    expect(i).toContain("starts in about 1 hour");
+    expect(i).toContain("do not describe which day it is relative to now");
   });
 
-  // (rodada 2 da review, e s7 do holdout) Um start SEM offset local não diz em que calendário o
-  // cliente vive, e o UTC que o `parseStartMs` usa para ordenar não responde essa pergunta. Os três
-  // casos abaixo foram medidos afirmando o dia ERRADO antes desta borda existir: o all-day do dia 18
-  // se anunciando como "amanhã" para quem estava no dia 16 às 21:00 em São Paulo, e o relógio de
-  // parede sem offset e o valor em `Z` se anunciando como "hoje" na véspera. Nenhum dos três afirma
-  // dia nenhum agora, e o lembrete continua saindo com a data, que está correta.
-  test("a start with no local offset claims no day at all", () => {
+  // (rodada 3 da review) O offset que o start declara é o do fuso NO INSTANTE DO COMPROMISSO, e
+  // `now` pode estar do outro lado de uma virada de horário de verão, onde o mesmo fuso está a uma
+  // hora dele. Medido: em America/New_York, um start `2026-11-01T02:30:00-05:00` com agora
+  // `00:30:00-04:00` está a duas horas no MESMO dia local, e o offset declarado sozinho põe o agora
+  // na data anterior e chama de "tomorrow" enquanto a distância na mesma frase diz duas horas.
+  test("a day that would depend on a daylight-saving hour is not claimed", () => {
+    const i = at("2026-11-01T02:30:00-05:00", "2026-11-01T00:30:00-04:00");
+    expect(i).not.toContain("calendar day as now");
+    expect(i).not.toContain("calendar day after now");
+    // TRÊS horas, não duas, e a diferença é o próprio motivo de a distância sair de instantes: o
+    // relógio de parede vai de 00:30 a 02:30, mas a hora entre 01:00 e 02:00 acontece duas vezes.
+    expect(i).toContain("starts in about 3 hours");
+  });
+
+  test("a start whose instant is invented says nothing at all", () => {
+    // All-day e relógio de parede sem offset: o instante que o `parseStartMs` produz é um marcador
+    // para ordenar, então nem o dia nem a distância são fatos sobre o compromisso. Os dois foram
+    // medidos afirmando o dia ERRADO antes desta borda existir — o all-day do dia 18 se anunciando
+    // como "amanhã" para quem estava no dia 16 às 21:00 em São Paulo, e o relógio de parede sem
+    // offset se anunciando como "hoje" na véspera.
     for (const [startISO, now] of [
       ["2026-09-18", "2026-09-16T21:00:00-03:00"],
       ["2026-09-18", "2026-09-16T15:00:00-03:00"],
       ["2026-09-18T09:00", "2026-09-17T21:00:00-03:00"],
-      ["2026-09-18T02:00:00Z", "2026-09-17T21:00:00-03:00"],
+      ["2026-09-18T09:00:00", "2026-09-17T12:00:00-03:00"],
     ] as const) {
       const i = at(startISO, now);
       expect(i).not.toContain("calendar day");
@@ -1551,6 +1573,18 @@ describe("reminderNudge temporal grounding (#685)", () => {
       // O controle: continua um lembrete, e continua pedindo a data e a hora.
       expect(i).toContain("stating the date and time");
     }
+  });
+
+  test("a start in Z says how far away it is, and nothing about the day", () => {
+    // `Z` é um instante de verdade, então a distância é um fato; o dia não é, porque UTC diz onde o
+    // instante está e nunca onde está quem vai ler a mensagem.
+    // O par é de meio-dia de propósito: longe de qualquer meia-noite, a sonda de horário de verão
+    // concordaria, então o silêncio sobre o dia só pode vir da regra do `Z`.
+    const i = at("2026-09-18T12:00:00Z", "2026-09-17T12:00:00-03:00");
+    expect(i).toContain("starts in about 21 hours");
+    expect(i).not.toContain("calendar day as now");
+    expect(i).not.toContain("calendar day after now");
+    expect(i).toContain("do not describe which day it is relative to now");
   });
 
   // WHY THE GROUNDING IS NOT A REF. `nudgeOccasionKey` hashes every non-null ref, and the refusal

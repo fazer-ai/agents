@@ -566,6 +566,11 @@ const DAY_MS = 86_400_000;
 // tomorrow (21:00 on the 16th in São Paulo is already the 17th in UTC), and an offset-less
 // `2026-09-18T09:00` announced itself as "today" on their 17th. `Z` is the same mistake with a
 // stated zone: it says where the instant is, never where the person reading it is.
+// An all-day date (`2026-09-18`) or a wall clock written without an offset: the two shapes whose
+// instant `parseStartMs` invents in UTC.
+const ALL_DAY_OR_LOCAL =
+  /^\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)?$/;
+
 function statedLocalOffsetMinutes(startISO: string): number | null {
   const m = /([+-])(\d{2}):?(\d{2})$/.exec(startISO);
   if (!m) return null;
@@ -581,6 +586,38 @@ function distancePhrase(ms: number): string {
   const hours = Math.round(ms / 3_600_000);
   if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
   return `${Math.round(ms / DAY_MS)} days`;
+}
+
+// WHICH CALENDAR DAY, and empty when that answer would depend on an hour we do not hold. The offset
+// the start states is the zone's offset AT THE APPOINTMENT'S instant, and `now` may sit on the other
+// side of a daylight-saving transition, where the same zone is an hour away from it. The payload
+// carries an offset and not an IANA zone, so there is nothing here to ask — and round 3 of the
+// review found the case that makes the difference customer-facing: in America/New_York, a start of
+// `2026-11-01T02:30:00-05:00` with now at `00:30:00-04:00` is two hours away on the SAME local day,
+// and the stated offset alone puts now on the previous date and calls it "tomorrow" while the
+// distance in the same sentence says two hours.
+//
+// So the day is claimed only when it does NOT depend on that hour: the difference is taken with the
+// stated offset and with an hour either side of it, and a disagreement means we say nothing about
+// the day and let the distance carry the sentence. It costs the relative word within an hour of
+// local midnight, which is a slice of the day when almost nothing is reminded, and it never states
+// a day that is wrong.
+function relativeDay(
+  startMs: number,
+  nowMs: number,
+  offset: number,
+): string | null {
+  const dayOf = (ms: number, off: number) =>
+    Math.floor((ms + off * 60_000) / DAY_MS);
+  const start = dayOf(startMs, offset);
+  const deltas = [-60, 0, 60].map(
+    (skew) => start - dayOf(nowMs, offset + skew),
+  );
+  if (new Set(deltas).size !== 1) return null;
+  const days = deltas[0] as number;
+  if (days === 0) return "on the same calendar day as now (today)";
+  if (days === 1) return "on the calendar day after now (tomorrow)";
+  return `${days} calendar days after now (in ${days} days)`;
 }
 
 // (#685) WHAT THE MODEL CANNOT WORK OUT FOR ITSELF, and the whole of this issue. The reminder turn
@@ -605,29 +642,36 @@ function distancePhrase(ms: number): string {
 // attempt. It is also our own derived text rather than external data, which is the boundary the two
 // lanes draw.
 //
-// Empty for a start nobody can place relative to now: unreadable (`parseStartMs` refuses to guess),
-// already begun (the handler ends that job before it ever gets here), or carrying no local offset —
-// an all-day date, a wall clock written without one, a value in `Z`. In all of them, asserting a day
-// would add a second wrong statement instead of removing one, and the reminder goes out saying what
-// it says today: the date, which is correct. The tool boundary is what keeps new rows out of that
-// case — `tool-definitions/appointment.ts` resolves an offset-less wall clock into the agent's own
-// zone before it is ever stored, for this same reason.
+// TWO FACTS, EACH SAID ONLY WHEN IT IS KNOWN. The distance needs a real instant; the calendar day
+// needs a local frame to place `now` in, and that is strictly more than the instant. So a start in
+// `Z` gets the distance and no day (UTC says where the instant is, never where the person reading it
+// is), an all-day date and a wall clock written without an offset get neither (their instant is a
+// placeholder `parseStartMs` invents for ordering), and a start already begun or unreadable gets
+// nothing at all — the handler ends that job before it reaches here, and a day asserted about it
+// would add a second wrong statement instead of removing one. The reminder still goes out in every
+// one of those cases, saying the date, which is correct. The tool boundary is what keeps new rows
+// out of the offset-less case: `tool-definitions/appointment.ts` resolves a bare wall clock into the
+// agent's own zone before it is ever stored, for this same reason.
 export function reminderTemporalGrounding(startISO: string, now: Date): string {
   const startMs = parseStartMs(startISO);
   const nowMs = now.getTime();
   if (!Number.isFinite(startMs) || startMs <= nowMs) return "";
   const offset = statedLocalOffsetMinutes(startISO);
-  if (offset === null) return "";
-  const days =
-    Math.floor((startMs + offset * 60_000) / DAY_MS) -
-    Math.floor((nowMs + offset * 60_000) / DAY_MS);
-  const day =
-    days === 0
-      ? "on the same calendar day as now (today)"
-      : days === 1
-        ? "on the calendar day after now (tomorrow)"
-        : `${days} calendar days after now (in ${days} days)`;
-  return ` This appointment falls ${day}, and starts in about ${distancePhrase(startMs - nowMs)}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
+  // The distance is knowable whenever the start names a real INSTANT — a stated offset, `Z`
+  // included. It is not knowable for an all-day date or a wall clock written without one, where the
+  // instant `parseStartMs` produces is a placeholder for ordering: "starts in about 9 hours" there
+  // would be that placeholder talking, not the appointment.
+  const distance = ALL_DAY_OR_LOCAL.test(startISO)
+    ? null
+    : distancePhrase(startMs - nowMs);
+  const day = offset === null ? null : relativeDay(startMs, nowMs, offset);
+  if (day && distance) {
+    return ` This appointment falls ${day}, and starts in about ${distance}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
+  }
+  if (distance) {
+    return ` This appointment starts in about ${distance}, and nothing here places it on a named calendar day: word the date and time naturally in the conversation's language, from the start in the fenced data, and do not describe which day it is relative to now.`;
+  }
+  return "";
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids

@@ -2261,6 +2261,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       [6715, "open-THREW"],
       [6715, "resolved"],
     ]);
+    // The step's other post-action is untouched by the transfer that threw, which is what says the
+    // boundary keeps the whole step and not just its resolve.
+    expect(st.labelSets).toEqual([["follow-up"]]);
     const row = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: 6715 },
       select: { resolvedBy: true },
@@ -2272,8 +2275,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // trying to close anything: the close comes from the MODEL calling `resolve_conversation`, and on a
   // nudge turn that tool takes the immediate branch and toggles inside the call, where the step's
   // `allowResolve` cannot reach it. Measured before the fix: `toggleStatus open` then
-  // `toggleStatus resolved`, zero messages, `resolvedBy = 'agent'` — the customer got nothing by the
-  // model's own declaration and the conversation left the queue that declaration handed it to.
+  // `toggleStatus resolved`, zero messages, `resolvedBy = 'agent'`: the customer got nothing by the
+  // model's own declaration, and the conversation left the queue that declaration handed it to.
   test("a nudge cannot close what its own silent transfer just handed over", async () => {
     await seedConv(6716, null);
     const st = statusClient();

@@ -2375,6 +2375,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["sendMessage", 6712, "Tive um problema aqui, já estou vendo."],
       ["toggleStatus", 6712, "resolved"],
     ]);
+    // ...and the close is CREDITED to the agent, which is the half the client log cannot show: a
+    // conversation that ends resolved with nobody stamped on it reads as an operator's close.
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 6712 },
+      select: { resolvedBy: true },
+    });
+    expect(row.resolvedBy).toBe("agent");
   });
 
   test("a handoff whose closing line fails to send neither resolves nor errors the turn", async () => {

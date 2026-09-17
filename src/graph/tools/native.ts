@@ -370,10 +370,12 @@ function handoffTool(ctx: ToolCtx) {
   // Always nudge a customer-facing reply before the handoff so the persona does not go silent on them.
   //
   // ...EXCEPT ON A MUTED TURN, where the promise would be false (review round 35). The line is
-  // RECORDED on `handoffState` for the caller to deliver, and an observation has no `handoffState`
-  // and throws its final output away — so the transfer happens, the customer hears nothing, and the
-  // model was told they were answered. A watcher escalating to a human is legitimate; telling it to
-  // write a message that goes nowhere is not, and the argument goes with the sentence.
+  // RECORDED on `handoffState` for the caller to deliver, and an observation has no caller that
+  // delivers: it throws its final output away. So the transfer happens, the customer hears nothing,
+  // and the model was told they were answered. A watcher escalating to a human is legitimate;
+  // telling it to write a message that goes nowhere is not, and the argument goes with the sentence.
+  // (The observation DOES carry a `handoffState` since issue #671, so `resolve_conversation` can see
+  // the transfer; what it does not carry is anything that reads the line back out.)
   const speaks = !ctx.client?.muted;
   const baseDescription = speaks
     ? `${coreDescription} \`customerMessage\` is REQUIRED: write the reply the customer will read (e.g. that a human will continue). Pass an EMPTY STRING only when this case must receive no reply at all — a formal or legal notice, an automated platform notification, or a customer already being handled by a human elsewhere.`

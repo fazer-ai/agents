@@ -64,6 +64,45 @@ senão o próximo `migrate dev` gera um `RENAME INDEX`.
 - **`notIn` drops NULL rows.** Prisma renders it as a bare `NOT IN (...)`, and `NULL NOT IN (...)` is `NULL` in SQL, so on a nullable column the filter silently shrinks the result. Measured seeding `[null, "vision", "agent"]`: `notIn: ["vision"]` returns `["agent"]` only. Where NULL carries meaning (rows written before the column had a default), say so: `OR: [{ col: null }, { col: { notIn: [...] } }]`. There is no error and every historical count just gets smaller.
 - **A `catch` cannot recover inside a scoped transaction.** `runScoped`/`runScopedOn` open a `$transaction` to `SET LOCAL app.tenant_id` for RLS (`src/lib/tenancy/multi-tenant.ts`), so a statement that fails puts the Postgres transaction in the aborted state and every later statement dies with `current transaction is aborted`: the try-create / catch-P2002 / update-instead pattern is dead code in there. Use `db.<model>.upsert` keyed on the full composite unique (Prisma emits a native `INSERT … ON CONFLICT DO UPDATE` when the where is a complete unique and create/update hold only scalars). Prisma has no manual savepoint; if upsert does not fit, restructure outside the transaction.
 
+## Renaming a name the MODEL sees
+
+A rename is not done when the keys move. Operator-authored prose names tools too, and it lives in
+eleven sites of one walker (`src/modules/agents/text-caps.ts`, which says of itself that it is the
+one place that knows where that text lives). Six of those sites reach a model that has tools, and
+those are the ones a rename has to rewrite:
+
+```
+toolGuidance.<tool>                 appended to that tool's description
+handoff.instructions                appended to handoff_to_human's description
+kanban.instructions                 appended to kanban_move_card's description
+followUp.steps[i].instructions      "Operator guidance for this follow-up", in the nudge prompt
+guardrails.customPolicy             "Additional policy", in every analysis prompt
+guardrails.output.generationPrompt  steers the model that rewrites a refused reply
+```
+
+Plus `agents.system_prompt`, the one surface the first rename of `assign_label` → `set_labels` did
+rewrite. It moved the `toolGuidance` KEY and left the value's text alone, and the result was measured
+on a real installation: `readToolGuidance` went on appending, to the description of `set_labels`, a
+rule about calling `assign_label`, a name the model is never shown and cannot call. Nothing was
+lost and no capability broke, which is exactly why nobody noticed (issue #604).
+
+The five sites NOT to rewrite are read by a person (`availability.awayMessage`,
+`contactAuth.denyMessage`, the two `guardrails.*.templateMessage`, `signature.text`): `set_labels`
+means no more to a customer than the old name did, so rewriting them edits a message a customer
+reads and fixes nothing. `vision.extractionPrompt` is out for a different reason: that model is
+handed no tools, so a tool name in it names nothing in either spelling.
+
+The list is not maintained by memory: `tests/modules/operator-text-surface.test.ts` classifies every
+site the walker has and fails on one it does not know, so a field added later forces the decision
+instead of silently sitting outside every future rename. The working form of the rewrite, word
+boundary and audit line included, is
+`prisma/migrations/20260917120000_rename_tool_names_in_operator_settings_text`.
+
+**Only a GLOBAL one-to-one rename can be rewritten this way.** The two migrations that move an HTTP
+tool off a native's name (`20260903120000`, `20260903150000`) deliberately rewrite no prose: the new
+name is derived per tenant (`<name>_N`), so there is no single replacement, and they leave the audit
+trail as the list instead.
+
 ## Dropping a column
 
 The condition for a safe `DROP COLUMN` is **not** "no code reads the field", it is "no query NAMES the column". A Prisma query without an explicit `select` asks for every scalar of the model, and a relation pulled as `toolDefinition: true` does the same, so a call site that never touches the field still puts the column in the SQL and the previous image answers `undefined_column` after the drop. Auditing the explicit `SELECT` lists answers backwards: the screen you expect to break is the one that survives, because it is the only one naming its columns. Measured on #149/#176 with the v1.9.0 client against a database already missing the column: the two `findMany`/`update` without `select` failed, the one with an explicit `select` passed.

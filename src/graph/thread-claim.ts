@@ -80,10 +80,18 @@ const WRITE_POLL_MS = 25;
 //
 // One full lease plus the same slack, and the slack is load-bearing: a lease read at any point in
 // the wait is at most TURN_LEASE_SECONDS in the future, so a holder that stops renewing expires
-// BEFORE this runs out and is taken over rather than refused — which is what makes expiry, not this
-// ceiling, the ordinary way a crashed holder is cleared. Refusing past it is not a lost answer
-// either: the webhook turn's delivery row goes back to the sweep, which re-drives it, and by then
-// the lease of whatever was stuck has expired.
+// BEFORE this runs out and is taken over rather than merely waited for — which is what makes expiry,
+// not this ceiling, the ordinary way a crashed holder is cleared.
+//
+// AND PAST THE CEILING THE TURN JOINS, it does not refuse (PR review, round 3). Refusing was written
+// on the premise that the work could be handed back, and the premise is false: a direct turn that
+// throws is caught in ../modules/chatwoot/webhook.ts, which records the error, announces the failure
+// inside Chatwoot and settles the delivery — "There is no retry on this path", in that file's own
+// words, and the sweep only ever sees PENDING and PROCESSING. So the two outcomes here are not
+// "retry later" against "run beside it": they are NO ANSWER AT ALL against the behaviour that
+// predates this issue, where the second invoke joins and the boundary, the hand-back note and the
+// token rollback are all deferred to keep it survivable. A customer waiting is better served by the
+// second. The ceiling's job is therefore to stop waiting and to SAY so, not to fail the turn.
 const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
 const TURN_POLL_MS = 50;
 
@@ -259,6 +267,10 @@ export interface MarkTurnOptions {
   // Waiting is what the caller wanted anyway: the customer is already waiting for the first answer,
   // and after the wait this turn loads a channel that CONTAINS it, so the two messages get one reply
   // that saw both instead of two that saw neither.
+  //
+  // It is a WAIT and not a refusal: past its ceiling the turn joins the occupancy, the way it did
+  // before this option existed. The reason is at TURN_WAIT_MS — a direct turn that throws is not
+  // retried by anything.
   waitForTurn?: boolean;
 }
 
@@ -292,9 +304,14 @@ export async function markTurnOwning(
       if (!hold.heldBefore) return hold;
       await clearTurnOwning(owner, base, hold);
     } else if (Date.now() >= deadline) {
-      throw new Error(
-        `a turn has held ${owner.graphThreadId} past its lease without finishing; refusing to start a second turn beside it`,
+      // Loud, because degrading quietly to the old behaviour is how a hung turn stops being visible:
+      // the only thing that reaches this line is a holder that goes on renewing and never finishes,
+      // and nothing else in the system reports it.
+      logger.warn(
+        { thread: owner.graphThreadId, waitedMs: TURN_WAIT_MS },
+        "a turn has held this thread past its lease without finishing; starting beside it rather than leaving the message unanswered",
       );
+      return acquireTurnHold(owner, base);
     }
     await Bun.sleep(TURN_POLL_MS);
   }

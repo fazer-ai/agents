@@ -1502,19 +1502,12 @@ async function runTurnBody(
           // the same thread and writes it then.
           if (
             owesHandbackNote(channelNow ?? []) &&
-            // Asked LAST, after the channel read above: that read is a round trip to the
-            // checkpointer's own store, and a takeover during it would make an earlier answer stale
-            // in exactly the same way.
-            (await botOwnsItNow())
-          ) {
-            if (anotherInvokeIsReading) {
-              handbackDeferred = true;
-            } else if (
-              // ASKED AGAIN, AS LATE AS POSSIBLE, and for the reason review round 10 found on the
-              // deferred path (issue #457): the read that justifies the note and the write that
-              // appends it are not one step, and the claim this turn holds is a COUNT, not a mutex —
-              // it reports an overlap, it does not forbid one. A second copy is the one failure this
-              // note cannot have, because it is an announcement the model reads and repeats.
+            // ASKED AGAIN, AS LATE AS POSSIBLE, and for the reason review round 10 found on the
+            // deferred path (issue #457): the read that justifies the note and the write that
+            // appends it are not one step, and the claim this turn holds is a COUNT, not a mutex —
+            // it reports an overlap, it does not forbid one. A second copy is the one failure this
+            // note cannot have, because it is an announcement the model reads and repeats.
+            (anotherInvokeIsReading ||
               owesHandbackNote(
                 (
                   (
@@ -1523,8 +1516,17 @@ async function runTurnBody(
                     })
                   ).values as { messages?: BaseMessage[] } | undefined
                 )?.messages ?? [],
-              )
-            ) {
+              )) &&
+            // Asked LAST, after EVERY channel read above (PR review, round 3): each of those is a
+            // round trip to the checkpointer's own store, and a takeover during any of them makes an
+            // earlier answer stale in exactly the same way. The note is a claim that the human
+            // attendance ENDED, so writing it on a stale answer leaves a false history the send gate
+            // downstream cannot take back.
+            (await botOwnsItNow())
+          ) {
+            if (anotherInvokeIsReading) {
+              handbackDeferred = true;
+            } else {
               await dividerGraph.updateState(
                 { configurable: { thread_id: graphThreadId } },
                 { messages: [humanHandbackMessage(conversationId)] },

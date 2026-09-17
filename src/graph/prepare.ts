@@ -147,6 +147,7 @@ import {
   type McpSelection,
 } from "./tools/mcp";
 import { buildRagTools } from "./tools/rag";
+import { logSchemaRefusals } from "./tools/refusal-log";
 import {
   dropDuplicateToolNames,
   droppedToolNamesEvent,
@@ -1475,7 +1476,12 @@ export async function buildToolset(
       [...new Set(dropped)].join(", "),
     );
   }
-  return guarded;
+  // LAST, so it is the outermost wrapper: the schema parse that refuses a call happens in the
+  // innermost tool, and this has to be the frame the exception passes through on its way out. One
+  // wrap here covers every caller of this builder (turn, nudge, observation, playground), which is
+  // the point: the four of them instantiate their own ToolFlowLogger, and that logger cannot see a
+  // refusal from any of them (issue #667).
+  return logSchemaRefusals(guarded, flow, cfg.logToolValues);
 }
 
 export interface CallbacksArgs {

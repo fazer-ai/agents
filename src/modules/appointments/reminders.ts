@@ -544,6 +544,10 @@ export interface ReminderNudgeArgs {
   // its own tool pointer. The discriminator is the credential: a Calendar booking cannot exist
   // without one, since the create call needs the token it resolves.
   canOperate: boolean;
+  // How many hours before the appointment start this reminder fires. Used to derive the correct
+  // temporal label ("hoje" vs "amanhã") so the agent does not say "amanhã" when the appointment
+  // is later the same day.
+  offsetHours?: number;
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids
@@ -556,11 +560,23 @@ export interface ReminderNudgeArgs {
 // changes: the customer still hears the date and time, and the agent is told to handle a reschedule
 // the way it handles anything else it has no tool for, instead of being handed the name of one that
 // cannot reach this booking.
+// NOTE: Derive a temporal label based on how many hours before the appointment this reminder fires.
+// This prevents the agent from saying "amanhã" when the reminder fires on the same day as the
+// appointment (e.g. a 1h or 2h reminder that runs on the morning of the event day).
+// Thresholds: <= 12h -> "hoje" (same day); <= 36h -> "amanhã"; otherwise exact date.
+export function reminderTemporalLabel(offsetHours?: number): string {
+  if (offsetHours === undefined) return "na data agendada";
+  if (offsetHours <= 12) return "hoje";
+  if (offsetHours <= 36) return "amanhã";
+  return "na data agendada";
+}
+
 export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const wantsConfirmation = a.isLast && a.askConfirmation;
+  const temporalLabel = reminderTemporalLabel(a.offsetHours);
   const base = wantsConfirmation
-    ? "This is the final reminder before the appointment. Remind the customer warmly of the date and time, and ASK them to confirm they will attend."
-    : "Remind the customer warmly of their upcoming appointment, stating the date and time. Keep it short and natural.";
+    ? `This is the final reminder before the appointment. Remind the customer warmly that the appointment is ${temporalLabel}, stating the exact time, and ASK them to confirm they will attend. IMPORTANT: use the word "${temporalLabel}" — do NOT say "amanhã" if the appointment is today.`
+    : `Remind the customer warmly of their upcoming appointment. The appointment is ${temporalLabel} — use exactly that word when mentioning when it is (e.g. "hoje às 16h" if today, "amanhã às 16h" if tomorrow). State the time clearly. Keep it short and natural.`;
   const tools = wantsConfirmation
     ? " If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
     : " If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).";
@@ -805,6 +821,8 @@ export async function appointmentReminderHandler(
       startISO: authoritativeReminderStart(live, startISO),
       eventId,
       calendarId,
+      offsetHours:
+        typeof p.offsetHours === "number" ? p.offsetHours : undefined,
     }),
     base,
     deps,

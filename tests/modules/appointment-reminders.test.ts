@@ -21,6 +21,7 @@ import {
   hasLiveAppointment,
   reminderAlreadyStarted,
   reminderNudge,
+  reminderTemporalLabel,
 } from "@/modules/appointments/reminders";
 import {
   APPOINTMENT_REMINDER_DEFAULTS,
@@ -232,6 +233,48 @@ describe("reminderNudge", () => {
         true,
       ),
     ).toContain("calendar_id=primary");
+  });
+});
+
+describe("reminderTemporalLabel", () => {
+  test("returns 'hoje' for reminders <= 12 hours away", () => {
+    expect(reminderTemporalLabel(1)).toBe("hoje");
+    expect(reminderTemporalLabel(2)).toBe("hoje");
+    expect(reminderTemporalLabel(12)).toBe("hoje");
+  });
+
+  test("returns 'amanhã' for reminders between 13 and 36 hours", () => {
+    expect(reminderTemporalLabel(24)).toBe("amanhã");
+    expect(reminderTemporalLabel(36)).toBe("amanhã");
+  });
+
+  test("returns default for reminders > 36 hours or undefined", () => {
+    expect(reminderTemporalLabel(48)).toBe("na data agendada");
+    expect(reminderTemporalLabel(undefined)).toBe("na data agendada");
+  });
+});
+
+describe("reminderNudge temporal grounding", () => {
+  const baseArgs = {
+    isLast: true,
+    askConfirmation: false,
+    summary: "Reunião Estratégica",
+    startISO: "2026-09-16T16:00:00-03:00",
+    eventId: "ev_1",
+    provider: "google_calendar",
+    calendarId: "primary",
+    canOperate: true,
+  };
+
+  test("instructs model to use 'hoje' and forbids 'amanhã' for same-day reminders", () => {
+    const nudge = reminderNudge({ ...baseArgs, offsetHours: 1 });
+    expect(nudge.instructions).toContain("hoje");
+    expect(nudge.instructions).toContain('do NOT say "amanhã"');
+  });
+
+  test("instructs model to use 'amanhã' for day-before reminders", () => {
+    const nudge = reminderNudge({ ...baseArgs, offsetHours: 24 });
+    expect(nudge.instructions).toContain("amanhã");
   });
 });
 

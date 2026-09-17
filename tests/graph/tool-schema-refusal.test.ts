@@ -191,6 +191,29 @@ async function seedConv(convId: number): Promise<bigint> {
   return c.id;
 }
 
+// The reader for every reactive case, scoped to the conversation each one owns. Also called AGAIN
+// after a later turn has run, which is what tells a line stamped with this turn's context apart from
+// one stamped with a context the wrapper captured and kept.
+async function readRows(convDbId: bigint): Promise<Row[]> {
+  return (await flowLogRows(suDb, {
+    where: { tenantId, conversationId: convDbId },
+    orderBy: { id: "asc" },
+    select: {
+      stage: true,
+      status: true,
+      level: true,
+      turnId: true,
+      source: true,
+      agentId: true,
+      conversationId: true,
+      inboxId: true,
+      threadId: true,
+      detail: true,
+      errorMessage: true,
+    },
+  })) as Row[];
+}
+
 async function runTurn(
   convId: number,
   calls: Call[],
@@ -212,24 +235,7 @@ async function runTurn(
       persistUsage: async () => {},
     },
   });
-  // The ONE reader in this file, scoped to the conversation each case owns.
-  const rows = (await flowLogRows(suDb, {
-    where: { tenantId, conversationId: convDbId },
-    orderBy: { id: "asc" },
-    select: {
-      stage: true,
-      status: true,
-      level: true,
-      turnId: true,
-      source: true,
-      agentId: true,
-      conversationId: true,
-      inboxId: true,
-      threadId: true,
-      detail: true,
-      errorMessage: true,
-    },
-  })) as Row[];
+  const rows = await readRows(convDbId);
   const conv = await suDb.conversation.findFirstOrThrow({
     where: { id: convDbId },
     select: { status: true },
@@ -241,6 +247,7 @@ async function runTurn(
     notes: r.notes,
     status: conv.status,
     answers: model.answers,
+    convDbId,
   };
 }
 
@@ -390,6 +397,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // Exactly one of each, which is what makes "how many attempts did it spend" a count.
     expect(refused(t.rows).length).toBe(1);
     expect(ran(t.rows).length).toBe(1);
+    expect(det(refused(t.rows)[0] as Row).output).toBeUndefined();
     const done = ran(t.rows)[0] as Row;
     expect(det(done).args).toEqual({
       reason: "string(12)",
@@ -612,6 +620,63 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       "string(1)",
       "string(1)",
     ]);
+  });
+
+  // THE WRAPPER CLOSES OVER THE TURN'S FLOW CONTEXT, so the question this asks is not "does the line
+  // carry a turn id" (the case above answers that) but "does it carry THIS turn's". A toolset built
+  // once and reused, or a wrapper that kept the context it was created with, stamps a later turn's
+  // refusal with an earlier turn's ids: no error, no line lost, and the line lands on the wrong card
+  // of the Logs page. Only a SECOND turn can show it, and only by re-reading the first conversation
+  // after that second turn has run.
+  test("each turn's refusal carries its own turn, not the one before it", async () => {
+    const first = await runTurn(6714, [
+      { name: "handoff_to_human", args: { reason: "primeiro turno" } },
+    ]);
+    const second = await runTurn(6715, [
+      { name: "handoff_to_human", args: { reason: "segundo turno" } },
+    ]);
+    const firstAgain = await readRows(first.convDbId);
+    // One refusal each, still, after both turns have run.
+    expect(refused(firstAgain).length).toBe(1);
+    expect(refused(second.rows).length).toBe(1);
+    const a = refused(firstAgain)[0] as Row;
+    const b = refused(second.rows)[0] as Row;
+    expect(a.turnId).not.toBe(b.turnId);
+    // And each one is grouped with the `generate` line of the turn that produced it.
+    for (const t of [firstAgain, second.rows]) {
+      const gen = t.find((r) => r.stage === "generate") as Row;
+      const line = refused(t)[0] as Row;
+      expect(line.turnId).toBe(gen.turnId);
+      expect(line.conversationId).toBe(gen.conversationId);
+      expect(line.threadId).toBe(gen.threadId);
+    }
+  });
+
+  // A REFUSAL THE DECLARATION CANNOT EXPLAIN, which is the case where naming anything would be
+  // guessing: the array parameter arrived as an array, so nothing at the top level disagrees, and
+  // what zod refused is an element inside it. The reason says so instead of borrowing the vendor's
+  // path, because a path is where an invented key comes back named from a nested position, and the
+  // clause forbids that anywhere, not only at the top.
+  test("a refusal inside a parameter names no path, and leaks nothing from it", async () => {
+    const MARKER = "MARCADOR667DENTRO52998224725";
+    const t = await runTurn(6716, [
+      { name: "set_labels", args: { labels: [MARKER, 52998224725] } },
+    ]);
+    const line = refused(t.rows)[0] as Row;
+    expect(line).toBeDefined();
+    expect(det(line).tool).toBe("set_labels");
+    // Nothing named, and it says that rather than inventing a parameter.
+    expect(refusalOf(line).params).toEqual([]);
+    expect(refusalOf(line).issues).toEqual([
+      "arguments refused by the tool schema",
+    ]);
+    // The array itself is a count, so neither the element's value nor its index travels.
+    expect(det(line).args).toEqual({ labels: "array(2)" });
+    expect(
+      JSON.stringify(t.rows, (_k, v) =>
+        typeof v === "bigint" ? String(v) : v,
+      ),
+    ).not.toContain(MARKER);
   });
 
   // THE PLAYGROUND REPLACES TOOLS AFTER ASSEMBLY, which is the one way the wrapper can be dropped

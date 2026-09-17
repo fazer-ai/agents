@@ -563,6 +563,11 @@ export function foreignReplyBoundary(
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       !m.private &&
+      // A REACTION IS NOT A REPLY. The fork stores an operator's emoji react as a real public
+      // outgoing message with a `user` sender, so it matches every other clause here; read as a
+      // boundary it would close every question the customer asked before the 👍. Same exclusion, for
+      // the same reason, as `isHumanAgentMessage` in ../chatwoot/normalize.ts.
+      !m.isReaction &&
       somebodyElse &&
       m.id > boundary
     ) {
@@ -584,7 +589,23 @@ export function selectOpenMessages(params: {
   const { page, scalarFloor, state, managedBotId } = params;
   const perMessage = state.floor;
   const pageArray = [...page];
-  if (perMessage === null) return pendingIncoming(pageArray, scalarFloor);
+  const closedByOther = foreignReplyBoundary(pageArray, managedBotId);
+  if (perMessage === null) {
+    // BEFORE THE PER-MESSAGE ERA THE FENCE STILL APPLIES (PR #701, review round 2). Down here the
+    // scalars decide, and they do not see outgoing messages at all — so a burst selected by them can
+    // carry a message a person already answered, which the post gate then reads as a burst it must
+    // not answer, refusing the whole thing INCLUDING the message after the human reply that nobody
+    // touched. No claim, no reschedule, and every later flush repeats it for as long as that history
+    // stays on the page. The fence belongs to the selection on both sides of the floor; only the
+    // row-by-row part is new above it.
+    const floorHere =
+      scalarFloor === null
+        ? closedByOther > 0
+          ? closedByOther
+          : null
+        : Math.max(scalarFloor, closedByOther);
+    return pendingIncoming(pageArray, floorHere);
+  }
   // THE REPLY A PERSON WROTE, which is the fence the rows cannot carry: `pendingIncoming` reads
   // incoming messages only, and a human agent answering a customer writes no row anywhere. The rule
   // is ASYMMETRIC on purpose. An outgoing message of OURS closes exactly what its turn claimed,
@@ -593,7 +614,6 @@ export function selectOpenMessages(params: {
   // answered read the thread, and handing that thread back to the model is the defect
   // `incomingAfterLastOutgoing` exists to prevent on the re-engage path.
   //
-  const closedByOther = foreignReplyBoundary(pageArray, managedBotId);
   return pendingIncoming(pageArray, null).filter((m) => {
     if (m.id <= perMessage) {
       return scalarFloor === null || m.id > scalarFloor;

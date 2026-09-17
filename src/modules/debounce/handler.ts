@@ -1761,7 +1761,22 @@ export async function flushDebounceJob(
         // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
         // The decision was taken over the span ("this is not ours to answer now"), so the span is
         // the fact rather than a hull of one (issue #690).
-        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+        // THIS gate exit CAN name its members, unlike the other three: the ceiling refusal already
+        // fetched the page, to find out whether there was a burst to refuse at all, and
+        // `ceilingBurst` is that burst. The span alone stopped being enough when the selection
+        // stopped being scalar (PR #701, review round 2): it reaches back only to the watermark, and
+        // the message this refusal is ABOUT can sit below that mark with no row on it, which is
+        // exactly the orphan this PR teaches the ceiling to see. Left to the span, the withdrawn
+        // request is executed by the first flush that has budget again.
+        dispensed: ceilingBurst
+          ? {
+              kind: "messages",
+              messageIds: [
+                ...ceilingBurst.pending,
+                ...ceilingBurst.dropped,
+              ].map((m) => m.id),
+            }
+          : { kind: "range", afterMessageId: ctx.watermark ?? null },
         base,
       });
       await settleGateExit({

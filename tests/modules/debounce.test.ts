@@ -188,6 +188,7 @@ function page(
     // is a shape the serializer really emits.
     sender?: string;
     senderId?: number;
+    reaction?: boolean;
   }>,
 ) {
   return {
@@ -198,6 +199,7 @@ function page(
       private: m.priv ?? false,
       ...(m.attachments ? { attachments: m.attachments } : {}),
       ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
+      ...(m.reaction ? { content_attributes: { is_reaction: true } } : {}),
     })),
   };
 }
@@ -1673,6 +1675,179 @@ describe.skipIf(!dbUp)("debounce", () => {
       },
     });
     expect(sent).toEqual([]);
+  });
+
+  // A CERCA VALE ANTES DA ERA POR MENSAGEM TAMBÉM (PR #701, review round 2, P1). Com o piso da era
+  // ainda nulo a seleção era a escalar pura, que não enxerga saída nenhuma, então a rajada saía
+  // carregando uma mensagem que a pessoa já tinha respondido — e o portão novo, vendo essa mensagem
+  // em ou abaixo da fronteira, recusava a rajada INTEIRA. A mensagem de depois da resposta humana,
+  // que ninguém respondeu, morria junto, sem reivindicação e sem reagendamento, e o flush seguinte
+  // repetia tudo enquanto aquele histórico estivesse visível.
+  test("the foreign-reply fence applies before the per-message era starts", async () => {
+    const convId = 948;
+    await seedConversation(convId);
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "tem alguém?" },
+              {
+                id: 2,
+                content: "oi, sou a Ana do suporte",
+                type: 1,
+                sender: "user",
+                senderId: 41,
+              },
+              { id: 3, content: "e qual o prazo?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // A pergunta de depois da resposta humana é respondida, e a de antes dela não.
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("qual o prazo");
+    expect(seen).not.toContain("tem alguém?");
+  });
+
+  // UMA REAÇÃO NÃO É UMA RESPOSTA (PR #701, review round 2). O fork guarda o emoji do operador como
+  // mensagem de saída de verdade, pública, com remetente `user` e `content_attributes.is_reaction` —
+  // e `isHumanAgentMessage` em ../../src/modules/chatwoot/normalize.ts já exclui exatamente essa
+  // forma, pelo mesmo motivo: é um aceno, não algo que a equipe disse. Lida como fronteira, ela
+  // fecharia toda pergunta anterior a ela.
+  test("an operator's emoji reaction is not a reply", async () => {
+    const convId = 949;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "consigo remarcar pra sexta?" },
+              {
+                id: 2,
+                content: "👍",
+                type: 1,
+                sender: "user",
+                senderId: 41,
+                reaction: true,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    expect(model.seen.join("\n")).toContain("remarcar pra sexta");
+  });
+
+  // E O QUE O TETO RECUSOU TEM QUE FICAR RECUSADO (PR #701, review round 2). O acerto anterior fez o
+  // teto voltar a ser perguntado quando existe órfã abaixo da marca; a liquidação da recusa, porém,
+  // grava a faixa `(marca, último id do job]`, que não cobre nada abaixo da marca. A órfã recusada
+  // ficava sem linha, e o primeiro flush com orçamento de novo executava o pedido que a recusa tinha
+  // acabado de retirar.
+  test("what the ceiling refused stays refused, including below the mark", async () => {
+    const convId = 950;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 99, polledAt: new Date() },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = () =>
+      makeStub({
+        pages: [
+          page([
+            { id: 1, content: "me manda a segunda via do boleto" },
+            { id: 2, content: "obrigado" },
+          ]),
+        ],
+        sent,
+        calls: { getMessages: 0 },
+      });
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: client(),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({
+        where: { tenantId, source: "inbox" },
+      });
+    }
+    // Com orçamento de novo, o pedido retirado não é executado.
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 2 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: client(),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen.join("\n")).not.toContain("segunda via do boleto");
   });
 
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate

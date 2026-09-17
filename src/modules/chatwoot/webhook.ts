@@ -3324,10 +3324,23 @@ async function maybeConsumeCommandOrGate(params: {
         //
         // A command with no message id is not reachable (it is parsed from the message's own text),
         // and the guard is what keeps the column from holding a number that orders nothing.
+        //
+        // AND THE PREVIOUS RESET'S SET GOES WITH IT (issue #645, review round 3). The pair
+        // `(reset_at_message_id, reset_cleared_labels)` is read together by the observer, and the
+        // set below is written only when the clear SUCCEEDS — so a second `/reset` whose label
+        // cleanup fails would leave the new boundary beside the FIRST reset's set, and the observer
+        // would hide genuine removals of those titles instead of falling back to the order cut.
+        // Cleared in the same statement that moves the boundary, because every SET expression here
+        // reads the OLD row: a command that does not move it (an older delivery finishing last)
+        // leaves the set alone, and the one that does move it invalidates it.
         if (commandMessageId !== null) {
           await db.$executeRaw`
             UPDATE conversations
-               SET reset_at_message_id = GREATEST(reset_at_message_id, ${commandMessageId})
+               SET reset_cleared_labels =
+                     CASE WHEN reset_at_message_id IS NULL
+                            OR ${commandMessageId} > reset_at_message_id
+                          THEN NULL ELSE reset_cleared_labels END,
+                   reset_at_message_id = GREATEST(reset_at_message_id, ${commandMessageId})
              WHERE id = ${ctx.conv.id}`;
         }
         return db.conversation.update({

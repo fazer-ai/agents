@@ -3192,11 +3192,23 @@ describe.skipIf(!dbUp)(
     // A clear that never returned removed nothing this side can name, and NULL says exactly that:
     // the labels are still standing, so their activity lines are still true and must not be hidden.
     test("a clear that failed records no set instead of claiming one", async () => {
-      // The row is shared by every test in this suite, so the column starts where this assertion
-      // can see a write: a leftover set from a healthy reset would satisfy nothing here.
-      await suDb.$executeRaw`
-        UPDATE conversations SET reset_cleared_labels = NULL
-         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      // AFTER A HEALTHY RESET, which is the arrangement that matters (review round 3): the boundary
+      // moves on every command and the set is written only when the clear succeeds, so a column
+      // left alone here would pair THIS reset's boundary with the PREVIOUS reset's set, and the
+      // observer would hide genuine removals of those titles instead of falling back to the order
+      // cut. Setting the column to NULL by hand before the failing reset is what masked it.
+      const healthy = fakeChatwoot();
+      globalThis.fetch = healthy.impl;
+      await sendReset();
+      expect(
+        (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: CONV_ID },
+            select: { resetClearedLabels: true },
+          })
+        ).resetClearedLabels,
+      ).toEqual([...LIVE_LABELS]);
+
       const cw = fakeChatwoot(/\/labels$/);
       globalThis.fetch = cw.impl;
       await sendReset();

@@ -1041,6 +1041,67 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // deliberately stays on the previous one. A turn that records no inbound id there leaves the
   // frontier back in the previous attendance, so a delayed message from it reads as CURRENT, stamps
   // itself at the end of the channel, and the cut then reads the live conversation as closed.
+  // A WAIT IS A WINDOW, AND SOMEBODY CAN WALK INTO IT (PR review round 5). The webhook's ownership
+  // gate answered before the wait, and the wait can last the whole ceiling; the recheck that already
+  // exists runs AFTER generation, where it suppresses the send and cannot take back a tool that
+  // mutated something. So the turn asks again on the far side of the wait, and the proof that it
+  // asks in time is that the model is never called.
+  test("a person who takes the conversation over during the wait stops the turn before the invoke", async () => {
+    const contactInboxId = 7467;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9467,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9467`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    // The model itself, not the factory: `makeModel` is called while the turn LOADS, well before the
+    // invoke, so counting factory calls would measure nothing.
+    const model = new CaptureReplyModel("resposta");
+    const sent: Array<[number, string]> = [];
+    markTurnInFlight(graphThreadId);
+    const turn = runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9467, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    const waiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        turn,
+        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+      ]),
+    ).toBe(waiting);
+    // A person takes it while the turn stands still.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 9467 },
+      data: { assigneeType: "User", assigneeId: 4242, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+
+    expect(await turn).toBe("taken-over");
+    expect(sent).toEqual([]);
+    // The one assertion the outcome word cannot make on its own: "taken-over" is also what a turn
+    // returns when the recheck AFTER generation catches it, and that turn already ran its tools.
+    expect(model.seen).toEqual([]);
+  }, 20_000);
+
   // THE WAIT IS OUTSIDE THE `ingest:` QUEUE (PR review round 4), and this is what says so. That key
   // is not ours alone: the PREVIOUS turn's own rollback takes it on the way out, AFTER it has
   // released the thread, and so does continuous ingestion. A wait that held it would starve exactly

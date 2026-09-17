@@ -3,7 +3,12 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { clearTurnReserved, markTurnReserved } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  clearTurnReserved,
+  markTurnInFlight,
+  markTurnReserved,
+} from "@/graph/inflight";
 import {
   claimIngestWrite,
   clearTurnOwning,
@@ -433,6 +438,83 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
       await clearTurnOwning(o, appDb, first);
       await clearTurnOwning(o, appDb, await waiter);
     }
+  }, 15_000);
+
+  // THE SAME GUARANTEE ACROSS REPLICAS, and it is a different code path (PR review round 2). In one
+  // process the local Map answers first and the row is never consulted; the holder that matters here
+  // is on ANOTHER host, so the only thing that can say "occupied" is the lease, and the only thing
+  // that can read it correctly is Postgres. Compared in this process instead, a replica whose clock
+  // runs ahead reads a live lease as expired, acquires on it, and `bumpTurnHolders` renews the lease
+  // of the holder it is waiting for — the same stranded thread, arriving through the clock.
+  test("across replicas too, waiting does not push the holder's lease", async () => {
+    const o = owner();
+    // Another replica holds it: the durable claim stands and its Map entry is dropped, because no
+    // entry for it exists on this host.
+    const other = await markTurnOwning(o, appDb);
+    clearTurnInFlight(o.graphThreadId);
+    const before = (await rowOf(o)).turnHeldUntil;
+    expect(before).not.toBeNull();
+
+    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    try {
+      const stillWaiting = Symbol("still waiting");
+      expect(
+        await Promise.race([
+          waiter,
+          new Promise<typeof stillWaiting>((r) =>
+            setTimeout(() => r(stillWaiting), 400),
+          ),
+        ]),
+      ).toBe(stillWaiting);
+      expect((await rowOf(o)).turnHeldUntil?.getTime()).toBe(before?.getTime());
+    } finally {
+      markTurnInFlight(o.graphThreadId);
+      await clearTurnOwning(o, appDb, other);
+      await clearTurnOwning(o, appDb, await waiter);
+    }
+  }, 15_000);
+
+  // THE WINDOW A SKEWED CLOCK OPENS, and the only one where reading the lease here instead of in the
+  // statement changes an answer (PR review round 2). A lease far from expiring reads the same on any
+  // clock; a lease about to expire reads as GONE on a clock that runs ahead, and the waiter then
+  // acquires on it — at which point `bumpTurnHolders`, which compares in Postgres, finds the claim
+  // still live, joins it, and renews it for another lease. Every 300 seconds the same window comes
+  // round again, so a holder that crashed is kept alive by the very turn waiting for it to die.
+  test("a lease about to expire is neither taken early nor renewed by the waiter", async () => {
+    const o = owner();
+    const crashed = await markTurnOwning(o, appDb);
+    // The holder is GONE: renewal stops with the process, and the lease is what hands the thread on.
+    // Its Map entry goes too, because the crash was on another host.
+    crashed.stopRenewal?.();
+    clearTurnInFlight(o.graphThreadId);
+    await suDb.$executeRaw`
+      UPDATE agent_threads
+         SET turn_held_until = now() + interval '2 seconds'
+       WHERE tenant_id = ${tenantId}
+         AND chatwoot_instance_id = ${instanceId}
+         AND contact_inbox_id = ${o.contactInboxId}`;
+    const before = (await rowOf(o)).turnHeldUntil;
+
+    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    const stillWaiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        waiter,
+        new Promise<typeof stillWaiting>((r) =>
+          setTimeout(() => r(stillWaiting), 700),
+        ),
+      ]),
+    ).toBe(stillWaiting);
+    // Untouched while Postgres still calls it live, which is the whole assertion: a waiter that
+    // acquired here would have pushed this forward by a full lease.
+    expect((await rowOf(o)).turnHeldUntil?.getTime()).toBe(before?.getTime());
+
+    // And EXPIRY is what hands it over, not the ceiling: the claim resets to a single holder on a
+    // new epoch, so this turn starts an occupancy rather than joining the dead one.
+    const hold = await waiter;
+    expect(hold.heldBefore).toBe(false);
+    expect((await rowOf(o)).turnHolders).toBe(1);
+    await clearTurnOwning(o, appDb, hold);
   }, 15_000);
 
   // The other half, and the reason the wait is opt-in: overlap is legitimate where nobody is owed a

@@ -69,13 +69,21 @@ const WRITE_LEASE_SECONDS = 30;
 const WRITE_WAIT_MS = (WRITE_LEASE_SECONDS + 5) * 1_000;
 const WRITE_POLL_MS = 25;
 
-// HOW LONG A SECOND INVOKE WAITS OUT THE FIRST (issue #658), and it follows the TURN lease the way
-// the two above follow the write lease. A turn renews while it is alive, so a tool-heavy one keeps
-// pushing the deadline out and is waited for rather than cut off; a holder that stops renewing lets
-// its lease lapse, and the next acquisition then reads the thread free on its own. What the ceiling
-// is for is the pathological case those two do not cover — a turn that goes on renewing and never
-// finishes — and there the honest outcome is to give the work back rather than to start the second
-// turn beside the first, which is the defect being closed.
+// HOW LONG A SECOND INVOKE WAITS OUT THE FIRST (issue #658). ABSOLUTE, measured from the moment the
+// wait starts, and that is where it parts company with the two bounds above (PR review, round 2).
+// They follow the lease because what they wait for is ONE checkpointer write, where "still renewing"
+// really does mean "still going to finish in a moment". A turn is not that: a model call that hangs
+// keeps its process alive, so the renewal timer goes on extending the lease every 100 seconds, and a
+// deadline that resets on every extension is unreachable in exactly the runaway case it was written
+// for. Following the lease here would be a ceiling that only ever fires on holders that did not need
+// one.
+//
+// One full lease plus the same slack, and the slack is load-bearing: a lease read at any point in
+// the wait is at most TURN_LEASE_SECONDS in the future, so a holder that stops renewing expires
+// BEFORE this runs out and is taken over rather than refused — which is what makes expiry, not this
+// ceiling, the ordinary way a crashed holder is cleared. Refusing past it is not a lost answer
+// either: the webhook turn's delivery row goes back to the sweep, which re-drives it, and by then
+// the lease of whatever was stuck has expired.
 const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
 const TURN_POLL_MS = 50;
 
@@ -194,26 +202,29 @@ async function insertHeldByTurn(
   return rows[0]?.turn_epoch ?? null;
 }
 
-// The append's lease as milliseconds, or null when nothing holds it. Read so the wait above can tell
-// a holder that is still working (the lease keeps moving) from one that stopped without releasing.
-// The turn lease, read for the same reason `readWriteLease` reads the write one: a wait that does
-// not follow the lease is a fixed timeout, and a fixed timeout fails a slow turn for being slow.
-async function readTurnLease(
+// IS THE TURN LEASE STILL LIVE, ANSWERED BY POSTGRES. The comparison is in the statement and not in
+// this process on purpose (PR review, round 2): the lease is minted as `now() + interval` by the
+// database, so a replica whose clock runs ahead would read an expired lease that Postgres still
+// considers live, acquire on it, and — because `bumpTurnHolders` renews unconditionally — push the
+// lease of the holder it is waiting for. A two-second skew is enough to keep a crashed holder alive
+// indefinitely, which is the round-1 defect coming back through the clock. Same shape as
+// `readTurnClaimOn`, which has always asked it this way.
+async function turnLeaseIsLive(
   owner: ThreadOwner,
   base: PrismaClient,
-): Promise<number | null> {
+): Promise<boolean> {
   const rows = await runScopedOn(
     base,
     sysCtx(owner.tenantId),
-    (db) => db.$queryRaw<{ turn_held_until: Date | null }[]>`
-      SELECT turn_held_until
+    (db) => db.$queryRaw<{ live: boolean }[]>`
+      SELECT (turn_held_until IS NOT NULL AND turn_held_until > now()) AS live
         FROM agent_threads
        WHERE tenant_id = ${owner.tenantId}
          AND chatwoot_instance_id = ${owner.instanceId}
          AND contact_inbox_id = ${owner.contactInboxId}`,
   );
-  const until = rows[0]?.turn_held_until ?? null;
-  return until === null ? null : until.getTime();
+  // No row is not "busy": nothing can own a thread nothing has ever touched.
+  return rows[0]?.live ?? false;
 }
 
 async function readWriteLease(
@@ -257,10 +268,7 @@ export async function markTurnOwning(
   opts: MarkTurnOptions = {},
 ): Promise<TurnHold> {
   if (!opts.waitForTurn) return acquireTurnHold(owner, base);
-  // Deadline discipline copied from the append wait below, for the same reason: what has to run out
-  // is the CLAIM, not a span measured from here.
-  let seenLease: number | null = null;
-  let deadline = Date.now() + TURN_WAIT_MS;
+  const deadline = Date.now() + TURN_WAIT_MS;
   for (;;) {
     // READ FIRST, AND ACQUIRE ONLY WHEN THE READ SAYS NOBODY IS THERE (PR review, round 1).
     // Acquiring to find out is the obvious shape and it is the one thing this wait cannot do:
@@ -270,10 +278,9 @@ export async function markTurnOwning(
     // counted. A holder that CRASHED would then never expire and the thread would be stranded for
     // good — strictly worse than the Map this module replaces, which a restart clears, and the exact
     // failure the lease exists to prevent.
-    const lease = await readTurnLease(owner, base);
     if (
       !isTurnRunning(owner.graphThreadId) &&
-      (lease === null || lease <= Date.now())
+      !(await turnLeaseIsLive(owner, base))
     ) {
       // The read above is a HINT; the exclusion is still the acquiring statement, which is where two
       // waiters that both read "free" are separated. The loser gives its hold straight back and
@@ -284,22 +291,10 @@ export async function markTurnOwning(
       const hold = await acquireTurnHold(owner, base);
       if (!hold.heldBefore) return hold;
       await clearTurnOwning(owner, base, hold);
-    } else {
-      if (lease !== null && lease !== seenLease) {
-        seenLease = lease;
-        deadline = Date.now() + TURN_WAIT_MS;
-      }
-      // WHY A FROZEN LEASE NEVER REACHES THIS. The ceiling is for a holder that goes on renewing and
-      // never finishes; a holder that stopped renewing has to be waited OUT, not refused. It always
-      // is: a lease read at t is at most t + TURN_LEASE_SECONDS, and the deadline it sets is
-      // t + TURN_WAIT_MS, which is longer by the same slack the append wait uses. So an unrenewed
-      // lease expires first, the branch above takes the thread, and only a lease that keeps moving
-      // can outlast its own deadline.
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `a turn has held ${owner.graphThreadId} past its lease without finishing; refusing to start a second turn beside it`,
-        );
-      }
+    } else if (Date.now() >= deadline) {
+      throw new Error(
+        `a turn has held ${owner.graphThreadId} past its lease without finishing; refusing to start a second turn beside it`,
+      );
     }
     await Bun.sleep(TURN_POLL_MS);
   }

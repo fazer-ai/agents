@@ -6,7 +6,7 @@ WT=/Users/gabrieljablonski/dev/agents-pubclone-658
 source "$WT/.verif658/env.sh"
 OUT=$1; TENANT=$2; INSTANCE=$3; A=$4; B=$5; LEAD=${6:-3000}
 mkdir -p "$OUT"
-START_AT=$(( $(date +%s%3N 2>/dev/null || python3 -c 'import time;print(int(time.time()*1000))') + LEAD ))
+START_AT=$(python3 -c "import time;print(int(time.time()*1000)+$LEAD)")
 run_one() {
   local label=$1 spec=$2
   IFS=: read -r conv ci msg resp mid delay <<< "$spec"

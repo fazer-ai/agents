@@ -58,6 +58,11 @@ export interface ChatwootMessageRow {
   // person wrote closes every customer message before it, and one of ours closes only what its turn
   // claimed (issue #698).
   senderType: "contact" | "user" | "agent_bot" | "other" | null;
+  // WHICH sender, when the page named one. Carried with the type because "agent_bot" alone does not
+  // say OURS: a conversation can be assigned to another AgentBot, whose replies write no claim row in
+  // this runtime, and exempting it from the outgoing boundary would read its answers as ours
+  // (PR #701, review round 1).
+  senderId: number | null;
   // The name the send gave itself on the way out (issue #499), when this message is one of ours and
   // the sender asked for one. Null on every message nobody named: everything inbound, everything a
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
@@ -239,6 +244,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       emailSubject: emailSubjectFrom(ca),
       activityType: activityTypeFrom(ca),
       senderType: senderTypeOf(item.sender),
+      senderId: isRecord(item.sender) ? num(item.sender.id) : null,
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

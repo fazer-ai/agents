@@ -86,6 +86,7 @@ import {
 import { readDebounceConfig } from "./settings";
 import {
   advanceHandledWatermark,
+  foreignReplyBoundary,
   readAnsweredFloor,
   readClaimedMessageIds,
   readSelectionState,
@@ -167,6 +168,10 @@ export interface CoalesceTurnContext {
   // Whether this caller is the operator's own re-engage, which is the only one entitled to answer
   // over a silence something chose deliberately (issue #452).
   initiatedBy: "automatic" | "operator";
+  // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
+  // everybody else's (PR #701, review round 1). Null when the caller has no bot to name, and then
+  // every outgoing message on the page counts as somebody else's.
+  managedBotId: number | null;
   // Told when the claim was lost, so the caller can tell a burst that has something coming for it
   // from one that does not (issue #690, PR review round 4). Only the flush passes it.
   onClaimLost?: (
@@ -375,10 +380,23 @@ export async function coalesceAndRunTurn(
       //
       // `ctx.selectPending` is the same closure the burst came from, so the two cannot drift: what it
       // still offers above the target is, by definition, a message nobody is speaking for.
-      const openAbove = (await ctx.selectPending(latest)).some(
-        (m) => m.id > targetWatermark,
-      );
-      if (openAbove) {
+      const open = await ctx.selectPending(latest);
+      const openAbove = open.some((m) => m.id > targetWatermark);
+      // AND WHETHER THIS BURST IS STILL OURS TO ANSWER (PR #701, review round 1). The question above
+      // is about what came AFTER; a person who answered the burst itself closes it without writing a
+      // row anywhere, and the fence that keeps an orphan from being re-offered takes those ids out of
+      // the selection — an emptiness that means "somebody already answered this" would otherwise read
+      // as "nothing came after me, go ahead".
+      //
+      // Present but closed, never merely absent: `getMessages` returns a window, so a burst member
+      // missing from it says nothing, and this gate treats an unreadable page as "carry on".
+      //
+      // Asked as the BOUNDARY rather than "are my ids still in the open set": a member another TURN
+      // claimed is missing from that set too, and standing down on it would take the decision away
+      // from the claim, whose `partial` is what sends this flush back for the members nobody took.
+      const boundary = foreignReplyBoundary(latest, ctx.managedBotId);
+      const answeredByOther = inTurn.some((m) => m.id <= boundary);
+      if (openAbove || answeredByOther) {
         logger.info(
           "%s: superseded mid-turn (conv=%s), deferring",
           ctx.label,
@@ -1445,7 +1463,12 @@ export async function flushDebounceJob(
       messageIds: pendingIncoming(messages, null).map((m) => m.id),
       base,
     });
-    return selectOpenMessages({ page: messages, scalarFloor: floor, state });
+    return selectOpenMessages({
+      page: messages,
+      scalarFloor: floor,
+      state,
+      managedBotId: agentBotId,
+    });
   };
 
   // The operator flipped the agent to monitoring during one of this flush's waits (issue #209
@@ -2127,6 +2150,7 @@ export async function flushDebounceJob(
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
+        managedBotId: agentBotId,
         onClaimLost: (reason) => {
           claimLostPartial = reason === "partial";
         },

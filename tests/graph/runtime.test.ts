@@ -3866,6 +3866,59 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent.length).toBe(1);
   });
 
+  // AND A PERSON WHO ANSWERED CLOSES THIS TURN TOO, not only the messages after it (PR #701, review
+  // round 1). The fence that stops an orphan from being re-offered removes the human-answered ids
+  // from the selection — including the one this turn is holding — so a gate that only asks "is
+  // anything NEWER still open?" reads that emptiness as "nothing came after me, go ahead" and posts
+  // over the person who already replied. The older gate was accidentally covered here: the newer
+  // inbound message was above the trigger and suppressed the post by arithmetic.
+  test("issue #698: a human reply closes the turn's own trigger, not just what came after it", async () => {
+    await seedConversation(9699, null);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9699 },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          { id: 2, content: "alguem ai?", message_type: 0, private: false },
+          {
+            id: 3,
+            content: "oi, sou a Ana do suporte",
+            message_type: 1,
+            private: false,
+            sender: { id: 41, type: "user" },
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9699 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // Nothing is said on top of the person who answered.
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("superseded");
+  });
+
   // The bound on the case above. Supersede drops a reply the newest message made obsolete, and the
   // re-armed flush answers the whole burst instead. It cannot reach the closing line, which left
   // before it — and it must not: by then the conversation reads `open`, so the flush re-decides

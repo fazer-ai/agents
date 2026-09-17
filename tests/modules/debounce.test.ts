@@ -187,6 +187,7 @@ function page(
     // outgoing message from a human agent's (issue #698). Omitted ⇒ the page names no sender, which
     // is a shape the serializer really emits.
     sender?: string;
+    senderId?: number;
   }>,
 ) {
   return {
@@ -196,7 +197,7 @@ function page(
       message_type: m.type ?? 0,
       private: m.priv ?? false,
       ...(m.attachments ? { attachments: m.attachments } : {}),
-      ...(m.sender ? { sender: { id: 1, type: m.sender } } : {}),
+      ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
     })),
   };
 }
@@ -1528,6 +1529,150 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(seen).not.toContain("pergunta antiga");
     expect(seen).not.toContain("outra antiga");
     expect(seen).not.toContain("a última antiga");
+  });
+
+  // AND "AGENT BOT" IS NOT THE SAME AS "OURS" (PR #701, review round 1). The exemption exists because
+  // our own reply is already recorded, message by message, in the claim rows. Another AgentBot on the
+  // same conversation writes nothing here: its reply closes what it answered and this runtime has no
+  // record of it at all. Exempting every bot reads that reply as ours, so the messages it answered
+  // come back as owed the moment the conversation returns to us.
+  test("another AgentBot's reply closes the burst before it, like a person's", async () => {
+    const convId = 945;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      // `jobFor` carries agentBotId 9, which is this tenant's bot; 77 below is somebody else's.
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "quero abrir um chamado" },
+              { id: 2, content: "é urgente" },
+              {
+                id: 3,
+                content: "abri o chamado 42 pra você",
+                type: 1,
+                sender: "agent_bot",
+                senderId: 77,
+              },
+              { id: 4, content: "obrigado, e qual o prazo?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("qual o prazo");
+    expect(seen).not.toContain("quero abrir um chamado");
+    expect(seen).not.toContain("é urgente");
+  });
+
+  // AND UMA SAÍDA SEM DONO NÃO É FRONTEIRA (PR #701, review round 1, segunda forma). A regra anda
+  // sobre evidência, nunca sobre silêncio: uma página que não atribuiu a saída pode estar descrevendo
+  // uma resposta NOSSA, e lê-la como de terceiro silencia um cliente que ninguém respondeu, que é o
+  // defeito desta issue chegando pelo conserto dela. O caminho de recuperação de entrega torna esse
+  // custo permanente, e é lá que a assimetria foi medida.
+  test("an outgoing the page did not attribute is not a boundary", async () => {
+    const convId = 946;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "tem alguém?" },
+              // Sem `sender`: a resposta automática de fora de horário, que a página não atribui.
+              {
+                id: 2,
+                content: "estamos fora do horário de atendimento",
+                type: 1,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    expect(model.seen.join("\n")).toContain("tem alguém?");
+  });
+
+  // E O PORTÃO DO FLUSH PERGUNTA O MESMO (PR #701, review round 1, mutante m13). A pessoa responde
+  // ENQUANTO o turno roda: a seleção que montou a rajada é de antes, e o re-fetch do portão é de
+  // depois. Perguntando só "chegou algo mais novo?", o portão vê a cerca ter tirado a rajada inteira
+  // da seleção e lê esse vazio como "ninguém veio depois de mim", postando por cima de quem
+  // respondeu.
+  test("a person who answers mid-turn stops the flush from posting", async () => {
+    const convId = 947;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => fakeModel(),
+        makeClient: makeStub({
+          pages: [
+            // A seleção, antes da resposta humana.
+            page([{ id: 1, content: "tem alguém?" }]),
+            // O re-fetch do portão, depois dela.
+            page([
+              { id: 1, content: "tem alguém?" },
+              {
+                id: 2,
+                content: "oi, sou a Ana do suporte",
+                type: 1,
+                sender: "user",
+                senderId: 41,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
   });
 
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate

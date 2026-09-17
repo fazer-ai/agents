@@ -36,6 +36,7 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
+  foreignReplyBoundary,
   readSelectionState,
   selectOpenMessages,
 } from "@/modules/debounce/watermark";
@@ -2607,12 +2608,28 @@ export async function runAgentTurn(
               messageIds: pendingIncoming(latest, null).map((m) => m.id),
               base,
             });
-            const openAbove = selectOpenMessages({
+            const open = selectOpenMessages({
               page: latest,
-              scalarFloor: triggerId,
+              scalarFloor: null,
               state,
-            }).some((m) => m.id > triggerId);
-            if (openAbove) {
+              managedBotId: agentBotId,
+            });
+            // TWO QUESTIONS, and the second one is new (PR #701, review round 1). "Is anything newer
+            // still open" is the supersede this gate always asked. "Is what I am about to answer
+            // still mine to answer" was carried for free by the first one, because a human reply
+            // always sat above the trigger with a newer inbound message under it — and the fence
+            // that keeps an orphan from being re-offered now removes BOTH from the selection, so an
+            // emptiness that means "a person already answered this" would read as "nothing came
+            // after me, go ahead".
+            //
+            // ASKED AS THE BOUNDARY, not as "is my trigger still in the open set". A message another
+            // TURN claimed is missing from that set too, and standing down on it would take the
+            // decision away from the claim, which is what tells a burst with free members to come
+            // back for them.
+            const openAbove = open.some((m) => m.id > triggerId);
+            const answeredByOther =
+              triggerId <= foreignReplyBoundary(latest, agentBotId);
+            if (openAbove || answeredByOther) {
               logger.info(
                 "direct turn: superseded mid-turn (conv=%s), deferring",
                 String(conversationId),

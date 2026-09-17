@@ -529,12 +529,59 @@ export async function readSelectionState(params: {
 // below the per-message floor: down there no row was ever written and none ever will be, so absence
 // proves nothing. Above the floor absence IS evidence, because every decision taken up there writes
 // a row, and the message is open unless a row or one of the two fences says otherwise.
+// THE REPLY SOMEBODY ELSE WROTE, as an id: every incoming message at or below it was read and
+// answered by whoever wrote it, and nothing in this runtime records that. Zero when the page carries
+// no such reply.
+//
+// "Somebody else" is a NAMED other: a person (`user`), or an AgentBot that is not this tenant's,
+// matched by id because another bot on the same conversation writes no claim row here and its reply
+// is as opaque to us as a person's. An outgoing message the page did not attribute is NOT a boundary,
+// and that default is the opposite of the one the selection would want — deliberately.
+//
+// The two costs are not symmetric. Read as a boundary, an unattributed reply of OURS silences a
+// customer nobody answered, which is this issue's own defect arriving through its fix; read as ours,
+// an unattributed reply of somebody else's costs a second answer on a thread a person already
+// handled. The delivery-recovery path makes the first cost concrete and permanent: an away message
+// or an out-of-hours notice sitting after a stranded customer message would refuse the recovery
+// forever (`tests/modules/chatwoot-recover-delivery.test.ts`). So the boundary moves on evidence,
+// never on silence.
+//
+// Exported because the two post gates ask it directly (PR #701, review round 1). They cannot ask
+// `selectOpenMessages` instead: a message another TURN claimed is also missing from that answer, and
+// the gates must not stand down on it — the claim is what detects that, and the word it returns is
+// what sends the flush back for the members nobody took.
+export function foreignReplyBoundary(
+  page: readonly ChatwootMessageRow[],
+  managedBotId: number | null,
+): number {
+  let boundary = 0;
+  for (const m of page) {
+    const somebodyElse =
+      m.senderType === "user" ||
+      (m.senderType === "agent_bot" &&
+        (managedBotId === null || m.senderId !== managedBotId));
+    if (
+      (m.messageType === "outgoing" || m.messageType === "template") &&
+      !m.private &&
+      somebodyElse &&
+      m.id > boundary
+    ) {
+      boundary = m.id;
+    }
+  }
+  return boundary;
+}
+
 export function selectOpenMessages(params: {
   page: readonly ChatwootMessageRow[];
   scalarFloor: number | null;
   state: { floor: number | null; resetAt: number | null; closed: Set<number> };
+  // The Chatwoot id of THIS tenant's agent bot, the only outgoing sender whose replies are already
+  // recorded here message by message. Null or a mismatch means the reply is somebody else's, and
+  // somebody else's reply closes what it answered (PR #701, review round 1).
+  managedBotId: number | null;
 }): ChatwootMessageRow[] {
-  const { page, scalarFloor, state } = params;
+  const { page, scalarFloor, state, managedBotId } = params;
   const perMessage = state.floor;
   const pageArray = [...page];
   if (perMessage === null) return pendingIncoming(pageArray, scalarFloor);
@@ -546,26 +593,13 @@ export function selectOpenMessages(params: {
   // answered read the thread, and handing that thread back to the model is the defect
   // `incomingAfterLastOutgoing` exists to prevent on the re-engage path.
   //
-  // "Not ours" is `senderType !== "agent_bot"`, and a page that named no sender counts as not ours:
-  // the conservative direction, because it leaves a message unanswered rather than answering one a
-  // person already handled.
-  let humanReplied = 0;
-  for (const m of pageArray) {
-    if (
-      (m.messageType === "outgoing" || m.messageType === "template") &&
-      !m.private &&
-      m.senderType !== "agent_bot" &&
-      m.id > humanReplied
-    ) {
-      humanReplied = m.id;
-    }
-  }
+  const closedByOther = foreignReplyBoundary(pageArray, managedBotId);
   return pendingIncoming(pageArray, null).filter((m) => {
     if (m.id <= perMessage) {
       return scalarFloor === null || m.id > scalarFloor;
     }
     if (state.closed.has(m.id)) return false;
-    if (m.id <= humanReplied) return false;
+    if (m.id <= closedByOther) return false;
     // THE COMMAND'S FENCE. `/reset` retires the pending burst and writes a dispensal for its own
     // message id alone, so the messages it withdrew carry no row: read by the rule above they would
     // be offered again, rebuilding the memory the command cleared and re-running requests the

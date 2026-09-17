@@ -39,6 +39,7 @@ function row(
     isReaction: false,
     activityType: null,
     senderType: null,
+    senderId: null,
     emailSubject: null,
     // Required on `ChatwootMessageRow` since this branch was cut; defaulted here for the same
     // reason every other field is.
@@ -249,6 +250,7 @@ describe("what the transcript sees", () => {
       isReaction: false,
       activityType: null,
       senderType: null,
+      senderId: null,
       transcribedText: null,
       imageDescription: null,
       extractedText: null,

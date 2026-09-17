@@ -166,6 +166,11 @@ export interface CoalesceTurnContext {
   // Whether this caller is the operator's own re-engage, which is the only one entitled to answer
   // over a silence something chose deliberately (issue #452).
   initiatedBy: "automatic" | "operator";
+  // Told when the claim was lost, so the caller can tell a burst that has something coming for it
+  // from one that does not (issue #690, PR review round 4). Only the flush passes it.
+  onClaimLost?: (
+    reason: "claimed" | "handled" | "dispensed" | "partial",
+  ) => void;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -473,6 +478,7 @@ export async function coalesceAndRunTurn(
       // list exists to remove rather than relocate.
       messageIds: inTurn.map((m) => m.id),
       initiatedBy: ctx.initiatedBy,
+      ...(ctx.onClaimLost ? { onLost: ctx.onClaimLost } : {}),
     },
   });
   // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
@@ -2031,6 +2037,8 @@ export async function flushDebounceJob(
         ),
       );
     }
+    // Set by the claim, read once the turn is over: see the branch at the tail of this function.
+    let claimLostPartial = false;
     const outcome = await coalesceAndRunTurn(
       {
         tenantId,
@@ -2070,6 +2078,9 @@ export async function flushDebounceJob(
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
+        onClaimLost: (reason) => {
+          claimLostPartial = reason === "partial";
+        },
         label: "debounce flush",
         coalesceStage: "debounce",
       },
@@ -2107,6 +2118,28 @@ export async function flushDebounceJob(
     // once it has it; a switched-off agent's burst waits for the switch.
     if (outcome === "agent-unavailable") {
       retryFlushOnFailedHandOver(await handOverIfObserving(), conversationId);
+    }
+    // A PARTIAL CONFLICT IS THE ONE REFUSAL WITH NOTHING COMING AFTER IT (issue #690, PR review
+    // round 4). Every other `superseded` means a newer message arrived and its own flush is armed,
+    // which is why this word completes the job. Here the competing claim is for a message this burst
+    // shares, and the ones nobody claimed are left with no flush, no watermark move and no schedule:
+    // the silence this issue is about, reached through the fix for it.
+    //
+    // The selection already drops what is spoken for at the moment it reads, so what lands here is a
+    // claim taken inside the window between that read and this one. Rescheduled, the next selection
+    // reads again, drops the message that was taken, and claims what is still free — one hop, and
+    // the deferral stamp keeps the ceiling honest if it somehow is not.
+    if (claimLostPartial) {
+      await stampDeferral({
+        tenantId,
+        threadId,
+        since: deferringSince,
+        base,
+      });
+      return {
+        outcome: "reschedule",
+        runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
+      };
     }
     return { outcome: "done" };
   } catch (e) {

@@ -304,6 +304,11 @@ export interface RunLoadedTurnParams {
     // WHO ASKED, forwarded verbatim to the claim. Only the operator's own re-engage may overturn a
     // deliberate silence, and only because a person asked for it (issue #452).
     initiatedBy: "automatic" | "operator";
+    // WHY THE CLAIM WAS LOST, for the one caller that can do something about it (issue #690, PR
+    // review round 4). The turn's own outcome word cannot carry it: every lost claim stands down
+    // the same way and produces the same silence, while the REPAIR differs — a burst refused on a
+    // partial conflict has messages nobody claimed and nothing scheduled to come back for them.
+    onLost?: (reason: "claimed" | "handled" | "dispensed" | "partial") => void;
     // HOW FAR THE HANDLED WATERMARK MAY HAVE MOVED and this claim still stand — the second question
     // the claim settles, under the same row lock, because a skip landing between a separate read of
     // the watermark and the claim is exactly the window the CAS this replaced used to close for
@@ -657,13 +662,16 @@ export async function runLoadedTurn(
       base,
     });
     if (!claim.won) {
+      target.onLost?.(claim.reason);
       logger.info(
         "turn: %s (conv=%s target=%s), deferring",
         claim.reason === "handled"
           ? "the burst was already handled"
           : claim.reason === "dispensed"
             ? "the burst was deliberately dispensed"
-            : "another turn holds the reply claim",
+            : claim.reason === "partial"
+              ? "another turn holds part of this burst"
+              : "another turn holds the reply claim",
         String(params.conversationId),
         String(target.toMessageId),
       );

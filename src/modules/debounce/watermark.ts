@@ -212,6 +212,7 @@ export async function claimReplyBurst(params: {
   // killing one of them. Inserting in one agreed order makes the loser wait and then lose cleanly.
   // De-duplicated because a burst can carry the same id twice through a re-fetch, and a repeat would
   // make the count below disagree with the set for a reason that is not contention.
+  let partial = false;
   const ids = [...new Set(params.messageIds)].sort((a, b) => a - b);
   const lowest = ids[0];
   const highest = ids[ids.length - 1];
@@ -339,6 +340,10 @@ export async function claimReplyBurst(params: {
               ON CONFLICT ("conversation_id", "message_id") DO NOTHING
            RETURNING "message_id"`;
       if (inserted.length !== ids.length) {
+        // Recorded before the rollback takes the partial inserts with it: afterwards nothing
+        // distinguishes "every message was already spoken for" from "one was, and the rest are still
+        // owed to somebody".
+        partial = inserted.length > 0;
         // ALL OR NOTHING. Fewer rows back means somebody else owns part of this tail, and a turn that
         // owns part of it owns none: the rollback takes the partial inserts with it, and the caller is
         // one statement short of a send that has not happened yet, which is the contract
@@ -381,7 +386,9 @@ export async function claimReplyBurst(params: {
       return { won: true };
     },
   ).catch((e): ReplyClaimOutcome => {
-    if (e instanceof LostReplyClaim) return { won: false, reason: "claimed" };
+    if (e instanceof LostReplyClaim) {
+      return { won: false, reason: partial ? "partial" : "claimed" };
+    }
     throw e;
   });
 }
@@ -420,7 +427,15 @@ export async function readClaimedMessageIds(params: {
 
 export type ReplyClaimOutcome =
   | { won: true }
-  | { won: false; reason: "claimed" | "handled" | "dispensed" };
+  | {
+      won: false;
+      // PART of this set was free and part was not (PR review, round 4). The refusal is still whole —
+      // a turn that owns part of a tail owns none of it — but the CONSEQUENCE differs, and only the
+      // caller can act on it: a burst refused because a newer message arrived has that newer
+      // message's own turn coming for it, while one refused on a conflict has nothing coming for the
+      // messages nobody claimed. The flush reschedules on this word and on no other.
+      reason: "claimed" | "handled" | "dispensed" | "partial";
+    };
 
 // The rollback signal for the all-or-nothing insert above. A thrown error is what aborts the
 // interactive transaction — returning early would COMMIT the partial rows, which is the one outcome

@@ -765,9 +765,11 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await claim([20])).toEqual({ won: false, reason: "claimed" });
     // AND THE OVERLAP LOSES WHOLE. A turn that owns part of a tail owns none of it — answering half
     // a burst is how a customer reads a reply to their second message and nothing about their first.
+    // The WORD is `partial` and not `claimed`: 19 and 21 are still owed to somebody, and the flush
+    // reschedules on exactly that distinction.
     expect(await claim([19, 20, 21])).toEqual({
       won: false,
-      reason: "claimed",
+      reason: "partial",
     });
     // ...and having lost, it left nothing behind: 19 and 21 are still free for the turn that does
     // read them. A partial insert surviving the loss would close them for a reply nobody sent.
@@ -1031,7 +1033,8 @@ describe.skipIf(!dbUp)("debounce", () => {
         initiatedBy: "automatic",
         base: appDb,
       }),
-    ).toEqual({ won: false, reason: "claimed" });
+      // `partial`, because 1003 was free: the word is what tells the flush to come back for it.
+    ).toEqual({ won: false, reason: "partial" });
     expect(
       await suDb.messageReplyClaim.findFirst({
         where: { conversationId: id, messageId: 1003 },

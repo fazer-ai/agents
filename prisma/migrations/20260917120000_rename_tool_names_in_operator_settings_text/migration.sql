@@ -26,6 +26,14 @@
 -- `system_prompt` is the seventh model-facing surface, and the migration named above already
 -- rewrote it; doing it again here would write a second audit line for one change.
 --
+-- AND PROSE DOES NOT ALL LIVE IN THE BAG. Two more surfaces are COLUMNS on the tool definition
+-- tables, which `text-caps.ts` knows nothing about: `tool_definitions.description` and
+-- `code_tool_definitions.description`, which the model receives as those tools' descriptions, plus
+-- the per-argument `description` inside each `input_schema`, which it receives as the argument's
+-- hint. This file rewrites them too; the block that does it is at the bottom, with the ambiguity
+-- they raise stated there. `tests/utils/operator-text-classes.ts` classifies every String column of
+-- those two tables so a new one cannot arrive unclassified.
+--
 -- DELIBERATELY NOT REWRITTEN, and the reason is the same for the first group: the text is read by a
 -- PERSON, not by a model, and `set_labels` means no more to a customer than `assign_label` did. The
 -- rename would change a message a customer reads and fix nothing.
@@ -60,6 +68,8 @@ BEGIN;
 
 ALTER TABLE "agents" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "code_tool_definitions" NO FORCE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
@@ -82,12 +92,21 @@ DECLARE
     'guardrails,output,generationPrompt'
   ];
 BEGIN
-  -- The prefilter is on the whole bag as text, which is cheap and over-inclusive: a row it selects
-  -- may carry the old name only in a field this migration leaves alone, and then `touched` comes
-  -- back empty and nothing is written. What it must not do is MISS a row, which is why it asks the
-  -- bag rather than the six paths.
+  -- THE PREFILTER IS A SUBSTRING, NOT A WORD BOUNDARY, and that is the whole point of it being
+  -- separate from the per-field test below. On the serialized bag a newline inside the operator's
+  -- note comes out as the two characters `\` and `n`, so `Allowed tool:` + newline + `assign_label`
+  -- puts a WORD CHARACTER right before the name and `\y` does not match: the agent would be skipped
+  -- with its guidance left stale and no audit line (measured in review round 1 of PR #687, where
+  -- the serialized bag answered false and the decoded value answered true). The boundary belongs on
+  -- the DECODED value, which is where prose actually lives, and this filter only has to avoid
+  -- MISSING a row. `strpos` rather than LIKE because `_` is a LIKE wildcard, the same note the
+  -- 20260903120000 migration makes about these names.
+  --
+  -- Over-inclusive on purpose: a row it selects may carry the old name only in a field this
+  -- migration leaves alone, and then `touched` comes back empty and nothing is written.
   FOR r IN
-    SELECT id, tenant_id, settings FROM "agents" WHERE settings::text ~ '\yassign_label\y'
+    SELECT id, tenant_id, settings FROM "agents"
+     WHERE strpos(settings::text, 'assign_label') > 0
   LOOP
     s := r.settings;
     touched := ARRAY[]::text[];
@@ -142,9 +161,12 @@ BEGIN
             ARRAY['followUp', 'steps', (ord - 1)::text, 'instructions'],
             to_jsonb(regexp_replace(step #>> '{instructions}', '\yassign_label\y', 'set_labels', 'g'))
           );
-          -- Through `format()`, and not as a bare literal: on the right of `text[] ||` an untyped
-          -- literal containing `[]` is parsed as an ARRAY LITERAL, and the migration dies with
-          -- "malformed array literal" (measured while mutating this line).
+          -- Through `format()`, and not as a bare literal. On the right of `text[] ||` an UNTYPED
+          -- literal is read as an ARRAY literal, so the statement dies at runtime with "malformed
+          -- array literal" (measured twice: once while mutating this line, and once for real on the
+          -- appends in the tool-definition block below, which now carry an explicit `::text`). Every
+          -- append in this file is therefore a typed expression: a function result, a concatenation,
+          -- or a cast. A DO block only fails when a row reaches it, so an empty table hides this.
           touched := touched || format('followUp.steps[%s].instructions', ord - 1);
         END IF;
       END LOOP;
@@ -173,6 +195,115 @@ BEGIN
   END LOOP;
 END $$;
 
+-- THE OPERATOR'S OWN TOOLS, which are prose too and do not live in the settings bag at all. An HTTP
+-- or CODE tool carries a `description` the operator typed, and the MODEL receives it as that tool's
+-- description (`src/graph/tools/http.ts:972`, `src/graph/tools/code.ts:172`), right beside the
+-- native whose name changed; the per-argument `description` inside `input_schema` reaches the same
+-- model as the argument's own hint (`http.ts:275`, `zt.describe`). Same harm, same surface, and
+-- `text-caps.ts` does not know about them because they are COLUMNS on two other tables rather than
+-- keys in the bag. Found by the round's blind holdout, not by the issue, whose table lists neither.
+--
+-- WHAT IS AMBIGUOUS HERE, said once for the whole file. A tenant whose own HTTP tool was named
+-- `assign_label` had it moved to `assign_label_N` by 20260903120000, so in THAT tenant prose naming
+-- `assign_label` could mean either the old native or their own moved tool. The ambiguity is not
+-- special to these two columns: it is exactly as true of `handoff.instructions` and of the
+-- `system_prompt` the earlier migration already rewrote blind. So this file resolves it the same way
+-- that one did, toward the global one-to-one rename, and the audit line is what makes the choice
+-- readable and reversible.
+
+CREATE OR REPLACE FUNCTION pg_temp.renamed(t text) RETURNS text
+  LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT regexp_replace($1, '\yassign_label\y', 'set_labels', 'g')
+  $fn$;
+
+-- The per-argument descriptions, one level deep: `input_schema` is `{ <field>: { type, description?,
+-- … } }` and nothing else in it is prose. A field whose `description` is not a string is left alone,
+-- and so is a schema that is not an object; an empty object would make `jsonb_object_agg` return
+-- NULL, hence the COALESCE.
+CREATE OR REPLACE FUNCTION pg_temp.renamed_schema(s jsonb) RETURNS jsonb
+  LANGUAGE sql IMMUTABLE AS $fn$
+    SELECT CASE
+      WHEN jsonb_typeof($1) <> 'object' THEN $1
+      ELSE COALESCE(
+        (SELECT jsonb_object_agg(
+                  e.key,
+                  CASE
+                    WHEN jsonb_typeof(e.value) = 'object'
+                         AND jsonb_typeof(e.value -> 'description') = 'string'
+                      THEN jsonb_set(
+                             e.value,
+                             '{description}',
+                             to_jsonb(pg_temp.renamed(e.value #>> '{description}'))
+                           )
+                    ELSE e.value
+                  END)
+           FROM jsonb_each($1) AS e),
+        $1)
+    END
+  $fn$;
+
+DO $$
+DECLARE
+  r RECORD;
+  tbl text;
+  new_desc text;
+  new_schema jsonb;
+  touched text[];
+BEGIN
+  -- Two tables, one loop, because the work is identical and the only thing that differs is which
+  -- table the row came from and what the audit target is called.
+  FOR r IN
+    SELECT 'tool_definitions' AS src, id, tenant_id, description, input_schema
+      FROM "tool_definitions"
+     WHERE strpos(COALESCE(description, ''), 'assign_label') > 0
+        OR strpos(input_schema::text, 'assign_label') > 0
+    UNION ALL
+    SELECT 'code_tool_definitions' AS src, id, tenant_id, description, input_schema
+      FROM "code_tool_definitions"
+     WHERE strpos(COALESCE(description, ''), 'assign_label') > 0
+        OR strpos(input_schema::text, 'assign_label') > 0
+    ORDER BY src, id
+  LOOP
+    touched := ARRAY[]::text[];
+    new_desc := pg_temp.renamed(r.description);
+    new_schema := pg_temp.renamed_schema(r.input_schema);
+    IF new_desc IS DISTINCT FROM r.description THEN
+      touched := touched || 'description'::text;
+    END IF;
+    IF new_schema IS DISTINCT FROM r.input_schema THEN
+      touched := touched || 'input_schema.*.description'::text;
+    END IF;
+    -- A row whose only occurrence is glued to a word character changes nothing, and must not be
+    -- stamped with a new updated_at for an edit that did not happen.
+    CONTINUE WHEN array_length(touched, 1) IS NULL;
+    IF r.src = 'tool_definitions' THEN
+      UPDATE "tool_definitions"
+         SET description = new_desc, input_schema = new_schema, updated_at = NOW()
+       WHERE id = r.id;
+      tbl := 'tool';
+    ELSE
+      UPDATE "code_tool_definitions"
+         SET description = new_desc, input_schema = new_schema, updated_at = NOW()
+       WHERE id = r.id;
+      tbl := 'code_tool';
+    END IF;
+    INSERT INTO "audit_logs" (
+      tenant_id, actor_id, actor_type, action, target, "before", "after", created_at
+    ) VALUES (
+      r.tenant_id, NULL, 'system', 'tool.text_renamed_tool', tbl || ':' || r.id,
+      NULL,
+      jsonb_build_object(
+        'tool', 'assign_label',
+        'renamed', 'set_labels',
+        'paths', to_jsonb(touched)
+      ),
+      NOW()
+    );
+  END LOOP;
+END $$;
+
+ALTER TABLE "code_tool_definitions" FORCE ROW LEVEL SECURITY;
+ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
 

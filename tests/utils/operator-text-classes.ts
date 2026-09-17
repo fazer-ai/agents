@@ -32,6 +32,40 @@ export const PERSON_FACING = [
   "signature.text",
 ];
 
+// PROSE THAT DOES NOT LIVE IN THE SETTINGS BAG. An HTTP or CODE tool definition is a row on its own
+// table, so `text-caps.ts` knows nothing about it, and two of its columns are prose the MODEL reads:
+// the tool's own description and the per-argument descriptions inside `input_schema`. Keyed by
+// `<model>.<column>` because that is what the fence reads out of `prisma/schema.prisma`.
+//
+// Only the `String` columns of those two models are classified, not every column: a `Json` blob or a
+// URL template is not prose, and a fence that demanded a decision about `appointment` would be a tax
+// on unrelated work. A new STRING column on a tool definition is a prose candidate by default, which
+// is the case worth stopping.
+export const TOOL_COLUMNS: Record<
+  string,
+  "model_with_tools" | "person" | "not_prose"
+> = {
+  // The model receives these as the tool's description and as each argument's hint.
+  "ToolDefinition.description": "model_with_tools",
+  "CodeToolDefinition.description": "model_with_tools",
+  // The identifier and the display name the operator typed. NOT rewritten by a rename of a NATIVE
+  // name: `20260903120000` already moved any tool that answered to a native's name, per tenant and
+  // to a derived `<name>_N`, so there is no global replacement to make here.
+  "ToolDefinition.name": "not_prose",
+  "ToolDefinition.label": "not_prose",
+  "CodeToolDefinition.name": "not_prose",
+  "CodeToolDefinition.label": "not_prose",
+  // The slow-tool acknowledgement, which the CUSTOMER reads.
+  "ToolDefinition.ackMessage": "person",
+  // Not prose at all: mechanics the model never reads as text.
+  "ToolDefinition.method": "not_prose",
+  "ToolDefinition.urlTemplate": "not_prose",
+  "ToolDefinition.allowedHosts": "not_prose",
+  "ToolDefinition.credentialRef": "not_prose",
+  // The operator's code. The model is shown the description, never the body.
+  "CodeToolDefinition.code": "not_prose",
+};
+
 export const CLASSIFIED = [
   ...MODEL_WITH_TOOLS,
   ...MODEL_WITHOUT_TOOLS,

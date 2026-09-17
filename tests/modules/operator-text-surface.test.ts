@@ -9,6 +9,7 @@ import {
   MODEL_WITH_TOOLS,
   MODEL_WITHOUT_TOOLS,
   PERSON_FACING,
+  TOOL_COLUMNS,
 } from "../utils/operator-text-classes";
 import { withoutComments } from "../utils/source-text";
 
@@ -101,6 +102,35 @@ describe("the operator-text surface a rename has to follow", () => {
       ),
     ].sort();
     expect(yielded).toEqual([...CLASSIFIED].sort());
+  });
+
+  // The second population, and the one the issue's own table does not mention: prose on the two tool
+  // definition tables. `text-caps.ts` cannot see it, so the scan is over the schema instead.
+  test("every STRING column of a tool definition is classified", async () => {
+    const schema = await Bun.file("prisma/schema.prisma").text();
+    const found: string[] = [];
+    for (const model of ["ToolDefinition", "CodeToolDefinition"]) {
+      const body = new RegExp(`^model ${model} \\{([\\s\\S]*?)^\\}`, "m").exec(
+        schema,
+      );
+      if (!body) throw new Error(`model ${model} not found in schema.prisma`);
+      for (const m of (body[1] as string).matchAll(
+        /^ {2}(\w+)\s+String\??(?:\[\])?\s/gm,
+      )) {
+        found.push(`${model}.${m[1]}`);
+      }
+    }
+    expect(found.sort()).toEqual(Object.keys(TOOL_COLUMNS).sort());
+  });
+
+  test("the tool columns a rename rewrites are exactly the two descriptions", () => {
+    const rewritten = Object.entries(TOOL_COLUMNS)
+      .filter(([, c]) => c === "model_with_tools")
+      .map(([k]) => k);
+    expect(rewritten.sort()).toEqual([
+      "CodeToolDefinition.description",
+      "ToolDefinition.description",
+    ]);
   });
 
   test("the three classes are disjoint, so no site is both", () => {

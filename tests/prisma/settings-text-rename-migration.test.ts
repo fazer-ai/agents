@@ -50,6 +50,9 @@ let tenant2Id = 0n;
 // below would also pass on a migration that rewrote nothing and a seed that was already clean: this
 // is the control that says the file measures the rewrite.
 let staleBefore: string | undefined;
+// The serialized bag of the newline agent, read BEFORE the migration: it is the only moment the
+// shape that defeats a word-boundary prefilter is still on disk.
+let serializedBefore = "";
 const ids: Record<string, bigint> = {};
 const id = (k: string): bigint => ids[k] as bigint;
 
@@ -69,6 +72,68 @@ async function agent(
     ],
   );
   ids[key] = BigInt(r.rows[0].id);
+}
+
+async function toolDef(
+  key: string,
+  table: "tool_definitions" | "code_tool_definitions",
+  description: string | null,
+  inputSchema: unknown,
+): Promise<void> {
+  const cols =
+    table === "tool_definitions"
+      ? `(tenant_id, name, label, description, method, url_template, allowed_hosts, headers, input_schema, ack_message, created_at, updated_at)
+         VALUES ($1, $2, $2, $3, 'GET', 'https://example.com/v1', ARRAY['example.com'], '{}'::jsonb, $4::jsonb, $5, NOW(), NOW())`
+      : `(tenant_id, name, label, description, input_schema, code, created_at, updated_at)
+         VALUES ($1, $2, $2, $3, $4::jsonb, 'return {}', NOW(), NOW())`;
+  const params: unknown[] = [
+    String(tenantId),
+    key,
+    description,
+    JSON.stringify(inputSchema),
+  ];
+  // The slow-tool acknowledgement is operator text the CUSTOMER reads, seeded with the old name so
+  // the exclusion is asserted rather than assumed.
+  if (table === "tool_definitions") params.push("Já verifico (assign_label)…");
+  const r = await suDb.query(
+    `INSERT INTO "${table}" ${cols} RETURNING id`,
+    params,
+  );
+  ids[key] = BigInt(r.rows[0].id);
+}
+
+async function toolRow(
+  table: "tool_definitions" | "code_tool_definitions",
+  toolId: bigint,
+): Promise<{
+  description: string | null;
+  // The whole spec per field, not just its description: two cases assert that a field the walk must
+  // step over comes back with its shape intact.
+  input_schema: Record<
+    string,
+    { description?: unknown } & Record<string, unknown>
+  >;
+  ack_message?: string | null;
+  updated_at: string;
+}> {
+  const extra = table === "tool_definitions" ? ", ack_message" : "";
+  const r = await suDb.query(
+    `SELECT description, input_schema, updated_at${extra} FROM "${table}" WHERE id = $1`,
+    [String(toolId)],
+  );
+  return { ...r.rows[0], updated_at: String(r.rows[0].updated_at) };
+}
+
+async function auditPathsFor(target: string): Promise<string[][]> {
+  const r = await suDb.query(
+    `SELECT "after" FROM "audit_logs"
+      WHERE target = $1 AND action = 'tool.text_renamed_tool'
+      ORDER BY id ASC`,
+    [target],
+  );
+  return r.rows.map(
+    (row) => (row.after as { paths?: string[] }).paths as string[],
+  );
 }
 
 async function settingsOf(agentId: bigint): Promise<Record<string, unknown>> {
@@ -350,6 +415,52 @@ describe.skipIf(!dbUp)(
       // and unlike that test it survives a reformat of the file.
       await agent("all_paths", ALL_PATHS_STALE);
 
+      // A NOTE WITH A NEWLINE BEFORE THE NAME. On the serialized bag that newline comes out as `\`
+      // followed by `n`, so a word-boundary PREFILTER over `settings::text` finds nothing and skips
+      // the agent entirely (review round 1 of PR #687). The boundary belongs on the decoded value.
+      await agent("newline", {
+        toolGuidance: {
+          set_labels: "Allowed tool:\nassign_label\tassign_label",
+        },
+      });
+      // An agent whose only occurrence is glued to a word character: nothing to rewrite, and no
+      // updated_at stamp for an edit that did not happen.
+      await agent("untouched", {
+        handoff: { instructions: "xassign_labelx e nada mais" },
+      });
+
+      // The operator's own tools, which are prose on two other tables.
+      await toolDef(
+        "http_tool",
+        "tool_definitions",
+        "Use no lugar de assign_label.",
+        {
+          etiqueta: {
+            type: "string",
+            description: "a etiqueta que assign_label aplicaria",
+          },
+          nota: { type: "string" },
+          quebrado: { type: "string", description: 42 },
+        },
+      );
+      await toolDef(
+        "code_tool",
+        "code_tool_definitions",
+        "Faz o que assign_label fazia.",
+        {
+          campo: { type: "string", description: "idem assign_label" },
+        },
+      );
+      await toolDef("tool_glued", "tool_definitions", "xassign_labelx", {});
+
+      serializedBefore = String(
+        (
+          await suDb.query(
+            'SELECT settings::text AS t FROM "agents" WHERE id = $1',
+            [String(id("newline"))],
+          )
+        ).rows[0].t,
+      );
       staleBefore = readToolGuidance(
         await settingsOf(id("guidance")),
       ).set_labels;
@@ -360,6 +471,14 @@ describe.skipIf(!dbUp)(
         await suDb.query('DELETE FROM "audit_logs" WHERE tenant_id = $1', [
           String(t),
         ]);
+        await suDb.query(
+          'DELETE FROM "tool_definitions" WHERE tenant_id = $1',
+          [String(t)],
+        );
+        await suDb.query(
+          'DELETE FROM "code_tool_definitions" WHERE tenant_id = $1',
+          [String(t)],
+        );
         await suDb.query('DELETE FROM "agents" WHERE tenant_id = $1', [
           String(t),
         ]);
@@ -606,6 +725,79 @@ describe.skipIf(!dbUp)(
         Object.values(before).every((v) => v.includes("assign_label")),
       ).toBeTrue();
       expect(shouldChange.length).toBe(MODEL_WITH_TOOLS.length);
+    });
+
+    test("a note whose only occurrence follows a newline is still rewritten", async () => {
+      // The control is the SHAPE of the seed, captured before the migration ran: on the serialized
+      // bag the character before the name is `n`, not a boundary, which is what made a `\y`
+      // prefilter skip the whole row.
+      expect(serializedBefore).toContain("\\nassign_label");
+      // `\b`, not Postgres's `\y`: JavaScript has no `\y` and reads it as the letter `y`, so the
+      // first version of this line asserted that the text does not contain `yassign_labely`, which
+      // passes without measuring anything. This is the same predicate spelled in the language the
+      // test is written in: the serialized bag has NO word-boundary match, the decoded value does.
+      expect(serializedBefore).not.toMatch(/\bassign_label\b/);
+      expect("Allowed tool:\nassign_label").toMatch(/\bassign_label\b/);
+      expect(
+        (
+          (await settingsOf(id("newline"))).toolGuidance as Record<
+            string,
+            string
+          >
+        ).set_labels,
+      ).toBe("Allowed tool:\nset_labels\tset_labels");
+    });
+
+    test("a row with nothing to rewrite keeps its updated_at", async () => {
+      const s = await settingsOf(id("untouched"));
+      expect((s.handoff as Record<string, string>).instructions).toBe(
+        "xassign_labelx e nada mais",
+      );
+      expect(await auditPaths(id("untouched"))).toEqual([]);
+      const r = await suDb.query(
+        'SELECT updated_at = created_at AS untouched FROM "agents" WHERE id = $1',
+        [String(id("untouched"))],
+      );
+      expect(r.rows[0].untouched).toBeTrue();
+    });
+
+    test("the operator's OWN tools are prose too, description and argument hints alike", async () => {
+      const http = await toolRow("tool_definitions", id("http_tool"));
+      expect(http.description).toBe("Use no lugar de set_labels.");
+      expect(http.input_schema.etiqueta?.description).toBe(
+        "a etiqueta que set_labels aplicaria",
+      );
+      // A field with no description, and one whose description is not a string: both survive.
+      expect(http.input_schema.nota).toEqual({ type: "string" });
+      expect(http.input_schema.quebrado).toEqual({
+        type: "string",
+        description: 42,
+      });
+      // The slow-tool ack is read by the CUSTOMER, so it keeps the old name like the other
+      // person-facing copy.
+      expect(http.ack_message).toContain("assign_label");
+
+      const code = await toolRow("code_tool_definitions", id("code_tool"));
+      expect(code.description).toBe("Faz o que set_labels fazia.");
+      expect(code.input_schema.campo?.description).toBe("idem set_labels");
+
+      expect(await auditPathsFor(`tool:${id("http_tool")}`)).toEqual([
+        ["description", "input_schema.*.description"],
+      ]);
+      expect(await auditPathsFor(`code_tool:${id("code_tool")}`)).toEqual([
+        ["description", "input_schema.*.description"],
+      ]);
+    });
+
+    test("a tool whose occurrence is glued to a word character is not touched at all", async () => {
+      const glued = await toolRow("tool_definitions", id("tool_glued"));
+      expect(glued.description).toBe("xassign_labelx");
+      expect(await auditPathsFor(`tool:${id("tool_glued")}`)).toEqual([]);
+      const r = await suDb.query(
+        'SELECT updated_at = created_at AS untouched FROM "tool_definitions" WHERE id = $1',
+        [String(id("tool_glued"))],
+      );
+      expect(r.rows[0].untouched).toBeTrue();
     });
 
     test("re-running it rewrites nothing and writes no second line", async () => {

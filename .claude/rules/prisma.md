@@ -80,6 +80,16 @@ guardrails.customPolicy             "Additional policy", in every analysis promp
 guardrails.output.generationPrompt  steers the model that rewrites a refused reply
 ```
 
+And prose does not all live in the settings bag. Two more surfaces are COLUMNS on the tool
+definition tables, which the walker knows nothing about:
+
+```
+tool_definitions.description                    the model receives it as that tool's description
+code_tool_definitions.description               idem
+tool_definitions.input_schema.<field>.description       the model receives it as the argument's hint
+code_tool_definitions.input_schema.<field>.description  idem
+```
+
 Plus `agents.system_prompt`, the one surface the first rename of `assign_label` → `set_labels` did
 rewrite. It moved the `toolGuidance` KEY and left the value's text alone, and the result was measured
 on a real installation: `readToolGuidance` went on appending, to the description of `set_labels`, a
@@ -93,8 +103,20 @@ reads and fixes nothing. `vision.extractionPrompt` is out for a different reason
 handed no tools, so a tool name in it names nothing in either spelling.
 
 The list is not maintained by memory: `tests/modules/operator-text-surface.test.ts` classifies every
-site the walker has and fails on one it does not know, so a field added later forces the decision
-instead of silently sitting outside every future rename. The working form of the rewrite, word
+site the walker has AND every `String` column of the two tool definition models, and fails on one it
+does not know, so a field added later forces the decision instead of silently sitting outside every
+future rename. The classification itself is `tests/utils/operator-text-classes.ts`.
+
+Two things bite while writing one of these:
+
+- **The prefilter over a serialized jsonb bag must be a SUBSTRING, never `\y`.** A newline inside the
+  operator's text serializes as `\` + `n`, which puts a word character right before the name: the
+  boundary fails and the whole row is skipped, stale and with no audit line. Keep `\y` for the
+  DECODED value, where prose actually lives, and use `strpos` (not LIKE: `_` is a LIKE wildcard).
+- **A bare literal on the right of `text[] ||` is parsed as an ARRAY literal** and the statement dies
+  with `malformed array literal`. Append typed expressions only (`'x'::text`, `format(...)`, a
+  concatenation). A DO block only fails when a row reaches it, so an empty table hides this until
+  production. The working form of the rewrite, word
 boundary and audit line included, is
 `prisma/migrations/20260917120000_rename_tool_names_in_operator_settings_text`.
 

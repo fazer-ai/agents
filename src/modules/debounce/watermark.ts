@@ -296,16 +296,28 @@ export async function claimReplyBurst(params: {
       // It is the same distinction the dispensal side of this change is built on, applied to the
       // read: the hull of a set is not the set, and the gap inside it is exactly where this issue's
       // defect lives.
+      // COUNTED PER MESSAGE, not per dispensal (PR review, round 5). How many of these ids a range
+      // covers is the question, because covering SOME of them is a different situation from covering
+      // all: the ones it does not cover are still owed to somebody, and the caller has to be told so
+      // it can come back for them. Asked as "does any dispensal touch this set", a range over
+      // `(1000,1001]` refused a burst of `[1001,1002]` whole and left 1002 with nothing scheduled.
       const dispensed = await db.$queryRaw<Array<{ hit: bigint }>>`
       SELECT count(*) AS "hit"
-        FROM "reply_dispensals" d
-       WHERE d."conversation_id" = ${params.conversationDbId}
-         AND EXISTS (
-               SELECT 1 FROM unnest(${ids}::int[]) AS m
-                WHERE m <= d."to_message_id"
+        FROM unnest(${ids}::int[]) AS m
+       WHERE EXISTS (
+               SELECT 1 FROM "reply_dispensals" d
+                WHERE d."conversation_id" = ${params.conversationDbId}
+                  AND m <= d."to_message_id"
                   AND (d."from_message_id" IS NULL OR m > d."from_message_id"))`;
-      if (!overturnsSilence && (dispensed[0]?.hit ?? 0n) > 0n) {
-        return { won: false, reason: "dispensed" };
+      const dispensedCount = Number(dispensed[0]?.hit ?? 0n);
+      if (!overturnsSilence && dispensedCount > 0) {
+        // Same distinction the claim conflict below draws, and for the same reason: a burst refused
+        // because every one of its messages was dispensed has nothing left owing, while one refused
+        // over a subset leaves the rest with no reply, no watermark move and no schedule.
+        return {
+          won: false,
+          reason: dispensedCount === ids.length ? "dispensed" : "partial",
+        };
       }
 
       // THE EXCLUSION ITSELF, and it is the unique index rather than a comparison. Overlapping sets

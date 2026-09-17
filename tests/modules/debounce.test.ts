@@ -979,6 +979,20 @@ describe.skipIf(!dbUp)("debounce", () => {
         base: appDb,
       }),
     ).toEqual({ won: false, reason: "dispensed" });
+
+    // ...and one that covers only PART of the set says so, because the messages it does not cover
+    // are still owed to somebody and the flush comes back for them (PR review, round 5).
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1009,
+        maxHandledAllowed: 1008,
+        messageIds: [1007, 1009],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "partial" });
   });
 
   // A BURST DOES NOT CARRY WHAT ANOTHER TURN IS ALREADY SPEAKING FOR (issue #690, PR review round

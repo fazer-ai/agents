@@ -721,8 +721,16 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   // The claim's own table, decided in one place and asked here directly: the paths above prove the
-  // gate consults it, this proves what it answers (issue #452).
-  test("the reply claim is monotonic and honours its handled ceiling", async () => {
+  // gate consults it, this proves what it answers (issue #452, rewritten for issue #690).
+  //
+  // WHAT CHANGED AND WHY, because one of these assertions is the inverse of what it used to be. The
+  // claim used to be a single number and the test asserted that a claim BEHIND it lost — which is
+  // the arithmetic issue #690 is about: claiming 20 closed 15 without anybody having read 15. What
+  // the assertion was actually protecting is a flush retry and a second click not answering the same
+  // burst twice, and that protection survives in a stronger form: identity. The same ids collide on
+  // the unique index however they are ordered, and a set that OVERLAPS a claimed one loses whole
+  // rather than in part. Both are asserted below, so the rewrite does not trade a proof for a hole.
+  test("the reply claim is per message, all or nothing, and still monotonic", async () => {
     const convId = 892;
     await seedConversation(convId);
     const { id } = await suDb.conversation.findFirstOrThrow({
@@ -730,14 +738,16 @@ describe.skipIf(!dbUp)("debounce", () => {
       select: { id: true },
     });
     const claim = (
-      toMessageId: number,
+      messageIds: number[],
       maxHandledAllowed: number | null = null,
     ) =>
       claimReplyBurst({
         tenantId,
         conversationDbId: id,
-        toMessageId,
+        toMessageId: Math.max(...messageIds),
         maxHandledAllowed,
+        messageIds,
+        initiatedBy: "automatic",
         base: appDb,
       });
     const stored = async () =>
@@ -748,25 +758,455 @@ describe.skipIf(!dbUp)("debounce", () => {
         })
       ).lastRepliedMessageId;
 
-    // Nothing claimed yet, then a burst ahead of it, then the same burst twice, then one behind —
-    // the shape a flush retry and a second click both take.
-    expect(await claim(10)).toEqual({ won: true });
-    expect(await claim(20)).toEqual({ won: true });
-    expect(await claim(20)).toEqual({ won: false, reason: "claimed" });
-    expect(await claim(15)).toEqual({ won: false, reason: "claimed" });
-    expect(await stored()).toBe(20);
+    expect(await claim([10])).toEqual({ won: true });
+    expect(await claim([20])).toEqual({ won: true });
+    // THE RETRY, which is what the old arithmetic was really guarding: the same burst claimed twice
+    // loses the second time, now by identity rather than by order.
+    expect(await claim([20])).toEqual({ won: false, reason: "claimed" });
+    // AND THE OVERLAP LOSES WHOLE. A turn that owns part of a tail owns none of it — answering half
+    // a burst is how a customer reads a reply to their second message and nothing about their first.
+    // The WORD is `partial` and not `claimed`: 19 and 21 are still owed to somebody, and the flush
+    // reschedules on exactly that distinction.
+    expect(await claim([19, 20, 21])).toEqual({
+      won: false,
+      reason: "partial",
+    });
+    // ...and having lost, it left nothing behind: 19 and 21 are still free for the turn that does
+    // read them. A partial insert surviving the loss would close them for a reply nobody sent.
+    expect(await claim([19, 21])).toEqual({ won: true });
+    // THE ONE THAT USED TO LOSE. Nobody ever claimed 15, and the turn that just read it is the only
+    // actor that can answer it. This is issue #690 in one line.
+    expect(await claim([15])).toEqual({ won: true });
+    // AND THE SCALAR DID NOT FOLLOW IT BACKWARDS. Everything still reading that column — the flush's
+    // own floor, every conversation below the per-message era — would otherwise treat 16 through 21
+    // as unanswered and coalesce them into the next burst.
+    expect(await stored()).toBe(21);
+  });
 
-    // AND THE WATERMARK IS THE SECOND QUESTION, settled under the same lock. The ceiling is what
-    // separates the callers: a flush answering above the mark passes `target - 1` and loses to a
-    // skip; a re-engage passes the mark it read on the way IN, so what was already settled when the
-    // operator clicked does not refuse it, and what lands afterwards does.
+  // A DELAYED REDELIVERY AND AN OPERATOR'S CLICK LOOK THE SAME AND ARE OPPOSITE (issue #690).
+  //
+  // Both answer a tail the watermark already covers, so arithmetic cannot separate them — the first
+  // shape of this fix tried, and would have let a redelivery of a message answered long ago overturn
+  // the record of its own answer. One is a person deciding a silence was wrong; the other is Chatwoot
+  // repeating itself. The caller says which it is, and the word is required so a path added later
+  // cannot inherit the forgiving one by omission.
+  test("a redelivery cannot overturn a dispensal that an operator's click can", async () => {
+    const convId = 899;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (initiatedBy: "automatic" | "operator") =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1001,
+        // The ceiling both of them pass: the mark it read on the way in.
+        maxHandledAllowed: 1001,
+        messageIds: [1001],
+        initiatedBy,
+        base: appDb,
+      });
+
+    // A turn ran over 1001 and chose silence — an empty reply, a guardrail going quiet — and said so
+    // by id on its way out. This is what both callers below will meet.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 1001,
+      dispensed: { kind: "messages", messageIds: [1001] },
+      base: appDb,
+    });
+
+    // Chatwoot repeating a delivery of that same message. It must not answer what was deliberately
+    // left unanswered, and the record is the only thing that knows.
+    expect(await claim("automatic")).toEqual({
+      won: false,
+      reason: "claimed",
+    });
+    // A person looking at the conversation and pressing the button. Overturning that silence is the
+    // whole reason the button exists (issue #452).
+    expect(await claim("operator")).toEqual({ won: true });
+    // AND HAVING BEEN ANSWERED, it is answered: the row says CLAIMED now, so a second click — or a
+    // redelivery arriving after it — meets a claim and not a silence.
+    expect(await claim("operator")).toEqual({ won: false, reason: "claimed" });
+    expect(
+      (
+        await suDb.messageReplyClaim.findFirstOrThrow({
+          where: { conversationId: id, messageId: 1001 },
+          select: { reason: true },
+        })
+      ).reason,
+    ).toBe("CLAIMED");
+  });
+
+  // A1 VARIANT (i), REPRODUCED AT THE CLAIM (issue #690 holdout). A message answered a while ago,
+  // its row still there, the mark well past it, and Chatwoot delivering it a second time. The
+  // sequential case, as opposed to the two simultaneous deliveries of `s5`: the first turn is long
+  // finished, so nothing is racing and identity is the only thing left that can refuse.
+  test("a redelivery of a message already claimed is refused, turns later", async () => {
+    const convId = 933;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (m: number, ceiling: number) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: m,
+        maxHandledAllowed: ceiling,
+        messageIds: [m],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+
+    expect(await claim(1001, 1000)).toEqual({ won: true });
+    expect(await claim(1002, 1001)).toEqual({ won: true });
+    expect(await claim(1003, 1002)).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 1003,
+      dispensed: { kind: "claimed" },
+      base: appDb,
+    });
+
+    expect(await claim(1001, 1000)).toEqual({ won: false, reason: "claimed" });
+  });
+
+  // THE CLICK'S ENTRY-TIME CEILING SURVIVES THE FLOOR (issue #452, PR review round 1). Above the
+  // floor the scalars answer nothing for an automatic caller, because every decision up there wrote
+  // a row and the rows are read directly. The operator's click is the exception, and only because it
+  // IGNORES dispensals on purpose: a skip recorded between the moment it read the mark and the
+  // moment it claims is a decision it would otherwise walk straight over. `docs/debounce.md` requires
+  // that skip to refuse the reply.
+  test("a skip landing while the operator's model ran still refuses the click", async () => {
+    const convId = 931;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The conversation is already in the per-message era, and well above the floor.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2000,
+        maxHandledAllowed: 1999,
+        messageIds: [2000],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // The operator reads the mark at 2000 and clicks. While the model runs, a delivery of 2001
+    // settles it deliberately and the mark moves.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 2001,
+      dispensed: { kind: "messages", messageIds: [2001] },
+      base: appDb,
+    });
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2001,
+        // What it read on the way IN, which is the whole point of the ceiling.
+        maxHandledAllowed: 2000,
+        messageIds: [2001],
+        initiatedBy: "operator",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "handled" });
+  });
+
+  // A DISPENSAL IS ASKED ABOUT THE IDS, NOT ABOUT THE SPAN THEY COVER (issue #690, PR review round
+  // 1). A burst is not dense: the selection drops what renders to nothing, so `[1001, 1005]` spans
+  // four ids it does not contain. Asked as an overlap of intervals, a dispensal sitting entirely
+  // inside that gap suppressed the whole reply for messages the turn was never speaking for.
+  test("a dispensal inside a sparse burst's gap does not refuse it", async () => {
+    const convId = 932;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // A gate exit dispensed (1002, 1004] — the middle of the span, and none of the burst.
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: id,
+        fromMessageId: 1002,
+        toMessageId: 1004,
+      },
+    });
+
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1005,
+        maxHandledAllowed: 1004,
+        messageIds: [1001, 1005],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // ...and one that really does contain a member still refuses the whole set.
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: id,
+        fromMessageId: 1005,
+        toMessageId: 1007,
+      },
+    });
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1007,
+        maxHandledAllowed: 1006,
+        messageIds: [1006, 1007],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "dispensed" });
+
+    // ...and one that covers only PART of the set says so, because the messages it does not cover
+    // are still owed to somebody and the flush comes back for them (PR review, round 5).
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1009,
+        maxHandledAllowed: 1008,
+        messageIds: [1007, 1009],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "partial" });
+  });
+
+  // A BURST DOES NOT CARRY WHAT ANOTHER TURN IS ALREADY SPEAKING FOR (issue #690, PR review round
+  // 3). The claim is taken before its turn sends and the watermark only moves after that turn
+  // returns, so in between a message sits above the mark with a row on it, invisible to a selection
+  // that asks the mark alone. Carried into the burst it makes the claim conflict, and the claim is
+  // all-or-nothing — so the message BESIDE it, which nobody claimed, would be refused too and have
+  // nothing coming for it afterwards. This asserts the claim's half of that: the free message wins
+  // on its own.
+  test("a burst claims the message beside one another turn already holds", async () => {
+    const convId = 934;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // A direct turn claimed 1001 and has not returned yet, so the watermark is still behind it.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1001,
+        maxHandledAllowed: 1000,
+        messageIds: [1001],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // The flush's selection drops 1001 and claims what is actually free.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1002,
+        maxHandledAllowed: 1001,
+        messageIds: [1002],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // ...and carrying 1001 along would have cost 1002 as well, which is the shape the selection
+    // exists to avoid.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1003,
+        maxHandledAllowed: 1002,
+        messageIds: [1001, 1003],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+      // `partial`, because 1003 was free: the word is what tells the flush to come back for it.
+    ).toEqual({ won: false, reason: "partial" });
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1003 },
+      }),
+    ).toBeNull();
+  });
+
+  // THE FLOOR IS THE MAX OF BOTH SCALARS, and a conversation where the CLAIM is ahead of the
+  // watermark is what proves it (issue #690, mutation m6). That state is not hypothetical: the claim
+  // is written before the send and the watermark after the turn, so a reply whose watermark write was
+  // lost leaves exactly this (issue #452). Taking `handled` alone would put every message between the
+  // two above the floor, where "no row" reads as open — and the bot answers a stretch it already
+  // replied to.
+  test("the floor starts at the highest of the two scalars, not at the watermark", async () => {
+    const convId = 936;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { lastRepliedMessageId: 50, lastHandledMessageId: 10 },
+    });
+
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 60,
+        maxHandledAllowed: 59,
+        messageIds: [60],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { replyClaimFloorMessageId: true },
+        })
+      ).replyClaimFloorMessageId,
+    ).toBe(50);
+    // ...and 20, which the lost watermark write left between the two, is still the scalars' to
+    // answer for: it is at or below the floor, so the unrelaxed rule refuses it.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 20,
+        maxHandledAllowed: 19,
+        messageIds: [20],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "claimed" });
+  });
+
+  // AND THE FLUSH COMES BACK FOR WHAT IT COULD NOT CLAIM (issue #690, mutation m8). The selection
+  // drops what is already spoken for at the moment it reads, so the only way into a partial conflict
+  // is a claim landing INSIDE the turn — which is what the model's side effect does here. Every other
+  // `superseded` completes the job, because a newer message's own flush is armed; this one has
+  // nothing coming for the messages nobody claimed, and rescheduling is the only thing that brings a
+  // turn back to them.
+  test("a partial claim conflict reschedules the flush instead of completing it", async () => {
+    const convId = 937;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    // Another turn claims message 2 while this one is at the model, so the burst `[1, 2]` reaches the
+    // claim with one member taken and one free.
+    const stealTwo = new SideEffectModel(async () => {
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        maxHandledAllowed: 1,
+        messageIds: [2],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+    });
+
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => stealTwo,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "tudo bem?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    // Nothing was sent, and the job comes back rather than completing.
+    expect(sent).toEqual([]);
+    expect(out.outcome).toBe("reschedule");
+    // Message 1 is still nobody's: the retry is what will speak for it.
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1 },
+      }),
+    ).toBeNull();
+  });
+
+  // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
+  // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
+  // the watermark is the only thing that knows anything, and it answers unrelaxed.
+  //
+  // The floor is written here rather than earned, because earning it takes a claim and a claim is
+  // what this test needs to be refused.
+  test("the handled ceiling answers in full below the per-message floor", async () => {
+    const convId = 898;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 60 },
+    });
+    const claim = (toMessageId: number, maxHandledAllowed: number | null) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId,
+        maxHandledAllowed,
+        messageIds: [toMessageId],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+
     await advanceHandledWatermark({
       tenantId,
       conversationDbId: id,
       toMessageId: 40,
+      // Positioning the mark, not reporting a decision: this call closes nothing, and
+      // says so explicitly rather than letting a default speak for it (issue #690).
+      dispensed: { kind: "messages", messageIds: [] },
       base: appDb,
     });
+    // A flush answering above the mark passes `target - 1` and loses to a skip that landed first.
     expect(await claim(30, 29)).toEqual({ won: false, reason: "handled" });
+    // A re-engage passes the mark it read on the way IN, so what was already settled when the
+    // operator clicked does not refuse it.
     expect(await claim(30, 40)).toEqual({ won: true });
     // A click that read the mark at 30 and found it at 40 by claim time: somebody settled this tail
     // while the model was running.
@@ -774,6 +1214,133 @@ describe.skipIf(!dbUp)("debounce", () => {
     // A caller that read NO mark on the way in. Null is that reading, not "no ceiling": a mark
     // stands here now, so it was written after that read and this claim is not entitled to it.
     expect(await claim(50, null)).toEqual({ won: false, reason: "handled" });
+  });
+
+  // THE SCALAR CLOSES WHAT NOBODY ANSWERED (issue #690). Two deliveries of one conversation with
+  // debounce OFF, serialized since issue #658: the turn that takes the thread first is the NEWER
+  // message's, and it loaded the channel before the older one existed — measured 12/12 on that
+  // round's holdout, the model's history was `[system, MSG-B]`. The direct path claims ONE message,
+  // its own trigger (`claimReply` in ../../src/graph/runtime.ts), so that turn claims 1002 and the
+  // column, being a single number, closes 1001 with it. The older message's turn is the only actor
+  // in the system that loaded BOTH, and it is exactly the one refused.
+  //
+  // BOTH GATES REFUSE IT, which is why this asserts on the two in order. `claimed` is asked first
+  // (1002 >= 1001), and behind it stands the ceiling: the newer turn advanced the watermark to 1002
+  // on its way out, so `handled > maxHandledAllowed` refuses the same claim a second time. A fix
+  // that moves only the first leaves the message unanswered for the same reason with a different
+  // word in the log.
+  //
+  // Nothing reopens 1001 afterwards: the watermark moved, the channel keeps it as context only, and
+  // no schedule exists for it. If the customer does not write again, that message is never answered
+  // and the operator sees nothing, because from the system's side the burst was served.
+  test("a newer burst's claim does not close a message no turn answered", async () => {
+    const convId = 896;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (toMessageId: number, maxHandledAllowed: number | null) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId,
+        maxHandledAllowed,
+        // The direct path's shape: one turn, one message, its own trigger.
+        messageIds: [toMessageId],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+
+    // MSG-B (1002) arrives second and is answered first, by a turn that never had MSG-A. The
+    // ceiling is the direct path's own: nothing at or past my message may have been handled.
+    expect(await claim(1002, 1001)).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 1002,
+      // Positioning the mark, not reporting a decision: this call closes nothing, and
+      // says so explicitly rather than letting a default speak for it (issue #690).
+      dispensed: { kind: "messages", messageIds: [] },
+      base: appDb,
+    });
+
+    // MSG-A (1001), whose turn read `[system, MSG-B, RESP-B, MSG-A]` and is the one that can answer
+    // it. No turn has spoken for 1001; a reply that never saw it must not close it.
+    expect(await claim(1001, 1000)).toEqual({ won: true });
+  });
+
+  // THE SECOND GATE, ISOLATED (issue #690). The test above is refused by `claimed`, which is asked
+  // first and hides a ceiling standing right behind it: the newer turn advances the watermark to
+  // 1002 on its way out — every outcome but `superseded` does (../../src/graph/runtime.ts) — so
+  // `handled > maxHandledAllowed` refuses the same claim a second time, for a different reason.
+  // Measured rather than reasoned: before the fix this returned `handled`, so a fix that moved only
+  // `claimed` would land exactly here, with the message still unanswered and the word changed in
+  // the log.
+  //
+  // No row is written for 1001 anywhere in here, so the ceiling is the only thing that could refuse.
+  test("the handled ceiling no longer refuses a message above the floor", async () => {
+    const convId = 897;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The conversation as it stands before the two deliveries: everything up to 1000 was decided by
+    // the scalar era, and that is where this conversation's floor has to land.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 1000,
+      // Positioning the mark, not reporting a decision: this call closes nothing, and
+      // says so explicitly rather than letting a default speak for it (issue #690).
+      dispensed: { kind: "messages", messageIds: [] },
+      base: appDb,
+    });
+    // MSG-B's turn: claims its own trigger, then moves the mark past BOTH messages.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1002,
+        maxHandledAllowed: 1001,
+        messageIds: [1002],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 1002,
+      // Positioning the mark, not reporting a decision: this call closes nothing, and
+      // says so explicitly rather than letting a default speak for it (issue #690).
+      dispensed: { kind: "messages", messageIds: [] },
+      base: appDb,
+    });
+
+    // MSG-A's turn. `handled` is 1002 against a ceiling of 1000, which is what used to refuse it.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1001,
+        maxHandledAllowed: 1000,
+        messageIds: [1001],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+    // AND THE FLOOR SAT WHERE THE OLD ERA STOPPED, not at zero: 1000 was decided before any row
+    // existed, so it stays the scalars' to answer for.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { replyClaimFloorMessageId: true },
+        })
+      ).replyClaimFloorMessageId,
+    ).toBe(1000);
   });
 
   // A LOST WATERMARK WRITE MUST NOT COST A SECOND REPLY (issue #452). The claim is written
@@ -851,6 +1418,9 @@ describe.skipIf(!dbUp)("debounce", () => {
             tenantId,
             conversationDbId: id,
             toMessageId: 1,
+            // Positioning the mark, not reporting a decision: this call closes nothing, and
+            // says so explicitly rather than letting a default speak for it (issue #690).
+            dispensed: { kind: "messages", messageIds: [] },
             base: appDb,
           });
         }
@@ -1619,6 +2189,9 @@ describe.skipIf(!dbUp)("debounce", () => {
         })
       ).id,
       toMessageId: 2,
+      // Positioning the mark, not reporting a decision: this call closes nothing, and
+      // says so explicitly rather than letting a default speak for it (issue #690).
+      dispensed: { kind: "messages", messageIds: [] },
       base: appDb,
     });
     const stranded = await suDb.chatwootWebhookDelivery.create({
@@ -2850,6 +3423,9 @@ describe.skipIf(!dbUp)("debounce", () => {
           tenantId,
           conversationDbId: conv.id,
           toMessageId: 9,
+          // The concurrent delivery closed message 9 without answering it, which is what
+          // this advance reports (issue #690).
+          dispensed: { kind: "messages", messageIds: [9] },
           base: appDb,
         });
         return new Response('{"authorized":true}', { status: 200 });
@@ -3058,6 +3634,9 @@ describe.skipIf(!dbUp)("debounce", () => {
         tenantId,
         conversationDbId: conv.id,
         toMessageId: to,
+        // Positioning the mark, not reporting a decision: this call closes nothing, and
+        // says so explicitly rather than letting a default speak for it (issue #690).
+        dispensed: { kind: "messages", messageIds: [] },
         base: appDb,
       });
     expect(await advance(5)).toBe(true);
@@ -4362,6 +4941,9 @@ describe.skipIf(!dbUp)("debounce", () => {
           })
         ).id,
         toMessageId: 15,
+        // Positioning the mark, not reporting a decision: this call closes nothing, and
+        // says so explicitly rather than letting a default speak for it (issue #690).
+        dispensed: { kind: "messages", messageIds: [] },
         base: appDb,
       });
       const sent: Array<[number, string]> = [];

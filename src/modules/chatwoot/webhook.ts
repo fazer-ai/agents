@@ -6212,6 +6212,11 @@ export async function processChatwootDelivery(
           tenantId: params.tenantId,
           conversationDbId: conversationRowId,
           toMessageId: messageId,
+          // ONE MESSAGE, BY ID (issue #690). A webhook delivery carries exactly one, so this exit
+          // knows its member and has no span to approximate: an observer with no responder beside it
+          // is keeping the mark for a message nothing is going to reply to, which is a dispensal and
+          // says so by name.
+          dispensed: { kind: "messages", messageIds: [messageId] },
           base,
         });
       } catch (err) {

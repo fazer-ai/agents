@@ -85,7 +85,11 @@ import {
   stampDeferral,
 } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
+import {
+  advanceHandledWatermark,
+  readAnsweredFloor,
+  readClaimedMessageIds,
+} from "./watermark";
 
 // How long a flush waits before asking again whether the thread is free. Matched to the debounce
 // worker's own tick (DEBOUNCE_WORKER_INTERVAL_MS, 2500ms by default) rather than to the minute
@@ -159,6 +163,14 @@ export interface CoalesceTurnContext {
   // the target rather than a value it would have to keep in step with the burst selection. Null is
   // a ceiling of its own ("this caller read no mark"), never the absence of one.
   claimHandledCeiling: (targetWatermark: number) => number | null;
+  // Whether this caller is the operator's own re-engage, which is the only one entitled to answer
+  // over a silence something chose deliberately (issue #452).
+  initiatedBy: "automatic" | "operator";
+  // Told when the claim was lost, so the caller can tell a burst that has something coming for it
+  // from one that does not (issue #690, PR review round 4). Only the flush passes it.
+  onClaimLost?: (
+    reason: "claimed" | "handled" | "dispensed" | "partial",
+  ) => void;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -218,6 +230,33 @@ export async function selectAnswerableBurst(
   // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
   overlayMediaAnnotations(tenantId, instanceId, messages);
   let pending = await ctx.selectPending(messages);
+  // AND NOT WHAT ANOTHER TURN IS ALREADY SPEAKING FOR (issue #690, PR review round 3). A claim is
+  // taken before its turn sends and the watermark only moves after that turn returns, so between the
+  // two a message sits above the mark with a row on it — invisible to a selection that asks the mark
+  // alone. Carried into the burst, it makes this claim conflict, and the claim is all-or-nothing: the
+  // whole burst is refused as `superseded`, the job completes, and the message BESIDE it, which
+  // nobody claimed, is left with nothing coming for it. That is this issue's own defect, arriving
+  // through the fix for it.
+  //
+  // Dropped here rather than repaired at the claim, because here it costs one indexed read and there
+  // it would cost either answering half a burst or a second turn over the same text.
+  if (pending.length > 0) {
+    const spoken = await readClaimedMessageIds({
+      tenantId,
+      conversationDbId: convDbId,
+      messageIds: pending.map((m) => m.id),
+      base,
+    });
+    // UNLESS THAT LEAVES NOTHING, and then the claim answers instead of this filter. A burst whose
+    // every message is already spoken for is not an empty burst: reported as one, the flush says
+    // there was nothing to answer when the truth is that another turn is answering it, and the word
+    // the caller acts on changes with it. Handed on whole, the claim loses on the conflict and the
+    // flush reports `superseded`, which is what actually happened.
+    if (spoken.size > 0) {
+      const free = pending.filter((m) => !spoken.has(m.id));
+      if (free.length > 0) pending = free;
+    }
+  }
   if (pending.length === 0) return null;
   let dropped: typeof pending = [];
 
@@ -270,6 +309,10 @@ export async function selectAnswerableBurst(
     await advanceHandledWatermark({
       tenantId,
       conversationDbId: convDbId,
+      // BY ID, not by span: this exit has already fetched the burst, so the members are known and
+      // the exact fact is available. A range here would put an approximation on a path that had the
+      // truth in hand (issue #690).
+      dispensed: { kind: "messages", messageIds: pending.map((m) => m.id) },
       toMessageId: targetWatermark,
       base,
     });
@@ -428,6 +471,14 @@ export async function coalesceAndRunTurn(
       conversationDbId: convDbId,
       toMessageId: targetWatermark,
       maxHandledAllowed: ctx.claimHandledCeiling(targetWatermark),
+      // THE MESSAGES THE TURN'S INPUT ACTUALLY CARRIED, which is `inTurn` and not `pending`
+      // (issue #690). The two differ by exactly the members that reached the burst without reaching
+      // the model — a voice note still waiting on its transcription renders to nothing — and
+      // claiming one of those would close a message the reply never read, which is the defect this
+      // list exists to remove rather than relocate.
+      messageIds: inTurn.map((m) => m.id),
+      initiatedBy: ctx.initiatedBy,
+      ...(ctx.onClaimLost ? { onLost: ctx.onClaimLost } : {}),
     },
   });
   // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
@@ -470,6 +521,25 @@ export async function coalesceAndRunTurn(
       tenantId,
       conversationDbId: convDbId,
       toMessageId: targetWatermark,
+      // THE MIXED CASE, and it is why the parameter is a calculated set rather than a word
+      // (issue #690). A turn that answered `[1003,1004,1005]` while the cap dropped `[1001,1002]`
+      // closes five messages with two different reasons: the three it answered are already in
+      // `message_reply_claims` from the claim it took before sending, and the two it dropped are
+      // named here. Said as one word — "this path posted, write nothing" — the dropped pair would
+      // be left with no record at all, which reads as open, and something answers them later.
+      //
+      // On a NON-posting outcome the whole burst is consumed the same way, so `pending` joins them:
+      // no claim was taken, so nothing else speaks for those messages. `inTurn` is deliberately not
+      // used — a member that reached the burst without reaching the model (a voice note still
+      // waiting on its transcription) is not dispensed, it is waiting, and its write-back arms the
+      // ingest that answers it.
+      dispensed: {
+        kind: "messages",
+        messageIds:
+          outcome === "posted" || outcome === "posted-partial"
+            ? dropped.map((m) => m.id)
+            : [...pending, ...dropped].map((m) => m.id),
+      },
       base,
     });
     // And say so on the LEDGER, for the messages this burst actually contained. A burst re-fetched
@@ -809,6 +879,9 @@ async function ingestObservedBurst(args: {
     return "unread";
   }
   let newest = armedLast;
+  // HOISTED so the watermark advance at the tail can name what it closed (issue #690). Filled by the
+  // fetch loop below, one id per message this route folded into memory.
+  const handedIds: number[] = [];
   let inboxChatwootId: number | null = null;
   {
     const contactInboxId = ctx.contactInboxId;
@@ -892,7 +965,6 @@ async function ingestObservedBurst(args: {
       );
       const compactionEnabled = readMemoryConfig(ctx.settings).compaction
         .enabled;
-      const handedIds: number[] = [];
       for (const m of burst) {
         const text = renderInboundMessage(toRenderable(m), { resolveQuoted });
         if (!text.trim()) continue;
@@ -1015,6 +1087,16 @@ async function ingestObservedBurst(args: {
       tenantId,
       conversationDbId: ctx.convDbId,
       toMessageId: newest,
+      // Handed to ingestion rather than answered: the words are remembered and no reply is coming,
+      // which is a dispensal, and this exit fetched the burst so it names its members (issue #690).
+      //
+      // EMPTY WHERE THE FETCH DID NOT HAPPEN, and that is left as it is rather than widened. `newest`
+      // starts at `armedLast`, which the arm supplies without a fetch, so this tail can be reached
+      // with no list — and the span that would cover it has no lower bound here (this function is
+      // handed no watermark), so a range would reach back over the whole conversation and close
+      // messages this decision never touched. Naming nothing leaves those messages as they were
+      // before this table existed; naming everything would close a history on a guess.
+      dispensed: { kind: "messages", messageIds: handedIds },
       base,
     });
   }
@@ -1257,6 +1339,12 @@ export async function flushDebounceJob(
         tenantId,
         conversationDbId: ctx.convDbId,
         toMessageId: last,
+        // A GATE EXIT, which is the one caller that cannot name its members: it decides before any
+        // Chatwoot fetch, so the burst is not known message by message — only the span it advances
+        // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
+        // The decision was taken over the span ("this is not ours to answer now"), so the span is
+        // the fact rather than a hull of one (issue #690).
+        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
         base,
       });
       await settleGateExit({
@@ -1596,6 +1684,12 @@ export async function flushDebounceJob(
         tenantId,
         conversationDbId: ctx.convDbId,
         toMessageId: last,
+        // A GATE EXIT, which is the one caller that cannot name its members: it decides before any
+        // Chatwoot fetch, so the burst is not known message by message — only the span it advances
+        // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
+        // The decision was taken over the span ("this is not ours to answer now"), so the span is
+        // the fact rather than a hull of one (issue #690).
+        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
         base,
       });
       await settleGateExit({
@@ -1676,6 +1770,9 @@ export async function flushDebounceJob(
           tenantId,
           conversationDbId: ctx.convDbId,
           toMessageId: last,
+          // Same gate exit, same reason as the one above: the span is what this decision was taken
+          // over, and its members are not known here (issue #690).
+          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
           base,
         });
         await settleGateExit({
@@ -1741,6 +1838,9 @@ export async function flushDebounceJob(
           tenantId,
           conversationDbId: ctx.convDbId,
           toMessageId: last,
+          // Same gate exit, same reason as the one above: the span is what this decision was taken
+          // over, and its members are not known here (issue #690).
+          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
           base,
         });
         await settleGateExit({
@@ -1937,6 +2037,8 @@ export async function flushDebounceJob(
         ),
       );
     }
+    // Set by the claim, read once the turn is over: see the branch at the tail of this function.
+    let claimLostPartial = false;
     const outcome = await coalesceAndRunTurn(
       {
         tenantId,
@@ -1975,6 +2077,10 @@ export async function flushDebounceJob(
         // The flush answers messages ABOVE the mark, so a mark at or past its target says something
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
+        initiatedBy: "automatic",
+        onClaimLost: (reason) => {
+          claimLostPartial = reason === "partial";
+        },
         label: "debounce flush",
         coalesceStage: "debounce",
       },
@@ -2012,6 +2118,28 @@ export async function flushDebounceJob(
     // once it has it; a switched-off agent's burst waits for the switch.
     if (outcome === "agent-unavailable") {
       retryFlushOnFailedHandOver(await handOverIfObserving(), conversationId);
+    }
+    // A PARTIAL CONFLICT IS THE ONE REFUSAL WITH NOTHING COMING AFTER IT (issue #690, PR review
+    // round 4). Every other `superseded` means a newer message arrived and its own flush is armed,
+    // which is why this word completes the job. Here the competing claim is for a message this burst
+    // shares, and the ones nobody claimed are left with no flush, no watermark move and no schedule:
+    // the silence this issue is about, reached through the fix for it.
+    //
+    // The selection already drops what is spoken for at the moment it reads, so what lands here is a
+    // claim taken inside the window between that read and this one. Rescheduled, the next selection
+    // reads again, drops the message that was taken, and claims what is still free — one hop, and
+    // the deferral stamp keeps the ceiling honest if it somehow is not.
+    if (claimLostPartial) {
+      await stampDeferral({
+        tenantId,
+        threadId,
+        since: deferringSince,
+        base,
+      });
+      return {
+        outcome: "reschedule",
+        runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
+      };
     }
     return { outcome: "done" };
   } catch (e) {

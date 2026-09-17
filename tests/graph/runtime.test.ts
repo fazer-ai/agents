@@ -35,6 +35,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
+import { withKeyedQueue } from "@/lib/locks";
 import type { TenantContext } from "@/lib/tenancy";
 import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -527,7 +528,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // the channel from outside an invoke takes, and stands down when the row says the thread is busy.
   // Here to prove the WIRING: `runAgentTurn` handing its owner down is what the deferral depends on,
   // and `tests/graph/nudge-refused-rollback.test.ts` proves the rule itself.
-  test("another replica's turn defers the token rollback instead of racing it", async () => {
+  test("another replica's turn is waited out, and the rollback then runs on a thread this turn owns alone", async () => {
     const contactInboxId = 7455;
     const contact = await suDb.contact.create({
       data: {
@@ -558,14 +559,24 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
     const saver = new MemorySaver();
     const sent: Array<[number, string]> = [];
-    // The other replica JOINS while this turn runs — turn claims are counted, so that is ordinary —
-    // and is still there when this one releases. Its Map entry is dropped at once: another replica
-    // holds none here, and leaving one would let the Map check answer instead of the row.
+    // The other replica is ALREADY reading this thread — on the row, not in this process's Map, so
+    // its entry is dropped at once and only the durable half answers. A turn that joined it here
+    // would have to defer its own rollback, because a removal the other invoke is about to undo
+    // leaves the same history and a checkpoint that lies. It waits instead (issue #658).
     const otherReplica = await markTurnOwning(owner, appDb);
     clearTurnInFlight(graphThreadId);
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      // Re-marked because `clearTurnOwning` drops a Map entry with the hold, and this one was taken
+      // off above.
+      markTurnInFlight(graphThreadId);
+      await clearTurnOwning(owner, appDb, otherReplica);
+    };
     let outcome: string;
     try {
-      outcome = await runAgentTurn({
+      const turn = runAgentTurn({
         tenantId,
         instanceId,
         agentBotId: 9,
@@ -578,14 +589,24 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           checkpointer: saver,
         },
       });
+      const waiting = Symbol("still waiting");
+      // It really waits: nothing on the other replica's side has moved yet.
+      expect(
+        await Promise.race([
+          turn,
+          new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+        ]),
+      ).toBe(waiting);
+      await release();
+      outcome = await turn;
     } finally {
-      markTurnInFlight(graphThreadId);
-      await clearTurnOwning(owner, appDb, otherReplica);
+      await release();
     }
     expect(sent).toEqual([]);
     expect(outcome).toBe("empty");
-    // Deferred, not removed: the honest outcome, and the one the log names. Writing a removal an
-    // invoke on another host is about to undo leaves the same history and a checkpoint that lies.
+    // REMOVED, not deferred, and that is what the wait bought: by the time this turn writes, no
+    // invoke anywhere is holding the channel it is rewriting, so the honest outcome is also the
+    // final one.
     const state = await buildThreadStateGraph(saver).getState({
       configurable: { thread_id: graphThreadId },
     });
@@ -595,7 +616,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       messages.filter((m) =>
         JSON.stringify(m.content).includes(FOLLOWUP_SKIP_SENTINEL),
       ),
-    ).not.toEqual([]);
+    ).toEqual([]);
   });
 
   // The control for the line above, and the reason it is not just "log on every empty turn": a model
@@ -1020,7 +1041,69 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // deliberately stays on the previous one. A turn that records no inbound id there leaves the
   // frontier back in the previous attendance, so a delayed message from it reads as CURRENT, stamps
   // itself at the end of the channel, and the cut then reads the live conversation as closed.
-  test("a turn whose boundary was deferred still moves the inbound frontier", async () => {
+  // THE WAIT IS OUTSIDE THE `ingest:` QUEUE (PR review round 4), and this is what says so. That key
+  // is not ours alone: the PREVIOUS turn's own rollback takes it on the way out, AFTER it has
+  // released the thread, and so does continuous ingestion. A wait that held it would starve exactly
+  // that rollback — it would sit behind the wait, the thread would come free, this turn would take
+  // it, and the rollback would then find an invoke reading and KEEP what it came to undo, so this
+  // turn would load the undelivered answer or the silence token as history. Measured on the queue
+  // rather than on the rollback, because the queue is the mechanism and the rollback is one of its
+  // several victims.
+  test("while a turn waits for the thread, the ingest queue stays open to everyone else", async () => {
+    const contactInboxId = 7466;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9466,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9466`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    markTurnInFlight(graphThreadId);
+    const turn = runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9466, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStubClient([]),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    try {
+      const waiting = Symbol("still waiting");
+      expect(
+        await Promise.race([
+          turn,
+          new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+        ]),
+      ).toBe(waiting);
+      // The turn is waiting right now, and the queue it will need is free: this callback runs
+      // instead of queueing behind the wait.
+      const tookTheQueue = Symbol("took the queue");
+      expect(
+        await Promise.race([
+          withKeyedQueue(`ingest:${graphThreadId}`, async () => tookTheQueue),
+          new Promise<"blocked">((r) => setTimeout(() => r("blocked"), 1_000)),
+        ]),
+      ).toBe(tookTheQueue);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+      await turn;
+    }
+  }, 20_000);
+
+  test("a turn that waited out another invoke moves the frontier with the boundary", async () => {
     const contactInboxId = 7013;
     const graphThreadId = contactInboxThreadId(
       tenantId,
@@ -1065,15 +1148,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
 
     expect(await turn(9320, 6001)).toBe("posted");
-    // The new conversation's first turn, with ANOTHER invoke already reading the thread: the
-    // boundary is deferred and the marker stays on the old conversation.
+    // The new conversation's first turn, arriving while ANOTHER invoke is still reading the thread.
+    // It waits that invoke out (issue #658) and then runs alone, so both the boundary and the
+    // frontier are this turn's to move.
     markTurnInFlight(graphThreadId);
-    try {
-      expect(await turn(9321, 6003)).toBe("posted");
-    } finally {
-      clearTurnInFlight(graphThreadId);
-    }
-    const deferred = await suDb.agentThread.findUniqueOrThrow({
+    const second = turn(9321, 6003);
+    setTimeout(() => clearTurnInFlight(graphThreadId), 150);
+    expect(await second).toBe("posted");
+    const marker = await suDb.agentThread.findUniqueOrThrow({
       where: {
         tenantId_chatwootInstanceId_contactInboxId: {
           tenantId,
@@ -1083,9 +1165,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
       select: { lastConversationId: true, lastSyncedMessageId: true },
     });
-    // The marker did stay behind — that is the deferral working — and the frontier did NOT.
-    expect(deferred.lastConversationId).toBe(9320);
-    expect(deferred.lastSyncedMessageId).toBe(6003);
+    expect(marker.lastConversationId).toBe(9321);
+    // THE FRONTIER IS THE POINT (issue #194), and it is what makes the message below late. It moves
+    // on the id the turn HANDLED, which is the ordinary way a new attendance opens: the customer
+    // writes and the bot answers.
+    expect(marker.lastSyncedMessageId).toBe(6003);
 
     // So the delayed message from the old conversation is late, and claims nothing: no stamp, which
     // is what keeps the live conversation out of the closed prefix.
@@ -1321,7 +1405,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // erases it. Deferring the claim keeps the divider (prompt content) worth writing later, and the
   // messages keep their own conversation stamps meanwhile, so the CUT lands in the right place either
   // way: the deferred turn belongs to the new attendance, not to the one that closed.
-  test("a boundary is not claimed while another invoke is reading the thread", async () => {
+  test("a boundary is claimed by the turn that waited the reading invoke out", async () => {
     const contact = await suDb.contact.create({
       data: {
         chatwootInstanceId: instanceId,
@@ -1367,16 +1451,40 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
 
     await turn(980);
-    // A turn of the OLD conversation, still invoking when the new one arrives.
+    // A turn of the OLD conversation, still invoking when the new one arrives. It does NOT run
+    // beside it (issue #658): an invoke is a read-modify-write of the whole channel, so the one
+    // finishing second saves what it loaded and undoes the first. It waits, and the boundary is
+    // then claimed in the ordinary way, by a turn that is alone on the thread.
     markTurnInFlight(graphThreadId);
-    try {
-      await turn(981);
-    } finally {
-      clearTurnInFlight(graphThreadId);
-    }
+    const second = turn(981);
+    const waiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        second,
+        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+      ]),
+    ).toBe(waiting);
+    // Nothing was written while it waited, the marker included: the wait is BEFORE the divider, the
+    // marker and the invoke, which is what makes standing still cost the turn a delay and nothing
+    // else.
+    expect(
+      (
+        await suDb.agentThread.findUniqueOrThrow({
+          where: {
+            tenantId_chatwootInstanceId_contactInboxId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+            },
+          },
+        })
+      ).lastConversationId,
+    ).toBe(980);
+    clearTurnInFlight(graphThreadId);
+    await second;
 
-    // Compaction is armed regardless: the attendance that ended is compactable now, and making it
-    // wait for a next turn that may never come is how a boundary quietly goes uncompacted.
+    // Compaction is armed once: the attendance that ended is compactable, and the turn that claimed
+    // the boundary is the one that arms it.
     expect(
       await suDb.schedulerJob.count({
         where: {
@@ -1388,20 +1496,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       }),
     ).toBe(1);
 
-    // The marker stayed put, so the boundary is still there to be claimed.
-    const marker = await suDb.agentThread.findUniqueOrThrow({
-      where: {
-        tenantId_chatwootInstanceId_contactInboxId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          contactInboxId,
-        },
-      },
-    });
-    expect(marker.lastConversationId).toBe(980);
-
-    // And the NEXT turn, with nothing in flight, claims it: divider written, marker advanced.
-    await turn(981);
+    // The marker advanced, and this turn is the one that moved it — there is no second turn here,
+    // which is the difference the wait makes: the boundary used to be deferred to whatever came
+    // next, and a next turn that never comes left it unclaimed.
     const after = await suDb.agentThread.findUniqueOrThrow({
       where: {
         tenantId_chatwootInstanceId_contactInboxId: {
@@ -1416,16 +1513,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const messages = ((
       cp?.channel_values as { messages?: BaseMessage[] } | undefined
     )?.messages ?? []) as BaseMessage[];
-    // Two: the first conversation's turn and its reply. The turn that ran while the boundary was
-    // deferred carries conversation 981 on its own message, so it stays in the OPEN attendance — the
-    // cut reads the stamp, not the divider.
+    // Two: the first conversation's turn and its reply.
     expect(
       selectClosedPrefix(messages, { currentAttendanceClosed: false }).closed,
     ).toHaveLength(2);
-    // And no divider was appended: it could only land AFTER the exchange that already happened on
-    // this conversation, telling the model that part of the conversation it is in the middle of is a
-    // past attendance. A hint in the wrong place is worse than no hint.
-    expect(messages.some(isConversationDivider)).toBe(false);
+    // And the divider IS there, which it could not be while the boundary was deferred: it lands
+    // before this conversation's own exchange, where a hint about a past attendance belongs.
+    expect(messages.some(isConversationDivider)).toBe(true);
   });
 
   test("inbox without an Agent → no-agent (silent)", async () => {
@@ -3863,7 +3957,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // the channel it LOADED, so a note appended beside it is erased — and an erased note is the bug
   // back, silently. Deferring costs nothing because the decision is derived: the next turn asks the
   // same question of the same thread.
-  test("issue #457: while another invoke is reading, the note rides in this turn's own invoke", async () => {
+  test("issue #457: the note reaches the model after this turn waits the other invoke out", async () => {
     const contactInboxId = 7459;
     await suDb.conversation.create({
       data: {
@@ -3891,14 +3985,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
       THREAD_STATE_NODE,
     );
-    // Another invoke is already reading this channel.
+    // Another invoke is already reading this channel, so this turn waits it out (issue #658) rather
+    // than appending beside it. What #457 is about survives the wait unchanged: the customer is
+    // waiting on a transfer with no ending, and the note has to reach the model of THIS turn.
     const owner = {
       tenantId,
       instanceId,
       contactInboxId,
       graphThreadId: threadId,
     };
-    await markTurnOwning(owner, appDb);
+    const otherInvoke = await markTurnOwning(owner, appDb);
 
     const client = {
       getMessages: async () => ({
@@ -3908,7 +4004,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       toggleTyping: async () => ({}),
     } as unknown as ChatwootClient;
     const model = new CaptureReplyModel(REPLY);
-    await runAgentTurn({
+    const turn = runAgentTurn({
       tenantId,
       instanceId,
       agentBotId: 9,
@@ -3920,11 +4016,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer,
       },
     });
+    const waiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        turn,
+        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+      ]),
+    ).toBe(waiting);
+    await clearTurnOwning(owner, appDb, otherInvoke);
+    await turn;
 
-    // THE CORRECTION IS NOT WHAT WAS DEFERRED, the durable append is. This turn is the one that
-    // would otherwise read a transfer with no ending, and the customer waiting for it is the one the
-    // issue is about — so the note goes into the invoke's own input instead of beside an older
-    // invoke that would erase it.
     const seen = (model.seen.at(-1) ?? []) as Array<{ content?: unknown }>;
     expect(seen.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE)).toBe(
       true,
@@ -3939,9 +4040,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(channel.filter(([, t]) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(
       1,
     );
-    // AND IT WAS NOT APPENDED BESIDE THE OLDER INVOKE: a durable `updateState` writes the note in a
-    // checkpoint of its own, before the customer's message exists. Carried by the invoke, the two
-    // enter together — so the first checkpoint that has the note has the customer's message too.
+    // AND IT IS A DURABLE APPEND, which is what the wait makes safe: `updateState` writes the note
+    // in a checkpoint of its own, before the customer's message exists. Deferring to the invoke's
+    // own input was the answer while an older invoke could erase that checkpoint; with nobody left
+    // to erase it, the note survives even a turn that dies before its invoke.
     const withNote: string[][] = [];
     for await (const cp of checkpointer.list({
       configurable: { thread_id: threadId },
@@ -3953,14 +4055,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       if (texts.includes(HUMAN_HANDBACK_NOTE)) withNote.push(texts);
     }
     // `list` reads newest-first, so the oldest checkpoint carrying the note is the last one.
-    expect(withNote.at(-1)?.some((t) => t.includes("oi"))).toBe(true);
+    expect(withNote.at(-1)?.some((t) => t.includes("oi"))).toBe(false);
   });
 
-  // TWO TURNS, ONE NOTE (issue #457, review round 10). The turn that defers can be beaten to the
-  // append by the very invoke it deferred to: that one finishes, writes the note, and this turn would
-  // then carry a second copy into its own invoke. The question is re-asked of the thread as it is
-  // immediately before the invoke, so a note already there is a note not carried.
-  test("issue #457: a note appended while we deferred is not carried a second time", async () => {
+  // TWO TURNS, ONE NOTE (issue #457, review round 10). The turn can be beaten to the append by the
+  // very invoke it waited out: that one finishes, writes the note, and this turn would then write a
+  // second copy. Waiting narrows the window but does not close it — the other invoke's release and
+  // its last write are not one step — so the question is re-asked of the thread as it is immediately
+  // before the invoke, and a note already there is a note not written again.
+  test("issue #457: a note appended by the invoke we waited out is not written twice", async () => {
     const contactInboxId = 7462;
     await suDb.conversation.create({
       data: {
@@ -3994,7 +4097,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       contactInboxId,
       graphThreadId: threadId,
     };
-    await markTurnOwning(owner, appDb);
+    const otherInvoke = await markTurnOwning(owner, appDb);
 
     // THE OTHER INVOKE, landing between this turn's decision and its invoke: the first read that
     // sees the handoff with no note is the decision's own, and the append follows it.
@@ -4029,7 +4132,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       sendMessage: async () => ({}),
       toggleTyping: async () => ({}),
     } as unknown as ChatwootClient;
-    await runAgentTurn({
+    const turn = runAgentTurn({
       tenantId,
       instanceId,
       agentBotId: 9,
@@ -4041,6 +4144,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer,
       },
     });
+    // Released only after the turn has begun waiting, so the decision below really runs on the far
+    // side of the occupancy.
+    setTimeout(() => void clearTurnOwning(owner, appDb, otherInvoke), 150);
+    await turn;
     expect(injected).toBe(true);
     const channel = await threadOf(checkpointer, threadId);
     expect(channel.filter(([, t]) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(

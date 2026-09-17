@@ -69,6 +69,32 @@ const WRITE_LEASE_SECONDS = 30;
 const WRITE_WAIT_MS = (WRITE_LEASE_SECONDS + 5) * 1_000;
 const WRITE_POLL_MS = 25;
 
+// HOW LONG A SECOND INVOKE WAITS OUT THE FIRST (issue #658). ABSOLUTE, measured from the moment the
+// wait starts, and that is where it parts company with the two bounds above (PR review, round 2).
+// They follow the lease because what they wait for is ONE checkpointer write, where "still renewing"
+// really does mean "still going to finish in a moment". A turn is not that: a model call that hangs
+// keeps its process alive, so the renewal timer goes on extending the lease every 100 seconds, and a
+// deadline that resets on every extension is unreachable in exactly the runaway case it was written
+// for. Following the lease here would be a ceiling that only ever fires on holders that did not need
+// one.
+//
+// One full lease plus the same slack, and the slack is load-bearing: a lease read at any point in
+// the wait is at most TURN_LEASE_SECONDS in the future, so a holder that stops renewing expires
+// BEFORE this runs out and is taken over rather than merely waited for — which is what makes expiry,
+// not this ceiling, the ordinary way a crashed holder is cleared.
+//
+// AND PAST THE CEILING THE TURN JOINS, it does not refuse (PR review, round 3). Refusing was written
+// on the premise that the work could be handed back, and the premise is false: a direct turn that
+// throws is caught in ../modules/chatwoot/webhook.ts, which records the error, announces the failure
+// inside Chatwoot and settles the delivery — "There is no retry on this path", in that file's own
+// words, and the sweep only ever sees PENDING and PROCESSING. So the two outcomes here are not
+// "retry later" against "run beside it": they are NO ANSWER AT ALL against the behaviour that
+// predates this issue, where the second invoke joins and the boundary, the hand-back note and the
+// token rollback are all deferred to keep it survivable. A customer waiting is better served by the
+// second. The ceiling's job is therefore to stop waiting and to SAY so, not to fail the turn.
+const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
+const TURN_POLL_MS = 50;
+
 export interface TurnHold {
   epoch: bigint | null;
   // Whether another invoke was ALREADY reading this thread when this one acquired, answered by the
@@ -184,8 +210,31 @@ async function insertHeldByTurn(
   return rows[0]?.turn_epoch ?? null;
 }
 
-// The append's lease as milliseconds, or null when nothing holds it. Read so the wait above can tell
-// a holder that is still working (the lease keeps moving) from one that stopped without releasing.
+// IS THE TURN LEASE STILL LIVE, ANSWERED BY POSTGRES. The comparison is in the statement and not in
+// this process on purpose (PR review, round 2): the lease is minted as `now() + interval` by the
+// database, so a replica whose clock runs ahead would read an expired lease that Postgres still
+// considers live, acquire on it, and — because `bumpTurnHolders` renews unconditionally — push the
+// lease of the holder it is waiting for. A two-second skew is enough to keep a crashed holder alive
+// indefinitely, which is the round-1 defect coming back through the clock. Same shape as
+// `readTurnClaimOn`, which has always asked it this way.
+async function turnLeaseIsLive(
+  owner: ThreadOwner,
+  base: PrismaClient,
+): Promise<boolean> {
+  const rows = await runScopedOn(
+    base,
+    sysCtx(owner.tenantId),
+    (db) => db.$queryRaw<{ live: boolean }[]>`
+      SELECT (turn_held_until IS NOT NULL AND turn_held_until > now()) AS live
+        FROM agent_threads
+       WHERE tenant_id = ${owner.tenantId}
+         AND chatwoot_instance_id = ${owner.instanceId}
+         AND contact_inbox_id = ${owner.contactInboxId}`,
+  );
+  // No row is not "busy": nothing can own a thread nothing has ever touched.
+  return rows[0]?.live ?? false;
+}
+
 async function readWriteLease(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -206,7 +255,69 @@ async function readWriteLease(
 
 // Take the thread for this turn, durably, and mark the Map with it so a same-process reader that
 // still asks the Map (the conversation key, ./inflight.ts) is never told less than the truth.
+//
+// IT ALWAYS JOINS, and the count is why: overlapping turns are legitimate (a nudge beside a reactive
+// turn, two deliveries racing with debounce off) and `clearTurnOwning` releases one holder at a time
+// to serve them. A caller that must NOT join — one that owes a customer a single reply — waits for
+// the thread with `waitForTurnToClear` before it gets here, and gives the hold back and waits again
+// if it still lands on an occupancy (issue #658).
 export async function markTurnOwning(
+  owner: ThreadOwner,
+  base: PrismaClient,
+): Promise<TurnHold> {
+  return acquireTurnHold(owner, base);
+}
+
+// WHEN A TURN THAT MUST NOT JOIN AN OCCUPANCY GIVES UP WAITING FOR IT. The caller holds the deadline
+// rather than this function, because the wait is not one call: the acquisition it guards is taken
+// under the `ingest:` queue, this wait runs OUTSIDE that queue (PR review, round 4), and a caller
+// that loses the acquiring race comes back here. One deadline across all of those attempts is the
+// bound that means anything.
+export function turnWaitDeadline(): number {
+  return Date.now() + TURN_WAIT_MS;
+}
+
+// WAIT FOR THE THREAD TO READ FREE, TAKING NOTHING (issue #658). Returns true when nobody is on it,
+// false when `deadline` ran out and the caller should proceed beside whoever is — the outcome
+// TURN_WAIT_MS describes, and never a throw.
+//
+// IT ONLY READS, and that is the whole shape of it. Acquiring to find out is the obvious
+// alternative and it is the one thing this cannot do: `bumpTurnHolders` sets
+// `turn_held_until = now() + TURN_LEASE_SECONDS` unconditionally, so a waiter that acquired on every
+// poll would RENEW the lease of the very holder it is waiting for, twenty times a second, and
+// `clearTurnOwning` keeps that extension while the holder is still counted. A holder that CRASHED
+// would then never expire and the thread would be stranded for good — strictly worse than the Map
+// this module replaces, which a restart clears, and the exact failure the lease exists to prevent.
+//
+// Taking nothing is also what lets the caller wait outside the `ingest:` queue: holding that queue
+// across the wait starves the previous turn's own rollback, which needs the same key and runs after
+// it releases the thread.
+export async function waitForTurnToClear(
+  owner: ThreadOwner,
+  base: PrismaClient,
+  deadline: number,
+): Promise<boolean> {
+  for (;;) {
+    if (
+      !isTurnRunning(owner.graphThreadId) &&
+      !(await turnLeaseIsLive(owner, base))
+    )
+      return true;
+    if (Date.now() >= deadline) {
+      // Loud, because degrading quietly to the old behaviour is how a hung turn stops being visible:
+      // the only thing that reaches this line is a holder that goes on renewing and never finishes,
+      // and nothing else in the system reports it.
+      logger.warn(
+        { thread: owner.graphThreadId, waitedMs: TURN_WAIT_MS },
+        "a turn has held this thread past its lease without finishing; starting beside it rather than leaving the message unanswered",
+      );
+      return false;
+    }
+    await Bun.sleep(TURN_POLL_MS);
+  }
+}
+
+async function acquireTurnHold(
   owner: ThreadOwner,
   base: PrismaClient,
 ): Promise<TurnHold> {

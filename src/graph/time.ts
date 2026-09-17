@@ -4,14 +4,6 @@
 
 export const DEFAULT_TIMEZONE = "America/Sao_Paulo";
 
-// Floors the epoch to a `minutes`-wide slot. For whole/half-hour timezone offsets (the common case,
-// incl. the default America/Sao_Paulo) this lands on local :00/:30; exotic :45 offsets may differ.
-export function roundDownToMinutes(date: Date, minutes: number): Date {
-  if (!Number.isFinite(minutes) || minutes <= 0) return date;
-  const ms = minutes * 60_000;
-  return new Date(Math.floor(date.getTime() / ms) * ms);
-}
-
 export interface TimeParts {
   YYYY: string;
   MM: string;
@@ -54,7 +46,7 @@ export function partsInTimezone(
 }
 
 // Floors to a `minutes`-wide slot ON THE LOCAL WALL CLOCK of `timezone`, which is not the same thing
-// as flooring the epoch (`roundDownToMinutes`) wherever the zone's offset is not a whole multiple of
+// as flooring the epoch wherever the zone's offset is not a whole multiple of
 // the slot. Measured in Asia/Kathmandu (+05:45), rounding to the half hour: 00:05 on the 18th floors
 // to 23:45 on the 17th, so a caller that renders the result as "the current moment" states YESTERDAY
 // and anything reasoning from it is a day off (round 6 of the review on issue #685).
@@ -72,28 +64,36 @@ export function roundDownLocalMinutes(
   // would reset every hour and behave like 60, and 45 would mean something different in each hour
   // (round 7 of the review — `get_current_time` takes any positive integer for this).
   const sinceMidnight = Number(p.HH) * 60 + Number(p.mm);
-  if (!Number.isFinite(sinceMidnight)) return date;
-  const floored = Math.floor(sinceMidnight / minutes) * minutes;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const wall = `${p.YYYY}-${p.MM}-${p.DD}T${pad(Math.floor(floored / 60))}:${pad(
-    floored % 60,
-  )}:00`;
-  const candidate = zonedWallClockToInstant(wall, timezone);
-  // A FLOOR NEVER MOVES FORWARD. `zonedWallClockToInstant` corrects the offset once, so on a
-  // transition day it can answer with the offset from the other side: measured in America/New_York,
-  // 03:15 at -04:00 rounded to the half hour came back as local 04:00, a time that has not happened
-  // yet (round 7 of the review). Refused against the instant itself, which is a correct if coarser
-  // answer for a caller that only needs stability inside a slot.
+  const seconds = Number(p.ss);
+  if (!Number.isFinite(sinceMidnight) || !Number.isFinite(seconds)) return date;
+  // The floor is SUBTRACTED from the instant, never rebuilt as a wall clock and converted back.
+  // Round 8 of the review found what that round trip costs: `zonedWallClockToInstant` corrects the
+  // offset once, from a UTC guess, so on a fall-back day it answers with the offset from the wrong
+  // side. In America/New_York, 02:15 EST floored to the half hour came back as local 01:00, 75
+  // minutes behind on a 30-minute slot; and on the spring-forward day the rebuilt 03:00 landed
+  // FORWARD of the instant, so the guard against that returned the instant unfloored, losing the
+  // very stability this function exists to give. (The repo already knew the conversion is
+  // single-pass: see why `tools/http.ts` reaches for `zonedWallClock` instead.)
   //
-  // There is deliberately NO second guard comparing the local date, even though landing on the
-  // previous date is the defect this function exists to remove. An answer that is EARLY is still a
-  // floor, and for it to leave the day it would have to be early at local midnight: searched over
-  // every timezone this runtime knows, 24 hours of each plausible transition day of 2026 and slots
-  // of 15/30/60 minutes — 4,934,160 cases — and once this forward check is in place, not one lands
-  // on another local date. The guard would be code no test can kill; the sweep in
-  // `tests/graph/time.test.ts` is what holds the property if this conversion ever changes.
-  if (!candidate || candidate.getTime() > date.getTime()) return date;
-  return candidate;
+  // Subtracting the elapsed remainder has neither failure, and needs no second opinion about which
+  // offset applies, because it never names a wall clock. Measured over 341,760 cases spanning every
+  // one of the 445 timezones this runtime knows, eight transition-plausible days of 2026, 24 hours
+  // and slots of 30 and 45 minutes:
+  //
+  // - it never answers later than the instant, and never more than one slot behind it (0 and 0);
+  // - the answer is a slot boundary in the local calendar, except when a transition sits between it
+  //   and the instant (122 of 341,760, and 0 of those without a transition). Subtracting real minutes
+  //   across a shift moves the wall clock by an extra hour, so it lands on the neighbour slot: the
+  //   fall-back hour happens twice, and the earlier 01:30 is still a floor for the later 01:45;
+  // - inside one slot every instant floors to the same one, which is what prompt caching needs, and
+  //   the only exceptions are those same 122 (0 of the boundary answers, all 48 of the others).
+  const remainder = sinceMidnight % minutes;
+  return new Date(
+    date.getTime() -
+      remainder * 60_000 -
+      seconds * 1_000 -
+      date.getMilliseconds(),
+  );
 }
 
 // Substitutes the supported tokens (YYYY/MM/DD/HH/mm/ss) in a custom pattern. Tokens are distinct

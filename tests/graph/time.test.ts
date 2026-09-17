@@ -3,31 +3,16 @@ import {
   formatWithPattern,
   partsInTimezone,
   roundDownLocalMinutes,
-  roundDownToMinutes,
   zonedWallClockToInstant,
 } from "@/graph/time";
 
-describe("roundDownToMinutes", () => {
-  test("floors to a 30-minute slot", () => {
-    const d = new Date("2026-06-13T14:47:31.000Z");
-    expect(roundDownToMinutes(d, 30).toISOString()).toBe(
-      "2026-06-13T14:30:00.000Z",
-    );
-  });
-
-  test("floors to a 15-minute slot", () => {
-    const d = new Date("2026-06-13T14:47:31.000Z");
-    expect(roundDownToMinutes(d, 15).toISOString()).toBe(
-      "2026-06-13T14:45:00.000Z",
-    );
-  });
-
-  test("returns the date unchanged for non-positive minutes", () => {
-    const d = new Date("2026-06-13T14:47:31.000Z");
-    expect(roundDownToMinutes(d, 0).getTime()).toBe(d.getTime());
-    expect(roundDownToMinutes(d, -5).getTime()).toBe(d.getTime());
-  });
-});
+// O piso por EPOCH, que é o que a fonte fazia antes desta rodada e não é mais exportado por ninguém:
+// fica aqui porque é o CONTROLE do teste de Kathmandu abaixo, e é a única coisa que demonstra por que
+// a função local precisou existir.
+function pisoPorEpoch(date: Date, minutes: number): Date {
+  const ms = minutes * 60_000;
+  return new Date(Math.floor(date.getTime() / ms) * ms);
+}
 
 describe("formatWithPattern / partsInTimezone", () => {
   // 2026-06-13T17:05:00Z is 14:05 in São Paulo (UTC-3).
@@ -103,7 +88,7 @@ describe("roundDownLocalMinutes", () => {
     // O controle: o arredondamento por epoch, que é o que estava aqui, responde o dia anterior.
     expect(
       formatWithPattern(
-        roundDownToMinutes(now, 30),
+        pisoPorEpoch(now, 30),
         "Asia/Kathmandu",
         "DD/MM/YYYY HH:mm",
       ),
@@ -127,17 +112,47 @@ describe("roundDownLocalMinutes", () => {
     }
   });
 
-  // (rodada 7 da review) Um piso nunca anda para frente. `zonedWallClockToInstant` corrige o offset
-  // UMA vez, então num dia de virada ele pode responder com o offset do outro lado: medido em
-  // America/New_York, 03:15 em -04:00 arredondado para a meia hora voltava como 04:00 local, uma
-  // hora que ainda não aconteceu.
-  test("never answers with an instant later than the one it was given", () => {
+  // (rodadas 7 e 8 da review) As duas falhas do caminho que RECONSTRUÍA o wall clock e convertia de
+  // volta. `zonedWallClockToInstant` corrige o offset uma vez só, a partir de um palpite em UTC, e
+  // num dia de virada responde com o offset do lado errado: no fall-back, 02:15 EST arredondado para
+  // a meia hora voltava como 01:00 local, 75 minutos atrás, com um slot de 30; e no spring-forward o
+  // 03:00 reconstruído caía À FRENTE do instante, o que fazia a guarda contra isso devolver o
+  // instante SEM piso (03:15), perdendo justamente a estabilidade da função. O piso hoje é subtraído
+  // do instante, então nenhuma das duas existe: a distância é o resto, sempre menor que o slot.
+  test("floors a fall-back hour without falling into the previous slot", () => {
+    const d = new Date("2026-11-01T02:15:00-05:00");
+    const r = roundDownLocalMinutes(d, "America/New_York", 30);
+    expect(formatWithPattern(r, "America/New_York", "DD/MM/YYYY HH:mm")).toBe(
+      "01/11/2026 02:00",
+    );
+    expect(d.getTime() - r.getTime()).toBe(15 * 60_000);
+  });
+
+  test("floors a spring-forward hour instead of giving up on the floor", () => {
     const d = new Date("2026-03-08T03:15:00-04:00");
     const r = roundDownLocalMinutes(d, "America/New_York", 30);
     expect(r.getTime()).toBeLessThanOrEqual(d.getTime());
     expect(formatWithPattern(r, "America/New_York", "DD/MM/YYYY HH:mm")).toBe(
-      "08/03/2026 03:15",
+      "08/03/2026 03:00",
     );
+  });
+
+  // A hora repetida do fall-back é DOIS instantes com o mesmo wall clock, e cada um tem o seu piso:
+  // o que a função nunca faz é responder o primeiro 01:30 para quem está no segundo 01:45, que é uma
+  // hora inteira de erro. É o mesmo motivo pelo qual o piso não passa por wall clock.
+  test("the repeated hour has two floors, one per instant", () => {
+    const antes = new Date("2026-11-01T01:45:00-04:00");
+    const depois = new Date("2026-11-01T01:45:00-05:00");
+    expect(depois.getTime() - antes.getTime()).toBe(60 * 60_000);
+    for (const d of [antes, depois]) {
+      const r = roundDownLocalMinutes(d, "America/New_York", 30);
+      expect(formatWithPattern(r, "America/New_York", "HH:mm")).toBe("01:30");
+      expect(d.getTime() - r.getTime()).toBe(15 * 60_000);
+    }
+    expect(
+      roundDownLocalMinutes(depois, "America/New_York", 30).getTime() -
+        roundDownLocalMinutes(antes, "America/New_York", 30).getTime(),
+    ).toBe(60 * 60_000);
   });
 
   // (rodada 7 da review) O slot conta a partir da MEIA-NOITE local, não do minuto da hora: 120
@@ -161,9 +176,12 @@ describe("roundDownLocalMinutes", () => {
     }
   });
 
-  // As duas propriedades que fazem esta função ser usável como "o momento atual" num prompt, sobre
-  // uma varredura de fusos exóticos (inclusive os de :45 e :30), slots e horas do dia: 7056 casos.
-  test("over a sweep of zones and slots: never forward, never another local day", () => {
+  // As propriedades que fazem esta função ser usável como "o momento atual" num prompt, sobre uma
+  // varredura de fusos exóticos (inclusive os de :45 e :30), slots e horas do dia: 7056 casos. A
+  // terceira é a que a rodada 8 acrescentou, e é a que o caminho antigo violava em 75 minutos: a
+  // resposta nunca está mais longe que o próprio slot, então ela sempre nomeia o slot corrente ou,
+  // atravessando uma virada, o vizinho — nunca um ponto a uma hora e meia de distância.
+  test("over a sweep of zones and slots: never forward, never another local day, never farther than the slot", () => {
     let violacoes = 0;
     let n = 0;
     for (const tz of [
@@ -184,6 +202,7 @@ describe("roundDownLocalMinutes", () => {
             n += 1;
             if (
               r.getTime() > d.getTime() ||
+              d.getTime() - r.getTime() >= slot * 60_000 ||
               formatWithPattern(d, tz, "DD") !== formatWithPattern(r, tz, "DD")
             ) {
               violacoes += 1;
@@ -194,6 +213,30 @@ describe("roundDownLocalMinutes", () => {
     }
     expect(n).toBe(7056);
     expect(violacoes).toBe(0);
+  });
+
+  // O motivo de a função existir: dois instantes dentro do mesmo slot têm que dar o MESMO instante,
+  // senão cada turno monta um prompt diferente e o cache do provedor nunca casa (é o que `TIME_VARS`
+  // diz sobre `TIME_ROUND_MINUTES`). Segundos e milissegundos entram nessa conta: sem zerá-los, dois
+  // turnos a dez segundos de distância já divergem.
+  test("every instant inside one slot floors to the same instant", () => {
+    const base = new Date("2026-09-18T14:30:00-03:00");
+    const esperado = base.getTime();
+    for (const deslocamento of [
+      0,
+      1,
+      999,
+      10_000,
+      61_000,
+      29 * 60_000 + 59_999,
+    ]) {
+      const r = roundDownLocalMinutes(
+        new Date(base.getTime() + deslocamento),
+        "America/Sao_Paulo",
+        30,
+      );
+      expect(r.getTime()).toBe(esperado);
+    }
   });
 
   test("a slot of zero or less is the instant itself", () => {

@@ -979,6 +979,66 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toEqual({ won: false, reason: "dispensed" });
   });
 
+  // A BURST DOES NOT CARRY WHAT ANOTHER TURN IS ALREADY SPEAKING FOR (issue #690, PR review round
+  // 3). The claim is taken before its turn sends and the watermark only moves after that turn
+  // returns, so in between a message sits above the mark with a row on it, invisible to a selection
+  // that asks the mark alone. Carried into the burst it makes the claim conflict, and the claim is
+  // all-or-nothing — so the message BESIDE it, which nobody claimed, would be refused too and have
+  // nothing coming for it afterwards. This asserts the claim's half of that: the free message wins
+  // on its own.
+  test("a burst claims the message beside one another turn already holds", async () => {
+    const convId = 934;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // A direct turn claimed 1001 and has not returned yet, so the watermark is still behind it.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1001,
+        maxHandledAllowed: 1000,
+        messageIds: [1001],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // The flush's selection drops 1001 and claims what is actually free.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1002,
+        maxHandledAllowed: 1001,
+        messageIds: [1002],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+
+    // ...and carrying 1001 along would have cost 1002 as well, which is the shape the selection
+    // exists to avoid.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 1003,
+        maxHandledAllowed: 1002,
+        messageIds: [1001, 1003],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: false, reason: "claimed" });
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1003 },
+      }),
+    ).toBeNull();
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.

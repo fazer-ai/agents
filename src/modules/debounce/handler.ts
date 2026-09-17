@@ -85,7 +85,11 @@ import {
   stampDeferral,
 } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
+import {
+  advanceHandledWatermark,
+  readAnsweredFloor,
+  readClaimedMessageIds,
+} from "./watermark";
 
 // How long a flush waits before asking again whether the thread is free. Matched to the debounce
 // worker's own tick (DEBOUNCE_WORKER_INTERVAL_MS, 2500ms by default) rather than to the minute
@@ -221,6 +225,33 @@ export async function selectAnswerableBurst(
   // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
   overlayMediaAnnotations(tenantId, instanceId, messages);
   let pending = await ctx.selectPending(messages);
+  // AND NOT WHAT ANOTHER TURN IS ALREADY SPEAKING FOR (issue #690, PR review round 3). A claim is
+  // taken before its turn sends and the watermark only moves after that turn returns, so between the
+  // two a message sits above the mark with a row on it — invisible to a selection that asks the mark
+  // alone. Carried into the burst, it makes this claim conflict, and the claim is all-or-nothing: the
+  // whole burst is refused as `superseded`, the job completes, and the message BESIDE it, which
+  // nobody claimed, is left with nothing coming for it. That is this issue's own defect, arriving
+  // through the fix for it.
+  //
+  // Dropped here rather than repaired at the claim, because here it costs one indexed read and there
+  // it would cost either answering half a burst or a second turn over the same text.
+  if (pending.length > 0) {
+    const spoken = await readClaimedMessageIds({
+      tenantId,
+      conversationDbId: convDbId,
+      messageIds: pending.map((m) => m.id),
+      base,
+    });
+    // UNLESS THAT LEAVES NOTHING, and then the claim answers instead of this filter. A burst whose
+    // every message is already spoken for is not an empty burst: reported as one, the flush says
+    // there was nothing to answer when the truth is that another turn is answering it, and the word
+    // the caller acts on changes with it. Handed on whole, the claim loses on the conflict and the
+    // flush reports `superseded`, which is what actually happened.
+    if (spoken.size > 0) {
+      const free = pending.filter((m) => !spoken.has(m.id));
+      if (free.length > 0) pending = free;
+    }
+  }
   if (pending.length === 0) return null;
   let dropped: typeof pending = [];
 

@@ -53,6 +53,11 @@ export interface ChatwootMessageRow {
   // declare what they narrate — a status change, a Linear event — and null on the ones that carry
   // only a localized sentence, which is where a label change lives.
   activityType: string | null;
+  // WHO SENT IT, from Chatwoot's own `sender.type`. It is what separates OUR outgoing message from a
+  // human agent's, a distinction `messageType` cannot make and the burst selection needs: a reply a
+  // person wrote closes every customer message before it, and one of ours closes only what its turn
+  // claimed (issue #698).
+  senderType: "contact" | "user" | "agent_bot" | "other" | null;
   // The name the send gave itself on the way out (issue #499), when this message is one of ours and
   // the sender asked for one. Null on every message nobody named: everything inbound, everything a
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
@@ -62,6 +67,20 @@ export interface ChatwootMessageRow {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Chatwoot's `sender.type` as the page reports it, narrowed to the three its serializer emits
+// (`push_event_data`: "contact", "user", "agent_bot"). An unknown string is "other" rather than
+// null: null means the page said nothing about a sender, which the serializer allows
+// (`json.sender … if message.sender`), and a caller deciding ownership has to tell "nobody said"
+// from "somebody we do not recognise".
+function senderTypeOf(
+  sender: unknown,
+): "contact" | "user" | "agent_bot" | "other" | null {
+  if (!isRecord(sender)) return null;
+  const t = sender.type;
+  if (typeof t !== "string") return null;
+  return t === "contact" || t === "user" || t === "agent_bot" ? t : "other";
 }
 
 function num(v: unknown): number | null {
@@ -219,6 +238,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       isReaction: ca?.is_reaction === true,
       emailSubject: emailSubjectFrom(ca),
       activityType: activityTypeFrom(ca),
+      senderType: senderTypeOf(item.sender),
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

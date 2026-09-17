@@ -1,6 +1,11 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { resetLandedAfter } from "@/graph/reset-episode";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  type ChatwootMessageRow,
+  pendingIncoming,
+} from "@/modules/chatwoot/messages";
 
 // `Conversation.lastHandledMessageId` marks the last inbound message the bot either responded to or
 // DELIBERATELY skipped (handoff mid-turn, human-owned period, consumed /commands, guardrail
@@ -435,6 +440,140 @@ export async function readClaimedMessageIds(params: {
     }),
   );
   return new Set(rows.map((r) => r.messageId));
+}
+
+// WHAT IS CLOSED ABOVE THE PER-MESSAGE FLOOR, and the two fences read with it (issue #698).
+//
+// The claim stopped deciding by arithmetic in #690, and this is the other half: the SELECTION has to
+// stop too, or a message nobody answered is never offered to a turn again. A competing claim writes
+// `last_replied_message_id`, which is what `readAnsweredFloor` reads, so one turn claiming message
+// 1002 raises the floor over 1001 as well, and 1001, which has no row anywhere, is excluded from
+// every future burst.
+//
+// Below `replyClaimFloorMessageId` the scalars still answer in full: down there no row was ever
+// written and none ever will be, so absence proves nothing. Above it absence IS evidence, because
+// every decision taken up there writes a row: a claim when a turn spoke for the message, a dispensal
+// when something closed it without answering. So a message up there is offered unless one of those
+// rows says otherwise.
+//
+// BOTH kinds of row close a message here, unlike at the claim, where an operator's click may
+// overturn a dispensal. This is the automatic path, and a deliberate silence is not something a
+// retry gets to undo.
+//
+// `resetAt` rides along because it is the second fence on the same decision and it is one column of
+// the same row: `/reset` writes a dispensal for the command's own id only, so the burst it retires
+// has no row at all, and above the floor "no row" means "offer it". Read separately it would be a
+// second round trip to answer half of one question.
+export async function readSelectionState(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  messageIds: readonly number[];
+  base?: PrismaClient;
+}): Promise<{
+  floor: number | null;
+  resetAt: number | null;
+  closed: Set<number>;
+}> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: { id: params.conversationDbId },
+      select: { replyClaimFloorMessageId: true, resetAtMessageId: true },
+    });
+    const floor = conv?.replyClaimFloorMessageId ?? null;
+    const resetAt = conv?.resetAtMessageId ?? null;
+    const ids =
+      floor === null ? [] : params.messageIds.filter((m) => m > floor);
+    if (ids.length === 0) return { floor, resetAt, closed: new Set<number>() };
+    const lowest = Math.min(...ids);
+    const [rows, ranges] = await Promise.all([
+      db.messageReplyClaim.findMany({
+        where: {
+          conversationId: params.conversationDbId,
+          messageId: { in: [...ids] },
+        },
+        select: { messageId: true },
+      }),
+      // Bounded by the lowest candidate: a range that ends below it cannot cover any of them, and a
+      // conversation accumulates one of these rows per gate exit for as long as it lives.
+      db.replyDispensal.findMany({
+        where: {
+          conversationId: params.conversationDbId,
+          toMessageId: { gte: lowest },
+        },
+        select: { fromMessageId: true, toMessageId: true },
+      }),
+    ]);
+    const closed = new Set(rows.map((r) => r.messageId));
+    for (const id of ids) {
+      if (
+        ranges.some(
+          (r) =>
+            id <= r.toMessageId &&
+            (r.fromMessageId === null || id > r.fromMessageId),
+        )
+      ) {
+        closed.add(id);
+      }
+    }
+    return { floor, resetAt, closed };
+  });
+}
+
+// THE SELECTION ITSELF, once `readSelectionState` has fetched what the rows say (issue #698). Pure,
+// and exported because THREE gates ask this one question and a second copy of it would drift: the
+// burst the debounce flush answers, the supersede gate of that flush, and the supersede gate of the
+// direct path, which is where #690's own measurement lives.
+//
+// `scalarFloor` is the pre-#690 answer, `max(last_handled, last_replied)`, and it still decides
+// below the per-message floor: down there no row was ever written and none ever will be, so absence
+// proves nothing. Above the floor absence IS evidence, because every decision taken up there writes
+// a row, and the message is open unless a row or one of the two fences says otherwise.
+export function selectOpenMessages(params: {
+  page: readonly ChatwootMessageRow[];
+  scalarFloor: number | null;
+  state: { floor: number | null; resetAt: number | null; closed: Set<number> };
+}): ChatwootMessageRow[] {
+  const { page, scalarFloor, state } = params;
+  const perMessage = state.floor;
+  const pageArray = [...page];
+  if (perMessage === null) return pendingIncoming(pageArray, scalarFloor);
+  // THE REPLY A PERSON WROTE, which is the fence the rows cannot carry: `pendingIncoming` reads
+  // incoming messages only, and a human agent answering a customer writes no row anywhere. The rule
+  // is ASYMMETRIC on purpose. An outgoing message of OURS closes exactly what its turn claimed,
+  // which the rows already say, so reading it as a boundary would re-lose every message this
+  // selection exists to find. One that is NOT ours closes everything before it: the person who
+  // answered read the thread, and handing that thread back to the model is the defect
+  // `incomingAfterLastOutgoing` exists to prevent on the re-engage path.
+  //
+  // "Not ours" is `senderType !== "agent_bot"`, and a page that named no sender counts as not ours:
+  // the conservative direction, because it leaves a message unanswered rather than answering one a
+  // person already handled.
+  let humanReplied = 0;
+  for (const m of pageArray) {
+    if (
+      (m.messageType === "outgoing" || m.messageType === "template") &&
+      !m.private &&
+      m.senderType !== "agent_bot" &&
+      m.id > humanReplied
+    ) {
+      humanReplied = m.id;
+    }
+  }
+  return pendingIncoming(pageArray, null).filter((m) => {
+    if (m.id <= perMessage) {
+      return scalarFloor === null || m.id > scalarFloor;
+    }
+    if (state.closed.has(m.id)) return false;
+    if (m.id <= humanReplied) return false;
+    // THE COMMAND'S FENCE. `/reset` retires the pending burst and writes a dispensal for its own
+    // message id alone, so the messages it withdrew carry no row: read by the rule above they would
+    // be offered again, rebuilding the memory the command cleared and re-running requests the
+    // operator took back. `resetLandedAfter` is the same predicate every other reader of this
+    // column asks.
+    if (resetLandedAfter(m.id, state.resetAt)) return false;
+    return true;
+  });
 }
 
 export type ReplyClaimOutcome =

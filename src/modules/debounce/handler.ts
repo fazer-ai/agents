@@ -34,7 +34,6 @@ import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
-  maxIncomingId,
   parseChatwootMessages,
   pendingIncoming,
   toRenderable,
@@ -89,6 +88,8 @@ import {
   advanceHandledWatermark,
   readAnsweredFloor,
   readClaimedMessageIds,
+  readSelectionState,
+  selectOpenMessages,
 } from "./watermark";
 
 // How long a flush waits before asking again whether the thread is free. Matched to the debounce
@@ -364,7 +365,20 @@ export async function coalesceAndRunTurn(
       const latest = parseChatwootMessages(
         await client.getMessages(conversationId),
       );
-      if (maxIncomingId(latest, targetWatermark) > targetWatermark) {
+      // ASKED WITH THE SELECTOR, not with the arithmetic of the page (issue #698). "A newer message
+      // arrived" used to be `maxIncomingId > targetWatermark`, which reads every incoming id above
+      // this turn's target as a customer still waiting. Once the selection stopped deciding by a
+      // single number, a turn can legitimately answer BELOW a message another turn already claimed —
+      // and then the id above it is not a mid-turn arrival, it is the message that caused this one to
+      // come back. Judged by arithmetic, the retry defers forever and the customer is never answered,
+      // which is the same silence this issue is about, one gate further along.
+      //
+      // `ctx.selectPending` is the same closure the burst came from, so the two cannot drift: what it
+      // still offers above the target is, by definition, a message nobody is speaking for.
+      const openAbove = (await ctx.selectPending(latest)).some(
+        (m) => m.id > targetWatermark,
+      );
+      if (openAbove) {
         logger.info(
           "%s: superseded mid-turn (conv=%s), deferring",
           ctx.label,
@@ -1135,6 +1149,10 @@ export async function flushDebounceJob(
         inboxId: true,
         contactInboxId: true,
         lastHandledMessageId: true,
+        // Read here for one branch only: the spend ceiling's shortcut below, which is a claim about
+        // this conversation's whole backlog and stops being true once the per-message era starts on
+        // it (issue #698).
+        replyClaimFloorMessageId: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -1250,6 +1268,7 @@ export async function flushDebounceJob(
       inboxChatwootId: inbox.chatwootInboxId,
       contactInboxId: conv.contactInboxId,
       watermark: conv.lastHandledMessageId,
+      perMessageFloor: conv.replyClaimFloorMessageId,
       loaded,
       settings: agentRow?.settings ?? {},
     };
@@ -1409,7 +1428,24 @@ export async function flushDebounceJob(
     const armed = ctx.watermark;
     const floor =
       fresh === null ? armed : armed === null ? fresh : Math.max(fresh, armed);
-    return pendingIncoming(messages, floor);
+    // AND ABOVE THE PER-MESSAGE FLOOR THE SCALAR DOES NOT DECIDE (issue #698).
+    //
+    // A competing claim writes `last_replied_message_id`, which is exactly what the floor above
+    // reads, so one turn claiming message 1002 raises it over 1001 too. 1001, which has no row
+    // anywhere, would be excluded from this burst and from every burst after it, and nothing ever
+    // comes back for it: the selection doing by arithmetic what the claim stopped doing in #690.
+    //
+    // The rule itself is `selectOpenMessages`, shared with the two supersede gates that ask the same
+    // question, and its fences are the boundaries the scalar used to carry for free by the accident
+    // of being one number that only moved forward. The first attempt at this carried none of them
+    // and was reverted for it (#690, review round 7, 3bdbc1dd).
+    const state = await readSelectionState({
+      tenantId,
+      conversationDbId: ctx.convDbId,
+      messageIds: pendingIncoming(messages, null).map((m) => m.id),
+      base,
+    });
+    return selectOpenMessages({ page: messages, scalarFloor: floor, state });
   };
 
   // The operator flipped the agent to monitoring during one of this flush's waits (issue #209
@@ -1443,8 +1479,21 @@ export async function flushDebounceJob(
   };
 
   const armedLast = readLastMessageId(job.payload);
+  // ONLY WHILE THE SCALAR STILL SPEAKS FOR THE WHOLE BACKLOG (issue #698). The shortcut reads "the
+  // mark covers this payload's last id, so there is nothing left to answer and nothing to refuse" —
+  // a statement about every message below the mark, which was safe while the selection asked the
+  // same single number. It is not safe once this conversation has a per-message floor: above that
+  // floor a message with no row is still owed, and it sits BELOW the mark by exactly the accident
+  // this issue is about. Taken there, the turn runs the model and its tools without the spend
+  // verdict ever being asked, and suppressing the reply afterwards does not unspend it.
+  //
+  // Where the shortcut no longer applies, nothing is said to the customer by mistake: the `over`
+  // branch below re-runs the same selection and returns silently when it finds nothing.
   const alreadyAnswered =
-    armedLast !== null && ctx.watermark !== null && ctx.watermark >= armedLast;
+    ctx.perMessageFloor === null &&
+    armedLast !== null &&
+    ctx.watermark !== null &&
+    ctx.watermark >= armedLast;
   const flushCeiling = alreadyAnswered
     ? null
     : await spendCeilingVerdict({

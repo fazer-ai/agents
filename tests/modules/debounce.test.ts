@@ -183,6 +183,10 @@ function page(
     type?: number;
     priv?: boolean;
     attachments?: unknown[];
+    // Chatwoot's own `sender.type` ("contact" | "user" | "agent_bot"), which is what separates our
+    // outgoing message from a human agent's (issue #698). Omitted ⇒ the page names no sender, which
+    // is a shape the serializer really emits.
+    sender?: string;
   }>,
 ) {
   return {
@@ -192,6 +196,7 @@ function page(
       message_type: m.type ?? 0,
       private: m.priv ?? false,
       ...(m.attachments ? { attachments: m.attachments } : {}),
+      ...(m.sender ? { sender: { id: 1, type: m.sender } } : {}),
     })),
   };
 }
@@ -1164,6 +1169,365 @@ describe.skipIf(!dbUp)("debounce", () => {
         where: { conversationId: id, messageId: 1 },
       }),
     ).toBeNull();
+  });
+
+  // AND THE RETRY FINDS THE FLOOR ALREADY PAST IT (issue #698). The test above ends where the damage
+  // begins: the job comes back, and the selection it comes back to still asks a single number.
+  // `readAnsweredFloor` is the max of the two scalars, the winning claim wrote `1002` into one of
+  // them, and message 1 sits below that with no claim row and no dispensal row anywhere. The claim
+  // would grant it (1 is above this conversation's per-message floor, so neither scalar gate even
+  // looks); the selection never offers it.
+  test("the retry after a partial conflict answers the message nobody claimed", async () => {
+    const convId = 938;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = makeStub({
+      pages: [
+        page([
+          { id: 1, content: "oi" },
+          { id: 2, content: "tudo bem?" },
+        ]),
+      ],
+      sent,
+      calls: { getMessages: 0 },
+    });
+    const checkpointer = new MemorySaver();
+    // The competing turn does what a real one does: claims its own message and advances the mark on
+    // its way out. Both writes land while this flush is at the model, so the burst `[1, 2]` reaches
+    // the claim with 2 taken and 1 free.
+    const stealTwo = new SideEffectModel(async () => {
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        maxHandledAllowed: 1,
+        messageIds: [2],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+      await advanceHandledWatermark({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        dispensed: { kind: "messages", messageIds: [2] },
+        base: appDb,
+      });
+    });
+
+    const first = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: { makeModel: () => stealTwo, makeClient: client, checkpointer },
+    });
+    expect(first.outcome).toBe("reschedule");
+    expect(sent).toEqual([]);
+
+    // THE RETRY, which is the only turn left that knows message 1 exists.
+    const retry = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: { makeModel: () => fakeModel(), makeClient: client, checkpointer },
+    });
+
+    expect(retry.outcome).toBe("done");
+    // The customer gets an answer to what they wrote, and the claim row is what records it.
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1 },
+      }),
+    ).not.toBeNull();
+  });
+
+  // THE REPLY A PERSON WROTE IS THE FENCE NO ROW RECORDS (issue #698). Above the per-message floor
+  // the selection reads "no row" as "still owed", and a human agent answering a customer writes no
+  // row anywhere: `pendingIncoming` reads incoming messages only, so without this fence the thread a
+  // person already handled goes back to the model. The rule is asymmetric, and the control below is
+  // what proves the asymmetry rather than a blanket "any outgoing closes everything": OUR own reply
+  // must not close the messages its turn did not claim, or the fix above would undo itself.
+  test("an outgoing a PERSON wrote closes the burst before it, and ours does not", async () => {
+    const withPage = async (convId: number, senderType: string) => {
+      await seedConversation(convId);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      // The per-message era, started without a claim: below this floor the scalars decide and the
+      // fence is never consulted.
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      const sent: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+                { id: 3, content: "já respondi", type: 1, sender: senderType },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      return { sent, outcome: out.outcome };
+    };
+
+    // A human agent answered 1 and 2. Nothing is owed, and nothing is said.
+    const human = await withPage(939, "user");
+    expect(human.sent).toEqual([]);
+    // Our own reply to message 2 leaves message 1 exactly as owed as it was: the claim rows are what
+    // say which messages a reply of ours covered, and there are none.
+    const ours = await withPage(940, "agent_bot");
+    expect(ours.sent.map(([, text]) => text)).toEqual([REPLY]);
+  });
+
+  // THE COMMAND'S FENCE, in the selection this time (issue #698). `/reset` retires the pending burst
+  // and writes a dispensal for its own message id alone, so the messages it withdrew carry no row —
+  // and above the floor "no row" means "offer it". Read without this fence, the next flush rebuilds
+  // the memory the operator cleared and can re-run a request they took back, which is the P1 that
+  // sent the first attempt at this selection back (#690, review round 7).
+  test("the selection does not offer back what /reset retired", async () => {
+    const convId = 941;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0, resetAtMessageId: 2 },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "cancela o pedido" },
+              { id: 2, content: "/reset" },
+              { id: 3, content: "oi de novo" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The customer is answered, and what reached the model is the message after the command and
+    // nothing before it.
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("oi de novo");
+    expect(seen).not.toContain("cancela o pedido");
+  });
+
+  // AND THE SPEND VERDICT IS ASKED AGAIN ONCE A MESSAGE CAN BE OWED BELOW THE MARK (issue #698).
+  //
+  // The flush skips the ceiling when the watermark already covers the payload's last id: "this burst
+  // was answered by an earlier attempt, so there is nothing to refuse". That reading is a claim about
+  // every message below the mark, and it stops being true the moment the selection stops asking a
+  // single number — which is exactly the case this issue creates, a message with no row sitting below
+  // a mark another turn moved. Taken, the turn runs the model and its tools with no verdict asked,
+  // and withholding the reply afterwards does not unspend it.
+  test("over the ceiling, an owed message below the mark still gets the verdict", async () => {
+    const convId = 942;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The mark covers the job's last id, and message 1 is owed below it: the shape of the retry this
+    // issue is about, written directly rather than raced into.
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0, lastHandledMessageId: 2 },
+    });
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 99, polledAt: new Date() },
+    });
+    try {
+      const sent: Array<[number, string]> = [];
+      const model = new CaptureReplyModel(REPLY);
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      // THE ASSERTION. The turn never ran, because the ceiling was asked before it.
+      expect(model.seen).toEqual([]);
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({
+        where: { tenantId, source: "inbox" },
+      });
+    }
+  });
+
+  // THE OTHER SIDE OF THE ASYMMETRY, and it is the side where the fix undoes itself (issue #698,
+  // holdout scenario s9). The test above proves a PERSON's reply closes the burst before it. This one
+  // proves OURS does not: our reply closes exactly the messages its turn claimed, and a message it
+  // never claimed is still owed afterwards. Read as a boundary, our own outgoing would re-lose every
+  // orphan this selection exists to find — and it would do it silently, because the flush would go on
+  // answering the newest message every time.
+  test("our own reply does not close the message its turn never claimed", async () => {
+    const convId = 943;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    // Message 1 is the orphan: nobody claimed it, nothing dispensed it. Message 2 is a burst of ours
+    // that was answered, so it carries a claim row and our reply sits at 3.
+    await claimReplyBurst({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 2,
+      maxHandledAllowed: 1,
+      messageIds: [2],
+      initiatedBy: "automatic",
+      base: appDb,
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "quero abrir um chamado" },
+              { id: 2, content: "bom dia" },
+              {
+                id: 3,
+                content: "bom dia!",
+                type: 1,
+                sender: "agent_bot",
+              },
+              { id: 4, content: "ainda preciso de ajuda" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    // The orphan is in the turn, and so is the new message; the one our reply DID claim is not.
+    expect(seen).toContain("quero abrir um chamado");
+    expect(seen).toContain("ainda preciso de ajuda");
+    expect(seen).not.toContain("bom dia");
+  });
+
+  // AND BELOW THE PER-MESSAGE FLOOR THE SCALAR STILL DECIDES, WHOLE (issue #698, mutation m7). This
+  // is the half of the rule that must NOT change, and it is invisible in every other test here: down
+  // there no row was ever written and none ever will be, so "no row" means nothing and the two
+  // scalars are the only thing that knows anything. Read by the rule that governs above the floor, a
+  // conversation that predates the per-message era would have its whole history offered back to the
+  // model on the next message — issue #452 and issue #8, reopened by the fix for #690.
+  //
+  // Measured as a gap: the mutant that answers `true` here survived the entire suite, 11890 tests,
+  // before this test existed.
+  test("below the per-message floor the scalars still close the history", async () => {
+    const convId = 944;
+    await seedConversation(convId, { lastHandledMessageId: 5 });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The era starts at 5: everything at or below it belongs to the scalars, whatever rows say.
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 5 },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 3, content: "pergunta antiga" },
+              { id: 4, content: "outra antiga" },
+              { id: 5, content: "a última antiga" },
+              { id: 6, content: "pergunta de hoje" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("pergunta de hoje");
+    expect(seen).not.toContain("pergunta antiga");
+    expect(seen).not.toContain("outra antiga");
+    expect(seen).not.toContain("a última antiga");
   });
 
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate

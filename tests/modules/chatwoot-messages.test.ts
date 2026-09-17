@@ -32,6 +32,7 @@ describe("parseChatwootMessages", () => {
       inReplyTo: null,
       isReaction: false,
       activityType: null,
+      senderType: null,
     });
     expect(rows[1]?.messageType).toBe("outgoing");
   });

@@ -14,8 +14,8 @@ import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
-  maxIncomingId,
   parseChatwootMessages,
+  pendingIncoming,
 } from "@/modules/chatwoot/messages";
 import {
   firstAudioAttachment,
@@ -36,6 +36,8 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
+  readSelectionState,
+  selectOpenMessages,
 } from "@/modules/debounce/watermark";
 import {
   emitFlowEvent,
@@ -2588,7 +2590,29 @@ export async function runAgentTurn(
             const latest = parseChatwootMessages(
               await client.getMessages(conversationId),
             );
-            if (maxIncomingId(latest, triggerId) > triggerId) {
+            // ASKED BY IDENTITY, not by the arithmetic of the page (issue #698). "A newer message
+            // arrived" used to be `maxIncomingId > triggerId`, which reads every id above this
+            // trigger as a customer still waiting — including the one another turn has already
+            // answered. That is the exact shape #690 measured on THIS path: two deliveries
+            // serialized (#658), the newer message's turn takes the thread first and answers, and
+            // this turn, the only actor that ever loaded the older message, comes second. #690 made
+            // the claim grant it; judged here by arithmetic, the gate swallowed the reply anyway and
+            // the customer got no answer to what they wrote.
+            //
+            // The same selector the flush uses, so the two cannot drift: what it still offers above
+            // this trigger is, by definition, a message nobody is speaking for.
+            const state = await readSelectionState({
+              tenantId,
+              conversationDbId: convDbId,
+              messageIds: pendingIncoming(latest, null).map((m) => m.id),
+              base,
+            });
+            const openAbove = selectOpenMessages({
+              page: latest,
+              scalarFloor: triggerId,
+              state,
+            }).some((m) => m.id > triggerId);
+            if (openAbove) {
               logger.info(
                 "direct turn: superseded mid-turn (conv=%s), deferring",
                 String(conversationId),

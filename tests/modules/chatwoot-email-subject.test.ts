@@ -51,6 +51,7 @@ function row(over: Partial<ChatwootMessageRow> = {}): ChatwootMessageRow {
     inReplyTo: null,
     isReaction: false,
     activityType: null,
+    senderType: null,
     sendId: null,
     emailSubject: null,
     ...over,

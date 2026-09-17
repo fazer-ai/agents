@@ -41,6 +41,10 @@ import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { reengageConversation } from "@/modules/conversations/reengage";
+import {
+  advanceHandledWatermark,
+  claimReplyBurst,
+} from "@/modules/debounce/watermark";
 import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
@@ -3790,6 +3794,76 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBeNull();
+  });
+
+  // AND THE NEWER MESSAGE SOMEBODY ELSE ALREADY ANSWERED IS NOT A SUPERSESSION (issue #698). The
+  // test above is the case the gate exists for: message 2 is still open, so the reply to 1 is
+  // obsolete and its own turn is coming. This is the other one, and it is the shape #690 measured on
+  // this exact path: two deliveries serialized (#658), the NEWER one takes the thread first and
+  // answers, and the older message's turn — the only actor in the system that ever loaded it — comes
+  // second. #690 made the claim grant it. Judged by arithmetic here, the gate then swallows the
+  // reply anyway: message 2 is above message 1, so the turn defers, hands nothing back and leaves
+  // the customer with no answer to what they wrote.
+  test("issue #698: a newer message somebody else answered does not supersede this reply", async () => {
+    await seedConversation(9698, null);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9698 },
+      select: { id: true },
+    });
+    // MSG-B's turn ran first and is done with it: the claim row is its record, and the mark moved on
+    // its way out, which is what every completed outcome but `superseded` does.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        maxHandledAllowed: 1,
+        messageIds: [2],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 2,
+      dispensed: { kind: "claimed" },
+      base: appDb,
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          { id: 2, content: "tudo bem?", message_type: 0, private: false },
+          {
+            id: 3,
+            content: "tudo ótimo!",
+            message_type: 1,
+            private: false,
+            sender: { id: 9, type: "agent_bot" },
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9698 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).not.toBe("superseded");
+    expect(sent.length).toBe(1);
   });
 
   // The bound on the case above. Supersede drops a reply the newest message made obsolete, and the

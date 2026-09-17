@@ -839,6 +839,42 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toBe("CLAIMED");
   });
 
+  // A1 VARIANT (i), REPRODUCED AT THE CLAIM (issue #690 holdout). A message answered a while ago,
+  // its row still there, the mark well past it, and Chatwoot delivering it a second time. The
+  // sequential case, as opposed to the two simultaneous deliveries of `s5`: the first turn is long
+  // finished, so nothing is racing and identity is the only thing left that can refuse.
+  test("a redelivery of a message already claimed is refused, turns later", async () => {
+    const convId = 887;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (m: number, ceiling: number) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: m,
+        maxHandledAllowed: ceiling,
+        messageIds: [m],
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+
+    expect(await claim(1001, 1000)).toEqual({ won: true });
+    expect(await claim(1002, 1001)).toEqual({ won: true });
+    expect(await claim(1003, 1002)).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 1003,
+      dispensed: { kind: "claimed" },
+      base: appDb,
+    });
+
+    expect(await claim(1001, 1000)).toEqual({ won: false, reason: "claimed" });
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.

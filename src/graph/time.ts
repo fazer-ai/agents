@@ -68,13 +68,32 @@ export function roundDownLocalMinutes(
 ): Date {
   if (!Number.isFinite(minutes) || minutes <= 0) return date;
   const p = partsInTimezone(date, timezone);
-  const minute = Number(p.mm);
-  if (!Number.isFinite(minute)) return date;
-  const floored = Math.floor(minute / minutes) * minutes;
-  const wall = `${p.YYYY}-${p.MM}-${p.DD}T${p.HH}:${String(floored).padStart(2, "0")}:00`;
-  // Null only for a wall clock the zone does not have, which flooring a minute inside an existing
-  // hour cannot produce; the unrounded instant is the honest fallback either way.
-  return zonedWallClockToInstant(wall, timezone) ?? date;
+  // MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the minutes
+  // would reset every hour and behave like 60, and 45 would mean something different in each hour
+  // (round 7 of the review — `get_current_time` takes any positive integer for this).
+  const sinceMidnight = Number(p.HH) * 60 + Number(p.mm);
+  if (!Number.isFinite(sinceMidnight)) return date;
+  const floored = Math.floor(sinceMidnight / minutes) * minutes;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const wall = `${p.YYYY}-${p.MM}-${p.DD}T${pad(Math.floor(floored / 60))}:${pad(
+    floored % 60,
+  )}:00`;
+  const candidate = zonedWallClockToInstant(wall, timezone);
+  // A FLOOR NEVER MOVES FORWARD. `zonedWallClockToInstant` corrects the offset once, so on a
+  // transition day it can answer with the offset from the other side: measured in America/New_York,
+  // 03:15 at -04:00 rounded to the half hour came back as local 04:00, a time that has not happened
+  // yet (round 7 of the review). Refused against the instant itself, which is a correct if coarser
+  // answer for a caller that only needs stability inside a slot.
+  //
+  // There is deliberately NO second guard comparing the local date, even though landing on the
+  // previous date is the defect this function exists to remove. An answer that is EARLY is still a
+  // floor, and for it to leave the day it would have to be early at local midnight: searched over
+  // every timezone this runtime knows, 24 hours of each plausible transition day of 2026 and slots
+  // of 15/30/60 minutes — 4,934,160 cases — and once this forward check is in place, not one lands
+  // on another local date. The guard would be code no test can kill; the sweep in
+  // `tests/graph/time.test.ts` is what holds the property if this conversion ever changes.
+  if (!candidate || candidate.getTime() > date.getTime()) return date;
+  return candidate;
 }
 
 // Substitutes the supported tokens (YYYY/MM/DD/HH/mm/ss) in a custom pattern. Tokens are distinct

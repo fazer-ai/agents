@@ -127,6 +127,75 @@ describe("roundDownLocalMinutes", () => {
     }
   });
 
+  // (rodada 7 da review) Um piso nunca anda para frente. `zonedWallClockToInstant` corrige o offset
+  // UMA vez, então num dia de virada ele pode responder com o offset do outro lado: medido em
+  // America/New_York, 03:15 em -04:00 arredondado para a meia hora voltava como 04:00 local, uma
+  // hora que ainda não aconteceu.
+  test("never answers with an instant later than the one it was given", () => {
+    const d = new Date("2026-03-08T03:15:00-04:00");
+    const r = roundDownLocalMinutes(d, "America/New_York", 30);
+    expect(r.getTime()).toBeLessThanOrEqual(d.getTime());
+    expect(formatWithPattern(r, "America/New_York", "DD/MM/YYYY HH:mm")).toBe(
+      "08/03/2026 03:15",
+    );
+  });
+
+  // (rodada 7 da review) O slot conta a partir da MEIA-NOITE local, não do minuto da hora: 120
+  // flooreando só os minutos reiniciaria a cada hora e se comportaria como 60, e 45 significaria
+  // outra coisa em cada hora. `get_current_time` aceita qualquer inteiro positivo aqui.
+  test("the slot counts from local midnight, so it survives an hour boundary", () => {
+    const d = new Date("2026-09-18T15:40:00Z");
+    for (const [slot, esperado] of [
+      [120, "14:00"],
+      [45, "15:00"],
+      [90, "15:00"],
+      [30, "15:30"],
+    ] as const) {
+      expect(
+        formatWithPattern(
+          roundDownLocalMinutes(d, "UTC", slot),
+          "UTC",
+          "HH:mm",
+        ),
+      ).toBe(esperado);
+    }
+  });
+
+  // As duas propriedades que fazem esta função ser usável como "o momento atual" num prompt, sobre
+  // uma varredura de fusos exóticos (inclusive os de :45 e :30), slots e horas do dia: 7056 casos.
+  test("over a sweep of zones and slots: never forward, never another local day", () => {
+    let violacoes = 0;
+    let n = 0;
+    for (const tz of [
+      "America/Sao_Paulo",
+      "America/New_York",
+      "Asia/Kathmandu",
+      "Australia/Lord_Howe",
+      "UTC",
+      "Pacific/Chatham",
+      "Europe/Lisbon",
+    ]) {
+      for (const slot of [5, 15, 30, 45, 60, 90, 120]) {
+        for (let h = 0; h < 24; h++) {
+          for (const mm of [0, 7, 29, 30, 44, 59]) {
+            // 8 de março de 2026 é dia de virada em America/New_York, que é o caso difícil.
+            const d = new Date(Date.UTC(2026, 2, 8, h, mm));
+            const r = roundDownLocalMinutes(d, tz, slot);
+            n += 1;
+            if (
+              r.getTime() > d.getTime() ||
+              formatWithPattern(d, tz, "DD") !== formatWithPattern(r, tz, "DD")
+            ) {
+              violacoes += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(n).toBe(7056);
+    expect(violacoes).toBe(0);
+  });
+
   test("a slot of zero or less is the instant itself", () => {
     const d = new Date("2026-09-18T14:29:00-03:00");
     expect(roundDownLocalMinutes(d, "America/Sao_Paulo", 0)).toEqual(d);

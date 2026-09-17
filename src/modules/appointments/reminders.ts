@@ -598,9 +598,11 @@ function distancePhrase(ms: number): string {
 // side of a daylight-saving transition, where the same zone is an hour away from it. The payload
 // carries an offset and not an IANA zone, so there is nothing here to ask — and round 3 of the
 // review found the case that makes the difference customer-facing: in America/New_York, a start of
-// `2026-11-01T02:30:00-05:00` with now at `00:30:00-04:00` is two hours away on the SAME local day,
-// and the stated offset alone puts now on the previous date and calls it "tomorrow" while the
-// distance in the same sentence says two hours.
+// `2026-11-01T02:30:00-05:00` with now at `00:30:00-04:00` is THREE hours away on the SAME local
+// day — the wall clock reads 00:30 then 02:30, and the hour between 01:00 and 02:00 happens twice,
+// which is the same reason the distance is taken from instants and not from the clock face — and
+// the stated offset alone puts now on the previous date and calls it "tomorrow" while the distance
+// in the same sentence says hours.
 //
 // So the day is claimed only when it does NOT depend on that hour: the difference is taken with the
 // stated offset and with an hour either side of it, and a disagreement means we say nothing about

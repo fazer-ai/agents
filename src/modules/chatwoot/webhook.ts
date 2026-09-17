@@ -2036,7 +2036,11 @@ export async function runEagerMedia(
             {
               ...(descricao ? { imageDescription: descricao } : {}),
               ...(documento ? { extractedText: documento } : {}),
-              ...(naoLidos > 0 ? { attachmentsUnread: naoLidos } : {}),
+              // ALWAYS, including zero. The store merges field by field, so omitting it on the
+              // pass that finally read everything left the earlier positive count standing — and
+              // the flush would render "N files unread" beside the complete extraction, asking the
+              // customer to resend what had just been read (PR #692 review, round 5).
+              attachmentsUnread: naoLidos,
             },
           );
       }

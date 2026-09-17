@@ -156,19 +156,24 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
 
   // Each case gets its own conversation: two cases sharing one would let a line written by the
   // first be counted by the second, which is the whole measurement here.
-  async function entregar(convId: number, anexos: ReturnType<typeof anexo>[]) {
-    await suDb.conversation.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        inboxId: inboxDbId,
-        chatwootConversationId: convId,
-        status: "pending",
-        threadId: `${tenantId}:${instanceId}:${convId}`,
-        lastEventAt: new Date(Date.now() - 60_000),
-      },
-      select: { id: true },
-    });
+  async function entregar(
+    convId: number,
+    anexos: ReturnType<typeof anexo>[],
+    opts: { reentrega?: boolean } = {},
+  ) {
+    if (!opts.reentrega)
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          inboxId: inboxDbId,
+          chatwootConversationId: convId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          lastEventAt: new Date(Date.now() - 60_000),
+        },
+        select: { id: true },
+      });
     const n = normalizeChatwootEvent({
       event: "message_created",
       id: 6000 + convId,
@@ -195,7 +200,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       data: {
         tenantId,
         chatwootInstanceId: instanceId,
-        deliveryId: `multi-anexo-${process.pid}-${convId}`,
+        deliveryId: `multi-anexo-${process.pid}-${convId}${opts.reentrega ? "-r" : ""}`,
         event: "message_created",
         status: "PENDING",
       },
@@ -348,6 +353,63 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     expect(n.message?.imageDescription).toContain("ja-lido.png");
   });
 
+  // A recovery that finally reads everything has to CLEAR the earlier failure, not merely stop
+  // adding to it: the store merges field by field, so a count left out survives and the flush
+  // renders "N unread" beside the complete extraction — asking the customer to resend what was
+  // just read (PR #692 review, round 5).
+  //
+  // Driven through TWO deliveries of the SAME message, because the count is written by the webhook
+  // and a test that stashes it by hand passes with the call site still omitting it — which is how
+  // this very case passed on the first attempt.
+  test("a pass that reads everything clears the count a failed one left", async () => {
+    clearMediaAnnotations();
+    await clearFlowLog(suDb, { tenantId });
+    const convId = CONV_ID + 5;
+
+    // Primeira entrega: vision não roda, os dois anexos ficam não lidos.
+    const primeira = await entregar(convId, [
+      anexo(701, "a.png"),
+      anexo(702, "b.png"),
+    ]);
+    expect(primeira.message?.attachmentsUnread).toBe(2);
+
+    // Recuperação: os mesmos anexos, agora com a extração já persistida na meta.
+    const segunda = await entregar(
+      convId,
+      [
+        anexo(701, "a.png", { image_description: "pedido 40000001" }),
+        anexo(702, "b.png", { image_description: "comprovante PIX" }),
+      ],
+      { reentrega: true },
+    );
+    expect(segunda.message?.attachmentsUnread).toBeUndefined();
+
+    // O que o flush monta: a página não sabe de nada, o overlay responde.
+    const row = {
+      id: segunda.message?.id ?? 0,
+      content: "",
+      messageType: "incoming" as const,
+      private: false,
+      attachmentTypes: ["image", "image"],
+      transcribedText: null,
+      imageDescription: null,
+      extractedText: null,
+      attachmentName: null,
+      location: null,
+      inReplyTo: null,
+      isReaction: false,
+      emailSubject: null,
+      activityType: null,
+      sendId: null,
+    } as ChatwootMessageRow;
+    overlayMediaAnnotations(tenantId, instanceId, [row]);
+
+    expect(row.imageDescription).toContain("comprovante PIX");
+    expect(renderInboundMessage(toRenderable(row))).not.toContain(
+      "anexos-nao-lidos",
+    );
+  });
+
   // A meta write-back that lands for SOME attachments must not suppress the complete aggregate: it
   // is best-effort per attachment, so a page carrying one description out of two is a partial
   // reading of the same pass, and `??=` used to let it win (PR #692 review, round 2).
@@ -374,7 +436,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       emailSubject: null,
       activityType: null,
       sendId: null,
-    } satisfies ChatwootMessageRow;
+    } as ChatwootMessageRow;
     overlayMediaAnnotations(1n, 2n, [row]);
 
     expect(row.imageDescription).toContain("comprovante PIX");

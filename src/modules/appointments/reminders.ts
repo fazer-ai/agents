@@ -609,6 +609,16 @@ function distancePhrase(ms: number): string {
 // the day and let the distance carry the sentence. It costs the relative word within an hour of
 // local midnight, which is a slice of the day when almost nothing is reminded, and it never states
 // a day that is wrong.
+// How far the zone's offset at `now` may sit from the offset the START states, which is the whole
+// uncertainty `relativeDay` refuses to guess through. An hour is the usual daylight-saving step and
+// was all this covered until round 10 of the review, which found the zones that move TWO: in
+// Antarctica/Troll (+00 in winter, +02 in summer), now at `2026-03-28T23:30Z` against an appointment
+// at `2026-03-29T10:00+02:00` was confidently called "today" while the local sending date was still
+// the 28th. Lord Howe moves by thirty minutes, so the half hour is in here too. The cost of each
+// value is a slightly wider band around midnight where the day goes unclaimed and the sentence
+// carries the distance alone, which is the trade this function is built on.
+const DST_SKEWS_MINUTES = [-120, -60, -30, 0, 30, 60, 120] as const;
+
 function relativeDay(
   startMs: number,
   nowMs: number,
@@ -617,7 +627,7 @@ function relativeDay(
   const dayOf = (ms: number, off: number) =>
     Math.floor((ms + off * 60_000) / DAY_MS);
   const start = dayOf(startMs, offset);
-  const deltas = [-60, 0, 60].map(
+  const deltas = DST_SKEWS_MINUTES.map(
     (skew) => start - dayOf(nowMs, offset + skew),
   );
   if (new Set(deltas).size !== 1) return null;

@@ -53,57 +53,48 @@ export function partsInTimezone(
 //
 // The DATE is what makes this load-bearing: the rounding exists to keep a value stable inside a slot
 // for the prompt cache, and moving the local date to buy that is trading the answer for the cache.
-export function roundDownLocalMinutes(
+// The local wall clock of `date` in `timezone`, floored to a `minutes`-wide slot counted from local
+// midnight. It returns PARTS, and that is the design rather than a detail: every earlier version of
+// this returned an instant, and each of rounds 7, 8 and 10 of the review found a different defect in
+// the arithmetic that produced it — a floor that moved forward, a floor 75 minutes behind on a
+// 30-minute slot, a floor that reported yesterday's date. All three came from the same place, doing
+// arithmetic on instants and then asking a timezone what wall clock they landed on, across a
+// transition where that question has two answers.
+//
+// Floored parts have no such question. The date is the date `partsInTimezone` already read, so it is
+// right by construction; the time is integer arithmetic on the minutes since local midnight, so it is
+// always a slot boundary and never later than the clock it was read from; and two instants inside one
+// local slot produce the same parts, which is the prompt-cache stability this exists for. What it
+// gives up is the one case an instant could have answered better: on a day whose clocks SKIPPED the
+// boundary (America/Santiago's 6 September 2026 begins at 01:00, so 00:00 never happens there), the
+// floor names that missing wall clock. The error is bounded by the slot and the date stays right,
+// which is the trade this function is here to make — a wrong DATE is the defect, a time floored into a
+// skipped hour is a coarse answer.
+export function flooredLocalParts(
   date: Date,
   timezone: string,
   minutes: number,
-): Date {
-  if (!Number.isFinite(minutes) || minutes <= 0) return date;
+): TimeParts {
   const p = partsInTimezone(date, timezone);
-  // MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the minutes
-  // would reset every hour and behave like 60, and 45 would mean something different in each hour
-  // (round 7 of the review — `get_current_time` takes any positive integer for this).
+  if (!Number.isFinite(minutes) || minutes <= 0) return p;
+  // MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the minutes would
+  // reset every hour and behave like 60, and 45 would mean something different in each hour
+  // (`get_current_time` takes any positive integer here).
   const sinceMidnight = Number(p.HH) * 60 + Number(p.mm);
-  const seconds = Number(p.ss);
-  if (!Number.isFinite(sinceMidnight) || !Number.isFinite(seconds)) return date;
-  // The floor is SUBTRACTED from the instant, never rebuilt as a wall clock and converted back.
-  // Round 8 of the review found what that round trip costs: `zonedWallClockToInstant` corrects the
-  // offset once, from a UTC guess, so on a fall-back day it answers with the offset from the wrong
-  // side. In America/New_York, 02:15 EST floored to the half hour came back as local 01:00, 75
-  // minutes behind on a 30-minute slot; and on the spring-forward day the rebuilt 03:00 landed
-  // FORWARD of the instant, so the guard against that returned the instant unfloored, losing the
-  // very stability this function exists to give. (The repo already knew the conversion is
-  // single-pass: see why `tools/http.ts` reaches for `zonedWallClock` instead.)
-  //
-  // Subtracting the elapsed remainder has neither failure, and needs no second opinion about which
-  // offset applies, because it never names a wall clock. Measured over 341,760 cases spanning every
-  // one of the 445 timezones this runtime knows, eight transition-plausible days of 2026, 24 hours
-  // and slots of 30 and 45 minutes:
-  //
-  // - it never answers later than the instant, and never more than one slot behind it (0 and 0);
-  // - the answer is a slot boundary in the local calendar, except when a transition sits between it
-  //   and the instant (122 of 341,760, and 0 of those without a transition). Subtracting real minutes
-  //   across a shift moves the wall clock by an extra hour, so it lands on the neighbour slot: the
-  //   fall-back hour happens twice, and the earlier 01:30 is still a floor for the later 01:45;
-  // - inside one slot every instant floors to the same one, which is what prompt caching needs, and
-  //   the only exceptions are those same 122 (0 of the boundary answers, all 48 of the others).
-  const remainder = sinceMidnight % minutes;
-  return new Date(
-    date.getTime() -
-      remainder * 60_000 -
-      seconds * 1_000 -
-      date.getMilliseconds(),
-  );
+  if (!Number.isFinite(sinceMidnight)) return p;
+  const floored = Math.floor(sinceMidnight / minutes) * minutes;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return {
+    ...p,
+    HH: pad(Math.floor(floored / 60)),
+    mm: pad(floored % 60),
+    ss: "00",
+  };
 }
 
-// Substitutes the supported tokens (YYYY/MM/DD/HH/mm/ss) in a custom pattern. Tokens are distinct
-// and case-sensitive (MM = month, mm = minute), so a flat sequence of replaces is unambiguous.
-export function formatWithPattern(
-  date: Date,
-  timezone: string,
-  pattern: string,
-): string {
-  const p = partsInTimezone(date, timezone);
+// Renders already-read parts, so a caller that floored them does not have to turn them back into an
+// instant to say them out loud. `formatWithPattern` is this over a fresh read.
+export function formatParts(p: TimeParts, pattern: string): string {
   return pattern
     .replace(/YYYY/g, p.YYYY)
     .replace(/DD/g, p.DD)
@@ -111,6 +102,36 @@ export function formatWithPattern(
     .replace(/HH/g, p.HH)
     .replace(/mm/g, p.mm)
     .replace(/ss/g, p.ss);
+}
+
+// The human sentence for already-read parts. The instant is rebuilt in UTC purely to hand `Intl` the
+// numbers: it is formatted in UTC as well, so nothing here is a claim about which instant those parts
+// name, and the weekday and month names come out of the local date that was read.
+export function formatPartsHuman(p: TimeParts, locale = "pt-BR"): string {
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: "UTC",
+    dateStyle: "full",
+    timeStyle: "short",
+  }).format(
+    new Date(
+      Date.UTC(
+        Number(p.YYYY),
+        Number(p.MM) - 1,
+        Number(p.DD),
+        Number(p.HH),
+        Number(p.mm),
+        Number(p.ss),
+      ),
+    ),
+  );
+}
+
+export function formatWithPattern(
+  date: Date,
+  timezone: string,
+  pattern: string,
+): string {
+  return formatParts(partsInTimezone(date, timezone), pattern);
 }
 
 // Converts an offset-less wall-clock "YYYY-MM-DDTHH:mm[:ss]" into the absolute instant that, formatted
@@ -140,17 +161,4 @@ export function zonedWallClockToInstant(
   const p = partsInTimezone(new Date(asUtc), timezone);
   const formattedUtc = Date.UTC(+p.YYYY, +p.MM - 1, +p.DD, +p.HH, +p.mm, +p.ss);
   return new Date(asUtc - (formattedUtc - asUtc));
-}
-
-// Human-readable date+time in a timezone (for the get_current_time tool output and previews).
-export function formatHumanDateTime(
-  date: Date,
-  timezone: string,
-  locale = "pt-BR",
-): string {
-  return new Intl.DateTimeFormat(locale, {
-    timeZone: timezone,
-    dateStyle: "full",
-    timeStyle: "short",
-  }).format(date);
 }

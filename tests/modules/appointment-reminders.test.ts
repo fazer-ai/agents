@@ -1565,6 +1565,22 @@ describe("reminderNudge temporal grounding (#685)", () => {
     expect(i).toContain("starts in about 3 hours");
   });
 
+  // (rodada 10 da review) E a hora não é o único tamanho de virada. Antarctica/Troll anda DUAS
+  // (+00 no inverno, +02 no verão), e enquanto a sonda testava só ±60 este par se anunciava como
+  // "hoje" com a data local do envio ainda no dia 28. A sonda hoje vai a ±120 e passa pela meia hora
+  // de Lord Howe no caminho; o preço é uma faixa um pouco mais larga em volta da meia-noite onde o
+  // dia não é afirmado e a frase sai só com a distância, que é a troca desta função.
+  test("a shift of two hours is as unguessable as one, and silences the day too", () => {
+    const i = at("2026-03-29T10:00:00+02:00", "2026-03-28T23:30:00Z");
+    expect(i).not.toContain("same calendar day");
+    expect(i).not.toContain("calendar day after it");
+    expect(i).toContain("starts in about");
+    // O controle: o MESMO compromisso, com o envio longe de qualquer meia-noite, volta a ter dia.
+    expect(at("2026-03-29T10:00:00+02:00", "2026-03-28T12:00:00Z")).toContain(
+      "calendar day after it (tomorrow)",
+    );
+  });
+
   test("a start whose instant is invented says nothing at all", () => {
     // All-day e relógio de parede sem offset: o instante que o `parseStartMs` produz é um marcador
     // para ordenar, então nem o dia nem a distância são fatos sobre o compromisso. Os dois foram
@@ -1595,14 +1611,17 @@ describe("reminderNudge temporal grounding (#685)", () => {
       "2026-09-18T12:00:00-00:00",
       "2026-09-18T12:00:00Z",
     ]) {
-      const i = at(startISO, "2026-09-16T22:30:00-03:00");
+      // O par é de meio-dia nas duas pontas de propósito (rodada 10): a sonda de horário de verão
+      // cala o dia dentro de duas horas de qualquer meia-noite, então um `now` às 22:30 silenciaria
+      // este teste sozinho e ele passaria sem medir a regra do offset zero.
+      const i = at(startISO, "2026-09-16T12:00:00-03:00");
       expect(i).not.toContain("calendar day after it");
       expect(i).not.toContain("same calendar day");
       expect(i).toContain("starts in about");
     }
     // O controle, no mesmo instante: com offset local declarado, o dia é afirmado e são dois dias.
     expect(
-      at("2026-09-18T12:00:00-03:00", "2026-09-16T22:30:00-03:00"),
+      at("2026-09-18T12:00:00-03:00", "2026-09-16T12:00:00-03:00"),
     ).toContain("2 calendar days after it (in 2 days)");
   });
 

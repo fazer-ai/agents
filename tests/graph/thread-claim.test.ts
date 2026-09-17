@@ -366,6 +366,55 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     await clearTurnOwning(o, appDb, first);
   });
 
+  // ISSUE #658. The claim COUNTS, so joining an occupancy is refused nowhere, and the only caller
+  // that stood down was the one with somewhere to defer to. A turn that owes a customer one reply
+  // has nowhere, so it used to run beside the first — and an invoke is a read-modify-write of the
+  // whole channel, so the one that finishes second saves what it loaded and undoes the first.
+  //
+  // The deadline here is the assertion in BOTH directions: first that the waiter is still waiting
+  // while the occupancy stands (a short race it must lose), then that it comes back once the
+  // occupancy ends. Without the wait it returns immediately, with `heldBefore` true.
+  test("a turn asked to wait does not join an occupancy, and starts one when it ends", async () => {
+    const o = owner();
+    const first = await markTurnOwning(o, appDb);
+    expect(first.heldBefore).toBe(false);
+
+    const waiter = markTurnOwning(o, appDb, { waitForTurn: true });
+    const stillWaiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        waiter,
+        new Promise<typeof stillWaiting>((r) =>
+          setTimeout(() => r(stillWaiting), 400),
+        ),
+      ]),
+    ).toBe(stillWaiting);
+    // AND IT GAVE THE HOLD BACK WHILE WAITING, which is what lets the first turn's release reach
+    // zero: a waiter that kept the hold it briefly took would leave the thread reading busy to the
+    // append and the compaction that are allowed to run between turns.
+    expect((await rowOf(o)).turnHolders).toBe(1);
+
+    await clearTurnOwning(o, appDb, first);
+    const second = await waiter;
+    // It starts an occupancy rather than joining one, so the attendance divider still reads the
+    // same thing it always read.
+    expect(second.heldBefore).toBe(false);
+    expect((await rowOf(o)).turnHolders).toBe(1);
+    await clearTurnOwning(o, appDb, second);
+  }, 15_000);
+
+  // The other half, and the reason the wait is opt-in: overlap is legitimate where nobody is owed a
+  // single answer, and a caller that does not ask to wait must not start waiting.
+  test("a turn that did not ask to wait still joins the occupancy", async () => {
+    const o = owner();
+    const first = await markTurnOwning(o, appDb);
+    const second = await markTurnOwning(o, appDb);
+    expect(second.heldBefore).toBe(true);
+    expect((await rowOf(o)).turnHolders).toBe(2);
+    await clearTurnOwning(o, appDb, second);
+    await clearTurnOwning(o, appDb, first);
+  });
+
   // A RESERVATION is not an occupancy, and the difference decides an attendance boundary. A delivery
   // recovery holds the graph key from its own fence to the handoff, so the invoke that then takes
   // this claim is the reserving caller itself: counted as another invoke, `heldBefore` comes back

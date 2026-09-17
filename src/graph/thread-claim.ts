@@ -69,6 +69,16 @@ const WRITE_LEASE_SECONDS = 30;
 const WRITE_WAIT_MS = (WRITE_LEASE_SECONDS + 5) * 1_000;
 const WRITE_POLL_MS = 25;
 
+// HOW LONG A SECOND INVOKE WAITS OUT THE FIRST (issue #658), and it follows the TURN lease the way
+// the two above follow the write lease. A turn renews while it is alive, so a tool-heavy one keeps
+// pushing the deadline out and is waited for rather than cut off; a holder that stops renewing lets
+// its lease lapse, and the next acquisition then reads the thread free on its own. What the ceiling
+// is for is the pathological case those two do not cover — a turn that goes on renewing and never
+// finishes — and there the honest outcome is to give the work back rather than to start the second
+// turn beside the first, which is the defect being closed.
+const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
+const TURN_POLL_MS = 50;
+
 export interface TurnHold {
   epoch: bigint | null;
   // Whether another invoke was ALREADY reading this thread when this one acquired, answered by the
@@ -186,6 +196,26 @@ async function insertHeldByTurn(
 
 // The append's lease as milliseconds, or null when nothing holds it. Read so the wait above can tell
 // a holder that is still working (the lease keeps moving) from one that stopped without releasing.
+// The turn lease, read for the same reason `readWriteLease` reads the write one: a wait that does
+// not follow the lease is a fixed timeout, and a fixed timeout fails a slow turn for being slow.
+async function readTurnLease(
+  owner: ThreadOwner,
+  base: PrismaClient,
+): Promise<number | null> {
+  const rows = await runScopedOn(
+    base,
+    sysCtx(owner.tenantId),
+    (db) => db.$queryRaw<{ turn_held_until: Date | null }[]>`
+      SELECT turn_held_until
+        FROM agent_threads
+       WHERE tenant_id = ${owner.tenantId}
+         AND chatwoot_instance_id = ${owner.instanceId}
+         AND contact_inbox_id = ${owner.contactInboxId}`,
+  );
+  const until = rows[0]?.turn_held_until ?? null;
+  return until === null ? null : until.getTime();
+}
+
 async function readWriteLease(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -206,7 +236,55 @@ async function readWriteLease(
 
 // Take the thread for this turn, durably, and mark the Map with it so a same-process reader that
 // still asks the Map (the conversation key, ./inflight.ts) is never told less than the truth.
+export interface MarkTurnOptions {
+  // WAIT OUT AN OCCUPANCY INSTEAD OF JOINING IT (issue #658). Off by default, because overlapping
+  // turns are legitimate and the count exists to serve them: a nudge invokes on the same memory
+  // thread as a reactive turn, and two deliveries race whenever debounce is off. What this is for is
+  // the caller that must produce ONE answer to a customer and has nowhere to put the work down — a
+  // webhook turn — where joining the occupancy is the defect: each invoke is a read-modify-write of
+  // the whole channel, so the one that finishes second saves the channel it loaded and undoes the
+  // first (./inflight.ts measures the same undo against compaction).
+  //
+  // Waiting is what the caller wanted anyway: the customer is already waiting for the first answer,
+  // and after the wait this turn loads a channel that CONTAINS it, so the two messages get one reply
+  // that saw both instead of two that saw neither.
+  waitForTurn?: boolean;
+}
+
 export async function markTurnOwning(
+  owner: ThreadOwner,
+  base: PrismaClient,
+  opts: MarkTurnOptions = {},
+): Promise<TurnHold> {
+  if (!opts.waitForTurn) return acquireTurnHold(owner, base);
+  // Deadline discipline copied from the append wait below, for the same reason: what has to run out
+  // is the CLAIM, not a span measured from here.
+  let seenLease: number | null = null;
+  let deadline = Date.now() + TURN_WAIT_MS;
+  for (;;) {
+    const hold = await acquireTurnHold(owner, base);
+    if (!hold.heldBefore) return hold;
+    // GIVEN BACK BEFORE WAITING, not held while waiting. The hold this call just took is itself an
+    // occupancy: kept, it would stop the first turn's release from reaching zero, and the thread
+    // would read busy to the append and the compaction that are allowed to run between turns. It
+    // also goes back through `clearTurnOwning` rather than a decrement of its own, so the renewal
+    // timer stops and the local Map mark goes with it.
+    await clearTurnOwning(owner, base, hold);
+    const lease = await readTurnLease(owner, base);
+    if (lease !== null && lease !== seenLease) {
+      seenLease = lease;
+      deadline = Date.now() + TURN_WAIT_MS;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `a turn has held ${owner.graphThreadId} past its lease without finishing; refusing to start a second turn beside it`,
+      );
+    }
+    await Bun.sleep(TURN_POLL_MS);
+  }
+}
+
+async function acquireTurnHold(
   owner: ThreadOwner,
   base: PrismaClient,
 ): Promise<TurnHold> {

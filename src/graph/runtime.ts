@@ -336,6 +336,18 @@ export interface RunLoadedTurnParams {
   // overlap on one thread (a nudge beside a reactive turn, two deliveries racing with debounce off),
   // and `clearTurnOwning` releases one holder at a time for exactly that reason (issue #593).
   standDownIfThreadHeld?: boolean;
+  // THE OTHER HALF OF THE SAME QUESTION (issue #658), for the callers the option above cannot serve.
+  // A turn that learns it is the second invoke WAITS the first one out and then reads a channel that
+  // contains its answer, instead of running beside it: the claim counts, so joining an occupancy is
+  // not refused anywhere, and each invoke is a read-modify-write of the whole channel — the one that
+  // finishes second saves what it loaded and undoes the first (./inflight.ts pins the same undo
+  // against compaction, issue #588 measured it between two turns).
+  //
+  // Opt-in rather than the default, and deliberately not set for every caller: overlapping turns are
+  // legitimate where nobody is waiting on a single answer (a nudge beside a reactive turn), and the
+  // count exists to serve them. What this is for is the caller that owes a customer ONE reply and
+  // has nowhere to put the work down — today `runAgentTurn`, the direct webhook entry.
+  waitForThreadTurn?: boolean;
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -1386,7 +1398,9 @@ async function runTurnBody(
           // makes the two exclusive rather than merely staggered across processes: the append's
           // check and its write are not one step (../graph/thread-claim.ts).
           const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
-          graphHold = await markTurnOwning(owner, base);
+          graphHold = await markTurnOwning(owner, base, {
+            waitForTurn: params.waitForThreadTurn,
+          });
           graphOwner = owner;
           // THE ONLY STEP THAT SEES A SIMULTANEOUS START. The caller's own check ran before this
           // claim, and two replicas starting together both pass it: each asks whether anyone holds
@@ -1495,7 +1509,22 @@ async function runTurnBody(
           ) {
             if (anotherInvokeIsReading) {
               handbackDeferred = true;
-            } else {
+            } else if (
+              // ASKED AGAIN, AS LATE AS POSSIBLE, and for the reason review round 10 found on the
+              // deferred path (issue #457): the read that justifies the note and the write that
+              // appends it are not one step, and the claim this turn holds is a COUNT, not a mutex —
+              // it reports an overlap, it does not forbid one. A second copy is the one failure this
+              // note cannot have, because it is an announcement the model reads and repeats.
+              owesHandbackNote(
+                (
+                  (
+                    await dividerGraph.getState({
+                      configurable: { thread_id: graphThreadId },
+                    })
+                  ).values as { messages?: BaseMessage[] } | undefined
+                )?.messages ?? [],
+              )
+            ) {
               await dividerGraph.updateState(
                 { configurable: { thread_id: graphThreadId } },
                 { messages: [humanHandbackMessage(conversationId)] },
@@ -2510,6 +2539,15 @@ export async function runAgentTurn(
 
   const outcome = await runLoadedTurn({
     ...(params.onFoldedIn ? { onFoldedIn: params.onFoldedIn } : {}),
+    // WAITS OUT A TURN ALREADY ON THIS THREAD (issue #658), and it is set HERE rather than by the
+    // webhook because this function IS the caller: the direct, no-debounce entry answering one
+    // customer message, with nowhere to put the work down and somebody waiting for a reply. Two
+    // deliveries for the same conversation race whenever debounce is off, and two replicas starting
+    // together both pass their own check before either acquires, so the only step that can see the
+    // simultaneous start is the acquiring statement. Joining the occupancy instead means the
+    // customer gets two replies, the second computed from a history without the first, and the
+    // channel the second turn saves undoes what the first wrote (issue #588).
+    waitForThreadTurn: true,
     // The direct path answers exactly one message, so the receipt set is that message.
     readMessageIds: typeof n.message?.id === "number" ? [n.message.id] : [],
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is

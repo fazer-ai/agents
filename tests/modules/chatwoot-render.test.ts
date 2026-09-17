@@ -56,6 +56,31 @@ describe("renderInboundMessage", () => {
     ).toBe("<imagem>uma nota fiscal no valor de R$ 120</imagem>");
   });
 
+  // Issue #691: era `else if`, então uma mensagem com foto E PDF renderizava só a foto e o
+  // documento sumia sem deixar rastro — inclusive para o modelo, que respondia como se não
+  // existisse.
+  test("a message carrying both an image and a document renders both", () => {
+    const out = renderInboundMessage({
+      text: "",
+      imageDescription: "print do pedido 40000001",
+      extractedText: "CNH do titular",
+      attachmentTypes: ["image", "file"],
+    });
+    expect(out).toContain("<imagem>print do pedido 40000001</imagem>");
+    expect(out).toContain("<documento>CNH do titular</documento>");
+  });
+
+  // O texto do cliente aparece UMA vez, não uma por bloco.
+  test("the customer's own words are not repeated once per block", () => {
+    const out = renderInboundMessage({
+      text: "segue em anexo",
+      imageDescription: "print",
+      extractedText: "pdf",
+      attachmentTypes: ["image", "file"],
+    });
+    expect(out.split("segue em anexo").length - 1).toBe(1);
+  });
+
   test("an extracted document renders the content in a <documento> marker", () => {
     expect(
       renderInboundMessage({

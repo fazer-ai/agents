@@ -24,6 +24,7 @@ export interface RenderableMessage {
   // Vision extraction written back by the eager pass (or absent when vision is off/failed/unsupported).
   imageDescription?: string | null;
   extractedText?: string | null;
+  attachmentsUnread?: number | null;
   // Chatwoot file_type of each attachment ("audio" | "image" | "file" | "video" | ...).
   attachmentTypes: string[];
   // Best-effort file name of the first attachment (for the "could not extract" marker).
@@ -146,18 +147,31 @@ export function renderInboundMessage(
   }
   const imageDescription = (m.imageDescription ?? "").trim();
   const extractedText = (m.extractedText ?? "").trim();
+  // The files the eager pass did not read — over the cap, or attempted and failed. Phrased HERE,
+  // with the other markers, so it survives the debounce re-fetch: glued onto the extracted text it
+  // existed only on the discarded event, and a model told nothing answers as if the message had
+  // those files fewer (PR #692 review, rounds 1 and 3).
+  const pulados = m.attachmentsUnread ?? 0;
+  const naoLidos =
+    pulados > 0
+      ? `<anexos-nao-lidos quantidade="${pulados}">não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
+      : "";
   let body: string;
   if (types.has("audio")) {
     const tr = cleanTranscription(m.transcribedText ?? text);
     body = tr
       ? `<mensagem-de-audio>${tr}</mensagem-de-audio>`
       : "<mensagem de áudio não audível; peça que o cliente reenvie por texto>";
-  } else if (imageDescription) {
-    // Vision extracted the image content → the agent "sees" it.
-    body = withText(`<imagem>${imageDescription}</imagem>`);
-  } else if (extractedText) {
-    // Vision extracted a document's content.
-    body = withText(`<documento>${extractedText}</documento>`);
+  } else if (imageDescription || extractedText) {
+    // Vision extracted the content → the agent "sees" it. BOTH blocks, when both exist: this was an
+    // `else if`, so a message carrying a photo AND a PDF rendered only the photo and the document
+    // vanished with no trace (issue #691). One `withText` call, so the customer's own words are not
+    // repeated once per block.
+    const blocos = [
+      imageDescription ? `<imagem>${imageDescription}</imagem>` : "",
+      extractedText ? `<documento>${extractedText}</documento>` : "",
+    ].filter(Boolean);
+    body = withText(blocos.join("\n"));
   } else if (types.has("image")) {
     // No extraction (vision off/failed) → ask for text/audio, as before.
     body = withText(
@@ -194,6 +208,14 @@ export function renderInboundMessage(
   } else {
     return ""; // nothing renderable → skip
   }
+
+  // Only ALONGSIDE something that WAS read. When nothing was, the branch above already emitted the
+  // "send it as text" marker, which asks for exactly the same thing — and two markers saying it is
+  // noise the model has to reconcile. The case this exists for is the PARTIAL one: some files read,
+  // others over the cap or unreadable, where the extraction that succeeded would otherwise make the
+  // message look complete (PR #692 review, rounds 1 and 3).
+  if (naoLidos && (imageDescription || extractedText))
+    body = body ? `${body}\n${naoLidos}` : naoLidos;
 
   if (m.inReplyTo != null && ctx.resolveQuoted) {
     const quoted = ctx.resolveQuoted(m.inReplyTo);

@@ -42,6 +42,12 @@ export interface NormalizedChatwootAttachment {
   // message_created; populated once our STT write-back lands (which the fork re-dispatches as a
   // message_updated). Read to make eager STT idempotent and to render the transcription in the UI.
   transcribedText?: string | null;
+  // What a PREVIOUS vision pass persisted on this attachment's meta (`image_description` /
+  // `extracted_text`, fork write-back). Read to make the eager vision pass idempotent PER
+  // ATTACHMENT: a delivery recovery re-runs it, and reusing what is already there is both cheaper
+  // and what makes the aggregate it publishes complete (PR #692 review, round 4).
+  imageDescription?: string | null;
+  extractedText?: string | null;
   // NOTE: Location attachments (a WhatsApp pin) also ship their coordinates + human-readable place
   // name in the payload (Attachment#push_event_data → location_metadata: coordinates_lat /
   // coordinates_long / fallback_title). The columns default to 0.0, so an exact (0,0) means "the
@@ -82,6 +88,10 @@ export interface NormalizedChatwootMessage {
   // path. The debounce flush reads these back from the attachment meta on re-fetch.
   imageDescription?: string | null;
   extractedText?: string | null;
+  // How many attachments the eager vision pass did not open (over the per-message cap). The
+  // renderer turns it into the marker that tells the model files are missing, so it must reach the
+  // flush as well as the direct path — it rides the annotation store, not the payload.
+  attachmentsUnread?: number | null;
   // The message author (message events only), from the payload `sender.webhook_data`. `type` is
   // "user" (a HUMAN agent), "agent_bot" (a bot — ours or another), or null/absent (the customer, on
   // incoming). Drives continuous ingestion: a human agent's outgoing reply is folded into the agent's

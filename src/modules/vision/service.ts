@@ -199,6 +199,12 @@ export interface ExtractInboundParams {
   // Optional execution-flow context: when present, the extraction is logged as a `vision` stage
   // (mirrors STT), so a skip/failure is visible on the Logs page instead of vanishing.
   flow?: FlowContext;
+  // Whether to write this extraction into the in-process annotation store. Default true, which is
+  // the single-attachment contract. The webhook passes FALSE because it analyses every attachment
+  // and stashes ONE aggregate after the loop: the store is keyed by MESSAGE, so an intermediate
+  // write is a singleton wearing the aggregate's clothes, and a debounce flush landing mid-flight
+  // would overlay it over the complete meta (PR #692 review, round 3).
+  stashAnnotation?: boolean;
 }
 
 export interface ExtractResult {
@@ -404,14 +410,15 @@ export async function extractInboundFile(
 
   // NOTE: Stash BEFORE the write-back — same contract as the STT pass: on upstream Chatwoot (no
   // fork meta route) the in-process overlay is the only reader of this extraction (issue #49).
-  stashMediaAnnotation(
-    {
-      tenantId: params.tenantId,
-      instanceId: params.instanceId,
-      messageId: params.messageId,
-    },
-    kind === "image" ? { imageDescription: text } : { extractedText: text },
-  );
+  if (params.stashAnnotation !== false)
+    stashMediaAnnotation(
+      {
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        messageId: params.messageId,
+      },
+      kind === "image" ? { imageDescription: text } : { extractedText: text },
+    );
 
   // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on
   // the flow log so a meta that never lands is visible to the operator.

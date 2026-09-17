@@ -923,9 +923,20 @@ export function visualAttachments(e: NormalizedChatwootEvent): {
 // The basename of the data url, query stripped. It labels each extraction so the model can tell
 // which datum came from which file: two receipts in one message are two different orders, and a
 // blob with no boundary reads as one document that contradicts itself.
+//
+// BEST-EFFORT BY CONSTRUCTION, because the label is a nicety and the delivery is not.
+// `decodeURIComponent` THROWS on an invalid escape (`.../100%.png` is a real file name), and this
+// runs outside `runEagerMedia`'s recovery block and before vision is even known to be on — so an
+// ornament could abort the whole message. The undecoded basename is a worse label, never a worse
+// outcome (PR #692 review, round 1).
 function fileNameOf(dataUrl: string): string | null {
   const path = dataUrl.split("?")[0] ?? dataUrl;
   const base = path.slice(path.lastIndexOf("/") + 1);
-  const name = decodeURIComponent(base).trim();
+  let name: string;
+  try {
+    name = decodeURIComponent(base).trim();
+  } catch {
+    name = base.trim();
+  }
   return name.length > 0 && name.length <= 120 ? name : null;
 }

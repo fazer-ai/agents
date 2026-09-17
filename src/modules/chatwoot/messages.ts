@@ -33,6 +33,10 @@ export interface ChatwootMessageRow {
   // absent (vision off/failed/unsupported, or not an image/document).
   imageDescription: string | null;
   extractedText: string | null;
+  // How many attachments the eager vision pass did not open (over the per-message cap). OPTIONAL
+  // because the fetched page can never carry it: `overlayMediaAnnotations` fills it from the
+  // in-process stash, which is why the notice is a COUNT here and a marker only at render time.
+  attachmentsSkipped?: number | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
   // NOTE: The first usable location attachment's content (coordinates/title), for the
@@ -105,12 +109,19 @@ function metaJoinedFrom(attachments: unknown, key: string): string | null {
     .join("\n\n");
 }
 
-// The basename of an attachment's data url, or null. Same rule as `fileNameFrom`, per attachment.
+// The basename of an attachment's data url, or null. Same rule as `fileNameFrom`, per attachment,
+// and best-effort for the same reason: `decodeURIComponent` throws on an invalid escape, and a
+// label must never cost the page it labels (PR #692 review, round 1).
 function fileNameOfUrl(url: unknown): string | null {
   if (typeof url !== "string" || !url) return null;
   const path = url.split("?")[0] ?? url;
   const base = path.slice(path.lastIndexOf("/") + 1);
-  const name = decodeURIComponent(base).trim();
+  let name: string;
+  try {
+    name = decodeURIComponent(base).trim();
+  } catch {
+    name = base.trim();
+  }
   return name.length > 0 && name.length <= 120 ? name : null;
 }
 

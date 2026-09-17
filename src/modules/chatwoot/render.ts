@@ -24,6 +24,7 @@ export interface RenderableMessage {
   // Vision extraction written back by the eager pass (or absent when vision is off/failed/unsupported).
   imageDescription?: string | null;
   extractedText?: string | null;
+  attachmentsSkipped?: number | null;
   // Chatwoot file_type of each attachment ("audio" | "image" | "file" | "video" | ...).
   attachmentTypes: string[];
   // Best-effort file name of the first attachment (for the "could not extract" marker).
@@ -146,6 +147,14 @@ export function renderInboundMessage(
   }
   const imageDescription = (m.imageDescription ?? "").trim();
   const extractedText = (m.extractedText ?? "").trim();
+  // The files the eager pass did not open. Phrased HERE, with the other markers, so it survives the
+  // debounce re-fetch: glued onto the extracted text it existed only on the discarded event, and a
+  // model told nothing answers as if the message had those files fewer (PR #692 review, round 1).
+  const pulados = m.attachmentsSkipped ?? 0;
+  const naoLidos =
+    pulados > 0
+      ? `<anexos-nao-lidos quantidade="${pulados}">não foram analisados; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
+      : "";
   let body: string;
   if (types.has("audio")) {
     const tr = cleanTranscription(m.transcribedText ?? text);
@@ -198,6 +207,12 @@ export function renderInboundMessage(
   } else {
     return ""; // nothing renderable → skip
   }
+
+  // AFTER the chain, because it is true in every branch: files the eager pass never opened are
+  // missing whether the ones it did open were read, failed, or were never attempted. Inside the
+  // extraction branch (where it started) a message whose extractions ALL failed said nothing about
+  // the files that were skipped on top of that.
+  if (naoLidos) body = body ? `${body}\n${naoLidos}` : naoLidos;
 
   if (m.inReplyTo != null && ctx.resolveQuoted) {
     const quoted = ctx.resolveQuoted(m.inReplyTo);

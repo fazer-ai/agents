@@ -2,8 +2,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  clearMediaAnnotations,
+  overlayMediaAnnotations,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
@@ -246,13 +252,63 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     );
     const n = await entregar(CONV_ID + 1, muitos);
 
-    // Exactly the cap, and exactly ONE pass: the notice is stashed on the event, so the second call
-    // site finds text already there and takes its idempotence path. That is the intended shape — the
-    // overflow is written once, not once per pass — and pinning it here is what would catch a notice
-    // that starts accumulating.
+    // Eleven files cost EIGHT extractions, not eleven and not one — and exactly one pass, because
+    // `attachmentsSkipped` marks the event as already analyzed and the second call site takes its
+    // idempotence path. That mark is why a message whose every extraction fails no longer pays the
+    // whole provider bill twice, and pinning the number here is what would catch it coming back.
     expect(await linhasDeVisao(CONV_ID + 1)).toBe(8);
-    expect(n.message?.extractedText).toContain("3 anexo(s)");
-    expect(n.message?.extractedText).toContain("reenvie o que falta");
+    // A COUNT on the event, not text glued to the extraction: that is what lets it cross the
+    // debounce re-fetch, and the marker itself is the renderer's job.
+    expect(n.message?.attachmentsSkipped).toBe(3);
+    expect(
+      renderInboundMessage({
+        text: "",
+        attachmentTypes: ["image"],
+        attachmentsSkipped: n.message?.attachmentsSkipped,
+      }),
+    ).toContain('<anexos-nao-lidos quantidade="3">');
+  });
+
+  // THE DEBOUNCE FLUSH IS THE PATH THE FIRST ROUND OF THIS PR DID NOT MEASURE, and it is the path
+  // most production agents take. The flush throws the webhook event away and rebuilds the message
+  // from Chatwoot's own page plus the in-process annotation store, so anything that lived only on
+  // `n.message` reached nobody. Two things did: the joined extraction (each `extractInboundFile`
+  // stashed its own under the same message key, and the store merges field by field, so N parallel
+  // extractions left whichever finished last) and the overflow notice.
+  test("the joined extraction and the overflow both survive the flush's re-fetch", async () => {
+    clearMediaAnnotations();
+    await clearFlowLog(suDb, { tenantId });
+    const convId = CONV_ID + 3;
+    const muitos = Array.from({ length: 10 }, (_, i) =>
+      anexo(500 + i, `foto-${i + 1}.jpg`),
+    );
+    const n = await entregar(convId, muitos);
+
+    // What the flush rebuilds: a page row that knows nothing (upstream Chatwoot, where the meta
+    // write-back route does not exist), then the overlay.
+    const row: ChatwootMessageRow = {
+      id: n.message?.id ?? 0,
+      content: "",
+      messageType: "incoming" as const,
+      private: false,
+      attachmentTypes: ["image"],
+      transcribedText: null,
+      imageDescription: null,
+      extractedText: null,
+      attachmentName: null,
+      location: null,
+      inReplyTo: null,
+      isReaction: false,
+      emailSubject: null,
+      activityType: null,
+      sendId: null,
+    };
+    overlayMediaAnnotations(tenantId, instanceId, [row]);
+
+    expect(row.attachmentsSkipped).toBe(2);
+    expect(renderInboundMessage({ ...row, text: "" })).toContain(
+      "anexos-nao-lidos",
+    );
   });
 
   // A message within the cap must not carry the notice: it would tell the model files are missing
@@ -262,6 +318,6 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     const n = await entregar(CONV_ID + 2, [anexo(301, "unico.png")]);
 
     expect(await linhasDeVisao(CONV_ID + 2)).toBeGreaterThan(0);
-    expect(n.message?.extractedText ?? "").not.toContain("não foram lidos");
+    expect(n.message?.attachmentsSkipped ?? 0).toBe(0);
   });
 });

@@ -58,6 +58,7 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
   retireCoveredDeliveries,
@@ -1930,7 +1931,10 @@ export async function runEagerMedia(
   if (
     visuais.length > 0 &&
     !n.message.imageDescription &&
-    !n.message.extractedText
+    !n.message.extractedText &&
+    // Also a mark that this event has been through the pass: without it, a message whose every
+    // extraction failed pays the whole provider bill again at the second call site.
+    !n.message.attachmentsSkipped
   ) {
     try {
       const visionCfg = await resolveVisionConfig(
@@ -1984,15 +1988,29 @@ export async function runEagerMedia(
         // The overflow is NAMED, never silently dropped: a model told "3 more files were not read"
         // asks the customer to resend those three, while a model told nothing answers as if the
         // message had three files fewer, which is the failure this issue is about.
-        if (sobraram > 0)
-          documentos.push(
-            `[${sobraram} anexo(s) além do limite de ${VISION_MAX_ATTACHMENTS} não foram lidos; ` +
-              `se a resposta depender deles, peça ao cliente que reenvie o que falta]`,
+        // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch: glued
+        // onto the extracted text it existed only on this event, which the flush discards.
+        if (sobraram > 0) n.message.attachmentsSkipped = sobraram;
+        const descricao = imagens.length > 0 ? imagens.join("\n\n") : null;
+        const documento =
+          documentos.length > 0 ? documentos.join("\n\n") : null;
+        if (descricao) n.message.imageDescription = descricao;
+        if (documento) n.message.extractedText = documento;
+
+        // ONE aggregated annotation for the message, after the loop. Each `extractInboundFile`
+        // stashes its own under the SAME message key and the store merges field by field, so N
+        // parallel extractions left only whichever finished last — and on upstream Chatwoot, where
+        // the meta write-back route does not exist, that store is the debounce flush's ONLY reader.
+        // The joined value would have lived solely on this event (PR #692 review, round 1).
+        if (descricao || documento || sobraram > 0)
+          stashMediaAnnotation(
+            { tenantId, instanceId, messageId },
+            {
+              ...(descricao ? { imageDescription: descricao } : {}),
+              ...(documento ? { extractedText: documento } : {}),
+              ...(sobraram > 0 ? { attachmentsSkipped: sobraram } : {}),
+            },
           );
-        if (imagens.length > 0)
-          n.message.imageDescription = imagens.join("\n\n");
-        if (documentos.length > 0)
-          n.message.extractedText = documentos.join("\n\n");
       }
     } catch (err) {
       logger.warn("vision failed (conv=%s): %s", convLabel, errMsg(err));

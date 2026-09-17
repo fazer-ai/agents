@@ -82,6 +82,10 @@ export interface NormalizedChatwootMessage {
   // path. The debounce flush reads these back from the attachment meta on re-fetch.
   imageDescription?: string | null;
   extractedText?: string | null;
+  // How many attachments the eager vision pass did not open (over the per-message cap). The
+  // renderer turns it into the marker that tells the model files are missing, so it must reach the
+  // flush as well as the direct path — it rides the annotation store, not the payload.
+  attachmentsSkipped?: number | null;
   // The message author (message events only), from the payload `sender.webhook_data`. `type` is
   // "user" (a HUMAN agent), "agent_bot" (a bot — ours or another), or null/absent (the customer, on
   // incoming). Drives continuous ingestion: a human agent's outgoing reply is folded into the agent's

@@ -44,6 +44,19 @@ export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
 //
 // Carries the command's message id so a reader holding one boundary matches that reset's ack and no
 // other. `content_attributes` is written by whoever posts the message, which is this build.
+// THE LABELS `/reset` REMOVED, on its own acknowledgement (issue #645).
+//
+// The ack's id was the end of the cleanup, and that was an ORDER test: the label-change activity is
+// not written by the labels request, it is handed to `Conversations::ActivityMessageJob.perform_later`,
+// so on an install whose queues are backed up the row lands ABOVE the ack and the cut does not see
+// it. Naming the SET instead makes the reader's question a content one, and the order stops
+// mattering — which is why this key replaces that cut rather than joining it.
+//
+// Same bag and the same reason as `CHATWOOT_SEND_ID_KEY`: written by whoever posts the message,
+// which is this build, and echoed back on `GET /conversations/:id/messages`, with no migration and
+// no allowlist to add to. Namespaced because the bag is shared.
+export const CHATWOOT_RESET_CLEARED_LABELS_KEY = "fazer_ai_reset_cleared";
+
 export function resetAckSendId(commandMessageId: number): string {
   return `reset-ack:${commandMessageId}`;
 }

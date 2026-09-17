@@ -87,6 +87,58 @@ describe("ChatwootClient", () => {
     });
   });
 
+  // ONE BAG, TWO KEYS (issue #645). `content_attributes` is a single object on the request, so the
+  // set the /reset acknowledgement declares has to be built alongside the name and not next to it —
+  // a second `content_attributes` would overwrite the first and the reader of either key would find
+  // nothing. Both sites are the same message, and this is the only caller that sends both.
+  test("sendMessage carries the send id and the cleared labels on one bag", async () => {
+    const { fetchImpl, calls } = stub(200, { id: 1 });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendMessage(42, "limpo", {
+      sendId: "reset-ack:9001",
+      resetClearedLabels: ["compra-de-ingresso", "orcamento-enviado"],
+    });
+    expect(calls[0]?.body).toMatchObject({
+      content_attributes: {
+        fazer_ai_send_id: "reset-ack:9001",
+        fazer_ai_reset_cleared: ["compra-de-ingresso", "orcamento-enviado"],
+      },
+    });
+    // An EMPTY set is still an answer ("the clear removed nothing"), so it travels rather than
+    // being folded into the omission below.
+    await client.sendMessage(42, "limpo", { resetClearedLabels: [] });
+    expect(calls[1]?.body).toMatchObject({
+      content_attributes: { fazer_ai_reset_cleared: [] },
+    });
+    expect(calls[1]?.body).not.toHaveProperty(
+      "content_attributes.fazer_ai_send_id",
+    );
+  });
+
+  // The private note is the acknowledgement's fallback on a conversation the bot no longer owns,
+  // and it is the SAME row for the reader downstream, so it carries the declaration too.
+  test("sendPrivateNote carries the cleared labels as well", async () => {
+    const { fetchImpl, calls } = stub(200, { id: 1 });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendPrivateNote(42, "limpo", {
+      sendId: "reset-ack:9001",
+      resetClearedLabels: ["compra-de-ingresso"],
+    });
+    expect(calls[0]?.body).toMatchObject({
+      private: true,
+      content_attributes: {
+        fazer_ai_send_id: "reset-ack:9001",
+        fazer_ai_reset_cleared: ["compra-de-ingresso"],
+      },
+    });
+  });
+
   // And OMITTED otherwise, rather than sent empty: the fork stores the bag verbatim, so a key
   // written on every message whether or not anything will read it is exactly the hypothesis-shaped
   // debt this repo asks callers not to leave behind.

@@ -1,4 +1,7 @@
-import { CHATWOOT_SEND_ID_KEY } from "./constants";
+import {
+  CHATWOOT_RESET_CLEARED_LABELS_KEY,
+  CHATWOOT_SEND_ID_KEY,
+} from "./constants";
 import {
   activityTypeFrom,
   emailSubjectFrom,
@@ -58,10 +61,20 @@ export interface ChatwootMessageRow {
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
   // be proved by identity instead of by matching text.
   sendId: string | null;
+  // The labels `/reset` removed, named by the acknowledgement it posted right after (issue #645).
+  // Non-null on that one message and null on every other, including a reset from a build that did
+  // not write the key yet: an empty array means the reset found no label, which is not the same
+  // answer as "this message says nothing about labels".
+  resetClearedLabels: string[] | null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function stringArrayFrom(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  return v.every((e) => typeof e === "string") ? (v as string[]) : null;
 }
 
 function num(v: unknown): number | null {
@@ -226,6 +239,12 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
         typeof ca?.[CHATWOOT_SEND_ID_KEY] === "string"
           ? (ca[CHATWOOT_SEND_ID_KEY] as string)
           : null,
+      // Same suspicion as above, one shape further in: an array of strings, and a single non-string
+      // element disqualifies the whole value rather than being dropped, because a bag we did not
+      // write cannot be repaired into one we did.
+      resetClearedLabels: stringArrayFrom(
+        ca?.[CHATWOOT_RESET_CLEARED_LABELS_KEY],
+      ),
     });
   }
   out.sort((a, b) => a.id - b.id);

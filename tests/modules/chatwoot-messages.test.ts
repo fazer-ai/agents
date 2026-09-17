@@ -23,6 +23,7 @@ describe("parseChatwootMessages", () => {
       messageType: "incoming",
       private: false,
       sendId: null,
+      resetClearedLabels: null,
       attachmentTypes: [],
       transcribedText: null,
       imageDescription: null,
@@ -276,6 +277,54 @@ describe("parseChatwootMessages", () => {
       ],
     });
     expect(rows.map((r) => r.sendId)).toEqual(["abc-123", null, null, null]);
+  });
+
+  // THE SET A /reset DECLARED IT REMOVED (issue #645), one shape further in than the name above: an
+  // array of strings, and a single element of another type disqualifies the whole value. A bag we
+  // did not write cannot be repaired into one we did, and a set read half-right is worse than one
+  // not read at all — it would hide the lines of the titles that survived the filter.
+  test("reads the cleared labels, and only as an array of strings", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 1,
+          content: "limpo",
+          message_type: 1,
+          content_attributes: {
+            fazer_ai_send_id: "reset-ack:10",
+            fazer_ai_reset_cleared: ["compra-de-ingresso", "orcamento"],
+          },
+        },
+        // An empty set is an ANSWER ("the clear removed nothing"), not an absence: the filter that
+        // reads this hides nothing on `[]` and falls back to an order test on null.
+        {
+          id: 2,
+          content: "limpo",
+          message_type: 1,
+          content_attributes: { fazer_ai_reset_cleared: [] },
+        },
+        {
+          id: 3,
+          content: "colisão",
+          message_type: 1,
+          content_attributes: { fazer_ai_reset_cleared: "compra-de-ingresso" },
+        },
+        {
+          id: 4,
+          content: "meia colisão",
+          message_type: 1,
+          content_attributes: { fazer_ai_reset_cleared: ["vip", 7] },
+        },
+        { id: 5, content: "sem bag", message_type: 1 },
+      ],
+    });
+    expect(rows.map((r) => r.resetClearedLabels)).toEqual([
+      ["compra-de-ingresso", "orcamento"],
+      [],
+      null,
+      null,
+      null,
+    ]);
   });
 });
 

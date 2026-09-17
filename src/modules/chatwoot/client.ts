@@ -3,7 +3,11 @@ import { withKeyedQueue } from "@/lib/locks";
 import { withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
-import { CHATWOOT_AUTH_HEADER, CHATWOOT_SEND_ID_KEY } from "./constants";
+import {
+  CHATWOOT_AUTH_HEADER,
+  CHATWOOT_RESET_CLEARED_LABELS_KEY,
+  CHATWOOT_SEND_ID_KEY,
+} from "./constants";
 
 // Chatwoot Application API client with the dual-identity profiles (validated against the
 // chatwoot-pro fork's BOT_ACCESSIBLE_ENDPOINTS):
@@ -458,6 +462,10 @@ export class ChatwootClient {
       // everywhere else there is nothing to reconcile, and a key written for nobody to read is the
       // hypothesis-shaped debt this repo asks callers not to leave behind.
       sendId?: string;
+      // THE LABELS `/reset` REMOVED, carried on its own acknowledgement (issue #645), so the reader
+      // of the label block can ask a CONTENT question instead of an order one. One caller, for the
+      // same reason `sendId` has few: the key exists because a specific reader asks for it.
+      resetClearedLabels?: string[];
     } = {},
   ): Promise<unknown> {
     return this.request(
@@ -471,9 +479,23 @@ export class ChatwootClient {
         // Omitted rather than sent empty, so a send with no name leaves the bag untouched: the fork
         // stores `content_attributes` verbatim, and an always-present key would put ours on every
         // message whether or not anything will ever ask for it.
-        ...(opts.sendId === undefined
+        // Omitted rather than sent empty for the same reason as the name above, and the two share
+        // ONE bag: writing `content_attributes` twice would have the second overwrite the first.
+        ...(opts.sendId === undefined && opts.resetClearedLabels === undefined
           ? {}
-          : { content_attributes: { [CHATWOOT_SEND_ID_KEY]: opts.sendId } }),
+          : {
+              content_attributes: {
+                ...(opts.sendId === undefined
+                  ? {}
+                  : { [CHATWOOT_SEND_ID_KEY]: opts.sendId }),
+                ...(opts.resetClearedLabels === undefined
+                  ? {}
+                  : {
+                      [CHATWOOT_RESET_CLEARED_LABELS_KEY]:
+                        opts.resetClearedLabels,
+                    }),
+              },
+            }),
       },
     );
   }
@@ -482,11 +504,12 @@ export class ChatwootClient {
   sendPrivateNote(
     conversationId: number,
     content: string,
-    opts: { sendId?: string } = {},
+    opts: { sendId?: string; resetClearedLabels?: string[] } = {},
   ): Promise<unknown> {
     return this.sendMessage(conversationId, content, {
       private: true,
       sendId: opts.sendId,
+      resetClearedLabels: opts.resetClearedLabels,
     });
   }
 

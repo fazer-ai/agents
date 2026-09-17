@@ -313,6 +313,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       emailSubject: null,
       activityType: null,
       sendId: null,
+      resetClearedLabels: null,
     };
     overlayMediaAnnotations(tenantId, instanceId, [row]);
 

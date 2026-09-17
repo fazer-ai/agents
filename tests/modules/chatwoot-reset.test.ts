@@ -72,6 +72,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 // re-reads the holder and stands the whole hand-back down if it has already changed. Without it the
 // GET carries no status at all, `parseLiveConversation` returns null, and the run takes the
 // "unreadable, hand back anyway" path every other test here exercises.
+// What this conversation carries when the reset lands, in the order Chatwoot returns them.
+const LIVE_LABELS = ["compra-de-ingresso", "orcamento-enviado"] as const;
+
 function fakeChatwoot(
   failing: RegExp | null = null,
   takeoverAfterToggle: {
@@ -132,6 +135,12 @@ function fakeChatwoot(
             }
           : {}),
       });
+    }
+    // The labels STANDING on the conversation when the command arrives. The clear reads them so the
+    // acknowledgement can name them (issue #645); the fall-through below would answer with no
+    // payload, which reads as "no label" and would make that assertion vacuous.
+    if (method === "GET" && url.pathname.endsWith("/labels")) {
+      return jsonResponse({ payload: [...LIVE_LABELS] });
     }
     // The account's attribute schema. `crm_id` is deliberately absent from it: it is the key an
     // integration owns, and the one a wholesale clear would destroy.
@@ -3139,6 +3148,49 @@ describe.skipIf(!dbUp)(
       expect(body?.content_attributes?.fazer_ai_send_id).toBe(
         `reset-ack:${9000 + deliverySeq}`,
       );
+    });
+
+    // ISSUE #645. The name above answers an ORDER question — where did the cleanup end — and the
+    // label-change activity is written by `Conversations::ActivityMessageJob.perform_later`, so on a
+    // backed-up queue it lands AFTER the acknowledgement and no order can reach it. The same row
+    // therefore names the SET the clear removed, which turns the observer's question into a content
+    // one: a removal line whose titles are all in this set is the reset's own, at any id.
+    test("the acknowledgement declares the labels the cleanup took off", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const body = ackCalls(cw.calls)[0]?.body as {
+        content_attributes?: Record<string, unknown>;
+      } | null;
+      expect(body?.content_attributes?.fazer_ai_reset_cleared).toEqual([
+        ...LIVE_LABELS,
+      ]);
+      // ...ON THE SAME BAG as the name. `content_attributes` is one object, so a second write would
+      // have overwritten the first, and the reader of either key would find nothing.
+      expect(body?.content_attributes?.fazer_ai_send_id).toBe(
+        `reset-ack:${9000 + deliverySeq}`,
+      );
+      // And the set is the one this very write replaced: read inside the label queue, before the
+      // POST that empties it.
+      const labelCalls = cw.calls.filter((c) => c.path.endsWith("/labels"));
+      expect(labelCalls.map((c) => c.method)).toEqual(["GET", "POST"]);
+    });
+
+    // A clear that never returned removed nothing this side can name, and `[]` says exactly that:
+    // the labels are still standing, so their activity lines are still true and must not be hidden.
+    test("a clear that failed declares no labels instead of claiming them", async () => {
+      const cw = fakeChatwoot(/\/labels$/);
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const body = ackCalls(cw.calls)[0]?.body as {
+        content_attributes?: Record<string, unknown>;
+      } | null;
+      expect(body?.content_attributes?.fazer_ai_reset_cleared).toEqual([]);
+      expect(
+        String((ackCalls(cw.calls)[0]?.body as { content?: unknown })?.content),
+      ).toMatch(/etiquetas/i);
     });
 
     test("a partial reset is not announced as a full one", async () => {

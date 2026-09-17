@@ -684,23 +684,41 @@ export interface LabelHistory {
 // lets the removal through; it also never stopped applying, so once the window had slid past the
 // reset it went on dropping legitimate activity rows before the window's oldest message (round 21).
 //
-// BEST-EFFORT, AND THE LIMIT IS CHATWOOT'S, NOT THIS CUT'S (round 22). The label-change activity is
-// not written by the labels request: `LabelActivityMessageHandler#create_label_change_activity`
+// AND THE CUT IS WHAT THE RESET SAYS IT TOOK, NOT WHERE THE ACK LANDED (issue #645). The
+// label-change activity is not written by the labels request: `LabelActivityMessageHandler#create_label_change_activity`
 // hands it to `Conversations::ActivityMessageJob.perform_later`, so the row appears whenever that
 // Sidekiq job runs. Normally that is well inside the dozen calls still ahead of the acknowledgement;
-// on an install whose queues are backed up (which this one has been) the job can land after it, and
-// then the row keeps an id above the ack and this filter does not see it. Nothing on the row says
-// who caused it — a label change writes no `content_attributes` at all — so no ordering and no
-// content test separates the two. What is left showing is a TRUE sentence about a label that really
-// was removed, on a conversation in test mode, and the residual is written down in the PR and in
-// docs/chatwoot.md rather than papered over with a time window.
+// on an install whose queues are backed up (which this one has been) the job lands after it, the row
+// keeps an id ABOVE the ack, and an order test cannot see it — which is exactly the residual round 22
+// wrote down and this issue came back for. So the acknowledgement now NAMES the set it removed
+// (`CHATWOOT_RESET_CLEARED_LABELS_KEY`, constants.ts), and the question here is a content one: a
+// removal line whose titles are all in that set is the reset's own, whenever it arrives.
+//
+// CONSUMED, one title at a time. A cleared title leaves the set with the first line that narrates
+// it, so a label put back after the reset and moved again has its own lines read: the reset removes
+// each title exactly once, and every further mention of it is somebody else's doing. The price is
+// ORDER between two Sidekiq jobs — a re-add whose line lands BEFORE the reset's own removal line
+// spends the title, and then it is the re-add that is hidden. Both rows come from the same queue in
+// request order, so the inversion needs the removal job to be delayed past a classification the
+// reset itself cancelled (`cancelPendingJobsByPrefixUpToMessage`, webhook.ts).
+//
+// The reading is checked against the CLEARED SET and not against the account's catalog, which is
+// stricter for free: these titles were standing on this conversation seconds ago, so a locale that
+// admits two readings of the same line ("Ana removeu a vip" is the label `a vip` under pt and `vip`
+// under pt_BR) is settled by the set rather than by a catalog that has both.
 //
 // NO MARKER, NO CUT. A reset performed before this name existed, or one whose acknowledgement never
 // landed, leaves nothing that says where its cleanup ended, and a guess there is what round 21 was
 // about. Those conversations read the way they did before this block existed.
 //
-// A human who changed a label between the command and its acknowledgement loses their line too,
-// which is a miss, the direction this block fails in on purpose.
+// NO SET, THE OLD CUT. An acknowledgement from a build before this key still answers the order
+// question, so those conversations keep the round-20 behaviour instead of losing the filter
+// entirely — including its miss, the human who changed a label between the command and the ack.
+// With a set present that miss is gone: their line names a title the reset did not remove.
+//
+// A line nothing can READ is not filtered here, and does not have to be: recognition is the same
+// parser `labelHistoryFromRows` runs below, so a removal sentence no template matches is invisible
+// to the reader this filter protects.
 export function afterResetNarration(
   rows: ChatwootMessageRow[],
   resetBoundary: number | null,
@@ -709,7 +727,34 @@ export function afterResetNarration(
   const marker = resetAckSendId(resetBoundary);
   const ack = rows.find((r) => r.sendId === marker);
   if (ack === undefined) return rows;
-  return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
+  const cleared = ack.resetClearedLabels;
+  if (cleared === null)
+    return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
+  const pending = new Set(cleared.map((t) => t.trim()).filter((t) => t !== ""));
+  const dropped = new Set<number>();
+  // In id order, because consuming a title is order-dependent; the ROWS are returned in the order
+  // they came in, which is what every caller before this change received.
+  for (const r of [...rows].sort((a, b) => a.id - b.id)) {
+    // CONSUMPTION IS A LIMITED RESOURCE, so only a row that could BE Chatwoot's own narration may
+    // spend a title. A private note and a row that declares its own kind are neither (Chatwoot
+    // writes the label activity public and with no `content_attributes` at all), and a title spent
+    // by one of them would hide the real removal line that comes after it. Same three questions the
+    // reader below asks, for the same reason.
+    if (r.messageType !== "activity" || r.private) continue;
+    if (r.activityType !== null) continue;
+    // A row too long to SCAN goes unread here exactly as it does below, so a reset that removed
+    // hundreds of labels at once keeps its line AND is counted as an omission. That is the reader's
+    // own limit, not a second one: filtering it here would make the block report a hidden change
+    // over the very cleanup this function exists to hide.
+    if (r.content.length > ACTIVITY_SCAN_MAX_CHARS) continue;
+    const titles = labelsNarrated(r.content).find((ts) =>
+      ts.every((t) => pending.has(t)),
+    );
+    if (titles === undefined) continue;
+    for (const t of titles) pending.delete(t);
+    dropped.add(r.id);
+  }
+  return rows.filter((r) => !dropped.has(r.id));
 }
 
 export function labelHistoryFromRows(

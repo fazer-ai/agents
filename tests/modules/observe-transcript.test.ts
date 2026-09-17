@@ -41,6 +41,7 @@ function row(
     // Required on `ChatwootMessageRow` since this branch was cut; defaulted here for the same
     // reason every other field is.
     sendId: null,
+    resetClearedLabels: null,
     ...p,
   };
 }
@@ -440,6 +441,8 @@ describe("the notes the conversation already carries", () => {
         // ROUND 21: a customer message racing the cleanup used to take the cut's place and let the
         // removal above through. The cut is the acknowledgement's own row now, found by name.
         row({ id: 11.5, content: "oi, mais uma coisa" }),
+        // NO SET on this acknowledgement, which is what a reset from a build before #645 looks
+        // like: this test is the one that keeps that fallback honest.
         row({
           id: 12,
           messageType: "outgoing",
@@ -484,6 +487,178 @@ describe("the notes the conversation already carries", () => {
         "Fulano removeu compra-de-ingresso",
         "Classificador SAC adicionou cancelamento",
       ]);
+    });
+
+    // (#645) O RESÍDUO QUE O CORTE PELO ACK NÃO COBRE, e é o que esta issue vem fechar. A linha de
+    // atividade não é escrita pelo request de etiquetas: o `LabelActivityMessageHandler` passa por
+    // `Conversations::ActivityMessageJob.perform_later`, então ela aparece quando aquele job do
+    // Sidekiq roda. Com fila atrasada, ele roda DEPOIS do ack e a linha fica com id acima do corte,
+    // que é um teste de ORDEM e por isso não a vê. O observador então lê as etiquetas que o reset
+    // acabou de apagar, nomeadas, como motivo para não recolocá-las.
+    test("(#645) the cleanup's line above the ack is still not this episode's history", () => {
+      const ack = (cleared: string[] | null) =>
+        row({
+          id: 12,
+          messageType: "outgoing",
+          content: "Conversa limpa.",
+          sendId: "reset-ack:10",
+          resetClearedLabels: cleared,
+        });
+      const rows = [
+        ack(["compra-de-ingresso"]),
+        // O job do Sidekiq rodou depois do ack: mesma remoção, id acima do corte.
+        row({
+          id: 13,
+          messageType: "activity",
+          content: "Fulano removeu compra-de-ingresso",
+        }),
+        row({
+          id: 14,
+          messageType: "activity",
+          content: "Classificador SAC adicionou cancelamento",
+        }),
+      ];
+      expect(
+        labelHistoryFromRows(afterResetNarration(rows, 10), vocab, undefined, 8)
+          .lines,
+      ).toEqual(["Classificador SAC adicionou cancelamento"]);
+
+      // CONSUMED ONCE. The title is put back after the reset and taken off again, and both lines
+      // are this episode's: the reset removed it exactly once, and the set stops answering for it
+      // the moment its own line is read.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack(["compra-de-ingresso"]),
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                content: "Classificador SAC adicionou compra-de-ingresso",
+              }),
+              row({
+                id: 15,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+
+      // ALL OF A LINE'S TITLES, not one of them. A removal that names a cleared title next to a
+      // live one is not the reset's: `set_labels` writes the whole set, so a colleague taking two
+      // labels off at once renders one sentence, and hiding it would cost the model the change it
+      // has to reason from.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack(["compra-de-ingresso"]),
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso, cancelamento",
+              }),
+            ],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Fulano removeu compra-de-ingresso, cancelamento"]);
+
+      // NEITHER A NOTE NOR A ROW THAT DECLARES ITS OWN KIND SPENDS A TITLE. Chatwoot writes the
+      // label activity public and with no `activity.type`, so a row carrying either is somebody
+      // else's; letting one consume the title would hide the reset's real removal line behind it.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack(["compra-de-ingresso"]),
+              row({
+                id: 13,
+                messageType: "activity",
+                private: true,
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                activityType: "conversation_status_changed",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 15,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+
+      // AND THE SCAN LIMIT IS THE READER'S, not a second one: a cleanup whose sentence is too long
+      // to read goes unread on both sides, so the line stays out of the block and is COUNTED as an
+      // omission — which is what stops the block from calling the window quiet over it.
+      const many = Array.from({ length: 200 }, (_, i) => `etiqueta-${i}`);
+      const long = labelHistoryFromRows(
+        afterResetNarration(
+          [
+            ack(many),
+            row({
+              id: 13,
+              messageType: "activity",
+              content: `Fulano removeu ${many.join(", ")}`,
+            }),
+          ],
+          10,
+        ),
+        [...vocab, ...many],
+        undefined,
+        8,
+      );
+      expect(long.lines).toEqual([]);
+      expect(long.omitted).toBe(1);
+
+      // A CLEAR THAT REMOVED NOTHING (or that failed) hides nothing, and the difference from the
+      // order cut shows here: a colleague's own change, made while the cleanup ran, is BELOW the
+      // acknowledgement and survives, because it names a title the reset did not remove.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano adicionou cancelamento",
+              }),
+              ack([]),
+            ],
+            10,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Fulano adicionou cancelamento"]);
     });
 
     // And a reset with nothing said since: the acknowledgement is the last row, so every activity

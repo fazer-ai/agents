@@ -410,6 +410,54 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     );
   });
 
+  // THE CAP IS A BUDGET ON PROVIDER CALLS, NOT ON HOW MUCH OF THE MESSAGE WE WILL READ. Cutting the
+  // list before checking what was already extracted threw away results already in hand and then
+  // counted them as unread — and because the overlay WINS over the fetched page (round 4), the
+  // contradiction is destructive: nine descriptions on the page became eight plus "1 not read", so
+  // the model asked the customer to resend a file the page was showing it (PR #692 review, round 6).
+  test("what is already extracted does not count against the cap", async () => {
+    clearMediaAnnotations();
+    await clearFlowLog(suDb, { tenantId });
+    const convId = CONV_ID + 6;
+    const nove = Array.from({ length: 9 }, (_, i) =>
+      anexo(800 + i, `foto-${i + 1}.jpg`, {
+        image_description: `descricao ${i + 1}`,
+      }),
+    );
+    const n = await entregar(convId, nove);
+
+    // Nada foi pago: nove extrações já estavam na meta, e o teto só governa o que falta ler.
+    expect(await linhasDeVisao(convId)).toBe(0);
+    // A nona é a que o corte descartava, e é ela que prova o defeito.
+    expect(n.message?.imageDescription).toContain("descricao 9");
+    expect(n.message?.attachmentsUnread).toBeUndefined();
+
+    // O que o flush monta: a página não sabe de nada (Chatwoot upstream), o overlay responde.
+    const row = {
+      id: n.message?.id ?? 0,
+      content: "",
+      messageType: "incoming" as const,
+      private: false,
+      attachmentTypes: Array.from({ length: 9 }, () => "image"),
+      transcribedText: null,
+      imageDescription: null,
+      extractedText: null,
+      attachmentName: null,
+      location: null,
+      inReplyTo: null,
+      isReaction: false,
+      emailSubject: null,
+      activityType: null,
+      sendId: null,
+    } as ChatwootMessageRow;
+    overlayMediaAnnotations(tenantId, instanceId, [row]);
+
+    expect(row.imageDescription).toContain("descricao 9");
+    expect(renderInboundMessage(toRenderable(row))).not.toContain(
+      "anexos-nao-lidos",
+    );
+  });
+
   // A meta write-back that lands for SOME attachments must not suppress the complete aggregate: it
   // is best-effort per attachment, so a page carrying one description out of two is a partial
   // reading of the same pass, and `??=` used to let it win (PR #692 review, round 2).

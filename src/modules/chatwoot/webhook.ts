@@ -1926,8 +1926,20 @@ export async function runEagerMedia(
   // what was in the other two; on one production mailbox that was 50.6% of the conversations with
   // an attachment. In PARALLEL, because the per-file budget is 20s for an image and 60s for a
   // document: five of those in series is a turn nobody waits for, while five at once cost one.
-  const visuais = visualAttachments(n).slice(0, VISION_MAX_ATTACHMENTS);
-  const sobraram = visualAttachments(n).length - visuais.length;
+  // The cap is a budget on PROVIDER CALLS, not on how much of the message we are willing to read:
+  // an attachment that already carries its extraction costs nothing to reuse. Cutting before that
+  // distinction threw away results already in hand and then counted them as unread — and since the
+  // overlay WINS over the fetched page (round 4), a recovery on nine already-read files replaced a
+  // complete render with eight of them plus "1 not read", asking the customer to resend what the
+  // page was already showing (PR #692 review, round 6).
+  const todos = visualAttachments(n);
+  let novasExtracoes = 0;
+  const visuais = todos.filter((v) =>
+    v.imageDescription || v.extractedText
+      ? true
+      : novasExtracoes++ < VISION_MAX_ATTACHMENTS,
+  );
+  const sobraram = todos.length - visuais.length;
   if (
     visuais.length > 0 &&
     !n.message.imageDescription &&
@@ -2050,10 +2062,12 @@ export async function runEagerMedia(
   }
 }
 
-// How many attachments one message may cost a vision pass. The measured mean on a production
+// How many attachments one message may cost a vision pass IN NEW EXTRACTIONS. The measured mean on a production
 // mailbox is 1.98 per conversation, so this clears the real traffic with room; the tail is a
 // customer who attaches a whole album (70 in the same measurement), and there the cap is the point.
-// The overflow is reported to the model rather than dropped.
+// The overflow is reported to the model rather than dropped. What was ALREADY extracted does not
+// count against it: reusing it costs nothing, and leaving it out would publish an aggregate poorer
+// than the page it overrides.
 const VISION_MAX_ATTACHMENTS = 8;
 
 // The label that keeps two files apart. Single attachment keeps the bare text, byte for byte, so

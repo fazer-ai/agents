@@ -711,6 +711,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     });
     const convId = 39;
     const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    // O ENFILEIRAMENTO É RETENTADO, e isso é uma decisão e não um detalhe: com uma tentativa só, um
+    // blip do scheduler manda a entrega para a varredura e o cliente espera trinta minutos por uma
+    // mensagem que uma segunda tentativa teria salvo na hora. É a mesma razão pela qual o observador
+    // e a transcrição tardia retentam — o append é a última chance, nenhum turno vai cobrir isto.
+    const tentativas = { attempts: 0 };
     deliverySeq += 1;
     messageSeq += 1;
     const messageId = messageSeq;
@@ -753,7 +758,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       deliveryRowId: delivery.id,
       agentBotId: OUR_BOT,
       normalized: n,
-      base: failingIngest(),
+      base: failingIngest(tentativas),
       onDirectTurn: (r) => {
         seen.outcome =
           r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
@@ -782,6 +787,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(sent).toEqual([]);
     expect(seen.outcome).toBe("taken-over-unread");
     expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // Uma tentativa só faz duas operações no scheduler, quatro fazem cinco: o que se mede aqui é o
+    // RETRY, e sem ele este número cai para 2.
+    expect(tentativas.attempts).toBe(5);
     // A LINHA CONTINUA RECUPERÁVEL, que é o ponto inteiro: PROCESSING é o estado que a varredura
     // revisita, e PROCESSED é o que ninguém revisita nunca mais.
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");

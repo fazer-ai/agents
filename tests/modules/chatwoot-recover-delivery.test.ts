@@ -236,7 +236,14 @@ function depsWith(
 // scalar beside it (MEASURED at the fork: `api/v1/models/_message.json.jbuilder` renders
 // `json.inbox_id message.inbox_id` on every message the index serializes).
 function pageWith(
-  msgs: Array<{ id: number; content: string; createdAt?: number }>,
+  msgs: Array<{
+    id: number;
+    content: string;
+    createdAt?: number;
+    // Uma resposta que uma PESSOA escreveu pelo compositor: saída pública com remetente `user`
+    // (issue #703). É o que a fronteira de terceiro enxerga, e nada aqui muda a atribuição.
+    byUser?: boolean;
+  }>,
   // `null` drops the key, which is what a Chatwoot that does not render it looks like from here.
   inboxId: number | null = CHATWOOT_INBOX_ID,
 ) {
@@ -244,12 +251,14 @@ function pageWith(
     payload: msgs.map((m) => ({
       id: m.id,
       content: m.content,
-      message_type: 0,
+      message_type: m.byUser ? 1 : 0,
       private: false,
       ...(inboxId !== null ? { inbox_id: inboxId } : {}),
       // Epoch SECONDS, as the REST read gives it.
       created_at: m.createdAt ?? SENT_AT,
-      sender: { id: 77, name: "Cliente", type: "contact" },
+      sender: m.byUser
+        ? { id: 41, name: "Ana", type: "user" }
+        : { id: 77, name: "Cliente", type: "contact" },
       attachments: [],
     })),
   };
@@ -669,6 +678,55 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       select: { lastError: true },
     });
     expect(conv.lastError).toContain("incompleta");
+  });
+
+  // E UMA RESPOSTA QUE UMA PESSOA JÁ ESCREVEU FECHA A LINHA (issue #703). Este é o desfecho novo
+  // chegando aqui: o turno recuperado relê a página, acha a resposta da atendente acima da mensagem
+  // presa, e para. `answered-elsewhere` é o mesmo fato do `taken-over` por outra porta — a diferença
+  // é só que a atribuição não mudou — e é o caso mais forte do conjunto: os outros se apoiam em algo
+  // que ESTA rota fez, e este se apoia numa resposta que já existe e está na página.
+  //
+  // Fora do `TURN_SETTLED`, a recuperação devolveria a linha para DEAD e a conversa que uma pessoa
+  // acabou de atender voltaria para a lista de perdas — o defeito da #703 reaparecendo uma camada
+  // acima do conserto dele.
+  test("a message a person already answered settles the row", async () => {
+    const convId = 8997;
+    const messageId = 9497;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([
+        { id: messageId, content: "tem alguém?" },
+        // A atendente respondeu enquanto a entrega estava presa. A atribuição NÃO muda: com ela
+        // mudando, o recheck de posse fecharia antes, com `taken-over`, que é outro caminho.
+        {
+          id: messageId + 1,
+          content: "oi, sou a Ana do suporte",
+          byUser: true,
+        },
+      ]),
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: ["Olá!"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+
+    expect(outcome).toBe("recovered");
+    // Nada é dito por cima da pessoa...
+    expect(stub.sent).toEqual([]);
+    // ...e a linha fica fechada, em vez de voltar para a lista de perdas.
+    expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
   });
 
   test("a conversation the mirror still calls resolved is answered anyway", async () => {

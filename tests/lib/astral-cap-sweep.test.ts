@@ -428,9 +428,11 @@ const BARE_SLICES: Record<
   "src/graph/tools/mcp.ts": [5, "ascii"],
   // The spend ceiling's project key is the head of a hex digest (#426).
   "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
-  // Five since #568: the fifth is the ceiling on what the model is SHOWN of a scope's labels,
-  // applied to the write report. An array of label titles, so the cut cannot land inside one.
-  "src/graph/tools/native.ts": [5, "array"],
+  // Six since #695: the fifth is the ceiling on what the model is SHOWN of a scope's labels,
+  // applied to the write report, and the sixth is the same ceiling over the GUARDED list, which the
+  // delta contract names in the tool description instead of hiding. Both cut arrays of label
+  // titles, so neither cut can land inside one.
+  "src/graph/tools/native.ts": [6, "array"],
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],

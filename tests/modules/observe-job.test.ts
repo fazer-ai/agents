@@ -206,7 +206,7 @@ class LabellingModel {
               tool_calls: [
                 {
                   name: "set_labels",
-                  args: { labels: self.labels },
+                  args: { add: self.labels },
                   id: "call_labels",
                 },
               ],
@@ -244,7 +244,7 @@ class RecordingLabellingModel {
               tool_calls: [
                 {
                   name: "set_labels",
-                  args: { labels: ["cancelamento"] },
+                  args: { add: ["cancelamento"] },
                   id: "call_labels",
                 },
               ],
@@ -1652,7 +1652,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 tool_calls: [
                   {
                     name: "set_labels",
-                    args: { labels: ["cancelamento"] },
+                    args: { add: ["cancelamento"] },
                     id: "call_labels",
                   },
                 ],
@@ -1982,7 +1982,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 tool_calls: [
                   {
                     name: "set_labels",
-                    args: { labels: ["cancelamento"] },
+                    args: { add: ["cancelamento"] },
                     id: "l1",
                   },
                 ],
@@ -2163,7 +2163,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                   { name: "calculator", args: { expression: "2+2" }, id: "c1" },
                   {
                     name: "set_labels",
-                    args: { labels: ["cancelamento"] },
+                    args: { add: ["cancelamento"] },
                     id: "l1",
                   },
                 ],
@@ -2220,7 +2220,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 tool_calls: [
                   {
                     name: "set_labels",
-                    args: { labels: ["ja-estava"] },
+                    args: { add: ["ja-estava"] },
                     id: "l1",
                   },
                 ],
@@ -2469,7 +2469,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
     );
     expect(res).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([["agente-off", "cancelamento"]]);
+    // `compra-de-ingresso` was on the conversation and the model did not name it, so it stays:
+    // under the replace contract this same call deleted it by omission.
+    expect(log.labelsWritten).toEqual([
+      ["agente-off", "compra-de-ingresso", "cancelamento"],
+    ]);
     // NOTHING REACHES THE CUSTOMER, which is the one promise the mode makes. The final prose is the
     // model talking to a wall: the turn delivers no reply, and the client it holds would refuse one.
     expect(log.publicSends).toBe(0);
@@ -2656,7 +2660,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 tool_calls: [
                   {
                     name: "set_labels",
-                    args: { labels: ["cancelamento"], scope: "contact" },
+                    args: { add: ["cancelamento"], scope: "contact" },
                     id: "call_contact",
                   },
                 ],
@@ -2854,7 +2858,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 {
                   name: "set_labels",
                   args: {
-                    labels: n === 1 ? ["cancelamento"] : ["compra-de-ingresso"],
+                    add: n === 1 ? ["cancelamento"] : ["compra-de-ingresso"],
                   },
                   id: `call_${n}`,
                 },
@@ -2939,7 +2943,13 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // what the model was SHOWN, so two reads are two claims about the same turn: a label the prompt
   // advertises but the baseline lacks comes back as an ADDITION when the model repeats it to keep
   // it, which puts back what somebody removed in between — the exact harm the diff exists to avoid.
-  test("the labels in the prompt are the labels the tool compares against", async () => {
+  // Retitled with #695: the prompt is a SNAPSHOT and the write is not computed from it. The block
+  // the model reads is built at turn prep; the write is applied to the read taken INSIDE the label
+  // queue, which is the only list still true at the moment of writing. Compute it from the prompt's
+  // snapshot instead and a label somebody removed mid-turn comes back — which is also why the tool
+  // description tells the model to name only what changes, and says that repeating a label to keep
+  // it is not harmless.
+  test("the write is applied to the live read, not to the prompt's snapshot", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     let reads = 0;
     const base = stubClient([message(1, "quero cancelar")], [], log);
@@ -2952,7 +2962,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         return reads === 1 ? ["vip"] : [];
       },
     } as unknown as typeof base;
-    const model = new LabellingModel(["vip", "cancelamento"]);
+    // The model names only what changes, as the tool asks. `vip` is in the prompt it read, and is
+    // gone by the time the queue lets the write through.
+    const model = new LabellingModel(["cancelamento"]);
     const res = await runObserve(
       tenantId,
       {
@@ -2969,12 +2981,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
     );
     expect(res).toEqual({ outcome: "done" });
-    // The write is computed against the read INSIDE the label queue (reads 2+), and `vip` was in
-    // the shown set, so repeating it is not a request to add it back.
+    // Had the baseline been the prompt's snapshot, this would be ["vip", "cancelamento"] and would
+    // put back the label taken off while the model was generating.
     const written = log.labelsWritten.at(-1);
-    expect(written).toBeDefined();
-    expect(written).not.toContain("vip");
-    expect(written).toContain("cancelamento");
+    expect(written).toEqual(["cancelamento"]);
   });
 
   // THE GUARD HAS TO HOLD IN EVERY MODEL-FACING PLACE, not only in the tool's diff. `set_labels`
@@ -2982,7 +2992,22 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   // prompt prints the conversation's labels in `<etiquetas-atuais>` from the SAME read — so without
   // this the block advertised `agente-off` while the tool's description denied it existed, which is
   // both a contradiction to reason from and the invitation the guard exists to withdraw (round 12).
-  test("a guarded label is absent from the prompt, and survives the write", async () => {
+  // Retitled with #695: PROTECTING AND HIDING COME APART. Under the replace contract the two
+  // travelled together, because being shown a label was the first half of being able to delete it
+  // by omission, so the guard had to withdraw it from every model-facing place. Under the delta,
+  // being shown one puts it at no risk — only naming it in `remove` does, and that is refused.
+  //
+  // The two places that change are the ones the model acts FROM: the tool's description and
+  // `<etiquetas-atuais>`. Hiding the value there is what made a fenced agent invent `duvidas-evento`
+  // for a canonical value it could not see (measured 2026-09-11), and naming it is what stops that.
+  //
+  // The label-change HISTORY is deliberately NOT one of them, and this test pins that. That block
+  // narrates who moved what, which is not the model's business for a label it may not move, and the
+  // filter behind it (`namesGuardedTitle`) carries edge cases of its own: a guarded title first in
+  // the run, a locale that glues a particle to it, a line too long to scan and counted rather than
+  // shown. Relaxing it is a decision about narration, not about the fence, and it is not this
+  // issue's.
+  test("a guarded label is shown where the model acts, and still survives the write", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     __resetChatwootVocabCache();
     // ISSUE #642, ROUND 1: the third model-facing place is the label HISTORY, and it is the one
@@ -3036,7 +3061,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                     tool_calls: [
                       {
                         name: "set_labels",
-                        args: { labels: ["cancelamento"] },
+                        args: { add: ["cancelamento"] },
                         id: "call_labels",
                       },
                     ],
@@ -3062,15 +3087,19 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         },
       );
       expect(res).toEqual({ outcome: "done" });
-      // Neither the labels block in the prompt, nor the history block, nor the tool's own
-      // description names it — while the change beside it is there, so the line dropped for being
-      // about the guarded label and not for the block being empty.
+      // The labels block names it, beside the ones that are not guarded.
       expect(prompt).toContain("compra-de-ingresso");
       expect(prompt).toContain("Fulano adicionou cancelamento");
-      expect(prompt).not.toContain("agente-off");
+      expect(prompt).toContain("agente-off");
+      // And so does the tool's description, as one it refuses to move: the model learns the fence
+      // from the declaration instead of spending a call to be told no.
       const labelsTool = seenTools.find((d) => d.includes("current_labels"));
       expect(labelsTool).toBeDefined();
-      expect(labelsTool).not.toContain("agente-off");
+      expect(labelsTool).toContain("agente-off");
+      expect(labelsTool).toContain("refuses to add or remove");
+      // The HISTORY line about it still does not: message 2 is "Fulano adicionou agente-off", and
+      // the changes block drops it while keeping the line beside it. Value yes, narration no.
+      expect(prompt).not.toContain("Fulano adicionou agente-off");
       // And the model asking for `cancelamento` alone did not take it off the conversation.
       const written = log.labelsWritten.at(-1);
       expect(written).toContain("agente-off");
@@ -3615,11 +3644,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       },
     );
     expect(res).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([["cancelamento"]]);
+    expect(log.labelsWritten).toEqual([["compra-de-ingresso", "cancelamento"]]);
     const detail = detailOf(await observeLines(), -1);
     expect(detail.acted).toBe(true);
     expect(detail.labels).toEqual([
-      { scope: "conversation", added: 1, removed: 1, after: 1 },
+      { scope: "conversation", added: 1, removed: 0, after: 2 },
     ]);
   });
 
@@ -3710,7 +3739,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                     {
                       name: "set_labels",
                       args: {
-                        labels: n === 1 ? ["cancelamento"] : ["duvidas-evento"],
+                        add: n === 1 ? ["cancelamento"] : ["duvidas-evento"],
                       },
                       id: `call_labels_${n}`,
                     },
@@ -3729,7 +3758,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const last = detailOf(lines, -1);
     expect(last.skipped).toBe("superseded");
     expect(last.labels).toEqual([
-      { scope: "conversation", added: 1, removed: 1, after: 1 },
+      { scope: "conversation", added: 1, removed: 0, after: 2 },
     ]);
   });
 
@@ -3753,7 +3782,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 tool_calls: [
                   {
                     name: "set_labels",
-                    args: { labels: ["cancelamento"] },
+                    args: { add: ["cancelamento"] },
                     id: "call_labels",
                   },
                 ],
@@ -3791,12 +3820,12 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
     // Done, not retried: a tool already committed.
     expect(res).toEqual({ outcome: "done" });
-    expect(log.labelsWritten).toEqual([["cancelamento"]]);
+    expect(log.labelsWritten).toEqual([["compra-de-ingresso", "cancelamento"]]);
     const last = detailOf(await observeLines(), -1);
     expect(last.failed).toBe("model_call");
     expect(last.retried).toBe(false);
     expect(last.labels).toEqual([
-      { scope: "conversation", added: 1, removed: 1, after: 1 },
+      { scope: "conversation", added: 1, removed: 0, after: 2 },
     ]);
   });
 

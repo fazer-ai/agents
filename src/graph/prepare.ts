@@ -1272,18 +1272,21 @@ export async function buildToolset(
     task?: string[];
   } = {};
   // A GUARDED LABEL IS NOT SHOWN, which is the whole of its protection on this side: the diff at
-  // write time subtracts the same set, so hiding it here and refusing it there are one rule stated
-  // in the two places that have to agree. Filtered at the SEAM rather than at each reader, because a
-  // scope that leaked one into the description would offer the model a label it is not allowed to
-  // keep and would then be told it kept it anyway.
-  // Guarded ones subtracted AND the ceiling applied, through the tool's own projection: this seam
-  // and the tool's description have to answer the same question with the same function.
-  const hideGuarded = (labels: string[]): string[] =>
-    modelVisibleLabels(labels, cfg.protectedLabels);
+  // write time refuses the same set, so what the model sees and what the tool accepts are stated
+  // once each and no longer have to agree by subtraction. Applied at the SEAM rather than at each
+  // reader, so every scope answers the question with the same function.
+  //
+  // THE GUARD IS NO LONGER SUBTRACTED HERE (issue #695). Under the replace contract a guarded label
+  // had to be hidden, because a label the model was shown and left out was deleted; under the delta
+  // contract nothing is removed unless named, so a guarded label can be shown and still refused.
+  // Showing it is the point: hiding it is what made a fenced agent invent a name for the canonical
+  // value it was not allowed to see.
+  const shownProjection = (labels: string[]): string[] =>
+    modelVisibleLabels(labels);
   if (grantsLabels && ctx.conversationId > 0) {
-    if (kanban) shownLabels.task = hideGuarded(kanban.card.labels);
+    if (kanban) shownLabels.task = shownProjection(kanban.card.labels);
     try {
-      shownLabels.conversation = hideGuarded(
+      shownLabels.conversation = shownProjection(
         ctx.conversationLabels ??
           (await ctx.client.getConversationLabels(ctx.conversationId)),
       );

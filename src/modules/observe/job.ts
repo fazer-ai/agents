@@ -1346,17 +1346,13 @@ export async function runObserve(
       e instanceof Error ? e.message : String(e),
     );
   }
-  // THE PROMPT BLOCK HIDES THE GUARDED ONES TOO. `set_labels` filters them out of what it shows and
-  // out of what it accepts, and this block is the third model-facing place the same list reaches —
-  // leaving it raw would print `agente-off` under `<etiquetas-atuais>` while the tool's own
-  // description denies it exists, which is both a contradiction to reason from and the exact
-  // invitation the guard is there to withdraw. The unfiltered `current` still goes to `buildToolset`
-  // as the ONE read: what the tool does with it (seed `shownLabels`, minus the guard) is its rule to
-  // apply, and copying the subtraction here would make two places responsible for one decision.
-  // Through the same projection the tool renders: the guard subtracted AND the ceiling applied, so
-  // this block cannot advertise a label the tool's own description leaves out (see label-view.ts).
+  // THE PROMPT BLOCK SHOWS THE GUARDED ONES, and that is the change of issue #695. It used to hide
+  // them, because `set_labels` hid them too and a block that printed `agente-off` while the tool's
+  // description denied it existed was a contradiction to reason from. The tool now shows them and
+  // refuses to move them, so this block says the same thing by saying everything: the same
+  // projection the tool renders, which is the ceiling and nothing else (see label-view.ts).
   const currentForPrompt =
-    current === null ? null : modelVisibleLabels(current, cfg.protectedLabels);
+    current === null ? null : modelVisibleLabels(current);
 
   // WHAT ALREADY CHANGED, beside what is standing now, and read here rather than beside `notes`
   // because this is a request: every exit above it (no customer message, agent off, window empty)

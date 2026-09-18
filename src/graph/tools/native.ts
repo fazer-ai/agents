@@ -842,77 +842,57 @@ function existingLabelsXml(labels: string[]): string {
 // snapshot. NOTE: the enumerated labels are the account's Label titles; task tags may use a separate
 // taggable namespace on the fork — confirm live before relying on the suggestion for task scope.
 
-// THE MODEL'S LIST IS AN INTENT, NOT A WRITE. Between the read that produced `shown` (turn prep)
-// and this call, another writer — an operator, an automation rule, the observer, n8n — can have
-// added a label the model never saw. Sending `desired` as-is would erase it, which is the same
-// class of bug as the unqueued read-then-POST that issue #477 closed, just with a wider window: a
-// whole turn instead of two calls.
+// THE MODEL NAMES THE DELTA, so the tool never has to infer one. This replaced a diff against
+// what the model was SHOWN (`applyLabelIntent`, issue #695): under a replace contract the complete
+// list was the only thing the model could send, removal happened by OMISSION, and the whole defence
+// against a concurrent writer was to compare that list with a per-turn snapshot of what the model
+// had seen. Naming the delta makes that defence a property instead of a mechanism:
 //
-// So the intent is read as a DIFF against what the model saw, applied to what is standing now, and
-// it is a diff in BOTH directions:
+//   not named          -> not touched, whoever put it there and whenever;
+//   named in `remove`  -> removed, even if the model was never shown it;
+//   named in `add`     -> added, even if it is already there (no-op, not an error).
 //
-//   shown and left out  -> a removal;
-//   asked for, not shown -> an addition;
-//   shown AND asked for  -> the model said nothing about it, so neither.
+// The second line is the one the old contract could not express, and the first is the one it could
+// only approximate. A label an operator, an automation, the observer or n8n added between the turn's
+// read and this call is now safe for free, and so is one past the 40-label ceiling.
 //
-// The third line is the one that is easy to get wrong, because the model writes those labels out
-// again on every call — the tool asks it to, since leaving one out would delete it. Repeating a
-// label is therefore NOT a request to have it; it is the absence of a request to lose it. Treating
-// it as an addition puts back exactly what a concurrent writer has just removed: an operator peels
-// `vip` off while the model generates, the model repeats `vip` merely to keep the rest, and the
-// tool undoes the operator. That is the same class as erasing a concurrent ADD, which is what the
-// removal half exists to prevent; both halves are the same rule, applied in the two directions.
-//
-// An unshown scope yields no removals at all and every label as an addition — the safe degenerate,
-// because a model that cannot see what is there cannot mean "and nothing else".
-//
-// `added` and `removed` are then read off `next` rather than off the intent: they are what this
-// write DID, and the intent and the write differ exactly in the unchanged-label case above.
-export function applyLabelIntent(
-  shown: string[] | undefined,
-  desired: string[],
+// THE GUARD SUBTRACTS FROM BOTH DIRECTIONS and is REPORTED. `settings.setLabels.protected` keeps
+// meaning "this tool may neither add nor remove it" — both halves, because a tenant relies on the
+// add half to keep one agent's taxonomy out of another agent's reach. What it stops meaning is
+// "never sees": under a delta, being shown a label no longer puts it at risk, so protecting and
+// hiding come apart. That is the whole point of the change, and hiding is what made a fenced agent
+// invent a label it could not see on 2026-09-11.
+export function applyLabelDelta(
+  add: readonly string[],
+  remove: readonly string[],
   current: string[],
   guarded?: string[],
 ): {
   next: string[];
   added: string[];
   removed: string[];
-  visible: string[];
+  refusedAdd: string[];
+  refusedRemove: string[];
 } {
-  // LABELS THIS TOOL CANNOT REACH, in either direction. A conversation carries labels that belong to
-  // something other than a classifier: `agente-off` is what keeps an agent off a conversation, and a
-  // testing label is what keeps a rehearsal out of the metrics. Both are written by an operator or by
-  // another system and read back by it, and both were being erased here for a reason that is the
-  // contract working as designed — a label present before the turn is SHOWN, so leaving it out is a
-  // removal, and the model has to remember to repeat it or it is gone.
-  //
-  // The guard is applied by SUBTRACTION rather than by a new branch, so it inherits the two rules
-  // this function already proves instead of adding a third: taken out of `shown`, a guarded label
-  // cannot be "shown and left out", which is the same rule that already makes an unshown scope
-  // additive; taken out of `desired`, it cannot be "asked for and not shown", so a model that names
-  // one does not get to claim it either. What the model cannot see it cannot lose, and what it
-  // cannot ask for it cannot take.
-  const guard = new Set((guarded ?? []).map((l) => l.trim()).filter(Boolean));
-  const want = [
-    ...new Set(desired.map((l) => l.trim()).filter(Boolean)),
-  ].filter((l) => !guard.has(l));
-  const wanted = new Set(want);
-  const seen = new Set((shown ?? []).filter((l) => !guard.has(l)));
-  const dropped = new Set(
-    (shown ?? []).filter((l) => !guard.has(l) && !wanted.has(l)),
-  );
-  const kept = current.filter((l) => !dropped.has(l));
-  const fresh = want.filter((l) => !seen.has(l));
-  const next = [...new Set([...kept, ...fresh])];
+  const clean = (xs: readonly string[]): string[] => [
+    ...new Set(xs.map((l) => l.trim()).filter(Boolean)),
+  ];
+  const guard = new Set(clean(guarded ?? []));
+  const wantAdd = clean(add);
+  const wantRemove = clean(remove);
+  const refusedAdd = wantAdd.filter((l) => guard.has(l));
+  const refusedRemove = wantRemove.filter((l) => guard.has(l));
+  const drop = new Set(wantRemove.filter((l) => !guard.has(l)));
+  const kept = current.filter((l) => !drop.has(l));
+  const next = [...new Set([...kept, ...wantAdd.filter((l) => !guard.has(l))])];
   return {
     next,
+    // What this write DID, read off `next` rather than off the request: naming a label already
+    // present, or removing one that is not there, asks for something and moves nothing.
     added: next.filter((l) => !current.includes(l)),
     removed: current.filter((l) => !next.includes(l)),
-    // WHAT THE MODEL IS TOLD IT NOW HAS, and the same list `recordShown` stores. A guarded label
-    // standing on the conversation is deliberately missing from both: the report and the shown set
-    // have to be ONE list, or the next call in the turn diffs against something it was never handed
-    // — which is the defect this file already carries four comments about.
-    visible: next.filter((l) => !guard.has(l)),
+    refusedAdd,
+    refusedRemove,
   };
 }
 
@@ -923,56 +903,63 @@ export function applyLabelIntent(
 //
 // THE RESULTING SET IS STATED because this line is the model's only way to learn it. The
 // `<current_labels>` block in the description is built once, at turn prep, so from the second call
-// onward it describes the past — including the model's own first write. Without this, a model that
-// added `pending` and then wanted the scope empty would pass `[]`, have it diffed against a
-// snapshot that never held `pending`, and be told nothing changed.
+// onward it describes the past, including the model's own first write.
 //
-// Saying it is also what LICENCES the next call to act on it: `recordShown` stores exactly this
-// list as what the model was shown, so a label a concurrent writer added mid-turn becomes removable
-// only after the model has actually been handed it. "Shown" has to keep meaning shown.
+// A REFUSAL IS NAMED, and this is new with the delta contract. While a guarded label was hidden,
+// the model could not ask for it, so subtracting it silently had nothing to report to. Now it sees
+// the label, will therefore ask, and answering "already as requested" would be a false statement it
+// reads back out of its own transcript one call later (issue #695).
 function labelWriteReport(
   where: string,
   added: string[],
   removed: string[],
   next: string[],
+  refusedAdd: string[] = [],
+  refusedRemove: string[] = [],
 ): string {
-  // The report is the THIRD statement about the same list, so it is capped like the other two —
-  // and it says how many it left out rather than presenting a partial set as the whole truth.
+  // The report is the THIRD statement about the same list, so it is capped like the other two, and
+  // it says how many it left out rather than presenting a partial set as the whole truth.
   const head = next.slice(0, SHOWN_LABELS_MAX);
   const rest = next.length - head.length;
+  const quoted = (xs: string[]) => xs.map((l) => `"${l}"`).join(", ");
   const now = next.length
-    ? `${head.map((l) => `"${l}"`).join(", ")}${rest > 0 ? ` (+${rest} more)` : ""}`
+    ? `${quoted(head)}${rest > 0 ? ` (+${rest} more)` : ""}`
     : "(none)";
   const parts: string[] = [];
-  if (added.length)
-    parts.push(`added ${added.map((l) => `"${l}"`).join(", ")}`);
-  if (removed.length)
-    parts.push(`removed ${removed.map((l) => `"${l}"`).join(", ")}`);
+  if (added.length) parts.push(`added ${quoted(added)}`);
+  if (removed.length) parts.push(`removed ${quoted(removed)}`);
+  const refused: string[] = [];
+  if (refusedAdd.length) refused.push(`cannot be added: ${quoted(refusedAdd)}`);
+  if (refusedRemove.length)
+    refused.push(`cannot be removed: ${quoted(refusedRemove)}`);
+  const tail = refused.length
+    ? ` Some labels are managed by another system and ${refused.join("; ")}.`
+    : "";
   if (parts.length === 0)
-    return `Labels on the ${where} were already as requested. Now set: ${now}.`;
-  return `Labels on the ${where}: ${parts.join("; ")}. Now set: ${now}.`;
+    return refused.length
+      ? `No label on the ${where} changed.${tail} Now set: ${now}.`
+      : `Labels on the ${where} were already as requested. Now set: ${now}.`;
+  return `Labels on the ${where}: ${parts.join("; ")}.${tail} Now set: ${now}.`;
 }
 
 // THE MODEL-VISIBLE SET, kept current for the rest of the turn. A turn has as many label writes as
-// the model has tool calls, and every one of them is diffed against what the model saw; leaving
-// that at the turn-prep snapshot means the second call is answered as if the first had not
-// happened — `set_labels(['pending'])` then `set_labels([])` leaves `pending` standing and reports
-// that nothing changed.
+// the model has tool calls, and a `<current_labels>` block frozen at the turn-prep snapshot answers
+// the second call as if the first had not happened.
 //
-// What gets stored is the list the report just handed the model, not some private view of the
-// world: the two have to be the same list, for the same reason the description block and the diff
-// read one value. It also promotes a scope that could not be read at prep — the contact's, which is
-// deliberately never read there — into a known one, since the tool's own GET answered it.
+// INFORMATIONAL, NOT LOAD-BEARING, which is what changed with the delta contract (issue #695).
+// While removal happened by omission, this list WAS the reference every removal was computed
+// against, and getting it wrong erased data; now it only tells the model what is there, and a stale
+// entry costs a redundant `add` rather than a deletion. The guard is no longer subtracted here
+// either: a protected label is shown precisely so the model stops inventing a name for a value it
+// could not see.
 function recordShown(
   ctx: ToolCtx,
   scope: "conversation" | "contact" | "task",
   next: string[],
 ): void {
   if (!ctx.shownLabels) ctx.shownLabels = {};
-  // Through the same projection the description renders, so a second call in this turn diffs
-  // against exactly what the model was handed — including the ceiling. A label past it is unseen,
-  // and unseen is never a removal.
-  ctx.shownLabels[scope] = modelVisibleLabels(next, ctx.protectedLabels);
+  // Through the same projection the description renders, ceiling included.
+  ctx.shownLabels[scope] = modelVisibleLabels(next);
 }
 
 // WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the diff
@@ -1021,69 +1008,37 @@ function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
 }
 
 function setLabelsTool(ctx: ToolCtx) {
-  // THE ACCOUNT'S VOCABULARY IS FILTERED TOO, and this is the half that hiding `shownLabels` does
-  // not cover: `<existing_labels>` advertises every label the account has as a value the model may
-  // pick, so a guarded one was being offered as a choice while the diff silently refused it. The
-  // guard promises the model never SEES these; a suggestion list is seeing. Filtered here, on the
-  // way into this description, and never on the shared vocab cache, which other tools and other
-  // agents read.
-  const guardedSet = new Set(ctx.protectedLabels ?? []);
-  const labelsXml = existingLabelsXml(
-    (ctx.vocab?.labels ?? []).filter((l) => !guardedSet.has(l)),
-  );
+  // THE ACCOUNT'S VOCABULARY IS NO LONGER FILTERED HERE. It used to be, because `<existing_labels>`
+  // advertises every label the account has as a value the model may pick, and under the replace
+  // contract being offered one was the first half of being able to delete it by omission. Under the
+  // delta contract the guard is enforced on the way in, so the suggestion list can be whole — and a
+  // whole list is what stops an agent inventing `duvidas-evento` because the canonical value was
+  // fenced out of its sight (measured 2026-09-11, issue #695).
+  const labelsXml = existingLabelsXml(ctx.vocab?.labels ?? []);
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
   const scopeSchema = taskScope
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
-  // READ AT CALL TIME, not captured here: `recordShown` moves this set forward as the turn writes,
-  // and a value closed over at build time would freeze it at the turn-prep snapshot. The XML block
-  // below is the opposite on purpose — a description is serialised once, so it can only ever be the
-  // snapshot, which is why the report states the resulting set.
-  //
-  // ONE BASELINE PER MODEL BATCH, and the batch is the unit because that is what the model saw.
-  // LangGraph runs every tool call of one AIMessage concurrently and returns to the model only when
-  // the whole batch is done, so two `set_labels` side by side were both written from the SAME
-  // snapshot and neither could have read the other's result. A baseline taken per CALL lets the
-  // second one see the first one's write recorded as "shown" and take it for a label it saw and
-  // left out: `["a"]` and `["b"]` end as `b` alone.
-  //
-  // "Synchronously at the top of the handler" is not enough, and that is the whole reason this is
-  // keyed rather than timed: `applyToolPreconditions` wraps the tool and AWAITS the state read
-  // before this handler is entered, so with a precondition configured the second call can arrive
-  // after the first has already written. Timing cannot separate the two cases; the batch key can.
-  //
-  // The key is LangGraph's own, measured rather than assumed: `langgraph_step` is identical for
-  // every call of one batch and differs between batches (2, 2, 4 for two batches of a probe run),
-  // and the namespace and thread go with it so a subgraph cannot collide with its parent. When
-  // there is no config at all — a direct invocation in a test, the playground — there is no batch
-  // to share and each call reads the live set, which is right because those calls ARE sequential.
-  let batch: {
-    key: string;
-    shown: NonNullable<ToolCtx["shownLabels"]>;
-  } | null = null;
-  const batchKey = (config?: ToolRunnableConfig): string | null => {
-    const md = config?.metadata as Record<string, unknown> | undefined;
-    const step = md?.langgraph_step;
-    if (typeof step !== "number") return null;
-    return `${String(md?.thread_id ?? "")}|${String(md?.langgraph_checkpoint_ns ?? "")}|${step}`;
-  };
-  const baselineFor = (
-    config?: ToolRunnableConfig,
-  ): NonNullable<ToolCtx["shownLabels"]> => {
-    const key = batchKey(config);
-    if (key === null) return { ...(ctx.shownLabels ?? {}) };
-    if (batch?.key !== key)
-      batch = { key, shown: { ...(ctx.shownLabels ?? {}) } };
-    return batch.shown;
-  };
   const currentXml = currentLabelsXml(ctx.shownLabels);
+  // NAMED UP FRONT, so a refusal is not the model's way of discovering the fence. Now that these
+  // are visible, a model that reads one off `<current_labels>` and decides it belongs elsewhere
+  // would otherwise spend a call to be told no. Capped like every other model-facing list.
+  const guarded = [...new Set(ctx.protectedLabels ?? [])].filter(Boolean);
+  const guardedShown = guarded.slice(0, SHOWN_LABELS_MAX);
+  const guardedSentence = guardedShown.length
+    ? ` These labels are managed by another system and this tool refuses to add or remove them, although you can see them: ${guardedShown
+        .map((l) => `'${l}'`)
+        .join(
+          ", ",
+        )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}.`
+    : "";
   const baseDescription = [
-    `Set the labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
-    "Pass the COMPLETE list that scope should have afterwards: keep the labels that still apply, leave out the ones that no longer do, and add the new ones.",
-    "Leaving out a label REMOVES it, so to add one without touching the rest, repeat the labels that are already there.",
+    `Add or remove labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
+    "Name ONLY what changes: a label you do not name is left exactly as it is. There is no need to repeat the labels that should stay, and repeating them is not harmless — it is a request to have them, which puts back one somebody has just taken off.",
+    "To swap a value, name the old one in `remove` and the new one in `add` in the same call.",
     currentXml &&
-      "What is set right now is in `<current_labels>` below; a scope not listed there could not be read, and a call naming it can only add.",
+      "What is set right now is in `<current_labels>` below; a scope not listed there could not be read.",
     labelsXml &&
       "Prefer an EXISTING label from `<existing_labels>` below; a label that is not listed is created.",
   ]
@@ -1091,51 +1046,72 @@ function setLabelsTool(ctx: ToolCtx) {
     .join(" ");
   return tool(
     async (
-      {
-        labels,
-        scope,
-      }: {
-        labels: string[];
+      args: {
+        add?: string[];
+        remove?: string[];
         scope?: "conversation" | "contact" | "task";
       },
-      config?: ToolRunnableConfig,
+      _config?: ToolRunnableConfig,
     ) => {
-      // Trimming and de-duplicating is applyLabelIntent's job, so the three scopes cannot drift.
-      const desired = labels;
-      // The batch's shared view of the world, which has to stay the view the model wrote against.
-      const seenNow = baselineFor(config);
+      const { add = [], remove = [], scope } = args;
+      // THE OLD SHAPE IS REFUSED BY NAME, and this is not defensive programming. Operator prose in
+      // five free-text fields still describes the replace contract on every tenant that has not
+      // rewritten it, and a model following that prose sends `{labels: [...]}`. A strict schema
+      // would strip the key and leave an empty delta, so the call would answer "already as
+      // requested" and the model would record a classification that was never written — the most
+      // expensive failure this tool can produce (issue #695 holdout s3).
+      const legacy = (args as { labels?: unknown }).labels;
+      if (Array.isArray(legacy)) {
+        ctx.onNoEffect?.("set_labels");
+        return "Could not set the labels: this tool no longer takes a complete `labels` list. Name only what changes, with `add` and `remove` — a label you do not name is left as it is.";
+      }
+      if (add.length === 0 && remove.length === 0) {
+        ctx.onNoEffect?.("set_labels");
+        return "Could not set the labels (neither `add` nor `remove` named anything).";
+      }
       if (scope === "task") {
         if (!ctx.kanban) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the labels (this conversation has no linked card).";
         }
-        // The card's set is the TURN-PREP SNAPSHOT on both sides — it is what the model was shown
-        // and the only reading we have, since resolving the card again costs the two or three calls
-        // loadKanbanContext makes. So a label somebody added to the card during the turn is erased
-        // by this write, exactly as the append-only version erased it before; the scope is unchanged
-        // by this tool's new power, and closing it means re-resolving the card before every write.
-        const { next, added, removed, visible } = applyLabelIntent(
-          seenNow.task,
-          desired,
-          ctx.kanban.card.labels,
-          ctx.protectedLabels,
-        );
+        // THE CARD'S SET IS THE TURN-PREP SNAPSHOT, and the delta does NOT close that. Resolving
+        // the card again costs the two or three calls loadKanbanContext makes, so `current` here is
+        // what was read at prep: a label added to the card mid-turn is invisible to this write, and
+        // removing one that was taken off the card mid-turn is a no-op computed against a stale
+        // list. Unlike the conversation and contact scopes, "not named, not touched" is therefore a
+        // statement about the snapshot rather than about the card. Closing it means re-resolving
+        // the card before every write (issue #695 holdout s6).
+        const { next, added, removed, refusedAdd, refusedRemove } =
+          applyLabelDelta(add, remove, ctx.kanban.card.labels, guarded);
         if (added.length === 0 && removed.length === 0) {
           // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
           // The dispatch was counted as an effect on the way in, and a call that changed no label
           // is a call the tick may safely run again.
           ctx.onNoEffect?.("set_labels");
-          recordShown(ctx, "task", visible);
-          return labelWriteReport("kanban card", added, removed, visible);
+          recordShown(ctx, "task", next);
+          return labelWriteReport(
+            "kanban card",
+            added,
+            removed,
+            next,
+            refusedAdd,
+            refusedRemove,
+          );
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
         ctx.onLabelsWritten?.(describeLabelWrite("task", added, removed, next));
-        // The card snapshot is this scope's `current` as well as its `shown`, so a second call in
-        // the same turn would otherwise diff against the set before this write and put back what it
-        // just removed.
+        // The card snapshot is this scope's only reading, so a second call in the same turn would
+        // otherwise compute its delta against the set before this write.
         ctx.kanban.card.labels = [...next];
-        recordShown(ctx, "task", visible);
-        return labelWriteReport("kanban card", added, removed, visible);
+        recordShown(ctx, "task", next);
+        return labelWriteReport(
+          "kanban card",
+          added,
+          removed,
+          next,
+          refusedAdd,
+          refusedRemove,
+        );
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
@@ -1157,19 +1133,19 @@ function setLabelsTool(ctx: ToolCtx) {
         const current = await ctx.client.getContactLabels(
           contact.chatwootContactId,
         );
-        const { next, added, removed, visible } = applyLabelIntent(
-          seenNow.contact,
-          desired,
-          current,
-          ctx.protectedLabels,
-        );
+        const { next, added, removed, refusedAdd, refusedRemove } =
+          applyLabelDelta(add, remove, current, guarded);
         if (added.length === 0 && removed.length === 0) {
-          // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
-          // The dispatch was counted as an effect on the way in, and a call that changed no label
-          // is a call the tick may safely run again.
           ctx.onNoEffect?.("set_labels");
-          recordShown(ctx, "contact", visible);
-          return labelWriteReport("contact", added, removed, visible);
+          recordShown(ctx, "contact", next);
+          return labelWriteReport(
+            "contact",
+            added,
+            removed,
+            next,
+            refusedAdd,
+            refusedRemove,
+          );
         }
         // ASKED AGAIN, after the GET and before the write — the fourth handler in this file that
         // waits before writing, and the same rule as the other three. The conversation scope asks
@@ -1182,13 +1158,21 @@ function setLabelsTool(ctx: ToolCtx) {
         ctx.onLabelsWritten?.(
           describeLabelWrite("contact", added, removed, next),
         );
-        recordShown(ctx, "contact", visible);
-        return labelWriteReport("contact", added, removed, visible);
+        recordShown(ctx, "contact", next);
+        return labelWriteReport(
+          "contact",
+          added,
+          removed,
+          next,
+          refusedAdd,
+          refusedRemove,
+        );
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
       // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
       // another writer added between the two (issue #477 review, round 3). The queue serialises OUR
-      // writers; the diff above is what survives the ones it does not reach.
+      // writers; the delta is what survives the ones it does not reach — and unlike the diff it
+      // replaced, it survives them without needing to know what the model was shown.
       return withConversationLabels(
         ctx.tenantId,
         ctx.conversationId,
@@ -1196,25 +1180,27 @@ function setLabelsTool(ctx: ToolCtx) {
           const current = await ctx.client.getConversationLabels(
             ctx.conversationId,
           );
-          const { next, added, removed, visible } = applyLabelIntent(
-            seenNow.conversation,
-            desired,
-            current,
-            ctx.protectedLabels,
-          );
+          const { next, added, removed, refusedAdd, refusedRemove } =
+            applyLabelDelta(add, remove, current, guarded);
           if (added.length === 0 && removed.length === 0) {
             // Nothing moved: see the sibling scopes above.
             ctx.onNoEffect?.("set_labels");
-            recordShown(ctx, "conversation", visible);
-            return labelWriteReport("conversation", added, removed, visible);
+            recordShown(ctx, "conversation", next);
+            return labelWriteReport(
+              "conversation",
+              added,
+              removed,
+              next,
+              refusedAdd,
+              refusedRemove,
+            );
           }
           // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
           // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
           // peels the episode's labels off in this very queue (webhook.ts), so a call that was
           // wanted when it entered can land on a conversation the operator has just been told was
-          // cleared — and it would put the old episode's labels back. The nudge asks at the same
-          // point, for the same reason. Only an explicit `false` stops the write: a fence that
-          // could not answer is not a withdrawal.
+          // cleared. Only an explicit `false` stops the write: a fence that could not answer is not
+          // a withdrawal.
           if (ctx.stillWanted && !(await ctx.stillWanted())) {
             ctx.onNoEffect?.("set_labels");
             return "Could not set the labels (the run was called off while this write waited its turn).";
@@ -1223,33 +1209,48 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onLabelsWritten?.(
             describeLabelWrite("conversation", added, removed, next),
           );
-          recordShown(ctx, "conversation", visible);
-          return labelWriteReport("conversation", added, removed, visible);
+          recordShown(ctx, "conversation", next);
+          return labelWriteReport(
+            "conversation",
+            added,
+            removed,
+            next,
+            refusedAdd,
+            refusedRemove,
+          );
         },
       );
     },
     {
       name: "set_labels",
       description: withOperatorNote(
-        baseDescription,
+        baseDescription + guardedSentence,
         ctx,
         "set_labels",
         [currentXml, labelsXml].filter(Boolean).join("\n"),
       ),
-      schema: z.object({
-        labels: z.array(z.string()).describe(
-          // The current set is repeated HERE, on the argument, and not only in the description
-          // above: this is the field the model fills, and the failure this tool can cause that
-          // the old add-only one could not is a model treating it as "the label to add" and
-          // silently dropping the rest.
-          `The COMPLETE list of labels the scope you choose should have after the call, e.g. ['vip', 'orçamento']. Labels currently set on THAT scope and left out of this list are REMOVED, so repeat the ones that should stay. An empty list clears them all.${shownLabelsSentence(
-            ctx.shownLabels,
-          )}`,
-        ),
+      // LOOSE ON PURPOSE: a call carrying the retired `labels` key has to REACH the handler so it
+      // can be refused by name. A strict object strips the key, and the refusal would arrive as
+      // "nothing changed" — see the handler.
+      schema: z.looseObject({
+        add: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `Labels to ADD, e.g. ['vip']. Only these are added; everything already on the scope stays.${shownLabelsSentence(
+              ctx.shownLabels,
+            )}`,
+          ),
+        remove: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Labels to REMOVE, e.g. ['aguardando-dados']. Only these are removed; a label you do not name here is kept. Removing one that is not set is not an error.",
+          ),
         scope: scopeSchema
           .optional()
           .describe(
-            `Which labels to set: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
+            `Which labels to change: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
           ),
       }),
     },

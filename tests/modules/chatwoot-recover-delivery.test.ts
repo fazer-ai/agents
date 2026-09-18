@@ -370,6 +370,9 @@ async function seedDeadDelivery(over: {
   routeAgentBotId?: number | null;
   // Whether the receiver recorded that route as an OBSERVER's.
   routeObserved?: boolean | null;
+  // Se a entrega já tinha decidido lembrar a mensagem (issue #688, review r15). Null é a linha que
+  // build nenhum marcou.
+  routeRemembers?: boolean | null;
   // The event the delivery carried. `message_created` by default; `message_updated` is the write-back
   // that finally brought a voice note's transcription (issue #478).
   event?: string;
@@ -393,6 +396,9 @@ async function seedDeadDelivery(over: {
         over.inboundMessageId === undefined ? 9301 : over.inboundMessageId,
       routeAgentBotId: over.routeAgentBotId ?? null,
       routeObserved: over.routeObserved ?? null,
+      ...(over.routeRemembers === undefined
+        ? {}
+        : { routeRemembers: over.routeRemembers }),
       bindingGeneration: over.bindingGeneration ?? null,
     },
     select: { id: true },
@@ -3989,6 +3995,70 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
     }
   }
+
+  // O QUE A ENTREGA DECIDIU SOBRE A MEMÓRIA SOBREVIVE AO REPLAY (issue #688, review r15). A parada
+  // por posse manda a mensagem para a ingestão mesmo num agente em `test`, que não ingere
+  // continuamente — é a última chance daquela mensagem, e foi a rodada 1 desta PR que abriu essa
+  // porta. Se o enfileiramento falha, a linha vai para a varredura; e no replay o turno NÃO roda de
+  // novo quando uma pessoa ainda tem a conversa, então `stoodDownUnread` é falso, a rota em `test`
+  // não lembra nada, e a entrega liquidava pelo portão de posse com a mensagem em memória nenhuma.
+  //
+  // Quem sabia era a linha: a correção que o receptor escreve na primeira passada gravou
+  // `routeRemembers: true` nela. O replay repõe esse fato, do mesmo jeito que já repõe a rota e a
+  // geração da vinculação — o mundo andou, a decisão não.
+  test("a replay honours the memory this delivery had already decided to keep", async () => {
+    await asTestModeAgent(async () => {
+      const convId = 8942;
+      const messageId = 9591;
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+          status: "open",
+          // A pessoa ainda tem a conversa: é por isso que turno nenhum roda no replay.
+          assigneeType: "User",
+          assigneeId: 9,
+          inboxId: inboxDbId,
+          threadId: threadOf(convId),
+          lastEventAt: new Date(),
+          contactInboxId: 71_000 + convId,
+        },
+      });
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeAgentBotId: AGENT_BOT_ID,
+        // O fato que a primeira passada gravou.
+        routeRemembers: true,
+      });
+      const stub = stubChatwoot({
+        conv: { status: "open", assigneeType: "User", assigneeId: 9 },
+        page: pageWith([{ id: messageId, content: "consigo remarcar?" }]),
+      });
+
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+
+      // Ninguém fala por cima da pessoa...
+      expect(stub.sent).toEqual([]);
+      // ...e a mensagem VAI para a memória, que é o que a linha dizia dever. Pelo CAMPO e não por
+      // substring do payload: o id de uma vizinha aparece dentro do de outra e a contagem mente.
+      const armed = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_MESSAGE" },
+        select: { payload: true },
+      });
+      expect(
+        armed.filter(
+          (j) => (j.payload as { messageId?: number }).messageId === messageId,
+        ).length,
+      ).toBe(1);
+    });
+  });
 
   // ISSUE #478 review, round 5. The identity fence refuses a route whose agent has no Chatwoot bot,
   // because the reply is posted with the persona's token and the ownership comparison needs an id to

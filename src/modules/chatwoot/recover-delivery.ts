@@ -271,6 +271,11 @@ export async function recoverStrandedDelivery(
         // neighbouring reason (`recover-takeover.ts`): two routes, two different answers.
         routeAgentBotId: true,
         routeObserved: true,
+        // E SE ELA JÁ TINHA DECIDIDO LEMBRAR A MENSAGEM (issue #688, review r15). A correção que o
+        // receptor escreve quando uma parada por posse manda a mensagem para a ingestão mora nesta
+        // coluna, e é a única coisa que sobrevive ao replay: lá o turno não roda de novo, então a
+        // decisão não pode ser redescoberta.
+        routeRemembers: true,
         // THE WORLD THE MESSAGE ARRIVED IN (issue #540): the inbox's binding generation at receipt,
         // written by the INSERT rather than by the claim — which is what makes it readable on the
         // rows this module has to reason about, the ones that stranded before a role was stated.
@@ -353,6 +358,10 @@ interface LoadedRow {
   routeAgentBotId: number | null;
   // Whether that route was the OBSERVER's, as the receiver recorded it. Null = never asked.
   routeObserved: boolean | null;
+  // Se esta entrega já tinha decidido lembrar a mensagem (issue #688, review r15): a rota ingere
+  // continuamente, ou uma parada por posse mandou a mensagem para a ingestão e corrigiu a coluna.
+  // Null numa linha que build nenhum marcou, que é lida como "não decidiu nada".
+  routeRemembers: boolean | null;
   // The inbox's binding generation when this delivery was received (issue #540). Null on a row an
   // older build wrote, on a payload that named no inbox, and where the read failed — all three mean
   // "this row cannot say", never generation zero.
@@ -1419,6 +1428,8 @@ async function runRecovery(params: {
       // The role the delivery arrived with, so the replay does not re-derive it from bindings that
       // have moved since (issue #476 review, round 22).
       routeObserved: observerRouteBotId !== null,
+      // O que a entrega decidiu sobre a memória, reposto pelo mesmo motivo (issue #688, review r15).
+      routeRemembered: row.routeRemembers === true,
       // The world the message arrived in, from the row rather than re-read (issue #540). The replay
       // resolves the route against the binding as it stands now, and this is what lets that
       // resolution say whether it describes the same world.

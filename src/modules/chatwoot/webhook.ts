@@ -1656,6 +1656,16 @@ export interface ProcessChatwootParams {
   // and re-deriving would let a delivery that belonged to a watcher be replayed as the responder —
   // which answers. A live delivery leaves it undefined and the route is read as it always is.
   routeObserved?: boolean;
+  // SE ESTA ENTREGA JÁ DECIDIU LEMBRAR A MENSAGEM (issue #688, review r15), como a linha do ledger a
+  // registra. Mesmo espírito do `routeObserved` acima: o que o replay repõe é o que a entrega
+  // decidiu quando chegou, em vez de derivar de novo de um mundo que andou.
+  //
+  // Sem isto, a parada por posse sobre um agente em `test` perde a mensagem no replay. A rota de um
+  // agente de teste não ingere continuamente, e quem fazia a ingestão acontecer era a própria parada
+  // (`stoodDownUnread`); num replay com a conversa ainda de uma pessoa, turno nenhum roda, a parada
+  // não existe, e a entrega liquida pelo portão de posse com a mensagem em memória nenhuma. A linha
+  // sabia: a correção que a rodada 1 escreve grava `routeRemembers: true` nela antes da ingestão.
+  routeRemembered?: boolean;
   // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), as the ledger row
   // holds it. Both callers pass the ROW's value — the live path from the insert it just made or the
   // duplicate it found, the recovery from the row it took back — because the question it answers is
@@ -6480,8 +6490,15 @@ export async function processChatwootDelivery(
   // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
   // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
   // a punha no canal antes de a re-checagem pós-geração recusar o envio.
+  // E `params.routeRemembered` É A QUARTA (review r15), que é a segunda e a terceira chegando por um
+  // replay: a linha do ledger guarda o que ESTA entrega decidiu, e num replay nenhuma delas pode ser
+  // redescoberta — o turno não roda de novo quando uma pessoa ainda tem a conversa.
   const routeIngests =
-    rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
+    rt !== null &&
+    (routeRemembers ||
+      params.routeRemembered === true ||
+      handedToObserver ||
+      stoodDownUnread);
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
   // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
   // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,

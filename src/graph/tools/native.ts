@@ -1081,7 +1081,7 @@ function setLabelsTool(ctx: ToolCtx) {
         .map((l) => `'${l}'`)
         .join(
           ", ",
-        )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}. If one of them is in your \`add\`, the call's \`remove\` is not applied either, so a swap you cannot complete does not leave the scope empty.`
+        )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}. Naming one of them in \`add\` when it is not already there also holds the call's \`remove\`, so a swap you cannot complete does not leave the scope empty.`
     : "";
   const baseDescription = [
     `Add or remove labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,

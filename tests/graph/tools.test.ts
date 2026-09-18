@@ -1613,12 +1613,13 @@ describe("native tools", () => {
       }),
       "set_labels",
     ).description as string;
-    expect(guarded).toContain("the call's `remove` is not applied either");
+    expect(guarded).toContain("when it is not already there");
+    expect(guarded).toContain("holds the call's `remove`");
     const free = byName(
       buildNativeTools({ client, conversationId: 9 }),
       "set_labels",
     ).description as string;
-    expect(free).not.toContain("is not applied either");
+    expect(free).not.toContain("holds the call's `remove`");
   });
 
   test("reaffirming a guarded label that is already there does not hold the swap", async () => {

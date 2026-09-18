@@ -38,9 +38,37 @@ what this product loads, for exactly this reason: it carries the same binary
 base64-encoded inside a 1.9 MB JavaScript file, which nothing can replace
 without rebuilding the package.
 
-HEVC PATENTS. libde265 decodes HEVC/H.265. Patent licensing for HEVC is
-administered by pools independent of these projects, and no patent license is
-granted by the LGPL, by the Apache License or by this NOTICE. An operator who
-needs HEIC conversion in a jurisdiction where that matters is responsible for
-its own assessment, and can remove the capability by replacing the library as
-described above.
+HEVC PATENTS, AND THE TWO CASES THIS DECISION DOES NOT COVER. libde265 decodes
+HEVC/H.265. Patent licensing for HEVC is administered by pools independent of
+these projects (Access Advance among others), and no patent license is granted
+by the LGPL, by the Apache License or by this NOTICE. Shipping a decoder
+here was decided against ONE distribution model, so the decision is only as good
+as that model:
+
+  THE CASE IT WAS DECIDED FOR. The operator installs this product on its own
+  infrastructure and decodes images that reach its own agent. That is the same
+  exposure every phone, browser and operating system already carries, and the
+  alternative is not reading the attachment at all.
+
+  CASE 1, NOT COVERED: HANDING PRE-COMPILED BINARIES TO THIRD PARTIES. Building
+  this product into an image, bundle, appliance or installer and distributing
+  that artifact to someone else is a different act from self-hosting, and it is
+  the act the HEVC pools license. Nothing in this NOTICE, in the LGPL or in
+  the Apache License authorizes it, and no assessment of ours reaches it.
+
+  CASE 2, NOT COVERED: A CONTRACT THAT FORBIDS PATENT-POOL EXPOSURE. Some
+  customer, procurement or public-sector contracts prohibit shipping components
+  exposed to a patent pool, with no regard for how they are deployed. Such a
+  clause is decided by the contract and not by this product.
+
+In both cases the capability is REMOVABLE, and removing it is the supported
+answer rather than a workaround: replace the library as described above with a
+build that carries no HEVC decoder, or point VISION_LIBHEIF_WASM_PATH at a file
+that is not there. Measured, so that nobody has to guess what that does: the
+conversion fails, the attachment is NOT read, and the application log names the
+path it could not load. That is the outcome this feature replaced -- before it,
+a HEIC went to the provider as it arrived and the provider refused it -- so the
+capability is what is lost, not the installation. Everything else keeps working.
+
+An operator who needs HEIC conversion in a jurisdiction where any of this
+matters is responsible for its own assessment.

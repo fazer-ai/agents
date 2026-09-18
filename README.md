@@ -147,6 +147,8 @@ bun dev                   # http://localhost:3000
 
 A licença desta edição está em [LICENSE](LICENSE). Os componentes de terceiros com obrigações próprias estão nomeados em [NOTICE](NOTICE), entre eles a libheif e a libde265 (LGPL-3.0), usadas sem modificação, carregadas de arquivos em disco e substituíveis por outra build compatível em interface sem recompilar nada.
 
+**A libde265 decodifica HEVC/H.265, e a licença de patente de HEVC é administrada por pools independentes desses projetos: nenhuma licença de patente é concedida pela LGPL, por esta licença ou pelo NOTICE.** A decisão de embarcar o decodificador foi tomada contra UM modelo de distribuição, o self-hosted, em que o operador instala na própria infraestrutura e decodifica as próprias imagens. Ela **não** cobre dois casos, nomeados no [NOTICE](NOTICE): entregar binário pré-compilado a terceiros (imagem, bundle, appliance ou instalador), que é o ato que os pools licenciam; e contrato de cliente que proíba componente com exposição a pool de patentes, independentemente de como ele é implantado. Nos dois casos a capacidade é removível, e remover é a resposta suportada: o anexo HEIC deixa de ser lido e o resto continua funcionando.
+
 ## Links
 
 - 🌐 Site: [fazer.ai](https://fazer.ai)

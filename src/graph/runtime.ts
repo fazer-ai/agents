@@ -14,8 +14,8 @@ import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
-  maxIncomingId,
   parseChatwootMessages,
+  pendingIncoming,
 } from "@/modules/chatwoot/messages";
 import {
   firstAudioAttachment,
@@ -36,6 +36,9 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
+  foreignReplyBoundary,
+  readSelectionState,
+  selectOpenMessages,
 } from "@/modules/debounce/watermark";
 import {
   emitFlowEvent,
@@ -2588,7 +2591,58 @@ export async function runAgentTurn(
             const latest = parseChatwootMessages(
               await client.getMessages(conversationId),
             );
-            if (maxIncomingId(latest, triggerId) > triggerId) {
+            // ASKED BY IDENTITY, not by the arithmetic of the page (issue #698). "A newer message
+            // arrived" used to be `maxIncomingId > triggerId`, which reads every id above this
+            // trigger as a customer still waiting — including the one another turn has already
+            // answered. That is the exact shape #690 measured on THIS path: two deliveries
+            // serialized (#658), the newer message's turn takes the thread first and answers, and
+            // this turn, the only actor that ever loaded the older message, comes second. #690 made
+            // the claim grant it; judged here by arithmetic, the gate swallowed the reply anyway and
+            // the customer got no answer to what they wrote.
+            //
+            // The same selector the flush uses, so the two cannot drift: what it still offers above
+            // this trigger is, by definition, a message nobody is speaking for.
+            const state = await readSelectionState({
+              tenantId,
+              conversationDbId: convDbId,
+              messageIds: pendingIncoming(latest, null).map((m) => m.id),
+              base,
+            });
+            const open = selectOpenMessages({
+              page: latest,
+              scalarFloor: null,
+              state,
+              // A PERSONA CARREGADA, não a rota que trouxe a entrega (PR #701, review round 7).
+              // Quem envia é `loaded.agentBotToken`; com o inbox religado entre o roteamento e o
+              // load, o aviso que ESTA persona acabou de postar seria saída de terceiro e o portão
+              // engoliria a resposta dela mesma. Mesmo conserto que o flush levou na rodada 6.
+              purpose: "reply",
+              managedBotId: loaded.agentBotId,
+              // E O PROVEDOR DO INBOX COM ELE (PR #701, review round 8): a resposta digitada no
+              // aparelho pareado não tem remetente nenhum, e só o provedor diz se aquela marca é de
+              // um atendente ou o eco da nossa própria resposta.
+              whatsappProvider: loaded.whatsappProvider,
+            });
+            // TWO QUESTIONS, and the second one is new (PR #701, review round 1). "Is anything newer
+            // still open" is the supersede this gate always asked. "Is what I am about to answer
+            // still mine to answer" was carried for free by the first one, because a human reply
+            // always sat above the trigger with a newer inbound message under it — and the fence
+            // that keeps an orphan from being re-offered now removes BOTH from the selection, so an
+            // emptiness that means "a person already answered this" would read as "nothing came
+            // after me, go ahead".
+            //
+            // ASKED AS THE BOUNDARY, not as "is my trigger still in the open set". A message another
+            // TURN claimed is missing from that set too, and standing down on it would take the
+            // decision away from the claim, which is what tells a burst with free members to come
+            // back for them.
+            const openAbove = open.some((m) => m.id > triggerId);
+            const answeredByOther =
+              triggerId <=
+              foreignReplyBoundary(latest, {
+                managedBotId: loaded.agentBotId,
+                whatsappProvider: loaded.whatsappProvider,
+              });
+            if (openAbove || answeredByOther) {
               logger.info(
                 "direct turn: superseded mid-turn (conv=%s), deferring",
                 String(conversationId),

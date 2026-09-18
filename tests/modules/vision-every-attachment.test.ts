@@ -312,6 +312,10 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       isReaction: false,
       emailSubject: null,
       activityType: null,
+      senderType: null,
+      externalSenderName: null,
+      imported: false,
+      senderId: null,
       sendId: null,
     };
     overlayMediaAnnotations(tenantId, instanceId, [row]);
@@ -400,6 +404,10 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       isReaction: false,
       emailSubject: null,
       activityType: null,
+      senderType: null,
+      externalSenderName: null,
+      imported: false,
+      senderId: null,
       sendId: null,
     } as ChatwootMessageRow;
     overlayMediaAnnotations(tenantId, instanceId, [row]);
@@ -448,6 +456,10 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       isReaction: false,
       emailSubject: null,
       activityType: null,
+      senderType: null,
+      externalSenderName: null,
+      imported: false,
+      senderId: null,
       sendId: null,
     } as ChatwootMessageRow;
     overlayMediaAnnotations(tenantId, instanceId, [row]);
@@ -483,6 +495,10 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       isReaction: false,
       emailSubject: null,
       activityType: null,
+      senderType: null,
+      externalSenderName: null,
+      imported: false,
+      senderId: null,
       sendId: null,
     } as ChatwootMessageRow;
     overlayMediaAnnotations(1n, 2n, [row]);

@@ -57,6 +57,8 @@ const CONV_DENIED_UNREAD = 9420;
 const CONV_THROWS = 9421;
 const CONV_GATE_TAKEN = 9422;
 const CONV_LEDGER = 9423;
+const CONV_ORPHAN = 9434;
+const CONV_HUMAN_REPLIED = 9435;
 const CONV_OTHER_BOT = 9424;
 const CONV_OBS_FAILS = 9425;
 const CONV_HANDLED_FLOOR = 9426;
@@ -67,6 +69,7 @@ const CONV_TURN_UNREADABLE = 9430;
 const CONV_LADDER_FLIP = 9431;
 const CONV_CEILING_CLIENT = 9432;
 const CONV_PAST_BOUND = 9433;
+const CONV_CEILING_REMEMBERED = 9436;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
@@ -76,13 +79,23 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
-function page(msgs: Array<{ id: number; content: string }>) {
+function page(
+  msgs: Array<{
+    id: number;
+    content: string;
+    // Uma saída, e de quem: o que separa a resposta de uma PESSOA da nossa (PR #701).
+    type?: number;
+    sender?: string;
+    senderId?: number;
+  }>,
+) {
   return {
     payload: msgs.map((m) => ({
       id: m.id,
       content: m.content,
-      message_type: 0,
+      message_type: m.type ?? 0,
       private: false,
+      ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
     })),
   };
 }
@@ -267,9 +280,12 @@ describe.skipIf(!dbUp)(
       });
       inboxDbId = inbox.id;
       await seedConversation(CONV_OBSERVED, 94_100);
+      await seedConversation(CONV_ORPHAN, 94_340);
+      await seedConversation(CONV_HUMAN_REPLIED, 94_350);
       await seedConversation(CONV_DISABLED, 94_110);
       await seedConversation(CONV_FLIPPED_MID_TURN, 94_120);
       await seedConversation(CONV_CEILING, 94_130);
+      await seedConversation(CONV_CEILING_REMEMBERED, 94_360);
       await seedConversation(CONV_PAGED, 94_140);
       await seedConversation(CONV_OUT_OF_REACH, 94_150);
       await seedConversation(CONV_NO_THREAD, null);
@@ -357,6 +373,107 @@ describe.skipIf(!dbUp)(
           "94100:2",
         ]);
         expect(await watermarkOf(CONV_OBSERVED)).toBe(2);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("the orphan below the mark is handed over too, not left without a row", async () => {
+      // PR #701, review round 6. A observação ingere e MARCA a rajada, então ela tem que enxergar o
+      // mesmo conjunto que o flush: a órfã abaixo da marca, que esta PR ensinou a seleção a oferecer,
+      // ficava sem ser ingerida e sem linha nenhuma, com a passagem declarada bem-sucedida. Voltando
+      // para produção, um flush depois executa aquele pedido velho.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ORPHAN },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { replyClaimFloorMessageId: 0, lastRepliedMessageId: 2 },
+      });
+      const job = await claimedJob(CONV_ORPHAN, 2);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "monitoring" },
+      });
+      const s2 = stub([
+        page([
+          { id: 1, content: "quero cancelar meu plano" },
+          { id: 2, content: "obrigado" },
+        ]),
+      ]);
+      try {
+        await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s2.makeClient as never,
+          },
+        });
+        const keys = (await ingestJobs())
+          .map((j) => j.dedupeKey)
+          .filter((k) => k.includes("94340:"));
+        // A órfã entra na memória do observador junto com a mensagem que estava acima da marca.
+        expect(keys.map((k) => k.split(":").slice(-2).join(":"))).toEqual([
+          "94340:1",
+          "94340:2",
+        ]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("a human reply does not hide the customer's questions from the observer", async () => {
+      // PR #701, review round 7. Elegibilidade para RESPONDER e elegibilidade para LEMBRAR são
+      // perguntas diferentes, e a cerca da resposta de terceiro só responde a primeira. Ligada aqui,
+      // uma resposta humana esconde da memória do agente as perguntas atrás dela, e a passagem
+      // declara sucesso sem ter lembrado nada — que é exatamente o que a observação existe para
+      // fazer.
+      const job = await claimedJob(CONV_HUMAN_REPLIED, 2);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "monitoring" },
+      });
+      const s3 = stub([
+        page([
+          { id: 1, content: "quanto custa a consulta?" },
+          { id: 2, content: "e tem convênio?" },
+          {
+            id: 3,
+            content: "oi, sou a Ana, já respondo",
+            type: 1,
+            sender: "user",
+            senderId: 41,
+          },
+        ]),
+      ]);
+      try {
+        await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s3.makeClient as never,
+          },
+        });
+        const keys = (await ingestJobs())
+          .map((j) => j.dedupeKey)
+          .filter((k) => k.includes("94350:"));
+        expect(keys.map((k) => k.split(":").slice(-2).join(":"))).toEqual([
+          "94350:1",
+          "94350:2",
+        ]);
       } finally {
         await suDb.agent.update({
           where: { id: agentDbId },
@@ -470,6 +587,135 @@ describe.skipIf(!dbUp)(
         const keys = (await ingestJobs()).map((j) => j.dedupeKey);
         expect(ingestedIds(keys, 94_130)).toEqual([7]);
         expect(await watermarkOf(CONV_CEILING)).toBe(7);
+      } finally {
+        await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+        await suDb.tenant.update({
+          where: { id: tenantId },
+          data: { settings: (before.settings as object) ?? {} },
+        });
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("what the ceiling REFUSED is still the observer's to remember", async () => {
+      // PR #701, review round 8. Uma dispensa diz que ninguém vai RESPONDER àquela mensagem. Ela não
+      // diz nada sobre a memória — e a recusa por teto é justamente a que nomeia cada membro da
+      // rajada que recusou. Lida pela ingestão, ela esconde do observador exatamente o que o cliente
+      // pediu enquanto o orçamento estava estourado, e a passagem declara sucesso sem ter lembrado
+      // nada. A meia escalar desse mesmo problema é o que o `watermarkPastBurst` sempre compensou.
+      //
+      // A corrida é a outra porta de entrada: uma virada para monitoramento que caia entre o
+      // `stillWanted("settlement")` e a passagem abaixo dele chega no mesmo lugar por dois writes de
+      // distância. Esta sequência não precisa dela, e é a que o operador realmente faz: o teto
+      // recusa, ele devolve a conversa e vira o agente para observar enquanto o orçamento não volta.
+      const before = await suDb.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...((before.settings as object) ?? {}),
+            spendCeiling: {
+              enabled: true,
+              monthlyInboxUsd: 10,
+              overCeilingMessage: "Orçamento do mês esgotado.",
+            },
+          },
+        },
+      });
+      await suDb.spendCostSnapshot.create({
+        data: {
+          tenantId,
+          source: "inbox",
+          monthStart: monthStart(new Date()),
+          costUsd: 12,
+          polledAt: new Date(),
+        },
+      });
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_CEILING_REMEMBERED },
+        select: { id: true },
+      });
+      // A era por mensagem, que é onde a dispensa decide: abaixo deste piso quem decide é a escalar.
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      try {
+        const s1 = stub([page([{ id: 7, content: "quero remarcar" }])]);
+        const job1 = await claimedJob(CONV_CEILING_REMEMBERED, 7);
+        await flushDebounceJob({
+          job: job1,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("the model must not be invoked over the ceiling");
+            },
+            makeClient: s1.makeClient as never,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        // O ARRANJO, conferido em vez de suposto: a recusa aconteceu, nomeou a mensagem 7 e não
+        // lembrou nada dela. Sem isto o teste passaria medindo outra coisa.
+        expect(s1.sent).toEqual(["Orçamento do mês esgotado."]);
+        expect(await watermarkOf(CONV_CEILING_REMEMBERED)).toBe(7);
+        // NOMEADA, e a linha mora no `message_reply_claims` com a palavra `DISPENSED` — a tabela
+        // `reply_dispensals` é só para a faixa que o chamador não conseguiu enumerar, e a recusa por
+        // teto consegue.
+        expect(
+          await suDb.messageReplyClaim.findFirst({
+            where: { conversationId: conv.id, messageId: 7 },
+            select: { reason: true },
+          }),
+        ).toEqual({ reason: "DISPENSED" });
+        expect(
+          ingestedIds(
+            (await ingestJobs()).map((j) => j.dedupeKey),
+            94_360,
+          ),
+        ).toEqual([]);
+
+        // O operador devolve a conversa e vira o agente para observar enquanto o orçamento não
+        // volta; o cliente escreve de novo. A rajada seguinte reusa a chave de dedupe da thread, que
+        // é única: a linha da primeira sai como a do scheduler sairia ao terminar.
+        await suDb.schedulerJob.delete({ where: { id: job1.id } });
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: { status: "pending", assigneeType: null, assigneeId: null },
+        });
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "monitoring" },
+        });
+        const s2 = stub([
+          page([
+            { id: 7, content: "quero remarcar" },
+            { id: 8, content: "consegue para quinta?" },
+          ]),
+        ]);
+        await flushDebounceJob({
+          job: await claimedJob(CONV_CEILING_REMEMBERED, 8),
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s2.makeClient as never,
+          },
+        });
+        // As DUAS: o que o teto recusou e o que veio depois. O observador guarda o que o CLIENTE
+        // disse, e a recusa foi uma decisão sobre a resposta.
+        expect(
+          ingestedIds(
+            (await ingestJobs()).map((j) => j.dedupeKey),
+            94_360,
+          ),
+        ).toEqual([7, 8]);
       } finally {
         await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
         await suDb.tenant.update({

@@ -590,6 +590,8 @@ export async function reengageConversation(
         // THE ONE OPERATOR-INITIATED PATH. A person looked at the conversation and asked for the
         // tail to be answered, which is the only thing allowed to overturn a deliberate silence.
         initiatedBy: "operator",
+        managedBotId: resolved.loaded.agentBotId,
+        whatsappProvider: resolved.loaded.whatsappProvider,
         label: "reengage",
       },
       base,

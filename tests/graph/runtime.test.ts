@@ -41,6 +41,10 @@ import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { reengageConversation } from "@/modules/conversations/reengage";
+import {
+  advanceHandledWatermark,
+  claimReplyBurst,
+} from "@/modules/debounce/watermark";
 import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
@@ -3790,6 +3794,300 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBeNull();
+  });
+
+  // AND THE NEWER MESSAGE SOMEBODY ELSE ALREADY ANSWERED IS NOT A SUPERSESSION (issue #698). The
+  // test above is the case the gate exists for: message 2 is still open, so the reply to 1 is
+  // obsolete and its own turn is coming. This is the other one, and it is the shape #690 measured on
+  // this exact path: two deliveries serialized (#658), the NEWER one takes the thread first and
+  // answers, and the older message's turn — the only actor in the system that ever loaded it — comes
+  // second. #690 made the claim grant it. Judged by arithmetic here, the gate then swallows the
+  // reply anyway: message 2 is above message 1, so the turn defers, hands nothing back and leaves
+  // the customer with no answer to what they wrote.
+  test("issue #698: a newer message somebody else answered does not supersede this reply", async () => {
+    await seedConversation(9698, null);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9698 },
+      select: { id: true },
+    });
+    // MSG-B's turn ran first and is done with it: the claim row is its record, and the mark moved on
+    // its way out, which is what every completed outcome but `superseded` does.
+    expect(
+      await claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: 2,
+        maxHandledAllowed: 1,
+        messageIds: [2],
+        initiatedBy: "automatic",
+        base: appDb,
+      }),
+    ).toEqual({ won: true });
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 2,
+      dispensed: { kind: "claimed" },
+      base: appDb,
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          { id: 2, content: "tudo bem?", message_type: 0, private: false },
+          {
+            id: 3,
+            content: "tudo ótimo!",
+            message_type: 1,
+            private: false,
+            sender: { id: 9, type: "agent_bot" },
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9698 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).not.toBe("superseded");
+    expect(sent.length).toBe(1);
+  });
+
+  // AND A PERSON WHO ANSWERED CLOSES THIS TURN TOO, not only the messages after it (PR #701, review
+  // round 1). The fence that stops an orphan from being re-offered removes the human-answered ids
+  // from the selection — including the one this turn is holding — so a gate that only asks "is
+  // anything NEWER still open?" reads that emptiness as "nothing came after me, go ahead" and posts
+  // over the person who already replied. The older gate was accidentally covered here: the newer
+  // inbound message was above the trigger and suppressed the post by arithmetic.
+  test("issue #698: a human reply closes the turn's own trigger, not just what came after it", async () => {
+    await seedConversation(9699, null);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9699 },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          { id: 2, content: "alguem ai?", message_type: 0, private: false },
+          {
+            id: 3,
+            content: "oi, sou a Ana do suporte",
+            message_type: 1,
+            private: false,
+            sender: { id: 41, type: "user" },
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9699 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // Nothing is said on top of the person who answered.
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("superseded");
+  });
+
+  // E A OUTRA ROTA POR ONDE UMA PESSOA RESPONDE, no caminho direto também (bateria de mutação da
+  // rodada 10, m31). A resposta digitada no aparelho pareado chega sem remetente nenhum, então a
+  // cláusula acima não a vê, e este portão é o único que decide aqui: sem a rota do aparelho ele
+  // responde por cima da atendente. Vale só onde o provedor reserva os ids do envio — no `zapi` a
+  // mesma forma pode ser o eco da nossa própria resposta, e o control abaixo é o que prova a
+  // diferença em vez de a afirmar.
+  test("issue #698: a reply from the paired phone closes the direct turn, and only on a reserving provider", async () => {
+    const pagina = () =>
+      ({
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            {
+              id: 2,
+              content: "oi, aqui é a Ana",
+              message_type: 1,
+              private: false,
+              content_attributes: { external_sender_name: "WhatsApp" },
+            },
+          ],
+        }),
+        sendMessage: async (id: number, content: string) => {
+          enviados.push([id, content]);
+          return {};
+        },
+      }) as unknown as ChatwootClient;
+    const enviados: Array<[number, string]> = [];
+    const rodar = async (convId: number, provider: string) => {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: 7 },
+        data: { provider },
+      });
+      await seedConversation(convId, null);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      // A LINHA DO INBOX TEM QUE ESTAR LIGADA: o provedor sai dela, e uma conversa sem inbox devolve
+      // `whatsappProvider: null`, que recusa a rota do aparelho. Sem isto o teste passaria a medir a
+      // ausência do vínculo em vez da regra.
+      const inboxRow = await suDb.inbox.findFirstOrThrow({
+        where: { tenantId, chatwootInboxId: 7 },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0, inboxId: inboxRow.id },
+      });
+      return runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: convId }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: async () => pagina(),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    };
+    try {
+      expect(await rodar(9705, "baileys")).toBe("superseded");
+      expect(enviados).toEqual([]);
+      // O control: sem a reserva de ids, a mesma linha pode ser a nossa própria resposta voltando, e
+      // o cliente continua devendo uma.
+      expect(await rodar(9706, "zapi")).toBe("posted");
+      expect(enviados.map(([, texto]) => texto)).toHaveLength(1);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: 7 },
+        data: { provider: null },
+      });
+    }
+  });
+
+  // QUEM CLASSIFICA A SAÍDA É QUEM A PRODUZ, no caminho direto também (PR #701, review round 7). O
+  // `agentBotId` é a ROTA que trouxe a entrega; quem envia é `loaded.agentBotToken`, da persona que o
+  // inbox serve no momento do load. Religado o inbox entre uma coisa e outra, o aviso que ESTA
+  // persona acabou de postar seria saída de terceiro, e o portão engoliria a resposta dela mesma.
+  test("issue #698: the persona that sends classifies its own outgoing on the direct path", async () => {
+    const OTHER_BOT = 87;
+    const OTHER_INBOX = 88;
+    const key2 = await suDb.vaultEntry.create({
+      data: { tenantId, name: "llm-key-direct-2", secret: encryptJson("sk") },
+      select: { id: true },
+    });
+    const agent2 = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Persona direta",
+        systemPrompt: "Você é prestativa.",
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: `vault:${key2.id}`,
+        },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: agent2.id,
+        chatwootAgentBotId: OTHER_BOT,
+        accessToken: encryptJson("BOT2"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `rt-direct-2-${process.pid}`,
+        name: "Persona direta",
+      },
+    });
+    const inbox2 = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX,
+        name: "Outro inbox",
+        agentId: agent2.id,
+      },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9700,
+        status: "pending",
+        inboxId: inbox2.id,
+        threadId: `${tenantId}:${instanceId}:9700`,
+        lastEventAt: new Date(),
+        replyClaimFloorMessageId: 0,
+      },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          {
+            id: 2,
+            content: "só um instante",
+            message_type: 1,
+            private: false,
+            // O aviso é DESTA persona, a que o inbox serve agora.
+            sender: { id: OTHER_BOT, type: "agent_bot" },
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      // A ROTA nomeia o bot antigo.
+      agentBotId: 9,
+      event: incoming({ conversationId: 9700, inboxId: OTHER_INBOX }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(sent.length).toBe(1);
   });
 
   // The bound on the case above. Supersede drops a reply the newest message made obsolete, and the

@@ -34,7 +34,6 @@ import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
-  maxIncomingId,
   parseChatwootMessages,
   pendingIncoming,
   toRenderable,
@@ -87,8 +86,11 @@ import {
 import { readDebounceConfig } from "./settings";
 import {
   advanceHandledWatermark,
+  foreignReplyBoundary,
   readAnsweredFloor,
   readClaimedMessageIds,
+  readSelectionState,
+  selectOpenMessages,
 } from "./watermark";
 
 // How long a flush waits before asking again whether the thread is free. Matched to the debounce
@@ -166,6 +168,15 @@ export interface CoalesceTurnContext {
   // Whether this caller is the operator's own re-engage, which is the only one entitled to answer
   // over a silence something chose deliberately (issue #452).
   initiatedBy: "automatic" | "operator";
+  // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
+  // everybody else's (PR #701, review round 1). Null when the caller has no bot to name, and then
+  // every outgoing message on the page counts as somebody else's.
+  managedBotId: number | null;
+  // The WhatsApp provider of the inbox this conversation is on, which is the other half of the same
+  // question: on a provider that reserves its send ids, an attendant's reply typed on the paired
+  // phone is recognisable, and on one that does not, the same shape can be our own echo (PR #701,
+  // review round 8). Null refuses that route, which is the safe direction.
+  whatsappProvider: string | null;
   // Told when the claim was lost, so the caller can tell a burst that has something coming for it
   // from one that does not (issue #690, PR review round 4). Only the flush passes it.
   onClaimLost?: (
@@ -364,7 +375,52 @@ export async function coalesceAndRunTurn(
       const latest = parseChatwootMessages(
         await client.getMessages(conversationId),
       );
-      if (maxIncomingId(latest, targetWatermark) > targetWatermark) {
+      // ASKED BY IDENTITY, not with the arithmetic of the page (issue #698). "A newer message
+      // arrived" used to be `maxIncomingId > targetWatermark`, which reads every incoming id above
+      // this turn's target as a customer still waiting. Once the selection stopped deciding by a
+      // single number, a turn can legitimately answer BELOW a message another turn already claimed —
+      // and then the id above it is not a mid-turn arrival, it is the message that caused this one to
+      // come back. Judged by arithmetic, the retry defers forever and the customer is never answered,
+      // which is the same silence this issue is about, one gate further along.
+      //
+      // AND ASKED HERE, not through `ctx.selectPending` (PR #701, review round 5). That closure is
+      // the CALLER's tail strategy, and the operator's click uses "everything after the last outgoing
+      // message" — so a slow-tool acknowledgement of ours, posted mid-turn by `emitAck`, empties that
+      // tail and the gate reads zero as "nothing came after me". The customer message underneath it
+      // is still unclaimed, and the stale reply goes out on top of it. The gate's question does not
+      // depend on who called: is there an OPEN message above what I am about to answer?
+      const state = await readSelectionState({
+        tenantId,
+        conversationDbId: convDbId,
+        messageIds: pendingIncoming(latest, null).map((m) => m.id),
+        base,
+      });
+      const openAbove = selectOpenMessages({
+        page: latest,
+        scalarFloor: targetWatermark,
+        state,
+        purpose: "reply",
+        managedBotId: ctx.managedBotId,
+        whatsappProvider: ctx.whatsappProvider,
+      }).some((m) => m.id > targetWatermark);
+      // AND WHETHER THIS BURST IS STILL OURS TO ANSWER (PR #701, review round 1). The question above
+      // is about what came AFTER; a person who answered the burst itself closes it without writing a
+      // row anywhere, and the fence that keeps an orphan from being re-offered takes those ids out of
+      // the selection — an emptiness that means "somebody already answered this" would otherwise read
+      // as "nothing came after me, go ahead".
+      //
+      // Present but closed, never merely absent: `getMessages` returns a window, so a burst member
+      // missing from it says nothing, and this gate treats an unreadable page as "carry on".
+      //
+      // Asked as the BOUNDARY rather than "are my ids still in the open set": a member another TURN
+      // claimed is missing from that set too, and standing down on it would take the decision away
+      // from the claim, whose `partial` is what sends this flush back for the members nobody took.
+      const boundary = foreignReplyBoundary(latest, {
+        managedBotId: ctx.managedBotId,
+        whatsappProvider: ctx.whatsappProvider,
+      });
+      const answeredByOther = inTurn.some((m) => m.id <= boundary);
+      if (openAbove || answeredByOther) {
         logger.info(
           "%s: superseded mid-turn (conv=%s), deferring",
           ctx.label,
@@ -633,6 +689,14 @@ async function settleGateExit(params: {
   // this gate knows nothing about, and reaching back over one hides a real loss for good.
   afterMessageId: number | null;
   upToMessageId: number;
+  // ...OR THE MEMBERS THEMSELVES, when the exit knows them (PR #701, review round 12). Only one of
+  // the four gate exits fetched the page before deciding, and for that one the range is strictly
+  // worse than the list: a burst that reaches down to an orphan below the watermark spans every
+  // message BETWEEN the two, including the ones the selection deliberately left out — a message
+  // some other turn claimed and died holding, whose delivery is a genuine loss the sweep still has
+  // to report. Settled by range, it silently becomes PROCESSED, which is the one state the sweep
+  // never looks at again. The same set the dispensal names, named here too.
+  messageIds?: number[];
   // Whether the state that closed the gate is ANOTHER AgentBot, as opposed to a human, a status
   // change or a decision about the contact. The one thing about the gate this exit is scoped by.
   heldByAnotherBot: boolean;
@@ -665,8 +729,12 @@ async function settleGateExit(params: {
       settlement: "consumed",
       // ...which is the same reason nothing was folded in: no graph ran.
       covered: false,
-      afterMessageId: params.afterMessageId,
-      upToMessageId: params.upToMessageId,
+      ...(params.messageIds && params.messageIds.length > 0
+        ? { messageIds: params.messageIds }
+        : {
+            afterMessageId: params.afterMessageId,
+            upToMessageId: params.upToMessageId,
+          }),
       base: params.base,
     });
   } catch (e) {
@@ -953,9 +1021,33 @@ async function ingestObservedBurst(args: {
         messages.unshift(...rows);
       }
       overlayMediaAnnotations(tenantId, instanceId, messages);
-      const burst = pendingIncoming(messages, floor).filter(
-        (m) => armedLast === null || m.id <= armedLast,
-      );
+      // POR IDENTIDADE AQUI TAMBÉM (PR #701, review round 6). A observação ingere e MARCA a rajada,
+      // então ela tem que enxergar o mesmo conjunto que o flush enxerga: a órfã abaixo da marca, que
+      // esta PR ensinou a seleção a oferecer, ficaria sem ser ingerida e sem linha nenhuma, com a
+      // troca para observação declarando a passagem bem-sucedida. Voltando para produção, um flush
+      // depois executa aquele pedido velho.
+      //
+      // A PAGINAÇÃO CONTINUA SENDO A ESCALAR, de propósito: ela alcança de volta até o piso escalar,
+      // e é o que limita o custo desta varredura. Uma mensagem aberta que esteja FORA dessa janela
+      // continua fora daqui, e é o flush seguinte que a pega.
+      const selState = await readSelectionState({
+        tenantId,
+        conversationDbId: ctx.convDbId,
+        messageIds: pendingIncoming(messages, null).map((m) => m.id),
+        base,
+      });
+      const burst = selectOpenMessages({
+        page: messages,
+        scalarFloor: floor,
+        state: selState,
+        // "Devo LEMBRAR disto?", que não é "posso responder a isto?" (PR #701, review rounds 7 e 8).
+        // As duas cercas da resposta ficam de fora, e por motivos que são o mesmo motivo: a memória
+        // do observador guarda o que o CLIENTE disse, e nem quem respondeu nem uma decisão de não
+        // responder mudam isso. Ligada a primeira, uma resposta humana esconde da memória as
+        // perguntas atrás dela; ligada a segunda, a recusa por teto esconde a rajada inteira que ela
+        // acabou de nomear. Nos dois casos a passagem declara sucesso sem ter lembrado nada.
+        purpose: "memory",
+      }).filter((m) => armedLast === null || m.id <= armedLast);
       const resolveQuoted = buildQuoteResolver(messages);
       const graphThreadId = resolveGraphThreadId(
         tenantId,
@@ -1135,6 +1227,10 @@ export async function flushDebounceJob(
         inboxId: true,
         contactInboxId: true,
         lastHandledMessageId: true,
+        // Read here for one branch only: the spend ceiling's shortcut below, which is a claim about
+        // this conversation's whole backlog and stops being true once the per-message era starts on
+        // it (issue #698).
+        replyClaimFloorMessageId: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -1182,6 +1278,11 @@ export async function flushDebounceJob(
         // rows of the burst it consumed, and this is that burst's LOWER bound. Missing, the range is
         // open at the bottom and reaches back over a strand an earlier message left behind.
         watermark: conv.lastHandledMessageId,
+        // AND O PISO DA ERA COM ELE (PR #701, review round 4). Sem este campo aqui, o `gateExitFrom`
+        // logo abaixo cai de volta na marca exatamente no ramo em que o portão de posse fecha, e a
+        // órfã abaixo da marca fica sem linha: o mesmo defeito que a rodada 3 consertou nos outros
+        // sítios, sobrevivendo num ramo do contexto que não carregava o campo.
+        perMessageFloor: conv.replyClaimFloorMessageId,
         // WHICH other party, when there is one. A human taking the conversation is a statement about
         // the message — they answer it, whichever route carried it — and another BOT is not. Read
         // from the same conversation row the gate just judged, for the same reason `gateClosed` is.
@@ -1250,12 +1351,22 @@ export async function flushDebounceJob(
       inboxChatwootId: inbox.chatwootInboxId,
       contactInboxId: conv.contactInboxId,
       watermark: conv.lastHandledMessageId,
+      perMessageFloor: conv.replyClaimFloorMessageId,
       loaded,
       settings: agentRow?.settings ?? {},
     };
   });
   // No conversation / no config → nothing to do (not a failure).
   if (ctx === null) return { outcome: "done" };
+  // ONDE A AUSÊNCIA DE LINHA COMEÇA A SIGNIFICAR ALGUMA COISA, e por isso o limite inferior de toda
+  // faixa que um gate exit grava (PR #701, review round 3). Um gate exit decide antes de qualquer
+  // busca no Chatwoot, então ele não sabe nomear os membros e diz o VÃO que consumiu. O vão começava
+  // na marca, e desde que a seleção parou de ser escalar existe mensagem aberta ABAIXO dela: a órfã
+  // sem linha, que a faixa deixava de fora e o primeiro flush seguinte oferecia de novo, executando
+  // um pedido que este exit já tinha descartado. Abaixo do piso da era nada precisa de linha, porque
+  // lá os escalares decidem inteiros; entre o piso e o `last` está tudo que este exit consome.
+  const gateExitFrom = ctx.perMessageFloor ?? ctx.watermark ?? null;
+
   // NOTE: An unbound inbox is a state an operator has to repair, so it leaves the same line the
   // webhook's direct path leaves rather than ending as a silent "done" (issue #318).
   if ("unbound" in ctx) {
@@ -1344,7 +1455,7 @@ export async function flushDebounceJob(
         // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
         // The decision was taken over the span ("this is not ours to answer now"), so the span is
         // the fact rather than a hull of one (issue #690).
-        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+        dispensed: { kind: "range", afterMessageId: gateExitFrom },
         base,
       });
       await settleGateExit({
@@ -1352,7 +1463,10 @@ export async function flushDebounceJob(
         instanceId,
         conversationId,
         conversationRowId: ctx.convDbId,
-        afterMessageId: ctx.watermark ?? null,
+        // O mesmo limite da dispensa acima, como nos outros dois exits: o ledger fecha o conjunto que
+        // a decisão consumiu, e o `heldByAnotherBot` abaixo continua decidindo o ESCOPO daquele
+        // fechamento, que é outra pergunta.
+        afterMessageId: gateExitFrom,
         upToMessageId: last,
         heldByAnotherBot: ctx.heldByAnotherBot,
         base,
@@ -1409,7 +1523,36 @@ export async function flushDebounceJob(
     const armed = ctx.watermark;
     const floor =
       fresh === null ? armed : armed === null ? fresh : Math.max(fresh, armed);
-    return pendingIncoming(messages, floor);
+    // AND ABOVE THE PER-MESSAGE FLOOR THE SCALAR DOES NOT DECIDE (issue #698).
+    //
+    // A competing claim writes `last_replied_message_id`, which is exactly what the floor above
+    // reads, so one turn claiming message 1002 raises it over 1001 too. 1001, which has no row
+    // anywhere, would be excluded from this burst and from every burst after it, and nothing ever
+    // comes back for it: the selection doing by arithmetic what the claim stopped doing in #690.
+    //
+    // The rule itself is `selectOpenMessages`, shared with the two supersede gates that ask the same
+    // question, and its fences are the boundaries the scalar used to carry for free by the accident
+    // of being one number that only moved forward. The first attempt at this carried none of them
+    // and was reverted for it (#690, review round 7, 3bdbc1dd).
+    const state = await readSelectionState({
+      tenantId,
+      conversationDbId: ctx.convDbId,
+      messageIds: pendingIncoming(messages, null).map((m) => m.id),
+      base,
+    });
+    return selectOpenMessages({
+      page: messages,
+      scalarFloor: floor,
+      state,
+      // A PERSONA CARREGADA, não o bot que o payload nomeou (PR #701, review round 6). Quem envia é
+      // `ctx.loaded.agentBotToken`, e o payload é de quando o job foi armado: com o inbox religado a
+      // outra persona nesse meio-tempo, os dois divergem, e o aviso que ESTA persona acabou de postar
+      // seria classificado como de terceiro — a fronteira fecharia a própria rajada dela e o portão
+      // engoliria a resposta. Quem classifica a saída tem que ser o mesmo que a produz.
+      purpose: "reply",
+      managedBotId: ctx.loaded.agentBotId,
+      whatsappProvider: ctx.loaded.whatsappProvider,
+    });
   };
 
   // The operator flipped the agent to monitoring during one of this flush's waits (issue #209
@@ -1443,8 +1586,21 @@ export async function flushDebounceJob(
   };
 
   const armedLast = readLastMessageId(job.payload);
+  // ONLY WHILE THE SCALAR STILL SPEAKS FOR THE WHOLE BACKLOG (issue #698). The shortcut reads "the
+  // mark covers this payload's last id, so there is nothing left to answer and nothing to refuse" —
+  // a statement about every message below the mark, which was safe while the selection asked the
+  // same single number. It is not safe once this conversation has a per-message floor: above that
+  // floor a message with no row is still owed, and it sits BELOW the mark by exactly the accident
+  // this issue is about. Taken there, the turn runs the model and its tools without the spend
+  // verdict ever being asked, and suppressing the reply afterwards does not unspend it.
+  //
+  // Where the shortcut no longer applies, nothing is said to the customer by mistake: the `over`
+  // branch below re-runs the same selection and returns silently when it finds nothing.
   const alreadyAnswered =
-    armedLast !== null && ctx.watermark !== null && ctx.watermark >= armedLast;
+    ctx.perMessageFloor === null &&
+    armedLast !== null &&
+    ctx.watermark !== null &&
+    ctx.watermark >= armedLast;
   const flushCeiling = alreadyAnswered
     ? null
     : await spendCeilingVerdict({
@@ -1689,7 +1845,22 @@ export async function flushDebounceJob(
         // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
         // The decision was taken over the span ("this is not ours to answer now"), so the span is
         // the fact rather than a hull of one (issue #690).
-        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+        // THIS gate exit CAN name its members, unlike the other three: the ceiling refusal already
+        // fetched the page, to find out whether there was a burst to refuse at all, and
+        // `ceilingBurst` is that burst. The span alone stopped being enough when the selection
+        // stopped being scalar (PR #701, review round 2): it reaches back only to the watermark, and
+        // the message this refusal is ABOUT can sit below that mark with no row on it, which is
+        // exactly the orphan this PR teaches the ceiling to see. Left to the span, the withdrawn
+        // request is executed by the first flush that has budget again.
+        dispensed: ceilingBurst
+          ? {
+              kind: "messages",
+              messageIds: [
+                ...ceilingBurst.pending,
+                ...ceilingBurst.dropped,
+              ].map((m) => m.id),
+            }
+          : { kind: "range", afterMessageId: gateExitFrom },
         base,
       });
       await settleGateExit({
@@ -1697,6 +1868,20 @@ export async function flushDebounceJob(
         instanceId,
         conversationId,
         conversationRowId: ctx.convDbId,
+        // NOMEADO, PELO MESMO CONJUNTO DA DISPENSA (PR #701, review rounds 3, 7 e 12). O ledger
+        // fecha por faixa quando o exit decide antes de qualquer fetch, e daqui isso era errado nas
+        // duas pontas: começando na marca, deixava a entrega da órfã consumida parada e reportada
+        // como perda (rodada 3); parando no `last` do payload, deixava a da mensagem mais nova que
+        // a releitura trouxe (rodada 7). Esticar a faixa consertou as duas e abriu uma terceira: a
+        // faixa passa a cobrir tudo o que está ENTRE a órfã e o topo, inclusive o que a seleção
+        // deixou de fora de propósito — a entrega que outro turno reivindicou e morreu segurando,
+        // que é perda de verdade e some do relatório virando PROCESSED.
+        //
+        // Este é o único dos quatro gate exits que leu a página antes de decidir, então é o único
+        // que pode nomear. Os outros três continuam na faixa porque não têm o que nomear.
+        messageIds: ceilingBurst
+          ? [...ceilingBurst.pending, ...ceilingBurst.dropped].map((m) => m.id)
+          : undefined,
         afterMessageId: ctx.watermark ?? null,
         upToMessageId: last,
         // False, and for the reason the gate below gives: what closed this exit is a decision about
@@ -1772,7 +1957,7 @@ export async function flushDebounceJob(
           toMessageId: last,
           // Same gate exit, same reason as the one above: the span is what this decision was taken
           // over, and its members are not known here (issue #690).
-          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+          dispensed: { kind: "range", afterMessageId: gateExitFrom },
           base,
         });
         await settleGateExit({
@@ -1780,7 +1965,12 @@ export async function flushDebounceJob(
           instanceId,
           conversationId,
           conversationRowId: ctx.convDbId,
-          afterMessageId: ctx.watermark ?? null,
+          // O MESMO LIMITE DA DISPENSA, sempre (PR #701, review round 4). O ledger fecha o conjunto
+          // que a decisão consumiu, e desde a rodada 3 esse conjunto desce até o piso da era. Dois
+          // limites diferentes para uma decisão só deixam a entrega da órfã parada, reportada como
+          // perda que ninguém atendeu e elegível para recuperação, depois de a decisão já ter sido
+          // tomada sobre ela.
+          afterMessageId: gateExitFrom,
           upToMessageId: last,
           // False, and not read from anywhere: the gate above already proved this route owns the
           // conversation, and what closed THIS exit is a decision about the CONTACT. That decision
@@ -1840,7 +2030,7 @@ export async function flushDebounceJob(
           toMessageId: last,
           // Same gate exit, same reason as the one above: the span is what this decision was taken
           // over, and its members are not known here (issue #690).
-          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+          dispensed: { kind: "range", afterMessageId: gateExitFrom },
           base,
         });
         await settleGateExit({
@@ -1848,7 +2038,12 @@ export async function flushDebounceJob(
           instanceId,
           conversationId,
           conversationRowId: ctx.convDbId,
-          afterMessageId: ctx.watermark ?? null,
+          // O MESMO LIMITE DA DISPENSA, sempre (PR #701, review round 4). O ledger fecha o conjunto
+          // que a decisão consumiu, e desde a rodada 3 esse conjunto desce até o piso da era. Dois
+          // limites diferentes para uma decisão só deixam a entrega da órfã parada, reportada como
+          // perda que ninguém atendeu e elegível para recuperação, depois de a decisão já ter sido
+          // tomada sobre ela.
+          afterMessageId: gateExitFrom,
           upToMessageId: last,
           heldByAnotherBot: recheck.heldByAnotherBot,
           base,
@@ -2078,6 +2273,8 @@ export async function flushDebounceJob(
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
+        managedBotId: ctx.loaded.agentBotId,
+        whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {
           claimLostPartial = reason === "partial";
         },

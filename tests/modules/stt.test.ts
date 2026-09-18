@@ -262,6 +262,10 @@ describe.skipIf(!dbUp)("stt", () => {
         inReplyTo: null,
         isReaction: false,
         activityType: null,
+        senderType: null,
+        externalSenderName: null,
+        imported: false,
+        senderId: null,
         location: null,
       },
     ];
@@ -321,6 +325,10 @@ describe.skipIf(!dbUp)("stt", () => {
         inReplyTo: null,
         isReaction: false,
         activityType: null,
+        senderType: null,
+        externalSenderName: null,
+        imported: false,
+        senderId: null,
         location: null,
       },
     ];

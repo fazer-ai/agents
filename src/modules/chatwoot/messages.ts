@@ -53,6 +53,32 @@ export interface ChatwootMessageRow {
   // declare what they narrate — a status change, a Linear event — and null on the ones that carry
   // only a localized sentence, which is where a label change lives.
   activityType: string | null;
+  // WHO SENT IT, from Chatwoot's own `sender.type`. It is what separates OUR outgoing message from a
+  // human agent's, a distinction `messageType` cannot make and the burst selection needs: a reply a
+  // person wrote closes every customer message before it, and one of ours closes only what its turn
+  // claimed (issue #698).
+  senderType: "contact" | "user" | "agent_bot" | "other" | null;
+  // WHICH sender, when the page named one. Carried with the type because "agent_bot" alone does not
+  // say OURS: a conversation can be assigned to another AgentBot, whose replies write no claim row in
+  // this runtime, and exempting it from the outgoing boundary would read its answers as ours
+  // (PR #701, review round 1).
+  senderId: number | null;
+  // `content_attributes.external_sender_name`, which is the OTHER route a person answers by: typed
+  // on the phone paired to the inbox's number, never through the CRM. The fork stores that echo
+  // sender-less, so `senderType` is null on it and the two clauses above cannot see it at all — and
+  // it is the only field on the row that separates it from the three other shapes of sender-less
+  // outgoing message Chatwoot itself writes (an automation rule, a scheduled message, a CSAT
+  // survey). Trusting it also needs the inbox's WhatsApp provider, which the page does not carry;
+  // see `foreignReplyBoundary` and `providerReservesEchoIds` (PR #701, review round 8).
+  externalSenderName: string | null;
+  // `content_attributes.imported`, written by the history importer on a backfilled row. It is NOT a
+  // detail of the mark above, it is the fence on it: an import inserts last year's messages with
+  // today's autoincrement ids, so a phone's backfilled reply lands ABOVE a live customer message
+  // nobody has answered yet — and read as a boundary it would silence that customer, and every other
+  // one in the operator's backlog, on the day they pair a phone (PR #701, review round 9). The
+  // webhook path fences the same flag one layer up (`hasDeviceAttendantShape`), where it is
+  // unreachable; here the page really carries it.
+  imported: boolean;
   // The name the send gave itself on the way out (issue #499), when this message is one of ours and
   // the sender asked for one. Null on every message nobody named: everything inbound, everything a
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
@@ -62,6 +88,20 @@ export interface ChatwootMessageRow {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Chatwoot's `sender.type` as the page reports it, narrowed to the three its serializer emits
+// (`push_event_data`: "contact", "user", "agent_bot"). An unknown string is "other" rather than
+// null: null means the page said nothing about a sender, which the serializer allows
+// (`json.sender … if message.sender`), and a caller deciding ownership has to tell "nobody said"
+// from "somebody we do not recognise".
+function senderTypeOf(
+  sender: unknown,
+): "contact" | "user" | "agent_bot" | "other" | null {
+  if (!isRecord(sender)) return null;
+  const t = sender.type;
+  if (typeof t !== "string") return null;
+  return t === "contact" || t === "user" || t === "agent_bot" ? t : "other";
 }
 
 function num(v: unknown): number | null {
@@ -219,6 +259,13 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       isReaction: ca?.is_reaction === true,
       emailSubject: emailSubjectFrom(ca),
       activityType: activityTypeFrom(ca),
+      senderType: senderTypeOf(item.sender),
+      senderId: isRecord(item.sender) ? num(item.sender.id) : null,
+      externalSenderName:
+        typeof ca?.external_sender_name === "string"
+          ? ca.external_sender_name
+          : null,
+      imported: ca?.imported === true,
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

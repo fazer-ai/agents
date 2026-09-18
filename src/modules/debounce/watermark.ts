@@ -1,6 +1,15 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { resetLandedAfter } from "@/graph/reset-episode";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  type ChatwootMessageRow,
+  pendingIncoming,
+} from "@/modules/chatwoot/messages";
+import {
+  providerReservesEchoIds,
+  SESSION_SENDER_NAME,
+} from "@/modules/chatwoot/normalize";
 
 // `Conversation.lastHandledMessageId` marks the last inbound message the bot either responded to or
 // DELIBERATELY skipped (handoff mid-turn, human-owned period, consumed /commands, guardrail
@@ -435,6 +444,302 @@ export async function readClaimedMessageIds(params: {
     }),
   );
   return new Set(rows.map((r) => r.messageId));
+}
+
+// WHAT IS CLOSED ABOVE THE PER-MESSAGE FLOOR, and the two fences read with it (issue #698).
+//
+// The claim stopped deciding by arithmetic in #690, and this is the other half: the SELECTION has to
+// stop too, or a message nobody answered is never offered to a turn again. A competing claim writes
+// `last_replied_message_id`, which is what `readAnsweredFloor` reads, so one turn claiming message
+// 1002 raises the floor over 1001 as well, and 1001, which has no row anywhere, is excluded from
+// every future burst.
+//
+// Below `replyClaimFloorMessageId` the scalars still answer in full: down there no row was ever
+// written and none ever will be, so absence proves nothing. Above it absence IS evidence, because
+// every decision taken up there writes a row: a claim when a turn spoke for the message, a dispensal
+// when something closed it without answering. So a message up there is offered unless one of those
+// rows says otherwise.
+//
+// BOTH kinds of row close a message here, unlike at the claim, where an operator's click may
+// overturn a dispensal. This is the automatic path, and a deliberate silence is not something a
+// retry gets to undo.
+//
+// `resetAt` rides along because it is the second fence on the same decision and it is one column of
+// the same row: `/reset` writes a dispensal for the command's own id only, so the burst it retires
+// has no row at all, and above the floor "no row" means "offer it". Read separately it would be a
+// second round trip to answer half of one question.
+export async function readSelectionState(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  messageIds: readonly number[];
+  base?: PrismaClient;
+}): Promise<SelectionState> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: { id: params.conversationDbId },
+      select: { replyClaimFloorMessageId: true, resetAtMessageId: true },
+    });
+    const floor = conv?.replyClaimFloorMessageId ?? null;
+    const resetAt = conv?.resetAtMessageId ?? null;
+    const ids =
+      floor === null ? [] : params.messageIds.filter((m) => m > floor);
+    if (ids.length === 0) {
+      return {
+        floor,
+        resetAt,
+        claimed: new Set<number>(),
+        dispensed: new Set<number>(),
+      };
+    }
+    const lowest = Math.min(...ids);
+    const [rows, ranges] = await Promise.all([
+      db.messageReplyClaim.findMany({
+        where: {
+          conversationId: params.conversationDbId,
+          messageId: { in: [...ids] },
+        },
+        // THE WORD MATTERS, not only the row (PR #701, review round 8). This table holds both
+        // answers: `CLAIMED` is a turn that took the message, `DISPENSED` is a decision not to
+        // answer it — and a range in `reply_dispensals` is the second one for what a caller could
+        // not enumerate. Read as one set they say "closed", which is the reply's question and not
+        // the observer's.
+        select: { messageId: true, reason: true },
+      }),
+      // Bounded by the lowest candidate: a range that ends below it cannot cover any of them, and a
+      // conversation accumulates one of these rows per gate exit for as long as it lives.
+      db.replyDispensal.findMany({
+        where: {
+          conversationId: params.conversationDbId,
+          toMessageId: { gte: lowest },
+        },
+        select: { fromMessageId: true, toMessageId: true },
+      }),
+    ]);
+    const claimed = new Set(
+      rows.filter((r) => r.reason === "CLAIMED").map((r) => r.messageId),
+    );
+    // ANYTHING THAT IS NOT A CLAIM lands here, rather than `DISPENSED` alone, because that is the
+    // forgiving direction for both questions: the reply still stands down on a word it does not
+    // recognise, and the observer still remembers a message it might already hold — which costs a
+    // deduplicated ingest, against a customer's question nobody ever recorded.
+    const dispensed = new Set(
+      rows.filter((r) => r.reason !== "CLAIMED").map((r) => r.messageId),
+    );
+    for (const id of ids) {
+      if (
+        ranges.some(
+          (r) =>
+            id <= r.toMessageId &&
+            (r.fromMessageId === null || id > r.fromMessageId),
+        )
+      ) {
+        dispensed.add(id);
+      }
+    }
+    return { floor, resetAt, claimed, dispensed };
+  });
+}
+
+// THE SELECTION ITSELF, once `readSelectionState` has fetched what the rows say (issue #698). Pure,
+// and exported because THREE gates ask this one question and a second copy of it would drift: the
+// burst the debounce flush answers, the supersede gate of that flush, and the supersede gate of the
+// direct path, which is where #690's own measurement lives.
+//
+// `scalarFloor` is the pre-#690 answer, `max(last_handled, last_replied)`, and it still decides
+// below the per-message floor: down there no row was ever written and none ever will be, so absence
+// proves nothing. Above the floor absence IS evidence, because every decision taken up there writes
+// a row, and the message is open unless a row or one of the two fences says otherwise.
+// THE REPLY SOMEBODY ELSE WROTE, as an id: every incoming message at or below it was read and
+// answered by whoever wrote it, and nothing in this runtime records that. Zero when the page carries
+// no such reply.
+//
+// "Somebody else" is a NAMED other, by either of the two routes a person can answer through:
+//
+//   - THE COMPOSER, which the page types: a `user`, or an AgentBot that is not this tenant's,
+//     matched by id because another bot on the same conversation writes no claim row here and its
+//     reply is as opaque to us as a person's.
+//   - THE PAIRED PHONE, which the page cannot type at all: the fork stores an attendant's WhatsApp
+//     reply sender-less, so the clause above sees nothing, and the only mark on the row is
+//     `external_sender_name` (PR #701, review round 8). That mark is trustworthy ONLY where the
+//     provider reserves its send ids: everywhere else our OWN reply comes back wearing exactly this
+//     shape when the send response is lost, and reading it as somebody else's would have the agent
+//     fall silent on a customer nobody answered. Same rule, one spelling, as
+//     `isDeviceAttendantMessage` in ../chatwoot/normalize.ts.
+//
+// An outgoing message the page did not attribute AND did not mark is NOT a boundary, and that
+// default is the opposite of the one the selection would want — deliberately.
+//
+// The two costs are not symmetric. Read as a boundary, an unattributed reply of OURS silences a
+// customer nobody answered, which is this issue's own defect arriving through its fix; read as ours,
+// an unattributed reply of somebody else's costs a second answer on a thread a person already
+// handled. The delivery-recovery path makes the first cost concrete and permanent: an away message
+// or an out-of-hours notice sitting after a stranded customer message would refuse the recovery
+// forever (`tests/modules/chatwoot-recover-delivery.test.ts`). So the boundary moves on evidence,
+// never on silence.
+//
+// Exported because the two post gates ask it directly (PR #701, review round 1). They cannot ask
+// `selectOpenMessages` instead: a message another TURN claimed is also missing from that answer, and
+// the gates must not stand down on it — the claim is what detects that, and the word it returns is
+// what sends the flush back for the members nobody took.
+export function foreignReplyBoundary(
+  page: readonly ChatwootMessageRow[],
+  opts: ReplyIdentity,
+): number {
+  const deviceCounts = providerReservesEchoIds(opts.whatsappProvider);
+  let boundary = 0;
+  for (const m of page) {
+    const somebodyElse =
+      m.senderType === "user" ||
+      (m.senderType === "agent_bot" &&
+        (opts.managedBotId === null || m.senderId !== opts.managedBotId)) ||
+      (m.senderType === null &&
+        m.externalSenderName === SESSION_SENDER_NAME &&
+        deviceCounts);
+    if (
+      (m.messageType === "outgoing" || m.messageType === "template") &&
+      !m.private &&
+      // A REACTION IS NOT A REPLY. The fork stores an operator's emoji react as a real public
+      // outgoing message with a `user` sender, so it matches every other clause here; read as a
+      // boundary it would close every question the customer asked before the 👍. Same exclusion, for
+      // the same reason, as `isHumanAgentMessage` in ../chatwoot/normalize.ts.
+      !m.isReaction &&
+      // AND A BACKFILLED ROW IS NOT A REPLY TO ANYTHING LIVE (PR #701, review round 9). The importer
+      // writes last year's conversation with today's ids, so an old answer from the paired phone
+      // sorts ABOVE the message the customer sent five minutes ago — and every clause above it
+      // matches. The same exclusion `hasDeviceAttendantShape` makes, for the same reason and at a
+      // point where the flag is actually reachable: this page is read from the database, not from
+      // the webhook the importer never fires.
+      !m.imported &&
+      somebodyElse &&
+      m.id > boundary
+    ) {
+      boundary = m.id;
+    }
+  }
+  return boundary;
+}
+
+// WHO WE ARE ON THIS CONVERSATION, which is what the boundary above compares against: the Chatwoot
+// id of this tenant's agent bot, and the WhatsApp provider of the inbox it answers on. Both halves
+// are REQUIRED of the caller rather than defaulted, for the reason `isDeviceAttendantMessage` gives
+// about its own: a caller that forgot would lose the fence silently on one route and turn it on
+// where it is unsafe on the other.
+export interface ReplyIdentity {
+  managedBotId: number | null;
+  whatsappProvider: string | null;
+}
+
+// WHAT THE ROWS SAY ABOUT A SET OF MESSAGES, as `readSelectionState` read them. The two sets are
+// kept apart because they answer different questions and only one of them is about replying (PR
+// #701, review round 8): a CLAIM says a turn took this message and folded it into memory, a
+// DISPENSAL says nobody will reply to it — and a dispensal is not a statement about memory at all.
+// The two live in two tables and the split is NOT the table: `message_reply_claims` holds both words
+// (`CLAIMED`/`DISPENSED`) and `reply_dispensals` holds the ranges of the second, so reading by table
+// puts a spend-ceiling refusal on the wrong side of this line.
+export interface SelectionState {
+  floor: number | null;
+  resetAt: number | null;
+  claimed: Set<number>;
+  dispensed: Set<number>;
+}
+
+// WHICH QUESTION THE CALLER IS ASKING, because the same page has two right answers (PR #701, review
+// rounds 7 and 8) and a boolean per difference is how the two come to disagree:
+//
+//   "may I REPLY to this?"     — a reply somebody else wrote closes it, and so does a dispensal:
+//                                both are decisions that this message will not be answered by us.
+//   "should I REMEMBER this?"  — neither does. What the observer's memory holds is what the CUSTOMER
+//                                said; who answered does not change that, and a refusal to reply is
+//                                a decision about the reply. Applied to ingestion, the reply fences
+//                                hide the questions behind them from the agent's memory and the
+//                                hand-over then reports success having remembered nothing.
+//
+// A CLAIM closes both: the turn that wrote it is the turn that put the message in memory. So does
+// `/reset`, whose whole point is that the memory it cleared must not be rebuilt.
+//
+// A union rather than a flag, so the identity above is demanded exactly where it is used: the
+// memory question never computes a boundary, and inventing a `null` identity to satisfy a parameter
+// is how a caller comes to pass the wrong one.
+export type SelectionPurpose =
+  | ({ purpose: "reply" } & ReplyIdentity)
+  | { purpose: "memory" };
+
+export function selectOpenMessages(
+  params: {
+    page: readonly ChatwootMessageRow[];
+    scalarFloor: number | null;
+    state: SelectionState;
+  } & SelectionPurpose,
+): ChatwootMessageRow[] {
+  const { page, scalarFloor, state } = params;
+  const perMessage = state.floor;
+  const pageArray = [...page];
+  const forReply = params.purpose === "reply";
+  const closedByOther = forReply ? foreignReplyBoundary(pageArray, params) : 0;
+  if (perMessage === null) {
+    // BEFORE THE PER-MESSAGE ERA THE FENCE STILL APPLIES (PR #701, review round 2). Down here the
+    // scalars decide, and they do not see outgoing messages at all — so a burst selected by them can
+    // carry a message a person already answered, which the post gate then reads as a burst it must
+    // not answer, refusing the whole thing INCLUDING the message after the human reply that nobody
+    // touched. No claim, no reschedule, and every later flush repeats it for as long as that history
+    // stays on the page. The fence belongs to the selection on both sides of the floor; only the
+    // row-by-row part is new above it.
+    const floorHere =
+      scalarFloor === null
+        ? closedByOther > 0
+          ? closedByOther
+          : null
+        : Math.max(scalarFloor, closedByOther);
+    // ...AND THE IMPORT IS FENCED ON BOTH SIDES OF THE FLOOR, for the reason the clause below gives.
+    // Down here the scalar decides and usually covers it, but a conversation whose backfill landed
+    // above the mark has the same history to answer and no row anywhere to say otherwise.
+    const desta = pendingIncoming(pageArray, floorHere);
+    return forReply ? desta.filter((m) => !m.imported) : desta;
+  }
+  // THE REPLY A PERSON WROTE, which is the fence the rows cannot carry: `pendingIncoming` reads
+  // incoming messages only, and a human agent answering a customer writes no row anywhere. The rule
+  // is ASYMMETRIC on purpose. An outgoing message of OURS closes exactly what its turn claimed,
+  // which the rows already say, so reading it as a boundary would re-lose every message this
+  // selection exists to find. One that is NOT ours closes everything before it: the person who
+  // answered read the thread, and handing that thread back to the model is the defect
+  // `incomingAfterLastOutgoing` exists to prevent on the re-engage path.
+  //
+  return pendingIncoming(pageArray, null).filter((m) => {
+    if (m.id <= perMessage) {
+      return scalarFloor === null || m.id > scalarFloor;
+    }
+    if (state.claimed.has(m.id)) return false;
+    // A BACKFILLED QUESTION IS NOT AN UNANSWERED ONE (PR #701, review round 13), and this is the
+    // inbound half of the fence round 9 put on the outgoing side. The importer writes no webhook, so
+    // a row it backfilled has neither a claim nor a dispensal — and above the floor "no row" is
+    // exactly what this selection reads as "still owed". The scalar used to cover it by accident:
+    // the import lands under a watermark that a later real message pushed past, which is precisely
+    // the shape this PR taught the selection to reopen. Reopened, last year's requests go back to
+    // the model and its tools run again, hundreds of rows at once on the day an operator pairs a
+    // phone.
+    //
+    // FOR THE REPLY ONLY. "Should I remember this?" is the other question and its answer is yes:
+    // the import IS how history reaches the agent's memory, and the observer's reach here is the
+    // one it always had.
+    if (forReply && m.imported) return false;
+    // A DISPENSAL IS A DECISION ABOUT THE REPLY, so it closes this message for the reply question
+    // and for nothing else (PR #701, review round 8). The spend-ceiling refusal is where the two
+    // come apart: it names every member of the burst it refused, and a flip to monitoring landing
+    // between that write and the hand-over below left the observer selecting nothing and reporting
+    // a hand-over that remembered none of it. The scalar half of exactly this problem is what
+    // `watermarkPastBurst` in ../debounce/handler.ts has always compensated for.
+    if (forReply && state.dispensed.has(m.id)) return false;
+    if (forReply && m.id <= closedByOther) return false;
+    // THE COMMAND'S FENCE. `/reset` retires the pending burst and writes a dispensal for its own
+    // message id alone, so the messages it withdrew carry no row: read by the rule above they would
+    // be offered again, rebuilding the memory the command cleared and re-running requests the
+    // operator took back. `resetLandedAfter` is the same predicate every other reader of this
+    // column asks, and it holds for BOTH questions — the memory it cleared must not be rebuilt by
+    // the observer either.
+    if (resetLandedAfter(m.id, state.resetAt)) return false;
+    return true;
+  });
 }
 
 export type ReplyClaimOutcome =

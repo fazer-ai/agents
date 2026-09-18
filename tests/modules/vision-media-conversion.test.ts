@@ -71,6 +71,18 @@ const STRAIGHT = readFileSync(
 const CLAP = readFileSync(
   `${import.meta.dir}/../fixtures/media/recorte-clap.heic`,
 );
+// The same crop, with a 16-byte EXTENDED-SIZE `free` box spliced after `ftyp` (32-bit size of 1, the
+// real size in the 64 bits after the type) and the `iloc` offsets moved with it. libheif reads it
+// exactly like the file above; a walker that stops at the first `size == 1` reads nothing past it.
+const CLAP_EXT = readFileSync(
+  `${import.meta.dir}/../fixtures/media/recorte-clap-caixa-estendida.heic`,
+);
+// And the same crop again with the CONTAINER itself extended: `meta` rewritten with a 32-bit size of
+// 1 and its real size in the 64 bits after the type. Here the extended header has to move where the
+// children start, not just how far the box reaches.
+const CLAP_META_EXT = readFileSync(
+  `${import.meta.dir}/../fixtures/media/recorte-clap-meta-estendido.heic`,
+);
 const COLECAO = readFileSync(
   `${import.meta.dir}/../fixtures/media/colecao-primaria-nao-e-a-primeira.heic`,
 );
@@ -760,7 +772,9 @@ describe("heic-to-jpeg", () => {
       }
       return { data, width: w, height: h, premultiplied: false };
     };
-    const out = await runMediaConverter("heic-to-jpeg", brandedHeic(), {
+    // The real fixture's bytes, because the cap reads the declared size out of them and a synthetic
+    // header declares nothing — the frames are what is being stood in for here, not the container.
+    const out = await runMediaConverter("heic-to-jpeg", heicBytes(), {
       withFrames: (async (_b, use) =>
         use([
           {
@@ -836,6 +850,76 @@ describe("heic-to-jpeg", () => {
       (await runMediaConverter("heic-to-jpeg", clap, { maxSourcePixels: 4096 }))
         .byteLength,
     ).toBeGreaterThan(0);
+  });
+
+  test("an extended-size box does not blind the cap", async () => {
+    // Review round 12. BMFF states a box size three ways — `n`, `0` for "to the end of the file", and
+    // `1` for "the real size is the 64 bits after the type" — and a walker that only understands the
+    // first stops at the first of the others. It then reports "no declared size", which under the
+    // previous fallback meant the cropped dimensions, which is the hole the walk was added to close.
+    const ext = CLAP_EXT.buffer.slice(
+      CLAP_EXT.byteOffset,
+      CLAP_EXT.byteOffset + CLAP_EXT.byteLength,
+    ) as ArrayBuffer;
+    // The file is read by libheif exactly like its twin, so the difference is entirely in the walk.
+    await withHeicFrames(ext, async (frames) => {
+      expect([frames[0]?.width, frames[0]?.height]).toEqual([1, 1]);
+    });
+    expect(storedPixels(ext)).toBe(64 * 64);
+    await expect(
+      runMediaConverter("heic-to-jpeg", ext, { maxSourcePixels: 1 }),
+    ).rejects.toThrow(/stores 4096 px, over the 1 px cap/);
+
+    // And when the CONTAINER is the extended one, the eight extra bytes move where its children
+    // begin. A walker that reaches past the box but not into it reads nothing either.
+    const metaExt = CLAP_META_EXT.buffer.slice(
+      CLAP_META_EXT.byteOffset,
+      CLAP_META_EXT.byteOffset + CLAP_META_EXT.byteLength,
+    ) as ArrayBuffer;
+    expect(storedPixels(metaExt)).toBe(64 * 64);
+    await expect(
+      runMediaConverter("heic-to-jpeg", metaExt, { maxSourcePixels: 1 }),
+    ).rejects.toThrow(/stores 4096 px, over the 1 px cap/);
+
+    // A size the walk cannot hold is a size it does not get to truncate. The same `free` box with
+    // 2^32 added to its declared size: reading only the low word would find 16 there, walk on, and
+    // report the `ispe` of a file whose boxes do not line up. The walk stops instead, finds no
+    // declared size, and the caller fails closed.
+    const huge = new Uint8Array(CLAP_EXT);
+    new DataView(huge.buffer, huge.byteOffset).setUint32(28 + 8, 1);
+    expect(
+      storedPixels(
+        huge.buffer.slice(
+          huge.byteOffset,
+          huge.byteOffset + huge.byteLength,
+        ) as ArrayBuffer,
+      ),
+    ).toBe(0);
+  });
+
+  test("a file that will not declare its size is refused, not converted on trust", async () => {
+    // FAIL CLOSED. `ispe` is mandatory in HEIF and every file libheif accepts carries one, so finding
+    // none means the container is malformed or beyond this walker — and the attacker is the one who
+    // chooses the container. Driven through the frame seam, because reaching this branch needs a file
+    // that decodes to a frame AND hides its `ispe`, which is a combination no real encoder writes.
+    await expect(
+      runMediaConverter("heic-to-jpeg", brandedHeic(), {
+        withFrames: (async (_b, use) =>
+          use([
+            {
+              width: 2,
+              height: 2,
+              primary: true,
+              decode: async () => ({
+                data: new Uint8ClampedArray(2 * 2 * 4).fill(255),
+                width: 2,
+                height: 2,
+                premultiplied: false,
+              }),
+            },
+          ])) as typeof withHeicFrames,
+      }),
+    ).rejects.toThrow(/does not declare the size it stores/);
   });
 
   test("the declared size is read from the file, and an unreadable one does not throw", () => {

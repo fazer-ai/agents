@@ -175,14 +175,39 @@ export function storedPixels(bytes: ArrayBuffer): number {
   const walk = (start: number, end: number, depth: number): void => {
     let i = start;
     while (i + 8 <= end) {
-      const size = v.getUint32(i);
+      const declared = v.getUint32(i);
       const type = ascii(bytes, i + 4);
-      if (size < 8 || i + size > end) return;
-      if (type === "ispe" && i + 20 <= end)
-        most = Math.max(most, v.getUint32(i + 12) * v.getUint32(i + 16));
+      // THE THREE WAYS A BMFF BOX STATES ITS SIZE, and the two unusual ones are not decoration: a
+      // walker that stops at the first `size == 1` reads nothing past it, returns "no ispe found",
+      // and hands the cap back to the cropped dimensions it was written to distrust. Reproduced with
+      // a 16-byte extended-size `free` box spliced after `ftyp` — libheif reads that file fine
+      // (PR #707 review round 12).
+      //   0  the box runs to the end of the file
+      //   1  the real size is the 64-bit value after the type
+      //   n  the size, header included
+      let size = declared;
+      let header = 8;
+      if (declared === 0) size = end - i;
+      else if (declared === 1) {
+        if (i + 16 > end) return;
+        // Read as two 32-bit words rather than through `getBigUint64`: a non-zero high word means a
+        // box of at least 4 GiB, which no buffer that reached here can contain, so it is out of
+        // range for the same reason the length guard below is. Spelling it this way also keeps the
+        // tree's one bounded `BigInt` parse the only cast of its kind
+        // (tests/lib/caller-id-spelling.test.ts sweeps for the spelling, not for the intent).
+        if (v.getUint32(i + 8) !== 0) return;
+        size = v.getUint32(i + 12);
+        header = 16;
+      }
+      if (size < header || i + size > end) return;
+      if (type === "ispe" && i + header + 12 <= end)
+        most = Math.max(
+          most,
+          v.getUint32(i + header + 4) * v.getUint32(i + header + 8),
+        );
       const step = ISPE_CAP_DEPTH[depth];
       if (step !== undefined && type === step[0])
-        walk(i + step[1], i + size, depth + 1);
+        walk(i + header + (step[1] - 8), i + size, depth + 1);
       i += size;
     }
   };
@@ -231,8 +256,17 @@ async function heicToJpeg(
     const { width, height } = frameDimensions(frame);
     // The larger of what the decoder reports and what the file says it stores, because a crop makes
     // the first smaller than the work the decode actually does.
-    const pixels = Math.max(width * height, storedPixels(bytes));
+    const stored = storedPixels(bytes);
     const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
+    // FAIL CLOSED when the file will not say. `ispe` is mandatory in HEIF and every file libheif
+    // accepts carries one, so finding none means the container is malformed or beyond this walker —
+    // and falling back to the decoder's numbers there is precisely the hole, because the attacker
+    // chooses the container. A guard that opens when it cannot read itself is not a guard.
+    if (stored === 0)
+      throw new MediaConversionError(
+        "heic does not declare the size it stores, so the pixel cap cannot be applied",
+      );
+    const pixels = Math.max(width * height, stored);
     if (pixels > cap)
       throw new MediaConversionError(
         `heic is ${width}x${height} and stores ${pixels} px, over the ${cap} px cap`,

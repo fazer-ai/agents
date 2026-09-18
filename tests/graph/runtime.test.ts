@@ -3919,6 +3919,82 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("superseded");
   });
 
+  // E A OUTRA ROTA POR ONDE UMA PESSOA RESPONDE, no caminho direto também (bateria de mutação da
+  // rodada 10, m31). A resposta digitada no aparelho pareado chega sem remetente nenhum, então a
+  // cláusula acima não a vê, e este portão é o único que decide aqui: sem a rota do aparelho ele
+  // responde por cima da atendente. Vale só onde o provedor reserva os ids do envio — no `zapi` a
+  // mesma forma pode ser o eco da nossa própria resposta, e o control abaixo é o que prova a
+  // diferença em vez de a afirmar.
+  test("issue #698: a reply from the paired phone closes the direct turn, and only on a reserving provider", async () => {
+    const pagina = () =>
+      ({
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            {
+              id: 2,
+              content: "oi, aqui é a Ana",
+              message_type: 1,
+              private: false,
+              content_attributes: { external_sender_name: "WhatsApp" },
+            },
+          ],
+        }),
+        sendMessage: async (id: number, content: string) => {
+          enviados.push([id, content]);
+          return {};
+        },
+      }) as unknown as ChatwootClient;
+    const enviados: Array<[number, string]> = [];
+    const rodar = async (convId: number, provider: string) => {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: 7 },
+        data: { provider },
+      });
+      await seedConversation(convId, null);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      // A LINHA DO INBOX TEM QUE ESTAR LIGADA: o provedor sai dela, e uma conversa sem inbox devolve
+      // `whatsappProvider: null`, que recusa a rota do aparelho. Sem isto o teste passaria a medir a
+      // ausência do vínculo em vez da regra.
+      const inboxRow = await suDb.inbox.findFirstOrThrow({
+        where: { tenantId, chatwootInboxId: 7 },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0, inboxId: inboxRow.id },
+      });
+      return runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: convId }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: async () => pagina(),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    };
+    try {
+      expect(await rodar(9705, "baileys")).toBe("superseded");
+      expect(enviados).toEqual([]);
+      // O control: sem a reserva de ids, a mesma linha pode ser a nossa própria resposta voltando, e
+      // o cliente continua devendo uma.
+      expect(await rodar(9706, "zapi")).toBe("posted");
+      expect(enviados.map(([, texto]) => texto)).toHaveLength(1);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: 7 },
+        data: { provider: null },
+      });
+    }
+  });
+
   // QUEM CLASSIFICA A SAÍDA É QUEM A PRODUZ, no caminho direto também (PR #701, review round 7). O
   // `agentBotId` é a ROTA que trouxe a entrega; quem envia é `loaded.agentBotToken`, da persona que o
   // inbox serve no momento do load. Religado o inbox entre uma coisa e outra, o aviso que ESTA

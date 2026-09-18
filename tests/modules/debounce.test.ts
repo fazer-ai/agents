@@ -1439,6 +1439,248 @@ describe.skipIf(!dbUp)("debounce", () => {
     }
   });
 
+  // UMA NOTA PRIVADA NÃO É UMA RESPOSTA AO CLIENTE (bateria de mutação da rodada 10, m7). Ela sai com
+  // remetente `user` e `message_type` de saída, casando com todas as outras cláusulas da fronteira, e
+  // o cliente nunca a vê: é a equipe falando entre si. Lida como resposta, ela cala uma conversa que
+  // ninguém atendeu, que é o custo assimétrico que esta fronteira existe para não pagar.
+  test("an operator's private note is not a reply to the customer", async () => {
+    const convId = 961;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => fakeModel(),
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "tem alguém?" },
+              {
+                id: 2,
+                content: "esse é o cliente do contrato antigo",
+                type: 1,
+                priv: true,
+                sender: "user",
+                senderId: 41,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+  });
+
+  // E UM TEMPLATE QUE UMA PESSOA DISPAROU É UMA RESPOSTA (bateria de mutação da rodada 10, m8). Fora
+  // da janela de 24h do WhatsApp é a única forma de a equipe falar, então tratá-lo como outra coisa
+  // faria o agente responder por cima justamente nas conversas que ficaram paradas mais tempo.
+  test("a template a person sent closes the burst like any other reply", async () => {
+    const convId = 962;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => fakeModel(),
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "tem alguém?" },
+              {
+                id: 2,
+                content: "Olá! Retomando seu atendimento.",
+                type: 3,
+                sender: "user",
+                senderId: 41,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+  });
+
+  // A CERCA ACIMA DA MARCA ESCALAR, e não só onde não há marca nenhuma (bateria de mutação da rodada
+  // 10, m15). Antes da era por mensagem o piso é `max(escalar, fronteira)`, e o teste que existia
+  // cobria só o caso de marca nula: com uma marca, o `Math.max` some sem nada ficar vermelho, e a
+  // pergunta que a pessoa já respondeu volta para o modelo.
+  test("before the per-message era, the fence applies ABOVE the scalar mark too", async () => {
+    const convId = 963;
+    await seedConversation(convId, { lastHandledMessageId: 1 });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "boa tarde" },
+              { id: 2, content: "tem alguém?" },
+              {
+                id: 3,
+                content: "oi, sou a Ana do suporte",
+                type: 1,
+                sender: "user",
+                senderId: 41,
+              },
+              { id: 4, content: "e qual o prazo?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("qual o prazo");
+    // A que estava ENTRE a marca e a resposta da Ana é a que o `Math.max` tira.
+    expect(seen).not.toContain("tem alguém?");
+  });
+
+  // QUAL PORTÃO RECUSOU IMPORTA (bateria de mutação da rodada 10, m23 e m29). São dois: a SELEÇÃO,
+  // que decide o que entra na rajada, e o portão de POST, que reconfere depois do modelo. Cada um
+  // sozinho produz o mesmo silêncio, então um teste que só olha o que foi enviado passa com qualquer
+  // um dos dois cego — e cego na seleção o modelo roda, com a conta e a latência disso, sobre
+  // mensagens que uma pessoa já respondeu.
+  test("the device reply is caught by the SELECTION, before the model runs", async () => {
+    const convId = 964;
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { provider: "baileys" },
+    });
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error(
+              "the model must not run over messages a person already answered",
+            );
+          },
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+                {
+                  id: 3,
+                  content: "oi, aqui é a Ana",
+                  type: 1,
+                  fromDevice: true,
+                },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(sent).toEqual([]);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider: null },
+      });
+    }
+  });
+
+  // E O PORTÃO DE POST TEM QUE ENXERGAR A MESMA ROTA (bateria de mutação da rodada 10, m23). Aqui a
+  // resposta do aparelho chega DEPOIS da seleção, dentro da corrida do modelo, que é o único momento
+  // em que a seleção não pode ter visto nada.
+  test("a device reply that lands mid-turn stops the flush from posting", async () => {
+    const convId = 965;
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { provider: "baileys" },
+    });
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              // A seleção, antes de a atendente pegar o telefone.
+              page([{ id: 1, content: "tem alguém?" }]),
+              // O re-fetch do portão, depois.
+              page([
+                { id: 1, content: "tem alguém?" },
+                {
+                  id: 2,
+                  content: "oi, aqui é a Ana",
+                  type: 1,
+                  fromDevice: true,
+                },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(sent).toEqual([]);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider: null },
+      });
+    }
+  });
+
   // THE COMMAND'S FENCE, in the selection this time (issue #698). `/reset` retires the pending burst
   // and writes a dispensal for its own message id alone, so the messages it withdrew carry no row —
   // and above the floor "no row" means "offer it". Read without this fence, the next flush rebuilds

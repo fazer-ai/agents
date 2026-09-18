@@ -1299,6 +1299,102 @@ describe("native tools", () => {
     expect(out).not.toContain("called off");
   });
 
+  test("a swap whose add is guarded lands the removal alone, and says so", async () => {
+    // PINNED, not desired. The guard catches one half of a swap and the other half still applies,
+    // so a mutually-exclusive taxonomy can end a turn with NO category. Measured identical on the
+    // clean HEAD 5ae9af39 (`protected: ["cancelamento"]`, the model's complete list omitting
+    // `compra-de-ingresso`, POST `["agente-off", "testando-agente"]`), so this PR does not
+    // introduce it — it makes it ROUTINE, because a guarded label is now shown and the model
+    // therefore asks for it. Whether a guarded half should make the whole call atomic is a
+    // product decision and lives in its own issue; what this test buys is that the shape cannot
+    // change here without somebody deciding to change it.
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [
+        "compra-de-ingresso",
+        "agente-off",
+        "testando-agente",
+      ],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([[9, ["agente-off", "testando-agente"]]]);
+    // No category at all, and the refusal is named rather than swallowed.
+    expect(out).toContain("cannot be added");
+    expect(out).toContain("cancelamento");
+    expect(out).toContain('removed "compra-de-ingresso"');
+  });
+
+  test("a swap whose remove is guarded lands the addition alone, and says so", async () => {
+    // The mirror, and the other state the single write exists to prevent: both categories at
+    // once. Also identical on 5ae9af39 (POST carried all four).
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["compra-de-ingresso"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([
+      [9, ["compra-de-ingresso", "agente-off", "cancelamento"]],
+    ]);
+    expect(out).toContain("cannot be removed");
+    expect(out).toContain('added "cancelamento"');
+  });
+
+  test("a guard that holds the whole taxonomy refuses both halves and writes nothing", async () => {
+    // The configuration that is actually correct: every mutually-exclusive value guarded. Both
+    // halves fall, no POST goes out, and the two refusals are reported. The half-write lives in
+    // the INCOMPLETE list, which is the condition of the 2026-09-17 incident.
+    let posts = 0;
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async () => {
+        posts++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["compra-de-ingresso", "cancelamento", "outros"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toBe(0);
+    expect(out).toContain("cannot be added");
+    expect(out).toContain("cannot be removed");
+  });
+
   test("set_labels task scope is offered only when a card is linked", () => {
     const { client } = recordingClient();
     const withCard = byName(

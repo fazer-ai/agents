@@ -1330,7 +1330,7 @@
     },
     "labelInstructions": "Orientação de uso",
     "labelInstructionsHint": "Opcional. Quais etiquetas a conversa, o contato ou o card devem carregar, e quando. A IA já vê as que estão valendo; escreva aqui as suas regras, inclusive quais delas se excluem.",
-    "labelInstructionsPlaceholder": "ex.: a conversa carrega exatamente uma entre \"cancelamento\", \"compra-de-ingresso\" e \"outros\": ao definir uma, deixe as outras de fora. Mantenha \"vip\" e \"agente-off\" onde já estiverem.",
+    "labelInstructionsPlaceholder": "ex.: a conversa carrega exatamente uma entre \"cancelamento\", \"compra-de-ingresso\" e \"outros\": para trocar, nomeie a antiga em remove e a nova em add, na mesma chamada. Não nomeie etiqueta que você não está mudando.",
     "limits": "Limites de execução",
     "limitsHint": "Limite quanto trabalho o agente faz em um único turno antes de ter que responder.",
     "limitsMaxHistoryTokens": "Teto de histórico",

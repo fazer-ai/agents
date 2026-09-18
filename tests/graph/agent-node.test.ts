@@ -1247,6 +1247,78 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("pronto");
   });
 
+  // Rodada 1 do review da #639. The stall rule ends the turn on a batch whose calls were all answered
+  // already — and that batch is left in the checkpoint with NO tool result after it, because
+  // `ToolNode` skipped every call in it. `isEmptyAssistantTurn` keeps it (it carries calls), so the
+  // NEXT customer turn sends a provider an assistant message whose `tool_call_id`s are never
+  // answered, which OpenAI and Anthropic both refuse — the thread stops answering at all.
+  test("a stalled turn leaves the next one no tool call without an answer", async () => {
+    const counter = tool(async () => "counted", {
+      name: "count_it",
+      description: "count",
+      schema: z.object({}),
+    });
+    const sent: BaseMessage[][] = [];
+    class StallsThenSpeaks {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            sent.push(messages);
+            self.rounds++;
+            if (self.rounds <= 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "count_it", args: {}, id: "dup" }],
+              });
+            return new AIMessage("oi de novo");
+          },
+        };
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new StallsThenSpeaks() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [counter],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "stall-then-next-turn" } };
+    await graph.invoke({ messages: [new HumanMessage("conte")] }, cfg);
+    const second = await graph.invoke(
+      { messages: [new HumanMessage("e aí?")] },
+      cfg,
+    );
+    // The second turn ran and answered, which is what says the path was walked.
+    expect(String(second.messages.at(-1)?.content ?? "")).toBe("oi de novo");
+    // And nothing the provider would refuse travelled: every call in what was SENT has its answer
+    // after the message that made it.
+    const dangling: string[] = [];
+    for (const messages of sent) {
+      for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (m?.getType() !== "ai") continue;
+        for (const call of (m as AIMessage).tool_calls ?? []) {
+          const answered = messages
+            .slice(i + 1)
+            .some(
+              (later) =>
+                later.getType() === "tool" &&
+                (later as { tool_call_id?: string }).tool_call_id === call.id,
+            );
+          if (!answered) dangling.push(String(call.id));
+        }
+      }
+    }
+    expect(dangling).toEqual([]);
+  });
+
   // Round 26. A provider can emit a good `skip_reply` beside a call whose arguments do not parse, and
   // LangChain files that one under `invalid_tool_calls` — invisible to a check that reads
   // `tool_calls`. The batch then looked like nothing but the decision, the turn ended, and the model

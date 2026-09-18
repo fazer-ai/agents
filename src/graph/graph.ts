@@ -3,6 +3,7 @@ import {
   AIMessage,
   type BaseMessage,
   type MessageContent,
+  RemoveMessage,
   SystemMessage,
 } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -262,6 +263,21 @@ function repeatsAnsweredCalls(history: BaseMessage[]): boolean {
   // spelled `every` because that is the claim being made (nothing new can come of this batch), and
   // because the equivalence rests on `ToolNode` skipping only the answered call rather than the step.
   return calls.every((c) => typeof c.id === "string" && answered.has(c.id));
+}
+
+// The repeated batch is taken OUT of the channel, and this is not tidiness. `ToolNode` answered none
+// of its calls — every id already had an answer, which is what the stall IS — so the message stays in
+// the history as an assistant turn whose `tool_call_id`s are never answered: `isEmptyAssistantTurn`
+// keeps it, because it carries calls, and the NEXT customer turn hands a provider a history OpenAI
+// and Anthropic both refuse, which stops the thread answering at all. Found by review round 1 of
+// #639, and newly reachable here because a lone `skip_reply` no longer ends the turn before it.
+//
+// Nothing is lost by removing it: the batch is a verbatim repeat of one still in the history WITH
+// its results, and text the model wrote beside it was never delivered (the turn ends on the empty
+// message), so leaving it is the sentence-the-customer-never-read hazard this file already avoids.
+function dropRepeatedBatch(history: BaseMessage[]): BaseMessage[] {
+  const id = history.at(-1)?.id;
+  return typeof id === "string" ? [new RemoveMessage({ id })] : [];
 }
 
 function reaffirmedSilenceAlone(history: BaseMessage[]): boolean {
@@ -663,13 +679,20 @@ export function buildAgentGraph({
     // empty step is not by itself a stall (a tool that answered nothing still leaves the model free
     // to reply, which is what a `/reset` landing mid-turn relies on), while a batch whose every id
     // is already answered provably cannot produce one.
+    const stalled = repeatsAnsweredCalls(history);
     if (
-      repeatsAnsweredCalls(history) ||
+      stalled ||
       reaffirmedSilenceAlone(history) ||
       (silentTurn && hardLimit)
     ) {
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
-      return { messages: [...narration, new AIMessage("")] };
+      return {
+        messages: [
+          ...narration,
+          ...(stalled ? dropRepeatedBatch(history) : []),
+          new AIMessage(""),
+        ],
+      };
     }
     // `staySilent` is back in this condition, and round 18 is why it had to be. It left when the
     // branch above returned on `staySilent` alone — no round after the decision, so nothing to

@@ -18,7 +18,9 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { runMediaConverter } from "./convert";
 import { visionAcceptsDocuments } from "./document-support";
+import { normalizeMediaType, planImageConversion } from "./media-conversion";
 import {
   getVisionProvider,
   type VisionKind,
@@ -222,6 +224,65 @@ function metaKeyFor(kind: VisionKind): "image_description" | "extracted_text" {
 // persisted in the attachment meta) or null when vision is not runnable, the file is unsupported
 // (non-image/PDF, or a PDF on an image-only provider), or it yields nothing. Best-effort: the
 // webhook never strands delivery on it.
+// THE CONVERSION, in the one place both entry points share. The question it answers is not "can
+// this be read at all" — `visionKindForMime` asked that, about the file — but "can THIS PROVIDER
+// read it", which is ./media-conversion's table. When the answer is no and a converter applies, what
+// goes to the provider is the converted bytes and the converted mime.
+//
+// A FAILED CONVERSION SKIPS rather than falling back to the original bytes, and the asymmetry is the
+// whole point: the only reason a conversion was attempted is that the provider does not read what
+// the customer sent, so sending it anyway buys a 400 whose answer we already have. Falling back
+// would also spend the round trip twice for one attachment.
+//
+// The line it writes is the only record of where half a second of the turn went (~450ms of the 560ms
+// total is the HEVC decode), and it is written ONLY when a conversion happened, so the 98.6% of
+// attachments that need none add nothing to the Logs page.
+async function convertForProvider(args: {
+  bytes: ArrayBuffer;
+  mimeType: string | null;
+  provider: string;
+  flow?: FlowContext;
+}): Promise<
+  | { ok: true; bytes: ArrayBuffer; mimeType: string | null }
+  | { ok: false; reason: string }
+> {
+  const plan = planImageConversion({
+    mimeType: args.mimeType,
+    provider: args.provider,
+  });
+  if (plan.action === "as-is")
+    return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+  const startedAt = performance.now();
+  try {
+    const bytes = await runMediaConverter(plan.converter, args.bytes);
+    if (args.flow)
+      emitFlowEvent(args.flow, {
+        stage: "vision",
+        level: "info",
+        status: "ok",
+        provider: args.provider,
+        durationMs: Math.round(performance.now() - startedAt),
+        detail: {
+          step: "convert",
+          converter: plan.converter,
+          from: normalizeMediaType(args.mimeType),
+          to: plan.to,
+          bytesIn: args.bytes.byteLength,
+          bytesOut: bytes.byteLength,
+        },
+      });
+    return { ok: true, bytes, mimeType: plan.to };
+  } catch (err) {
+    // The converter id is already the head of the wrapped message, so it is not repeated here.
+    logger.warn(
+      "vision: conversion failed (provider=%s): %s",
+      args.provider,
+      err instanceof Error ? err.message : String(err),
+    );
+    return { ok: false, reason: "convert_failed" };
+  }
+}
+
 export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
@@ -360,6 +421,16 @@ export async function extractInboundFile(
     return skip("spend_ceiling");
   }
 
+  // AFTER the ceiling, because converting is CPU this turn does not owe a month with no budget left,
+  // and BEFORE the call, because the provider is what the conversion is for.
+  const converted = await convertForProvider({
+    bytes,
+    mimeType: contentType,
+    provider: cfg.provider,
+    flow: params.flow,
+  });
+  if (!converted.ok) return skip(converted.reason);
+
   let extracted: VisionResult;
   try {
     extracted = await extractWithRetry({
@@ -369,9 +440,10 @@ export async function extractInboundFile(
       flow: params.flow,
       sleep: params.deps?.sleep,
       req: {
-        bytes,
+        bytes: converted.bytes,
         mimeType:
-          contentType ?? (kind === "image" ? "image/jpeg" : "application/pdf"),
+          converted.mimeType ??
+          (kind === "image" ? "image/jpeg" : "application/pdf"),
         kind,
         prompt: cfg.extractionPrompt,
         model: cfg.model || provider.defaultModel,
@@ -549,6 +621,18 @@ export async function extractPlaygroundFile(
     flow: params.flow,
   });
 
+  // Same placement as the inbound path, and the same reason: after the ceiling, before the call. The
+  // refusal differs only in its shape — the playground has no marker to leave on a Chatwoot
+  // attachment, so an unconvertible file is the `unsupported` the operator already sees for a type
+  // this provider cannot read.
+  const converted = await convertForProvider({
+    bytes: params.file,
+    mimeType: params.mimeType,
+    provider: cfg.provider,
+    flow: params.flow,
+  });
+  if (!converted.ok) return { kind: "unsupported", text: "" };
+
   try {
     const extracted = await extractWithRetry({
       provider,
@@ -557,9 +641,9 @@ export async function extractPlaygroundFile(
       flow: params.flow,
       sleep: params.deps?.sleep,
       req: {
-        bytes: params.file,
+        bytes: converted.bytes,
         mimeType:
-          params.mimeType ??
+          converted.mimeType ??
           (kind === "image" ? "image/jpeg" : "application/pdf"),
         kind,
         prompt: cfg.extractionPrompt,

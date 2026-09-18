@@ -905,7 +905,17 @@ export function applyLabelDelta(
   // still write `reembolso`) and s9 (a guarded REMOVE must still let its addition through, so a
   // conversation CAN still end with both categories). Holding the whole call would reverse both.
   // The "both categories" direction is therefore still reachable, on purpose, and #712 says so.
-  const hold = refusedAdd.length > 0;
+  //
+  // A REFUSED ADDITION OF A LABEL ALREADY STANDING DOES NOT HOLD ANYTHING. It asked for nothing:
+  // under the delta, naming a present label is a no-op, so there was no exchange for the removal
+  // to be in service of. Without this, a model that reaffirms a guarded label it can now SEE —
+  // `add: [nova-categoria, agente-off]`, `remove: [categoria-antiga]`, with `agente-off` guarded
+  // and on the conversation, which is the real observer's configuration — would hold a swap that
+  // completes perfectly well and leave BOTH categories standing, where the same call landed the
+  // single correct one before this rule existed. Still conditioned on the guard's REFUSAL and not
+  // on the write's outcome: an agent with no guard refuses nothing and holds nothing, whatever its
+  // additions end up moving.
+  const hold = refusedAdd.some((l) => !current.includes(l));
   const free = wantRemove.filter((l) => !guard.has(l));
   // Named back only when the label is actually standing: reporting a hold on one that was not
   // there would claim an effect the call never had, which is the same lie in the other direction.

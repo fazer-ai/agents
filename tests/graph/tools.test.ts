@@ -1621,6 +1621,69 @@ describe("native tools", () => {
     expect(free).not.toContain("is not applied either");
   });
 
+  test("reaffirming a guarded label that is already there does not hold the swap", async () => {
+    // Found by the holdout verifier on the head this rule first shipped in. `agente-off` guarded
+    // AND standing is the real observer's configuration, and a model that reaffirms it — which it
+    // can now do, because #695 made guarded labels visible — beside a perfectly ordinary swap
+    // would otherwise end the turn with BOTH categories, which is the state the single write
+    // exists to prevent and which the same call did NOT produce before the hold existed.
+    //
+    // The refused addition asked for nothing: naming a present label moves nothing under the
+    // delta, so there was no exchange for the removal to be in service of.
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["agente-off"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento", "agente-off"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([[9, ["agente-off", "cancelamento"]]]);
+    expect(out).toContain('removed "compra-de-ingresso"');
+    expect(out).not.toContain("stays");
+    // The refusal is still reported: the model asked for something it may not have.
+    expect(out).toContain("cannot be added");
+  });
+
+  test("a guarded label that is NOT standing still holds the swap", async () => {
+    // The other side of the same line, so the refinement above cannot be widened into "a refused
+    // addition never holds anything". Same call, same guard, and the only difference is that the
+    // guarded label the model named is not on the conversation, so asking for it was a real
+    // request and the removal did come with it.
+    let posts = 0;
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso"],
+      setConversationLabels: async () => {
+        posts++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["agente-off"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["agente-off"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toBe(0);
+    expect(out).toContain('"compra-de-ingresso" stays');
+  });
+
   test("a hold names only what was actually standing", async () => {
     // The report claims an effect, so it is read off the scope rather than off the request. A
     // label the model asked to remove that is not there was going nowhere either way, and saying

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  awaitsTranscription,
+  normalizeChatwootEvent,
+} from "@/modules/chatwoot/normalize";
+import {
   type RenderableMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
@@ -60,5 +64,73 @@ describe("o ramo de áudio do renderizador tem precedência sobre o resto", () =
     );
     expect(corpo).toContain("recuperar o acesso à minha conta");
     expect(corpo).toContain(PLACEHOLDER);
+  });
+});
+
+// E A PERGUNTA DO PORTÃO É PELO TIPO DO ARQUIVO (issue #688, review r9), nunca por "o STT consegue
+// rodar nisto". Um anexo cujo `data_url` ou id ainda não chegou não é transcritível AGORA e mesmo
+// assim alcança o grafo como placeholder — e a transcrição dele vem depois, sobre o mesmo id de
+// mensagem. Perguntando pela elegibilidade do STT, essa mensagem lê como "sem áudio nenhum", o
+// portão atua, a ingestão grava o id no dedup, e a transcrição é descartada como duplicata: a perda
+// que esta exceção existe para fechar, entrando pela porta dela.
+//
+// É a mesma armadilha que `turnHadTheWords` documenta do lado dele, e já custou uma rodada de review
+// lá (#576, round 9). Esta é a segunda vez.
+describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
+  function evento(attachment: Record<string, unknown>) {
+    return normalizeChatwootEvent({
+      event: "message_created",
+      id: 4242,
+      private: false,
+      content: "",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      attachments: [attachment],
+      conversation: {
+        id: 77,
+        inbox_id: 9,
+        status: "pending",
+        contact_inbox: { id: 7001 },
+        meta: {},
+        channel: "Channel::Api",
+      },
+    });
+  }
+
+  test("um áudio sem data_url ainda espera a transcrição", () => {
+    const n = evento({ id: 1, file_type: "audio" });
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(true);
+  });
+
+  test("um áudio com data_url e sem transcrição também espera", () => {
+    const n = evento({
+      id: 1,
+      file_type: "audio",
+      data_url: "https://chat.late.example/a.ogg",
+    });
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(true);
+  });
+
+  test("um áudio já transcrito não espera mais nada", () => {
+    const n = evento({
+      id: 1,
+      file_type: "audio",
+      data_url: "https://chat.late.example/a.ogg",
+      transcribed_text: "queria trocar o endereço",
+    });
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(false);
+  });
+
+  test("uma imagem não espera transcrição nenhuma", () => {
+    const n = evento({
+      id: 1,
+      file_type: "image",
+      data_url: "https://chat.late.example/a.png",
+    });
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(false);
   });
 });

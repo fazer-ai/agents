@@ -816,16 +816,27 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // caso hoje: as palavras dele chegam depois, num `message_updated` que o STT dispara, e sobre o
 // MESMO id de mensagem.
 //
-// Extraído do irmão abaixo porque a pergunta vale em qualquer evento, e quem a faz é o portão de
-// posse do caminho direto: parar o turno manda a mensagem para a ingestão contínua, a ingestão grava
-// o id no dedup do thread, e a transcrição que vem depois é descartada como duplicata. A pergunta
-// NÃO é se a mensagem já tem palavras — uma legenda, ou o assunto de um e-mail, são palavras e ainda
-// assim a transcrição vem —, é se ainda vem mais.
+// Quem faz a pergunta é o portão de posse do caminho direto: parar o turno manda a mensagem para a
+// ingestão contínua, a ingestão grava o id no dedup do thread, e a transcrição que vem depois é
+// descartada como duplicata. A pergunta NÃO é se a mensagem já tem palavras — uma legenda, ou o
+// assunto de um e-mail, são palavras e ainda assim a transcrição vem —, é se ainda vem mais.
+//
+// PELO TIPO DO ARQUIVO, e não por `firstAudioAttachment`, que é a mesma armadilha que
+// `turnHadTheWords` documenta do lado dele: aquele exige um id e um `data_url` utilizáveis, ou seja,
+// responde se o STT PODE RODAR. Um anexo cujo url ainda não chegou reprova esse teste e mesmo assim
+// alcança o grafo como placeholder — lido assim, a mensagem passaria por "sem áudio nenhum", o
+// portão atuaria, e a transcrição seria perdida exatamente pela porta que esta exceção fecha. Custou
+// uma rodada de review lá (#576) e outra aqui.
+//
+// `hasPendingInboundMediaUpdate` (../chatwoot/webhook.ts) continua com a pergunta DELE, que é outra e
+// mais estreita: ali o que se decide é armar a ingestão sobre um evento de atualização, e alargá-la é
+// outra decisão, com testes próprios.
 export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
   if (!isIncomingMessage(n)) return false;
-  const audio = firstAudioAttachment(n);
-  return Boolean(
-    audio && !audio.transcribedText && !n.message?.transcribedText,
+  const anexos = n.message?.attachments ?? [];
+  if (!anexos.some((a) => a.fileType === "audio")) return false;
+  return !(
+    anexos.some((a) => Boolean(a.transcribedText)) || n.message?.transcribedText
   );
 }
 

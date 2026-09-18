@@ -5916,6 +5916,32 @@ export async function processChatwootDelivery(
             // invoke, então nenhum canal a tem. Liquidar aqui a tiraria da lista de perdas sem que
             // nada a tivesse lido. A linha fecha lá embaixo, depois que a ingestão a pegou.
             stoodDownUnread = true;
+            // E O FATO DA COBERTURA É ESCRITO AQUI (review r5), separado da liquidação. Quem o
+            // escrevia era o `settleDelivery` logo abaixo, que esta parada deliberadamente não
+            // chama; sem ele a coluna fica NULA, e null é "nenhuma linha sabe" — a ingestão de uma
+            // transcrição tardia cai então no fallback de POSSE ATUAL, e com a conversa já devolvida
+            // ao bot ela lê "um turno vai cobrir isto" e descarta a transcrição.
+            //
+            // `covered: false` é monotônico (a escrita só move `false` para `true`, nunca o
+            // contrário), então dizê-lo aqui não pode apagar a cobertura de ninguém. Best-effort,
+            // como a do `onFoldedIn`: o que esta entrega deve é a mensagem, e falhar em reportar um
+            // fato lateral não é motivo para não entregá-la.
+            if (n.message?.id != null && n.conversationId !== null) {
+              await recordTurnCoverage({
+                tenantId: params.tenantId,
+                instanceId: params.instanceId,
+                conversationId: n.conversationId,
+                covered: false,
+                messageIds: [n.message.id],
+                base,
+              }).catch((err) => {
+                logger.warn(
+                  "chatwoot: could not record that no turn covered the message a person took over (conv=%s): %s; a late transcription may be read as covered and dropped",
+                  n.conversationId === null ? "?" : String(n.conversationId),
+                  errMsg(err),
+                );
+              });
+            }
           } else if (n.message?.id != null) {
             // `posted-partial` answers too: part of the reply IS with the customer, and calling
             // that "consumed" would tell the stranded-delivery sweep nothing ever replied here.
@@ -6465,12 +6491,19 @@ export async function processChatwootDelivery(
   // É o mesmo fato que `turnHadTheWords` já enuncia do lado da COBERTURA, com a mesma pergunta: o
   // que esta parada tem em mãos é a mensagem, não as palavras. E vale só para ELA — o observador e a
   // ingestão contínua seguem como sempre seguiram, onde o placeholder tem razão própria de entrar.
-  const standDownHasTheWords = turnHadTheWords({
-    hasAudio: (n.message?.attachments ?? []).some(
-      (a) => a.fileType === "audio",
-    ),
-    transcribedText: n.message?.transcribedText,
-  });
+  //
+  // E O CONTEÚDO DA MENSAGEM CONTA COMO TRANSCRIÇÃO (review r5), porque é assim que o render a lê:
+  // `renderInboundMessage` monta o corpo do áudio com `m.transcribedText ?? text`. Um áudio que já
+  // veio com `content` tem palavras utilizáveis agora, e tratá-lo como placeholder aposta num
+  // write-back que pode nunca vir — com o STT desligado ou falhando, o texto que o invoke anterior
+  // teria guardado some, que é a perda desta issue por mais uma porta.
+  const standDownHasTheWords =
+    turnHadTheWords({
+      hasAudio: (n.message?.attachments ?? []).some(
+        (a) => a.fileType === "audio",
+      ),
+      transcribedText: n.message?.transcribedText,
+    }) || Boolean(n.message?.content?.trim());
   const routeIngests =
     rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was

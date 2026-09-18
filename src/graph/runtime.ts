@@ -27,7 +27,10 @@ import {
   isIncomingMessage,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
-import { renderInboundMessage } from "@/modules/chatwoot/render";
+import {
+  audioAwaitsWords,
+  renderInboundMessage,
+} from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
@@ -440,6 +443,10 @@ export interface RunLoadedTurnParams {
   // count exists to serve them. What this is for is the caller that owes a customer ONE reply and
   // has nowhere to put the work down — today `runAgentTurn`, the direct webhook entry.
   waitForThreadTurn?: boolean;
+  // SE O PORTÃO DE POSSE DO OUTRO LADO DA ESPERA ATUA (issue #688). Separado de `waitForThreadTurn`
+  // porque a espera e o portão respondem perguntas diferentes: a espera é sobre o thread, o portão é
+  // sobre o que a parada dele CUSTA. Ausente ou `true`, atua sempre que houve espera.
+  recheckOwnershipAfterWait?: boolean;
 }
 
 // A turn that waited the thread out and still landed on an occupancy: it gave the hold back and has
@@ -1608,7 +1615,10 @@ async function runTurnBody(
             //
             // O leitor é o COMPARTILHADO (`conversationOwnershipNow`), o mesmo que o receptor e o
             // `recover-takeover` usam, em vez de um segundo privado que responda diferente.
-            if (turnWaitUntil !== null) {
+            if (
+              turnWaitUntil !== null &&
+              params.recheckOwnershipAfterWait !== false
+            ) {
               const posse = await (
                 params.deps?.ownershipRead ?? conversationOwnershipNow
               )({
@@ -2841,6 +2851,20 @@ export async function runAgentTurn(
     // customer gets two replies, the second computed from a history without the first, and the
     // channel the second turn saves undoes what the first wrote (issue #588).
     waitForThreadTurn: true,
+    // ...E O PORTÃO DE POSSE DO OUTRO LADO DELA NÃO ATUA SOBRE UMA NOTA DE VOZ QUE AINDA ESPERA A
+    // TRANSCRIÇÃO (issue #688, review r7). Parar o turno significa mandar a mensagem para a ingestão
+    // contínua, e a ingestão grava o id no dedup do thread — o que faz a transcrição que chega
+    // depois, no `message_updated` do STT, ser descartada como duplicata. As duas saídas para um
+    // áudio são então PERDER o que ele já traz (se a parada não ingere) ou perder a transcrição (se
+    // ingere), e nenhuma das duas é aceitável para o defeito que esta issue conserta.
+    //
+    // Sete rodadas de review chegaram a esse fundo por caminhos diferentes, e a saída não é uma
+    // terceira condição no receptor: é a ingestão aprender a ENRIQUECER uma mensagem que já folhou,
+    // que mexe no dedup compartilhado e é issue própria. Até lá, uma nota de voz segue exatamente
+    // como seguia antes desta PR — o turno roda, a re-checagem pós-geração suprime o envio, e a
+    // transcrição tardia chega à memória pelo caminho de sempre. Nenhuma regressão, e o conserto
+    // vale para todo o resto, que é a população da issue.
+    recheckOwnershipAfterWait: !audioAwaitsWords(renderable),
     // The direct path answers exactly one message, so the receipt set is that message.
     readMessageIds: typeof n.message?.id === "number" ? [n.message.id] : [],
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is

@@ -798,16 +798,19 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }, 20_000);
 
-  // E UM ÁUDIO QUE AINDA NÃO TEM PALAVRAS NÃO VAI PELA INGESTÃO (issue #688, review r4). A nota de
-  // voz chega ao grafo como PLACEHOLDER até o STT escrever de volta, e a rota dela é o
-  // `message_updated` que traz a transcrição — não esta. Mandar o placeholder para a ingestão grava
-  // o id da mensagem no dedup do thread (`recentSyncedMessageIds`), e a transcrição que chega depois
-  // é descartada como duplicata: a mensagem do cliente some, que é exatamente o que esta issue
-  // existe para impedir, reintroduzido pelo próprio conserto dela.
+  // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a
+  // transcrição, ele NÃO atua, e o turno segue exatamente como seguia antes desta PR.
   //
-  // É o mesmo fato que o `turnHadTheWords` já enuncia do lado da COBERTURA, pela mesma razão: o que
-  // o turno (ou esta parada) tem em mãos é a mensagem, não as palavras dela.
-  test("issue #688: an audio still waiting on STT is left to the write-back, not queued as a placeholder", async () => {
+  // O caminho até aqui é o argumento. Parar o turno significa mandar a mensagem para a ingestão
+  // contínua, e a ingestão grava o id no dedup do thread (`recentSyncedMessageIds`), o que faz a
+  // transcrição do `message_updated` ser descartada como duplicata. As duas saídas para um áudio são
+  // então perder o que ele já traz, ou perder a transcrição — e a terceira, a ingestão aprender a
+  // ENRIQUECER uma mensagem já folhada, mexe no dedup compartilhado e é issue própria.
+  //
+  // Então aqui o desfecho é `taken-over`, o da re-checagem pós-geração, e não `taken-over-unread`:
+  // o turno rodou. É o comportamento de hoje, preservado de propósito, e o conserto vale para toda a
+  // população que a issue descreve.
+  test("issue #688: the gate does not act on an audio still waiting on STT, so the transcription survives", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { mode: "production", settings: { debounce: { enabled: false } } },
@@ -890,18 +893,15 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     clearTurnInFlight(graphThreadId);
     await run;
 
-    // O turno parou do mesmo jeito...
+    // Nada é dito por cima da pessoa — isso a re-checagem pós-geração já garantia...
     expect(sent).toEqual([]);
-    expect(seen.outcome).toBe("taken-over-unread");
-    // ...e NENHUM job de ingestão foi armado para este id: o dedup do thread fica livre para a
-    // transcrição que vem no `message_updated`.
+    // ...mas o desfecho é o de SEMPRE, e não o da parada: o portão não atuou.
+    expect(seen.outcome).toBe("taken-over");
+    // E NENHUM job de ingestão foi armado para este id, que é o ponto: o dedup do thread fica livre
+    // para a transcrição que vem no `message_updated`.
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
     expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
-    // E a marca continua sem passar por cima da mensagem.
-    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
-      messageId,
-    );
   }, 20_000);
 
   // E UM ÁUDIO QUE JÁ TRAZ TEXTO NÃO É PLACEHOLDER (issue #688, review r5). `renderInboundMessage`
@@ -1112,16 +1112,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       event: "message_created",
       id: messageId,
       private: false,
-      content: "",
+      content: "e o rastreio do meu pedido?",
       message_type: "incoming",
       sender: { id: 88, name: "Cliente", type: null },
-      attachments: [
-        {
-          id: 900 + messageId,
-          file_type: "audio",
-          data_url: "https://chat.late.example/audio.ogg",
-        },
-      ],
       conversation: conversation(convId, {
         assigneeType: null,
         status: "pending",

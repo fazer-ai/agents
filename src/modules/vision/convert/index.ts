@@ -134,11 +134,20 @@ async function heicToJpeg(
     );
   const open = opts.withFrames ?? withHeicFrames;
   return await open(bytes, async (frames: readonly HeicFrame[]) => {
-    // The FIRST frame, which is the still. A burst or a Live Photo carries several, and taking the
-    // first is what the vendors do with the animated formats they do accept ("Animations are
-    // unsupported, and only the first frame is used" — Anthropic), so the customer's photo and our
-    // reading of it agree.
-    const frame = frames[0];
+    // THE PRIMARY IMAGE, which is not the same as the first one. A HEIC may hold several top-level
+    // images, and the file says which of them it is OF: the `pitm` box. libheif hands them back in
+    // storage order, and the two disagree — measured on a two-image collection whose `pitm` points
+    // at the second, where the first item is a different picture entirely.
+    //
+    // The animation rule the vendors state ("Animations are unsupported, and only the first frame is
+    // used" — Anthropic) does not transfer, and that was the mistake here: a GIF's frames are one
+    // picture over time, with no frame designated, while a HEIC collection is several pictures with
+    // one designated. Taking the first would send a picture the sender did not send, and the
+    // extraction would come back successful and about the wrong image (PR #707 review round 6).
+    //
+    // Falling back to the first when nothing is designated, which is what a file with a single image
+    // and no `pitm` looks like.
+    const frame = frames.find((f) => f.primary) ?? frames[0];
     if (frame === undefined)
       throw new MediaConversionError("heic carries no image frame");
     const { width, height } = frameDimensions(frame);

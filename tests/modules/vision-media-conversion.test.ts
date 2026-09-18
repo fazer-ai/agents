@@ -44,6 +44,16 @@ const HEIC = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
 const ALPHA = readFileSync(
   `${import.meta.dir}/../fixtures/media/recorte-alpha.heic`,
 );
+// A three-image collection whose PRIMARY is the MIDDLE item: flat blue 512x512, flat red 2400x1200,
+// flat green 300x300, with `pitm` pointing at the red one. Three and not two on purpose — with two,
+// "take the last" and "take the designated" agree, and the mutation battery showed that a two-image
+// fixture cannot tell the fix from a different wrong answer. Built with libheif's own encoder
+// (`heif-enc azul512.png vermelho2400.png verde300.png`, which makes the first input primary) and
+// then patching the two-byte item id inside the `pitm` box from 1 to 2, which is the only way to get
+// the two orders to disagree — every encoder writes the primary first.
+const COLECAO = readFileSync(
+  `${import.meta.dir}/../fixtures/media/colecao-primaria-nao-e-a-primeira.heic`,
+);
 // A HEIC header carrying a real brand, with nothing behind it. The brand lives at offset 8, inside
 // the `ftyp` box, which is why a string starting with "ftyp" is NOT one — the first four bytes are
 // the box size.
@@ -557,6 +567,7 @@ describe("heic-to-jpeg", () => {
             return Array.from({ length: n }, (_, i) => ({
               get_width: () => 10,
               get_height: () => 10,
+              is_primary: () => i === 0,
               free: () => trail.push(`image ${i}`),
               display: () => undefined,
             }));
@@ -584,6 +595,83 @@ describe("heic-to-jpeg", () => {
     trail.length = 0;
     await withHeicFrames(heicBytes(), async (f) => f.length, fake(0));
     expect(trail).toEqual(["context"]);
+  });
+
+  test("converts the image the file DESIGNATES, not the one stored first", async () => {
+    // Review round 6. A HEIC may carry several top-level images and name one of them in its `pitm`
+    // box; libheif returns them in storage order, and the two disagree. Taking the first sends a
+    // picture the sender did not send, and the extraction comes back successful and about the wrong
+    // image — the worst shape a defect can have here, because nothing downstream looks wrong.
+    //
+    // Measured on the fixture: item order is blue 512x512, red 2400x1200, green 300x300, and `pitm`
+    // designates the red one — neither the first nor the last.
+    const out = await runMediaConverter(
+      "heic-to-jpeg",
+      COLECAO.buffer.slice(
+        COLECAO.byteOffset,
+        COLECAO.byteOffset + COLECAO.byteLength,
+      ) as ArrayBuffer,
+    );
+    const img = jpeg.decode(new Uint8Array(out));
+    // 2400x1200 fitted to the 1568 edge, which 512x512 could never produce.
+    expect([img.width, img.height]).toEqual([1568, 784]);
+    const mid = ((img.height >> 1) * img.width + (img.width >> 1)) * 4;
+    const [r, g, b] = [
+      img.data[mid],
+      img.data[mid + 1],
+      img.data[mid + 2],
+    ] as number[];
+    expect(r).toBeGreaterThan(180);
+    expect(b).toBeLessThan(90);
+    // And not the blue one, which is the failure this guards.
+    expect(g).toBeLessThan(90);
+  });
+
+  test("a file that designates nothing converts its first image instead of refusing", async () => {
+    // Legal, and the reason the fallback is not merely defensive: `pitm` is OPTIONAL, so a file with
+    // images and no designation must still convert. No encoder writes one — every one of them makes
+    // an input primary — so the library is stood in for. Driven through `runMediaConverter` and not
+    // through `withHeicFrames`, because the selection being asserted lives in the converter.
+    const solid = (w: number, h: number, r: number) => {
+      const data = new Uint8ClampedArray(w * h * 4);
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = r;
+        data[i + 3] = 255;
+      }
+      return { data, width: w, height: h };
+    };
+    const out = await runMediaConverter("heic-to-jpeg", brandedHeic(), {
+      withFrames: (async (_b, use) =>
+        use([
+          {
+            width: 40,
+            height: 20,
+            primary: false,
+            decode: async () => solid(40, 20, 200),
+          },
+          {
+            width: 8,
+            height: 8,
+            primary: false,
+            decode: async () => solid(8, 8, 10),
+          },
+        ])) as typeof withHeicFrames,
+    });
+    const img = jpeg.decode(new Uint8Array(out));
+    // The first one, 40x20 and red — not the 8x8, and not a refusal.
+    expect([img.width, img.height]).toEqual([40, 20]);
+    expect(img.data[0]).toBeGreaterThan(150);
+  });
+
+  test("a file with no designated image still converts its only one", async () => {
+    // The fallback, and the case every ordinary photo takes: one image, which libheif reports as
+    // primary. Asserted so a library version that stops answering `is_primary` fails here instead of
+    // converting nothing.
+    await withHeicFrames(heicBytes(), async (frames) => {
+      expect(frames.map((f) => f.primary)).toEqual([true]);
+    });
+    const out = await runMediaConverter("heic-to-jpeg", heicBytes());
+    expect(jpeg.decode(new Uint8Array(out)).width).toBe(1568);
   });
 
   test("refuses a source over the pixel cap instead of allocating it", async () => {

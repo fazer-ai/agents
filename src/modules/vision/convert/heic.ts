@@ -20,6 +20,9 @@ import { dirname, join } from "node:path";
 export type HeicFrame = {
   readonly width: number;
   readonly height: number;
+  // `pitm`, the image the file DESIGNATES as the one it is of. Carried out because libheif returns
+  // items in storage order and the designation is not part of it.
+  readonly primary: boolean;
   decode(): Promise<{
     data: Uint8ClampedArray;
     width: number;
@@ -30,6 +33,7 @@ export type HeicFrame = {
 type HeifImage = {
   get_width(): number;
   get_height(): number;
+  is_primary(): boolean;
   // `heif_image_handle_release`, and it is NOT covered by freeing the context: see the release below.
   free(): void;
   display(
@@ -137,6 +141,7 @@ export async function withHeicFrames<T>(
         // and after the release below the handle is gone.
         width: image.get_width(),
         height: image.get_height(),
+        primary: image.is_primary(),
         decode: () => displayImage(image),
       })),
     );

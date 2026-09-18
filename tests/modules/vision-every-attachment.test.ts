@@ -314,6 +314,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       activityType: null,
       senderType: null,
       externalSenderName: null,
+      imported: false,
       senderId: null,
       sendId: null,
     };
@@ -405,6 +406,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       activityType: null,
       senderType: null,
       externalSenderName: null,
+      imported: false,
       senderId: null,
       sendId: null,
     } as ChatwootMessageRow;
@@ -456,6 +458,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       activityType: null,
       senderType: null,
       externalSenderName: null,
+      imported: false,
       senderId: null,
       sendId: null,
     } as ChatwootMessageRow;
@@ -494,6 +497,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       activityType: null,
       senderType: null,
       externalSenderName: null,
+      imported: false,
       senderId: null,
       sendId: null,
     } as ChatwootMessageRow;

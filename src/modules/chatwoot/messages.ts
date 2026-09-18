@@ -71,6 +71,14 @@ export interface ChatwootMessageRow {
   // survey). Trusting it also needs the inbox's WhatsApp provider, which the page does not carry;
   // see `foreignReplyBoundary` and `providerReservesEchoIds` (PR #701, review round 8).
   externalSenderName: string | null;
+  // `content_attributes.imported`, written by the history importer on a backfilled row. It is NOT a
+  // detail of the mark above, it is the fence on it: an import inserts last year's messages with
+  // today's autoincrement ids, so a phone's backfilled reply lands ABOVE a live customer message
+  // nobody has answered yet — and read as a boundary it would silence that customer, and every other
+  // one in the operator's backlog, on the day they pair a phone (PR #701, review round 9). The
+  // webhook path fences the same flag one layer up (`hasDeviceAttendantShape`), where it is
+  // unreachable; here the page really carries it.
+  imported: boolean;
   // The name the send gave itself on the way out (issue #499), when this message is one of ours and
   // the sender asked for one. Null on every message nobody named: everything inbound, everything a
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
@@ -257,6 +265,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
         typeof ca?.external_sender_name === "string"
           ? ca.external_sender_name
           : null,
+      imported: ca?.imported === true,
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

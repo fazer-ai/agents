@@ -604,6 +604,13 @@ export function foreignReplyBoundary(
       // boundary it would close every question the customer asked before the 👍. Same exclusion, for
       // the same reason, as `isHumanAgentMessage` in ../chatwoot/normalize.ts.
       !m.isReaction &&
+      // AND A BACKFILLED ROW IS NOT A REPLY TO ANYTHING LIVE (PR #701, review round 9). The importer
+      // writes last year's conversation with today's ids, so an old answer from the paired phone
+      // sorts ABOVE the message the customer sent five minutes ago — and every clause above it
+      // matches. The same exclusion `hasDeviceAttendantShape` makes, for the same reason and at a
+      // point where the flag is actually reachable: this page is read from the database, not from
+      // the webhook the importer never fires.
+      !m.imported &&
       somebodyElse &&
       m.id > boundary
     ) {

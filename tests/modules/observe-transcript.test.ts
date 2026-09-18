@@ -40,6 +40,7 @@ function row(
     activityType: null,
     senderType: null,
     externalSenderName: null,
+    imported: false,
     senderId: null,
     emailSubject: null,
     // Required on `ChatwootMessageRow` since this branch was cut; defaulted here for the same
@@ -252,6 +253,7 @@ describe("what the transcript sees", () => {
       activityType: null,
       senderType: null,
       externalSenderName: null,
+      imported: false,
       senderId: null,
       transcribedText: null,
       imageDescription: null,

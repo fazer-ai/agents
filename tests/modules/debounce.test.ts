@@ -193,6 +193,9 @@ function page(
     // back FROM the WhatsApp session instead of out of Chatwoot — an attendant typing on the paired
     // phone, and nobody in the `sender` field (PR #701, review round 8).
     fromDevice?: boolean;
+    // `content_attributes.imported`: a row the history importer backfilled, which carries today's id
+    // and last year's conversation (PR #701, review round 9).
+    imported?: boolean;
   }>,
 ) {
   return {
@@ -200,6 +203,7 @@ function page(
       const ca = {
         ...(m.reaction ? { is_reaction: true } : {}),
         ...(m.fromDevice ? { external_sender_name: "WhatsApp" } : {}),
+        ...(m.imported ? { imported: true } : {}),
       };
       return {
         id: m.id,
@@ -1371,6 +1375,62 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect((await withProvider(959, "zapi")).map(([, text]) => text)).toEqual(
         [REPLY],
       );
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider: null },
+      });
+    }
+  });
+
+  // O IMPORTADOR ESCREVE O PASSADO COM OS IDS DE HOJE (PR #701, review round 9). Ao parear um
+  // telefone, o histórico entra como mensagens novas do ponto de vista do banco: a resposta que o
+  // atendente deu no ano passado recebe um id ACIMA da pergunta que o cliente mandou agora e casa com
+  // todas as cláusulas da fronteira. Lida como resposta, ela cala esse cliente — e o backlog inteiro
+  // do operador junto, de uma vez, no dia do pareamento. Mesma exclusão que o `hasDeviceAttendantShape`
+  // faz no webhook, aqui num ponto em que a marca é de fato alcançável: esta página vem do banco.
+  test("a backfilled reply from the phone's history is not a reply to what is live", async () => {
+    const convId = 960;
+    await suDb.inbox.update({
+      where: { id: inboxDbId },
+      data: { provider: "baileys" },
+    });
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "vocês abrem sábado?" },
+                {
+                  id: 2,
+                  content: "bom dia, funcionamos das 9 às 13",
+                  type: 1,
+                  fromDevice: true,
+                  imported: true,
+                },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(sent.map(([, text]) => text)).toEqual([REPLY]);
     } finally {
       await suDb.inbox.update({
         where: { id: inboxDbId },

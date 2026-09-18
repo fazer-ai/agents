@@ -34,6 +34,7 @@ function row(over: Partial<ChatwootMessageRow> = {}): ChatwootMessageRow {
     activityType: null,
     senderType: null,
     externalSenderName: null,
+    imported: false,
     senderId: null,
     location: null,
     ...over,

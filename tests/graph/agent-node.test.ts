@@ -5,8 +5,12 @@ import {
   type BaseMessage,
   HumanMessage,
   SystemMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
+} from "@langchain/core/tools";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
@@ -17,7 +21,11 @@ import {
 } from "@/graph/graph";
 import { CALLED_OFF_TOOL_RESULT } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
-import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import {
+  SKIP_REPLY_ACK,
+  SKIP_REPLY_MARK,
+  SKIP_REPLY_TOOL,
+} from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { buildNativeTools } from "@/graph/tools/native";
@@ -125,13 +133,18 @@ function realSkipTool(): StructuredToolInterface {
 }
 
 describe("agentNode tool-call limit (soft+hard)", () => {
-  // Issue #454, review rounds 5 and 11. Silence is a TOOL CALL now, so the graph loops back with the
-  // tool's result and asks the model AGAIN — and round 5 only stopped that round from being told
-  // "Conclua agora: responda ao cliente". The round itself was the defect: whatever the model writes
-  // there goes to the customer, and on the proactive path that is an unsolicited message, which the
-  // sentinel made impossible by being the final text. The decision is terminal now: no further round
-  // at all. The COUNT is untouched, so the cap still bounds a model that loops on skip_reply.
-  test("the turn ends on the silence decision: the model is not asked again", async () => {
+  // Issue #454, review rounds 5 and 11, then issue #639. Silence is a TOOL CALL, so the graph loops
+  // back with the tool's result and asks the model AGAIN — and round 5 only stopped that round from
+  // being told "Conclua agora: responda ao cliente". Rounds 9 and 11 then made the decision terminal,
+  // because whatever the model writes on that round goes to the customer, and on the proactive path
+  // that is an unsolicited message.
+  //
+  // #639 measured the price of ending the turn: everything the operator asked for AFTER the decision
+  // stops running, which is a real prompt shape (`one tool at a time` plus numbered steps starting at
+  // `skip_reply`). So the round is back, and what rounds 9 and 11 were protecting is kept in code
+  // instead — the wrap-up still cannot land on it, and the turn's last word is blanked on the way
+  // out. The COUNT is untouched, so the cap still bounds a model that loops on skip_reply.
+  test("the round after the silence decision exists, and carries no wrap-up", async () => {
     const skipTool = realSkipTool();
     // One skip_reply call, then an empty answer — the shape a silent turn actually has.
     class SkipThenSilentModel {
@@ -170,9 +183,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("nada a fazer")] },
       { configurable: { thread_id: "limit-skip" } },
     );
-    // ONE round: the decision ended the turn. The wrap-up instruction cannot land because there is
-    // no round after it to land on (the control below proves the same cap DOES produce it).
-    expect(model.boundRounds).toHaveLength(1);
+    // TWO rounds: the decision no longer ends the turn (#639). The wrap-up is what must not land on
+    // the second one — "responda ao cliente" is the exact opposite of what the model just chose —
+    // and the control below proves the same cap DOES produce it for an ordinary turn.
+    expect(model.boundRounds).toHaveLength(2);
     expect(model.boundRounds.some(carriesWrapUp)).toBe(false);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
@@ -180,7 +194,12 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // The defect round 11 named, in the shape that reaches a person: the round after the decision is
   // where a follow-up that chose silence writes to the customer anyway. Well below the cap, so no
   // limit is involved — only the decision.
-  test("a model that would speak after skip_reply never gets the chance", async () => {
+  //
+  // #639 moved WHERE that is stopped without moving WHETHER: the model gets the round (it is the
+  // round the operator's remaining steps run in) and the sentence it writes there is taken out of the
+  // message the runtime posts. Both halves are asserted, and they have to be: "nothing was posted" is
+  // satisfied just as well by a model that wrote nothing at all.
+  test("a model that speaks after skip_reply is not delivered", async () => {
     const skipTool = realSkipTool();
     class SkipThenTalksAnyway {
       rounds = 0;
@@ -216,8 +235,15 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("ok")] },
       { configurable: { thread_id: "silence-terminal" } },
     );
-    expect(model.rounds).toBe(1);
+    // It DID get the chance — which is the point, because that round is where `resolve_conversation`
+    // would have run — and the customer gets nothing all the same.
+    expect(model.rounds).toBe(2);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    // …and the words it wrote are nowhere in the turn's messages either: left in the channel they are
+    // a sentence the customer never saw, read by the next turn as something they were told.
+    expect(
+      result.messages.some((m) => String(m.content ?? "").includes("boleto")),
+    ).toBe(false);
   });
 
   // Round 9: the HARD limit is the other way the decision gets talked over. At `maxToolCalls: 1` the
@@ -347,6 +373,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         return {
           async invoke(): Promise<AIMessage> {
             self.rounds++;
+            // The round after the decision, which #639 gave back: this model has nothing more to do
+            // with it, and a real one never repeats a message id, so it gets its own empty turn
+            // instead of the same object twice.
+            if (self.rounds > 1)
+              return new AIMessage({ id: "ai-quiet", content: "" });
             return new AIMessage({
               id: "ai-skip-1",
               content: NARRATION,
@@ -376,7 +407,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("ok")] },
       { configurable: { thread_id: "silence-narration" } },
     );
-    expect(model.rounds).toBe(1);
+    // TWO rounds since #639: the decision no longer ends the turn. This stub asks for the same call
+    // every round, so the second round makes no progress and the turn ends there — the blanking is
+    // what this test is about either way, and it happens on the round the decision was SEEN.
+    expect(model.rounds).toBe(2);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
     // Gone from the CHANNEL, which is the copy the next turn reads back.
     const state = await buildThreadStateGraph(checkpointer).getState({
@@ -438,6 +472,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 ],
               });
             }
+            // #639: the lone decision on round 2 no longer ends the turn, so this model is asked a
+            // third time and has nothing left to do.
+            if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
               tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
@@ -461,7 +498,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       cfg,
     );
-    expect(model.rounds).toBe(2);
+    // THREE rounds since #639, and the extra one is the whole fix: the lone `skip_reply` of round 2
+    // is where the operator's remaining step would run, so it buys a round instead of ending there.
+    expect(model.rounds).toBe(3);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
     const state = await buildThreadStateGraph(checkpointer).getState(cfg);
     const messages = ((state.values as { messages?: BaseMessage[] })
@@ -632,6 +671,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 JSON.stringify(m.content).includes("quieto"),
               ),
             );
+            // The lone decision no longer ends the turn (#639), so this model is asked once more.
+            // It has nothing left to do, which is how a turn like this one ends now.
+            if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
               tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
@@ -652,7 +694,557 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       { configurable: { thread_id: "narration-not-sent" } },
     );
-    expect(seenNarration).toEqual([false]);
+    // TWO rounds see the history now, and neither may carry the sentence: #639 gave the lone
+    // decision a round of its own, and the blanking has to survive every one of them.
+    expect(seenNarration).toEqual([false, false]);
+  });
+
+  // s7 of the holdout. The decision is no longer terminal, so "the model keeps asking for silence"
+  // has to end somewhere, and the budget is the wrong somewhere: it is far away (`maxToolCalls` is
+  // ten by default) and it exists to bound ACTION, not repetition. The second lone decision is where
+  // the information ends — asked again after deciding alone, the model did nothing new.
+  test("a model that only ever asks for silence stops at the second decision", async () => {
+    const skipTool = realSkipTool();
+    class AlwaysSkips {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            // A FRESH call id each round, which is what a real provider does — otherwise `ToolNode`
+            // skips the repeat and the turn would end through the stall rule instead, proving
+            // nothing about this one.
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                { name: SKIP_REPLY_TOOL, args: {}, id: `c${self.rounds}` },
+              ],
+            });
+          },
+        };
+      }
+    }
+    const model = new AlwaysSkips();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "always-skips" } },
+    );
+    // Two decisions and no more, well short of the ten-call budget: the count is the assertion, and
+    // without it "the turn ended" would be satisfied by the budget catching it eight rounds later.
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+  });
+
+  // THE STALL, which only became reachable when the decision stopped ending the turn. `ToolNode`
+  // skips a call whose id already has an answer, so a model that repeats a batch verbatim gets no
+  // new result and is asked again with the same history — forever, because the budget counts tool
+  // RESULTS and none are being produced. Not a silence case at all, which is why it is tested with
+  // an ordinary tool: the rule is about repetition, not about `skip_reply`.
+  test("a batch whose every call was already answered ends the turn", async () => {
+    let ran = 0;
+    const counter = tool(
+      async () => {
+        ran++;
+        return "counted";
+      },
+      { name: "count_it", description: "count", schema: z.object({}) },
+    );
+    class RepeatsTheSameCall {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            return new AIMessage({
+              content: "",
+              tool_calls: [{ name: "count_it", args: {}, id: "same-id" }],
+            });
+          },
+        };
+      }
+    }
+    const model = new RepeatsTheSameCall();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [counter],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("conte")] },
+      { configurable: { thread_id: "repeats-same-call" } },
+    );
+    // The tool ran ONCE — the positive half, which is what says the turn reached the tool at all —
+    // and the model was asked twice, not until the recursion limit.
+    expect(ran).toBe(1);
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+  });
+
+  // THE DECISION STICKS, which is the half of #639 that is not about the extra round. `staySilent`
+  // answers "what did the model just do", and the batch after the decision is the operator's own
+  // call — so read off the LAST batch the turn would go back to being allowed to write, which is the
+  // hazard the terminal branch existed for, arriving through the new door. Caught by the mutation
+  // battery: making `silentTurn` read only the last batch left every other test green.
+  test("a decision two batches back still silences what the model writes at the end", async () => {
+    const skipTool = realSkipTool();
+    let resolved = false;
+    const resolveTool = tool(
+      async () => {
+        resolved = true;
+        return "resolved";
+      },
+      {
+        name: "resolve_conversation",
+        description: "resolve",
+        schema: z.object({}),
+      },
+    );
+    class SkipsResolvesThenTalks {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            if (self.rounds === 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "c2" },
+                ],
+              });
+            // Two batches after the decision, and a model that forgot it. The customer must not be
+            // written to all the same.
+            return new AIMessage("Pronto, resolvi para você!");
+          },
+        };
+      }
+    }
+    const model = new SkipsResolvesThenTalks();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, resolveTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("obrigado!")] },
+      { configurable: { thread_id: "sticky-silence" } },
+    );
+    expect(resolved).toBe(true);
+    expect(model.rounds).toBe(3);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    expect(JSON.stringify(result.messages)).not.toContain("resolvi para você");
+  });
+
+  // …and the decision belongs to ITS turn. The scan stops at the last human message, so a turn that
+  // went silent does not silence the next one — which is a real sequence on a shared contact-inbox
+  // thread, where every turn reads the same history.
+  test("a decision from an earlier turn does not silence this one", async () => {
+    const skipTool = realSkipTool();
+    class SkipsOnceThenAnswersNextTurn {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            return new AIMessage("Bom dia! Como posso ajudar?");
+          },
+        };
+      }
+    }
+    const model = new SkipsOnceThenAnswersNextTurn();
+    const checkpointer = new MemorySaver();
+    const cfg = { configurable: { thread_id: "silence-does-not-carry" } };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool],
+      maxToolCalls: 10,
+    });
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    // A SECOND turn on the same thread, whose history still carries the first turn's decision.
+    const second = await graph.invoke(
+      { messages: [new HumanMessage("bom dia")] },
+      cfg,
+    );
+    expect(String(second.messages.at(-1)?.content ?? "")).toBe(
+      "Bom dia! Como posso ajudar?",
+    );
+  });
+
+  // A REFUSED `skip_reply` is not a decision, and the rule that ENDS the turn on a reaffirmation has
+  // to agree with the rule that RECOGNISES one. An operator may declare a precondition on the native
+  // name; unmet, it returns an ordinary result under that name, which `skipReplyRan` does not accept.
+  // A refusal followed by a real decision is two lone `skip_reply` batches that are NOT "asked twice,
+  // nothing new" — and the mutation battery is why this exists: letting the decision leak from one
+  // batch to the older one left every other test green while ending this turn a round early, with
+  // the operator's `resolve_conversation` never run.
+  test("a refused skip_reply is not the decision a reaffirmation would end on", async () => {
+    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
+      kind: "attribute",
+      scope: "conversation",
+      key: "cpf",
+    });
+    let calls = 0;
+    // Refused on the FIRST call and honoured on the second, which is what a precondition does when
+    // the attribute arrives mid-turn — and the only shape where two lone batches disagree. The
+    // second result carries the MARK, because that, and not the text, is what makes it the decision.
+    const sometimesGuarded = tool(
+      async (_args: unknown, config: ToolRunnableConfig) => {
+        calls++;
+        if (calls === 1) return refusal;
+        // The MARK, through the same direct-tool-output passthrough the real tool uses: the text is
+        // not what identifies a decision, so a stand-in returning the ack string would leave both
+        // batches non-decisions and this test would prove nothing.
+        return new ToolMessage({
+          content: SKIP_REPLY_ACK,
+          tool_call_id: String(config?.toolCall?.id),
+          name: SKIP_REPLY_TOOL,
+          additional_kwargs: { [SKIP_REPLY_MARK]: true },
+        });
+      },
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    let resolved = false;
+    const resolveTool = tool(
+      async () => {
+        resolved = true;
+        return "resolved";
+      },
+      {
+        name: "resolve_conversation",
+        description: "resolve",
+        schema: z.object({}),
+      },
+    );
+    class AsksTwiceThenResolves {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds <= 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: SKIP_REPLY_TOOL, args: {}, id: `c${self.rounds}` },
+                ],
+              });
+            if (self.rounds === 3)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "c3" },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const model = new AsksTwiceThenResolves();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [sometimesGuarded, resolveTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "refused-then-real" } },
+    );
+    // The turn went past the second batch and ran what the operator asked for — the positive half.
+    // Read as a reaffirmation it would have ended there, and `resolved` would be false.
+    expect(resolved).toBe(true);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+  });
+
+  // WHAT THE BLANKING MAY NOT TOUCH, in a silent turn. Only the message that ENDS the turn is
+  // rewritten — a preamble beside an ordinary call ("Vou registrar isso") is followed by work that
+  // may lean on it, and rewriting every tool-calling turn's history is the different change
+  // `silenceNarration` already refuses to make.
+  test("a silent turn leaves a preamble beside an ordinary call alone", async () => {
+    const skipTool = realSkipTool();
+    const resolveTool = tool(async () => "resolved", {
+      name: "resolve_conversation",
+      description: "resolve",
+      schema: z.object({}),
+    });
+    class SkipsThenNarratesAnAct {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            if (self.rounds === 2)
+              return new AIMessage({
+                id: "ai-preamble",
+                content: "Vou registrar isso.",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "c2" },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const cfg = { configurable: { thread_id: "silent-preamble" } };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new SkipsThenNarratesAnAct() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool, resolveTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      cfg,
+    );
+    // Nothing reached the customer, and the preamble is still in the channel where the next turn can
+    // read what this one was doing.
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    const state = await buildThreadStateGraph(checkpointer).getState(cfg);
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const preamble = messages.find((m) => m.id === "ai-preamble");
+    expect(String(preamble?.content ?? "")).toBe("Vou registrar isso.");
+  });
+
+  // …and what it MUST touch, in the shape only one vendor has. For the Responses API the history is
+  // serialized from the raw `output` array in `response_metadata`, not from `content`, so a rule that
+  // cleared `content` alone left the sentence in the copy that actually travels. The blanking of the
+  // decision's own message has covered this since round 23; the turn's LAST message needed it too,
+  // and only got it when the turn stopped ending on the decision.
+  test("the final message of a silent turn loses its text in the provider's own copy too", async () => {
+    const skipTool = realSkipTool();
+    class SkipsThenSpeaksThroughResponses {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            return new AIMessage({
+              id: "ai-final",
+              content: "Tudo certo por aqui!",
+              response_metadata: {
+                output: [
+                  {
+                    type: "message",
+                    role: "assistant",
+                    content: [
+                      { type: "output_text", text: "Tudo certo por aqui!" },
+                    ],
+                  },
+                ],
+              },
+            });
+          },
+        };
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const cfg = { configurable: { thread_id: "silent-responses-api" } };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new SkipsThenSpeaksThroughResponses() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      cfg,
+    );
+    // The model DID write — the positive half, without which "no copy survives" is satisfied by a
+    // model that wrote nothing — and neither copy of it survives.
+    const final = result.messages.find((m) => m.id === "ai-final") as AIMessage;
+    expect(final).toBeDefined();
+    expect(final.response_metadata?.output).toBeDefined();
+    expect(JSON.stringify(result.messages)).not.toContain("Tudo certo");
+  });
+
+  // The wrap-up is "Conclua agora: responda ao cliente", which is the opposite of what a silent turn
+  // chose — and now that the turn goes on, it can reach the soft limit while still silent. Round 18
+  // suppressed it for the batch that just decided; #639 has to keep it suppressed for the rest.
+  test("the wrap-up does not land on the rounds after a lone decision", async () => {
+    const skipTool = realSkipTool();
+    const noop = tool(async () => "feito", {
+      name: "noop2",
+      description: "noop",
+      schema: z.object({}),
+    });
+    class SkipsThenWorksUpToTheLimit {
+      boundRounds: BaseMessage[][] = [];
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            self.rounds++;
+            self.boundRounds.push(messages);
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            if (self.rounds <= 3)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "noop2", args: {}, id: `n${self.rounds}` },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const model = new SkipsThenWorksUpToTheLimit();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, noop],
+      // Small enough that the soft limit (max - 2) is crossed on the rounds after the decision.
+      maxToolCalls: 4,
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "silent-soft-limit" } },
+    );
+    // The turn really did cross the soft limit — without this the assertion below is satisfied by a
+    // turn that never got near it.
+    expect(model.rounds).toBeGreaterThanOrEqual(3);
+    expect(model.boundRounds.some(carriesWrapUp)).toBe(false);
+  });
+
+  // A batch is a repeat only when EVERY call in it is already answered. One old call beside a new one
+  // still produces a result, so the round after it sees something this one did not.
+  test("a batch that repeats one call and makes another is not a stall", async () => {
+    let ran = 0;
+    const counter = tool(
+      async () => {
+        ran++;
+        return "counted";
+      },
+      { name: "count_it", description: "count", schema: z.object({}) },
+    );
+    class RepeatsOneAndAddsOne {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "count_it", args: {}, id: "old" }],
+              });
+            if (self.rounds === 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "count_it", args: {}, id: "old" },
+                  { name: "count_it", args: {}, id: "new" },
+                ],
+              });
+            return new AIMessage("pronto");
+          },
+        };
+      }
+    }
+    const model = new RepeatsOneAndAddsOne();
+    const result = await buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [counter],
+      maxToolCalls: 10,
+    }).invoke(
+      { messages: [new HumanMessage("conte")] },
+      { configurable: { thread_id: "partial-repeat" } },
+    );
+    // The new call ran (twice in total) and the turn reached its answer.
+    expect(ran).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("pronto");
   });
 
   // Round 26. A provider can emit a good `skip_reply` beside a call whose arguments do not parse, and
@@ -932,6 +1524,76 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
+  // ISSUE #639. A LONE decision no longer ENDS the turn, it makes the turn SILENT — two different
+  // guarantees, and `docs/graph.md` only ever argued for the second ("a turn that chose silence
+  // writes to the customer anyway" is the hazard). Ending it costs the operator everything they
+  // asked for after the decision, and the shape that reaches it is ordinary: a prompt that forbids
+  // parallel calls (the agent in the report carries one for `set_labels`, #604) and names
+  // `skip_reply` before the rest. Measured live on the issue, the two failing cells are exactly the
+  // two that name it first, and no wording fixes it — the note that takes gpt-5.2 from 0/12 to 12/12
+  // does nothing on gpt-5.6-luna, because it asks the model to disobey the operator's own ordering.
+  test("a lone skip_reply lets the rest of what the operator asked for run", async () => {
+    const skipTool = realSkipTool();
+    let resolved = false;
+    const resolveTool = failableTool(
+      async () => {
+        resolved = true;
+        return "resolved";
+      },
+      {
+        name: "resolve_conversation",
+        description: "resolve",
+        schema: z.object({}),
+      },
+    );
+    class OneToolAtATime {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            // The operator's numbered steps, obeyed literally: one call per round, skip first.
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            if (self.rounds === 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "c2" },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const model = new OneToolAtATime();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, resolveTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("obrigado!")] },
+      { configurable: { thread_id: "lone-skip-then-resolve" } },
+    );
+    // THE POSITIVE HALF FIRST, and it is not decoration: "nothing was delivered" is satisfied just
+    // as well by a turn that stopped dead, which is the bug. The resolve having RUN is what says the
+    // path was walked (the process note of 18/set, on assertions of absence).
+    expect(resolved).toBe(true);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+  });
+
   // ...and a companion the operator's own rule REFUSED is the same thing to the customer: the
   // reaction did not happen, so ending on the skip leaves them with nothing. Round 17 read that off
   // the RESULT; round 18 showed a result cannot answer it (a tool may decline through an ordinary
@@ -1023,8 +1685,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 ],
               });
             }
-            // Having seen the reaction land, the model asks for silence ALONE — and that is the
-            // batch the turn may end on.
+            // Having seen the reaction land, the model asks for silence ALONE. That used to end the
+            // turn; since #639 it buys one round, because that round is where the operator's
+            // remaining steps run. This model has none, so it spends the round and stops.
+            if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
               tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
@@ -1046,7 +1710,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       { configurable: { thread_id: "companion-ok" } },
     );
-    expect(model.rounds).toBe(2);
+    // THREE since #639: the reaffirmation on round 2 is a lone decision, and a lone decision now
+    // buys the round where the operator's remaining steps would run.
+    expect(model.rounds).toBe(3);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 

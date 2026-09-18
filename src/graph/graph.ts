@@ -153,30 +153,32 @@ function justDecidedToStaySilent(history: BaseMessage[]): boolean {
   return lastBatch(history).skipped;
 }
 
-// The AI message that REQUESTED the tool batch the history ends on, alongside the two answers about
-// that batch. One scan, because both are about the same batch and a second walk would be a second
-// chance to disagree about where it starts.
+// THE TURN'S BATCHES, newest first, each carrying the answers the decision needs. ONE scan, because
+// three questions are asked of it and a second walk would be a second chance to disagree about where
+// a batch starts:
 //
 //   `skipped` — the model chose silence, which is what suppresses the wrap-up instruction;
-//   `alone`   — the decision is ALL it did, which is what may end the turn.
+//   `alone`   — the decision is ALL it did, which is what makes the turn silent;
+//   `caller`  — the AI message that requested the batch, whose text is taken back out.
 //
-// They are separate because the two questions have different answers on a PARALLEL batch, and
-// merging them is what rounds 17 and 18 of review kept finding.
-function lastBatch(history: BaseMessage[]): {
-  skipped: boolean;
-  alone: boolean;
-  caller: BaseMessage | null;
-} {
+// The first two are separate because they differ on a PARALLEL batch, and merging them is what
+// rounds 17 and 18 of #454 kept finding.
+type Batch = { skipped: boolean; alone: boolean; caller: BaseMessage | null };
+
+function turnBatches(history: BaseMessage[]): Batch[] {
+  const out: Batch[] = [];
   let sawTool = false;
   let skipped = false;
-  // NOTE: The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
-  // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
-  // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
-  // the accident instead of the decision.
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     const t = m?.getType();
+    // The turn starts at the last human message: a batch from an EARLIER turn is not this one's.
+    if (t === "human") break;
     if (t === "tool") {
+      // NOTE: The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
+      // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
+      // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
+      // the accident instead of the decision.
       sawTool = true;
       // NOTE: The ACK, not the name. A precondition on `skip_reply` returns a normal tool result under
       // that same name saying the call did NOT run — read by name, an operator's own guard would
@@ -186,10 +188,90 @@ function lastBatch(history: BaseMessage[]): {
       continue;
     }
     // NOTE: The batch ends at the AI message that requested it — anything before is an earlier round.
-    if (sawTool) return { skipped, alone: onlySkipped(m), caller: m ?? null };
-    if (t === "human") return { skipped: false, alone: false, caller: null };
+    if (sawTool) {
+      out.push({ skipped, alone: onlySkipped(m), caller: m ?? null });
+      sawTool = false;
+      skipped = false;
+    }
   }
-  return { skipped: false, alone: false, caller: null };
+  return out;
+}
+
+function lastBatch(history: BaseMessage[]): Batch {
+  return (
+    turnBatches(history)[0] ?? { skipped: false, alone: false, caller: null }
+  );
+}
+
+// DID THIS TURN DECIDE SILENCE ON ITS OWN, anywhere since the last human message — a different
+// question from `justDecidedToStaySilent`, and issue #639 is the gap between them.
+//
+// A LONE `skip_reply` used to END the turn. Ending it and keeping it SILENT are two different
+// guarantees, and `docs/graph.md` only ever argued for the second; the first costs the operator
+// everything they asked for after the decision, and the shape that reaches it is ordinary — a prompt
+// that forbids parallel calls (the agent in the report carries one for `set_labels`, #604) with
+// `skip_reply` named before the rest. Measured live on the issue, the two failing cells are exactly
+// the two that name it first, and no wording fixes it: the note that takes gpt-5.2 from 0/12 to
+// 12/12 does nothing on gpt-5.6-luna, because it asks the model to disobey the operator's ordering.
+//
+// So the turn continues and the decision STICKS: the wrap-up stays suppressed, the hard limit stops
+// trying to force an answer, and the final text is taken out in code rather than being the model's
+// to withhold. Read over the whole turn and not off the last batch, because the batch after the
+// decision is the operator's `resolve_conversation`, and last-batch semantics would let the turn end
+// by writing to the customer — the very hazard the terminal branch existed for.
+//
+// ALONE, and that word is the scope. A PARALLEL batch does not make the turn silent, because there
+// the model has something to change its mind ABOUT: round 18 installed exactly that, so a companion
+// that FAILED lets it answer the customer instead. A decision taken by itself rests on nothing that
+// could have failed.
+function decidedToStaySilentAlone(history: BaseMessage[]): boolean {
+  return turnBatches(history).some((b) => b.skipped && b.alone);
+}
+
+// …AND THE TURN STILL HAS TO END. With the decision no longer terminal, what stops a model that
+// answers every round with the same lone `skip_reply` is the SECOND one: asked again after deciding
+// alone, it did nothing new, and no third round can add anything. The budget bounds it too, but far
+// later and through a path built for another purpose — this ends it where the information ends.
+//
+// It is also what keeps round 18's shape: a parallel batch followed by a lone `skip_reply` costs one
+// round more than it used to, and that round is the whole fix — it is where the operator's remaining
+// step gets to run. A model with nothing left to do spends it and stops.
+// Every call the last assistant turn asked for already has its answer in this turn's history, so the
+// tools step will produce nothing and the round after it sees exactly what this one saw. See the
+// call site for why this is asked of the calls and not of the step's output.
+function repeatsAnsweredCalls(history: BaseMessage[]): boolean {
+  // No check on the message TYPE, and the mutation battery is why: only an assistant turn carries
+  // `tool_calls`, so anything else falls out at the empty list below. A guard for it survived every
+  // mutation, which is what a dead condition looks like.
+  const calls = (history.at(-1) as AIMessage | undefined)?.tool_calls ?? [];
+  if (calls.length === 0) return false;
+  // THIS TURN'S answers, and the bound is load-bearing: a call id is only unique within the request
+  // that minted it, and a model that reuses one across turns (a stub reusing `call_attr`, a provider
+  // numbering from zero) would otherwise look like it was repeating a call it never made here.
+  const answered = new Set<string>();
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (m?.getType() === "human") break;
+    if (m?.getType() !== "tool") continue;
+    const id = (m as { tool_call_id?: string }).tool_call_id;
+    if (typeof id === "string") answered.add(id);
+  }
+  // `every`, and the mutation battery says `some` behaves identically today: a batch that repeats one
+  // id and mints another gets the new one RUN, so the tools step appends a result and the last message
+  // is no longer this assistant turn — the function is never consulted with a mixed batch. It is
+  // spelled `every` because that is the claim being made (nothing new can come of this batch), and
+  // because the equivalence rests on `ToolNode` skipping only the answered call rather than the step.
+  return calls.every((c) => typeof c.id === "string" && answered.has(c.id));
+}
+
+function reaffirmedSilenceAlone(history: BaseMessage[]): boolean {
+  const [last, previous] = turnBatches(history);
+  return (
+    last?.skipped === true &&
+    last.alone &&
+    previous?.skipped === true &&
+    previous.alone
+  );
 }
 
 // WHETHER THE DECISION WAS THE WHOLE OF WHAT THE MODEL DID, read off the CALLS rather than off their
@@ -287,6 +369,27 @@ function textlessResponseMetadata(
     return [{ ...(item as object), content: after }];
   });
   return { ...meta, output: rewritten };
+}
+
+// THE LAST WORD OF A SILENT TURN, taken out here instead of being the model's to withhold (issue
+// #639). The turn no longer ends ON the decision, so the message the runtime posts is whatever the
+// model wrote in the round after it — and a turn that chose silence writing to the customer is the
+// exact hazard the terminal branch existed for. Removing the TEXT and nothing else is the same rule
+// `silenceNarration` follows, and for the same reason: `thinking` blocks are signed protocol data,
+// and usage is what the turn is billed by.
+function withoutText(message: BaseMessage): BaseMessage {
+  const ai = message as AIMessage;
+  // NO tool calls carried, unlike `silenceNarration`: this one is only ever handed the message that
+  // ENDS the turn, which by definition requests nothing. Copying an empty list either way is how a
+  // mutation that dropped them stayed green — the difference is unreachable, so it is not written.
+  return new AIMessage({
+    ...(typeof ai.id === "string" ? { id: ai.id } : {}),
+    content: textlessContent(ai.content),
+    additional_kwargs: ai.additional_kwargs,
+    response_metadata: textlessResponseMetadata(ai.response_metadata),
+    ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
+    ...(ai.name ? { name: ai.name } : {}),
+  });
 }
 
 function silenceNarration(history: BaseMessage[]): BaseMessage[] {
@@ -519,27 +622,52 @@ export function buildAgentGraph({
     const toolCalls = hasTools ? toolCallsSinceLastHuman(history) : 0;
     const hardLimit = hasTools && toolCalls >= max;
     const staySilent = hasTools && justDecidedToStaySilent(history);
-    // THE DECISION IS TERMINAL, and terminal means the model is not asked again — not "asked again
-    // and hopefully quiet". `skip_reply` is a tool, so the graph loops back here with its result, and
-    // the contract that the next completion carries no text was the MODEL's to keep. It usually does,
-    // being told to; when it does not, a turn that explicitly chose silence writes to the customer
-    // anyway, and on the proactive path that is an unsolicited message — the outcome the sentinel
-    // used to make impossible, because the token WAS the final text and the turn ended on it.
+    // The decision, taken alone, for the REST of the turn (issue #639, and see the function).
+    const silentTurn = hasTools && decidedToStaySilentAlone(history);
+    // ONLY THE MESSAGE THAT ENDS THE TURN, which is the one carrying no calls: a message that still
+    // requests tools is not what the runtime posts, and blanking a preamble beside an ordinary call
+    // is a different change on a path this issue is not about (the same line `silenceNarration`
+    // draws). `narration` already covers the text written beside the decision itself.
+    const silenced = (m: BaseMessage): BaseMessage =>
+      silentTurn && ((m as AIMessage).tool_calls?.length ?? 0) === 0
+        ? withoutText(m)
+        : m;
+    // THE DECISION STICKS, and it no longer ENDS the turn (issue #639). The old branch returned
+    // here on a lone `skip_reply` with no further model round, which is what cost the operator every
+    // step they wrote after it. What that branch was protecting is kept by `silentTurn` instead: the
+    // wrap-up below stays suppressed, the hard limit stops trying to force an answer, and the final
+    // text is taken out on the way back — in code, rather than being the model's to keep.
     //
-    // So the turn ends here, on the decision, whatever the budget says. The outcome is the one the
-    // model was heading for: no tool calls, `toolsCondition` routes to END, an empty message posts
-    // nothing. The hard limit keeps its callback because the calls still COUNTED, which is what
-    // bounds a model that loops on skip_reply; what it no longer does is force a TEXT answer out of
-    // a turn that chose not to give one (round 9 found that half, round 11 the other).
+    // The count is still untouched, which is what bounds a model that loops on `skip_reply`: at the
+    // budget the raw model is invoked with no tools at all, so the next message carries no calls and
+    // `toolsCondition` routes to END.
     // BLANKED THE MOMENT THE DECISION IS SEEN, not only when the turn ends on it. A model can put
     // text in the message that calls `skip_reply`, and on a PARALLEL batch that message is not the
     // end of the turn — so a branch that only blanked on the way out left the narration standing
     // whenever a companion tool bought another round, and the turn could still finish silent (round
     // 20). Undelivered either way: the runtime posts the LAST assistant message.
     const narration = staySilent ? silenceNarration(history) : [];
-    // NOTE: Terminal only when the decision was ALL the model did (see `onlySkipped`). `staySilent` alone
-    // still suppresses the wrap-up instruction below: the model just chose silence either way.
-    if (staySilent && lastBatch(history).alone) {
+    // THE TURN ENDS WHERE THE INFORMATION ENDS: a lone `skip_reply` asked for again, right after one,
+    // adds nothing a further round could act on (see `reaffirmedSilenceAlone`). Everything the old
+    // terminal branch did on the way out is done here, minus the part that cost the operator their
+    // remaining steps.
+    // …and the OTHER way a silent turn runs out of things to do: the budget. A turn that decided
+    // silence alone and has spent its tool calls cannot act again and may not speak, so asking the
+    // model at all buys a completion whose only possible use is text this path would blank. The old
+    // terminal branch got here for free by never leaving; this pays the same by not asking.
+    // THE STALL, and it became reachable when the lone decision stopped ending the turn (#639).
+    // `ToolNode` SKIPS a call whose `tool_call_id` already has an answer in the history, so a model
+    // that repeats a batch verbatim gets no new result and is asked again with the same history,
+    // forever: the budget does not bound it either, because that counts tool RESULTS and none are
+    // being produced. Asked of the CALLS rather than of the tools step's output, deliberately — an
+    // empty step is not by itself a stall (a tool that answered nothing still leaves the model free
+    // to reply, which is what a `/reset` landing mid-turn relies on), while a batch whose every id
+    // is already answered provably cannot produce one.
+    if (
+      repeatsAnsweredCalls(history) ||
+      reaffirmedSilenceAlone(history) ||
+      (silentTurn && hardLimit)
+    ) {
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
       return { messages: [...narration, new AIMessage("")] };
     }
@@ -552,6 +680,9 @@ export function buildAgentGraph({
       hasTools &&
       !hardLimit &&
       !staySilent &&
+      // …and for the rest of a turn that decided silence alone, for the same reason: the decision is
+      // still standing two rounds later, and the wrap-up would be arguing with it (issue #639).
+      !silentTurn &&
       toolCalls >= Math.max(1, max - 2);
 
     // WHERE THE WRAP-UP TRAVELS (issue #628): after the history where every destination takes a
@@ -596,6 +727,16 @@ export function buildAgentGraph({
     // alone bound, the model sees the companion's result and either reaffirms silence (a batch that
     // is nothing but the decision, which ends the turn) or answers, which is exactly what the
     // customer needs when the companion failed. It cannot loop: the reaffirmation is terminal.
+    //
+    // A turn that decided silence ALONE is the other case, and it takes no tools at all: there is
+    // nothing for the model to reconsider and nothing left it may say, so the raw model's answer
+    // carries no calls, `toolsCondition` ends the turn, and the text comes out below. That is also
+    // what stops a model looping on `skip_reply` now that the decision is no longer terminal — the
+    // budget it spends looping is what brings it here (issue #639).
+    // No `!silentTurn` here, though the two cases are different: a turn that decided silence alone
+    // and hit the budget already returned above, so this line is only ever reached by the parallel
+    // one. The extra term survived every mutation, which is the shape of a condition that cannot
+    // change an answer.
     const silenceOnly =
       hardLimit && staySilent
         ? (tools ?? []).filter((t) => t.name === SKIP_REPLY_TOOL)
@@ -645,10 +786,12 @@ export function buildAgentGraph({
         return {
           messages: [
             ...narration,
-            await runModelCall(second.run, {
-              primary: second.labels,
-              onRetry: onModelRetry,
-            }),
+            silenced(
+              await runModelCall(second.run, {
+                primary: second.labels,
+                onRetry: onModelRetry,
+              }),
+            ),
           ],
         };
       } catch (err) {
@@ -679,7 +822,7 @@ export function buildAgentGraph({
           : undefined,
       },
     );
-    return { messages: [...narration, response] };
+    return { messages: [...narration, silenced(response)] };
   };
 
   // ONCE PER TURN, the same closure argument the two flags above make. It says the tool boundary

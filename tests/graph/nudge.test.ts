@@ -30,6 +30,7 @@ import {
   renderNudge,
   runAgentNudge,
 } from "@/graph/nudge";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import {
   claimIngestWrite,
   markTurnOwning,
@@ -1049,6 +1050,69 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // The label still applies, the same way it does on every other silent end, and the resolve
     // still falls with the transfer.
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  // s5 of the #639 holdout, and the proactive path is where the old terminal branch was most
+  // defensible: an unsolicited message is the worst thing a follow-up can do. That guarantee is kept
+  // — nothing is sent — while the operator's remaining step now runs, which is the whole issue. Both
+  // halves are asserted, because "sent nothing" on its own is satisfied by a turn that died after the
+  // decision, which is exactly the bug.
+  test("a follow-up that decides silence ALONE still runs what the operator asked next", async () => {
+    // Its own conversation id, unused by any other test in this file: seeding a row two tests share
+    // makes one of them read state the other left, and this file keeps one row per test for that
+    // reason.
+    await seedConv(9997, null);
+    const s = stub();
+    class SkipsThenLabels {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            // The operator's `one tool at a time` shape: the decision first, by itself.
+            if (self.rounds === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "n1" }],
+              });
+            if (self.rounds === 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { labels: ["sem-resposta"] },
+                    id: "n2",
+                  },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const model = new SkipsThenLabels();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9997`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    // …and the label the operator asked for after the decision was applied, which is the half the
+    // old terminal branch cost.
+    expect(s.labelSets).toEqual([["sem-resposta"]]);
   });
 
   test("invokes on the per-contact-inbox memory thread, not the per-conversation thread (unification)", async () => {

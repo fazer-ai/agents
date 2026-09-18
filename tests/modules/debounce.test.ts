@@ -1850,6 +1850,96 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(model.seen.join("\n")).not.toContain("segunda via do boleto");
   });
 
+  // E O LEDGER FECHA O MESMO CONJUNTO QUE A RECUSA CONSUMIU (PR #701, review round 3). A recusa do
+  // teto passou a poder decidir sobre uma órfã ABAIXO da marca; o ledger continuava fechando por
+  // faixa a partir da marca, então a entrega daquela órfã ficava DEAD, reportada como perda que
+  // ninguém atendeu e elegível para recuperação, apesar de a recusa já ter decidido sobre ela.
+  test("the ceiling's refusal closes the ledger row of the orphan it consumed", async () => {
+    const convId = 952;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    // A entrega da órfã, parada e reportada como perda.
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ceiling-orphan-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 99, polledAt: new Date() },
+    });
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "me manda a segunda via" },
+                { id: 2, content: "obrigado" },
+              ]),
+            ],
+            sent: [],
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({
+        where: { tenantId, source: "inbox" },
+      });
+    }
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: reported.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.
@@ -4023,6 +4113,69 @@ describe.skipIf(!dbUp)("debounce", () => {
       // come back for the same messages.
       expect(calls.getMessages).toBe(0);
       expect(await watermarkOf(840)).toBe(7);
+    });
+
+    test("a refused contact closes the orphan below the mark too", async () => {
+      // PR #701, review round 3 (P1). O portão decide ANTES de qualquer busca no Chatwoot, então ele
+      // não sabe nomear os membros e grava a faixa. A faixa começa na marca, e a órfã que esta PR
+      // ensinou a seleção a enxergar mora ABAIXO dela: sem linha, ela volta como devida assim que a
+      // autorização voltar, e o turno seguinte executa um pedido que este portão já tinha descartado.
+      // A faixa passa a começar no piso da era, que é onde a ausência de linha começa a significar
+      // alguma coisa.
+      const convId = 951;
+      await seedConversation(convId, { lastHandledMessageId: 2 });
+      await seedContactOn(convId, 71);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      const sent: Array<[number, string]> = [];
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "cancela meu plano" },
+                { id: 2, content: "obrigado" },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, { n: 0 }),
+        },
+      });
+      expect(sent).toEqual([]);
+      // Autorização de volta: o pedido descartado não é executado.
+      const model = new CaptureReplyModel(REPLY);
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "cancela meu plano" },
+                { id: 2, content: "obrigado" },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, { n: 0 }),
+        },
+      });
+      expect(model.seen.join("\n")).not.toContain("cancela meu plano");
     });
 
     test("a refused contact settles the ledger by RANGE: the conversation is still ours", async () => {

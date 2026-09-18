@@ -1293,6 +1293,15 @@ export async function flushDebounceJob(
   });
   // No conversation / no config → nothing to do (not a failure).
   if (ctx === null) return { outcome: "done" };
+  // ONDE A AUSÊNCIA DE LINHA COMEÇA A SIGNIFICAR ALGUMA COISA, e por isso o limite inferior de toda
+  // faixa que um gate exit grava (PR #701, review round 3). Um gate exit decide antes de qualquer
+  // busca no Chatwoot, então ele não sabe nomear os membros e diz o VÃO que consumiu. O vão começava
+  // na marca, e desde que a seleção parou de ser escalar existe mensagem aberta ABAIXO dela: a órfã
+  // sem linha, que a faixa deixava de fora e o primeiro flush seguinte oferecia de novo, executando
+  // um pedido que este exit já tinha descartado. Abaixo do piso da era nada precisa de linha, porque
+  // lá os escalares decidem inteiros; entre o piso e o `last` está tudo que este exit consome.
+  const gateExitFrom = ctx.perMessageFloor ?? ctx.watermark ?? null;
+
   // NOTE: An unbound inbox is a state an operator has to repair, so it leaves the same line the
   // webhook's direct path leaves rather than ending as a silent "done" (issue #318).
   if ("unbound" in ctx) {
@@ -1381,7 +1390,7 @@ export async function flushDebounceJob(
         // over, which is what `settleGateExit` below states to the ledger with the same two bounds.
         // The decision was taken over the span ("this is not ours to answer now"), so the span is
         // the fact rather than a hull of one (issue #690).
-        dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+        dispensed: { kind: "range", afterMessageId: gateExitFrom },
         base,
       });
       await settleGateExit({
@@ -1776,7 +1785,7 @@ export async function flushDebounceJob(
                 ...ceilingBurst.dropped,
               ].map((m) => m.id),
             }
-          : { kind: "range", afterMessageId: ctx.watermark ?? null },
+          : { kind: "range", afterMessageId: gateExitFrom },
         base,
       });
       await settleGateExit({
@@ -1784,7 +1793,22 @@ export async function flushDebounceJob(
         instanceId,
         conversationId,
         conversationRowId: ctx.convDbId,
-        afterMessageId: ctx.watermark ?? null,
+        // AND O LEDGER TEM QUE ALCANÇAR O MESMO CONJUNTO (PR #701, review round 3). O ledger fecha
+        // por faixa, e a faixa daqui começava na marca: a entrega da órfã que esta recusa consumiu
+        // ficava PROCESSING ou DEAD, reportada como perda que ninguém atendeu e elegível para
+        // recuperação, apesar de a recusa já ter decidido sobre ela. Desce só até o membro mais
+        // antigo da rajada recusada, nunca até o piso da era: alcance a mais que isso retiraria
+        // entrega de mensagem que este exit não consumiu.
+        afterMessageId: ceilingBurst
+          ? Math.min(
+              ctx.watermark ?? Number.MAX_SAFE_INTEGER,
+              Math.min(
+                ...[...ceilingBurst.pending, ...ceilingBurst.dropped].map(
+                  (m) => m.id,
+                ),
+              ) - 1,
+            )
+          : (ctx.watermark ?? null),
         upToMessageId: last,
         // False, and for the reason the gate below gives: what closed this exit is a decision about
         // the TENANT, which holds for whichever route carried the message.
@@ -1859,7 +1883,7 @@ export async function flushDebounceJob(
           toMessageId: last,
           // Same gate exit, same reason as the one above: the span is what this decision was taken
           // over, and its members are not known here (issue #690).
-          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+          dispensed: { kind: "range", afterMessageId: gateExitFrom },
           base,
         });
         await settleGateExit({
@@ -1927,7 +1951,7 @@ export async function flushDebounceJob(
           toMessageId: last,
           // Same gate exit, same reason as the one above: the span is what this decision was taken
           // over, and its members are not known here (issue #690).
-          dispensed: { kind: "range", afterMessageId: ctx.watermark ?? null },
+          dispensed: { kind: "range", afterMessageId: gateExitFrom },
           base,
         });
         await settleGateExit({

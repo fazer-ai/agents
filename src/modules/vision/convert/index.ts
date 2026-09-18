@@ -114,16 +114,31 @@ export const __frameDimensionsForTest = frameDimensions;
 // `MediaSourceMismatchError` — and bytes that were never a HEIC should not cost a decoder at all.
 const HEIC_BRANDS = new Set(["mif1", "msf1", "heic", "heix", "hevc", "hevx"]);
 
-function heicBrand(bytes: ArrayBuffer): string | null {
-  if (bytes.byteLength < 12) return null;
+// WHAT THIS FILE IS, in the words the operator's line will use. Three answers and not two, because
+// the two ways of not being a HEIC are different facts and the line names one of them: a 703-byte
+// JPEG reported as `<too short>` sends whoever reads it looking for a truncated upload. The whole
+// PR is about that line.
+type HeicHeader =
+  | { kind: "brand"; brand: string }
+  | { kind: "too-short" }
+  | { kind: "not-ftyp" };
+
+function heicHeader(bytes: ArrayBuffer): HeicHeader {
+  if (bytes.byteLength < 12) return { kind: "too-short" };
   // THE BOX BEFORE THE BRAND. `ftyp` at offset 4 is what makes offset 8 the major brand rather than
   // four bytes that happen to spell one: a JPEG whose first marker is a comment can carry "heic" at
   // offset 8 and decode perfectly as a JPEG. Reading the brand alone would call that file a broken
   // HEIC and SKIP it, which is the exact regression the brand check exists to prevent — the
   // attachment was readable and stops being read (PR #707 review round 7; holdout s8 is the same
   // failure arrived at from the other side).
-  if (ascii(bytes, 4) !== "ftyp") return null;
-  return ascii(bytes, 8);
+  if (ascii(bytes, 4) !== "ftyp") return { kind: "not-ftyp" };
+  return { kind: "brand", brand: ascii(bytes, 8) };
+}
+
+function headerReason(h: HeicHeader): string {
+  if (h.kind === "too-short") return "is too short to carry one";
+  if (h.kind === "not-ftyp") return "does not open with an `ftyp` box";
+  return `carries brand "${h.brand}"`;
 }
 
 function ascii(bytes: ArrayBuffer, offset: number): string {
@@ -136,10 +151,10 @@ async function heicToJpeg(
   bytes: ArrayBuffer,
   opts: ConvertOptions,
 ): Promise<ArrayBuffer> {
-  const brand = heicBrand(bytes);
-  if (brand === null || !HEIC_BRANDS.has(brand))
+  const header = heicHeader(bytes);
+  if (header.kind !== "brand" || !HEIC_BRANDS.has(header.brand))
     throw new MediaSourceMismatchError(
-      `declared as heic but carries brand ${brand === null ? "<too short>" : `"${brand}"`}`,
+      `declared as heic but ${headerReason(header)}`,
     );
   const open = opts.withFrames ?? withHeicFrames;
   return await open(bytes, async (frames: readonly HeicFrame[]) => {

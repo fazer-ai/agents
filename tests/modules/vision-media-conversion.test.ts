@@ -769,6 +769,37 @@ describe("heic-to-jpeg", () => {
     ).rejects.toBeInstanceOf(MediaSourceMismatchError);
   });
 
+  test("the operator's line names WHICH of the three things the file is", async () => {
+    // The three ways of not being a convertible HEIC are different facts, and the line is the whole
+    // point of this PR. Reported as one, a 703-byte JPEG reads as `<too short>` and sends whoever is
+    // looking at it after a truncated upload (PR #707, found by the verifier's a4 addendum).
+    const message = async (bytes: ArrayBuffer) =>
+      (
+        await runMediaConverter("heic-to-jpeg", bytes).catch(
+          (e: unknown) => e as Error,
+        )
+      ).message;
+
+    expect(await message(new ArrayBuffer(8))).toContain(
+      "is too short to carry one",
+    );
+    // Long enough, and not an ISO base-media file at all: a real JPEG.
+    const jpg = new Uint8Array(
+      jpeg.encode(
+        { data: new Uint8Array(8 * 8 * 4).fill(180), width: 8, height: 8 },
+        80,
+      ).data,
+    );
+    expect(jpg.byteLength).toBeGreaterThan(12);
+    expect(await message(jpg.buffer as ArrayBuffer)).toContain(
+      "does not open with an `ftyp` box",
+    );
+    // An ISO base-media file that is simply another format.
+    expect(await message(brandedHeic("avif"))).toContain(
+      'carries brand "avif"',
+    );
+  });
+
   test("a truncated but correctly branded HEIC is a conversion failure, not a mismatch", async () => {
     // The type did not lie; the file is broken. The caller must skip this one rather than hand the
     // provider bytes it has already said it cannot read.

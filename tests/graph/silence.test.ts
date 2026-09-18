@@ -17,7 +17,9 @@ import {
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
 } from "@/graph/silence";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
+import { dropDuplicateToolNames } from "@/graph/tools/unique-names";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 const S = FOLLOWUP_SKIP_SENTINEL;
@@ -313,15 +315,25 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
       { name: "cep" },
     ]);
     expect(followupSilenceChannel(granted, withOther)).toBe("tool");
-    // ...and for the agent whose own tool holds the name, the grant never fired, the drop leaves it
-    // standing, and the directive falls back to the sentinel it can actually speak.
+    // ...and the agent whose own tool holds the name reaches the same answer by the other road since
+    // issue #715: the grant now fires, so the tool left under this name is OURS, and when it is the
+    // whole toolset the drop takes it out — the directive falls back to the sentinel it can actually
+    // speak. The sentinel is the same, and what changed is why: before, the grant stood down and the
+    // turn kept a tool that the assembly had already dropped elsewhere.
     const theirs = withFollowupSilenceChannel({
       nativeToolsAllow: [] as string[],
       httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
     });
     const kept = withoutLoneSilenceTool(theirs, [{ name: SKIP_REPLY_TOOL }]);
-    expect(kept).toHaveLength(1);
+    expect(kept).toHaveLength(0);
     expect(followupSilenceChannel(theirs, kept)).toBe("sentinel");
+    // And with anything else beside it the channel is real, which is the case the carve-out was
+    // costing: same agent, one ordinary tool more.
+    const alongside = withoutLoneSilenceTool(theirs, [
+      { name: SKIP_REPLY_TOOL },
+      { name: "cep" },
+    ]);
+    expect(followupSilenceChannel(theirs, alongside)).toBe("tool");
   });
 });
 
@@ -542,15 +554,53 @@ describe("withFollowupSilenceChannel", () => {
     ).toEqual([SKIP_REPLY_TOOL]);
   });
 
-  // ...with one exception, and it is about somebody else's property. `toolDefinitionCreateSchema`
-  // reserves no native name, and `dropDuplicateToolNames` puts natives FIRST — so granting ours to
-  // an agent that runs a custom HTTP tool under this name would evict theirs from every follow-up.
-  test("an operator's own tool keeps the name, and the agent keeps the sentinel", () => {
+  // Issue #715. There WAS an exception here, and it was about somebody else's property: granting
+  // ours to an agent running a custom HTTP tool under this name would evict theirs from every
+  // follow-up, so the grant stood down and that agent kept the sentinel.
+  //
+  // The premise died with #457, whose `reserved` argument makes a native name unavailable to every
+  // other source EVEN WHEN THE NATIVE IS NOT BUILT. Their tool is dropped at assembly either way,
+  // so standing down protected nothing and only cost the agent its silence channel — and the
+  // follow-up then had neither: not ours, because the grant never fired, and not theirs, because
+  // the reservation ate it.
+  //
+  // Both halves are asserted here, and the second is why this is not just a rename: the assembly
+  // really does drop their tool, so "the grant costs them nothing" is measured rather than argued.
+  test("the collision already cost the operator the tool, so it no longer costs the channel", () => {
     const cfg = {
       nativeToolsAllow: [] as string[],
       httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
     };
-    expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+    expect(withFollowupSilenceChannel(cfg).nativeToolsAllow).toEqual([
+      SKIP_REPLY_TOOL,
+    ]);
+    // …and with natives revoked their tool is dropped whatever the grant does, which is the fact
+    // the old carve-out was written before.
+    const noneBuilt = new Set<string>();
+    const { tools, dropped } = dropDuplicateToolNames(
+      [{ name: SKIP_REPLY_TOOL } as never],
+      NATIVE_TOOL_NAMES.filter((n) => !noneBuilt.has(n)),
+    );
+    expect(tools).toEqual([]);
+    expect(dropped).toEqual([SKIP_REPLY_TOOL]);
+  });
+
+  // s9 of the holdout. The refusal returned EARLY, so it skipped the precondition cleanup below it
+  // as well — leaving a fail-closed guard on the very call the directive depends on, for exactly
+  // the agent that also had no channel. Round 15 fixed this shape once for the granted case; this
+  // is the other door into it.
+  test("and the precondition cleanup that the refusal skipped now runs for that agent", () => {
+    const out = withFollowupSilenceChannel({
+      nativeToolsAllow: [] as string[],
+      httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
+      toolPreconditions: {
+        [SKIP_REPLY_TOOL]: { kind: "attribute", key: "cpf" },
+        handoff_to_human: { kind: "attribute", key: "url" },
+      } as Record<string, unknown>,
+    });
+    expect(out.toolPreconditions).toEqual({
+      handoff_to_human: { kind: "attribute", key: "url" },
+    });
   });
 
   // Round 15. The guard fired on the NAME alone, including when the native was granted — and then

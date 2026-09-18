@@ -22,11 +22,14 @@ export const SKIP_REPLY_TOOL = "skip_reply";
 // than two copies that drift. It is what the MODEL reads; it is not what identifies the tool.
 export const SKIP_REPLY_ACK = "Acknowledged: not replying this turn";
 
-// WHAT IDENTIFIES THE TOOL, and it is deliberately not text. The ack is published in this repo, and
-// with natives revoked an operator may legitimately bind a custom HTTP tool under this name whose
-// response body they do not control — a third-party API, or a customer's own words echoed back. A
-// body that happens to begin with the ack would then be read as a decision to stay silent, and the
-// turn would end without answering: a denial of the customer's reply, reachable by injection.
+// WHAT IDENTIFIES THE TOOL, and it is deliberately not text. The ack is published in this repo, so
+// anything that can put it in a result under this name would be read as a decision to stay silent,
+// and the turn would end without answering: a denial of the customer's reply, reachable by
+// injection. The road this was written for — an operator's own HTTP tool under this name, returning
+// a body they do not control — is closed since #457 reserved a native name against every other
+// source even when the native is not built. The reachable one is a precondition on the tool, which
+// returns a NORMAL result under the same name by design. The mark is what makes the rule hold
+// whichever road opens next, which is why it did not have to change with #715.
 //
 // `additional_kwargs` is out of reach of any response body: only the tool that builds the
 // `ToolMessage` can set it, and `skipReplyTool` is the only thing that does (round 24).
@@ -160,22 +163,23 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   cfg: T,
 ): T {
   let out = cfg;
-  // NOTE: THE NAME IS NOT TAKEN FROM A TOOL THE OPERATOR ALREADY HAS. `toolDefinitionCreateSchema` reserves
-  // no native names, so an agent with natives revoked can legitimately run a custom HTTP tool called
-  // `skip_reply` — and `dropDuplicateToolNames` puts natives FIRST, so granting ours would evict
-  // theirs from every follow-up turn. A tool the operator built, silently gone, to install a channel
-  // they never asked for. Those agents keep the sentinel.
+  // NOTE: THE OPERATOR'S OWN TOOL UNDER THIS NAME IS NOT A REASON TO STAND DOWN, and it stopped being
+  // one before this function noticed (issue #715). There used to be a carve-out here: an agent with
+  // natives revoked could legitimately run a custom HTTP tool called `skip_reply`, and since
+  // `dropDuplicateToolNames` puts natives FIRST, granting ours would evict theirs from every
+  // follow-up — a tool the operator built, silently gone, to install a channel they never asked for.
   //
-  // ONLY WHEN THEIRS ACTUALLY WINS, which is when the native is not already granted. With the native
-  // in the allowlist it wins the name anyway, so returning early there protected nothing and skipped
-  // the precondition cleanup below — leaving a fail-closed guard on the very call the directive
-  // depends on, which is the leak by the third road all over again (round 15).
-  if (
-    !inertToolsFor(out).has(SKIP_REPLY_TOOL) &&
-    out.httpToolDefs?.some((d) => d.name === SKIP_REPLY_TOOL)
-  ) {
-    return out;
-  }
+  // #457 (review round 5) made that premise false. Its `reserved` argument holds a native name
+  // against every other source EVEN WHEN THE NATIVE IS NOT BUILT, precisely so the rest of the repo
+  // can go on reading a native name as an identity (tool preconditions restrict rules to native
+  // names, `../handback.ts` reads a `handoff_to_human` result as a transfer that really happened).
+  // Their tool is therefore dropped at assembly whether or not we grant ours, so standing down
+  // protected nothing: the follow-up got NEITHER tool, and the agent paid a channel for it.
+  //
+  // Measured before the fix, on a live app: the toolset reaching the model came back empty, with
+  // `{phase:'duplicate_name_dropped',tools:['skip_reply']}` in the flow log. Giving the operator
+  // their name back is the other design the issue names, and it is not this one — it would reopen
+  // exactly what #457 closed.
   // NOTE: NOTHING ELSE IS ASKED HERE, and round 12 is why. Granting used to be gated on whether any source
   // was CONFIGURED, which is not the same question as whether any tool gets BUILT: an MCP server
   // that is down is configured and yields nothing, and the grant then handed a lone function schema
@@ -200,10 +204,12 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   return out;
 }
 
-// Whether the tool bound under the silence name is OUR no-op one. `dropDuplicateToolNames` puts
-// native tools first, so a native grant WINS the name — which is exactly when the name may be read
-// as "this call did nothing". With natives revoked, a custom HTTP tool can hold that name and really
-// call something (`toolDefinitionCreateSchema` reserves none), so nothing is inert.
+// Whether the tool bound under the silence name is OUR no-op one, which is exactly when the name may
+// be read as "this call did nothing". It is answered off the GRANT and never off the name: a native
+// that was granted wins the name at assembly, and one that was not leaves nothing under it either,
+// since #457 reserves a native name against every other source even when the native is not built.
+// So "not granted" means no tool answers here at all rather than somebody else's — which reads the
+// same from this function, and is why the answer did not have to change with issue #715.
 export function inertToolsFor(cfg: {
   nativeToolsAllow?: string[];
 }): ReadonlySet<string> {
@@ -217,9 +223,10 @@ export function inertToolsFor(cfg: {
 // than by the config that asked for it. `renderNudge` takes this and nothing else.
 //
 // Two conditions, and each covers what the other cannot:
-//   - the native one is what got BOUND (`inertToolsFor`): with natives revoked, a custom HTTP tool
-//     may legitimately carry this name and really call something, and asking the model to call it
-//     to stay quiet would fire a side effect on every silent follow-up;
+//   - the native one is what got BOUND (`inertToolsFor`): asking the model to call a tool to stay
+//     quiet is only safe when the tool is OURS and does nothing, so this is answered off the grant
+//     and never off the name (the name alone stopped being able to belong to anyone else with
+//     #457's reservation, but the question is about what the call DOES, not who could hold it);
 //   - and it is really THERE: a grant is not an assembled tool. `withFollowupSilenceChannel` grants
 //     generously — it cannot know that the MCP server behind the only other source is down — so a
 //     turn can be granted `skip_reply` and still reach the model with no tool bound at all.
@@ -270,10 +277,14 @@ export function skipReplyRan(m: {
 // gets exactly that on a REACTIVE turn, which is how their agent answers "ok" and "obrigado" with
 // silence. This rule belongs to the path that adds the tool, not to every path that binds one.
 //
-// AND A NAME IS NOT AN IDENTITY, here as everywhere else in this file. With natives revoked, the
-// lone tool under this name is the operator's own HTTP tool — `withFollowupSilenceChannel` refuses to
-// grant over it for exactly that reason — and removing it would delete their only tool from every
-// follow-up because it happens to be spelled like ours. `inertToolsFor` is the one that knows.
+// AND A NAME IS NOT AN IDENTITY, here as everywhere else in this file: the question is whether the
+// lone tool DOES nothing, and only the grant answers that. `inertToolsFor` is the one that knows.
+// This used to carry a second reason — that with natives revoked the lone tool under this name was
+// the operator's own, and dropping it would delete their only tool — and #715 retired it: #457
+// reserves a native name against every other source even when the native is not built, so nothing
+// of theirs ever reaches this list under it, and `withFollowupSilenceChannel` no longer stands down.
+// The reading off the grant is unchanged, which is the point of having asked that question and not
+// the other one.
 export function withoutLoneSilenceTool<T extends { name: string }>(
   cfg: { nativeToolsAllow?: string[] },
   tools: T[],

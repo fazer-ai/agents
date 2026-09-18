@@ -689,6 +689,14 @@ async function settleGateExit(params: {
   // this gate knows nothing about, and reaching back over one hides a real loss for good.
   afterMessageId: number | null;
   upToMessageId: number;
+  // ...OR THE MEMBERS THEMSELVES, when the exit knows them (PR #701, review round 12). Only one of
+  // the four gate exits fetched the page before deciding, and for that one the range is strictly
+  // worse than the list: a burst that reaches down to an orphan below the watermark spans every
+  // message BETWEEN the two, including the ones the selection deliberately left out — a message
+  // some other turn claimed and died holding, whose delivery is a genuine loss the sweep still has
+  // to report. Settled by range, it silently becomes PROCESSED, which is the one state the sweep
+  // never looks at again. The same set the dispensal names, named here too.
+  messageIds?: number[];
   // Whether the state that closed the gate is ANOTHER AgentBot, as opposed to a human, a status
   // change or a decision about the contact. The one thing about the gate this exit is scoped by.
   heldByAnotherBot: boolean;
@@ -721,8 +729,12 @@ async function settleGateExit(params: {
       settlement: "consumed",
       // ...which is the same reason nothing was folded in: no graph ran.
       covered: false,
-      afterMessageId: params.afterMessageId,
-      upToMessageId: params.upToMessageId,
+      ...(params.messageIds && params.messageIds.length > 0
+        ? { messageIds: params.messageIds }
+        : {
+            afterMessageId: params.afterMessageId,
+            upToMessageId: params.upToMessageId,
+          }),
       base: params.base,
     });
   } catch (e) {
@@ -1856,34 +1868,22 @@ export async function flushDebounceJob(
         instanceId,
         conversationId,
         conversationRowId: ctx.convDbId,
-        // AND O LEDGER TEM QUE ALCANÇAR O MESMO CONJUNTO (PR #701, review round 3). O ledger fecha
-        // por faixa, e a faixa daqui começava na marca: a entrega da órfã que esta recusa consumiu
-        // ficava PROCESSING ou DEAD, reportada como perda que ninguém atendeu e elegível para
-        // recuperação, apesar de a recusa já ter decidido sobre ela. Desce só até o membro mais
-        // antigo da rajada recusada, nunca até o piso da era: alcance a mais que isso retiraria
-        // entrega de mensagem que este exit não consumiu.
-        afterMessageId: ceilingBurst
-          ? Math.min(
-              ctx.watermark ?? Number.MAX_SAFE_INTEGER,
-              Math.min(
-                ...[...ceilingBurst.pending, ...ceilingBurst.dropped].map(
-                  (m) => m.id,
-                ),
-              ) - 1,
-            )
-          : (ctx.watermark ?? null),
-        // E O TOPO TAMBÉM É O DA RAJADA (PR #701, review round 7). `selectAnswerableBurst` relê a
-        // página, então a rajada recusada pode conter mensagem MAIS NOVA que o `lastMessageId` do
-        // payload. A dispensa já nomeia todas elas; o ledger, fechando só até o `last` antigo, deixa
-        // a entrega da mais nova parada e reportada como perda, enquanto a seleção já a exclui.
-        upToMessageId: ceilingBurst
-          ? Math.max(
-              last,
-              ...[...ceilingBurst.pending, ...ceilingBurst.dropped].map(
-                (m) => m.id,
-              ),
-            )
-          : last,
+        // NOMEADO, PELO MESMO CONJUNTO DA DISPENSA (PR #701, review rounds 3, 7 e 12). O ledger
+        // fecha por faixa quando o exit decide antes de qualquer fetch, e daqui isso era errado nas
+        // duas pontas: começando na marca, deixava a entrega da órfã consumida parada e reportada
+        // como perda (rodada 3); parando no `last` do payload, deixava a da mensagem mais nova que
+        // a releitura trouxe (rodada 7). Esticar a faixa consertou as duas e abriu uma terceira: a
+        // faixa passa a cobrir tudo o que está ENTRE a órfã e o topo, inclusive o que a seleção
+        // deixou de fora de propósito — a entrega que outro turno reivindicou e morreu segurando,
+        // que é perda de verdade e some do relatório virando PROCESSED.
+        //
+        // Este é o único dos quatro gate exits que leu a página antes de decidir, então é o único
+        // que pode nomear. Os outros três continuam na faixa porque não têm o que nomear.
+        messageIds: ceilingBurst
+          ? [...ceilingBurst.pending, ...ceilingBurst.dropped].map((m) => m.id)
+          : undefined,
+        afterMessageId: ctx.watermark ?? null,
+        upToMessageId: last,
         // False, and for the reason the gate below gives: what closed this exit is a decision about
         // the TENANT, which holds for whichever route carried the message.
         heldByAnotherBot: false,

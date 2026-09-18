@@ -2324,6 +2324,129 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toBe("PROCESSED");
   });
 
+  // ...E NÃO FECHA A DE QUEM ELA NÃO CONSUMIU (PR #701, review round 12). Alcançar a órfã abaixo da
+  // marca exigiu esticar a faixa do ledger para baixo, e faixa pega tudo o que está NO MEIO: a
+  // entrega que outro turno reivindicou e morreu segurando fica entre a órfã e o topo da rajada, a
+  // seleção a deixou de fora de propósito, e a recusa não decidiu nada sobre ela. Fechada por faixa,
+  // ela vira PROCESSED, que é o único estado que a varredura nunca mais olha — uma perda real
+  // apagada do relatório. Este exit é o único dos quatro que leu a página antes de decidir, então é
+  // o único que pode nomear os membros, e nomear é o que separa os dois casos.
+  test("the ceiling's refusal does not close a delivery it never consumed", async () => {
+    const convId = 966;
+    await seedConversation(convId, { lastHandledMessageId: 3 });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    // A 2 é de OUTRO turno: reivindicada, e o processo morreu antes de enviar. A seleção a exclui
+    // pela linha de claim, e a entrega dela é perda de verdade, que a varredura ainda tem que
+    // reportar.
+    await suDb.messageReplyClaim.create({
+      data: {
+        tenantId,
+        conversationId: id,
+        messageId: 2,
+        reason: "CLAIMED",
+      },
+    });
+    const daOutraTurma = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ceiling-notmine-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 2,
+      },
+      select: { id: true },
+    });
+    // A órfã que a recusa CONSOME de fato, abaixo da marca e sem linha nenhuma.
+    const daOrfa = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ceiling-orphan2-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 99, polledAt: new Date() },
+    });
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 4 }),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "me manda a segunda via" },
+                { id: 2, content: "e o boleto de março" },
+                { id: 3, content: "obrigado" },
+                { id: 4, content: "ainda preciso disso" },
+              ]),
+            ],
+            sent: [],
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({
+        where: { tenantId, source: "inbox" },
+      });
+    }
+    const estado = async (rowId: bigint) =>
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { status: true },
+        })
+      ).status;
+    // A órfã que a recusa consumiu fecha.
+    expect(await estado(daOrfa.id)).toBe("PROCESSED");
+    // A do turno que morreu segurando a 2 continua sendo perda, e continua no relatório.
+    expect(await estado(daOutraTurma.id)).toBe("DEAD");
+  });
+
   // E O PORTÃO DE POSSE FECHA A ÓRFÃ TAMBÉM (PR #701, review round 4). A rodada 3 fez a faixa começar
   // no piso da era, mas o RAMO do contexto que este portão devolve não carregava o campo do piso, e
   // a expressão caía de volta na marca exatamente aqui. O defeito sobrevivia num ramo, calado: a

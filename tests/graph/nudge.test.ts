@@ -1079,15 +1079,17 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
                 content: "",
                 tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "n1" }],
               });
+            // `resolve_conversation` rather than `set_labels`, and it is not indifference: the two
+            // trees this round lives in disagree about `set_labels`' schema while the #710 backport
+            // is in flight (the public `main` names a DELTA, `add`/`remove`, and REFUSES the retired
+            // `labels` key by name), so a test written against the master's schema is green here and
+            // red in the PR's own CI. `resolve_conversation` takes no arguments and is byte-identical
+            // in both, which is also the pair the issue itself reports.
             if (self.rounds === 2)
               return new AIMessage({
                 content: "",
                 tool_calls: [
-                  {
-                    name: "set_labels",
-                    args: { labels: ["sem-resposta"] },
-                    id: "n2",
-                  },
+                  { name: "resolve_conversation", args: {}, id: "n2" },
                 ],
               });
             return new AIMessage("");
@@ -1110,9 +1112,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     });
     expect(outcome).toBe("silent");
     expect(s.messages).toEqual([]);
-    // …and the label the operator asked for after the decision was applied, which is the half the
-    // old terminal branch cost.
-    expect(s.labelSets).toEqual([["sem-resposta"]]);
+    // …and the step the operator asked for after the decision RAN, which is the half the old
+    // terminal branch cost.
+    expect(s.resolved).toEqual([9997]);
   });
 
   test("invokes on the per-contact-inbox memory thread, not the per-conversation thread (unification)", async () => {

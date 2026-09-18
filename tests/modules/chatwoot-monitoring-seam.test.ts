@@ -692,11 +692,16 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
-    // E A MARCA NÃO PASSA POR CIMA DELA: uma marca acima de uma mensagem que ninguém leu é a
-    // mensagem perdida, mesmo com a ingestão tendo funcionado.
-    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
-      messageId,
-    );
+    // E SÓ ENTÃO A MARCA PASSA, que é a ordem inteira desta parada (review r10). Enquanto nada tinha
+    // lido a mensagem, uma marca acima dela seria a mensagem perdida; com a ingestão tendo
+    // funcionado, ela está na memória e o que falta é dizer isso — como o `agent-unavailable` sob um
+    // observador diz, e como o takeover comum sempre disse. Sem esta escrita a mensagem fica acima
+    // da marca com a memória já contendo-a, e a conversa voltando ao bot o flush seguinte a
+    // seleciona de novo: a mesma pergunta duas vezes no prompt.
+    expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
+    // A linha fecha, e fecha DEPOIS da ingestão — nunca no portão, onde a mensagem ainda não era de
+    // ninguém.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
   }, 20_000);
 
   // E SE O ENFILEIRAMENTO FALHAR, A LINHA NÃO FECHA (issue #688, review r1). A mensagem ir para a
@@ -1203,9 +1208,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
-    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
-      messageId,
-    );
+    // E a marca passa, como no caminho de produção: a ingestão guardou, então dizer isso é a
+    // última escrita da parada (review r10).
+    expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
   }, 20_000);
 
   test("a turn that stood down for the observer settles nothing until the ingestion has the message", async () => {

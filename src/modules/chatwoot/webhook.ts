@@ -6713,6 +6713,21 @@ export async function processChatwootDelivery(
       await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
     }
   }
+  // E A PARADA DA #688 FECHA A CONTABILIDADE PELO MESMO CAMINHO (review r10), depois que a ingestão
+  // pegou a mensagem e nunca antes. A marca ficar parada era certo enquanto nada tinha lido a
+  // mensagem; com a ingestão tendo funcionado, ela ESTÁ na memória e o que falta é dizer isso — como
+  // o `agent-unavailable` sob um observador diz logo acima, e como o takeover comum sempre disse.
+  //
+  // Sem esta escrita a mensagem fica ACIMA da marca com a memória já contendo-a, e a conversa
+  // voltando para o bot o flush seguinte a seleciona de novo: a mesma pergunta duas vezes no prompt,
+  // uma vinda da memória e outra da rajada.
+  //
+  // `leave-for-sweep` pela mesma razão do observador: a marca É a escrita que fecha esta parada, e
+  // liquidar a linha com ela ainda abaixo da mensagem deixaria um registro terminal sobre uma
+  // mensagem que o resto do sistema continua tratando como não lida.
+  if (stoodDownUnread && ingested !== "failed" && ingested !== "no-thread") {
+    await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
+  }
   // THE WATCHER'S VERDICT (issue #477): a customer message on a conversation the agent observes arms
   // the OBSERVE row, which reads the conversation from Chatwoot when its window closes. After the
   // marks and best-effort, like compaction: the memory append above is what this delivery owes, and

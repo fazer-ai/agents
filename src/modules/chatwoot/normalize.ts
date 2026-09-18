@@ -833,11 +833,15 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // outra decisão, com testes próprios.
 export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
   if (!isIncomingMessage(n)) return false;
-  const anexos = n.message?.attachments ?? [];
-  if (!anexos.some((a) => a.fileType === "audio")) return false;
-  return !(
-    anexos.some((a) => Boolean(a.transcribedText)) || n.message?.transcribedText
+  // O PRIMEIRO áudio, que é o que a transcrição cobre: `firstAudioAttachment` e `runEagerMedia`
+  // selecionam esse mesmo, e uma transcrição pendurada em OUTRO anexo não diz nada sobre ele. Com
+  // dois áudios, o segundo transcrito e o primeiro não, ler "algum está transcrito" como cobertura
+  // deixaria o portão atuar sobre a mensagem cuja transcrição ainda vem (review r10).
+  const audios = (n.message?.attachments ?? []).filter(
+    (a) => a.fileType === "audio",
   );
+  if (audios.length === 0) return false;
+  return !(audios[0]?.transcribedText || n.message?.transcribedText);
 }
 
 export function incomingRenderable(

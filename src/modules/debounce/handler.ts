@@ -1218,6 +1218,11 @@ export async function flushDebounceJob(
         // rows of the burst it consumed, and this is that burst's LOWER bound. Missing, the range is
         // open at the bottom and reaches back over a strand an earlier message left behind.
         watermark: conv.lastHandledMessageId,
+        // AND O PISO DA ERA COM ELE (PR #701, review round 4). Sem este campo aqui, o `gateExitFrom`
+        // logo abaixo cai de volta na marca exatamente no ramo em que o portão de posse fecha, e a
+        // órfã abaixo da marca fica sem linha: o mesmo defeito que a rodada 3 consertou nos outros
+        // sítios, sobrevivendo num ramo do contexto que não carregava o campo.
+        perMessageFloor: conv.replyClaimFloorMessageId,
         // WHICH other party, when there is one. A human taking the conversation is a statement about
         // the message — they answer it, whichever route carried it — and another BOT is not. Read
         // from the same conversation row the gate just judged, for the same reason `gateClosed` is.
@@ -1398,7 +1403,10 @@ export async function flushDebounceJob(
         instanceId,
         conversationId,
         conversationRowId: ctx.convDbId,
-        afterMessageId: ctx.watermark ?? null,
+        // O mesmo limite da dispensa acima, como nos outros dois exits: o ledger fecha o conjunto que
+        // a decisão consumiu, e o `heldByAnotherBot` abaixo continua decidindo o ESCOPO daquele
+        // fechamento, que é outra pergunta.
+        afterMessageId: gateExitFrom,
         upToMessageId: last,
         heldByAnotherBot: ctx.heldByAnotherBot,
         base,
@@ -1891,7 +1899,12 @@ export async function flushDebounceJob(
           instanceId,
           conversationId,
           conversationRowId: ctx.convDbId,
-          afterMessageId: ctx.watermark ?? null,
+          // O MESMO LIMITE DA DISPENSA, sempre (PR #701, review round 4). O ledger fecha o conjunto
+          // que a decisão consumiu, e desde a rodada 3 esse conjunto desce até o piso da era. Dois
+          // limites diferentes para uma decisão só deixam a entrega da órfã parada, reportada como
+          // perda que ninguém atendeu e elegível para recuperação, depois de a decisão já ter sido
+          // tomada sobre ela.
+          afterMessageId: gateExitFrom,
           upToMessageId: last,
           // False, and not read from anywhere: the gate above already proved this route owns the
           // conversation, and what closed THIS exit is a decision about the CONTACT. That decision
@@ -1959,7 +1972,12 @@ export async function flushDebounceJob(
           instanceId,
           conversationId,
           conversationRowId: ctx.convDbId,
-          afterMessageId: ctx.watermark ?? null,
+          // O MESMO LIMITE DA DISPENSA, sempre (PR #701, review round 4). O ledger fecha o conjunto
+          // que a decisão consumiu, e desde a rodada 3 esse conjunto desce até o piso da era. Dois
+          // limites diferentes para uma decisão só deixam a entrega da órfã parada, reportada como
+          // perda que ninguém atendeu e elegível para recuperação, depois de a decisão já ter sido
+          // tomada sobre ela.
+          afterMessageId: gateExitFrom,
           upToMessageId: last,
           heldByAnotherBot: recheck.heldByAnotherBot,
           base,

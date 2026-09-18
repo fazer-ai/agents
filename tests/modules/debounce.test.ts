@@ -1940,6 +1940,69 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toBe("PROCESSED");
   });
 
+  // E O PORTÃO DE POSSE FECHA A ÓRFÃ TAMBÉM (PR #701, review round 4). A rodada 3 fez a faixa começar
+  // no piso da era, mas o RAMO do contexto que este portão devolve não carregava o campo do piso, e
+  // a expressão caía de volta na marca exatamente aqui. O defeito sobrevivia num ramo, calado: a
+  // órfã ficava sem linha e voltava como devida assim que a conversa voltasse para o bot.
+  test("a closed ownership gate closes the orphan below the mark too", async () => {
+    const convId = 953;
+    await seedConversation(convId, {
+      assigneeType: "User",
+      assigneeId: 5,
+      lastHandledMessageId: 2,
+    });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 2 }),
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          throw new Error("o portão fecha antes de qualquer modelo");
+        },
+        makeClient: async () => {
+          throw new Error("o portão fecha antes de qualquer busca");
+        },
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // A conversa volta para o bot e uma mensagem nova chega.
+    await suDb.conversation.update({
+      where: { id },
+      data: { assigneeType: null, assigneeId: null, status: "pending" },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 3 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "cancela meu plano" },
+              { id: 2, content: "obrigado" },
+              { id: 3, content: "voltei" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("voltei");
+    expect(seen).not.toContain("cancela meu plano");
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.
@@ -4176,6 +4239,60 @@ describe.skipIf(!dbUp)("debounce", () => {
         },
       });
       expect(model.seen.join("\n")).not.toContain("cancela meu plano");
+    });
+
+    test("a refused contact closes the ledger row of the orphan too", async () => {
+      // PR #701, review round 4 (P2). A dispensa desceu até o piso da era na rodada 3, e o ledger
+      // continuou começando na marca: dois limites para uma decisão só. A entrega da órfã ficava
+      // parada, reportada como perda que ninguém atendeu e elegível para recuperação, depois de a
+      // recusa já ter decidido sobre ela.
+      const convId = 954;
+      await seedConversation(convId, { lastHandledMessageId: 2 });
+      await seedContactOn(convId, 73);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      const reported = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `auth-orphan-${process.pid}`,
+          event: "message_created",
+          status: "DEAD",
+          processedAt: new Date(Date.now() - 60_000),
+          receivedAt: new Date(Date.now() - 120_000),
+          conversationId: convId,
+          inboundMessageId: 1,
+        },
+        select: { id: true },
+      });
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 2, content: "obrigado" }])],
+            sent: [],
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, { n: 0 }),
+        },
+      });
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: reported.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSED");
     });
 
     test("a refused contact settles the ledger by RANGE: the conversation is still ours", async () => {

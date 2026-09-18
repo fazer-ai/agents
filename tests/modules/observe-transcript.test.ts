@@ -10,6 +10,7 @@ import {
   notesFromRows,
   observeTurnText,
   renderTranscript,
+  stringArrayOrNull,
   transcriptFromRows,
 } from "@/modules/observe/job";
 import {
@@ -440,6 +441,8 @@ describe("the notes the conversation already carries", () => {
         // ROUND 21: a customer message racing the cleanup used to take the cut's place and let the
         // removal above through. The cut is the acknowledgement's own row now, found by name.
         row({ id: 11.5, content: "oi, mais uma coisa" }),
+        // The reset made NO CLAIM (third argument `null`), which is what one from a build before
+        // #645 looks like: this test is the one that keeps that fallback honest.
         row({
           id: 12,
           messageType: "outgoing",
@@ -453,13 +456,17 @@ describe("the notes the conversation already carries", () => {
         }),
       ];
       expect(
-        labelHistoryFromRows(afterResetNarration(rows, 10), vocab, undefined, 8)
-          .lines,
+        labelHistoryFromRows(
+          afterResetNarration(rows, 10, null),
+          vocab,
+          undefined,
+          8,
+        ).lines,
       ).toEqual(["Classificador SAC adicionou cancelamento"]);
       // With no reset on the conversation, nothing is cut.
       expect(
         labelHistoryFromRows(
-          afterResetNarration(rows, null),
+          afterResetNarration(rows, null, null),
           vocab,
           undefined,
           8,
@@ -475,6 +482,7 @@ describe("the notes the conversation already carries", () => {
           afterResetNarration(
             rows.filter((r) => r.sendId === null),
             10,
+            null,
           ),
           vocab,
           undefined,
@@ -484,6 +492,408 @@ describe("the notes the conversation already carries", () => {
         "Fulano removeu compra-de-ingresso",
         "Classificador SAC adicionou cancelamento",
       ]);
+    });
+
+    // (#645) O RESÍDUO QUE O CORTE PELO ACK NÃO COBRE, e é o que esta issue vem fechar. A linha de
+    // atividade não é escrita pelo request de etiquetas: o `LabelActivityMessageHandler` passa por
+    // `Conversations::ActivityMessageJob.perform_later`, então ela aparece quando aquele job do
+    // Sidekiq roda. Com fila atrasada, ele roda DEPOIS do ack e a linha fica com id acima do corte,
+    // que é um teste de ORDEM e por isso não a vê. O observador então lê as etiquetas que o reset
+    // acabou de apagar, nomeadas, como motivo para não recolocá-las.
+    test("(#645) the cleanup's line above the ack is still not this episode's history", () => {
+      // O ack não carrega mais o conjunto: ele vive em `conversations.reset_cleared_labels`, e
+      // aqui entra pelo terceiro argumento, que é como o job o lê.
+      const ack = row({
+        id: 12,
+        messageType: "outgoing",
+        content: "Conversa limpa.",
+        sendId: "reset-ack:10",
+      });
+      const cleared = ["compra-de-ingresso"];
+      const rows = [
+        ack,
+        // O job do Sidekiq rodou depois do ack: mesma remoção, id acima do corte.
+        row({
+          id: 13,
+          messageType: "activity",
+          content: "Fulano removeu compra-de-ingresso",
+        }),
+        row({
+          id: 14,
+          messageType: "activity",
+          content: "Classificador SAC adicionou cancelamento",
+        }),
+      ];
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(rows, 10, cleared),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Classificador SAC adicionou cancelamento"]);
+
+      // CONSUMED ONCE. The title is put back after the reset and taken off again, and both lines
+      // are this episode's: the reset removed it exactly once, and the set stops answering for it
+      // the moment its own line is read.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                content: "Classificador SAC adicionou compra-de-ingresso",
+              }),
+              row({
+                id: 15,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+
+      // ALL OF A LINE'S TITLES, not one of them. A removal that names a cleared title next to a
+      // live one is not the reset's: `set_labels` writes the whole set, so a colleague taking two
+      // labels off at once renders one sentence, and hiding it would cost the model the change it
+      // has to reason from.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso, cancelamento",
+              }),
+            ],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Fulano removeu compra-de-ingresso, cancelamento"]);
+
+      // NEITHER A NOTE NOR A ROW THAT DECLARES ITS OWN KIND SPENDS A TITLE. Chatwoot writes the
+      // label activity public and with no `activity.type`, so a row carrying either is somebody
+      // else's; letting one consume the title would hide the reset's real removal line behind it.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                private: true,
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                activityType: "conversation_status_changed",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 15,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+
+      // AND THE SCAN LIMIT IS THE READER'S, not a second one: a cleanup whose sentence is too long
+      // to read goes unread on both sides, so the line stays out of the block and is COUNTED as an
+      // omission — which is what stops the block from calling the window quiet over it.
+      const many = Array.from({ length: 200 }, (_, i) => `etiqueta-${i}`);
+      const long = labelHistoryFromRows(
+        afterResetNarration(
+          [
+            ack,
+            row({
+              id: 13,
+              messageType: "activity",
+              content: `Fulano removeu ${many.join(", ")}`,
+            }),
+          ],
+          10,
+          many,
+        ),
+        [...vocab, ...many],
+        undefined,
+        8,
+      );
+      expect(long.lines).toEqual([]);
+      expect(long.omitted).toBe(1);
+
+      // ...AND CONSUMED ONCE COM A PÁGINA COMPLETA, que é onde o consumo é a única coisa que
+      // libera o título: no regime completo a adição não libera (é ela que pode ter chegado
+      // atrasada), então sem consumir a remoção da própria limpeza o reset esconderia toda remoção
+      // futura daquele título.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({ id: 10, content: "/reset" }),
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                content: "Classificador SAC adicionou compra-de-ingresso",
+              }),
+              row({
+                id: 15,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+
+      // (RODADA 6) O CAMINHO COMUM: a linha da limpeza chega ABAIXO do ack. O corte por ordem a
+      // pega, e se ele rodasse ANTES da varredura o título nunca seria gasto — a etiqueta voltaria
+      // a ser posta e a remoção seguinte, essa legítima, cairia no lugar da linha do reset. A
+      // varredura lê todas as linhas depois do boundary; o corte por ordem é o último passo.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({ id: 10, content: "/reset" }),
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Classificador SAC adicionou compra-de-ingresso",
+              }),
+              row({
+                id: 14,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+            ],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+
+      // (RODADA 5) OS DOIS CORTES SÃO SOMADOS, e é o corte por ordem que cobre a linha do reset
+      // ANTERIOR. Dois comandos seguidos com o job de atividade atrasado deixam a remoção do
+      // primeiro entre o segundo comando e o ack dele, nomeando um título que a segunda limpeza já
+      // não encontrou de pé e portanto nunca registrou: o conjunto aqui é `[]` e mesmo assim a
+      // linha não chega ao modelo.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano removeu compra-de-ingresso",
+              }),
+              ack,
+            ],
+            10,
+            [],
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+      // E o preço, que é o mesmo que o corte por ordem sempre teve: a mudança de um colega feita
+      // DENTRO da limpeza se perde junto. É uma falta, na direção em que este bloco erra de
+      // propósito, e limitada ao trecho do próprio comando.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              row({
+                id: 11,
+                messageType: "activity",
+                content: "Fulano adicionou cancelamento",
+              }),
+              ack,
+            ],
+            10,
+            [],
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+      // Acima do ack, a mesma linha do colega fica: o corte é ancorado na linha do ack e não vale
+      // para sempre (rodada 21).
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [
+              ack,
+              row({
+                id: 13,
+                messageType: "activity",
+                content: "Fulano adicionou cancelamento",
+              }),
+            ],
+            10,
+            [],
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Fulano adicionou cancelamento"]);
+    });
+
+    // (#645) A COLUNA É LIDA, NÃO ACREDITADA. `reset_cleared_labels` é `Json?`, então chega como
+    // `unknown`: um elemento fora do formato desqualifica o valor inteiro, porque um conjunto lido
+    // pela metade esconderia as linhas dos títulos que sobraram, e "não sei" cai no corte por ordem
+    // em vez de inventar um conjunto.
+    test("(#645) the cleared set is read as an array of strings or not at all", () => {
+      expect(stringArrayOrNull(["vip", "cancelamento"])).toEqual([
+        "vip",
+        "cancelamento",
+      ]);
+      expect(stringArrayOrNull([])).toEqual([]);
+      expect(stringArrayOrNull(["vip", 7])).toBeNull();
+      expect(stringArrayOrNull("vip")).toBeNull();
+      expect(stringArrayOrNull(null)).toBeNull();
+      expect(stringArrayOrNull({ "0": "vip" })).toBeNull();
+    });
+
+    // (#645, RODADA 1 DO REVIEW) O MESMO PAR DE LINHAS, DOIS REGIMES. `[adicionou A, removeu A]` é
+    // ambíguo por construção: com a página alcançando o comando, a remoção é a do reset chegando
+    // atrasada atrás de uma adição também atrasada; com a página truncada acima do comando, a linha
+    // do reset envelheceu para fora e a remoção é de alguém. Nada no conteúdo separa as duas, então
+    // quem decide é o alcance da página, e cada regime escolhe o erro que lhe cabe.
+    test("(#645) the same two lines read differently by how far the page reaches", () => {
+      const ack = row({
+        id: 12,
+        messageType: "outgoing",
+        content: "Conversa limpa.",
+        sendId: "reset-ack:10",
+      });
+      const cleared = ["compra-de-ingresso"];
+      const added = row({
+        id: 13,
+        messageType: "activity",
+        content: "Classificador SAC adicionou compra-de-ingresso",
+      });
+      const removed = row({
+        id: 14,
+        messageType: "activity",
+        content: "Fulano removeu compra-de-ingresso",
+      });
+      // A página alcança o comando (a linha do `/reset` está nela), então tudo que o Chatwoot
+      // escreveu desde o reset está nela também: a remoção é a do próprio reset, e a adição — que
+      // é história de verdade — fica.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [row({ id: 10, content: "/reset" }), ack, added, removed],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual(["Classificador SAC adicionou compra-de-ingresso"]);
+      // Página truncada acima do comando: a linha da limpeza pode nunca aparecer, e guardar o
+      // título para uma linha que ninguém vai ler esconderia remoções reais para sempre.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration([ack, added, removed], 10, cleared),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([
+        "Classificador SAC adicionou compra-de-ingresso",
+        "Fulano removeu compra-de-ingresso",
+      ]);
+      // E a linha da limpeza continua escondida no regime completo mesmo sem adição nenhuma no
+      // meio, que é o caso comum.
+      expect(
+        labelHistoryFromRows(
+          afterResetNarration(
+            [row({ id: 10, content: "/reset" }), ack, removed],
+            10,
+            cleared,
+          ),
+          vocab,
+          undefined,
+          8,
+        ).lines,
+      ).toEqual([]);
+      // ...e o filtro aplica o próprio boundary: uma linha de antes do comando não entra na janela.
+      expect(
+        afterResetNarration(
+          [
+            row({
+              id: 9,
+              messageType: "activity",
+              content: "Fulano adicionou cancelamento",
+            }),
+            row({ id: 10, content: "/reset" }),
+            ack,
+          ],
+          10,
+          cleared,
+        ).map((r) => r.id),
+      ).toEqual([12]);
     });
 
     // And a reset with nothing said since: the acknowledgement is the last row, so every activity
@@ -506,6 +916,7 @@ describe("the notes the conversation already carries", () => {
               }),
             ],
             10,
+            ["compra-de-ingresso"],
           ),
           vocab,
           undefined,
@@ -958,6 +1369,28 @@ describe("the notes the conversation already carries", () => {
     // this suite would notice, because no template that carries an apostrophe collides for ordinary
     // values. It is the crafted placeholder that would have walked through the hole.
     test("no vendored template carries YAML's own escaping", () => {
+      // (#645) AND THE TWO VERBS ARE A PARTITION OF THAT TABLE. The split decides whether a line
+      // can be `/reset`'s own cleanup, so a sentence filed under the wrong leaf is a misreading
+      // with no other symptom: the union has to be the whole table and the two must not overlap.
+      expect(
+        [
+          ...__templatesForTest.labelsAdded,
+          ...__templatesForTest.labelsRemoved,
+        ].sort(),
+      ).toEqual([...__templatesForTest.labels].sort());
+      expect(
+        __templatesForTest.labelsAdded.filter((t) =>
+          __templatesForTest.labelsRemoved.includes(t),
+        ),
+      ).toEqual([]);
+      // ...and the verb reaches the reader, in a locale that puts it at each end.
+      expect(labelsNarrated("John adicionou vip")).toEqual([
+        { kind: "added", titles: ["vip"] },
+      ]);
+      expect(labelsNarrated("Hans hat vip entfernt")).toEqual([
+        { kind: "removed", titles: ["vip"] },
+      ]);
+
       const all = [...__templatesForTest.labels, ...__templatesForTest.other];
       expect(all.filter((t) => t.includes("''"))).toEqual([]);
       expect(all.filter((t) => t.includes('\\"'))).toEqual([]);

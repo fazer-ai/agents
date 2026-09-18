@@ -471,6 +471,11 @@ export class ChatwootClient {
         // Omitted rather than sent empty, so a send with no name leaves the bag untouched: the fork
         // stores `content_attributes` verbatim, and an always-present key would put ours on every
         // message whether or not anything will ever ask for it.
+        // WHAT A PUBLIC MESSAGE'S BAG IS NOT FOR (issue #645, review round 2). Whatever goes in here
+        // reaches the CONTACT on a website inbox: `api/v1/widget/messages/index.json.jbuilder`
+        // renders `json.content_attributes message.content_attributes` and `Message#push_event_data`
+        // ships the whole attributes hash. A name for the send is ours and opaque; anything that
+        // says something about the account's own state belongs on our side of the fence.
         ...(opts.sendId === undefined
           ? {}
           : { content_attributes: { [CHATWOOT_SEND_ID_KEY]: opts.sendId } }),

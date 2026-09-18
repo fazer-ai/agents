@@ -684,32 +684,140 @@ export interface LabelHistory {
 // lets the removal through; it also never stopped applying, so once the window had slid past the
 // reset it went on dropping legitimate activity rows before the window's oldest message (round 21).
 //
-// BEST-EFFORT, AND THE LIMIT IS CHATWOOT'S, NOT THIS CUT'S (round 22). The label-change activity is
-// not written by the labels request: `LabelActivityMessageHandler#create_label_change_activity`
+// AND THE CUT IS WHAT THE RESET SAYS IT TOOK, NOT WHERE THE ACK LANDED (issue #645). The
+// label-change activity is not written by the labels request: `LabelActivityMessageHandler#create_label_change_activity`
 // hands it to `Conversations::ActivityMessageJob.perform_later`, so the row appears whenever that
 // Sidekiq job runs. Normally that is well inside the dozen calls still ahead of the acknowledgement;
-// on an install whose queues are backed up (which this one has been) the job can land after it, and
-// then the row keeps an id above the ack and this filter does not see it. Nothing on the row says
-// who caused it — a label change writes no `content_attributes` at all — so no ordering and no
-// content test separates the two. What is left showing is a TRUE sentence about a label that really
-// was removed, on a conversation in test mode, and the residual is written down in the PR and in
-// docs/chatwoot.md rather than papered over with a time window.
+// on an install whose queues are backed up (which this one has been) the job lands after it, the row
+// keeps an id ABOVE the ack, and an order test cannot see it — which is exactly the residual round 22
+// wrote down and this issue came back for. So the command NAMES the set it removed, on
+// `conversations.reset_cleared_labels`, and the question here is a content one: a removal line whose
+// titles are all in that set is the reset's own, whenever it arrives.
 //
-// NO MARKER, NO CUT. A reset performed before this name existed, or one whose acknowledgement never
-// landed, leaves nothing that says where its cleanup ended, and a guess there is what round 21 was
-// about. Those conversations read the way they did before this block existed.
+// ON OUR ROW AND NOT ON THE ACKNOWLEDGEMENT'S `content_attributes`, which is where it was until the
+// review round measured the leak (round 2): the widget renders that bag verbatim to the CONTACT
+// (`api/v1/widget/messages/index.json.jbuilder`) and `Message#push_event_data` ships the whole
+// attributes hash, so internal label names would reach the customer on a website inbox. The column
+// also frees the content test from needing the acknowledgement to have landed at all.
 //
-// A human who changed a label between the command and its acknowledgement loses their line too,
-// which is a miss, the direction this block fails in on purpose.
+// CONSUMED, one title at a time, and only by a REMOVAL line (round 1). A cleared title leaves the
+// set with the removal that narrates it, so a label put back after the reset and taken off again
+// has its own lines read: the reset removes each title exactly once, and every further mention of it
+// is somebody else's doing.
+//
+// The reading is checked against the CLEARED SET and not against the account's catalog, which is
+// stricter for free: these titles were standing on this conversation seconds ago, so a locale that
+// admits two readings of the same line ("Ana removeu a vip" is the label `a vip` under pt and `vip`
+// under pt_BR) is settled by the set rather than by a catalog that has both.
+//
+// THE TWO CUTS ARE JOINED (round 5): the set answers for the titles THIS reset removed, at any id,
+// and the acknowledgement's row answers for everything the command wrote before it, whatever the
+// titles. Only the second covers a PREVIOUS reset's removal line arriving late, which names a title
+// the newer clear no longer found standing and therefore never recorded.
+//
+// NO SET, THE OLD CUT ALONE, AND THEN NO MARKER, NO CUT. A reset from before the column made no claim, so
+// those conversations fall back to the acknowledgement's id and keep the round-20 behaviour —
+// including its miss, the colleague who changed a label between the command and the ack. A reset
+// whose acknowledgement never landed either has nothing left that says where its cleanup ended, and
+// a guess there is what round 21 was about: it reads the way it did before this block existed. With
+// a set present neither applies, and that miss is gone: the colleague's line names a title the reset
+// did not remove.
+//
+// A line nothing can READ is not filtered here, and does not have to be: recognition is the same
+// parser `labelHistoryFromRows` runs below, so a removal sentence no template matches is invisible
+// to the reader this filter protects.
+// An array of strings or nothing. A single element of another type disqualifies the whole value
+// rather than being dropped: a column value this build did not write cannot be repaired into one it
+// did, and a set read half-right would hide the lines of the titles that survived.
+export function stringArrayOrNull(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  return v.every((e) => typeof e === "string") ? (v as string[]) : null;
+}
+
 export function afterResetNarration(
-  rows: ChatwootMessageRow[],
+  // THE PAGE AS FETCHED, boundary and all, and this function applies the boundary filter itself
+  // (issue #645, review round 1). It needs one fact the filtered rows cannot carry: whether the
+  // window still REACHES the command. A page that stops above it was truncated, so the cleanup's
+  // own row may have aged out while the acknowledgement is still in view, and the two regimes below
+  // answer the same ambiguous pair of lines differently.
+  fetched: ChatwootMessageRow[],
   resetBoundary: number | null,
+  // WHAT THE RESET SAYS IT REMOVED, from `conversations.reset_cleared_labels` and not from any row
+  // in the page (issue #645, review round 2). It rode the acknowledgement's own `content_attributes`
+  // first, which hands it to the CONTACT on a website inbox, so the set lives on our side of the
+  // fence now — and it no longer needs the acknowledgement to have landed at all. NULL is a reset
+  // that made no claim (one from before the column, or one whose clear never returned), which is
+  // the only case that still falls back to the order cut below.
+  cleared: string[] | null,
 ): ChatwootMessageRow[] {
-  if (resetBoundary === null) return rows;
+  if (resetBoundary === null) return fetched;
+  const rows = fetched.filter((r) => r.id > resetBoundary);
+  // THE TWO CUTS ARE JOINED, not alternatives (issue #645, review round 5). The set answers for the
+  // titles THIS reset removed, at any id; the acknowledgement's row answers for everything the
+  // command wrote before it, whatever the titles. Only the second one covers a PREVIOUS reset's
+  // removal line arriving late: two commands in a row with the activity job behind them leaves the
+  // first reset's line between the second command and its acknowledgement, named with a title the
+  // second clear no longer found standing and therefore never recorded.
+  //
+  // The price is the one the order cut always had, and it comes back with it: a colleague who
+  // changed a label between the command and its acknowledgement loses that line. It is a miss, in
+  // the direction this block fails in on purpose, and it is bounded by the cleanup's own stretch.
   const marker = resetAckSendId(resetBoundary);
   const ack = rows.find((r) => r.sendId === marker);
-  if (ack === undefined) return rows;
-  return rows.filter((r) => r.messageType !== "activity" || r.id > ack.id);
+  // ...AND THE ORDER CUT IS APPLIED LAST, after the walk below has read every row past the boundary
+  // (round 6). In the ORDINARY case the cleanup's removal line sits BELOW the acknowledgement, so
+  // cutting first hid it from the walk, its titles were never spent, and the next genuine removal
+  // of one of them was dropped in its place — the miss this filter exists to avoid, on the common
+  // path rather than on a rare one.
+  const orderCut = (r: ChatwootMessageRow) =>
+    ack === undefined || r.messageType !== "activity" || r.id > ack.id;
+  // NO SET, NO CONTENT TEST, and then the order cut is all there is.
+  if (cleared === null) return rows.filter(orderCut);
+  const pending = new Set(cleared.map((t) => t.trim()).filter((t) => t !== ""));
+  // WHETHER THE CLEANUP'S OWN ROW IS STILL REACHABLE. With the command in the page, everything
+  // Chatwoot wrote since the reset is in it too, so the cleanup's line is somewhere in these rows
+  // and the budget has to be kept for it. With the page truncated above the command, the line may
+  // have aged out, and a budget held for a row nobody will ever read hides real removals forever.
+  const reachesCommand = fetched.some((r) => r.id <= resetBoundary);
+  const dropped = new Set<number>();
+  // In id order, because consuming a title is order-dependent; the ROWS are returned in the order
+  // they came in, which is what every caller before this change received.
+  for (const r of [...rows].sort((a, b) => a.id - b.id)) {
+    // CONSUMPTION IS A LIMITED RESOURCE, so only a row that could BE Chatwoot's own narration may
+    // spend a title. A private note and a row that declares its own kind are neither (Chatwoot
+    // writes the label activity public and with no `content_attributes` at all), and a title spent
+    // by one of them would hide the real removal line that comes after it. Same three questions the
+    // reader below asks, for the same reason.
+    if (r.messageType !== "activity" || r.private) continue;
+    if (r.activityType !== null) continue;
+    // A row too long to SCAN goes unread here exactly as it does below, so a reset that removed
+    // hundreds of labels at once keeps its line AND is counted as an omission. That is the reader's
+    // own limit, not a second one: filtering it here would make the block report a hidden change
+    // over the very cleanup this function exists to hide.
+    if (r.content.length > ACTIVITY_SCAN_MAX_CHARS) continue;
+    const readings = labelsNarrated(r.content);
+    // A TITLE PUT BACK IS NOT PENDING ANY MORE — but only where the cleanup's own line is out of
+    // reach (issue #645, review round 1). The two regimes answer the same pair of rows, `[added A,
+    // removed A]`, and the rows are IDENTICAL in both: with a truncated page the removal is
+    // somebody's real change and the reset's own line aged out, while with the command in view the
+    // removal is the reset's, delayed past an addition whose own Sidekiq job was delayed too.
+    // Nothing in the content separates them, so the page's reach decides, and each regime chooses
+    // the error that fits it: a truncated page must not hold a budget for a row it will never see,
+    // and a complete page must not spend that budget on an addition.
+    if (!reachesCommand)
+      for (const r0 of readings)
+        if (r0.kind === "added") for (const t of r0.titles) pending.delete(t);
+    // ...AND ONLY A REMOVAL CAN BE THE CLEANUP'S OWN LINE. Reading the verb is what stops an
+    // addition whose Sidekiq job landed out of order from spending the title and letting the real
+    // removal through — the finding that this asymmetry exists to answer.
+    const removal = readings.find(
+      (r0) => r0.kind === "removed" && r0.titles.every((t) => pending.has(t)),
+    );
+    if (removal === undefined) continue;
+    for (const t of removal.titles) pending.delete(t);
+    dropped.add(r.id);
+  }
+  return rows.filter((r) => !dropped.has(r.id) && orderCut(r));
 }
 
 export function labelHistoryFromRows(
@@ -752,9 +860,12 @@ export function labelHistoryFromRows(
       // string reaching the model, and a locale that glues a particle onto the title (Korean writes
       // `vip을(를)`) puts it out of reach of the scan above, which asks for a word boundary the
       // sentence does not have (round 7).
-      if (readings.some((ts) => ts.some((t) => guard.has(t)))) return false;
+      if (readings.some((r) => r.titles.some((t) => guard.has(t))))
+        return false;
       // And ONE reading whose titles this account actually has is what makes the line a change.
-      return readings.some((ts) => ts.every((t) => known.has(t)));
+      // The verb is not asked here: this block forwards the sentence whole, so what it needs to
+      // know is that a label MOVED, not which way.
+      return readings.some((r) => r.titles.every((t) => known.has(t)));
     })
     .sort((a, b) => a.id - b.id);
   // THE CAP HIDES CHANGES TOO (round 18). `escopo="janela-lida"` says where the block looked, not
@@ -998,6 +1109,9 @@ export async function runObserve(
         inboxId: true,
         status: true,
         resetAtMessageId: true,
+        // Read with the boundary, from the same row: the pair is what the label filter needs, and
+        // reading them apart would let a second `/reset` land between the two queries (issue #645).
+        resetClearedLabels: true,
       },
     });
     const cfg = await loadAgentConfig(
@@ -1185,6 +1299,10 @@ export async function runObserve(
   // the opposite of what the operator was told happened. Applied before the quote resolver is
   // built, so a reply quoting a pre-reset message does not reintroduce its text either.
   const resetBoundary = conv?.resetAtMessageId ?? null;
+  // A `Json?` column, so it arrives as `unknown` and is READ rather than trusted: NULL is a reset
+  // that made no claim, and anything that is not an array of strings is a row nothing this build
+  // wrote (issue #645).
+  const resetCleared = stringArrayOrNull(conv?.resetClearedLabels);
   const rows =
     resetBoundary === null
       ? fetched
@@ -1265,8 +1383,10 @@ export async function runObserve(
   // standing; a title invented, applied and taken off between two ticks is in neither list and its
   // lines are not read, which is the miss this block chooses over inventing a decision.
   const labelChanges = labelHistoryFromRows(
-    // Minus the reset's own cleanup, which lands above the boundary the filter above uses.
-    afterResetNarration(rows, resetBoundary),
+    // Minus the reset's own cleanup. The PAGE goes in rather than `rows`: this one applies the
+    // reset boundary itself, because whether the page still reaches the command is what decides
+    // how it reads a removal line (issue #645).
+    afterResetNarration(fetched, resetBoundary, resetCleared),
     vocabLabels === null && current === null
       ? null
       : [...(vocabLabels ?? []), ...(current ?? [])],

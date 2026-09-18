@@ -875,6 +875,23 @@ model Conversation {
   // `lastHandledMessageId` above is one. Written with GREATEST, so two commands landing out of order
   // cannot move the boundary back. NULL = never reset.
   resetAtMessageId         Int?      @map("reset_at_message_id")
+  // THE LABELS THAT `/reset` REMOVED, so the observer can tell the command's own removal line from
+  // real history (issue #645). Chatwoot narrates a label change as an activity row that carries no
+  // `content_attributes` at all, and the row is written by `ActivityMessageJob.perform_later`, so on
+  // a backed-up queue it lands after the acknowledgement and no ORDER can reach it. The set is the
+  // content question that has the same answer at any id.
+  //
+  // HERE AND NOT ON THE ACKNOWLEDGEMENT'S OWN `content_attributes`, which is where it was until the
+  // review measured the leak: `api/v1/widget/messages/index.json.jbuilder` renders
+  // `json.content_attributes message.content_attributes` and `Message#push_event_data` ships the
+  // whole attributes hash, so on a website inbox the bag of a PUBLIC message reaches the contact.
+  // Internal label names are ours to know, not the customer's.
+  //
+  // `Json?` and not `String[]`: NULL is "this reset made no claim" (a reset from before this column,
+  // or one whose clear never returned) and `[]` is "it removed nothing", which the filter answers
+  // differently. Written only by the reset that OWNS the current boundary, so an older command
+  // finishing last cannot overwrite a newer one's set.
+  resetClearedLabels       Json?     @map("reset_cleared_labels")
   // THE CONSOLE WRITE'S PLACE IN THE SOURCE'S MESSAGE SEQUENCE (issue #469): the newest message
   // Chatwoot knew about when this side last wrote this row WITHOUT a version. NULL = no such write
   // has been made here, or the read that would have named one could not.

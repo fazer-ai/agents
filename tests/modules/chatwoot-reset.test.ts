@@ -72,8 +72,14 @@ function jsonResponse(body: unknown, status = 200): Response {
 // re-reads the holder and stands the whole hand-back down if it has already changed. Without it the
 // GET carries no status at all, `parseLiveConversation` returns null, and the run takes the
 // "unreadable, hand back anyway" path every other test here exercises.
+// What this conversation carries when the reset lands, in the order Chatwoot returns them.
+const LIVE_LABELS = ["compra-de-ingresso", "orcamento-enviado"] as const;
+
 function fakeChatwoot(
-  failing: RegExp | null = null,
+  // A path that answers 500. A PREDICATE when the method matters too: the label snapshot and the
+  // clear share one path, and the review round that separated them needs the GET to fail with the
+  // POST still up (issue #645).
+  failing: RegExp | ((method: string, path: string) => boolean) | null = null,
   takeoverAfterToggle: {
     type: string;
     id: number;
@@ -103,7 +109,11 @@ function fakeChatwoot(
     if (token.trim() === "") {
       return jsonResponse({ error: "Invalid Access Token" }, 401);
     }
-    if (failing?.test(url.pathname))
+    if (
+      typeof failing === "function"
+        ? failing(method, url.pathname)
+        : failing?.test(url.pathname)
+    )
       return jsonResponse({ error: "boom" }, 500);
     if (
       method === "GET" &&
@@ -132,6 +142,12 @@ function fakeChatwoot(
             }
           : {}),
       });
+    }
+    // The labels STANDING on the conversation when the command arrives. The clear reads them so the
+    // acknowledgement can name them (issue #645); the fall-through below would answer with no
+    // payload, which reads as "no label" and would make that assertion vacuous.
+    if (method === "GET" && url.pathname.endsWith("/labels")) {
+      return jsonResponse({ payload: [...LIVE_LABELS] });
     }
     // The account's attribute schema. `crm_id` is deliberately absent from it: it is the key an
     // integration owns, and the one a wholesale clear would destroy.
@@ -3139,6 +3155,144 @@ describe.skipIf(!dbUp)(
       expect(body?.content_attributes?.fazer_ai_send_id).toBe(
         `reset-ack:${9000 + deliverySeq}`,
       );
+    });
+
+    // ISSUE #645. The name above answers an ORDER question — where did the cleanup end — and the
+    // label-change activity is written by `Conversations::ActivityMessageJob.perform_later`, so on a
+    // backed-up queue it lands AFTER the acknowledgement and no order can reach it. The command
+    // therefore records the SET it removed, which turns the observer's question into a content one:
+    // a removal line whose titles are all in that set is the reset's own, at any id.
+    //
+    // ON OUR OWN ROW, and the review round measured why it cannot ride the acknowledgement's
+    // `content_attributes`: the widget renders that bag verbatim to the CONTACT
+    // (`api/v1/widget/messages/index.json.jbuilder`) and `Message#push_event_data` ships the whole
+    // attributes hash, so internal label names would reach the customer on a website inbox.
+    test("the reset records the labels it took off, on the conversation row", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetClearedLabels: true, resetAtMessageId: true },
+      });
+      expect(conv.resetClearedLabels).toEqual([...LIVE_LABELS]);
+      // Paired with the boundary of the command that removed them: read apart, a second reset
+      // landing between the two queries would hand the observer one reset's boundary and the
+      // other's set.
+      expect(conv.resetAtMessageId).toBe(9000 + deliverySeq);
+      // And the set is the one this very write replaced: read inside the label queue, before the
+      // POST that empties it.
+      expect(
+        cw.calls.filter((c) => c.path.endsWith("/labels")).map((c) => c.method),
+      ).toEqual(["GET", "POST"]);
+      // THE PUBLIC MESSAGE SAYS NOTHING ABOUT THE ACCOUNT'S OWN STATE. Its bag carries the name of
+      // the send and nothing else, which is what keeps the contact out of this.
+      const bag = (
+        ackCalls(cw.calls)[0]?.body as {
+          content_attributes?: Record<string, unknown>;
+        } | null
+      )?.content_attributes;
+      expect(Object.keys(bag ?? {})).toEqual(["fazer_ai_send_id"]);
+    });
+
+    // A clear that never returned removed nothing this side can name, and NULL says exactly that:
+    // the labels are still standing, so their activity lines are still true and must not be hidden.
+    test("a clear that failed records no set instead of claiming one", async () => {
+      // AFTER A HEALTHY RESET, which is the arrangement that matters (review round 3): the boundary
+      // moves on every command and the set is written only when the clear succeeds, so a column
+      // left alone here would pair THIS reset's boundary with the PREVIOUS reset's set, and the
+      // observer would hide genuine removals of those titles instead of falling back to the order
+      // cut. Setting the column to NULL by hand before the failing reset is what masked it.
+      const healthy = fakeChatwoot();
+      globalThis.fetch = healthy.impl;
+      await sendReset();
+      expect(
+        (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: CONV_ID },
+            select: { resetClearedLabels: true },
+          })
+        ).resetClearedLabels,
+      ).toEqual([...LIVE_LABELS]);
+
+      const cw = fakeChatwoot(/\/labels$/);
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetClearedLabels: true },
+      });
+      expect(conv.resetClearedLabels).toBeNull();
+      expect(
+        String((ackCalls(cw.calls)[0]?.body as { content?: unknown })?.content),
+      ).toMatch(/etiquetas/i);
+    });
+
+    // THE SNAPSHOT IS NOT THE STEP (review round 4). Reading the labels is bookkeeping for a later
+    // reader; clearing them is what the operator asked for. Awaited bare, a read that fails aborts
+    // the step and the labels stay on the conversation with the POST endpoint perfectly available.
+    test("a snapshot that failed does not stop the clear", async () => {
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_cleared_labels = NULL
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      const cw = fakeChatwoot(
+        (method, path) => method === "GET" && path.endsWith("/labels"),
+      );
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      // The clear went out anyway, with an empty set, which is the command's whole job here.
+      const post = cw.calls.find(
+        (c) => c.method === "POST" && c.path.endsWith("/labels"),
+      );
+      expect(post).toBeDefined();
+      expect((post?.body as { labels?: unknown })?.labels).toEqual([]);
+      // No claim: the observer falls back to the order cut rather than to a set nobody read. Asked
+      // as SQL, because the two nulls of a jsonb column are not the same thing: a written `'null'`
+      // reads back as `null` through the client and answers FALSE to `IS NULL`, so every later
+      // query about "no claim" would disagree with this assertion.
+      expect(
+        await suDb.$queryRaw<{ sql_null: boolean }[]>`
+          SELECT reset_cleared_labels IS NULL AS sql_null
+            FROM conversations
+           WHERE tenant_id = ${tenantId}
+             AND chatwoot_conversation_id = ${CONV_ID}`,
+      ).toEqual([{ sql_null: true }]);
+      // And the operator is not told the labels survived, because they did not.
+      expect(
+        String((ackCalls(cw.calls)[0]?.body as { content?: unknown })?.content),
+      ).not.toMatch(/Reset parcial/);
+    });
+
+    // A SECOND RESET DOES NOT INHERIT THE FIRST ONE'S SET. `reset_at_message_id` only moves forward
+    // (GREATEST), and two deliveries are dispatched detached, so the write is fenced on owning the
+    // current boundary: an older command finishing last must not pair a newer boundary with its own
+    // set.
+    test("the set belongs to the reset that owns the boundary", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+      const first = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetAtMessageId: true },
+      });
+      // The boundary jumps ahead of the next command's own message id, the way a newer reset would
+      // have left it, and then the reset runs with nothing standing on the conversation.
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_at_message_id = ${(first.resetAtMessageId ?? 0) + 10_000}
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      await suDb.$executeRaw`
+        UPDATE conversations SET reset_cleared_labels = '["de-antes"]'::jsonb
+         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_ID}`;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetClearedLabels: true },
+      });
+      expect(conv.resetClearedLabels).toEqual(["de-antes"]);
     });
 
     test("a partial reset is not announced as a full one", async () => {

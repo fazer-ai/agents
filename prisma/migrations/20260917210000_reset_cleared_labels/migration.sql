@@ -1,0 +1,18 @@
+-- WHAT THE /reset TOOK OFF, ON OUR SIDE OF THE FENCE (issue #645).
+--
+-- The observer has to tell the command's own label-removal line from real history, and Chatwoot
+-- gives it nothing to go on: a label change writes no `content_attributes`, and the row is created
+-- by `Conversations::ActivityMessageJob.perform_later`, so on a backed-up queue it lands after the
+-- command's acknowledgement and an order test cannot see it. Naming the SET turns that into a
+-- content question, which has the same answer at any id.
+--
+-- The set rode the acknowledgement's own `content_attributes` first, and the review round measured
+-- why it cannot: `api/v1/widget/messages/index.json.jbuilder` renders `json.content_attributes`
+-- verbatim and `Message#push_event_data` ships the whole attributes hash, so on a website inbox the
+-- bag of a public message is handed to the CONTACT. Internal label names are not the customer's.
+--
+-- NULLABLE jsonb, because three answers are distinct: NULL is "no claim" (a reset from before this
+-- column, or one whose clear never returned), `[]` is "it removed nothing", and a list is the set.
+-- No default, for the same reason: a default of `[]` would make every pre-existing conversation
+-- claim a reset that removed nothing.
+ALTER TABLE "conversations" ADD COLUMN "reset_cleared_labels" JSONB;

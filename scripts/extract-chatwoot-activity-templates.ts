@@ -25,7 +25,12 @@ if (!dir) {
   process.exit(1);
 }
 
-const labels = new Set<string>();
+// SPLIT BY THE KEY THEY CAME FROM (issue #645, review round 1). `conversations.activity.labels`
+// has exactly two leaves, `added` and `removed`, and the difference decides whether a line can be
+// the reset's own cleanup: the reset only ever REMOVES, so an addition that lands out of order must
+// not be read as one. The union of the two is what the single table used to hold.
+const labelsAdded = new Set<string>();
+const labelsRemoved = new Set<string>();
 const other = new Set<string>();
 // A SECOND PRODUCER OF ACTIVITY ROWS (round 17). `DataImports::Intercom::ActivityContentBuilder`
 // writes `message_type: activity` with `content_attributes: {}` — no bag to tell it apart — and
@@ -34,6 +39,7 @@ const other = new Set<string>();
 // `a participant`. Kept apart from the others because that builder appends the Intercom part's own
 // body as `"<sentence>: <body>"`, so these have to be refused with that tail as well.
 const imports = new Set<string>();
+const unknownLabelPaths = new Set<string>();
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -69,7 +75,13 @@ for (const file of readdirSync(dir).filter((f) => f.endsWith(".yml"))) {
       // template with no `%{labels}` has nothing to read back (round 17).
       walk(conversations.activity, [], (path, value) => {
         if (path.startsWith("labels.")) {
-          if (value.includes("%{labels}")) labels.add(value);
+          if (!value.includes("%{labels}")) return;
+          // `labels.added` / `labels.removed`, and anything else under `labels.` is a leaf this
+          // script has never seen: printed apart rather than folded into one of the two, because a
+          // sentence filed under the wrong verb is exactly the misreading this split exists to fix.
+          if (path === "labels.added") labelsAdded.add(value);
+          else if (path === "labels.removed") labelsRemoved.add(value);
+          else unknownLabelPaths.add(`${path}: ${value}`);
         } else {
           other.add(value);
         }
@@ -86,8 +98,21 @@ const render = (set: Set<string>) =>
     .map((t) => `  ${JSON.stringify(t)},`)
     .join("\n");
 
-console.log(`// LABEL_ACTIVITY_TEMPLATES (${labels.size})`);
-console.log(render(labels));
+if (unknownLabelPaths.size > 0) {
+  console.log(
+    `// !! LEAVES UNDER labels. THAT ARE NEITHER added NOR removed (${unknownLabelPaths.size})`,
+  );
+  console.log(
+    [...unknownLabelPaths]
+      .sort()
+      .map((t) => `//   ${t}`)
+      .join("\n"),
+  );
+}
+console.log(`// LABEL_ADDED_TEMPLATES (${labelsAdded.size})`);
+console.log(render(labelsAdded));
+console.log(`\n// LABEL_REMOVED_TEMPLATES (${labelsRemoved.size})`);
+console.log(render(labelsRemoved));
 console.log(`\n// OTHER_ACTIVITY_TEMPLATES (${other.size})`);
 console.log(render(other));
 console.log(`\n// IMPORT_ACTIVITY_TEMPLATES (${imports.size})`);

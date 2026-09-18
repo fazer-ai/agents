@@ -3324,10 +3324,23 @@ async function maybeConsumeCommandOrGate(params: {
         //
         // A command with no message id is not reachable (it is parsed from the message's own text),
         // and the guard is what keeps the column from holding a number that orders nothing.
+        //
+        // AND THE PREVIOUS RESET'S SET GOES WITH IT (issue #645, review round 3). The pair
+        // `(reset_at_message_id, reset_cleared_labels)` is read together by the observer, and the
+        // set below is written only when the clear SUCCEEDS — so a second `/reset` whose label
+        // cleanup fails would leave the new boundary beside the FIRST reset's set, and the observer
+        // would hide genuine removals of those titles instead of falling back to the order cut.
+        // Cleared in the same statement that moves the boundary, because every SET expression here
+        // reads the OLD row: a command that does not move it (an older delivery finishing last)
+        // leaves the set alone, and the one that does move it invalidates it.
         if (commandMessageId !== null) {
           await db.$executeRaw`
             UPDATE conversations
-               SET reset_at_message_id = GREATEST(reset_at_message_id, ${commandMessageId})
+               SET reset_cleared_labels =
+                     CASE WHEN reset_at_message_id IS NULL
+                            OR ${commandMessageId} > reset_at_message_id
+                          THEN NULL ELSE reset_cleared_labels END,
+                   reset_at_message_id = GREATEST(reset_at_message_id, ${commandMessageId})
              WHERE id = ${ctx.conv.id}`;
         }
         return db.conversation.update({
@@ -3522,11 +3535,55 @@ async function maybeConsumeCommandOrGate(params: {
       await step("clear labels", "etiquetas", () =>
         // In the conversation's label queue like every other writer, so a clear cannot land in the
         // middle of somebody's read-modify-write (issue #477 review, round 3).
-        withConversationLabels(params.tenantId, conversationId, () =>
+        withConversationLabels(params.tenantId, conversationId, async () => {
+          // WHAT THIS CLEAR REMOVES, READ INSIDE THE QUEUE (issue #645). The observer uses this set
+          // to tell the reset's own removal line from real history — a question about CONTENT,
+          // which is the only kind that still has an answer when Chatwoot's activity job lands
+          // after the acknowledgement. Read here and not before the queue because the answer has to
+          // be the set this very write replaces.
+          // BEST-EFFORT, AND IT IS NOT WHAT THIS STEP IS FOR (issue #645, review round 4). The step
+          // exists to CLEAR the labels, which is what the operator asked for; naming them is
+          // bookkeeping for a later reader. Awaited bare, a read that times out aborted the step
+          // and the labels stayed on the conversation, with the POST endpoint perfectly available.
+          // A read that failed leaves the column NULL, which the observer already answers with the
+          // order cut.
+          let before: string[] | null = null;
+          try {
+            before = await client.getConversationLabels(conversationId);
+          } catch (err) {
+            logger.warn(
+              "chatwoot: /reset could not read the labels it is about to clear (conv=%s): %s",
+              String(conversationId),
+              errMsg(err),
+            );
+          }
           // As the ADMIN: /reset is a person peeling the episode's labels off, not the persona
           // deciding something, and the activity line should say so (issue #493).
-          client.setConversationLabels(conversationId, [], { asAdmin: true }),
-        ),
+          await client.setConversationLabels(conversationId, [], {
+            asAdmin: true,
+          });
+          // WRITTEN ONLY AFTER THE CLEAR RETURNS, and only by the reset that still OWNS the
+          // boundary. A read that succeeded and a clear that threw leaves those labels standing,
+          // and naming them as removed would tell the observer to hide activity lines that describe
+          // the conversation's live state; the ambiguous case (the POST applied and the response
+          // was lost) leaves the column NULL and lets the removal line show, which is the direction
+          // this whole block fails in on purpose.
+          //
+          // The `WHERE` is the pair's own fence: `reset_at_message_id` moves forward with GREATEST
+          // and two `/reset` deliveries are not serialized, so an older command finishing last
+          // would otherwise pair a newer boundary with the set IT removed. Same row, one read.
+          if (before !== null)
+            await runScopedOn(
+              base,
+              sysCtx(tenantId),
+              (db) =>
+                db.$executeRaw`
+                UPDATE conversations
+                   SET reset_cleared_labels = ${JSON.stringify(before)}::jsonb
+                 WHERE id = ${ctx.conv.id}
+                   AND reset_at_message_id = ${commandMessageId}`,
+            );
+        }),
       );
       await step("clear custom attributes", "atributos", () =>
         client.clearConversationCustomAttributes(conversationId),

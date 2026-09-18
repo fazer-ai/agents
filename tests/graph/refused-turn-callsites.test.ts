@@ -22,7 +22,17 @@ import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 // turn can return ("posted", "empty", "silent", "messaged", "noted", …) is not a refusal: something
 // stands at the end of it.
 const NUDGE_REFUSALS = ["stale", "live-unavailable"] as const;
-const TURN_REFUSALS = ["stale", "superseded", "blocked", "taken-over"] as const;
+const TURN_REFUSALS = [
+  "stale",
+  "superseded",
+  "blocked",
+  "taken-over",
+  // A rajada que uma PESSOA atendeu (issue #703). Chega ao `refuse` pela mesma VARIÁVEL que o
+  // `superseded` — o `postBlocked` devolve a palavra e o caller escreve `return refuse(blocked)` —
+  // então a isenção da NOTE abaixo cobre as duas. Entra na lista porque é recusa pós-geração como
+  // qualquer outra: o turno rodou, e o que ele produziu tem que ser desfeito.
+  "answered-elsewhere",
+] as const;
 
 // The stretch below the closure, stripped, or `null` when the closure is gone. Everything above it is
 // a refusal BEFORE the invoke, where there is no generated turn to take back and `refuse` would be a

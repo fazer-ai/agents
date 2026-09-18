@@ -202,10 +202,23 @@ export interface RecoverStrandedDeliveryParams {
 //                   three attempts — three model calls — to reach that same silence. The customer's
 //                   missing half is reported on the conversation instead, where an operator can act
 //                   on it (`notePartialDelivery`).
+//   `answered-elsewhere` — uma PESSOA respondeu esta mensagem, sem mexer na atribuição (issue #703).
+//                   É o mesmo fato do `taken-over` chegando por outra porta, e a razão de estar aqui
+//                   é a mais forte do conjunto: os outros quatro se apoiam em algo que ESTA rota fez,
+//                   e este se apoia numa resposta que já existe, escrita por outra pessoa, visível na
+//                   página que o portão acabou de reler. Deliberadamente do lado oposto do
+//                   `superseded`, que também não postou nada: lá a recusa se apoia na entrega da
+//                   mensagem mais nova carregar a resposta, e uma recuperação não pode se apoiar
+//                   nisso — aqui não há nada em que se apoiar, porque o cliente já foi atendido.
+//
+//                   Fora deste conjunto, a recuperação devolve a linha para DEAD, e a conversa que
+//                   uma pessoa atendeu volta para a lista de perdas que essa mesma pessoa acabou de
+//                   esvaziar — o defeito da #703 reaparecendo uma camada acima do conserto dele.
 const TURN_SETTLED = new Set([
   "posted",
   "posted-partial",
   "taken-over",
+  "answered-elsewhere",
   "blocked",
 ]);
 

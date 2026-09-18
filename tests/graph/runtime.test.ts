@@ -3916,7 +3916,81 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // Nothing is said on top of the person who answered.
     expect(sent).toEqual([]);
+    // E a PALAVRA diz qual das duas recusas foi (issue #703). `superseded` afirma que o flush da
+    // mensagem nova está armado e por isso deixa a marca e o ledger onde estão; aqui ninguém vem
+    // atrás, e a rajada é fechada como consumida.
+    expect(outcome).toBe("answered-elsewhere");
+  });
+
+  // E QUANDO AS DUAS VALEM AO MESMO TEMPO, QUEM VEM ATRÁS MANDA (issue #703, bateria de mutação, m6).
+  // Uma atendente responde e o cliente escreve de novo, na mesma janela: o portão vê uma resposta de
+  // terceiro fechando este gatilho E uma mensagem do cliente ainda aberta acima dele. As duas recusas
+  // são verdadeiras e as contabilidades são opostas, então a ordem da pergunta é a decisão, não um
+  // detalhe de escrita. `superseded` é a resposta certa: a mensagem nova arma um flush que vai decidir
+  // a rajada INTEIRA de novo, e fechá-la aqui como consumida tomaria essa decisão duas vezes, a
+  // primeira sem ter lido a mensagem que chegou. Com a ordem invertida a marca andaria por cima de uma
+  // mensagem que ninguém leu, que é o defeito que o `superseded` existe para não cometer.
+  test("issue #703: a newer message and a human reply at once defer to the newer message", async () => {
+    await seedConversation(9712, null);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9712 },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          {
+            id: 2,
+            content: "oi, sou a Ana do suporte",
+            message_type: 1,
+            private: false,
+            sender: { id: 41, type: "user" },
+          },
+          // E o cliente escreveu de novo DEPOIS dela: ainda em aberto, e é dela que sai o flush.
+          {
+            id: 3,
+            content: "na verdade era outra coisa",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9712 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
     expect(outcome).toBe("superseded");
+    // E a marca fica ONDE ESTAVA, que é o que essa palavra compra: o flush da mensagem 3 responde a
+    // rajada inteira. Fechada como `answered-elsewhere`, a 3 nasceria abaixo de uma marca que passou
+    // por ela sem ninguém a ter lido.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { lastHandledMessageId: true },
+        })
+      ).lastHandledMessageId,
+    ).toBeNull();
   });
 
   // E A OUTRA ROTA POR ONDE UMA PESSOA RESPONDE, no caminho direto também (bateria de mutação da
@@ -3981,7 +4055,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
     };
     try {
-      expect(await rodar(9705, "baileys")).toBe("superseded");
+      expect(await rodar(9705, "baileys")).toBe("answered-elsewhere");
       expect(enviados).toEqual([]);
       // O control: sem a reserva de ids, a mesma linha pode ser a nossa própria resposta voltando, e
       // o cliente continua devendo uma.

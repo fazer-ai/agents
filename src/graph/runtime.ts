@@ -123,6 +123,27 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// O QUE O PORTÃO DE POST RESPONDE, e por que não é mais um booleano (issue #703). As duas recusas
+// que ele produz saem do mesmo `false` e têm contabilidades OPOSTAS: uma diz que vem coisa atrás e a
+// outra diz que acabou. Um booleano obriga quem chama a reconstruir a diferença — que é exatamente o
+// que ninguém fez, e o custo foi a rajada que uma pessoa atendeu ficar sem marca, sem dispensa e sem
+// ledger, com a entrega presa dela ainda reportada como perda.
+// O VOCABULÁRIO É O DO QUE ELE VIU, não o do que o turno fez, e a distância entre os dois é
+// deliberada. O portão relê a página e relata um FATO; quem traduz fato em desfecho é o
+// `postBlocked`, uma camada acima. Escrito com as palavras de desfecho, o portão obrigaria cada
+// caller a já saber a contabilidade de cada uma — que é a confusão que a #703 desfaz — e faria o
+// guard estrutural de `refused-turn-callsites` ler estes `return` como recusa de turno escapando do
+// `refuse()`, que é exatamente o defeito que aquele guard existe para pegar.
+export type PostVerdict =
+  // Pode postar.
+  | "post"
+  // CHEGOU MENSAGEM NOVA no meio do turno. Vira `superseded`, que não é terminal: a marca fica onde
+  // está de propósito, porque o flush da mensagem nova responde a rajada inteira de novo.
+  | "newer-message"
+  // UMA PESSOA RESPONDEU esta rajada, e ninguém vem atrás. Vira `answered-elsewhere`, terminal: a
+  // conversa foi atendida, só não por nós.
+  | "answered-by-other";
+
 export type RunAgentTurnOutcome =
   | "posted"
   // PART of what the turn promised reached the customer, and the rest is not coming (issue #429).
@@ -168,6 +189,23 @@ export type RunAgentTurnOutcome =
   // `heldBefore`. Issue #593.
   | "thread-busy"
   | "superseded"
+  // A RAJADA FOI ATENDIDA, POR QUEM NÃO SOMOS NÓS (issue #703). A forma é a do `superseded` — nada
+  // foi postado, o turno foi desfeito — e a contabilidade é a OPOSTA, que é o motivo de ser palavra
+  // separada em vez de um `superseded` com uma flag ao lado.
+  //
+  // `superseded` significa uma coisa precisa no desenho: *chegou mensagem mais nova, e o flush dela
+  // está armado*. É por isso que ele deliberadamente não avança a marca, não grava dispensa e não
+  // liquida o ledger — a rajada inteira vai ser respondida de novo, por quem vem atrás. Aqui nada
+  // disso é verdade: a pessoa já respondeu, ninguém vem, e o que a rajada cobria ficava para sempre
+  // `PROCESSING` ou `DEAD` no ledger, reportado como cliente que ninguém atendeu e ELEGÍVEL PARA
+  // RECUPERAÇÃO — que replaya o turno, roda modelo e ferramentas numa conversa já atendida, e só
+  // então o portão recusa o texto de novo (`recover-delivery.ts` só recusa replay diante de mensagem
+  // do CLIENTE mais nova; saída não bloqueia).
+  //
+  // Então esta palavra fica FORA da lista de exclusão do `coalesceAndRunTurn`, que é lida por
+  // exclusão: quem não está nela avança a marca e liquida o ledger, como `taken-over` e `empty` já
+  // faziam. Liquida como `consumed`, nunca `answered`, porque nós não respondemos nada.
+  | "answered-elsewhere"
   | "blocked";
 
 export interface RuntimeDeps {
@@ -280,12 +318,14 @@ export interface RunLoadedTurnParams {
   userSentAudio?: boolean;
   base?: PrismaClient;
   deps?: RuntimeDeps;
-  // Optional last-moment gate, called AFTER the assignee re-check and BEFORE the post. Returning
-  // false suppresses the reply (outcome "superseded"). Used by the posting paths to drop a reply
-  // when a newer message arrived mid-turn; the re-armed flush then answers the full burst. It is
-  // the SUPERSEDE question only — the at-most-once claim is `claimReply` below, taken here rather
-  // than by each caller.
-  shouldPost?: () => Promise<boolean>;
+  // Optional last-moment gate, called AFTER the assignee re-check and BEFORE the post. Anything but
+  // `"post"` suppresses the reply, e a palavra devolvida VIRA o desfecho do turno: as duas recusas
+  // que este portão produz têm contabilidades opostas e só ele sabe qual é qual (issue #703). Used
+  // by the posting paths to drop a reply when a newer message arrived mid-turn — o re-armed flush
+  // then answers the full burst — ou quando uma pessoa já respondeu a rajada, que não tem ninguém
+  // vindo atrás. It is the SUPERSEDE question only — the at-most-once claim is `claimReply` below,
+  // taken here rather than by each caller.
+  shouldPost?: () => Promise<PostVerdict>;
   // WHICH BURST THIS TURN CLAIMS, and it is asked of every caller (nullable, never defaulted)
   // because the answer is what makes two posting paths exclusive. `null` says this turn posts
   // nothing anyone else could also post — the playground, and a direct turn with no mirrored
@@ -897,10 +937,18 @@ async function runTurnBody(
   // output-guardrail path has returned "stale" past this same claim since the ask after that model
   // call was added.
   const postBlocked = async (): Promise<
-    "stale" | "agent-unavailable" | "superseded" | null
+    "stale" | "agent-unavailable" | "superseded" | "answered-elsewhere" | null
   > => {
     if (await writeCalledOff()) return standDown();
-    if (params.shouldPost && !(await params.shouldPost())) return "superseded";
+    // A PALAVRA DO PORTÃO, repassada inteira (issue #703). Traduzir as duas recusas dele para um
+    // `superseded` só é o defeito: quem decide o que a recusa significa é quem leu a página.
+    if (params.shouldPost) {
+      // A TRADUÇÃO MORA AQUI, num lugar só: o portão relata o que viu, e esta linha decide o que
+      // isso significa para a contabilidade do turno (issue #703).
+      const verdict = await params.shouldPost();
+      if (verdict === "newer-message") return "superseded";
+      if (verdict === "answered-by-other") return "answered-elsewhere";
+    }
     if (await writeCalledOff()) return standDown();
     return null;
   };
@@ -2582,7 +2630,7 @@ export async function runAgentTurn(
   const convDbId = loaded.conversationDbId;
   const shouldPost =
     triggerId !== null && convDbId !== null
-      ? async (): Promise<boolean> => {
+      ? async (): Promise<PostVerdict> => {
           try {
             const client = await loadChatwootClient(tenantId, instanceId, {
               base,
@@ -2642,12 +2690,23 @@ export async function runAgentTurn(
                 managedBotId: loaded.agentBotId,
                 whatsappProvider: loaded.whatsappProvider,
               });
-            if (openAbove || answeredByOther) {
+            // QUAL DAS DUAS RECUSAS, porque a contabilidade delas é oposta (issue #703). Uma
+            // mensagem nova acima deste gatilho tem o turno dela vindo atrás; uma pessoa que
+            // respondeu não tem ninguém vindo. `openAbove` primeiro: havendo as duas, quem vem
+            // atrás manda, porque a rajada dele ainda vai ser decidida por inteiro.
+            if (openAbove) {
               logger.info(
                 "direct turn: superseded mid-turn (conv=%s), deferring",
                 String(conversationId),
               );
-              return false;
+              return "newer-message";
+            }
+            if (answeredByOther) {
+              logger.info(
+                "direct turn: answered by somebody else (conv=%s), standing down",
+                String(conversationId),
+              );
+              return "answered-by-other";
             }
           } catch (e) {
             logger.warn(
@@ -2656,7 +2715,7 @@ export async function runAgentTurn(
               e instanceof Error ? e.message : String(e),
             );
           }
-          return true;
+          return "post";
         }
       : undefined;
 

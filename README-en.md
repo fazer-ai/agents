@@ -143,6 +143,12 @@ bun prisma:migrate
 bun dev                   # http://localhost:3000
 ```
 
+## License
+
+This edition's license is in [LICENSE](LICENSE). Third-party components carrying obligations of their own are named in [NOTICE](NOTICE), among them libheif and libde265 (LGPL-3.0), used unmodified, loaded from files on disk and replaceable with any interface-compatible build without recompiling anything.
+
+**libde265 decodes HEVC/H.265, and HEVC patent licensing is administered by pools independent of those projects: no patent license is granted by the LGPL, by this license or by the NOTICE.** Shipping the decoder was decided against ONE distribution model, self-hosting, where the operator installs on its own infrastructure and decodes its own images. It does **not** cover two cases, both named in the [NOTICE](NOTICE): handing a pre-compiled binary to a third party (image, bundle, appliance or installer), which is the act the pools license; and a customer contract that forbids components exposed to a patent pool, however they are deployed. In both cases the capability is removable, and removing it is the supported answer: HEIC attachments stop being read and everything else keeps working.
+
 ## Links
 
 - 🌐 Website: [fazer.ai](https://fazer.ai)

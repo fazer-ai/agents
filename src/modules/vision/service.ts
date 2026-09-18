@@ -18,7 +18,9 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { MediaSourceMismatchError, runMediaConverter } from "./convert";
 import { visionAcceptsDocuments } from "./document-support";
+import { normalizeMediaType, planImageConversion } from "./media-conversion";
 import {
   getVisionProvider,
   type VisionKind,
@@ -222,6 +224,89 @@ function metaKeyFor(kind: VisionKind): "image_description" | "extracted_text" {
 // persisted in the attachment meta) or null when vision is not runnable, the file is unsupported
 // (non-image/PDF, or a PDF on an image-only provider), or it yields nothing. Best-effort: the
 // webhook never strands delivery on it.
+// THE CONVERSION, in the one place both entry points share. The question it answers is not "can
+// this be read at all" — `visionKindForMime` asked that, about the file — but "can THIS PROVIDER
+// read it", which is ./media-conversion's table. When the answer is no and a converter applies, what
+// goes to the provider is the converted bytes and the converted mime.
+//
+// A FAILED CONVERSION SKIPS, with one exception that a measurement carved out. The reason a
+// conversion is attempted at all is that the provider does not read what the customer sent, so
+// sending the original anyway would buy a 400 whose answer is already known — but that reasoning
+// rests on the declared type being true, and Chatwoot serves whatever content type the uploader's
+// server declared. Measured on 2026-09-18: a PNG announced as `image/heic` is read by the vendor at
+// 200, because the vendors sniff bytes and ignore the data URI's label. Skipping there would take an
+// attachment that WAS read before this feature existed and stop reading it, which is why
+// `MediaSourceMismatchError` — the declared type lied — falls back to the original instead of
+// skipping, while every other failure still skips (issue #697, holdout scenario s8).
+//
+// The line it writes is the only record of where half a second of the turn went (~450ms of the 560ms
+// total is the HEVC decode), and it is written ONLY when a conversion happened, so the 98.6% of
+// attachments that need none add nothing to the Logs page.
+async function convertForProvider(args: {
+  bytes: ArrayBuffer;
+  mimeType: string | null;
+  provider: string;
+  flow?: FlowContext;
+}): Promise<
+  | { ok: true; bytes: ArrayBuffer; mimeType: string | null }
+  | { ok: false; reason: string }
+> {
+  const plan = planImageConversion({
+    mimeType: args.mimeType,
+    provider: args.provider,
+  });
+  if (plan.action === "as-is")
+    return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+  const startedAt = performance.now();
+  try {
+    const bytes = await runMediaConverter(plan.converter, args.bytes);
+    if (args.flow)
+      emitFlowEvent(args.flow, {
+        stage: "vision",
+        level: "info",
+        status: "ok",
+        provider: args.provider,
+        durationMs: Math.round(performance.now() - startedAt),
+        detail: {
+          step: "convert",
+          converter: plan.converter,
+          from: normalizeMediaType(args.mimeType),
+          to: plan.to,
+          bytesIn: args.bytes.byteLength,
+          bytesOut: bytes.byteLength,
+        },
+      });
+    return { ok: true, bytes, mimeType: plan.to };
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    // TWO LINES, because the two outcomes are not the same event and one sentence for both said the
+    // wrong thing about the commoner one. A mismatch stopped NOTHING: the bytes go to the provider
+    // untouched and the attachment is read, so "conversion failed" at `warn` reports a failure that
+    // did not happen, on the population that produces it most (Chatwoot serves whatever content type
+    // the uploader's server declared). What it is worth saying is that the declared type was wrong,
+    // because an operator seeing a run of them is looking at a mislabelling upstream of us.
+    //
+    // Neither sentence reaches `execution_logs`: the Logs page gets `convert_failed` as the reason
+    // code from the caller, and a mismatch leaves no line there at all because nothing was skipped.
+    // These are the application log, which is what someone debugging one attachment reads.
+    if (err instanceof MediaSourceMismatchError) {
+      logger.info(
+        "vision: %s — sent as received, the provider sniffs the bytes (provider=%s)",
+        why,
+        args.provider,
+      );
+      return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+    }
+    // The converter id is already the head of the wrapped message, so it is not repeated here.
+    logger.warn(
+      "vision: conversion failed, the attachment was not read (provider=%s): %s",
+      args.provider,
+      why,
+    );
+    return { ok: false, reason: "convert_failed" };
+  }
+}
+
 export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
@@ -344,6 +429,28 @@ export async function extractInboundFile(
   // The playground's own file path asks in the same place, for the same reason, and differs only in
   // what it does with the answer: it goes through `assertPlaygroundSpendCeiling`, where no webhook
   // gate follows it and both halves are its own to announce.
+  // BEFORE THE CEILING, and this is the same rule the `visionKindForMime` check above follows: a
+  // refusal says SPEND was what stood in the way, so it is asked after everything that would have
+  // stopped the call anyway (docs/spend-ceiling.md, "Where the gate is asked"). A HEIC that is
+  // truncated or over the pixel cap is refused in a month with budget to spare, so answering
+  // `spend_ceiling` in a spent one reports a refusal that never happened and sends the operator to
+  // change a budget that cannot make the file readable.
+  //
+  // It costs a decode this turn may not spend anything on — the earlier ordering was written to
+  // avoid exactly that, and it bought the wrong thing. The cost is bounded (one conversion at a
+  // time, 50 Mpx cap) and it is the same trade this path already makes for the download, which sits
+  // below the ceiling because it is what tells us the file's type in the first place.
+  //
+  // A mismatch is NOT one of these: it falls back to the original bytes and the call still happens,
+  // so it is the ceiling's business like any other readable file.
+  const converted = await convertForProvider({
+    bytes,
+    mimeType: contentType,
+    provider: cfg.provider,
+    flow: params.flow,
+  });
+  if (!converted.ok) return skip(converted.reason);
+
   const ceiling = await spendCeilingVerdict({
     tenantId: params.tenantId,
     source: "inbox",
@@ -369,9 +476,10 @@ export async function extractInboundFile(
       flow: params.flow,
       sleep: params.deps?.sleep,
       req: {
-        bytes,
+        bytes: converted.bytes,
         mimeType:
-          contentType ?? (kind === "image" ? "image/jpeg" : "application/pdf"),
+          converted.mimeType ??
+          (kind === "image" ? "image/jpeg" : "application/pdf"),
         kind,
         prompt: cfg.extractionPrompt,
         model: cfg.model || provider.defaultModel,
@@ -540,9 +648,23 @@ export async function extractPlaygroundFile(
     return { kind: "unsupported", text: "" };
   }
 
-  // The playground's own ceiling, asked once the file is known to be extractable and before the
-  // provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an operator uploading a
-  // file into a spent month is told why instead of watching the extraction produce nothing.
+  // Same placement as the inbound path and the same rule: a file this provider cannot read stops the
+  // call whatever the budget says, so it is answered before the money is. The refusal differs only
+  // in its shape — the playground has no marker to leave on a Chatwoot attachment, so an
+  // unconvertible file is the `unsupported` the operator already sees for an unreadable type, and
+  // getting the order wrong would answer 429 for a file no budget can make readable.
+  const converted = await convertForProvider({
+    bytes: params.file,
+    mimeType: params.mimeType,
+    provider: cfg.provider,
+    flow: params.flow,
+  });
+  if (!converted.ok) return { kind: "unsupported", text: "" };
+
+  // The playground's own ceiling, asked once the file is known to be extractable AND convertible,
+  // and before the provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an
+  // operator uploading a file into a spent month is told why instead of watching the extraction
+  // produce nothing.
   await assertPlaygroundSpendCeiling({
     tenantId: params.ctx.tenantId as bigint,
     base,
@@ -557,9 +679,9 @@ export async function extractPlaygroundFile(
       flow: params.flow,
       sleep: params.deps?.sleep,
       req: {
-        bytes: params.file,
+        bytes: converted.bytes,
         mimeType:
-          params.mimeType ??
+          converted.mimeType ??
           (kind === "image" ? "image/jpeg" : "application/pdf"),
         kind,
         prompt: cfg.extractionPrompt,

@@ -2,6 +2,7 @@
 // turns a file (image or PDF) + an instruction into extracted text. Adding a provider = one function
 // + one registry entry. The key never lands in the URL or logs.
 
+import { mediaSubtype, normalizeMediaType } from "./media-conversion";
 export type VisionKind = "image" | "document";
 
 export interface VisionRequest {
@@ -362,11 +363,17 @@ export function getVisionProvider(name: string): VisionProvider | null {
 const UNSUPPORTED_IMAGE_SUBTYPES = new Set(["svg+xml", "svg"]);
 
 // Classifies a downloaded file's mime into the extraction kind, or null when unextractable.
+//
+// Normalised through `./media-conversion` rather than parsed here, so there is ONE parser: two of
+// them drift, and they drift on the exotic spellings, which is the whole population these functions
+// exist to classify. Deduping also fixed a case the copy here got wrong — a PDF whose content type
+// carried a parameter (`application/pdf; charset=binary`; Chatwoot serves whatever the uploader's
+// server declared) matched neither the equality nor the `/pdf` suffix, so it was classified
+// unextractable and the document was never read.
 export function visionKindForMime(mimeType: string | null): VisionKind | null {
-  const m = (mimeType ?? "").toLowerCase();
+  const m = normalizeMediaType(mimeType);
   if (m.startsWith("image/")) {
-    const subtype = m.slice("image/".length).split(";")[0]?.trim() ?? "";
-    return UNSUPPORTED_IMAGE_SUBTYPES.has(subtype) ? null : "image";
+    return UNSUPPORTED_IMAGE_SUBTYPES.has(mediaSubtype(m)) ? null : "image";
   }
   if (m === "application/pdf" || m.endsWith("/pdf")) return "document";
   return null;

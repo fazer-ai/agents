@@ -691,7 +691,11 @@ export function selectOpenMessages(
           ? closedByOther
           : null
         : Math.max(scalarFloor, closedByOther);
-    return pendingIncoming(pageArray, floorHere);
+    // ...AND THE IMPORT IS FENCED ON BOTH SIDES OF THE FLOOR, for the reason the clause below gives.
+    // Down here the scalar decides and usually covers it, but a conversation whose backfill landed
+    // above the mark has the same history to answer and no row anywhere to say otherwise.
+    const desta = pendingIncoming(pageArray, floorHere);
+    return forReply ? desta.filter((m) => !m.imported) : desta;
   }
   // THE REPLY A PERSON WROTE, which is the fence the rows cannot carry: `pendingIncoming` reads
   // incoming messages only, and a human agent answering a customer writes no row anywhere. The rule
@@ -706,6 +710,19 @@ export function selectOpenMessages(
       return scalarFloor === null || m.id > scalarFloor;
     }
     if (state.claimed.has(m.id)) return false;
+    // A BACKFILLED QUESTION IS NOT AN UNANSWERED ONE (PR #701, review round 13), and this is the
+    // inbound half of the fence round 9 put on the outgoing side. The importer writes no webhook, so
+    // a row it backfilled has neither a claim nor a dispensal — and above the floor "no row" is
+    // exactly what this selection reads as "still owed". The scalar used to cover it by accident:
+    // the import lands under a watermark that a later real message pushed past, which is precisely
+    // the shape this PR taught the selection to reopen. Reopened, last year's requests go back to
+    // the model and its tools run again, hundreds of rows at once on the day an operator pairs a
+    // phone.
+    //
+    // FOR THE REPLY ONLY. "Should I remember this?" is the other question and its answer is yes:
+    // the import IS how history reaches the agent's memory, and the observer's reach here is the
+    // one it always had.
+    if (forReply && m.imported) return false;
     // A DISPENSAL IS A DECISION ABOUT THE REPLY, so it closes this message for the reply question
     // and for nothing else (PR #701, review round 8). The spend-ceiling refusal is where the two
     // come apart: it names every member of the burst it refused, and a flip to monitoring landing

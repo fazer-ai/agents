@@ -2447,6 +2447,86 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await estado(daOutraTurma.id)).toBe("DEAD");
   });
 
+  // O LADO DE DENTRO DA MESMA CERCA (PR #701, review round 13). A rodada 9 tirou a linha importada da
+  // FRONTEIRA, que é a metade de saída; esta é a de entrada. O importador não dispara webhook, então
+  // a pergunta que ele traz de volta não tem reivindicação nem dispensa — e acima do piso "sem linha"
+  // é exatamente o que esta seleção lê como "ainda devida". A escalar cobria isso por acidente, e
+  // esta PR é que ensinou a seleção a passar por baixo dela: reaberta, a pergunta do ano passado
+  // volta para o modelo e as ferramentas dela rodam de novo.
+  test("an imported question from the history is not an unanswered one", async () => {
+    const convId = 967;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 3 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              // Retaguarda que o importador trouxe: id de hoje, conversa do ano passado, sem linha
+              // nenhuma e abaixo da marca que a mensagem real empurrou.
+              { id: 1, content: "cancela meu plano", imported: true },
+              { id: 2, content: "obrigado", imported: true },
+              // A mensagem de verdade, que é a que o cliente está esperando.
+              { id: 3, content: "bom dia, queria remarcar" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("queria remarcar");
+    expect(seen).not.toContain("cancela meu plano");
+  });
+
+  // E DOS DOIS LADOS DO PISO, como toda cerca desta seleção. Antes da era por mensagem quem decide é
+  // a escalar, que cobre a retaguarda por acidente quando o importador escreve abaixo da marca — e
+  // não cobre quando ele escreve acima dela, que é o caso de uma conversa que ainda não tinha marca
+  // nenhuma. A pergunta do ano passado é a mesma pergunta nos dois casos.
+  test("the import fence applies before the per-message era too", async () => {
+    const convId = 968;
+    await seedConversation(convId);
+    const sent: Array<[number, string]> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 2 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "cancela meu plano", imported: true },
+              { id: 2, content: "bom dia, queria remarcar" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    const seen = model.seen.join("\n");
+    expect(seen).toContain("queria remarcar");
+    expect(seen).not.toContain("cancela meu plano");
+  });
+
   // E O PORTÃO DE POSSE FECHA A ÓRFÃ TAMBÉM (PR #701, review round 4). A rodada 3 fez a faixa começar
   // no piso da era, mas o RAMO do contexto que este portão devolve não carregava o campo do piso, e
   // a expressão caía de volta na marca exatamente aqui. O defeito sobrevivia num ramo, calado: a

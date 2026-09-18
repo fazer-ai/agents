@@ -51,6 +51,18 @@ const ALPHA = readFileSync(
 // (`heif-enc azul512.png vermelho2400.png verde300.png`, which makes the first input primary) and
 // then patching the two-byte item id inside the `pitm` box from 1 to 2, which is the only way to get
 // the two orders to disagree — every encoder writes the primary first.
+// A HEIC written with premultiplied alpha (`heif-enc --premultiplied-alpha`): 64x64 of a single
+// pixel value, RGBA (100, 0, 0, 128), where the 100 is ALREADY the colour scaled by the alpha.
+// libheif reports `is_premultiplied_alpha()` true for it and hands those exact bytes back.
+const PREMULT = readFileSync(
+  `${import.meta.dir}/../fixtures/media/alfa-premultiplicado.heic`,
+);
+// The SAME source PNG encoded without `--premultiplied-alpha`. It decodes to the identical bytes and
+// differs only in the flag, which is what makes the flag the only thing that says which formula is
+// owed.
+const STRAIGHT = readFileSync(
+  `${import.meta.dir}/../fixtures/media/alfa-straight.heic`,
+);
 const COLECAO = readFileSync(
   `${import.meta.dir}/../fixtures/media/colecao-primaria-nao-e-a-primeira.heic`,
 );
@@ -309,6 +321,82 @@ describe("flattenOntoWhite", () => {
     // Room for JPEG, nowhere near the 54 levels of red that the wrong order costs.
     expect(img.data[mid]).toBeGreaterThan(225);
     expect(img.data[mid]).toBeLessThan(250);
+  });
+
+  test("premultiplied colour is not scaled by its alpha a second time", async () => {
+    // Review round 10. libheif answers `is_premultiplied_alpha()` and hands back colour that is
+    // already multiplied by the alpha; compositing it with the straight-alpha formula multiplies
+    // again and darkens everything translucent. The arithmetic, on the fixture's (100, 0, 0, 128):
+    //
+    //   premultiplied (right)   100 + 255 * (1 - 128/255) = 227
+    //   straight (wrong)        100 * (128/255) + 255 * (1 - 128/255) = 177
+    //
+    // Fifty levels of red on every cutout edge, and nothing about the output looks broken.
+    const out = await runMediaConverter(
+      "heic-to-jpeg",
+      PREMULT.buffer.slice(
+        PREMULT.byteOffset,
+        PREMULT.byteOffset + PREMULT.byteLength,
+      ) as ArrayBuffer,
+    );
+    const img = jpeg.decode(new Uint8Array(out));
+    const mid = ((img.height >> 1) * img.width + (img.width >> 1)) * 4;
+    expect(img.data[mid] as number).toBeGreaterThan(215);
+    expect(img.data[mid] as number).toBeLessThan(240);
+  });
+
+  test("the two files decode to the SAME bytes, so only the flag can tell them apart", async () => {
+    // Measured, and it is what makes this a correctness question rather than a heuristic one: the
+    // same PNG encoded with and without `--premultiplied-alpha` comes back byte-identical. Nothing
+    // in the pixels says which formula is owed, so discarding the flag is not a worse guess — it is
+    // no information. Independently reproduced by the verifier's a5 addendum.
+    const asArrayBuffer = (b: Buffer) =>
+      b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+    const raw = async (b: Buffer) =>
+      withHeicFrames(asArrayBuffer(b), async (frames) => {
+        const f = frames[0] as (typeof frames)[number];
+        const d = await f.decode();
+        return {
+          first: [...d.data.slice(0, 4)],
+          premultiplied: d.premultiplied,
+        };
+      });
+    const pre = await raw(PREMULT);
+    const straight = await raw(STRAIGHT);
+    expect(pre.first).toEqual(straight.first);
+    expect(pre.first).toEqual([100, 0, 0, 128]);
+    expect([pre.premultiplied, straight.premultiplied]).toEqual([true, false]);
+    // And the two conversions therefore differ only because the flag was read.
+    const red = async (b: Buffer) => {
+      const img = jpeg.decode(
+        new Uint8Array(
+          await runMediaConverter("heic-to-jpeg", asArrayBuffer(b)),
+        ),
+      );
+      return img.data[
+        ((img.height >> 1) * img.width + (img.width >> 1)) * 4
+      ] as number;
+    };
+    expect(await red(PREMULT)).toBeGreaterThan(215);
+    expect(await red(STRAIGHT)).toBeLessThan(200);
+  });
+
+  test("the formula follows the buffer's own flag, not the file it came from", () => {
+    // Asserted on the primitive with both flags over the same bytes, so the two arms are one
+    // comparison instead of two fixtures.
+    const bytes = () => ({
+      data: new Uint8Array([100, 0, 0, 128]),
+      width: 1,
+      height: 1,
+    });
+    expect(flattenOntoWhite({ ...bytes(), premultiplied: true }).data[0]).toBe(
+      227,
+    );
+    expect(flattenOntoWhite({ ...bytes(), premultiplied: false }).data[0]).toBe(
+      177,
+    );
+    // Absent means straight, which is what every other source here produces.
+    expect(flattenOntoWhite(bytes()).data[0]).toBe(177);
   });
 
   test("a real HEIC cutout reaches the encoder white, not black", async () => {
@@ -651,7 +739,7 @@ describe("heic-to-jpeg", () => {
         data[i] = r;
         data[i + 3] = 255;
       }
-      return { data, width: w, height: h };
+      return { data, width: w, height: h, premultiplied: false };
     };
     const out = await runMediaConverter("heic-to-jpeg", brandedHeic(), {
       withFrames: (async (_b, use) =>
@@ -773,12 +861,13 @@ describe("heic-to-jpeg", () => {
     // The three ways of not being a convertible HEIC are different facts, and the line is the whole
     // point of this PR. Reported as one, a 703-byte JPEG reads as `<too short>` and sends whoever is
     // looking at it after a truncated upload (PR #707, found by the verifier's a4 addendum).
-    const message = async (bytes: ArrayBuffer) =>
-      (
-        await runMediaConverter("heic-to-jpeg", bytes).catch(
-          (e: unknown) => e as Error,
-        )
-      ).message;
+    const message = async (bytes: ArrayBuffer) => {
+      const out: unknown = await runMediaConverter("heic-to-jpeg", bytes).catch(
+        (e: unknown) => e,
+      );
+      expect(out).toBeInstanceOf(MediaSourceMismatchError);
+      return (out as Error).message;
+    };
 
     expect(await message(new ArrayBuffer(8))).toContain(
       "is too short to carry one",

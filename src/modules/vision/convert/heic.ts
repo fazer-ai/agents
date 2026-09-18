@@ -27,6 +27,9 @@ export type HeicFrame = {
     data: Uint8ClampedArray;
     width: number;
     height: number;
+    // Carried on the DECODED buffer rather than the frame, because it describes those bytes: the
+    // compositing step downstream is the only thing that needs it.
+    premultiplied: boolean;
   }>;
 };
 
@@ -34,6 +37,7 @@ type HeifImage = {
   get_width(): number;
   get_height(): number;
   is_primary(): boolean;
+  is_premultiplied_alpha(): boolean;
   // `heif_image_handle_release`, and it is NOT covered by freeing the context: see the release below.
   free(): void;
   display(
@@ -153,17 +157,21 @@ export async function withHeicFrames<T>(
   }
 }
 
-function displayImage(
-  image: HeifImage,
-): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+function displayImage(image: HeifImage): Promise<{
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+  premultiplied: boolean;
+}> {
   const width = image.get_width();
   const height = image.get_height();
+  const premultiplied = image.is_premultiplied_alpha();
   return new Promise((resolve, reject) => {
     image.display(
       { data: new Uint8ClampedArray(width * height * 4), width, height },
       (out) =>
         out
-          ? resolve({ data: out.data, width, height })
+          ? resolve({ data: out.data, width, height, premultiplied })
           : reject(new Error("libheif could not render the image")),
     );
   });

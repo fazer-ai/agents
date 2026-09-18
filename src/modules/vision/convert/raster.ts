@@ -8,6 +8,11 @@ export type Rgba = {
   readonly data: Uint8Array | Uint8ClampedArray;
   readonly width: number;
   readonly height: number;
+  // WHAT THE RGB MEANS WHERE ALPHA IS NOT 255, which is a property of these bytes and not of the
+  // file they came from. Premultiplied means the colour has already been multiplied by the alpha, so
+  // compositing it must NOT multiply again. Absent is straight alpha, which is what every other
+  // source here produces.
+  readonly premultiplied?: boolean;
 };
 
 // AREA AVERAGE, not nearest neighbour. The thing being downscaled is a photo of a receipt or a
@@ -93,12 +98,24 @@ export function flattenOntoWhite(src: Rgba): Rgba {
   }
   if (!transparent) return src;
   const out = new Uint8Array(s.length);
+  // Premultiplied colour is ALREADY scaled by its alpha, so multiplying again darkens everything
+  // translucent: a pixel of (100, 0, 0, 128) over white comes out 177 instead of 227 (PR #707 review
+  // round 10).
+  //
+  // THE FLAG IS THE ONLY THING THAT SAYS WHICH FORMULA APPLIES, and that is measured rather than
+  // assumed: the same PNG encoded twice, with and without `heif-enc --premultiplied-alpha`, decodes
+  // to the IDENTICAL bytes `[100, 0, 0, 128]` and differs only in what
+  // `is_premultiplied_alpha()` answers. So ignoring it is not a worse guess, it is having no
+  // information at all — which is also why the defect is invisible from both sides: the output does
+  // not look broken, and the pixels do not say which formula was owed.
+  const premultiplied = src.premultiplied === true;
   for (let i = 0; i < s.length; i += 4) {
     const a = (s[i + 3] as number) / 255;
     const bg = 255 * (1 - a);
-    out[i] = (s[i] as number) * a + bg;
-    out[i + 1] = (s[i + 1] as number) * a + bg;
-    out[i + 2] = (s[i + 2] as number) * a + bg;
+    const k = premultiplied ? 1 : a;
+    out[i] = (s[i] as number) * k + bg;
+    out[i + 1] = (s[i + 1] as number) * k + bg;
+    out[i + 2] = (s[i + 2] as number) * k + bg;
     out[i + 3] = 255;
   }
   return { data: out, width: src.width, height: src.height };

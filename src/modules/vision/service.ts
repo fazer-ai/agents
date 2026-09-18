@@ -278,14 +278,31 @@ async function convertForProvider(args: {
       });
     return { ok: true, bytes, mimeType: plan.to };
   } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    // TWO LINES, because the two outcomes are not the same event and one sentence for both said the
+    // wrong thing about the commoner one. A mismatch stopped NOTHING: the bytes go to the provider
+    // untouched and the attachment is read, so "conversion failed" at `warn` reports a failure that
+    // did not happen, on the population that produces it most (Chatwoot serves whatever content type
+    // the uploader's server declared). What it is worth saying is that the declared type was wrong,
+    // because an operator seeing a run of them is looking at a mislabelling upstream of us.
+    //
+    // Neither sentence reaches `execution_logs`: the Logs page gets `convert_failed` as the reason
+    // code from the caller, and a mismatch leaves no line there at all because nothing was skipped.
+    // These are the application log, which is what someone debugging one attachment reads.
+    if (err instanceof MediaSourceMismatchError) {
+      logger.info(
+        "vision: %s — sent as received, the provider sniffs the bytes (provider=%s)",
+        why,
+        args.provider,
+      );
+      return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
+    }
     // The converter id is already the head of the wrapped message, so it is not repeated here.
     logger.warn(
-      "vision: conversion failed (provider=%s): %s",
+      "vision: conversion failed, the attachment was not read (provider=%s): %s",
       args.provider,
-      err instanceof Error ? err.message : String(err),
+      why,
     );
-    if (err instanceof MediaSourceMismatchError)
-      return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
     return { ok: false, reason: "convert_failed" };
   }
 }

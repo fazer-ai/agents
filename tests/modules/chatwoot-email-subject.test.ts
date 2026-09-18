@@ -34,7 +34,7 @@ import { codeOnly } from "@/tests/utils/source-text";
 // shapes and asserts the three answer identically, so the next field added here cannot drift.
 
 const SUBJECT =
-  "Olá, tudo bem? Perdi o acesso ao e-mail e ao telefone cadastrados na minha conta da Guichê Web e, por isso, não consigo receber o código de acesso. Gostaria de solicitar a atualização dos meus dados para recuperar o acesso à minha conta";
+  "Olá, tudo bem? Perdi o acesso ao e-mail e ao telefone cadastrados na minha conta do Café Exemplo e, por isso, não consigo receber o código de acesso. Gostaria de solicitar a atualização dos meus dados para recuperar o acesso à minha conta";
 
 function row(over: Partial<ChatwootMessageRow> = {}): ChatwootMessageRow {
   return {

@@ -24,7 +24,7 @@ import {
 // (blank|--) and the delimiters `\n\n` and `\n\n--\n\n` are what `appendSignature` in the fork's
 // reply box uses, so an operator who configures both meets the same thing twice.
 
-const SIG = "— Gi, Guichê Web";
+const SIG = "— Bia, Café Exemplo";
 
 describe("attachSignature: it attaches to a CHUNK, never to the text", () => {
   test("the last balloon carries it, and only that one", () => {
@@ -271,18 +271,21 @@ describe("signatureFor: on or off, and the variables", () => {
       signatureFor(
         { ...cfg, text: "— {{nome_agente}}, {{nome_empresa}}" },
         {
-          nome_agente: "Gi",
-          nome_empresa: "Guichê Web",
+          nome_agente: "Bia",
+          nome_empresa: "Café Exemplo",
         },
       ),
-    ).toBe("— Gi, Guichê Web");
+    ).toBe("— Bia, Café Exemplo");
   });
 
   test("an unknown placeholder is LEFT STANDING, not blanked", () => {
     // What makes a typo visible on the customer's screen instead of silently deleting the
     // operator's text. `interpolatePromptVars`'s own rule, inherited rather than re-decided here.
     expect(
-      signatureFor({ ...cfg, text: "— {{nome_agent}}" }, { nome_agente: "Gi" }),
+      signatureFor(
+        { ...cfg, text: "— {{nome_agent}}" },
+        { nome_agente: "Bia" },
+      ),
     ).toBe("— {{nome_agent}}");
   });
 
@@ -434,7 +437,7 @@ describe("deliverReply: what the customer actually receives", () => {
 });
 
 describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
-  const MULTI = "— Gi\n\nGuichê Web";
+  const MULTI = "— Bia\n\nCafé Exemplo";
 
   // The split is LOSSY for this question in two independent ways, and each cost a review round.
   test("a model signature that SPANS chunks is still caught", () => {
@@ -470,10 +473,10 @@ describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
     // The second loss: `splitReplyParts` trims every paragraph, so a signature whose second line is
     // indented comes back without the indentation. Reassembling from the separators recovered the
     // newlines and not this, which is why the caller passes the reply itself.
-    const indented = "— Gi\n\n  Guichê Web";
+    const indented = "— Bia\n\n  Café Exemplo";
     const reply = `Resposta.\n\n${indented}`;
     const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
-    expect(chunks.join("\n\n")).not.toContain("  Guichê Web");
+    expect(chunks.join("\n\n")).not.toContain("  Café Exemplo");
     expect(alreadySigned(chunks, indented, reply)).toBe(true);
     expect(
       attachSignature(
@@ -504,7 +507,7 @@ describe("the render options travel with the variables (review of #599)", () => 
     const cfg = {
       ...SIGNATURE_DEFAULTS,
       enabled: true,
-      text: "— Gi · {{horario_atendimento}}",
+      text: "— Bia · {{horario_atendimento}}",
     };
     const schedule = {
       timezone: "America/Sao_Paulo",

@@ -54,7 +54,7 @@ const ACCOUNT_ONE: Account = {
 const ACCOUNT_TWO: Account = {
   instanceId: "2",
   accountId: 1,
-  accountName: "Guichê Web",
+  accountName: "Café Exemplo",
 };
 
 // `agents-teams` answers with the accounts the agent's bound inboxes live in, and deliberately with

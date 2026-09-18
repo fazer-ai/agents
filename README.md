@@ -143,6 +143,10 @@ bun prisma:migrate
 bun dev                   # http://localhost:3000
 ```
 
+## Licença
+
+A licença desta edição está em [LICENSE](LICENSE). Os componentes de terceiros com obrigações próprias estão nomeados em [NOTICE](NOTICE), entre eles a libheif e a libde265 (LGPL-3.0), usadas sem modificação, carregadas de arquivos em disco e substituíveis por outra build compatível em interface sem recompilar nada.
+
 ## Links
 
 - 🌐 Site: [fazer.ai](https://fazer.ai)

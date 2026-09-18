@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import decode from "heic-decode";
+import { copyFileSync, existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import jpeg from "jpeg-js";
 import {
-  __disposeFramesForTest,
   __frameDimensionsForTest,
   __serializedForTest,
   MAX_SOURCE_PIXELS,
@@ -11,6 +11,13 @@ import {
   MediaSourceMismatchError,
   runMediaConverter,
 } from "@/modules/vision/convert";
+import {
+  __resetLibheifForTest,
+  LIBHEIF_WASM_PATH_ENV,
+  libheifWasmPath,
+  loadLibheif,
+  withHeicFrames,
+} from "@/modules/vision/convert/heic";
 import {
   fitRgba,
   flattenOntoWhite,
@@ -169,8 +176,9 @@ describe("frameDimensions", () => {
   });
 
   test("refuses a frame without them instead of decoding unbounded", () => {
-    // `@types/heic-decode` 2.0.0 does not declare these fields, so a library version that stops
-    // carrying them would silently remove the pixel cap. It has to fail loudly instead.
+    // libheif ships no types at all, so the shape above is ours, asserted at runtime rather than by
+    // the compiler: a library version that stops carrying the dimensions would silently remove the
+    // pixel cap. It has to fail loudly instead.
     for (const frame of [
       { decode: () => {} },
       { width: 100, decode: () => {} },
@@ -395,106 +403,133 @@ describe("heic-to-jpeg", () => {
     expect(out.byteLength).toBeLessThan(1568 * 1045 * 4);
   });
 
-  test("the source HEIC is what a decoder says it is", async () => {
-    // Guards the fixture itself: a truncated or re-encoded file would make every assertion above
-    // pass for the wrong reason.
-    const raw = await decode({ buffer: new Uint8Array(heicBytes()) });
-    expect([raw.width, raw.height]).toEqual([2400, 1600]);
+  test("the wasm binary is a replaceable file on disk, and the path is overridable", () => {
+    // THE LICENSING SHAPE, asserted. libheif is LGPL-3.0 in a proprietary product, and §4(d)(1) of
+    // that licence asks for a mechanism that "will operate properly with a modified version of the
+    // Library that is interface-compatible". A 1.9 MB JavaScript file with the binary base64'd
+    // inside it — what `libheif-js/wasm-bundle` ships, and what this module deliberately does not
+    // use — is not one. A file on disk, found by a path the operator can override, is.
+    const path = libheifWasmPath();
+    expect(path.endsWith("libheif.wasm")).toBe(true);
+    expect(existsSync(path)).toBe(true);
+    expect(statSync(path).size).toBeGreaterThan(1_000_000);
+
+    const before = process.env[LIBHEIF_WASM_PATH_ENV];
+    try {
+      process.env[LIBHEIF_WASM_PATH_ENV] = "/outro/lugar/libheif.wasm";
+      expect(libheifWasmPath()).toBe("/outro/lugar/libheif.wasm");
+      // Blank is not an override: an empty env var in a compose file must not point the loader at "".
+      process.env[LIBHEIF_WASM_PATH_ENV] = "   ";
+      expect(libheifWasmPath()).toBe(path);
+    } finally {
+      if (before === undefined) delete process.env[LIBHEIF_WASM_PATH_ENV];
+      else process.env[LIBHEIF_WASM_PATH_ENV] = before;
+    }
   });
 
-  test("the library still hands its handles to us, non-enumerably", async () => {
-    // THE CONTRACT THIS PR DEPENDS ON, asserted against the real library. `decode.all()` does not
-    // dispose on its own (the one-shot `decode()` does), and it attaches `dispose` to the returned
-    // ARRAY as a non-enumerable property, so neither the types nor a key probe reveal it. An upgrade
-    // that moves or drops it has to fail here, not three weeks later as memory growth in production.
-    const frames = await decode.all({ buffer: new Uint8Array(heicBytes()) });
-    expect(Array.isArray(frames)).toBe(true);
-    expect(Object.keys(frames)).not.toContain("dispose");
-    expect(typeof (frames as unknown as { dispose?: unknown }).dispose).toBe(
-      "function",
-    );
-    __disposeFramesForTest(frames);
+  test("the loader really reads the binary at that path, and says so when it cannot", async () => {
+    // The override is only worth the licence claim if it CHANGES WHICH BINARY RUNS. Asserted in both
+    // directions: a path with nothing at it has to fail, and a copy of the binary somewhere else has
+    // to convert. A loader that let emscripten find the package's own file would pass the second and
+    // silently ignore the first.
+    const real = libheifWasmPath();
+    const copia = join(tmpdir(), `libheif-copia-${process.pid}.wasm`);
+    const before = process.env[LIBHEIF_WASM_PATH_ENV];
+    try {
+      __resetLibheifForTest();
+      process.env[LIBHEIF_WASM_PATH_ENV] = join(tmpdir(), "nao-existe.wasm");
+      await expect(loadLibheif()).rejects.toThrow();
+      // No reset here, deliberately: a failed load must not poison the next attempt on its own, or
+      // an operator who fixed the path would have to restart the process. The recovery is the
+      // module's, not the test's.
+      copyFileSync(real, copia);
+      process.env[LIBHEIF_WASM_PATH_ENV] = copia;
+      const out = await runMediaConverter("heic-to-jpeg", heicBytes());
+      expect(new Uint8Array(out)[0]).toBe(0xff);
+    } finally {
+      if (before === undefined) delete process.env[LIBHEIF_WASM_PATH_ENV];
+      else process.env[LIBHEIF_WASM_PATH_ENV] = before;
+      rmSync(copia, { force: true });
+      __resetLibheifForTest();
+    }
   });
 
-  test("the handles are released on every path out, refusals included", async () => {
-    // The refusals are the paths that leaked most: the decoder and every handle are allocated by
-    // `decode.all()` before the cap is even read. Driven through an injected decoder, because
-    // "someone called dispose" is not visible from the bytes that come back.
-    const calls: string[] = [];
-    const framesFor = (width: number, height: number, decodes = true) => {
-      const frames: unknown[] = [
-        {
-          width,
-          height,
-          decode: async () => {
-            if (!decodes) throw new Error("decoder blew up");
-            return { data: new Uint8Array(width * height * 4), width, height };
-          },
-        },
-      ];
-      Object.defineProperty(frames, "dispose", {
-        enumerable: false,
-        value: () => calls.push("dispose"),
-      });
-      return frames;
+  test("a failure from underneath the module still comes out as OUR error", async () => {
+    // libheif and the WASM loader answer with their own classes — an unreadable binary is a plain
+    // `Error` from readFileSync — and the caller catches one type. Without the wrap, a missing file
+    // would surface as an ENOENT the service reads as "not a conversion failure".
+    const before = process.env[LIBHEIF_WASM_PATH_ENV];
+    try {
+      __resetLibheifForTest();
+      process.env[LIBHEIF_WASM_PATH_ENV] = join(tmpdir(), "nao-existe.wasm");
+      const err = await runMediaConverter("heic-to-jpeg", heicBytes()).catch(
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(MediaConversionError);
+      // The original is kept, because it is the only thing that says WHICH file failed.
+      expect((err as Error).cause).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("heic-to-jpeg failed");
+    } finally {
+      if (before === undefined) delete process.env[LIBHEIF_WASM_PATH_ENV];
+      else process.env[LIBHEIF_WASM_PATH_ENV] = before;
+      __resetLibheifForTest();
+    }
+  });
+
+  test("withHeicFrames decodes the real fixture and hands the dimensions back first", async () => {
+    const seen = await withHeicFrames(heicBytes(), async (frames) => {
+      expect(frames.length).toBe(1);
+      const f = frames[0] as (typeof frames)[number];
+      // Dimensions BEFORE any pixel work, which is what the cap needs.
+      expect([f.width, f.height]).toEqual([2400, 1600]);
+      const raw = await f.decode();
+      return [raw.width, raw.height, raw.data.length] as const;
+    });
+    expect(seen).toEqual([2400, 1600, 2400 * 1600 * 4]);
+  });
+
+  test("the decoder is released even when the body throws", async () => {
+    // The `finally` is what makes the ownership ours on every path, including the ones libheif's own
+    // wrapper never returned a handle for. Observable here only as "the throw comes through and the
+    // next call still works" — a wedged or leaked decoder shows up as the second call failing.
+    await expect(
+      withHeicFrames(heicBytes(), async () => {
+        throw new Error("estourou no meio");
+      }),
+    ).rejects.toThrow("estourou no meio");
+    const again = await withHeicFrames(heicBytes(), async (f) => f.length);
+    expect(again).toBe(1);
+  });
+
+  test("a file that parses to no image still releases the decoder", async () => {
+    // The case the previous wrapper could not release: it built the decoder and only then decided
+    // whether to hand the caller anything to free. Truncated, brand intact, so it reaches libheif.
+    const out = await withHeicFrames(truncatedHeic(), async (f) => f.length);
+    expect(out).toBe(0);
+  });
+
+  test("a rejected file leaves NOTHING behind in the wasm heap", async () => {
+    // The round 2 finding, as an assertion instead of a claim. A malformed file is the case the old
+    // wrapper could not release — it built the decoder and threw before returning a handle — and it
+    // cost 6.5 KB each. The probe is a malloc(1) against libheif's own heap: the pointer it returns
+    // is the boundary of what is allocated, so two probes with the allocation released in between
+    // are equal, and any residual shows up as the difference.
+    const lib = (await loadLibheif()) as unknown as {
+      _malloc(n: number): number;
+      _free(p: number): void;
     };
-
-    await runMediaConverter("heic-to-jpeg", brandedHeic(), {
-      decodeAll: async () => framesFor(40, 30),
-    });
-    expect(calls).toEqual(["dispose"]);
-
-    calls.length = 0;
-    await expect(
-      runMediaConverter("heic-to-jpeg", brandedHeic(), {
-        decodeAll: async () => framesFor(4000, 3000),
-        maxSourcePixels: 100,
-      }),
-    ).rejects.toBeInstanceOf(MediaConversionError);
-    expect(calls).toEqual(["dispose"]);
-
-    calls.length = 0;
-    await expect(
-      runMediaConverter("heic-to-jpeg", brandedHeic(), {
-        decodeAll: async () => framesFor(40, 30, false),
-      }),
-    ).rejects.toBeInstanceOf(MediaConversionError);
-    expect(calls).toEqual(["dispose"]);
-
-    calls.length = 0;
-    await expect(
-      runMediaConverter("heic-to-jpeg", brandedHeic(), {
-        decodeAll: async () => {
-          const frames: unknown[] = [];
-          Object.defineProperty(frames, "dispose", {
-            enumerable: false,
-            value: () => calls.push("dispose"),
-          });
-          return frames;
-        },
-      }),
-    ).rejects.toBeInstanceOf(MediaConversionError);
-    expect(calls).toEqual(["dispose"]);
-  });
-
-  test("a collection without dispose converts anyway instead of refusing", async () => {
-    // A missing dispose costs a leak; refusing every photo over it would cost the feature.
-    const out = await runMediaConverter("heic-to-jpeg", brandedHeic(), {
-      decodeAll: async () => [
-        {
-          width: 40,
-          height: 30,
-          decode: async () => ({
-            data: new Uint8Array(40 * 30 * 4),
-            width: 40,
-            height: 30,
-          }),
-        },
-      ],
-    });
-    expect(out.byteLength).toBeGreaterThan(0);
-    expect(() => __disposeFramesForTest([])).not.toThrow();
-    expect(() => __disposeFramesForTest({ dispose: 42 })).not.toThrow();
+    const probe = () => {
+      const p = lib._malloc(1);
+      lib._free(p);
+      return p;
+    };
+    // One pass first, to take the allocator's own one-time step (440 bytes) out of the measurement.
+    await withHeicFrames(truncatedHeic(), async (f) => f.length);
+    const before = probe();
+    for (let i = 0; i < 50; i++)
+      await withHeicFrames(truncatedHeic(), async (f) => f.length);
+    // Not "bounded", not "small": ZERO. Measured flat at 100, 500, 1000 and 2000 files too.
+    expect(probe() - before).toBe(0);
   });
 
   test("refuses a source over the pixel cap instead of allocating it", async () => {
@@ -511,9 +546,9 @@ describe("heic-to-jpeg", () => {
 
   test("bytes whose declared type lied are a MISMATCH, not a conversion failure", async () => {
     // The two are answered oppositely by the caller — one falls back to the original, the other
-    // skips — so they cannot share an error class. The brand check runs before the decoder, which is
-    // also why `heic-decode`'s own `TypeError("input buffer is not a HEIC image")` is now
-    // unreachable: nothing without a brand ever reaches it.
+    // skips — so they cannot share an error class. The brand check runs before the decoder, so
+    // libheif never sees a file it would reject for not being HEIC at all: what reaches it always
+    // carries a brand we accept, and its own complaints are about the bytes behind that header.
     for (const bytes of [
       new TextEncoder().encode("not a heic at all").buffer as ArrayBuffer,
       // starts with "ftyp", which is NOT where the brand lives: the first four bytes are the size

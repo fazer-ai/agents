@@ -4,6 +4,43 @@ Copyright 2025-2026 FAZER.AI LTDA
 This product is licensed under the Apache License, Version 2.0 (see the LICENSE
 file in this repository).
 
-This software may include third-party open-source components, each distributed
-under its own license. Refer to the dependency manifests (package.json and the
-lockfile) and any accompanying license files for details.
+It includes third-party open-source components, each distributed under its own
+license. The full set is in package.json and the lockfile; the ones with
+obligations of their own are named below.
+
+
+libheif and libde265 (LGPL-3.0)
+-------------------------------
+
+Image conversion for HEIC/HEIF inputs uses libheif 1.23.2 (LGPL-3.0-or-later),
+built with libde265 1.0.15 (LGPL-3.0-or-later) as its HEVC decoder. Both are
+used UNMODIFIED, through the `libheif-js` package, and neither is statically
+linked into any binary of ours: this product runs from TypeScript source and
+loads libheif at runtime from files on disk.
+
+  - Upstream: https://github.com/strukturag/libheif and
+    https://github.com/strukturag/libde265
+  - Distribution used: https://github.com/catdad-experiments/libheif-js
+  - License texts, as shipped: node_modules/libheif-js/LICENSE (LGPL-3.0) and
+    node_modules/libheif-js/libheif/LICENSE (LGPL-3.0, GPL-3.0 and MIT)
+
+REPLACING THE LIBRARY. You may replace libheif with any interface-compatible
+build, and nothing of ours needs rebuilding to do it:
+
+  - the WebAssembly binary is a single file, node_modules/libheif-js/
+    libheif-wasm/libheif.wasm, and the path it is loaded from is overridable at
+    runtime with the VISION_LIBHEIF_WASM_PATH environment variable; or
+  - replace the node_modules/libheif-js directory with your own build of the
+    package.
+
+The bundled variant of that package (libheif-js/wasm-bundle) is deliberately NOT
+what this product loads, for exactly this reason: it carries the same binary
+base64-encoded inside a 1.9 MB JavaScript file, which nothing can replace
+without rebuilding the package.
+
+HEVC PATENTS. libde265 decodes HEVC/H.265. Patent licensing for HEVC is
+administered by pools independent of these projects, and no patent license is
+granted by the LGPL, by the Apache License or by this NOTICE. An operator who
+needs HEIC conversion in a jurisdiction where that matters is responsible for
+its own assessment, and can remove the capability by replacing the library as
+described above.

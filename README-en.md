@@ -143,6 +143,10 @@ bun prisma:migrate
 bun dev                   # http://localhost:3000
 ```
 
+## License
+
+This edition's license is in [LICENSE](LICENSE). Third-party components carrying obligations of their own are named in [NOTICE](NOTICE), among them libheif and libde265 (LGPL-3.0), used unmodified, loaded from files on disk and replaceable with any interface-compatible build without recompiling anything.
+
 ## Links
 
 - 🌐 Website: [fazer.ai](https://fazer.ai)

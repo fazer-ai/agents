@@ -2,9 +2,9 @@
 // to be importable by the frontend (its sibling `document-support` already is); this file is where
 // the decoders live, and it must never be pulled into that graph — libheif is 8.4 MB of WASM.
 
-import decode from "heic-decode";
 import type { MediaConverterId } from "../media-conversion";
-import { type Rgba, rasterToJpeg } from "./raster";
+import { type HeicFrame, withHeicFrames } from "./heic";
+import { rasterToJpeg } from "./raster";
 
 // Thrown for every refusal a conversion can make, so the caller has one thing to catch and one
 // message to put on the operator's line. A conversion that fails is NOT the same as an extraction
@@ -49,8 +49,9 @@ export const MAX_SOURCE_PIXELS = 50_000_000;
 // handles being released. Production passes neither.
 export type ConvertOptions = {
   readonly maxSourcePixels?: number;
-  // `heic-decode`'s `decode.all`, injectable so the battery can see `dispose` being called.
-  readonly decodeAll?: (arg: { buffer: Uint8Array }) => Promise<unknown[]>;
+  // Stands in for `./heic`'s frame opener, so the battery can drive the refusal paths without a
+  // fixture for each and can watch the decoder being released.
+  readonly withFrames?: typeof withHeicFrames;
 };
 
 // The long edge every vision provider downscales to on its standard tier anyway (OpenAI and
@@ -83,11 +84,10 @@ function serialized<T>(run: () => Promise<T>): Promise<T> {
 // work, long before any of it runs.
 export const __serializedForTest = serialized;
 
-// The dimensions of the frame `heic-decode` defers, which the runtime carries on the frame object
-// and `@types/heic-decode` 2.0.0 does not declare (measured 2026-09-17: the object's own keys are
-// `width`, `height`, `decode`). Read through a check rather than a cast, and REFUSED when absent:
-// the pixel cap below is the only thing between a hostile 100 MP file and 400 MB of RGBA, so a
-// library upgrade that moves this shape has to fail loudly instead of quietly removing the guard.
+// The dimensions come off the image handle before any pixel is decoded, which is what lets the cap
+// below be applied before the memory is spent. Read through a check rather than trusted, and REFUSED
+// when unusable: the cap is the only thing between a hostile 100 MP file and 400 MB of RGBA, so a
+// libheif upgrade that changes this shape has to fail loudly instead of quietly removing the guard.
 function frameDimensions(frame: unknown): { width: number; height: number } {
   const f = frame as { width?: unknown; height?: unknown };
   // `typeof x === "number"` is NOT enough, and the gap is the one that matters: NaN is a number, and
@@ -104,42 +104,14 @@ function positiveInteger(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v > 0;
 }
 
-// Exported for the battery: the branch below cannot be reached through `heic-decode`, which always
-// carries the dimensions, so the only way to exercise the refusal is to hand it the shape a future
-// version might.
+// Exported for the battery: the branch above cannot be reached through libheif, which always carries
+// the dimensions, so the only way to exercise the refusal is to hand it the shape a future version
+// might.
 export const __frameDimensionsForTest = frameDimensions;
 
-// WHO OWNS THE NATIVE HANDLES, and `heic-decode`'s two entry points answer differently. Read off its
-// source (2.1.0), not its types: the one-shot `decode()` disposes in its own `finally`, while
-// `decode.all()` hands ownership to the caller and attaches `dispose` to the returned ARRAY as a
-// NON-ENUMERABLE property — which is why probing a frame's own keys shows `width`, `height` and
-// `decode`, and no hint that anything needs releasing. `dispose` runs `image.free()` for every image
-// and `decoder.decoder.delete()`, so skipping it strands one decoder context and every image handle
-// of that file in the WASM heap, per conversion, for the life of the process.
-//
-// Measured before this: RSS 431 -> 476 -> 518 MB across three conversions of the same 12 MP photo,
-// ~45 MB each and never returned — which I first wrote off as GC lag. The serialisation gate bounds
-// how many buffers exist AT ONCE and does nothing about a leak, so this was growth no amount of
-// serialising would have stopped.
-//
-// `@types/heic-decode` 2.0.0 does not declare `dispose`, so it is read through a check. Absent, the
-// conversion still proceeds: the cost of a missing dispose is a leak, and refusing every photo would
-// be worse. What keeps that from being silent is the battery, which asserts the library still carries
-// it — an upgrade that drops it fails CI instead of failing in production three weeks later.
-function disposeFrames(frames: unknown): void {
-  const dispose = (frames as { dispose?: unknown }).dispose;
-  if (typeof dispose === "function")
-    (dispose as (this: unknown) => void).call(frames);
-}
-
-// Exported for the battery, for the reason above: this is the seam where "the library still releases
-// its handles" is checked instead of assumed.
-export const __disposeFramesForTest = disposeFrames;
-
-// The brands `heic-decode` accepts, checked here rather than left to it, for two reasons the library
-// cannot serve: it answers a mislabelled file with a bare `TypeError` indistinguishable from any
-// other failure, and it builds the decoder BEFORE deciding, so bytes that were never a HEIC still
-// cost a WASM allocation that the throw then strands (review round 2).
+// The brands libheif accepts, checked here rather than left to the decoder, for two reasons. A
+// mislabelled file has to be told apart from a broken one — they earn opposite answers, see
+// `MediaSourceMismatchError` — and bytes that were never a HEIC should not cost a decoder at all.
 const HEIC_BRANDS = new Set(["mif1", "msf1", "heic", "heix", "hevc", "hevx"]);
 
 function heicBrand(bytes: ArrayBuffer): string | null {
@@ -160,14 +132,8 @@ async function heicToJpeg(
     throw new MediaSourceMismatchError(
       `declared as heic but carries brand ${brand === null ? "<too short>" : `"${brand}"`}`,
     );
-  // `all()` returns the frame list and DEFERS the pixel work to each frame's own `decode()`, in ~7ms
-  // (measured). That is what lets the cap be read before the memory is spent; the one-shot
-  // `decode()` would have allocated the whole buffer just to tell us it was too big.
-  const decodeAll = opts.decodeAll ?? decode.all;
-  const frames = (await decodeAll({
-    buffer: new Uint8Array(bytes),
-  })) as Array<{ decode(): Promise<Rgba> }>;
-  try {
+  const open = opts.withFrames ?? withHeicFrames;
+  return await open(bytes, async (frames: readonly HeicFrame[]) => {
     // The FIRST frame, which is the still. A burst or a Live Photo carries several, and taking the
     // first is what the vendors do with the animated formats they do accept ("Animations are
     // unsupported, and only the first frame is used" — Anthropic), so the customer's photo and our
@@ -187,12 +153,7 @@ async function heicToJpeg(
       maxEdge: MAX_OUTPUT_EDGE,
       quality: JPEG_QUALITY,
     });
-  } finally {
-    // In `finally`, because the refusals above are the paths that leaked most visibly: an oversized
-    // file allocates the decoder and every handle before the cap is even read, and the throw used to
-    // walk straight past the release.
-    disposeFrames(frames);
-  }
+  });
 }
 
 // A `Record` over the id union and not a lookup that can miss: adding an entry to MEDIA_CONVERTERS
@@ -205,12 +166,11 @@ const IMPLS: Record<
   "heic-to-jpeg": heicToJpeg,
 };
 
-// ONE ERROR TYPE OUT, whatever went wrong inside. The decoders are third-party and answer with
-// their own classes — `heic-decode` throws a bare `TypeError("input buffer is not a HEIC image")`
-// for a file that is not one — so without this the module's single-catch contract would hold for
-// the refusals it writes itself and quietly leak for the ones the library writes. The original is
-// kept as `cause`, and its message is carried through because it is the only thing that says WHICH
-// file failed.
+// ONE ERROR TYPE OUT, whatever went wrong inside. libheif answers with its own classes, and so does
+// the WASM loader (a missing or unreadable binary is an `Error` from `readFileSync`), so without this
+// the module's single-catch contract would hold for the refusals it writes itself and leak for
+// everything underneath. The original is kept as `cause`, and its message is carried through because
+// it is the only thing that says WHICH file failed.
 export async function runMediaConverter(
   id: MediaConverterId,
   bytes: ArrayBuffer,

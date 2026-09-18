@@ -73,8 +73,24 @@ function openaiFetch() {
     const uri = body.messages?.[0]?.content?.[1]?.image_url?.url ?? "";
     const mime = /^data:([^;]+);base64,/.exec(uri)?.[1] ?? "";
     mimes.push(mime);
-    const subtype = mime.startsWith("image/") ? mime.slice(6) : "";
-    if (!OPENAI_FORMATS.includes(subtype)) {
+    // SNIFFED, not read off the label, because that is what the vendor does. Measured on
+    // 2026-09-18: the same PNG bytes announced as `image/png` and as `image/heic` both come back
+    // 200 with the value transcribed. A fake that trusted the data URI would accept a request the
+    // vendor rejects and reject one it accepts — and the second is the regression this file exists
+    // to guard (holdout scenario s8).
+    const data = Buffer.from(uri.slice(uri.indexOf(",") + 1), "base64");
+    const sniffed = data
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      ? "png"
+      : data[0] === 0xff && data[1] === 0xd8
+        ? "jpeg"
+        : data.subarray(0, 4).toString("latin1") === "RIFF"
+          ? "webp"
+          : data.subarray(0, 3).toString("latin1") === "GIF"
+            ? "gif"
+            : "outro";
+    if (!OPENAI_FORMATS.includes(sniffed)) {
       return new Response(
         JSON.stringify({
           error: {
@@ -307,10 +323,11 @@ describe.skipIf(!dbUp)("heic transcode before the vision call", () => {
   });
 
   test("a HEIC that cannot be decoded is skipped, and the provider is never called", async () => {
-    // The asymmetry that matters: a failed conversion does NOT fall back to the original bytes. The
-    // only reason the conversion was attempted is that this provider does not read them, so sending
-    // them anyway would buy a 400 whose answer is already known — and would bill the turn for it.
-    const broken = Buffer.from("ftypheic mas o resto e lixo", "latin1");
+    // The asymmetry that matters: a conversion that fails on a file whose type did NOT lie does not
+    // fall back. The provider has already said it cannot read this type, so sending it anyway would
+    // buy a 400 whose answer is known. Truncated, not garbage: the brand at offset 8 is intact, so
+    // this is a broken HEIC rather than a mislabelled something-else.
+    const broken = HEIC.subarray(0, 40);
     const { impl, mimes } = openaiFetch();
     const out = await extractInboundFile({
       tenantId,
@@ -329,5 +346,37 @@ describe.skipIf(!dbUp)("heic transcode before the vision call", () => {
     });
     expect(out).toBeNull();
     expect(mimes).toEqual([]);
+  });
+
+  test("an attachment whose declared type lied is still read, not dropped", async () => {
+    // HOLDOUT s8, and a regression this PR introduced before it was measured. Chatwoot serves
+    // whatever content type the uploader's server declared, and the vendors sniff bytes: a PNG
+    // announced as `image/heic` came back 200 with the value read off it, live, on 2026-09-18. So a
+    // failed conversion must not skip when the failure is "these bytes were never that type" —
+    // before this feature existed the attachment was read, and it has to stay read.
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const { impl, mimes } = openaiFetch();
+    const out = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 905,
+      messageId: 65,
+      attachmentId: 11,
+      dataUrl: "https://chat.example.com/IMG_0005.heic",
+      cfg: await cfg(),
+      base: appDb,
+      deps: {
+        makeClient: stubClient(png, "image/heic"),
+        fetchImpl: impl,
+        sleep: async () => {},
+      },
+    });
+    // The bytes went as they came, under the label they came with — which is exactly what the
+    // vendor accepted when this was measured against the live API.
+    expect(mimes).toEqual(["image/heic"]);
+    expect(out?.text).toBe(EXTRACTED);
   });
 });

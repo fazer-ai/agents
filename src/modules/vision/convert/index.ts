@@ -17,6 +17,22 @@ export class MediaConversionError extends Error {
   }
 }
 
+// THE DECLARED TYPE LIED, which is a different fact from "this file cannot be converted" and earns
+// the opposite answer. Measured against the live API on 2026-09-18: a PNG announced as `image/heic`
+// comes back 200 with the value read off it — the vendors sniff the bytes, they do not trust the
+// data URI's label. And Chatwoot serves whatever content type the uploader's server declared, so a
+// mislabelled attachment is a real population, not a hypothetical.
+//
+// So when the bytes are not of the type the plan was made for, the original goes to the provider
+// untouched and the vendor answers for itself. Skipping there would take an attachment that WAS
+// being read before this feature existed and stop reading it (issue #697, holdout scenario s8).
+export class MediaSourceMismatchError extends MediaConversionError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MediaSourceMismatchError";
+  }
+}
+
 // The RGBA buffer a decode materialises is width*height*4 and exists in full before anything is
 // encoded: a 12 MP photo is 48 MB, and the 48 MP ones current iPhones shoot are 192 MB. The cap is on
 // PIXELS and not on the file, because HEIC's whole point is that the file is small — the 25 MB
@@ -120,10 +136,30 @@ function disposeFrames(frames: unknown): void {
 // its handles" is checked instead of assumed.
 export const __disposeFramesForTest = disposeFrames;
 
+// The brands `heic-decode` accepts, checked here rather than left to it, for two reasons the library
+// cannot serve: it answers a mislabelled file with a bare `TypeError` indistinguishable from any
+// other failure, and it builds the decoder BEFORE deciding, so bytes that were never a HEIC still
+// cost a WASM allocation that the throw then strands (review round 2).
+const HEIC_BRANDS = new Set(["mif1", "msf1", "heic", "heix", "hevc", "hevx"]);
+
+function heicBrand(bytes: ArrayBuffer): string | null {
+  // The brand is the four bytes at offset 8, inside the `ftyp` box.
+  if (bytes.byteLength < 12) return null;
+  const b = new Uint8Array(bytes, 8, 4);
+  return String.fromCharCode(...b)
+    .replace("\0", " ")
+    .trim();
+}
+
 async function heicToJpeg(
   bytes: ArrayBuffer,
   opts: ConvertOptions,
 ): Promise<ArrayBuffer> {
+  const brand = heicBrand(bytes);
+  if (brand === null || !HEIC_BRANDS.has(brand))
+    throw new MediaSourceMismatchError(
+      `declared as heic but carries brand ${brand === null ? "<too short>" : `"${brand}"`}`,
+    );
   // `all()` returns the frame list and DEFERS the pixel work to each frame's own `decode()`, in ~7ms
   // (measured). That is what lets the cap be read before the memory is spent; the one-shot
   // `decode()` would have allocated the whole buffer just to tell us it was too big.

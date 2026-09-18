@@ -18,7 +18,7 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
-import { runMediaConverter } from "./convert";
+import { MediaSourceMismatchError, runMediaConverter } from "./convert";
 import { visionAcceptsDocuments } from "./document-support";
 import { normalizeMediaType, planImageConversion } from "./media-conversion";
 import {
@@ -229,10 +229,15 @@ function metaKeyFor(kind: VisionKind): "image_description" | "extracted_text" {
 // read it", which is ./media-conversion's table. When the answer is no and a converter applies, what
 // goes to the provider is the converted bytes and the converted mime.
 //
-// A FAILED CONVERSION SKIPS rather than falling back to the original bytes, and the asymmetry is the
-// whole point: the only reason a conversion was attempted is that the provider does not read what
-// the customer sent, so sending it anyway buys a 400 whose answer we already have. Falling back
-// would also spend the round trip twice for one attachment.
+// A FAILED CONVERSION SKIPS, with one exception that a measurement carved out. The reason a
+// conversion is attempted at all is that the provider does not read what the customer sent, so
+// sending the original anyway would buy a 400 whose answer is already known — but that reasoning
+// rests on the declared type being true, and Chatwoot serves whatever content type the uploader's
+// server declared. Measured on 2026-09-18: a PNG announced as `image/heic` is read by the vendor at
+// 200, because the vendors sniff bytes and ignore the data URI's label. Skipping there would take an
+// attachment that WAS read before this feature existed and stop reading it, which is why
+// `MediaSourceMismatchError` — the declared type lied — falls back to the original instead of
+// skipping, while every other failure still skips (issue #697, holdout scenario s8).
 //
 // The line it writes is the only record of where half a second of the turn went (~450ms of the 560ms
 // total is the HEVC decode), and it is written ONLY when a conversion happened, so the 98.6% of
@@ -279,6 +284,8 @@ async function convertForProvider(args: {
       args.provider,
       err instanceof Error ? err.message : String(err),
     );
+    if (err instanceof MediaSourceMismatchError)
+      return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
     return { ok: false, reason: "convert_failed" };
   }
 }

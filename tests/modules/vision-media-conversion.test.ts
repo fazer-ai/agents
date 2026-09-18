@@ -8,6 +8,7 @@ import {
   __serializedForTest,
   MAX_SOURCE_PIXELS,
   MediaConversionError,
+  MediaSourceMismatchError,
   runMediaConverter,
 } from "@/modules/vision/convert";
 import {
@@ -30,6 +31,20 @@ const HEIC = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
 const ALPHA = readFileSync(
   `${import.meta.dir}/../fixtures/media/recorte-alpha.heic`,
 );
+// A HEIC header carrying a real brand, with nothing behind it. The brand lives at offset 8, inside
+// the `ftyp` box, which is why a string starting with "ftyp" is NOT one — the first four bytes are
+// the box size.
+const brandedHeic = (brand = "heic", extra = 0): ArrayBuffer => {
+  const b = new Uint8Array(12 + extra);
+  b.set([0, 0, 0, 12], 0);
+  b.set(new TextEncoder().encode("ftyp"), 4);
+  b.set(new TextEncoder().encode(brand), 8);
+  return b.buffer as ArrayBuffer;
+};
+
+// A real HEIC cut short: the brand is intact, so the type did not lie, and the decode still fails.
+const truncatedHeic = () => heicBytes().slice(0, 40);
+
 const heicBytes = () =>
   HEIC.buffer.slice(
     HEIC.byteOffset,
@@ -140,7 +155,7 @@ describe("planImageConversion", () => {
       // Rejects for the CONTENT, never with "unknown converter", and always as this module's own
       // error type even when the refusal came from the third-party decoder.
       await expect(
-        runMediaConverter(spec.id, new ArrayBuffer(4)),
+        runMediaConverter(spec.id, brandedHeic()),
       ).rejects.toBeInstanceOf(MediaConversionError);
     }
   });
@@ -424,14 +439,14 @@ describe("heic-to-jpeg", () => {
       return frames;
     };
 
-    await runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+    await runMediaConverter("heic-to-jpeg", brandedHeic(), {
       decodeAll: async () => framesFor(40, 30),
     });
     expect(calls).toEqual(["dispose"]);
 
     calls.length = 0;
     await expect(
-      runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+      runMediaConverter("heic-to-jpeg", brandedHeic(), {
         decodeAll: async () => framesFor(4000, 3000),
         maxSourcePixels: 100,
       }),
@@ -440,7 +455,7 @@ describe("heic-to-jpeg", () => {
 
     calls.length = 0;
     await expect(
-      runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+      runMediaConverter("heic-to-jpeg", brandedHeic(), {
         decodeAll: async () => framesFor(40, 30, false),
       }),
     ).rejects.toBeInstanceOf(MediaConversionError);
@@ -448,7 +463,7 @@ describe("heic-to-jpeg", () => {
 
     calls.length = 0;
     await expect(
-      runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+      runMediaConverter("heic-to-jpeg", brandedHeic(), {
         decodeAll: async () => {
           const frames: unknown[] = [];
           Object.defineProperty(frames, "dispose", {
@@ -464,7 +479,7 @@ describe("heic-to-jpeg", () => {
 
   test("a collection without dispose converts anyway instead of refusing", async () => {
     // A missing dispose costs a leak; refusing every photo over it would cost the feature.
-    const out = await runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+    const out = await runMediaConverter("heic-to-jpeg", brandedHeic(), {
       decodeAll: async () => [
         {
           width: 40,
@@ -494,18 +509,46 @@ describe("heic-to-jpeg", () => {
     expect(2400 * 1600).toBeLessThan(MAX_SOURCE_PIXELS);
   });
 
-  test("the decoder's own TypeError comes out as this module's error", async () => {
-    // `heic-decode` throws a bare `TypeError("input buffer is not a HEIC image")`. The caller has one
-    // catch, so a leaked foreign class is a contract break even though both are Errors; the original
-    // stays reachable as `cause`.
-    const promise = runMediaConverter(
-      "heic-to-jpeg",
+  test("bytes whose declared type lied are a MISMATCH, not a conversion failure", async () => {
+    // The two are answered oppositely by the caller — one falls back to the original, the other
+    // skips — so they cannot share an error class. The brand check runs before the decoder, which is
+    // also why `heic-decode`'s own `TypeError("input buffer is not a HEIC image")` is now
+    // unreachable: nothing without a brand ever reaches it.
+    for (const bytes of [
       new TextEncoder().encode("not a heic at all").buffer as ArrayBuffer,
+      // starts with "ftyp", which is NOT where the brand lives: the first four bytes are the size
+      new TextEncoder().encode("ftypheic and then junk").buffer as ArrayBuffer,
+      brandedHeic("avif"),
+      new ArrayBuffer(4),
+      // 8 to 11 bytes is the window where the brand's own slice would read out of bounds: the guard
+      // has to answer "not that type" there, not let a RangeError surface as a conversion failure
+      // and turn a fallback into a skip.
+      new ArrayBuffer(8),
+      new ArrayBuffer(11),
+    ]) {
+      await expect(
+        runMediaConverter("heic-to-jpeg", bytes),
+      ).rejects.toBeInstanceOf(MediaSourceMismatchError);
+    }
+    // Every brand the library accepts is accepted here, so a real file is never mistaken for a lie.
+    for (const brand of ["mif1", "msf1", "heic", "heix", "hevc", "hevx"]) {
+      const err = await runMediaConverter(
+        "heic-to-jpeg",
+        brandedHeic(brand),
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(MediaConversionError);
+      expect(err).not.toBeInstanceOf(MediaSourceMismatchError);
+    }
+  });
+
+  test("a truncated but correctly branded HEIC is a conversion failure, not a mismatch", async () => {
+    // The type did not lie; the file is broken. The caller must skip this one rather than hand the
+    // provider bytes it has already said it cannot read.
+    const err = await runMediaConverter("heic-to-jpeg", truncatedHeic()).catch(
+      (e: unknown) => e,
     );
-    await expect(promise).rejects.toBeInstanceOf(MediaConversionError);
-    await expect(promise).rejects.toThrow(/not a HEIC image/);
-    const err = await promise.catch((e: unknown) => e);
-    expect((err as { cause?: unknown }).cause).toBeInstanceOf(TypeError);
+    expect(err).toBeInstanceOf(MediaConversionError);
+    expect(err).not.toBeInstanceOf(MediaSourceMismatchError);
   });
 
   test("the gate lets no two conversions hold their buffers at once", async () => {

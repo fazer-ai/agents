@@ -3916,7 +3916,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // Nothing is said on top of the person who answered.
     expect(sent).toEqual([]);
-    expect(outcome).toBe("superseded");
+    // E a PALAVRA diz qual das duas recusas foi (issue #703). `superseded` afirma que o flush da
+    // mensagem nova está armado e por isso deixa a marca e o ledger onde estão; aqui ninguém vem
+    // atrás, e a rajada é fechada como consumida.
+    expect(outcome).toBe("answered-elsewhere");
   });
 
   // E A OUTRA ROTA POR ONDE UMA PESSOA RESPONDE, no caminho direto também (bateria de mutação da
@@ -3981,7 +3984,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
     };
     try {
-      expect(await rodar(9705, "baileys")).toBe("superseded");
+      expect(await rodar(9705, "baileys")).toBe("answered-elsewhere");
       expect(enviados).toEqual([]);
       // O control: sem a reserva de ids, a mesma linha pode ser a nossa própria resposta voltando, e
       // o cliente continua devendo uma.

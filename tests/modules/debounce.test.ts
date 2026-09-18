@@ -2061,6 +2061,149 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(sent).toEqual([]);
   });
 
+  // ...E QUEM RESPONDEU FECHA A RAJADA, em vez de deixá-la pendurada (issue #703). O teste acima
+  // afirma o silêncio, que é a metade fácil: os dois portões produzem silêncio. A metade que faltava
+  // é a CONTABILIDADE, e ela depende de qual recusa foi.
+  //
+  // `superseded` significa "chegou mensagem nova, e o flush dela está armado", e por isso não avança
+  // a marca, não grava dispensa e não liquida o ledger: a rajada inteira vai ser respondida de novo.
+  // Quando quem fechou foi uma PESSOA, nada disso é verdade — ninguém vem atrás. A rajada ficava sem
+  // marca e sem linha, e a entrega presa que ela estava resgatando continuava `DEAD`, reportada como
+  // cliente que ninguém atendeu e elegível para recuperação, que replaya o turno inteiro numa
+  // conversa já atendida.
+  test("a burst a PERSON answered is closed, not left pending", async () => {
+    const convId = 969;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    // A entrega da mensagem 1, morta por uma queda de processo: é exatamente o que reler a thread
+    // resgata, e o que esta recusa tem que fechar.
+    const presa = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `answered-elsewhere-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 1 }),
+      base: appDb,
+      deps: {
+        makeModel: () => fakeModel(),
+        makeClient: makeStub({
+          pages: [
+            // A seleção, antes de a atendente responder.
+            page([{ id: 1, content: "tem alguém?" }]),
+            // O re-fetch do portão, depois dela. A atribuição NÃO muda: sem isso o recheck de posse
+            // fecharia antes, com `taken-over`, que é outro caminho e já faz a coisa certa.
+            page([
+              { id: 1, content: "tem alguém?" },
+              {
+                id: 2,
+                content: "oi, sou a Ana do suporte",
+                type: 1,
+                sender: "user",
+                senderId: 41,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // O bot não fala por cima da pessoa: isto é o que já valia.
+    expect(sent).toEqual([]);
+    // E a rajada fica FECHADA. A marca passa por ela.
+    const conv = await suDb.conversation.findUniqueOrThrow({
+      where: { id },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBe(1);
+    // A mensagem carrega a palavra que diz o que houve: ninguém a respondeu por nós.
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1 },
+        select: { reason: true },
+      }),
+    ).toEqual({ reason: "DISPENSED" });
+    // E a entrega presa sai da lista de perdas, em vez de ser replayada numa conversa atendida.
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: presa.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
+  });
+
+  // O CONTROLE QUE MANTÉM AS DUAS PALAVRAS SEPARADAS (issue #703). O conserto acima é uma palavra
+  // nova, e o jeito de ele se desfazer é alguém colapsar as duas de volta num `superseded` só. Aqui
+  // quem fecha é uma mensagem NOVA do cliente, e aí a marca tem que ficar exatamente onde estava: o
+  // flush rearmado responde a rajada inteira, e avançar aqui declararia atendida uma mensagem que
+  // ninguém leu.
+  test("a burst superseded by a NEWER message is left where it was", async () => {
+    const convId = 970;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 1 }),
+      base: appDb,
+      deps: {
+        makeModel: () => fakeModel(),
+        makeClient: makeStub({
+          pages: [
+            page([{ id: 1, content: "tem alguém?" }]),
+            // O cliente escreveu de novo no meio do turno.
+            page([
+              { id: 1, content: "tem alguém?" },
+              { id: 2, content: "é urgente" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+    const conv = await suDb.conversation.findUniqueOrThrow({
+      where: { id },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBeNull();
+    // E nenhuma linha: a mensagem 1 continua devida, e o flush rearmado a responde com a 2.
+    expect(
+      await suDb.messageReplyClaim.findFirst({
+        where: { conversationId: id, messageId: 1 },
+      }),
+    ).toBeNull();
+  });
+
   // A CERCA VALE ANTES DA ERA POR MENSAGEM TAMBÉM (PR #701, review round 2, P1). Com o piso da era
   // ainda nulo a seleção era a escalar pura, que não enxerga saída nenhuma, então a rajada saía
   // carregando uma mensagem que a pessoa já tinha respondido — e o portão novo, vendo essa mensagem

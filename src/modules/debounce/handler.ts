@@ -11,6 +11,7 @@ import { armIngest } from "@/graph/ingest-job";
 import { parseThreadId } from "@/graph/nudge";
 import { type AgentConfig, loadAgentConfig } from "@/graph/prepare";
 import {
+  type PostVerdict,
   type RunAgentTurnOutcome,
   type RuntimeDeps,
   runLoadedTurn,
@@ -370,7 +371,7 @@ export async function coalesceAndRunTurn(
   // 2. Post gate, first half: re-fetch to detect mid-turn arrivals (supersede). Re-fetch failure is
   //    non-fatal. The second half — the monotonic claim that makes this exclusive with every other
   //    posting path — is taken by `runLoadedTurn` off `claimReply` below.
-  const shouldPost = async (): Promise<boolean> => {
+  const shouldPost = async (): Promise<PostVerdict> => {
     try {
       const latest = parseChatwootMessages(
         await client.getMessages(conversationId),
@@ -420,13 +421,30 @@ export async function coalesceAndRunTurn(
         whatsappProvider: ctx.whatsappProvider,
       });
       const answeredByOther = inTurn.some((m) => m.id <= boundary);
-      if (openAbove || answeredByOther) {
+      // AS DUAS RECUSAS SÃO PALAVRAS DIFERENTES (issue #703), e a diferença é toda a contabilidade
+      // que vem depois. `superseded` afirma que o flush da mensagem nova está armado, e é por isso
+      // que ele deixa marca, dispensa e ledger onde estão: a rajada inteira vai ser respondida de
+      // novo. Uma pessoa que respondeu não arma flush nenhum — a conversa foi atendida, e o que esta
+      // rajada cobria tem que ser fechado como consumido, ou fica para sempre na lista de perdas e
+      // volta pela recuperação de entrega.
+      //
+      // `openAbove` é perguntado primeiro: quando as duas valem, quem vem atrás manda, porque a
+      // rajada dele ainda vai ser decidida por inteiro e esta decisão seria tomada duas vezes.
+      if (openAbove) {
         logger.info(
           "%s: superseded mid-turn (conv=%s), deferring",
           ctx.label,
           String(conversationId),
         );
-        return false;
+        return "newer-message";
+      }
+      if (answeredByOther) {
+        logger.info(
+          "%s: answered by somebody else (conv=%s), standing down",
+          ctx.label,
+          String(conversationId),
+        );
+        return "answered-by-other";
       }
     } catch (e) {
       logger.warn(
@@ -436,7 +454,7 @@ export async function coalesceAndRunTurn(
         err(e),
       );
     }
-    return true;
+    return "post";
   };
 
   // 3. Run the turn with the coalesced text. A thrown error bubbles to the caller. Share one turnId

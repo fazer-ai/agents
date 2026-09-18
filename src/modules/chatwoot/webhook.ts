@@ -169,7 +169,11 @@ import {
   visualAttachments,
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
-import { renderAttendantMessage, renderInboundMessage } from "./render";
+import {
+  audioAwaitsWords,
+  renderAttendantMessage,
+  renderInboundMessage,
+} from "./render";
 import {
   awaitRouteTokenRefresh,
   noteRouteTokenLookup,
@@ -6480,30 +6484,21 @@ export async function processChatwootDelivery(
   // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
   // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
   // a punha no canal antes de a re-checagem pós-geração recusar o envio.
-  // A PARADA TEM A MENSAGEM, MAS PODE NÃO TER AS PALAVRAS DELA (issue #688, review r4). Uma nota de
-  // voz chega como PLACEHOLDER até o STT escrever de volta, e a rota dela é o `message_updated` que
-  // traz a transcrição, não esta. Mandar o placeholder pela ingestão grava o id no dedup do thread
-  // (`recentSyncedMessageIds` em ../../graph/ingest-dedup.ts), e a transcrição que chega depois é
-  // descartada como duplicata: a mensagem do cliente some, que é o que esta issue existe para
-  // impedir, reintroduzido pelo próprio conserto dela. Lido mais abaixo, no `act`, que é onde a
-  // parada decide se a ingestão guarda a mensagem.
+  // A PARADA TEM A MENSAGEM, MAS PODE NÃO TER AS PALAVRAS DELA (issue #688, review r4-r6). Uma nota
+  // de voz chega como PLACEHOLDER até o STT escrever de volta, e a rota dela é o `message_updated`
+  // que traz a transcrição, não esta. Mandar o placeholder pela ingestão grava o id no dedup do
+  // thread (`recentSyncedMessageIds` em ../../graph/ingest-dedup.ts), e a transcrição que chega
+  // depois é descartada como duplicata: a mensagem do cliente some, que é o que esta issue existe
+  // para impedir, reintroduzido pelo próprio conserto dela.
   //
-  // É o mesmo fato que `turnHadTheWords` já enuncia do lado da COBERTURA, com a mesma pergunta: o
-  // que esta parada tem em mãos é a mensagem, não as palavras. E vale só para ELA — o observador e a
-  // ingestão contínua seguem como sempre seguiram, onde o placeholder tem razão própria de entrar.
+  // A PERGUNTA É DO RENDERIZADOR e mora lá (`audioAwaitsWords`), não aqui. Enumerar os campos deste
+  // lado errou um por rodada de review — a transcrição, depois o `content`, depois o `emailSubject` —
+  // e o renderizador é o único lugar onde a lista está completa por construção, porque é ele que
+  // decide o que sobrevive. Ler a lista lá é o que impede a quarta.
   //
-  // E O CONTEÚDO DA MENSAGEM CONTA COMO TRANSCRIÇÃO (review r5), porque é assim que o render a lê:
-  // `renderInboundMessage` monta o corpo do áudio com `m.transcribedText ?? text`. Um áudio que já
-  // veio com `content` tem palavras utilizáveis agora, e tratá-lo como placeholder aposta num
-  // write-back que pode nunca vir — com o STT desligado ou falhando, o texto que o invoke anterior
-  // teria guardado some, que é a perda desta issue por mais uma porta.
-  const standDownHasTheWords =
-    turnHadTheWords({
-      hasAudio: (n.message?.attachments ?? []).some(
-        (a) => a.fileType === "audio",
-      ),
-      transcribedText: n.message?.transcribedText,
-    }) || Boolean(n.message?.content?.trim());
+  // Vale só para ESTA parada: o observador e a ingestão contínua seguem como sempre seguiram, onde o
+  // placeholder tem razão própria de entrar.
+  const standDownHasTheWords = !audioAwaitsWords(incomingRenderable(n));
   const routeIngests =
     rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was

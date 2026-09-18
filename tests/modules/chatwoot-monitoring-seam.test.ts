@@ -1001,6 +1001,98 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
   }, 20_000);
 
+  // E O ASSUNTO DE UM E-MAIL TAMBÉM SÃO PALAVRAS (issue #688, review r6). O render põe o
+  // `<assunto>` por FORA do corpo, depois de todos os ramos, e num e-mail de corpo vazio com um
+  // áudio anexado ele É a mensagem — o caso que a #598 documenta, em que o assunto carrega o pedido.
+  // Lido como placeholder, a parada não ingere nada, a linha fecha, e com o STT desligado ou falhando
+  // não vem write-back que salve as palavras do cliente.
+  test("issue #688: an email subject beside an untranscribed audio counts as words", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 44;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      content_attributes: {
+        email: { subject: "recuperar o acesso à minha conta" },
+      },
+      attachments: [
+        {
+          id: 900 + messageId,
+          file_type: "audio",
+          data_url: "https://chat.late.example/audio.ogg",
+        },
+      ],
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    expect(seen.outcome).toBe("taken-over-unread");
+    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
+    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+  }, 20_000);
+
   // E A LINHA DIZ QUE NENHUM TURNO COBRIU A MENSAGEM (issue #688, review r5). Quem escrevia esse
   // fato era o `settleDelivery`, que esta parada deliberadamente não chama. Sem ele a coluna
   // `turn_covered` fica NULA, e null é "nenhuma linha sabe": a ingestão da transcrição tardia cai no

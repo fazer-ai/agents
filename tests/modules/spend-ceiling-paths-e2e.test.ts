@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { readFileSync } from "node:fs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -114,14 +115,14 @@ async function refusal(
 // a call that an unsupported type was going to stop anyway. What the assertion moves to is the
 // PROVIDER — the billed call the ceiling exists in front of — so `providerCalls` is the count that
 // matters and the download is just setup.
-function visionStub(contentType = "image/png") {
+function visionStub(contentType = "image/png", bytes = new ArrayBuffer(8)) {
   const providerCalls: string[] = [];
   return {
     providerCalls,
     deps: {
       makeClient: (() => ({
         downloadAttachment: async () => ({
-          bytes: new ArrayBuffer(8),
+          bytes,
           contentType,
         }),
         updateAttachmentMeta: async () => {},
@@ -135,6 +136,14 @@ function visionStub(contentType = "image/png") {
     },
   };
 }
+
+// A HEIC whose brand is real and whose body is not: it gets past the type check and past the brand
+// check, and only the decoder can refuse it. That is what makes it the case the ceiling must not
+// answer for — a file no budget can make readable, refused by the conversion.
+const HEIC_QUEBRADO = (() => {
+  const b = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + 40) as ArrayBuffer;
+})();
 
 // A turn that runs at all fails the test: the model factory is the assertion.
 function refusingModel() {
@@ -385,6 +394,48 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
+  // AND THE SAME FOR A FILE READABLE BY TYPE AND UNREADABLE IN FACT. A HEIC this provider does not
+  // take is converted, and a broken one fails that conversion and is skipped in a month with budget
+  // to spare — so `spend_ceiling` in a spent one names a cause that was not operative. This is the
+  // case the type check above cannot answer: `image/heic` IS a vision kind, and only the decoder
+  // finds out (PR #707 review round 8).
+  test("a HEIC that cannot be converted, over the ceiling, is skipped as convert_failed", async () => {
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
+    await spend("inbox", 1200);
+    const turnId = `vision-convert-${process.pid}`;
+    const s = visionStub("image/heic", HEIC_QUEBRADO);
+    const result = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 87,
+      messageId: 88,
+      attachmentId: 89,
+      dataUrl: "https://203.0.113.31:9/a.heic",
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        credentialRef: visionRef,
+        baseURL: null,
+        extractionPrompt: "descreva",
+      },
+      base: appDb,
+      flow: { tenantId, turnId, source: "inbox", base: appDb },
+      deps: s.deps,
+    });
+    expect(result).toBeNull();
+    expect(s.providerCalls).toEqual([]);
+    await settleFlowEvents();
+    const rows = await flowLogRows(suDb, {
+      where: { turnId },
+      select: { stage: true, detail: true },
+    });
+    const reasons = rows.map((r) => (r.detail as { reason?: string })?.reason);
+    expect(reasons).toContain("convert_failed");
+    expect(reasons).not.toContain("spend_ceiling");
+    await clearFlowLog(suDb, { tenantId });
+  });
+
   // A REFUSAL IS A STATEMENT THAT SPEND WAS WHAT STOOD IN THE WAY, and for a file this provider
   // cannot read there was never any spend to refuse: the same upload in a month with budget to spare
   // returns `unsupported` without touching the provider. Answering 429 sends the operator to look at
@@ -422,6 +473,23 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
         }),
       ),
     ).toEqual({ statusCode: 429, key: "errors.spendCeilingReached" });
+
+    // And the same for the file that IS a readable type and is not readable in fact: a broken HEIC
+    // answers `unsupported`, not 429, because no budget can make it convertible.
+    expect(
+      await extractPlaygroundFile({
+        ctx,
+        agentId,
+        file: HEIC_QUEBRADO,
+        mimeType: "image/heic",
+        base: appDb,
+        deps: {
+          fetchImpl: (() => {
+            throw new Error("the provider must not be called over the ceiling");
+          }) as never,
+        },
+      }),
+    ).toEqual({ kind: "unsupported", text: "" });
   });
 
   // ONE REFUSED MESSAGE, ONE `spend_ceiling` LINE. Vision runs on the same customer message the

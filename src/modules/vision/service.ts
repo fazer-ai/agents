@@ -412,6 +412,28 @@ export async function extractInboundFile(
   // The playground's own file path asks in the same place, for the same reason, and differs only in
   // what it does with the answer: it goes through `assertPlaygroundSpendCeiling`, where no webhook
   // gate follows it and both halves are its own to announce.
+  // BEFORE THE CEILING, and this is the same rule the `visionKindForMime` check above follows: a
+  // refusal says SPEND was what stood in the way, so it is asked after everything that would have
+  // stopped the call anyway (docs/spend-ceiling.md, "Where the gate is asked"). A HEIC that is
+  // truncated or over the pixel cap is refused in a month with budget to spare, so answering
+  // `spend_ceiling` in a spent one reports a refusal that never happened and sends the operator to
+  // change a budget that cannot make the file readable.
+  //
+  // It costs a decode this turn may not spend anything on — the earlier ordering was written to
+  // avoid exactly that, and it bought the wrong thing. The cost is bounded (one conversion at a
+  // time, 50 Mpx cap) and it is the same trade this path already makes for the download, which sits
+  // below the ceiling because it is what tells us the file's type in the first place.
+  //
+  // A mismatch is NOT one of these: it falls back to the original bytes and the call still happens,
+  // so it is the ceiling's business like any other readable file.
+  const converted = await convertForProvider({
+    bytes,
+    mimeType: contentType,
+    provider: cfg.provider,
+    flow: params.flow,
+  });
+  if (!converted.ok) return skip(converted.reason);
+
   const ceiling = await spendCeilingVerdict({
     tenantId: params.tenantId,
     source: "inbox",
@@ -427,16 +449,6 @@ export async function extractInboundFile(
     );
     return skip("spend_ceiling");
   }
-
-  // AFTER the ceiling, because converting is CPU this turn does not owe a month with no budget left,
-  // and BEFORE the call, because the provider is what the conversion is for.
-  const converted = await convertForProvider({
-    bytes,
-    mimeType: contentType,
-    provider: cfg.provider,
-    flow: params.flow,
-  });
-  if (!converted.ok) return skip(converted.reason);
 
   let extracted: VisionResult;
   try {
@@ -619,19 +631,11 @@ export async function extractPlaygroundFile(
     return { kind: "unsupported", text: "" };
   }
 
-  // The playground's own ceiling, asked once the file is known to be extractable and before the
-  // provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an operator uploading a
-  // file into a spent month is told why instead of watching the extraction produce nothing.
-  await assertPlaygroundSpendCeiling({
-    tenantId: params.ctx.tenantId as bigint,
-    base,
-    flow: params.flow,
-  });
-
-  // Same placement as the inbound path, and the same reason: after the ceiling, before the call. The
-  // refusal differs only in its shape — the playground has no marker to leave on a Chatwoot
-  // attachment, so an unconvertible file is the `unsupported` the operator already sees for a type
-  // this provider cannot read.
+  // Same placement as the inbound path and the same rule: a file this provider cannot read stops the
+  // call whatever the budget says, so it is answered before the money is. The refusal differs only
+  // in its shape — the playground has no marker to leave on a Chatwoot attachment, so an
+  // unconvertible file is the `unsupported` the operator already sees for an unreadable type, and
+  // getting the order wrong would answer 429 for a file no budget can make readable.
   const converted = await convertForProvider({
     bytes: params.file,
     mimeType: params.mimeType,
@@ -639,6 +643,16 @@ export async function extractPlaygroundFile(
     flow: params.flow,
   });
   if (!converted.ok) return { kind: "unsupported", text: "" };
+
+  // The playground's own ceiling, asked once the file is known to be extractable AND convertible,
+  // and before the provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an
+  // operator uploading a file into a spent month is told why instead of watching the extraction
+  // produce nothing.
+  await assertPlaygroundSpendCeiling({
+    tenantId: params.ctx.tenantId as bigint,
+    base,
+    flow: params.flow,
+  });
 
   try {
     const extracted = await extractWithRetry({

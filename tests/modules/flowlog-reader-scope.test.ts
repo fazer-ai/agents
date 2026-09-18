@@ -231,7 +231,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/reengage.test.ts": 3,
   "tests/modules/model-fallback-turn.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
-  "tests/modules/spend-ceiling-paths-e2e.test.ts": 3,
+  "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,
   "tests/modules/spend-ceiling-poll.test.ts": 6,
   "tests/modules/stt.test.ts": 1,
   "tests/modules/tts-normalize-observability.test.ts": 1,

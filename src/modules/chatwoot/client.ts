@@ -1569,7 +1569,8 @@ export class ChatwootClient {
 
   // Kanban task labels (admin token). The fork's tasks#update accepts `task: { labels: [...] }` and
   // calls update_labels, which REPLACES the whole set (same acts_as_taggable as conversation/contact),
-  // so set_labels reads the current set (from the card snapshot) and writes the whole one. Shape CONFIRMED
+  // so set_labels reads the current set (FRESH, by `getKanbanTask` at call time, not from the turn-prep
+  // snapshot — issue #695) and writes the whole one. Shape CONFIRMED
   // against the chatwoot-pro `feat-kanban-task-labels` branch (tasks_controller#update_task_labels;
   // _task.json.jbuilder renders `json.labels task.cached_label_list_array`).
   setKanbanTaskLabels(taskId: number, labels: string[]): Promise<unknown> {

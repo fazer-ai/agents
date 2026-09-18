@@ -1813,7 +1813,7 @@ export function ToolGrantsEditor({
                 maxLength={TOOL_INSTRUCTIONS_MAX}
                 placeholder={t(
                   "editor.labelInstructionsPlaceholder",
-                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": when you set one, leave the others out.',
+                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
                 )}
               />
             </FormField>
@@ -1822,7 +1822,7 @@ export function ToolGrantsEditor({
               group
               description={t(
                 "editor.protectedLabelsHint",
-                "Optional, comma-separated. Labels this agent may neither add nor remove, and never sees. Use it for the ones another system owns — otherwise they last only while the AI remembers to repeat them.",
+                "Optional, comma-separated. Labels this agent may neither add nor remove: the ones another system owns. It still sees them and is told it cannot move them.",
               )}
             >
               <Input

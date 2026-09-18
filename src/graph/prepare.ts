@@ -267,8 +267,9 @@ export interface AgentConfig {
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
   // set_labels, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
   toolGuidance: Partial<Record<NativeToolName, string>>;
-  // Labels set_labels may neither add nor remove, and never sees (issue #568 review). See
-  // readProtectedLabels for why an operator control label is not the classifier's to touch.
+  // Labels set_labels may neither add nor remove (issue #568 review; #695 dropped "and never
+  // sees" — a protected label is shown and refused by name). See readProtectedLabels for why an
+  // operator control label is not the classifier's to touch.
   protectedLabels: string[];
   // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
@@ -1248,14 +1249,16 @@ export async function buildToolset(
       );
     }
   }
-  // WHAT THE LABELS ARE RIGHT NOW, read fresh, and the reason set_labels is allowed to remove
-  // anything: the tool takes the complete list a scope should end up with, so the labels left out
-  // of that list are removals — a claim only meaningful against a list the model actually saw. Read
-  // HERE, once, and handed to the tool as `shownLabels`, so the block in the description and the
-  // diff at write time are the same value and cannot describe different turns.
+  // WHAT THE LABELS ARE RIGHT NOW, read fresh, and since #695 this is GROUNDING rather than
+  // authority: the tool names a delta, so a removal comes from the model naming the label in
+  // `remove` and not from it being missing here. What this read buys is that the model knows which
+  // values exist on the scope, so it asks for the canonical one instead of inventing a synonym.
+  // Read HERE, once, and handed to the tool as `shownLabels`, so the block in the description and
+  // the argument's own sentence are the same value and cannot describe different turns.
   //
   // A scope that fails to read is simply ABSENT, never `[]`: an empty list says "this conversation
-  // has no labels", which a model would honour by removing everything, while absent says "we do not
+  // has no labels", which under the old contract a model would honour by removing everything, and
+  // which even now invites a redundant `add`, while absent says "we do not
   // know" and makes the call additive. This is best-effort like the vocab above, and the failure
   // mode of getting it wrong is deleting a customer's classification, so it fails to the safe side.
   //
@@ -1272,18 +1275,21 @@ export async function buildToolset(
     task?: string[];
   } = {};
   // A GUARDED LABEL IS NOT SHOWN, which is the whole of its protection on this side: the diff at
-  // write time subtracts the same set, so hiding it here and refusing it there are one rule stated
-  // in the two places that have to agree. Filtered at the SEAM rather than at each reader, because a
-  // scope that leaked one into the description would offer the model a label it is not allowed to
-  // keep and would then be told it kept it anyway.
-  // Guarded ones subtracted AND the ceiling applied, through the tool's own projection: this seam
-  // and the tool's description have to answer the same question with the same function.
-  const hideGuarded = (labels: string[]): string[] =>
-    modelVisibleLabels(labels, cfg.protectedLabels);
+  // write time refuses the same set, so what the model sees and what the tool accepts are stated
+  // once each and no longer have to agree by subtraction. Applied at the SEAM rather than at each
+  // reader, so every scope answers the question with the same function.
+  //
+  // THE GUARD IS NO LONGER SUBTRACTED HERE (issue #695). Under the replace contract a guarded label
+  // had to be hidden, because a label the model was shown and left out was deleted; under the delta
+  // contract nothing is removed unless named, so a guarded label can be shown and still refused.
+  // Showing it is the point: hiding it is what made a fenced agent invent a name for the canonical
+  // value it was not allowed to see.
+  const shownProjection = (labels: string[]): string[] =>
+    modelVisibleLabels(labels);
   if (grantsLabels && ctx.conversationId > 0) {
-    if (kanban) shownLabels.task = hideGuarded(kanban.card.labels);
+    if (kanban) shownLabels.task = shownProjection(kanban.card.labels);
     try {
-      shownLabels.conversation = hideGuarded(
+      shownLabels.conversation = shownProjection(
         ctx.conversationLabels ??
           (await ctx.client.getConversationLabels(ctx.conversationId)),
       );

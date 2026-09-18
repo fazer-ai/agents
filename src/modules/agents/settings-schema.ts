@@ -723,7 +723,7 @@ const setLabels = z
     protected: z
       .array(z.string())
       .describe(
-        `labels set_labels may neither add nor remove, and never sees — for the ones another system owns (a switch that keeps an agent off a conversation, a testing marker). Blank, duplicate and non-string entries are dropped by the reader, and the list is capped at ${PROTECTED_LABELS_MAX}. An empty array clears the guard.`,
+        `labels set_labels may neither add nor remove — for the ones another system owns (a switch that keeps an agent off a conversation, a testing marker). The agent SEES them and is told so. Blank, duplicate and non-string entries are dropped by the reader, and the list is capped at ${PROTECTED_LABELS_MAX}. An empty array clears the guard.`,
       )
       .optional(),
   })

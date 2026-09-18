@@ -3,7 +3,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { modelVisibleLabels, SHOWN_LABELS_MAX } from "@/graph/tools/label-view";
 import {
-  applyLabelIntent,
+  applyLabelDelta,
   buildNativeTools,
   type HandoffTurnState,
   handoffAnsweredTheTurn,
@@ -169,10 +169,11 @@ describe("native tools", () => {
     ).not.toContain("customerMessage");
   });
 
-  test("the labels argument names the scope's own labels, not the conversation's", () => {
-    // The value replaces the SCOPE the call chooses, so an argument that always names the
-    // conversation's labels shows a `contact` call the wrong list — and copying them onto the
-    // contact is the move that description invites (review round 35).
+  test("the delta names the scope's own labels, not the conversation's", () => {
+    // The delta applies to the SCOPE the call chooses, so a description that always named the
+    // conversation's labels would show a `contact` call the wrong list — and copying them onto the
+    // contact is the move that invites (review round 35). Under #695 the listing is per scope and
+    // labelled with it, and the prose around it never says "conversation".
     const { client } = recordingClient();
     const tool = byName(
       buildNativeTools({
@@ -182,14 +183,23 @@ describe("native tools", () => {
       }),
       "set_labels",
     );
-    const field = (
-      tool.schema as { shape: { labels: { description?: string } } }
-    ).shape.labels;
-    expect(field.description).toContain("conversation: vip");
-    expect(field.description).toContain("contact: (none)");
+    const shape = (
+      tool.schema as {
+        shape: {
+          add: { description?: string };
+          remove: { description?: string };
+        };
+      }
+    ).shape;
+    expect(shape.add.description).toContain("conversation: vip");
+    expect(shape.add.description).toContain("contact: (none)");
     // The scope that was never read is not reported as empty: absent is not none.
-    expect(field.description).not.toContain("task");
-    expect(field.description).toContain("the scope you choose");
+    expect(shape.add.description).not.toContain("task");
+    // Scope-neutral: what stays is "already on the scope", never "on the conversation".
+    expect(shape.add.description).toContain("already on the scope stays");
+    expect(shape.remove.description).toContain(
+      "a label you do not name here is kept",
+    );
   });
 
   test("a ONE-SHOT allowlist grants what it names, not what the first candidate leaves", () => {
@@ -660,142 +670,155 @@ describe("native tools", () => {
     expect(out).toContain("after your final reply");
   });
 
-  describe("applyLabelIntent", () => {
-    test("no shown set ⇒ a pure union, whatever the model left out", () => {
-      expect(applyLabelIntent(undefined, ["b"], ["a"])).toEqual({
-        next: ["a", "b"],
-        added: ["b"],
-        removed: [],
-        visible: ["a", "b"],
-      });
-    });
-
-    test("only what was SHOWN and left out is removed", () => {
-      // `c` is standing but was never shown, so silence about it is not a request to remove it.
-      expect(applyLabelIntent(["a", "b"], ["a"], ["a", "b", "c"])).toEqual({
+  // REWRITTEN, NOT DELETED (issue #695). Every case below is the counterpart of one that proved the
+  // replace contract: what each of those proved about a diff against `shown`, its counterpart proves
+  // about a delta the model names. Two of them INVERT, and those are the ones worth reading.
+  describe("applyLabelDelta", () => {
+    test("only what is NAMED in remove is removed", () => {
+      // The counterpart of "only what was SHOWN and left out is removed". `c` survives here for a
+      // stronger reason than it did there: not because it was unseen, but because nobody named it.
+      expect(applyLabelDelta([], ["b"], ["a", "b", "c"])).toEqual({
         next: ["a", "c"],
         added: [],
         removed: ["b"],
-        visible: ["a", "c"],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
 
-    test("a shown label the conversation no longer carries is not reported as removed", () => {
-      // Somebody took `b` off between the read and the write. The intent still says "not b", and
-      // the answer is the same set — but the report is about what THIS write did, and it did not
-      // remove anything.
-      expect(applyLabelIntent(["a", "b"], ["a"], ["a"])).toEqual({
+    test("removing a label the conversation no longer carries reports nothing removed", () => {
+      // Somebody took `b` off between the read and the write. The report is about what THIS write
+      // did, and it did not remove anything.
+      expect(applyLabelDelta([], ["b"], ["a"])).toEqual({
         next: ["a"],
         added: [],
         removed: [],
-        visible: ["a"],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
 
     test("blank and duplicate entries are dropped, and order is stable", () => {
       expect(
-        applyLabelIntent([], ["  vip ", "vip", "", "   ", "lead"], []),
+        applyLabelDelta(["  vip ", "vip", "", "   ", "lead"], [], []),
       ).toEqual({
         next: ["vip", "lead"],
         added: ["vip", "lead"],
         removed: [],
-        visible: ["vip", "lead"],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
 
-    test("repeating a shown label does NOT put it back after somebody removed it", () => {
-      // The mirror of the case above, and the one a removals-only diff gets wrong. An operator
-      // peeled `vip` off while the model was generating; the model repeats it only because leaving
-      // it out would delete it. Read as an addition, the tool undoes the operator — the same harm
-      // as erasing a concurrent ADD, in the other direction.
-      expect(applyLabelIntent(["vip"], ["vip", "lead"], [])).toEqual({
-        next: ["lead"],
-        added: ["lead"],
-        removed: [],
-        visible: ["lead"],
-      });
-    });
-
-    test("a label shown, kept, and still standing is left exactly alone", () => {
-      expect(applyLabelIntent(["vip"], ["vip", "lead"], ["vip"])).toEqual({
+    test("INVERTED: naming a label in add DOES put it back after somebody removed it", () => {
+      // The case that flips. Under the replace contract the model repeated `vip` only because
+      // leaving it out would delete it, so treating the repeat as an addition undid an operator who
+      // had just peeled it off — and the tool deliberately did not. Under the delta contract nothing
+      // forces the model to mention a label it does not mean, so naming one in `add` IS a request to
+      // have it, and honouring that is correct. The cost moved to the operator's prose: a prompt
+      // that still says "repeat the labels that are already there" now asks for exactly this
+      // (holdout s14), which is why the old shape is refused by name rather than best-effort.
+      expect(applyLabelDelta(["vip", "lead"], [], [])).toEqual({
         next: ["vip", "lead"],
-        added: ["lead"],
+        added: ["vip", "lead"],
         removed: [],
-        visible: ["vip", "lead"],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
 
-    test("an empty desired list with nothing shown writes nothing at all", () => {
-      // The clear-everything call and the never-read case have to be told apart, or an unread
-      // context turns every "no labels apply" into wiping the conversation.
-      expect(applyLabelIntent(undefined, [], ["a", "b"])).toEqual({
+    test("naming nothing changes nothing, whatever is standing", () => {
+      // The counterpart of "an empty desired list with nothing shown writes nothing at all". There
+      // the clear-everything call and the never-read case had to be told apart, because `[]` could
+      // mean either; here `[]` can only mean "I name nothing", and wiping a conversation requires
+      // naming every label on it.
+      expect(applyLabelDelta([], [], ["a", "b"])).toEqual({
         next: ["a", "b"],
         added: [],
         removed: [],
-        visible: ["a", "b"],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
 
-    test("a guarded label SHOWN and left out is not removed", () => {
-      // The defect this guard exists for, and it is not the concurrent-write one: `agente-off` was
-      // standing before the turn, so it WAS shown, and the model leaving it out reads as a request
-      // to remove it. Measured on a live fork: asked for `["compra-de-ingresso"]`, the tool answered
-      // `removed "cancelamento", "agente-off", "vip"`.
+    test("INVERTED: a guarded label is no longer removed by silence, because silence removes nothing", () => {
+      // The defect the guard was built for does not exist under this contract. Measured on a live
+      // fork under the old one: asked for `["compra-de-ingresso"]`, the tool answered
+      // `removed "cancelamento", "agente-off", "vip"` — three labels the model never mentioned. Here
+      // the same intent leaves every one of them standing without the guard doing anything at all,
+      // which is why the guard's remaining job is the two directions below.
       expect(
-        applyLabelIntent(
-          ["cancelamento", "agente-off"],
+        applyLabelDelta(
           ["compra-de-ingresso"],
+          [],
           ["cancelamento", "agente-off"],
-          ["agente-off"],
         ),
       ).toEqual({
-        next: ["agente-off", "compra-de-ingresso"],
+        next: ["cancelamento", "agente-off", "compra-de-ingresso"],
         added: ["compra-de-ingresso"],
-        removed: ["cancelamento"],
-        visible: ["compra-de-ingresso"],
+        removed: [],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
 
-    test("a guarded label the model ASKS FOR is not added either", () => {
-      // The other direction, and the one hiding it from the description does not cover: a model
-      // that learned the name from the operator's prompt could otherwise switch the agent off by
-      // naming the label, which is the same authority the guard is supposed to deny.
+    test("a guarded label the model ASKS FOR is not added, and the refusal is named", () => {
+      // The half the issue's own first draft dropped. A model that learned the name from the
+      // operator's prompt could otherwise switch the agent off by naming the label, which is the
+      // authority the guard denies — and now that it can SEE the label, it will ask.
       expect(
-        applyLabelIntent([], ["agente-off", "vip"], [], ["agente-off"]),
+        applyLabelDelta(["agente-off", "vip"], [], [], ["agente-off"]),
       ).toEqual({
         next: ["vip"],
         added: ["vip"],
         removed: [],
-        visible: ["vip"],
+        refusedAdd: ["agente-off"],
+        refusedRemove: [],
       });
     });
 
-    test("the guard reaches the report, so shown and told stay ONE list", () => {
-      // `visible` is what the report states and what recordShown stores. If the guarded label leaked
-      // into either, the next call in the turn would be handed a label it is not allowed to keep and
-      // would be told it kept it — the same two-views defect this file already carries.
-      const out = applyLabelIntent(
-        ["vip"],
-        ["vip", "lead"],
+    test("a guarded label the model asks to REMOVE is not removed, and the refusal is named", () => {
+      expect(
+        applyLabelDelta(
+          [],
+          ["agente-off"],
+          ["agente-off", "vip"],
+          ["agente-off"],
+        ),
+      ).toEqual({
+        next: ["agente-off", "vip"],
+        added: [],
+        removed: [],
+        refusedAdd: [],
+        refusedRemove: ["agente-off"],
+      });
+    });
+
+    test("a guarded label standing on the scope is KEPT in next, and is no longer hidden", () => {
+      // `next` carries it because it is on the conversation; there is no `visible` projection any
+      // more, because the model is shown everything. That is the change: one list, not two.
+      const out = applyLabelDelta(
+        ["lead"],
+        [],
         ["vip", "testando-agente"],
         ["testando-agente"],
       );
       expect(out.next).toEqual(["vip", "testando-agente", "lead"]);
-      expect(out.visible).toEqual(["vip", "lead"]);
       expect(out.removed).toEqual([]);
     });
 
     test("an empty guard list is the behaviour before the guard", () => {
-      expect(applyLabelIntent(["a", "b"], ["a"], ["a", "b"], [])).toEqual({
+      expect(applyLabelDelta([], ["b"], ["a", "b"], [])).toEqual({
         next: ["a"],
         added: [],
         removed: ["b"],
-        visible: ["a"],
+        refusedAdd: [],
+        refusedRemove: [],
       });
     });
   });
 
-  test("set_labels without a shown set only ADDS (the safe degenerate)", async () => {
+  test("an add-only call never removes anything", async () => {
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["vip"],
@@ -804,17 +827,17 @@ describe("native tools", () => {
         return {};
       },
     } as unknown as ChatwootClient;
-    // No shownLabels: the model never saw what was there, so leaving "vip" out of the list cannot
-    // mean "remove it" — the read that would have justified the removal did not happen.
+    // Under the delta there is nothing to leave out: `vip` is not named, so it is not touched,
+    // and no snapshot of what the model saw has to be consulted to know that.
     const tools = buildNativeTools({ client, conversationId: 9 });
     const out = String(
-      await byName(tools, "set_labels").invoke({ labels: ["lead"] }),
+      await byName(tools, "set_labels").invoke({ add: ["lead"] }),
     );
     expect(setCalls).toEqual([[9, ["vip", "lead"]]]);
     expect(out).toContain("lead");
   });
 
-  test("set_labels removes a label the model was shown and left out", async () => {
+  test("set_labels removes exactly what `remove` names", async () => {
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["vip", "lead"],
@@ -829,17 +852,18 @@ describe("native tools", () => {
       shownLabels: { conversation: ["vip", "lead"] },
     });
     const out = String(
-      await byName(tools, "set_labels").invoke({ labels: ["vip"] }),
+      await byName(tools, "set_labels").invoke({ remove: ["lead"] }),
     );
     expect(setCalls).toEqual([[9, ["vip"]]]);
     expect(out).toContain('removed "lead"');
   });
 
   test("set_labels does NOT erase a label added while the model was generating", async () => {
-    // The whole reason the write is a diff and not the model's list: `agente-off` landed between
-    // the turn's read and this call. The model never saw it, so it never asked for it to go — and
-    // sending its list verbatim would take it out and put the agent back on a conversation somebody
-    // had just switched it off.
+    // The whole reason the model names a delta: `agente-off` landed between the turn's read and
+    // this call. The model never saw it and never named it, so it stays — with no snapshot, no
+    // diff and no window in which a complete list could have taken it out and put the agent back
+    // on a conversation somebody had just switched it off. The swap is named on both sides, which
+    // is how the tool description tells the model to change a value.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["dúvidas-evento", "agente-off"],
@@ -853,13 +877,18 @@ describe("native tools", () => {
       conversationId: 9,
       shownLabels: { conversation: ["dúvidas-evento"] },
     });
-    await byName(tools, "set_labels").invoke({ labels: ["cancelamento"] });
+    await byName(tools, "set_labels").invoke({
+      add: ["cancelamento"],
+      remove: ["dúvidas-evento"],
+    });
     expect(setCalls).toEqual([[9, ["agente-off", "cancelamento"]]]);
   });
 
-  test("set_labels cannot erase a guarded label it was shown", async () => {
-    // The concurrent-write case above only protects a label that landed mid-turn. This one was there
-    // before the turn started, so it is in `shownLabels`, and only the guard keeps it.
+  test("set_labels refuses to remove a guarded label, and names the refusal", async () => {
+    // The case above protects a label the model never named. This one it names explicitly, and only
+    // the guard keeps it. Under the delta the model SEES the guarded label, so it will ask; an
+    // answer that stayed silent would be a false statement the model reads back out of its own
+    // transcript one call later, which is why the report says which one it refused.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["dúvidas-evento", "agente-off"],
@@ -874,15 +903,23 @@ describe("native tools", () => {
       shownLabels: { conversation: ["dúvidas-evento"] },
       protectedLabels: ["agente-off"],
     });
-    const out = await byName(tools, "set_labels").invoke({
-      labels: ["cancelamento"],
-    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["dúvidas-evento", "agente-off"],
+      }),
+    );
     expect(setCalls).toEqual([[9, ["agente-off", "cancelamento"]]]);
-    // And the model is never told the label is there, so it cannot act on it next call.
-    expect(String(out)).not.toContain("agente-off");
+    // Told, by name, which one did not move and why — the opposite of the old contract, where the
+    // label was hidden and the silence is what made a fenced agent invent a name for it.
+    expect(out).toContain('cannot be removed: "agente-off"');
+    expect(out).toContain('removed "dúvidas-evento"');
   });
 
-  test("set_labels with an empty list clears what was shown, and nothing else", async () => {
+  test("a call that names neither side is refused, and writes nothing", async () => {
+    // Under the replace contract an empty list was a MEANING — "clear the scope" — so it had to be
+    // honoured. Under the delta it is the absence of a request, and honouring it would be inventing
+    // one. The refusal is what tells the model to name what it wants.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["vip", "agente-off"],
@@ -896,8 +933,37 @@ describe("native tools", () => {
       conversationId: 9,
       shownLabels: { conversation: ["vip"] },
     });
-    await byName(tools, "set_labels").invoke({ labels: [] });
-    expect(setCalls).toEqual([[9, ["agente-off"]]]);
+    const out = String(
+      await byName(tools, "set_labels").invoke({ add: [], remove: [] }),
+    );
+    expect(setCalls).toEqual([]);
+    expect(out).toContain("neither `add` nor `remove`");
+  });
+
+  test("the retired `labels` list is refused BY NAME, not silently dropped", async () => {
+    // Operator prose in five free-text fields still describes the replace contract on every tenant
+    // that has not rewritten it, and a model following that prose sends `{labels: [...]}`. A strict
+    // schema would strip the key and leave an empty delta, so the call would answer "already as
+    // requested" and the model would record a classification that was never written.
+    const setCalls: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["vip"],
+      setConversationLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      shownLabels: { conversation: ["vip"] },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({ labels: ["cancelamento"] }),
+    );
+    expect(setCalls).toEqual([]);
+    expect(out).toContain("no longer takes a complete `labels` list");
+    expect(out.toLowerCase()).not.toContain("already as requested");
   });
 
   test("set_labels writes nothing when the set already matches", async () => {
@@ -915,7 +981,7 @@ describe("native tools", () => {
       shownLabels: { conversation: ["vip"] },
     });
     const out = String(
-      await byName(tools, "set_labels").invoke({ labels: ["vip"] }),
+      await byName(tools, "set_labels").invoke({ add: ["vip"] }),
     );
     expect(setCount).toBe(0);
     expect(out.toLowerCase()).toContain("already as requested");
@@ -925,10 +991,9 @@ describe("native tools", () => {
   });
 
   test("a second call in the same turn can undo what the first one wrote", async () => {
-    // The model's visible set is not the turn-prep snapshot for the whole turn: it moves with the
-    // model's own writes. Without that, `set_labels(['pending'])` then `set_labels([])` diffs the
-    // second call against a snapshot that never held `pending`, leaves it standing, and reports
-    // that nothing changed.
+    // Each call names its own delta, so the second one does not depend on the first being
+    // reflected back into any snapshot: it removes what it names off whatever is standing when the
+    // queue lets it through.
     let current: string[] = [];
     const setCalls: unknown[][] = [];
     const client = {
@@ -945,11 +1010,11 @@ describe("native tools", () => {
       shownLabels: { conversation: [] },
     });
     const first = String(
-      await byName(tools, "set_labels").invoke({ labels: ["pending"] }),
+      await byName(tools, "set_labels").invoke({ add: ["pending"] }),
     );
     expect(first).toContain('added "pending"');
     const second = String(
-      await byName(tools, "set_labels").invoke({ labels: [] }),
+      await byName(tools, "set_labels").invoke({ remove: ["pending"] }),
     );
     expect(setCalls).toEqual([
       [9, ["pending"]],
@@ -959,10 +1024,11 @@ describe("native tools", () => {
     expect(second).toContain("Now set: (none)");
   });
 
-  test("a label a concurrent writer added becomes removable only once reported", async () => {
-    // `urgente` lands between the turn's read and the first call. The first write keeps it (the
-    // model never saw it) and the report hands it over; only then may a later call drop it — which
-    // is what keeps "shown" meaning shown while still letting the state move.
+  test("a label the model was never shown is removable the moment it names it", async () => {
+    // `urgente` lands between the turn's read and the first call. Under the replace contract it had
+    // to survive one write and be handed over by the report before it could be dropped, because
+    // "shown" was what licensed a removal. Naming the delta retires that ceremony: not naming it
+    // keeps it, naming it removes it, and neither answer depends on what the model was shown.
     let current: string[] = ["urgente"];
     const setCalls: unknown[][] = [];
     const client = {
@@ -979,20 +1045,20 @@ describe("native tools", () => {
       shownLabels: { conversation: [] },
     });
     const first = String(
-      await byName(tools, "set_labels").invoke({ labels: ["compra"] }),
+      await byName(tools, "set_labels").invoke({ add: ["compra"] }),
     );
     expect(setCalls[0]).toEqual([9, ["urgente", "compra"]]);
     expect(first).toContain('Now set: "urgente", "compra"');
-    await byName(tools, "set_labels").invoke({ labels: ["compra"] });
+    await byName(tools, "set_labels").invoke({ remove: ["urgente"] });
     expect(setCalls).toHaveLength(2);
     expect(setCalls[1]).toEqual([9, ["compra"]]);
   });
 
   test("two calls in ONE batch do not read each other's writes", async () => {
-    // LangGraph dispatches a tool-call batch concurrently, and both calls were written by the model
-    // from the same snapshot — neither could have read the other's result. If the second one reads
-    // the shown set AFTER waiting for the queue, it takes the first one's write for a label it saw
-    // and left out, and `["a"]` beside `["b"]` ends as `b` alone.
+    // LangGraph dispatches a tool-call batch concurrently, and the write is still a full PUT of the
+    // resulting list, so the queue is what makes the second call read the first one's result. Drop
+    // the serialisation and both read the empty scope, both PUT a one-item list, and `["a"]` beside
+    // `["b"]` ends as whichever landed last.
     let current: string[] = [];
     const setCalls: unknown[][] = [];
     const client = {
@@ -1010,8 +1076,8 @@ describe("native tools", () => {
     });
     const tool = byName(tools, "set_labels");
     await Promise.all([
-      tool.invoke({ labels: ["a"] }),
-      tool.invoke({ labels: ["b"] }),
+      tool.invoke({ add: ["a"] }),
+      tool.invoke({ add: ["b"] }),
     ]);
     expect(setCalls).toHaveLength(2);
     expect([...current].sort()).toEqual(["a", "b"]);
@@ -1063,8 +1129,8 @@ describe("native tools", () => {
       },
     };
     await Promise.all([
-      tool.invoke({ labels: ["a"] }, batch),
-      tool.invoke({ labels: ["b"] }, batch),
+      tool.invoke({ add: ["a"] }, batch),
+      tool.invoke({ add: ["b"] }, batch),
     ]);
     expect([...current].sort()).toEqual(["a", "b"]);
   });
@@ -1087,15 +1153,16 @@ describe("native tools", () => {
       stillWanted: async () => false,
     });
     const out = String(
-      await byName(tools, "set_labels").invoke({ labels: ["cancelamento"] }),
+      await byName(tools, "set_labels").invoke({ add: ["cancelamento"] }),
     );
     expect(setCount).toBe(0);
     expect(out).toContain("called off");
   });
 
-  test("set_labels task scope writes the card's labels (snapshot read + write)", async () => {
+  test("set_labels task scope reads the card fresh and writes it", async () => {
     const setCalls: unknown[][] = [];
     const client = {
+      getKanbanTask: async () => ({ labels: [] }),
       setKanbanTaskLabels: async (...args: unknown[]) => {
         setCalls.push(args);
         return {};
@@ -1108,12 +1175,224 @@ describe("native tools", () => {
     });
     const out = String(
       await byName(tools, "set_labels").invoke({
-        labels: ["quente"],
+        add: ["quente"],
         scope: "task",
       }),
     );
     expect(setCalls).toEqual([[11, ["quente"]]]);
     expect(out.toLowerCase()).toContain("card");
+  });
+
+  test("a label added to the card mid-turn survives, like in the other two scopes", async () => {
+    // ISSUE #695 HOLDOUT s6. The card used to be the turn-prep snapshot, so "not named, not
+    // touched" was a statement about that snapshot and not about the card: a label somebody put on
+    // it while the model was generating was erased by the next write. It is the one scope where the
+    // promise the whole change is built on was false, and one GET by id closes it — the id is in
+    // hand here, unlike at prep, where the card has to be resolved from the conversation.
+    const setCalls: unknown[][] = [];
+    const client = {
+      // The card moved after prep: `externa` is on it now and the snapshot never saw it.
+      getKanbanTask: async () => ({ labels: ["fila-1", "externa"] }),
+      setKanbanTaskLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: { ...kanbanCtx, card: { ...kanbanCtx.card, labels: ["fila-1"] } },
+    });
+    await byName(tools, "set_labels").invoke({
+      add: ["urgente"],
+      scope: "task",
+    });
+    expect(setCalls).toEqual([[11, ["fila-1", "externa", "urgente"]]]);
+  });
+
+  test("a card that cannot be read refuses the write instead of using the snapshot", async () => {
+    // Falling back to the snapshot would reintroduce the erasure silently, on the one path where
+    // nobody is looking. The conversation scope answers an unreadable state the same way.
+    let setCount = 0;
+    const client = {
+      getKanbanTask: async () => {
+        throw new Error("chatwoot 500");
+      },
+      setKanbanTaskLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: kanbanCtx,
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["quente"],
+        scope: "task",
+      }),
+    );
+    expect(setCount).toBe(0);
+    expect(out).toContain("could not be read");
+  });
+
+  test("a card write withdrawn during the fresh read does not land", async () => {
+    // The fresh read this PR added to the task scope is a WAIT, exactly like the GET the other two
+    // scopes do: `/reset` can retire the run while it is in flight, and until this recheck the
+    // task scope was the only one that wrote anyway, because the graph's dispatch check was the
+    // last word before its POST. The fence is asked AFTER the read, not before it.
+    let setCount = 0;
+    let asked = 0;
+    const client = {
+      getKanbanTask: async () => ({ labels: ["fila-1"] }),
+      setKanbanTaskLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: kanbanCtx,
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["quente"],
+        scope: "task",
+      }),
+    );
+    expect(asked).toBe(1);
+    expect(setCount).toBe(0);
+    expect(out).toContain("called off");
+  });
+
+  test("a card write with nothing to change never reaches the fence", async () => {
+    // Same rule the contact scope states: the fence guards a WRITE, and a call whose delta is
+    // empty writes nothing, so withdrawing the run must not turn it into a refusal.
+    let asked = 0;
+    const client = {
+      getKanbanTask: async () => ({ labels: ["fila-1"] }),
+      setKanbanTaskLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: kanbanCtx,
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["fila-1"],
+        scope: "task",
+      }),
+    );
+    expect(asked).toBe(0);
+    expect(out).not.toContain("called off");
+  });
+
+  test("a swap whose add is guarded lands the removal alone, and says so", async () => {
+    // PINNED, not desired. The guard catches one half of a swap and the other half still applies,
+    // so a mutually-exclusive taxonomy can end a turn with NO category. Measured identical on the
+    // clean HEAD 5ae9af39 (`protected: ["cancelamento"]`, the model's complete list omitting
+    // `compra-de-ingresso`, POST `["agente-off", "testando-agente"]`), so this PR does not
+    // introduce it — it makes it ROUTINE, because a guarded label is now shown and the model
+    // therefore asks for it. Whether a guarded half should make the whole call atomic is a
+    // product decision and lives in its own issue; what this test buys is that the shape cannot
+    // change here without somebody deciding to change it.
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [
+        "compra-de-ingresso",
+        "agente-off",
+        "testando-agente",
+      ],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([[9, ["agente-off", "testando-agente"]]]);
+    // No category at all, and the refusal is named rather than swallowed.
+    expect(out).toContain("cannot be added");
+    expect(out).toContain("cancelamento");
+    expect(out).toContain('removed "compra-de-ingresso"');
+  });
+
+  test("a swap whose remove is guarded lands the addition alone, and says so", async () => {
+    // The mirror, and the other state the single write exists to prevent: both categories at
+    // once. Also identical on 5ae9af39 (POST carried all four).
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["compra-de-ingresso"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([
+      [9, ["compra-de-ingresso", "agente-off", "cancelamento"]],
+    ]);
+    expect(out).toContain("cannot be removed");
+    expect(out).toContain('added "cancelamento"');
+  });
+
+  test("a guard that holds the whole taxonomy refuses both halves and writes nothing", async () => {
+    // The configuration that is actually correct: every mutually-exclusive value guarded. Both
+    // halves fall, no POST goes out, and the two refusals are reported. The half-write lives in
+    // the INCOMPLETE list, which is the condition of the 2026-09-17 incident.
+    let posts = 0;
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async () => {
+        posts++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["compra-de-ingresso", "cancelamento", "outros"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toBe(0);
+    expect(out).toContain("cannot be added");
+    expect(out).toContain("cannot be removed");
   });
 
   test("set_labels task scope is offered only when a card is linked", () => {
@@ -1142,7 +1421,7 @@ describe("native tools", () => {
     const tools = buildNativeTools({ client, conversationId: 9 });
     const out = String(
       await byName(tools, "set_labels").invoke({
-        labels: ["lead"],
+        add: ["lead"],
         scope: "contact",
       }),
     );
@@ -1177,7 +1456,7 @@ describe("native tools", () => {
     });
     const out = String(
       await byName(tools, "set_labels").invoke({
-        labels: ["lead"],
+        add: ["lead"],
         scope: "contact",
       }),
     );
@@ -1208,7 +1487,7 @@ describe("native tools", () => {
     });
     const out = String(
       await byName(tools, "set_labels").invoke({
-        labels: ["vip"],
+        add: ["vip"],
         scope: "contact",
       }),
     );
@@ -1829,9 +2108,11 @@ describe("what the model is shown has a ceiling", () => {
     expect(desc).not.toContain(`etq-${SHOWN_LABELS_MAX}`);
   });
 
-  test("what falls off the end is UNSEEN, so it is never removed", async () => {
-    // This is why a ceiling is safe here and a refusal is not needed: the diff only removes what the
-    // model was shown, so the labels past it keep standing without the model having to name them.
+  test("what falls off the end is untouched, because nothing unnamed is touched", async () => {
+    // Why a ceiling is safe here, and the reason got SIMPLER with the delta (issue #695). It used to
+    // rest on the diff: a label past the cut was not shown, so it could not be "shown and left out",
+    // so it survived. Now it rests on the contract itself — a label the call does not name is not
+    // touched — and the cut is a display decision with no reach into the write at all.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => many,
@@ -1845,14 +2126,15 @@ describe("what the model is shown has a ceiling", () => {
       conversationId: 9,
       shownLabels: { conversation: modelVisibleLabels(many) },
     });
-    await byName(tools, "set_labels").invoke({ labels: ["resolvido"] });
+    await byName(tools, "set_labels").invoke({ add: ["resolvido"] });
     const next = (setCalls[0]?.[1] ?? []) as string[];
-    // The 40 it saw and left out are gone; the 50 it never saw are all still there, plus the new one.
-    expect(next).not.toContain("etq-0");
+    // All 90 stand — the 40 it was shown as much as the 50 it never saw — plus the new one. Under
+    // the replace contract this same call deleted the 40 it had been shown and left out.
+    expect(next).toContain("etq-0");
     expect(next).toContain(`etq-${SHOWN_LABELS_MAX}`);
     expect(next).toContain("etq-89");
     expect(next).toContain("resolvido");
-    expect(next.length).toBe(many.length - SHOWN_LABELS_MAX + 1);
+    expect(next.length).toBe(many.length + 1);
   });
 
   test("the report is capped too, and says how many it left out", async () => {
@@ -1869,17 +2151,18 @@ describe("what the model is shown has a ceiling", () => {
       shownLabels: { conversation: [] },
     });
     const out = String(
-      await byName(tools, "set_labels").invoke({ labels: ["resolvido"] }),
+      await byName(tools, "set_labels").invoke({ add: ["resolvido"] }),
     );
     expect(out).toContain(`etq-${SHOWN_LABELS_MAX - 1}`);
     expect(out).not.toContain(`"etq-${SHOWN_LABELS_MAX}"`);
     expect(out).toContain("more)");
   });
 
-  test("a second call in the turn diffs against the capped list, not the full one", async () => {
-    // `recordShown` stores what the model was HANDED, ceiling included. Storing the full set would
-    // make the next call's baseline something the model never read, which is the one thing this
-    // whole contract is built to avoid.
+  test("what is recorded for the next call is capped too", async () => {
+    // `recordShown` stores what the model was HANDED, ceiling included. This is informational under
+    // the delta rather than load-bearing — a stale entry costs a redundant `add`, not a deletion —
+    // but it is still the text the next call reads, and it is capped like every other list the
+    // model is given.
     const client = {
       getConversationLabels: async () => many,
       setConversationLabels: async () => ({}),
@@ -1890,7 +2173,7 @@ describe("what the model is shown has a ceiling", () => {
       shownLabels: { conversation: [] },
     };
     const tools = buildNativeTools(ctx as never);
-    await byName(tools, "set_labels").invoke({ labels: ["resolvido"] });
+    await byName(tools, "set_labels").invoke({ add: ["resolvido"] });
     const shown = (ctx.shownLabels as { conversation: string[] }).conversation;
     expect(shown.length).toBe(SHOWN_LABELS_MAX);
   });

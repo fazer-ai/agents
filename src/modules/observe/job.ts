@@ -836,8 +836,15 @@ export function labelHistoryFromRows(
   // (round 16). `set_labels` takes an unbounded list, so a batch big enough to push its own activity
   // sentence past the scan limit is something this application produces, and dropping it quietly let
   // the block report `(nenhuma nesta janela)` over the very change the model had just made. The
-  // guard is checked FIRST and stays silent: its promise is that the string does not reach the
-  // model, and a count that only appears on conversations carrying a guarded label reports it.
+  // guard is checked FIRST and stays silent. Its ORIGINAL reason died with issue #695 — the promise
+  // used to be that the guarded string never reaches the model, and it now reaches it twice, in the
+  // tool's own description and in `<etiquetas-atuais>`. What survives is the narrower reason, which
+  // is the one that still holds here: a count that appears only on conversations carrying a guarded
+  // label is itself a signal about that label, so a visible `omitted` would announce "something you
+  // may not touch moved" on exactly those conversations and nowhere else. This block narrates WHO
+  // moved WHAT, which is not the model's business for a label it may not move; the VALUE is shown
+  // elsewhere precisely so it stops inventing a synonym for it. Relaxing this is a decision about
+  // narration rather than about the fence, and it belongs to its own issue.
   let unread = 0;
   const recognised = rows
     .filter((m) => {
@@ -1346,17 +1353,13 @@ export async function runObserve(
       e instanceof Error ? e.message : String(e),
     );
   }
-  // THE PROMPT BLOCK HIDES THE GUARDED ONES TOO. `set_labels` filters them out of what it shows and
-  // out of what it accepts, and this block is the third model-facing place the same list reaches —
-  // leaving it raw would print `agente-off` under `<etiquetas-atuais>` while the tool's own
-  // description denies it exists, which is both a contradiction to reason from and the exact
-  // invitation the guard is there to withdraw. The unfiltered `current` still goes to `buildToolset`
-  // as the ONE read: what the tool does with it (seed `shownLabels`, minus the guard) is its rule to
-  // apply, and copying the subtraction here would make two places responsible for one decision.
-  // Through the same projection the tool renders: the guard subtracted AND the ceiling applied, so
-  // this block cannot advertise a label the tool's own description leaves out (see label-view.ts).
+  // THE PROMPT BLOCK SHOWS THE GUARDED ONES, and that is the change of issue #695. It used to hide
+  // them, because `set_labels` hid them too and a block that printed `agente-off` while the tool's
+  // description denied it existed was a contradiction to reason from. The tool now shows them and
+  // refuses to move them, so this block says the same thing by saying everything: the same
+  // projection the tool renders, which is the ceiling and nothing else (see label-view.ts).
   const currentForPrompt =
-    current === null ? null : modelVisibleLabels(current, cfg.protectedLabels);
+    current === null ? null : modelVisibleLabels(current);
 
   // WHAT ALREADY CHANGED, beside what is standing now, and read here rather than beside `notes`
   // because this is a request: every exit above it (no customer message, agent off, window empty)

@@ -660,7 +660,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
   test("a refusal inside a parameter names no path, and leaks nothing from it", async () => {
     const MARKER = "MARCADOR667DENTRO52998224725";
     const t = await runTurn(6716, [
-      { name: "set_labels", args: { labels: [MARKER, 52998224725] } },
+      { name: "set_labels", args: { add: [MARKER, 52998224725] } },
     ]);
     const line = refused(t.rows)[0] as Row;
     expect(line).toBeDefined();
@@ -671,7 +671,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       "arguments refused by the tool schema",
     ]);
     // The array itself is a count, so neither the element's value nor its index travels.
-    expect(det(line).args).toEqual({ labels: "array(2)" });
+    expect(det(line).args).toEqual({ add: "array(2)" });
     expect(
       JSON.stringify(t.rows, (_k, v) =>
         typeof v === "bigint" ? String(v) : v,

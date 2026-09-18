@@ -6463,6 +6463,13 @@ export async function processChatwootDelivery(
   // paid a provider for the transcription.
   const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;
   let ingested: IngestOutcome = "nothing";
+  // SE A INGESTÃO CHEGOU A CORRER, que é outra pergunta que `ingested` (issue #688, review r12).
+  // O valor inicial acima é `"nothing"`, e ele é indistinguível de "correu e não tinha o que
+  // lembrar" — o que faz a parada por posse liquidar a entrega quando a condição abaixo não foi
+  // sequer avaliada. Escrita no ponto da chamada, e não derivada de novo a partir de
+  // `routeIngests`, porque foi exatamente uma derivação paralela que abriu o buraco: a
+  // liquidação perguntava uma coisa e a ingestão outra.
+  let ingestionRan = false;
   // NOTE: WHETHER THIS ROUTE INGESTS AT ALL, hoisted out of the condition below so the two halves can
   // be told apart (issue #478 review, round 8). A route that cannot — no runtime, switched off, a
   // test agent with nobody watching — reaches no branch and says nothing, and that silence is what a
@@ -6510,6 +6517,7 @@ export async function processChatwootDelivery(
   // `rt !== null` again, and it is the type checker's rather than the logic's: `routeIngests`
   // already implies it, but the narrowing does not survive the const.
   if (rt !== null && routeIngests && !responderRemembers && !responderCommand) {
+    ingestionRan = true;
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
@@ -6676,9 +6684,18 @@ export async function processChatwootDelivery(
   // aqui, ANTES do bloco do observador, porque os dois podem valer ao mesmo tempo e a mensagem a
   // recuperar é uma só; e como um throw, porque é isso que deixa a linha em PROCESSING, onde a
   // varredura a encontra.
-  if (stoodDownUnread && ingested === "failed") {
+  // ...E TAMBÉM QUANDO INGESTÃO NENHUMA CORREU (review r12). `routeIngests` é falso sempre que a
+  // rota não resolveu runtime (`rt === null`), e essa parada alcança isso: quem decide se o turno
+  // roda é `act`, uma pergunta sobre a POSSE da conversa, e o turno carrega a configuração dele
+  // sozinho, muito depois de `resolveRoute` ter lido a vinculação. Uma vinculação feita entre as
+  // duas leituras deixa `rt` nulo com o turno rodando — a corrida que a #540 mediu e que a
+  // `bindingGeneration` nomeia. O throw que existe para ela cobre só o caminho vivo COM recibo
+  // (exige `claimFrom === "PENDING"` e uma geração gravada); um replay da varredura não satisfaz
+  // nenhum dos dois. Sem isto, a liquidação da marca passava por cima de uma mensagem que memória
+  // nenhuma tem, que é o defeito desta issue voltando pela terceira porta que o conserto abriu.
+  if (stoodDownUnread && (ingested === "failed" || !ingestionRan)) {
     throw new Error(
-      `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and the ingestion of the message could not be armed; leaving the delivery for the sweep`,
+      `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and ${ingested === "failed" ? "the ingestion of the message could not be armed" : "no ingestion ran over the message, so nothing holds it"}; leaving the delivery for the sweep`,
     );
   }
   if (observerHolds) {

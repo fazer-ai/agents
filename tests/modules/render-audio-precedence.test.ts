@@ -78,6 +78,9 @@ describe("o ramo de áudio do renderizador tem precedência sobre o resto", () =
 // lá (#576, round 9). Esta é a segunda vez.
 describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
   function evento(attachment: Record<string, unknown>) {
+    return eventos(attachment);
+  }
+  function eventos(...attachments: Record<string, unknown>[]) {
     return normalizeChatwootEvent({
       event: "message_created",
       id: 4242,
@@ -85,7 +88,7 @@ describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
       content: "",
       message_type: "incoming",
       sender: { id: 88, name: "Cliente", type: null },
-      attachments: [attachment],
+      attachments,
       conversation: {
         id: 77,
         inbox_id: 9,
@@ -130,6 +133,69 @@ describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
       file_type: "image",
       data_url: "https://chat.late.example/a.png",
     });
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(false);
+  });
+
+  // COM DOIS ÁUDIOS, QUEM RESPONDE É O PRIMEIRO (issue #688, review r10). `firstAudioAttachment` e
+  // `runEagerMedia` selecionam esse mesmo, então é a transcrição DELE que ainda vem; uma transcrição
+  // pendurada em outro anexo não diz nada sobre ela. Lido como "algum está transcrito", o portão
+  // atuaria sobre a mensagem cuja transcrição está a caminho, que é exatamente a perda que esta
+  // exceção existe para fechar.
+  test("com dois áudios, o primeiro sem transcrição é quem decide", () => {
+    const n = eventos(
+      {
+        id: 1,
+        file_type: "audio",
+        data_url: "https://chat.late.example/a.ogg",
+      },
+      {
+        id: 2,
+        file_type: "audio",
+        data_url: "https://chat.late.example/b.ogg",
+        transcribed_text: "esse aqui já voltou",
+      },
+    );
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(true);
+  });
+
+  // ...e o outro lado da mesma regra: transcrito o primeiro, não há o que esperar, mesmo com um
+  // segundo áudio ainda cru. O eager pass cobre um áudio por mensagem, e é o primeiro.
+  test("com dois áudios, o primeiro já transcrito encerra a espera", () => {
+    const n = eventos(
+      {
+        id: 1,
+        file_type: "audio",
+        data_url: "https://chat.late.example/a.ogg",
+        transcribed_text: "queria trocar o endereço",
+      },
+      {
+        id: 2,
+        file_type: "audio",
+        data_url: "https://chat.late.example/b.ogg",
+      },
+    );
+    if (!n) throw new Error("payload did not normalize");
+    expect(awaitsTranscription(n)).toBe(false);
+  });
+
+  // E "o primeiro" é o primeiro ÁUDIO, não o primeiro anexo: uma imagem na frente não pode empurrar
+  // a resposta para "ainda vem transcrição" numa mensagem cujo áudio já voltou.
+  test("uma imagem antes do áudio não entra na conta", () => {
+    const n = eventos(
+      {
+        id: 1,
+        file_type: "image",
+        data_url: "https://chat.late.example/a.png",
+      },
+      {
+        id: 2,
+        file_type: "audio",
+        data_url: "https://chat.late.example/b.ogg",
+        transcribed_text: "queria trocar o endereço",
+      },
+    );
     if (!n) throw new Error("payload did not normalize");
     expect(awaitsTranscription(n)).toBe(false);
   });

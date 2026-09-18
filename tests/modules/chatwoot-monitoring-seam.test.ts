@@ -803,6 +803,128 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }, 20_000);
 
+  // E SE INGESTÃO NENHUMA CORREU, A LINHA TAMBÉM NÃO FECHA (issue #688, review r12). O teste acima é
+  // sobre o enfileiramento que FALHA; este é sobre a ingestão que nem chega a ser tentada, porque a
+  // rota não resolveu runtime nenhum. `routeIngests` é falso ali, `ingested` fica no valor inicial
+  // `"nothing"` — indistinguível de "correu e não tinha o que lembrar" — e a liquidação da marca
+  // disparava mesmo assim, por cima de uma mensagem que memória nenhuma tem.
+  //
+  // A corrida que produz isso é real e tem nome no repo: `resolveRoute` lê a vinculação do inbox
+  // cedo, `runAgentTurn` carrega a configuração dele sozinho muito depois, e quem decide se o turno
+  // roda é `act`, que pergunta pela POSSE da conversa e não pela rota. Uma vinculação feita entre as
+  // duas leituras deixa `rt` nulo com o turno rodando (é a janela da #540, que a `bindingGeneration`
+  // nomeia). O throw que existe para ela não cobre esta: ele exige `claimFrom === "PENDING"` e uma
+  // geração gravada no recibo, e um replay da varredura não tem nenhum dos dois.
+  //
+  // Encenada pela leitura, não pelo relógio: a PRIMEIRA leitura do inbox — a de `resolveRoute` —
+  // responde sem vinculação, e todas as seguintes respondem a linha real. Qualquer espera de tempo
+  // real aqui seria uma corrida contra o próprio teste.
+  test("issue #688: a takeover during the wait on a route that resolved NO runtime leaves the delivery for the sweep", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 45;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    const leituras = { inbox: 0 };
+    // A rota lê o inbox uma vez, e é essa leitura que responde "sem agente". O contador é o que
+    // impede o teste de passar à toa: se a leitura deixar de acontecer, o zero reprova.
+    const routeSeesNoBinding = appDb.$extends({
+      query: {
+        inbox: {
+          async findUnique({ args, query }) {
+            const row = await query(args);
+            leituras.inbox += 1;
+            return leituras.inbox === 1 && row !== null
+              ? { ...(row as Record<string, unknown>), agentId: null }
+              : row;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "consigo trocar o endereço?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: routeSeesNoBinding,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+
+    await expect(run).rejects.toThrow("no ingestion ran over the message");
+    // O turno parou no portão, como no caminho normal...
+    expect(seen.outcome).toBe("taken-over-unread");
+    expect(sent).toEqual([]);
+    // ...e a leitura da rota aconteceu de verdade.
+    expect(leituras.inbox).toBeGreaterThan(0);
+    // Ingestão nenhuma correu — é essa a premissa do caso, não o efeito a consertar.
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // O QUE ESTE TESTE GUARDA: a marca não passa por cima da mensagem, e a linha continua
+    // recuperável. PROCESSED com a marca avançada era a mensagem perdida.
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
+  }, 20_000);
+
   // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a
   // transcrição, ele NÃO atua, e o turno segue exatamente como seguia antes desta PR.
   //

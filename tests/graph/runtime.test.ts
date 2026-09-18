@@ -1045,6 +1045,153 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // deliberately stays on the previous one. A turn that records no inbound id there leaves the
   // frontier back in the previous attendance, so a delayed message from it reads as CURRENT, stamps
   // itself at the end of the channel, and the cut then reads the live conversation as closed.
+  // UMA ESPERA É UMA JANELA, E ALGUÉM PODE ENTRAR NELA (issue #688). O portão de posse do webhook
+  // respondeu ANTES da espera, e a espera dura até o teto (`TURN_WAIT_MS`); a re-checagem que já
+  // existe roda DEPOIS da geração, onde ela suprime o envio e não desfaz uma ferramenta que já mutou
+  // alguma coisa — um ticket aberto, uma etiqueta, uma chamada HTTP de saída.
+  //
+  // A PROVA NÃO É A PALAVRA DO DESFECHO, e é por isso que o teste mede o modelo. `taken-over`
+  // também é o que volta quando a re-checagem pós-geração pega o caso, e ali as ferramentas já
+  // rodaram: quem só olhasse o desfecho leria os dois como o mesmo evento.
+  test("issue #688: a person who takes the conversation over during the wait stops the turn before the invoke", async () => {
+    const contactInboxId = 7477;
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9477,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9477`,
+        lastEventAt: new Date(),
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    // O modelo em si, não a fábrica: `makeModel` é chamada enquanto o turno CARREGA, muito antes do
+    // invoke, então contar chamadas da fábrica não mediria nada.
+    const model = new CaptureReplyModel("resposta");
+    const sent: Array<[number, string]> = [];
+    markTurnInFlight(graphThreadId);
+    const turn = runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9477, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    const waiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        turn,
+        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+      ]),
+    ).toBe(waiting);
+    // Uma pessoa assume enquanto o turno está parado.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 9477 },
+      data: { assigneeType: "User", assigneeId: 4242, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+
+    expect(sent).toEqual([]);
+    expect(model.seen).toEqual([]);
+    // A PALAVRA É OUTRA, e a diferença é toda a contabilidade que vem depois. `taken-over` significa
+    // que o invoke rodou e a mensagem do cliente ESTÁ no canal; aqui o turno parou antes, e a
+    // mensagem não está em memória nenhuma. Lidas como a mesma palavra, é a segunda que some: foi
+    // exatamente isso que fez a tentativa anterior (`1ec96449`) ser revertida.
+    expect(await turn).toBe("taken-over-unread");
+    // E A MARCA FICA ONDE ESTAVA, que é o que essa palavra compra. A lista de exclusão deste caminho
+    // é lida por exclusão e só nomeia `superseded`, então uma palavra nova avança a marca por
+    // padrão — e uma marca por cima de uma mensagem que ninguém leu é a mensagem perdida.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { lastHandledMessageId: true },
+        })
+      ).lastHandledMessageId,
+    ).toBeNull();
+  }, 20_000);
+
+  // E UMA LEITURA DE POSSE QUE FALHA NÃO É UMA DESISTÊNCIA (issue #688). O `botOwnsItNow` de hoje é
+  // fail-closed: ele devolve `false` quando a query falha, o que é certo para os dois usos que ele
+  // tem (a nota de hand-back e o recibo de leitura, ambos suprimíveis — "leaving the note OWED,
+  // which costs nothing"). Usado para ENCERRAR o turno, o mesmo `false` transforma uma falha
+  // transitória de banco em desistência, e o cliente fica sem resposta com o bot ainda dono.
+  //
+  // A decisão é prosseguir, e ela é uma troca medida: prosseguir custa a janela que já existia hoje
+  // (e a re-checagem pós-geração ainda suprime o envio); parar custa uma resposta ao cliente toda
+  // vez que o banco piscar durante a espera, que é mais frequente do que um takeover dentro dela.
+  test("issue #688: an ownership read that FAILS during the wait does not stand the turn down", async () => {
+    const contactInboxId = 7478;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9478,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9478`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const model = new CaptureReplyModel("resposta");
+    const sent: Array<[number, string]> = [];
+    let leituras = 0;
+    markTurnInFlight(graphThreadId);
+    const turn = runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9478, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+        // A leitura de posse do outro lado da espera, e só ela, falha.
+        ownershipRead: async () => {
+          leituras += 1;
+          throw new Error("posse ilegivel (teste)");
+        },
+      } as never,
+    });
+    const waiting = Symbol("still waiting");
+    expect(
+      await Promise.race([
+        turn,
+        new Promise<typeof waiting>((r) => setTimeout(() => r(waiting), 300)),
+      ]),
+    ).toBe(waiting);
+    clearTurnInFlight(graphThreadId);
+
+    // O turno segue: o modelo é chamado e o cliente é respondido. Uma leitura ilegível não pode
+    // inventar uma desistência.
+    expect(await turn).toBe("posted");
+    expect(model.seen.length).toBe(1);
+    expect(sent.length).toBe(1);
+    // E A LEITURA FOI TENTADA. Sem esta linha o teste passa por não exercitar nada — é verde no
+    // código de hoje, que não tem portão nenhum, e continuaria verde num conserto que perguntasse a
+    // posse em outro lugar ou não perguntasse. O que ele guarda é a FALHA não virar desistência, e
+    // isso só significa alguma coisa se a falha tiver acontecido no caminho do turno.
+    expect(leituras).toBeGreaterThan(0);
+  }, 20_000);
+
   // THE WAIT IS OUTSIDE THE `ingest:` QUEUE (PR review round 4), and this is what says so. That key
   // is not ours alone: the PREVIOUS turn's own rollback takes it on the way out, AFTER it has
   // released the thread, and so does continuous ingestion. A wait that held it would starve exactly

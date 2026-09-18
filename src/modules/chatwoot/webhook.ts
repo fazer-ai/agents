@@ -5111,6 +5111,12 @@ export async function processChatwootDelivery(
   // The stand-down's observer read failed (round 20): thrown AFTER the turn's own catch, which
   // would otherwise swallow it as a turn that failed and ask once more.
   let standDownUnreadable = false;
+  // O TURNO PAROU ANTES DO INVOKE porque uma pessoa assumiu a conversa enquanto ele esperava o
+  // thread (issue #688). Nada leu a mensagem do cliente, então ela continua DEVIDA: esta linha é o
+  // que impede o gate de liquidá-la aqui e o que tira o `act` da ingestão lá embaixo, do mesmo jeito
+  // que o observador faz. Sem isso, a mensagem some — a marca passa, a entrega fecha como consumida
+  // e a ingestão a pula, que é exatamente o que fez a tentativa anterior ser revertida.
+  let stoodDownUnread = false;
   // Who is holding it, when somebody else is. A HUMAN taking a conversation is a statement about the
   // message: they will answer it, whichever bot route carried it here. ANOTHER BOT is not — its own
   // delivery of this same message may be running right now, and Chatwoot fans a message to two
@@ -5904,6 +5910,12 @@ export async function processChatwootDelivery(
             standDownUnreadable = true;
           } else if (observes === "yes") {
             handedToObserver = true;
+          } else if (outcome === "taken-over-unread") {
+            // MESMO CAMINHO DO OBSERVADOR, por um motivo próprio (issue #688). Ali a mensagem é do
+            // observador para lembrar; aqui ela não é de ninguém ainda — o turno parou antes do
+            // invoke, então nenhum canal a tem. Liquidar aqui a tiraria da lista de perdas sem que
+            // nada a tivesse lido. A linha fecha lá embaixo, depois que a ingestão a pegou.
+            stoodDownUnread = true;
           } else if (n.message?.id != null) {
             // `posted-partial` answers too: part of the reply IS with the customer, and calling
             // that "consumed" would tell the stranded-delivery sweep nothing ever replied here.
@@ -6470,7 +6482,9 @@ export async function processChatwootDelivery(
       instanceId: params.instanceId,
       deliveryRowId: params.deliveryRowId,
       n,
-      act: act && !observing && !handedToObserver,
+      // `stoodDownUnread` entra pela mesma porta que o observador (issue #688): `act` é o que diz à
+      // ingestão "um turno cobriu isto", e aqui nenhum cobriu.
+      act: act && !observing && !handedToObserver && !stoodDownUnread,
       consumed,
       agentId: rt.agentId,
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,

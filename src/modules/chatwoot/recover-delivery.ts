@@ -1475,6 +1475,16 @@ async function runRecovery(params: {
   //                  BECAUSE the customer was left waiting, and an empty second attempt leaves them
   //                  waiting with nothing else on the way. Not the same as `blocked`, which is a
   //                  policy deciding rather than a model running dry — see `TURN_SETTLED`.
+  //   `taken-over-unread` — uma pessoa assumiu a conversa enquanto o turno esperava o thread, e ele
+  //                   parou ANTES do invoke (issue #688). Fica de fora, e a distância para o
+  //                   `taken-over` logo acima é o motivo de a palavra existir: lá o turno rodou e a
+  //                   mensagem do cliente está no canal, então a pessoa que segura a conversa a vê e a
+  //                   responde; aqui nada leu a mensagem. No caminho AO VIVO o receptor conserta isso
+  //                   mandando-a para a ingestão e só então fechando a linha, mas esta rota não passa
+  //                   por lá: o replay que devia um turno não consulta a ingestão (`replayPosts`), de
+  //                   modo que settlar aqui tiraria da lista de perdas uma mensagem que nenhuma
+  //                   memória tem. O default honesto para um desfecho que ninguém considerou é "ainda
+  //                   devido", e este é um que foi considerado e continua devido.
   //   `no-agent` / `agent-unavailable` — the route cannot answer at all. Both write their own
   //                  operator-facing line, and both need an operator; what they must not do is take
   //                  the message off the worklist that operator reads.

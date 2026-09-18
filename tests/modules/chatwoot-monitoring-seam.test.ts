@@ -4,6 +4,8 @@ import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { contactInboxThreadId } from "@/graph/checkpointer";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { loadAgentConfig } from "@/graph/prepare";
 import { runScopedOn } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
@@ -591,6 +593,111 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     });
     expect(ledger.status).toBe("PROCESSING");
   });
+
+  // A METADE QUE A REVERSÃO COMPROU (issue #688). Um portão de posse do outro lado da espera é
+  // metade do conserto; a outra metade é a mensagem do cliente não sumir por causa dele. A tentativa
+  // anterior (`1ec96449`, revertida em `9dce80e2`) parava antes do invoke e perdia a mensagem: ela
+  // nunca entra no canal, a marca avança mesmo assim, a entrega é liquidada como consumida, e a
+  // ingestão do fim do `processChatwootDelivery` a pula, porque o `act` foi decidido lá atrás,
+  // quando ainda se esperava que um turno a cobrisse.
+  //
+  // O caminho é o mesmo que a #209 abriu para o `agent-unavailable`: quem parou sem ler a mensagem
+  // não liquida aqui, deixa a ingestão pegá-la, e só então a linha fecha.
+  test("issue #688: a takeover during the wait leaves the message to the ingestion instead of losing it", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: {
+        mode: "production",
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    const convId = 38;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "consigo trocar o endereço da entrega?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    // O thread ocupado é o que faz o turno ESPERAR, que é a janela inteira desta issue.
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Claro, posso trocar."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    // Uma pessoa assume enquanto o turno espera o thread.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    // Nada é dito por cima da pessoa, e o turno parou antes do invoke.
+    expect(sent).toEqual([]);
+    expect(seen.outcome).toBe("taken-over-unread");
+    // E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA. É aqui que a tentativa revertida falhava: sem isto,
+    // o cliente escreveu e nenhum lugar do sistema guarda o que ele disse.
+    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
+    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    // E A MARCA NÃO PASSA POR CIMA DELA: uma marca acima de uma mensagem que ninguém leu é a
+    // mensagem perdida, mesmo com a ingestão tendo funcionado.
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+  }, 20_000);
 
   test("a turn that stood down for the observer settles nothing until the ingestion has the message", async () => {
     // The stand-down's own settlement closed the row before the observer was asked (review

@@ -729,6 +729,53 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
   });
 
+  // E O TURNO QUE PAROU ANTES DE LER A MENSAGEM NÃO FECHA NADA (issue #688). O oposto exato do teste
+  // acima, e a distância entre os dois é a razão de `taken-over-unread` ser uma palavra separada de
+  // `taken-over`: lá o turno rodou, a página foi lida e a mensagem do cliente entrou na memória do
+  // agente, então a linha fecha; aqui o portão de posse parou o turno ANTES do invoke e nada leu a
+  // mensagem. No caminho ao vivo o receptor cobre isso mandando a mensagem para a ingestão, mas
+  // ESTE replay devia um turno e não consulta a ingestão — settlar aqui tiraria da lista de perdas
+  // uma mensagem que nenhuma memória tem.
+  //
+  // A posse é lida pelo `ownershipRead` injetado porque é a única forma de acertar a JANELA: o
+  // portão do receptor roda antes e precisa ver a conversa como nossa (senão a entrega nem chega ao
+  // turno), e o takeover tem que acontecer depois dele.
+  test("a takeover that stops the turn before the invoke does NOT close the loss", async () => {
+    const convId = 8998;
+    const messageId = 9498;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }]),
+    });
+    let leituras = 0;
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        ...depsWith(stub),
+        ownershipRead: async () => {
+          leituras += 1;
+          return { ours: false, closed: { outcome: "taken_over" } };
+        },
+      },
+    });
+
+    // A leitura aconteceu de verdade: sem isto o teste passaria com o portão inteiro removido.
+    expect(leituras).toBeGreaterThan(0);
+    // Nada é dito por cima da pessoa que assumiu...
+    expect(stub.sent).toEqual([]);
+    // ...e a linha VOLTA para a lista de perdas, em vez de sair dela calada.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    // O job completa: o que retenta é a varredura, quando a conversa voltar a ser nossa.
+    expect(outcome).toBe("superseded");
+  });
+
   test("a conversation the mirror still calls resolved is answered anyway", async () => {
     // The case that refuted this file's first design. An incoming message on a resolved conversation
     // REOPENS it (MEASURED at the fork: `Message#reopen_resolved_conversation` — `pending` on a bot

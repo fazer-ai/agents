@@ -10,7 +10,11 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { agentStillSpeaks } from "@/modules/agents/speaks";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { describeClosedGate } from "@/modules/chatwoot/gate-close";
+import {
+  describeClosedGate,
+  type GateCloseDetail,
+} from "@/modules/chatwoot/gate-close";
+import { conversationOwnershipNow } from "@/modules/chatwoot/human-takeover";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
@@ -188,6 +192,20 @@ export type RunAgentTurnOutcome =
   // ../graph/thread-claim.ts is the only step that sees the other one, and it reports it in
   // `heldBefore`. Issue #593.
   | "thread-busy"
+  // UMA PESSOA ASSUMIU A CONVERSA ENQUANTO ESTE TURNO ESPERAVA O THREAD (issue #688), e o turno
+  // parou ANTES do invoke. A forma é a do `thread-busy` — nada foi escrito: nenhum divisor, nenhum
+  // marcador, nenhum invoke — e a contabilidade é a mesma: a mensagem do cliente continua DEVIDA.
+  //
+  // Palavra separada do `taken-over`, e a distância entre as duas é o conserto inteiro. `taken-over`
+  // é o que a re-checagem DEPOIS da geração devolve: ali o invoke rodou, a mensagem do cliente está
+  // no canal, e o que foi suprimido é só o envio. Aqui o invoke não rodou, então a mensagem não está
+  // em memória nenhuma — e lida como `taken-over` ela desaparece, porque a marca avança, o receptor
+  // liquida a entrega como consumida e a ingestão a pula. Foi exatamente isso que fez a tentativa
+  // anterior (`1ec96449`) ser revertida em `9dce80e2`.
+  //
+  // Então esta palavra fica FORA do avanço da marca abaixo, e o receptor a trata como trata o
+  // observador: não liquida no gate, deixa a ingestão pegar a mensagem, e só então fecha a linha.
+  | "taken-over-unread"
   | "superseded"
   // A RAJADA FOI ATENDIDA, POR QUEM NÃO SOMOS NÓS (issue #703). A forma é a do `superseded` — nada
   // foi postado, o turno foi desfeito — e a contabilidade é a OPOSTA, que é o motivo de ser palavra
@@ -235,6 +253,21 @@ export interface RuntimeDeps {
   // that leans on real time to cross the boundary passes for the wrong reason the moment the
   // machine is slow enough to cross it before the first read.
   now?: () => Date;
+  // A LEITURA DE POSSE DO OUTRO LADO DA ESPERA (issue #688), injetável porque o caso que ela existe
+  // para cobrir é uma FALHA dela, e uma falha de banco não se encena de fora. Em produção é
+  // `conversationOwnershipNow`, o mesmo leitor que o webhook e o `recover-takeover` usam.
+  ownershipRead?: (p: {
+    tenantId: bigint;
+    instanceId: bigint;
+    conversationId: number;
+    ourAgentBotId: number | null;
+    base: PrismaClient;
+  }) => Promise<
+    // `closed` acompanha o `false` porque quem age sobre esta leitura escreve a linha do `handoff`
+    // com ela: lê-la de novo lá embaixo responderia sobre outro instante, que é a mesma regra que o
+    // `describeClosedGate` enuncia do lado dele.
+    { ours: true } | { ours: false; closed: GateCloseDetail | null }
+  >;
 }
 
 // THE BADGE FOR A DELIVERY THAT ENDED INCOMPLETE, written at the two sites that can produce one (a
@@ -1383,6 +1416,9 @@ async function runTurnBody(
   // Set only by the stand-down inside the `ingest:` lock below, and read out where that section has
   // committed, beside `calledOff`, because both say the same thing about what was written: nothing.
   let threadBusy = false;
+  // Mesma forma outra vez, para a janela que a ESPERA abre (issue #688): lida lá embaixo, onde a
+  // seção já commitou e nada foi escrito.
+  let takenOverUnread = false;
   // What the turn produced, kept when the TOKEN silenced it, and consumed in the `finally` once the
   // in-flight flag the rollback refuses on has been released. The messages travel rather than a
   // boolean because the rollback runs outside the scope that has them.
@@ -1542,6 +1578,61 @@ async function runTurnBody(
             ) {
               calledOff = true;
               return null;
+            }
+            // E QUEM É O DONO DA CONVERSA, pela mesma razão e sobre uma janela mais longa (issue
+            // #688). O portão do receptor respondeu ANTES da espera, e uma espera pelo outro invoke
+            // pode durar o teto inteiro; o `stillWanted` acima não cobre isso — ele responde sobre o
+            // RUN ter sido aposentado, não sobre quem detém a conversa. Tudo daqui para baixo chama
+            // o modelo e roda as ferramentas dele, e a re-checagem que já existe fica DEPOIS da
+            // geração: ela suprime o envio e não desfaz um ticket aberto, uma etiqueta escrita ou
+            // uma chamada HTTP de saída.
+            //
+            // SÓ NO CAMINHO QUE ESPEROU. Todo outro caller chega nesta linha tão rápido quanto
+            // sempre chegou, e alargar o portão para eles é outra decisão, com testes próprios.
+            //
+            // E A LEITURA QUE FALHA DEIXA O TURNO SEGUIR, que é o oposto do `botOwnsItNow` daqui de
+            // cima. Aquele é fail-closed de propósito, porque os dois usos dele são supríveis (a
+            // nota de hand-back e o recibo de leitura: "leaving the note OWED, which costs
+            // nothing"). Aqui o que está em jogo é a resposta ao cliente: um `false` vindo de um
+            // banco que piscou vira desistência, e isso atinge todo turno que esperou. Prosseguir
+            // custa a janela que já existia hoje — e a re-checagem pós-geração ainda segura o envio;
+            // parar custa uma conversa sem resposta toda vez que a leitura falhar, que é mais
+            // frequente do que um takeover dentro da espera. Foi o fail-closed que derrubou a
+            // tentativa anterior, na PR fazer-ai/agents#684 (commit `1ec96449`, revertido em `9dce80e2` —
+            // shas do repo PÚBLICO, que o mirror regenera; eles não existem neste histórico).
+            //
+            // O leitor é o COMPARTILHADO (`conversationOwnershipNow`), o mesmo que o receptor e o
+            // `recover-takeover` usam, em vez de um segundo privado que responda diferente.
+            if (turnWaitUntil !== null) {
+              const posse = await (
+                params.deps?.ownershipRead ?? conversationOwnershipNow
+              )({
+                tenantId,
+                instanceId,
+                conversationId,
+                ourAgentBotId: loaded.agentBotId ?? agentBotId,
+                base,
+              }).catch((err: unknown) => {
+                logger.warn(
+                  { err, conv: conversationId },
+                  "turn: ownership after the wait could not be read; carrying on rather than standing the turn down",
+                );
+                return { ours: true as const };
+              });
+              if (!posse.ours) {
+                // A MESMA LINHA QUE OS OUTROS TRÊS PORTÕES ESCREVEM, pela regra que a #271 fixou: um
+                // operador filtrando o log por um desfecho tem que receber TODOS os portões que
+                // fecham nesta pergunta, e este é o quarto. Escrita aqui em vez de na saída lá
+                // embaixo porque o `closed` veio junto da leitura e um segundo `findUnique`
+                // responderia sobre outro instante.
+                emitFlowEvent(flow, {
+                  stage: "handoff",
+                  status: "ok",
+                  detail: posse.closed ?? { outcome: "taken_over" },
+                });
+                takenOverUnread = true;
+                return null;
+              }
             }
             // READ AFTER THE CLAIM, never before it. `markTurnOwning` can wait out an append that is
             // mid-flight on another replica, and that append writes exactly these markers: a row read
@@ -1726,6 +1817,13 @@ async function runTurnBody(
           String(conversationId),
         );
         return "stale";
+      }
+      if (takenOverUnread) {
+        logger.info(
+          "turn: a person took conversation %s over while this turn waited for the thread, standing down before the invoke; the message is still owed",
+          String(conversationId),
+        );
+        return "taken-over-unread";
       }
       if (closedConversationId !== null) {
         // Outside the lock: this opens its own transaction, and nesting one inside an advisory-lock
@@ -2799,8 +2897,15 @@ export async function runAgentTurn(
   // Not covered by the command's own advance, which is the shape a review round measured: /reset
   // writes the boundary in its FIRST step and advances this watermark in its LAST, with a dozen
   // Chatwoot calls in between, so a process dying in that stretch leaves exactly the gap above.
+  // E `taken-over-unread` FICA FORA (issue #688), pelo motivo oposto ao do `superseded`: lá a marca
+  // fica parada porque a mensagem mais nova vem responder a rajada de novo; aqui ela fica parada
+  // porque NINGUÉM leu esta mensagem. O turno parou antes do invoke, então ela não está no canal, e
+  // uma marca por cima dela é a mensagem perdida — o receptor liquida a entrega e a ingestão a pula.
+  // A lista é lida por exclusão, então esta linha não é opcional: uma palavra que ela não nomeia
+  // avança a marca por padrão.
   if (
     outcome !== "superseded" &&
+    outcome !== "taken-over-unread" &&
     n.message?.id != null &&
     loaded.conversationDbId !== null
   ) {

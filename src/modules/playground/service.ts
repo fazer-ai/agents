@@ -217,10 +217,12 @@ export function applyToolMocks(
   // writes a follow-up production would have stayed silent on, which is the one decision the
   // playground exists to show (round 12).
   //
-  // BY IDENTITY, NEVER BY NAME (round 14). With natives revoked the tool under this name is the
-  // operator's own HTTP tool, which really calls something: refusing their mock there would have the
-  // playground hit the live endpoint — a simulation with side effects, which is the one thing it
-  // exists not to have.
+  // BY IDENTITY, NEVER BY NAME (round 14). The exemption is for OUR tool, asked of `inertToolsFor`,
+  // because a mock is refused only where the return IS the tool. Round 14 gave a second reason — that
+  // with natives revoked the tool under this name is the operator's own, so refusing their mock would
+  // have the playground hit the live endpoint — and #715 retired it: #457 reserves a native name
+  // against every other source even when the native is not built, so no tool of theirs is ever bound
+  // under it. Asking by identity is what kept this right through both readings.
   for (const n of protocol) names.delete(n);
   if (names.size === 0) return tools;
   return tools.map((tl) =>

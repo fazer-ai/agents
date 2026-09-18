@@ -3953,7 +3953,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             sender: { id: 41, type: "user" },
           },
           // E o cliente escreveu de novo DEPOIS dela: ainda em aberto, e é dela que sai o flush.
-          { id: 3, content: "na verdade era outra coisa", message_type: 0, private: false },
+          {
+            id: 3,
+            content: "na verdade era outra coisa",
+            message_type: 0,
+            private: false,
+          },
         ],
       }),
       sendMessage: async (conversationId: number, content: string) => {

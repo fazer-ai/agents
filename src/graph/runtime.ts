@@ -2612,7 +2612,12 @@ export async function runAgentTurn(
               page: latest,
               scalarFloor: null,
               state,
-              managedBotId: agentBotId,
+              // A PERSONA CARREGADA, não a rota que trouxe a entrega (PR #701, review round 7).
+              // Quem envia é `loaded.agentBotToken`; com o inbox religado entre o roteamento e o
+              // load, o aviso que ESTA persona acabou de postar seria saída de terceiro e o portão
+              // engoliria a resposta dela mesma. Mesmo conserto que o flush levou na rodada 6.
+              managedBotId: loaded.agentBotId,
+              foreignReplyCloses: true,
             });
             // TWO QUESTIONS, and the second one is new (PR #701, review round 1). "Is anything newer
             // still open" is the supersede this gate always asked. "Is what I am about to answer
@@ -2628,7 +2633,7 @@ export async function runAgentTurn(
             // back for them.
             const openAbove = open.some((m) => m.id > triggerId);
             const answeredByOther =
-              triggerId <= foreignReplyBoundary(latest, agentBotId);
+              triggerId <= foreignReplyBoundary(latest, loaded.agentBotId);
             if (openAbove || answeredByOther) {
               logger.info(
                 "direct turn: superseded mid-turn (conv=%s), deferring",

@@ -58,6 +58,7 @@ const CONV_THROWS = 9421;
 const CONV_GATE_TAKEN = 9422;
 const CONV_LEDGER = 9423;
 const CONV_ORPHAN = 9434;
+const CONV_HUMAN_REPLIED = 9435;
 const CONV_OTHER_BOT = 9424;
 const CONV_OBS_FAILS = 9425;
 const CONV_HANDLED_FLOOR = 9426;
@@ -77,13 +78,23 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
-function page(msgs: Array<{ id: number; content: string }>) {
+function page(
+  msgs: Array<{
+    id: number;
+    content: string;
+    // Uma saída, e de quem: o que separa a resposta de uma PESSOA da nossa (PR #701).
+    type?: number;
+    sender?: string;
+    senderId?: number;
+  }>,
+) {
   return {
     payload: msgs.map((m) => ({
       id: m.id,
       content: m.content,
-      message_type: 0,
+      message_type: m.type ?? 0,
       private: false,
+      ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
     })),
   };
 }
@@ -269,6 +280,7 @@ describe.skipIf(!dbUp)(
       inboxDbId = inbox.id;
       await seedConversation(CONV_OBSERVED, 94_100);
       await seedConversation(CONV_ORPHAN, 94_340);
+      await seedConversation(CONV_HUMAN_REPLIED, 94_350);
       await seedConversation(CONV_DISABLED, 94_110);
       await seedConversation(CONV_FLIPPED_MID_TURN, 94_120);
       await seedConversation(CONV_CEILING, 94_130);
@@ -409,6 +421,56 @@ describe.skipIf(!dbUp)(
         expect(keys.map((k) => k.split(":").slice(-2).join(":"))).toEqual([
           "94340:1",
           "94340:2",
+        ]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("a human reply does not hide the customer's questions from the observer", async () => {
+      // PR #701, review round 7. Elegibilidade para RESPONDER e elegibilidade para LEMBRAR são
+      // perguntas diferentes, e a cerca da resposta de terceiro só responde a primeira. Ligada aqui,
+      // uma resposta humana esconde da memória do agente as perguntas atrás dela, e a passagem
+      // declara sucesso sem ter lembrado nada — que é exatamente o que a observação existe para
+      // fazer.
+      const job = await claimedJob(CONV_HUMAN_REPLIED, 2);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "monitoring" },
+      });
+      const s3 = stub([
+        page([
+          { id: 1, content: "quanto custa a consulta?" },
+          { id: 2, content: "e tem convênio?" },
+          {
+            id: 3,
+            content: "oi, sou a Ana, já respondo",
+            type: 1,
+            sender: "user",
+            senderId: 41,
+          },
+        ]),
+      ]);
+      try {
+        await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s3.makeClient as never,
+          },
+        });
+        const keys = (await ingestJobs())
+          .map((j) => j.dedupeKey)
+          .filter((k) => k.includes("94350:"));
+        expect(keys.map((k) => k.split(":").slice(-2).join(":"))).toEqual([
+          "94350:1",
+          "94350:2",
         ]);
       } finally {
         await suDb.agent.update({

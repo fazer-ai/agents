@@ -2160,6 +2160,97 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(sent.length).toBe(1);
   });
 
+  // E O TOPO DO LEDGER É O DA RAJADA, não o do payload (PR #701, review round 7). A recusa relê a
+  // página, então a rajada recusada pode conter mensagem MAIS NOVA que o `lastMessageId` do job. A
+  // dispensa já nomeia todas elas; o ledger, fechando só até o `last` antigo, deixava a entrega da
+  // mais nova parada e reportada como perda, enquanto a seleção já a excluía.
+  test("the ceiling's refusal closes the ledger row of a message newer than the payload", async () => {
+    const convId = 957;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id },
+      data: { replyClaimFloorMessageId: 0 },
+    });
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ceiling-newer-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        // MAIS NOVA que o `lastMessageId` do job abaixo.
+        inboundMessageId: 3,
+      },
+      select: { id: true },
+    });
+    const monthStart = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+    );
+    await suDb.tenant.update({
+      where: { id: tenantId },
+      data: {
+        settings: { spendCeiling: { enabled: true, monthlyInboxUsd: 10 } },
+      },
+    });
+    await suDb.spendCostSnapshot.upsert({
+      where: {
+        tenantId_source_monthStart: { tenantId, source: "inbox", monthStart },
+      },
+      create: {
+        tenantId,
+        source: "inbox",
+        monthStart,
+        costUsd: 99,
+        polledAt: new Date(),
+      },
+      update: { costUsd: 99, polledAt: new Date() },
+    });
+    try {
+      await flushDebounceJob({
+        job: jobFor(convId, { lastMessageId: 2 }),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+                { id: 3, content: "me manda a segunda via" },
+              ]),
+            ],
+            sent: [],
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+    } finally {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: {} },
+      });
+      await suDb.spendCostSnapshot.deleteMany({
+        where: { tenantId, source: "inbox" },
+      });
+    }
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: reported.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.

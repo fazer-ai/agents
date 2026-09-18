@@ -3919,6 +3919,101 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("superseded");
   });
 
+  // QUEM CLASSIFICA A SAÍDA É QUEM A PRODUZ, no caminho direto também (PR #701, review round 7). O
+  // `agentBotId` é a ROTA que trouxe a entrega; quem envia é `loaded.agentBotToken`, da persona que o
+  // inbox serve no momento do load. Religado o inbox entre uma coisa e outra, o aviso que ESTA
+  // persona acabou de postar seria saída de terceiro, e o portão engoliria a resposta dela mesma.
+  test("issue #698: the persona that sends classifies its own outgoing on the direct path", async () => {
+    const OTHER_BOT = 87;
+    const OTHER_INBOX = 88;
+    const key2 = await suDb.vaultEntry.create({
+      data: { tenantId, name: "llm-key-direct-2", secret: encryptJson("sk") },
+      select: { id: true },
+    });
+    const agent2 = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Persona direta",
+        systemPrompt: "Você é prestativa.",
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: `vault:${key2.id}`,
+        },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: agent2.id,
+        chatwootAgentBotId: OTHER_BOT,
+        accessToken: encryptJson("BOT2"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `rt-direct-2-${process.pid}`,
+        name: "Persona direta",
+      },
+    });
+    const inbox2 = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX,
+        name: "Outro inbox",
+        agentId: agent2.id,
+      },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9700,
+        status: "pending",
+        inboxId: inbox2.id,
+        threadId: `${tenantId}:${instanceId}:9700`,
+        lastEventAt: new Date(),
+        replyClaimFloorMessageId: 0,
+      },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          {
+            id: 2,
+            content: "só um instante",
+            message_type: 1,
+            private: false,
+            // O aviso é DESTA persona, a que o inbox serve agora.
+            sender: { id: OTHER_BOT, type: "agent_bot" },
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      // A ROTA nomeia o bot antigo.
+      agentBotId: 9,
+      event: incoming({ conversationId: 9700, inboxId: OTHER_INBOX }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(sent.length).toBe(1);
+  });
+
   // The bound on the case above. Supersede drops a reply the newest message made obsolete, and the
   // re-armed flush answers the whole burst instead. It cannot reach the closing line, which left
   // before it — and it must not: by then the conversation reads `open`, so the flush re-decides

@@ -585,11 +585,21 @@ export function selectOpenMessages(params: {
   // recorded here message by message. Null or a mismatch means the reply is somebody else's, and
   // somebody else's reply closes what it answered (PR #701, review round 1).
   managedBotId: number | null;
+  // WHETHER A REPLY BY SOMEBODY ELSE CLOSES A MESSAGE, and every caller has to say it because the
+  // two answers are both right, for different questions (PR #701, review round 7).
+  //
+  // Asking "may I REPLY to this?", yes: a person answered it, and answering again talks over them.
+  // Asking "should I REMEMBER this?", no: the observer's memory is what the CUSTOMER said, and who
+  // answered does not change that. Applied to ingestion, a human reply hides the questions behind it
+  // from the agent's memory, and the hand-over then reports success having remembered nothing.
+  foreignReplyCloses: boolean;
 }): ChatwootMessageRow[] {
   const { page, scalarFloor, state, managedBotId } = params;
   const perMessage = state.floor;
   const pageArray = [...page];
-  const closedByOther = foreignReplyBoundary(pageArray, managedBotId);
+  const closedByOther = params.foreignReplyCloses
+    ? foreignReplyBoundary(pageArray, managedBotId)
+    : 0;
   if (perMessage === null) {
     // BEFORE THE PER-MESSAGE ERA THE FENCE STILL APPLIES (PR #701, review round 2). Down here the
     // scalars decide, and they do not see outgoing messages at all — so a burst selected by them can

@@ -395,6 +395,7 @@ export async function coalesceAndRunTurn(
         scalarFloor: targetWatermark,
         state,
         managedBotId: ctx.managedBotId,
+        foreignReplyCloses: true,
       }).some((m) => m.id > targetWatermark);
       // AND WHETHER THIS BURST IS STILL OURS TO ANSWER (PR #701, review round 1). The question above
       // is about what came AFTER; a person who answered the burst itself closes it without writing a
@@ -1024,6 +1025,11 @@ async function ingestObservedBurst(args: {
         scalarFloor: floor,
         state: selState,
         managedBotId: ctx.managedBotId,
+        // A pergunta aqui é "devo LEMBRAR disto?", não "posso responder a isto?" (PR #701, review
+        // round 7). O que a memória do observador guarda é o que o CLIENTE disse, e quem respondeu
+        // não muda isso: com a cerca ligada, uma resposta humana esconde da memória as perguntas
+        // atrás dela, e a passagem declara sucesso sem ter lembrado nada.
+        foreignReplyCloses: false,
       }).filter((m) => armedLast === null || m.id <= armedLast);
       const resolveQuoted = buildQuoteResolver(messages);
       const graphThreadId = resolveGraphThreadId(
@@ -1533,6 +1539,7 @@ export async function flushDebounceJob(
       // seria classificado como de terceiro — a fronteira fecharia a própria rajada dela e o portão
       // engoliria a resposta. Quem classifica a saída tem que ser o mesmo que a produz.
       managedBotId: ctx.loaded.agentBotId,
+      foreignReplyCloses: true,
     });
   };
 
@@ -1866,7 +1873,18 @@ export async function flushDebounceJob(
               ) - 1,
             )
           : (ctx.watermark ?? null),
-        upToMessageId: last,
+        // E O TOPO TAMBÉM É O DA RAJADA (PR #701, review round 7). `selectAnswerableBurst` relê a
+        // página, então a rajada recusada pode conter mensagem MAIS NOVA que o `lastMessageId` do
+        // payload. A dispensa já nomeia todas elas; o ledger, fechando só até o `last` antigo, deixa
+        // a entrega da mais nova parada e reportada como perda, enquanto a seleção já a exclui.
+        upToMessageId: ceilingBurst
+          ? Math.max(
+              last,
+              ...[...ceilingBurst.pending, ...ceilingBurst.dropped].map(
+                (m) => m.id,
+              ),
+            )
+          : last,
         // False, and for the reason the gate below gives: what closed this exit is a decision about
         // the TENANT, which holds for whichever route carried the message.
         heldByAnotherBot: false,

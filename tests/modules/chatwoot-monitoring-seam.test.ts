@@ -904,194 +904,110 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
   }, 20_000);
 
-  // E UM ÁUDIO QUE JÁ TRAZ TEXTO NÃO É PLACEHOLDER (issue #688, review r5). `renderInboundMessage`
-  // usa o `content` da mensagem como fallback da transcrição (`m.transcribedText ?? text`), então um
-  // áudio com conteúdo não vazio JÁ tem palavras utilizáveis. Lido como placeholder, a parada deixa
-  // o `act` da ingestão em pé, nada é enfileirado, a linha fecha PROCESSED — e se o STT estiver
-  // desligado ou falhar não vem write-back nenhum, então o texto que o invoke anterior teria
-  // guardado some. O conserto da r4 não pode cobrar isso de uma mensagem que já veio com palavras.
-  test("issue #688: an audio that already carries text is ingested, not treated as a placeholder", async () => {
+  // E COM UMA LEGENDA OU UM ASSUNTO O PORTÃO CONTINUA NÃO ATUANDO (issue #688, review r8). A
+  // pergunta que ele faz NÃO é se a mensagem já tem palavras — uma legenda de áudio e o assunto de um
+  // e-mail são palavras, e a transcrição ainda vem —, é se ainda vem mais. Perguntando pelas palavras,
+  // o portão atuava sobre um áudio legendado, a ingestão gravava o id no dedup do thread, e a
+  // transcrição chegava depois para ser descartada como duplicata: as palavras do áudio perdidas para
+  // sempre, que é a perda desta issue por mais uma porta.
+  test("issue #688: a caption or a subject does not make the gate act on an audio awaiting STT", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { mode: "production", settings: { debounce: { enabled: false } } },
     });
-    const convId = 42;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
-    deliverySeq += 1;
-    messageSeq += 1;
-    const messageId = messageSeq;
-    const sent: string[] = [];
-    const seen = { outcome: null as string | null };
-    const n = normalizeChatwootEvent({
-      event: "message_created",
-      id: messageId,
-      private: false,
-      // O provedor mandou o áudio COM o texto no corpo: o render o usa como transcrição.
-      content: "queria saber se ainda dá pra trocar",
-      message_type: "incoming",
-      sender: { id: 88, name: "Cliente", type: null },
-      attachments: [
+    for (const [convId, extra] of [
+      [42, { content: "queria saber se ainda dá pra trocar" }],
+      [
+        44,
         {
-          id: 900 + messageId,
-          file_type: "audio",
-          data_url: "https://chat.late.example/audio.ogg",
+          content: "",
+          content_attributes: {
+            email: { subject: "recuperar o acesso à minha conta" },
+          },
         },
       ],
-      conversation: conversation(convId, {
-        assigneeType: null,
-        status: "pending",
-      }),
-    });
-    if (!n) throw new Error("payload did not normalize");
-    const delivery = await suDb.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+    ] as const) {
+      const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+      deliverySeq += 1;
+      messageSeq += 1;
+      const messageId = messageSeq;
+      const seen = { outcome: null as string | null };
+      const n = normalizeChatwootEvent({
         event: "message_created",
-        status: "PENDING",
-        conversationId: convId,
-        inboundMessageId: messageId,
-      },
-      select: { id: true },
-    });
-    const graphThreadId = contactInboxThreadId(
-      tenantId,
-      instanceId,
-      81_000 + convId,
-    );
-    markTurnInFlight(graphThreadId);
-    const run = processChatwootDelivery({
-      tenantId,
-      instanceId,
-      deliveryRowId: delivery.id,
-      agentBotId: OUR_BOT,
-      normalized: n,
-      base: appDb,
-      onDirectTurn: (r) => {
-        seen.outcome =
-          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
-      },
-      deps: {
-        makeClient: (async () =>
-          ({
-            sendMessage: async (_id: number, text: string) => {
-              sent.push(text);
-              return {};
-            },
-            sendPrivateNote: async () => ({}),
-            toggleTyping: async () => ({}),
-          }) as unknown as ChatwootClient) as never,
-        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
-      },
-    });
-    await new Promise((r) => setTimeout(r, 300));
-    await suDb.conversation.updateMany({
-      where: { tenantId, chatwootConversationId: convId },
-      data: { assigneeType: "User", assigneeId: 5, status: "open" },
-    });
-    clearTurnInFlight(graphThreadId);
-    await run;
-
-    expect(sent).toEqual([]);
-    expect(seen.outcome).toBe("taken-over-unread");
-    // As palavras que o cliente mandou entram na memória, como entrariam num texto comum.
-    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
-    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
-  }, 20_000);
-
-  // E O ASSUNTO DE UM E-MAIL TAMBÉM SÃO PALAVRAS (issue #688, review r6). O render põe o
-  // `<assunto>` por FORA do corpo, depois de todos os ramos, e num e-mail de corpo vazio com um
-  // áudio anexado ele É a mensagem — o caso que a #598 documenta, em que o assunto carrega o pedido.
-  // Lido como placeholder, a parada não ingere nada, a linha fecha, e com o STT desligado ou falhando
-  // não vem write-back que salve as palavras do cliente.
-  test("issue #688: an email subject beside an untranscribed audio counts as words", async () => {
-    await suDb.agent.update({
-      where: { id: agentDbId },
-      data: { mode: "production", settings: { debounce: { enabled: false } } },
-    });
-    const convId = 44;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
-    deliverySeq += 1;
-    messageSeq += 1;
-    const messageId = messageSeq;
-    const seen = { outcome: null as string | null };
-    const n = normalizeChatwootEvent({
-      event: "message_created",
-      id: messageId,
-      private: false,
-      content: "",
-      message_type: "incoming",
-      sender: { id: 88, name: "Cliente", type: null },
-      content_attributes: {
-        email: { subject: "recuperar o acesso à minha conta" },
-      },
-      attachments: [
-        {
-          id: 900 + messageId,
-          file_type: "audio",
-          data_url: "https://chat.late.example/audio.ogg",
+        id: messageId,
+        private: false,
+        message_type: "incoming",
+        sender: { id: 88, name: "Cliente", type: null },
+        attachments: [
+          {
+            id: 900 + messageId,
+            file_type: "audio",
+            data_url: "https://chat.late.example/audio.ogg",
+          },
+        ],
+        conversation: conversation(convId, {
+          assigneeType: null,
+          status: "pending",
+        }),
+        ...extra,
+      });
+      if (!n) throw new Error("payload did not normalize");
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `mon-${process.pid}-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+          conversationId: convId,
+          inboundMessageId: messageId,
         },
-      ],
-      conversation: conversation(convId, {
-        assigneeType: null,
-        status: "pending",
-      }),
-    });
-    if (!n) throw new Error("payload did not normalize");
-    const delivery = await suDb.chatwootWebhookDelivery.create({
-      data: {
+        select: { id: true },
+      });
+      const graphThreadId = contactInboxThreadId(
         tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `mon-${process.pid}-${deliverySeq}`,
-        event: "message_created",
-        status: "PENDING",
-        conversationId: convId,
-        inboundMessageId: messageId,
-      },
-      select: { id: true },
-    });
-    const graphThreadId = contactInboxThreadId(
-      tenantId,
-      instanceId,
-      81_000 + convId,
-    );
-    markTurnInFlight(graphThreadId);
-    const run = processChatwootDelivery({
-      tenantId,
-      instanceId,
-      deliveryRowId: delivery.id,
-      agentBotId: OUR_BOT,
-      normalized: n,
-      base: appDb,
-      onDirectTurn: (r) => {
-        seen.outcome =
-          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
-      },
-      deps: {
-        makeClient: (async () =>
-          ({
-            sendMessage: async () => ({}),
-            sendPrivateNote: async () => ({}),
-            toggleTyping: async () => ({}),
-          }) as unknown as ChatwootClient) as never,
-        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
-      },
-    });
-    await new Promise((r) => setTimeout(r, 300));
-    await suDb.conversation.updateMany({
-      where: { tenantId, chatwootConversationId: convId },
-      data: { assigneeType: "User", assigneeId: 5, status: "open" },
-    });
-    clearTurnInFlight(graphThreadId);
-    await run;
+        instanceId,
+        81_000 + convId,
+      );
+      markTurnInFlight(graphThreadId);
+      const run = processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OUR_BOT,
+        normalized: n,
+        base: appDb,
+        onDirectTurn: (r) => {
+          seen.outcome =
+            r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+        },
+        deps: {
+          makeClient: (async () =>
+            ({
+              sendMessage: async () => ({}),
+              sendPrivateNote: async () => ({}),
+              toggleTyping: async () => ({}),
+            }) as unknown as ChatwootClient) as never,
+          makeModel: () =>
+            new FakeListChatModel({ responses: ["Já te digo."] }),
+        },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: convId },
+        data: { assigneeType: "User", assigneeId: 5, status: "open" },
+      });
+      clearTurnInFlight(graphThreadId);
+      await run;
 
-    expect(seen.outcome).toBe("taken-over-unread");
-    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
-    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
-  }, 20_000);
+      // O desfecho é o de SEMPRE, e não o da parada.
+      expect(seen.outcome).toBe("taken-over");
+      // E o dedup do thread fica livre para a transcrição que vem no `message_updated`.
+      const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+      expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    }
+  }, 30_000);
 
   // E A LINHA DIZ QUE NENHUM TURNO COBRIU A MENSAGEM (issue #688, review r5). Quem escrevia esse
   // fato era o `settleDelivery`, que esta parada deliberadamente não chama. Sem ele a coluna

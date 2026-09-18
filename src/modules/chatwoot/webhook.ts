@@ -149,6 +149,7 @@ import {
 import { withConversationLabels } from "./labels";
 import { mirrorChatwootEvent } from "./mirror";
 import {
+  awaitsTranscription,
   type ControlCommand,
   controlCommand,
   effectiveAssignee,
@@ -157,7 +158,6 @@ import {
   heldByAnotherParty,
   inboundTranscriptionOnUpdate,
   incomingRenderable,
-  isIncomingMessage,
   isNewHumanReplyToCustomer,
   isNewIncomingMessage,
   mayBeNewHumanReply,
@@ -1746,11 +1746,7 @@ export function turnHadTheWords(m: {
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
-  if (n.event !== "message_updated" || !isIncomingMessage(n)) return false;
-  const audio = firstAudioAttachment(n);
-  return Boolean(
-    audio && !audio.transcribedText && !n.message?.transcribedText,
-  );
+  return n.event === "message_updated" && awaitsTranscription(n);
 }
 
 // The EPISODE's /teste stamp, for the resolve-triggered closing gate. Its own read rather than the

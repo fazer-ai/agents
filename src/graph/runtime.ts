@@ -22,15 +22,13 @@ import {
   pendingIncoming,
 } from "@/modules/chatwoot/messages";
 import {
+  awaitsTranscription,
   firstAudioAttachment,
   incomingRenderable,
   isIncomingMessage,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
-import {
-  audioAwaitsWords,
-  renderInboundMessage,
-} from "@/modules/chatwoot/render";
+import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
@@ -2851,20 +2849,24 @@ export async function runAgentTurn(
     // customer gets two replies, the second computed from a history without the first, and the
     // channel the second turn saves undoes what the first wrote (issue #588).
     waitForThreadTurn: true,
-    // ...E O PORTÃO DE POSSE DO OUTRO LADO DELA NÃO ATUA SOBRE UMA NOTA DE VOZ QUE AINDA ESPERA A
-    // TRANSCRIÇÃO (issue #688, review r7). Parar o turno significa mandar a mensagem para a ingestão
-    // contínua, e a ingestão grava o id no dedup do thread — o que faz a transcrição que chega
-    // depois, no `message_updated` do STT, ser descartada como duplicata. As duas saídas para um
-    // áudio são então PERDER o que ele já traz (se a parada não ingere) ou perder a transcrição (se
-    // ingere), e nenhuma das duas é aceitável para o defeito que esta issue conserta.
+    // ...E O PORTÃO DE POSSE DO OUTRO LADO DELA NÃO ATUA SOBRE UMA MENSAGEM QUE AINDA VAI RECEBER
+    // MAIS CONTEÚDO (issue #688, review r7-r8), que hoje é uma só: a nota de voz esperando o STT.
     //
-    // Sete rodadas de review chegaram a esse fundo por caminhos diferentes, e a saída não é uma
-    // terceira condição no receptor: é a ingestão aprender a ENRIQUECER uma mensagem que já folhou,
-    // que mexe no dedup compartilhado e é issue própria. Até lá, uma nota de voz segue exatamente
-    // como seguia antes desta PR — o turno roda, a re-checagem pós-geração suprime o envio, e a
-    // transcrição tardia chega à memória pelo caminho de sempre. Nenhuma regressão, e o conserto
-    // vale para todo o resto, que é a população da issue.
-    recheckOwnershipAfterWait: !audioAwaitsWords(renderable),
+    // Parar o turno significa mandar a mensagem para a ingestão contínua, e a ingestão grava o id no
+    // dedup do thread — o que faz a transcrição que chega depois, sobre o MESMO id, ser descartada
+    // como duplicata. As duas saídas para um áudio são então perder o que ele já traz, ou perder a
+    // transcrição, e nenhuma serve para o defeito que esta issue conserta.
+    //
+    // A PERGUNTA NÃO É SE A MENSAGEM JÁ TEM PALAVRAS, e essa distinção custou duas rodadas: uma
+    // legenda, ou o assunto de um e-mail, SÃO palavras, e mesmo assim a transcrição ainda vem. O que
+    // decide é se ainda vem mais.
+    //
+    // A terceira saída — a ingestão aprender a ENRIQUECER uma mensagem que já folhou — mexe no dedup
+    // compartilhado e é issue própria. Até lá, uma nota de voz segue exatamente como seguia antes
+    // desta PR: o turno roda, a re-checagem pós-geração suprime o envio, e a transcrição tardia
+    // chega à memória pelo caminho de sempre. Nenhuma regressão, e o conserto vale para todo o
+    // resto, que é a população da issue.
+    recheckOwnershipAfterWait: !awaitsTranscription(n),
     // The direct path answers exactly one message, so the receipt set is that message.
     readMessageIds: typeof n.message?.id === "number" ? [n.message.id] : [],
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is

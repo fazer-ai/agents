@@ -102,42 +102,6 @@ export function cleanTranscription(s: string): string {
   return AMARA.test(t) ? "" : t;
 }
 
-// UMA MENSAGEM DE ÁUDIO QUE AINDA ESPERA AS PALAVRAS DELA (issue #688). Escrito AQUI, ao lado do
-// renderizador, porque a pergunta é sobre o que ele produz: a nota de voz cujo corpo sairia o
-// placeholder "não audível" é a que não tem nada para guardar agora, e cujas palavras chegam depois,
-// no `message_updated` do STT. Quem precisa disso é o portão de posse do caminho direto, que ao parar
-// o turno decide se manda a mensagem para a ingestão — e mandar o placeholder grava o id no dedup do
-// thread, fazendo a transcrição que vem depois ser descartada como duplicata.
-//
-// TRÊS RODADAS DE REVIEW ESCREVERAM ESTA FUNÇÃO, cada uma achando um campo que o render preserva e a
-// pergunta não via: primeiro a transcrição, depois o `content` (que o ramo de áudio usa como
-// fallback, `m.transcribedText ?? text`), depois o `emailSubject` (que o render põe por fora, e que
-// num e-mail com anexo de áudio e corpo vazio É a mensagem). O padrão é o motivo de a pergunta ter
-// vindo morar aqui: enumerar os campos do lado de fora erra um a cada rodada, e o renderizador é o
-// único lugar onde a lista está completa por construção.
-//
-// A cerca que impede as duas de divergirem está em tests/modules/render-audio-awaits.test.ts: para
-// toda mensagem em que esta função responde `true`, o corpo renderizado É o placeholder, e onde ela
-// responde `false` o corpo é outra coisa.
-export function audioAwaitsWords(m: RenderableMessage): boolean {
-  if (!new Set(m.attachmentTypes).has("audio")) return false;
-  // A mesma expressão do ramo de áudio do renderizador, e não uma paráfrase dela.
-  if (cleanTranscription(m.transcribedText ?? (m.text ?? "").trim())) {
-    return false;
-  }
-  // E o que o render preserva AO LADO do áudio, que é menos do que parece e a cerca mediu: o ramo de
-  // áudio acima é um `if/else if`, então `imageDescription`, `extractedText` e `location` NÃO chegam
-  // ao corpo quando há um áudio na mensagem — dizer que eles são palavras a guardar seria esta
-  // função afirmando o que o renderizador não faz. (Que o render descarte uma extração ao lado de um
-  // áudio é um defeito dele, e de outra issue; aqui a regra é concordar com o que ele produz hoje.)
-  //
-  // Sobra o ASSUNTO, e ele sobra porque é posto por FORA do corpo, depois de todos os ramos: num
-  // e-mail de corpo vazio com um áudio anexado, o assunto é a mensagem.
-  //
-  // `isReaction` também não precisa estar aqui: aquele ramo retorna antes de chegar ao áudio.
-  return !(m.emailSubject ?? "").trim();
-}
-
 const QUOTE_MAX = 200;
 
 export function renderInboundMessage(

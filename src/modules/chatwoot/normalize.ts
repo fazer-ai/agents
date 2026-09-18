@@ -812,6 +812,23 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // second answer to one question, and the two would drift the first time a marker or a field is
 // added — which is exactly what happened to the email subject (issue #598), read by the renderer,
 // the burst and the gate while the memory fold went on dropping the message whole.
+// UMA MENSAGEM QUE AINDA VAI RECEBER MAIS CONTEÚDO (issue #688). O áudio sem transcrição é o único
+// caso hoje: as palavras dele chegam depois, num `message_updated` que o STT dispara, e sobre o
+// MESMO id de mensagem.
+//
+// Extraído do irmão abaixo porque a pergunta vale em qualquer evento, e quem a faz é o portão de
+// posse do caminho direto: parar o turno manda a mensagem para a ingestão contínua, a ingestão grava
+// o id no dedup do thread, e a transcrição que vem depois é descartada como duplicata. A pergunta
+// NÃO é se a mensagem já tem palavras — uma legenda, ou o assunto de um e-mail, são palavras e ainda
+// assim a transcrição vem —, é se ainda vem mais.
+export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
+  if (!isIncomingMessage(n)) return false;
+  const audio = firstAudioAttachment(n);
+  return Boolean(
+    audio && !audio.transcribedText && !n.message?.transcribedText,
+  );
+}
+
 export function incomingRenderable(
   n: NormalizedChatwootEvent,
 ): RenderableMessage {

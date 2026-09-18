@@ -370,7 +370,7 @@ export async function coalesceAndRunTurn(
       const latest = parseChatwootMessages(
         await client.getMessages(conversationId),
       );
-      // ASKED WITH THE SELECTOR, not with the arithmetic of the page (issue #698). "A newer message
+      // ASKED BY IDENTITY, not with the arithmetic of the page (issue #698). "A newer message
       // arrived" used to be `maxIncomingId > targetWatermark`, which reads every incoming id above
       // this turn's target as a customer still waiting. Once the selection stopped deciding by a
       // single number, a turn can legitimately answer BELOW a message another turn already claimed —
@@ -378,10 +378,24 @@ export async function coalesceAndRunTurn(
       // come back. Judged by arithmetic, the retry defers forever and the customer is never answered,
       // which is the same silence this issue is about, one gate further along.
       //
-      // `ctx.selectPending` is the same closure the burst came from, so the two cannot drift: what it
-      // still offers above the target is, by definition, a message nobody is speaking for.
-      const open = await ctx.selectPending(latest);
-      const openAbove = open.some((m) => m.id > targetWatermark);
+      // AND ASKED HERE, not through `ctx.selectPending` (PR #701, review round 5). That closure is
+      // the CALLER's tail strategy, and the operator's click uses "everything after the last outgoing
+      // message" — so a slow-tool acknowledgement of ours, posted mid-turn by `emitAck`, empties that
+      // tail and the gate reads zero as "nothing came after me". The customer message underneath it
+      // is still unclaimed, and the stale reply goes out on top of it. The gate's question does not
+      // depend on who called: is there an OPEN message above what I am about to answer?
+      const state = await readSelectionState({
+        tenantId,
+        conversationDbId: convDbId,
+        messageIds: pendingIncoming(latest, null).map((m) => m.id),
+        base,
+      });
+      const openAbove = selectOpenMessages({
+        page: latest,
+        scalarFloor: targetWatermark,
+        state,
+        managedBotId: ctx.managedBotId,
+      }).some((m) => m.id > targetWatermark);
       // AND WHETHER THIS BURST IS STILL OURS TO ANSWER (PR #701, review round 1). The question above
       // is about what came AFTER; a person who answered the burst itself closes it without writing a
       // row anywhere, and the fence that keeps an orphan from being re-offered takes those ids out of

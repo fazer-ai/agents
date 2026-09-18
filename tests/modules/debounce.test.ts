@@ -2003,6 +2003,65 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(seen).not.toContain("cancela meu plano");
   });
 
+  // O PORTÃO NÃO PODE HERDAR A ESTRATÉGIA DE CAUDA DE QUEM O CHAMOU (PR #701, review round 5). O
+  // clique do operador seleciona a cauda DEPOIS da última saída, e uma saída nossa no meio do turno
+  // (o aviso de ferramenta lenta do prepare.ts) esvazia essa cauda: perguntando com o seletor do
+  // chamador, o portão vê zero e conclui "ninguém veio depois de mim", postando uma resposta que o
+  // cliente já superou. A fronteira também não pega, porque o aviso é NOSSO. A pergunta do portão é
+  // sempre a mesma, seja quem for o chamador: existe mensagem ABERTA acima do que eu ia responder?
+  test("an ack of ours mid-turn does not hide a newer customer message from the click", async () => {
+    const convId = 955;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    // A 2 e o nosso aviso chegam DURANTE a chamada do modelo, que é a janela real: tudo que o portão
+    // relê depois é o estado de depois deles.
+    let midTurn = false;
+    const model = new SideEffectModel(async () => {
+      midTurn = true;
+    });
+    const client = {
+      getMessages: async () => {
+        return !midTurn
+          ? page([{ id: 1, content: "consigo remarcar?" }])
+          : page([
+              { id: 1, content: "consigo remarcar?" },
+              { id: 2, content: "na verdade, deixa pra lá" },
+              {
+                id: 3,
+                content: "só um instante, estou verificando",
+                type: 1,
+                sender: "agent_bot",
+                senderId: 9,
+              },
+            ]);
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const clicked = await reengageConversation(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      id,
+      {
+        makeModel: () => model,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+
+    expect(sent).toEqual([]);
+    expect(clicked.outcome).toBe("superseded");
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.

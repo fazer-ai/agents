@@ -115,10 +115,19 @@ export const __frameDimensionsForTest = frameDimensions;
 const HEIC_BRANDS = new Set(["mif1", "msf1", "heic", "heix", "hevc", "hevx"]);
 
 function heicBrand(bytes: ArrayBuffer): string | null {
-  // The brand is the four bytes at offset 8, inside the `ftyp` box.
   if (bytes.byteLength < 12) return null;
-  const b = new Uint8Array(bytes, 8, 4);
-  return String.fromCharCode(...b)
+  // THE BOX BEFORE THE BRAND. `ftyp` at offset 4 is what makes offset 8 the major brand rather than
+  // four bytes that happen to spell one: a JPEG whose first marker is a comment can carry "heic" at
+  // offset 8 and decode perfectly as a JPEG. Reading the brand alone would call that file a broken
+  // HEIC and SKIP it, which is the exact regression the brand check exists to prevent — the
+  // attachment was readable and stops being read (PR #707 review round 7; holdout s8 is the same
+  // failure arrived at from the other side).
+  if (ascii(bytes, 4) !== "ftyp") return null;
+  return ascii(bytes, 8);
+}
+
+function ascii(bytes: ArrayBuffer, offset: number): string {
+  return String.fromCharCode(...new Uint8Array(bytes, offset, 4))
     .replace("\0", " ")
     .trim();
 }
@@ -145,8 +154,13 @@ async function heicToJpeg(
     // one designated. Taking the first would send a picture the sender did not send, and the
     // extraction would come back successful and about the wrong image (PR #707 review round 6).
     //
-    // Falling back to the first when nothing is designated, which is what a file with a single image
-    // and no `pitm` looks like.
+    // FALLING BACK TO THE FIRST when nothing is designated, and the honest note is that no file this
+    // parser accepts reaches it: measured by renaming the `pitm` box to `free` (which the standard
+    // says to ignore, so the box stops existing for a reader), libheif refuses the whole file with
+    // `No 'pitm' box` and returns ZERO images. So the branch is not for the pitm-less file it looks
+    // like it is for; it is for a library that hands back images without designating one, which this
+    // version never does. It stays because without it that case throws "heic carries no image
+    // frame" — a message about a file that plainly has frames — and because a test can kill it.
     const frame = frames.find((f) => f.primary) ?? frames[0];
     if (frame === undefined)
       throw new MediaConversionError("heic carries no image frame");

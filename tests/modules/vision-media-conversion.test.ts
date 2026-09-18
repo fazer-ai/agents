@@ -68,6 +68,15 @@ const brandedHeic = (brand = "heic", extra = 0): ArrayBuffer => {
 // A real HEIC cut short: the brand is intact, so the type did not lie, and the decode still fails.
 const truncatedHeic = () => heicBytes().slice(0, 40);
 
+// The first eight bytes of a real HEIC — box size and `ftyp` — and nothing behind them. Exactly the
+// input that gets past a `ftyp` check and into a brand read that has no bytes to read.
+const ftypPrefix = (total: number): ArrayBuffer => {
+  const b = new Uint8Array(total);
+  b.set([0, 0, 0, 12], 0);
+  b.set(new TextEncoder().encode("ftyp"), 4);
+  return b.buffer as ArrayBuffer;
+};
+
 const heicBytes = () =>
   HEIC.buffer.slice(
     HEIC.byteOffset,
@@ -627,11 +636,15 @@ describe("heic-to-jpeg", () => {
     expect(g).toBeLessThan(90);
   });
 
-  test("a file that designates nothing converts its first image instead of refusing", async () => {
-    // Legal, and the reason the fallback is not merely defensive: `pitm` is OPTIONAL, so a file with
-    // images and no designation must still convert. No encoder writes one — every one of them makes
-    // an input primary — so the library is stood in for. Driven through `runMediaConverter` and not
-    // through `withHeicFrames`, because the selection being asserted lives in the converter.
+  test("images with nothing designated convert the first instead of reading as empty", async () => {
+    // The fallback, and what it is actually for. It is NOT for a file with no `pitm`: measured by
+    // renaming that box to `free` (the standard says to ignore `free`, so it stops existing for a
+    // reader), libheif refuses the file outright with `No 'pitm' box` and returns zero images, so
+    // such a file never reaches this branch. What the branch answers for is a library that returns
+    // images without designating one, which this version never does — hence standing in for it.
+    // Without the fallback that case would throw "heic carries no image frame" about a file that
+    // plainly has frames. Driven through `runMediaConverter` and not through `withHeicFrames`,
+    // because the selection being asserted lives in the converter.
     const solid = (w: number, h: number, r: number) => {
       const data = new Uint8ClampedArray(w * h * 4);
       for (let i = 0; i < data.length; i += 4) {
@@ -699,9 +712,13 @@ describe("heic-to-jpeg", () => {
       new ArrayBuffer(4),
       // 8 to 11 bytes is the window where the brand's own slice would read out of bounds: the guard
       // has to answer "not that type" there, not let a RangeError surface as a conversion failure
-      // and turn a fallback into a skip.
+      // and turn a fallback into a skip. Two spellings of it, because they fail differently — the
+      // zeroed ones stop at the `ftyp` check, and these stop at the length, which is the only thing
+      // standing between an 11-byte file with a real box header and a RangeError.
       new ArrayBuffer(8),
       new ArrayBuffer(11),
+      ftypPrefix(8),
+      ftypPrefix(11),
     ]) {
       await expect(
         runMediaConverter("heic-to-jpeg", bytes),
@@ -716,6 +733,40 @@ describe("heic-to-jpeg", () => {
       expect(err).toBeInstanceOf(MediaConversionError);
       expect(err).not.toBeInstanceOf(MediaSourceMismatchError);
     }
+  });
+
+  test("a JPEG carrying an accepted brand at offset 8 is a MISMATCH, not a broken HEIC", async () => {
+    // Review round 7. Offset 8 is the major brand only when offset 4 says `ftyp`; on its own it is
+    // four bytes that can spell one by accident. A JPEG whose first marker is a comment puts the
+    // comment's payload exactly there, and the file decodes perfectly as a JPEG.
+    //
+    // Getting this wrong costs the SAME regression the brand check was written to prevent: the file
+    // would be called a broken HEIC, the conversion would fail, and the attachment would be skipped
+    // — an attachment the vendor reads by sniffing, and read before this feature existed.
+    const real = new Uint8Array(
+      jpeg.encode(
+        { data: new Uint8Array(8 * 8 * 4).fill(180), width: 8, height: 8 },
+        80,
+      ).data,
+    );
+    // SOI, then a COM segment (0xFFFE) whose declared length is 10: two length bytes plus eight of
+    // payload, which puts payload bytes 2..5 on file offsets 8..11.
+    const armadilha = new Uint8Array(real.length + 12);
+    armadilha.set([0xff, 0xd8, 0xff, 0xfe, 0x00, 0x0a, 0x20, 0x20], 0);
+    armadilha.set(new TextEncoder().encode("heic"), 8);
+    armadilha.set([0x20, 0x20], 12);
+    armadilha.set(real.subarray(2), 14);
+
+    // The two facts that make this the regression rather than a curiosity: those bytes DO spell an
+    // accepted brand at the offset the check reads, and the file IS a readable JPEG.
+    expect(String.fromCharCode(...armadilha.subarray(8, 12))).toBe("heic");
+    expect(jpeg.decode(armadilha).width).toBe(8);
+    // `ftyp` is what the check now requires at offset 4, and a JPEG has 0xFFFE there.
+    expect(String.fromCharCode(...armadilha.subarray(4, 8))).not.toBe("ftyp");
+
+    await expect(
+      runMediaConverter("heic-to-jpeg", armadilha.buffer as ArrayBuffer),
+    ).rejects.toBeInstanceOf(MediaSourceMismatchError);
   });
 
   test("a truncated but correctly branded HEIC is a conversion failure, not a mismatch", async () => {

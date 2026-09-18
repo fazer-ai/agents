@@ -6454,6 +6454,23 @@ export async function processChatwootDelivery(
   // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
   // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
   // a punha no canal antes de a re-checagem pós-geração recusar o envio.
+  // A PARADA TEM A MENSAGEM, MAS PODE NÃO TER AS PALAVRAS DELA (issue #688, review r4). Uma nota de
+  // voz chega como PLACEHOLDER até o STT escrever de volta, e a rota dela é o `message_updated` que
+  // traz a transcrição, não esta. Mandar o placeholder pela ingestão grava o id no dedup do thread
+  // (`recentSyncedMessageIds` em ../../graph/ingest-dedup.ts), e a transcrição que chega depois é
+  // descartada como duplicata: a mensagem do cliente some, que é o que esta issue existe para
+  // impedir, reintroduzido pelo próprio conserto dela. Lido mais abaixo, no `act`, que é onde a
+  // parada decide se a ingestão guarda a mensagem.
+  //
+  // É o mesmo fato que `turnHadTheWords` já enuncia do lado da COBERTURA, com a mesma pergunta: o
+  // que esta parada tem em mãos é a mensagem, não as palavras. E vale só para ELA — o observador e a
+  // ingestão contínua seguem como sempre seguiram, onde o placeholder tem razão própria de entrar.
+  const standDownHasTheWords = turnHadTheWords({
+    hasAudio: (n.message?.attachments ?? []).some(
+      (a) => a.fileType === "audio",
+    ),
+    transcribedText: n.message?.transcribedText,
+  });
   const routeIngests =
     rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
@@ -6491,7 +6508,11 @@ export async function processChatwootDelivery(
       n,
       // `stoodDownUnread` entra pela mesma porta que o observador (issue #688): `act` é o que diz à
       // ingestão "um turno cobriu isto", e aqui nenhum cobriu.
-      act: act && !observing && !handedToObserver && !stoodDownUnread,
+      act:
+        act &&
+        !observing &&
+        !handedToObserver &&
+        !(stoodDownUnread && standDownHasTheWords),
       consumed,
       agentId: rt.agentId,
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
@@ -6515,7 +6536,7 @@ export async function processChatwootDelivery(
         handedToObserver ||
         carriesTranscription ||
         // O append é a última chance aqui também (issue #688): nenhum turno vai cobrir esta mensagem.
-        stoodDownUnread,
+        (stoodDownUnread && standDownHasTheWords),
       sleep: params.deps?.sleep,
       base,
     });
@@ -6650,7 +6671,7 @@ export async function processChatwootDelivery(
   // aqui, ANTES do bloco do observador, porque os dois podem valer ao mesmo tempo e a mensagem a
   // recuperar é uma só; e como um throw, porque é isso que deixa a linha em PROCESSING, onde a
   // varredura a encontra.
-  if (stoodDownUnread && ingested === "failed") {
+  if (stoodDownUnread && standDownHasTheWords && ingested === "failed") {
     throw new Error(
       `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and the ingestion of the message could not be armed; leaving the delivery for the sweep`,
     );

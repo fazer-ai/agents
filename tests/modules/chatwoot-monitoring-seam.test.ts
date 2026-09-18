@@ -798,6 +798,112 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }, 20_000);
 
+  // E UM ÁUDIO QUE AINDA NÃO TEM PALAVRAS NÃO VAI PELA INGESTÃO (issue #688, review r4). A nota de
+  // voz chega ao grafo como PLACEHOLDER até o STT escrever de volta, e a rota dela é o
+  // `message_updated` que traz a transcrição — não esta. Mandar o placeholder para a ingestão grava
+  // o id da mensagem no dedup do thread (`recentSyncedMessageIds`), e a transcrição que chega depois
+  // é descartada como duplicata: a mensagem do cliente some, que é exatamente o que esta issue
+  // existe para impedir, reintroduzido pelo próprio conserto dela.
+  //
+  // É o mesmo fato que o `turnHadTheWords` já enuncia do lado da COBERTURA, pela mesma razão: o que
+  // o turno (ou esta parada) tem em mãos é a mensagem, não as palavras dela.
+  test("issue #688: an audio still waiting on STT is left to the write-back, not queued as a placeholder", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 41;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      // Áudio SEM transcrição: o placeholder.
+      attachments: [
+        {
+          id: 900 + messageId,
+          file_type: "audio",
+          data_url: "https://chat.late.example/audio.ogg",
+        },
+      ],
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    // O turno parou do mesmo jeito...
+    expect(sent).toEqual([]);
+    expect(seen.outcome).toBe("taken-over-unread");
+    // ...e NENHUM job de ingestão foi armado para este id: o dedup do thread fica livre para a
+    // transcrição que vem no `message_updated`.
+    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // E a marca continua sem passar por cima da mensagem.
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+  }, 20_000);
+
   // E O MODO DO AGENTE NÃO PODE DECIDIR ISTO (issue #688, review r1). `routeIngests` é a porta da
   // ingestão, e ela pergunta se a ROTA ingere CONTINUAMENTE — o que um agente em `test` não faz. O
   // portão novo, porém, alcança um agente em teste numa conversa ativada com `/teste`: ali o turno

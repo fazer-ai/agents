@@ -160,22 +160,23 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   cfg: T,
 ): T {
   let out = cfg;
-  // NOTE: THE NAME IS NOT TAKEN FROM A TOOL THE OPERATOR ALREADY HAS. `toolDefinitionCreateSchema` reserves
-  // no native names, so an agent with natives revoked can legitimately run a custom HTTP tool called
-  // `skip_reply` — and `dropDuplicateToolNames` puts natives FIRST, so granting ours would evict
-  // theirs from every follow-up turn. A tool the operator built, silently gone, to install a channel
-  // they never asked for. Those agents keep the sentinel.
+  // NOTE: THE OPERATOR'S OWN TOOL UNDER THIS NAME IS NOT A REASON TO STAND DOWN, and it stopped being
+  // one before this function noticed (issue #715). There used to be a carve-out here: an agent with
+  // natives revoked could legitimately run a custom HTTP tool called `skip_reply`, and since
+  // `dropDuplicateToolNames` puts natives FIRST, granting ours would evict theirs from every
+  // follow-up — a tool the operator built, silently gone, to install a channel they never asked for.
   //
-  // ONLY WHEN THEIRS ACTUALLY WINS, which is when the native is not already granted. With the native
-  // in the allowlist it wins the name anyway, so returning early there protected nothing and skipped
-  // the precondition cleanup below — leaving a fail-closed guard on the very call the directive
-  // depends on, which is the leak by the third road all over again (round 15).
-  if (
-    !inertToolsFor(out).has(SKIP_REPLY_TOOL) &&
-    out.httpToolDefs?.some((d) => d.name === SKIP_REPLY_TOOL)
-  ) {
-    return out;
-  }
+  // #457 (review round 5) made that premise false. Its `reserved` argument holds a native name
+  // against every other source EVEN WHEN THE NATIVE IS NOT BUILT, precisely so the rest of the repo
+  // can go on reading a native name as an identity (tool preconditions restrict rules to native
+  // names, `../handback.ts` reads a `handoff_to_human` result as a transfer that really happened).
+  // Their tool is therefore dropped at assembly whether or not we grant ours, so standing down
+  // protected nothing: the follow-up got NEITHER tool, and the agent paid a channel for it.
+  //
+  // Measured before the fix, on a live app: the toolset reaching the model came back empty, with
+  // `{phase:'duplicate_name_dropped',tools:['skip_reply']}` in the flow log. Giving the operator
+  // their name back is the other design the issue names, and it is not this one — it would reopen
+  // exactly what #457 closed.
   // NOTE: NOTHING ELSE IS ASKED HERE, and round 12 is why. Granting used to be gated on whether any source
   // was CONFIGURED, which is not the same question as whether any tool gets BUILT: an MCP server
   // that is down is configured and yields nothing, and the grant then handed a lone function schema
@@ -200,10 +201,12 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   return out;
 }
 
-// Whether the tool bound under the silence name is OUR no-op one. `dropDuplicateToolNames` puts
-// native tools first, so a native grant WINS the name — which is exactly when the name may be read
-// as "this call did nothing". With natives revoked, a custom HTTP tool can hold that name and really
-// call something (`toolDefinitionCreateSchema` reserves none), so nothing is inert.
+// Whether the tool bound under the silence name is OUR no-op one, which is exactly when the name may
+// be read as "this call did nothing". It is answered off the GRANT and never off the name: a native
+// that was granted wins the name at assembly, and one that was not leaves nothing under it either,
+// since #457 reserves a native name against every other source even when the native is not built.
+// So "not granted" means no tool answers here at all rather than somebody else's — which reads the
+// same from this function, and is why the answer did not have to change with issue #715.
 export function inertToolsFor(cfg: {
   nativeToolsAllow?: string[];
 }): ReadonlySet<string> {

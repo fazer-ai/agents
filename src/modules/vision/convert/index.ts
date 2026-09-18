@@ -147,6 +147,55 @@ function ascii(bytes: ArrayBuffer, offset: number): string {
     .trim();
 }
 
+// THE SIZE THE FILE SAYS IT STORES, read out of the file rather than asked of the decoder, and the
+// reason is that the two can disagree. A HEIC may carry a `clap` (clean aperture) crop, and libheif's
+// `get_width`/`get_height` then report the CROPPED size while the decode still materialises the whole
+// stored image — so a 1x1 crop over a 100 Mpx picture walks past a cap applied to the reported size
+// (PR #707 review round 11).
+//
+// Neither mechanism the review suggested is available here, and both were measured on this build
+// (libheif-js 1.23.2): `heif_image_handle_get_ispe_width` answers 0 even for a plain file whose
+// dimensions it should report, and `heif_context_set_maximum_image_size_limit` refuses nothing, at
+// read time or at decode time, at any value. What is left is the file itself, where `ispe` is
+// mandatory and says exactly this.
+//
+// The walk is deliberately shallow: `meta` → `iprp` → `ipco`, collecting every `ispe`, and the cap
+// uses the LARGEST, because `ipco` holds the properties of every item and a cap is only wrong if it
+// underestimates. Anything unparseable returns 0 and the cap falls back to the decoder's numbers,
+// which is the behaviour this had before.
+const ISPE_CAP_DEPTH: ReadonlyArray<[string, number]> = [
+  ["meta", 12], // FullBox: 4 more bytes of version/flags before the children
+  ["iprp", 8],
+  ["ipco", 8],
+];
+
+export function storedPixels(bytes: ArrayBuffer): number {
+  const v = new DataView(bytes);
+  let most = 0;
+  const walk = (start: number, end: number, depth: number): void => {
+    let i = start;
+    while (i + 8 <= end) {
+      const size = v.getUint32(i);
+      const type = ascii(bytes, i + 4);
+      if (size < 8 || i + size > end) return;
+      if (type === "ispe" && i + 20 <= end)
+        most = Math.max(most, v.getUint32(i + 12) * v.getUint32(i + 16));
+      const step = ISPE_CAP_DEPTH[depth];
+      if (step !== undefined && type === step[0])
+        walk(i + step[1], i + size, depth + 1);
+      i += size;
+    }
+  };
+  try {
+    walk(0, bytes.byteLength, 0);
+  } catch {
+    // A malformed file is not this function's problem: the decoder refuses it a moment later, and a
+    // cap that threw here would turn a broken HEIC into an unhandled error instead of a skip.
+    return 0;
+  }
+  return most;
+}
+
 async function heicToJpeg(
   bytes: ArrayBuffer,
   opts: ConvertOptions,
@@ -180,11 +229,13 @@ async function heicToJpeg(
     if (frame === undefined)
       throw new MediaConversionError("heic carries no image frame");
     const { width, height } = frameDimensions(frame);
-    const pixels = width * height;
+    // The larger of what the decoder reports and what the file says it stores, because a crop makes
+    // the first smaller than the work the decode actually does.
+    const pixels = Math.max(width * height, storedPixels(bytes));
     const cap = opts.maxSourcePixels ?? MAX_SOURCE_PIXELS;
     if (pixels > cap)
       throw new MediaConversionError(
-        `heic is ${width}x${height} (${pixels} px), over the ${cap} px cap`,
+        `heic is ${width}x${height} and stores ${pixels} px, over the ${cap} px cap`,
       );
     const raw = await frame.decode();
     return rasterToJpeg(raw, {

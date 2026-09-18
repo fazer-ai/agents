@@ -16,6 +16,7 @@ import {
   MediaConversionError,
   MediaSourceMismatchError,
   runMediaConverter,
+  storedPixels,
 } from "@/modules/vision/convert";
 import {
   __resetLibheifForTest,
@@ -62,6 +63,13 @@ const PREMULT = readFileSync(
 // owed.
 const STRAIGHT = readFileSync(
   `${import.meta.dir}/../fixtures/media/alfa-straight.heic`,
+);
+// The premultiplied fixture with a 1x1 `clap` (clean aperture) crop spliced in: a `clap` box appended
+// to `ipco`, one more association in `ipma`, and every `iloc` offset shifted by the 41 bytes those
+// two added. libheif then reports the image as 1x1 while the file still stores 64x64, which is the
+// disagreement the pixel cap has to survive.
+const CLAP = readFileSync(
+  `${import.meta.dir}/../fixtures/media/recorte-clap.heic`,
 );
 const COLECAO = readFileSync(
   `${import.meta.dir}/../fixtures/media/colecao-primaria-nao-e-a-primeira.heic`,
@@ -397,6 +405,17 @@ describe("flattenOntoWhite", () => {
     );
     // Absent means straight, which is what every other source here produces.
     expect(flattenOntoWhite(bytes()).data[0]).toBe(177);
+    // AND IT SATURATES. Premultiplied colour is supposed to be at most its alpha, and lossy HEVC
+    // does not have to honour that: [129, 129, 129, 128] composites to 256, which a plain
+    // `Uint8Array` stores as 0 — a black pixel where the arithmetic asked for white (round 11, P2).
+    expect(
+      flattenOntoWhite({
+        data: new Uint8Array([129, 129, 129, 128]),
+        width: 1,
+        height: 1,
+        premultiplied: true,
+      }).data[0],
+    ).toBe(255);
   });
 
   test("a real HEIC cutout reaches the encoder white, not black", async () => {
@@ -785,6 +804,58 @@ describe("heic-to-jpeg", () => {
     ).rejects.toThrow(/over the 3839999 px cap/);
     // And the real cap admits it, so the guard is not simply always on.
     expect(2400 * 1600).toBeLessThan(MAX_SOURCE_PIXELS);
+  });
+
+  test("a crop cannot shrink the file past the pixel cap", async () => {
+    // Review round 11, P1. A HEIC may carry a `clap` crop, and libheif's `get_width`/`get_height`
+    // then report the CROPPED size while the decode still materialises the whole stored image. A cap
+    // applied to the reported size is therefore no cap at all: a 1x1 crop over a 100 Mpx picture
+    // walks straight past it.
+    //
+    // Neither mechanism available in libheif answers this on the installed build, and both were
+    // measured: `heif_image_handle_get_ispe_width` returns 0 even for a plain file whose dimensions
+    // it should report, and `heif_context_set_maximum_image_size_limit` refuses nothing at any value,
+    // set before the read or after it. So the cap reads the size out of the file.
+    const clap = CLAP.buffer.slice(
+      CLAP.byteOffset,
+      CLAP.byteOffset + CLAP.byteLength,
+    ) as ArrayBuffer;
+
+    // The disagreement itself, asserted first: without it the test below passes for the wrong reason.
+    await withHeicFrames(clap, async (frames) => {
+      expect([frames[0]?.width, frames[0]?.height]).toEqual([1, 1]);
+    });
+    expect(storedPixels(clap)).toBe(64 * 64);
+
+    // One pixel of cap. The reported size fits it exactly, which is what made this a bypass.
+    await expect(
+      runMediaConverter("heic-to-jpeg", clap, { maxSourcePixels: 1 }),
+    ).rejects.toThrow(/stores 4096 px, over the 1 px cap/);
+    // And it still converts under a cap that admits what it really stores.
+    expect(
+      (await runMediaConverter("heic-to-jpeg", clap, { maxSourcePixels: 4096 }))
+        .byteLength,
+    ).toBeGreaterThan(0);
+  });
+
+  test("the declared size is read from the file, and an unreadable one does not throw", () => {
+    const of = (b: Buffer) =>
+      storedPixels(
+        b.buffer.slice(
+          b.byteOffset,
+          b.byteOffset + b.byteLength,
+        ) as ArrayBuffer,
+      );
+    expect(of(HEIC)).toBe(2400 * 1600);
+    expect(of(ALPHA)).toBe(400 * 400);
+    // A collection reports the LARGEST, because `ipco` holds every item's properties and a cap is
+    // only ever wrong by underestimating.
+    expect(of(COLECAO)).toBe(2400 * 1200);
+    // Nothing parseable: zero, so the cap falls back to the decoder's numbers instead of refusing
+    // every file or throwing where a skip belongs.
+    expect(storedPixels(new ArrayBuffer(8))).toBe(0);
+    expect(storedPixels(brandedHeic())).toBe(0);
+    expect(storedPixels(truncatedHeic())).toBe(0);
   });
 
   test("bytes whose declared type lied are a MISMATCH, not a conversion failure", async () => {

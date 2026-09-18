@@ -97,7 +97,11 @@ export function flattenOntoWhite(src: Rgba): Rgba {
     }
   }
   if (!transparent) return src;
-  const out = new Uint8Array(s.length);
+  // CLAMPED, not wrapping. Premultiplied colour is supposed to be at most its alpha, and lossy HEVC
+  // does not have to honour that: a decoded pixel of [129, 129, 129, 128] composites to 256, which a
+  // plain Uint8Array stores as 0 — a BLACK pixel where the arithmetic asked for white. Saturating is
+  // the correct answer and costs nothing (PR #707 review round 11).
+  const out = new Uint8ClampedArray(s.length);
   // Premultiplied colour is ALREADY scaled by its alpha, so multiplying again darkens everything
   // translucent: a pixel of (100, 0, 0, 128) over white comes out 177 instead of 227 (PR #707 review
   // round 10).

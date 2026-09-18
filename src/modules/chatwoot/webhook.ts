@@ -6448,7 +6448,14 @@ export async function processChatwootDelivery(
   // delivery decided rather than a switch as it stands later. The second is this delivery handing
   // the message to a watcher, decided here — and where it happens it CORRECTS the recorded fact,
   // below, because the claim's `false` stops being true the moment this delivery ingests anyway.
-  const routeIngests = rt !== null && (routeRemembers || handedToObserver);
+  // `stoodDownUnread` É A TERCEIRA (issue #688, review r1), e ela entra pelo mesmo motivo que a
+  // segunda: as duas primeiras perguntam se a ROTA ingere CONTINUAMENTE, e esta parada não é uma
+  // ingestão contínua, é a ÚLTIMA CHANCE daquela mensagem. Sem ela um agente em `test` numa conversa
+  // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
+  // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
+  // a punha no canal antes de a re-checagem pós-geração recusar o envio.
+  const routeIngests =
+    rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
   // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
   // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,
@@ -6503,7 +6510,12 @@ export async function processChatwootDelivery(
       // observer's is retried: the append is the last chance. The words come around once, on the
       // write-back, and no later event carries them — production's continuous ingestion is
       // best-effort because a turn covers what it misses, and here no turn ever will.
-      retryArm: observing || handedToObserver || carriesTranscription,
+      retryArm:
+        observing ||
+        handedToObserver ||
+        carriesTranscription ||
+        // O append é a última chance aqui também (issue #688): nenhum turno vai cobrir esta mensagem.
+        stoodDownUnread,
       sleep: params.deps?.sleep,
       base,
     });
@@ -6632,6 +6644,17 @@ export async function processChatwootDelivery(
   // The observer's verdict, from the enqueue (see the note above the mark). The throw is the other
   // exit of this function that leaves the row on PROCESSING deliberately: the route logs it, and
   // the sweep's recovery re-runs the delivery.
+  // O MESMO DE NOVO, PARA A PARADA DA #688 (review r1). O guarda abaixo é do observador, e esta
+  // parada caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED — que é o estado que
+  // nada revisita — e a mensagem do cliente sumia exatamente como sumia antes do conserto. Escrito
+  // aqui, ANTES do bloco do observador, porque os dois podem valer ao mesmo tempo e a mensagem a
+  // recuperar é uma só; e como um throw, porque é isso que deixa a linha em PROCESSING, onde a
+  // varredura a encontra.
+  if (stoodDownUnread && ingested === "failed") {
+    throw new Error(
+      `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and the ingestion of the message could not be armed; leaving the delivery for the sweep`,
+    );
+  }
   if (observerHolds) {
     if (ingested === "failed") {
       throw new Error(

@@ -914,12 +914,20 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     );
     // ...and the guards are the only readers, so none of them can see the wire's answer instead.
     for (const guard of [
-      "retryArm: observing || handedToObserver || carriesTranscription,",
       'if (carriesTranscription && ingested === "failed") {',
       'if (carriesTranscription && ingested === "no-thread") {',
     ]) {
       expect(after).toContain(guard);
     }
+    // O `retryArm` é o terceiro, e ele é procurado pelo CORPO e não por uma linha: a lista de
+    // disjuntos cresceu com a #688 e o formatter a quebrou em várias linhas, o que fazia a cerca
+    // reprovar por FORMA. O que ela sempre quis dizer é que o valor lido ali é o de depois do eager
+    // pass, então o que se prende é `carriesTranscription` estar dentro do argumento.
+    const arm = after.indexOf("retryArm:");
+    expect(arm).toBeGreaterThan(-1);
+    expect(after.slice(arm, after.indexOf("sleep:", arm))).toContain(
+      "carriesTranscription",
+    );
   });
 
   // The gate is what the analysis PRODUCED, not the event's shape: an update carrying an audio

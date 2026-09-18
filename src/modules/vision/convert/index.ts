@@ -274,6 +274,13 @@ async function heicToJpeg(
       throw new MediaConversionError(
         "heic does not declare the size it stores, so the pixel cap cannot be applied",
       );
+    // BOTH NUMBERS COME FROM `ispe`, and the work a decode costs comes from the HEVC bitstream, so a
+    // file that declares 1x1 and codes 2000x2000 would walk past any cap. libheif closes that one
+    // itself: it compares the coded dimensions against the signalled ones and refuses BEFORE
+    // decoding. Measured on 1.23.2, steady state — the same image at 2000, 4000 and 6000 px square,
+    // made to declare 1x1, costs 2-3 ms and zero wasm-heap growth against 111/91/197 ms and
+    // +27/+130/+216 MB decoded honestly. The lie buys less work than the truth. Pinned by a test,
+    // because it is the dependency's property and not ours (review round 14).
     const pixels = Math.max(width * height, stored);
     if (pixels > cap)
       throw new MediaConversionError(

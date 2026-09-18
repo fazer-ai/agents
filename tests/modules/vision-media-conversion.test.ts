@@ -89,6 +89,12 @@ const CLAP_META_EXT = readFileSync(
 const CLAP_FTYP_EXT = readFileSync(
   `${import.meta.dir}/../fixtures/media/recorte-clap-ftyp-estendido.heic`,
 );
+// A 2000x2000 HEVC image whose `ispe` was rewritten to say 1x1. Both numbers the cap can read come
+// from `ispe`, so a file like this one is what the cap CANNOT see — and it is refused before a pixel
+// is decoded, which is the property the cap rests on. See the test.
+const ISPE_MENOR = readFileSync(
+  `${import.meta.dir}/../fixtures/media/ispe-menor-que-o-codificado.heic`,
+);
 const COLECAO = readFileSync(
   `${import.meta.dir}/../fixtures/media/colecao-primaria-nao-e-a-primeira.heic`,
 );
@@ -933,6 +939,31 @@ describe("heic-to-jpeg", () => {
     await expect(
       runMediaConverter("heic-to-jpeg", stub.buffer as ArrayBuffer, {}),
     ).rejects.toThrow(/is too short to carry one/);
+  });
+
+  test("an ispe that understates the coded image is refused by the decoder, not decoded", async () => {
+    // Review round 14 raised the cap's one blind spot and it is real as a question: both numbers the
+    // cap reads — `get_width`/`get_height` and the `ispe` walk — come from `ispe`, while the work a
+    // decode costs is set by the HEVC bitstream. A file that declares 1x1 and codes 2000x2000 would
+    // walk past any cap.
+    //
+    // MEASURED, and libheif closes it: it compares the coded dimensions against the signalled ones
+    // and refuses BEFORE decoding. On libheif-js 1.23.2, steady state, the same source encoded at
+    // 2000x2000, 4000x4000 and 6000x6000 and then made to declare 1x1 costs 2-3 ms and grows the
+    // wasm heap by zero; decoded honestly the three cost 111 ms / +27 MB, 91 ms / +130 MB and
+    // 197 ms / +216 MB. The lie buys an attacker less work than telling the truth, at every size.
+    //
+    // So this test is not about the cap. It pins the property the cap leans on, which belongs to the
+    // dependency and could change under an upgrade: the file below is admitted by any cap (it says
+    // one pixel) and must still never be decoded.
+    const bytes = ISPE_MENOR.buffer.slice(
+      ISPE_MENOR.byteOffset,
+      ISPE_MENOR.byteOffset + ISPE_MENOR.byteLength,
+    ) as ArrayBuffer;
+    expect(storedPixels(bytes)).toBe(1);
+    await expect(
+      runMediaConverter("heic-to-jpeg", bytes, { maxSourcePixels: 50_000 }),
+    ).rejects.toThrow(/could not render the image/);
   });
 
   test("a file that will not declare its size is refused, not converted on trust", async () => {

@@ -132,7 +132,15 @@ function heicHeader(bytes: ArrayBuffer): HeicHeader {
   // attachment was readable and stops being read (PR #707 review round 7; holdout s8 is the same
   // failure arrived at from the other side).
   if (ascii(bytes, 4) !== "ftyp") return { kind: "not-ftyp" };
-  return { kind: "brand", brand: ascii(bytes, 8) };
+  // …and offset 8 is only the brand when the header ENDED there. `ftyp` states its size the same
+  // three ways every other BMFF box does, and with `size == 1` the real size occupies the next 64
+  // bits, so the brand sits at 16 and offset 8 holds the high half of a length. Reading it anyway
+  // reported `carries brand "   "` for a file libheif decodes without complaint, which sends the
+  // original HEIC to a provider that refuses it — the attachment stops being read, which is the one
+  // outcome this PR exists to prevent (review round 13).
+  const header = new DataView(bytes).getUint32(0) === 1 ? 16 : 8;
+  if (bytes.byteLength < header + 4) return { kind: "too-short" };
+  return { kind: "brand", brand: ascii(bytes, header) };
 }
 
 function headerReason(h: HeicHeader): string {

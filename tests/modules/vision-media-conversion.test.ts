@@ -83,6 +83,12 @@ const CLAP_EXT = readFileSync(
 const CLAP_META_EXT = readFileSync(
   `${import.meta.dir}/../fixtures/media/recorte-clap-meta-estendido.heic`,
 );
+// …and the same crop with the `ftyp` ITSELF extended: 32-bit size of 1, real size in the 64 bits
+// after the type, `iloc` offsets moved by the 8 bytes that added. The brand is then at offset 16,
+// and offset 8 holds the high half of a length — four zero bytes that spell no brand at all.
+const CLAP_FTYP_EXT = readFileSync(
+  `${import.meta.dir}/../fixtures/media/recorte-clap-ftyp-estendido.heic`,
+);
 const COLECAO = readFileSync(
   `${import.meta.dir}/../fixtures/media/colecao-primaria-nao-e-a-primeira.heic`,
 );
@@ -895,6 +901,38 @@ describe("heic-to-jpeg", () => {
         ) as ArrayBuffer,
       ),
     ).toBe(0);
+  });
+
+  test("an extended-size ftyp still carries a brand, eight bytes later", async () => {
+    // Review round 13. The brand check reads offset 8, which is only the brand when the header ended
+    // there: with `size == 1` the real size occupies the next 64 bits and the brand sits at 16. The
+    // file below decodes in libheif without complaint and was reported as `carries brand "   "` — a
+    // source mismatch, which hands the original HEIC to a provider that refuses it. The attachment
+    // stops being read, which is the outcome this whole PR exists to prevent.
+    const ext = CLAP_FTYP_EXT.buffer.slice(
+      CLAP_FTYP_EXT.byteOffset,
+      CLAP_FTYP_EXT.byteOffset + CLAP_FTYP_EXT.byteLength,
+    ) as ArrayBuffer;
+    await withHeicFrames(ext, async (frames) => {
+      expect([frames[0]?.width, frames[0]?.height]).toEqual([1, 1]);
+    });
+    expect(
+      (await runMediaConverter("heic-to-jpeg", ext, {})).byteLength,
+    ).toBeGreaterThan(0);
+    // And the cap still reads the size the file stores, through the same extended header.
+    await expect(
+      runMediaConverter("heic-to-jpeg", ext, { maxSourcePixels: 1 }),
+    ).rejects.toThrow(/stores 4096 px, over the 1 px cap/);
+
+    // The other side of the same header: sixteen bytes is a whole extended header and no brand, so
+    // the file is too short to carry one — not a file whose brand is four zero bytes.
+    const stub = new Uint8Array(16);
+    new DataView(stub.buffer).setUint32(0, 1);
+    stub.set(new TextEncoder().encode("ftyp"), 4);
+    new DataView(stub.buffer).setBigUint64(8, 20n);
+    await expect(
+      runMediaConverter("heic-to-jpeg", stub.buffer as ArrayBuffer, {}),
+    ).rejects.toThrow(/is too short to carry one/);
   });
 
   test("a file that will not declare its size is refused, not converted on trust", async () => {

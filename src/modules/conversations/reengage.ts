@@ -591,6 +591,7 @@ export async function reengageConversation(
         // tail to be answered, which is the only thing allowed to overturn a deliberate silence.
         initiatedBy: "operator",
         managedBotId: resolved.loaded.agentBotId,
+        whatsappProvider: resolved.loaded.whatsappProvider,
         label: "reengage",
       },
       base,

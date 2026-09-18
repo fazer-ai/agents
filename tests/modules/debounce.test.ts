@@ -189,18 +189,30 @@ function page(
     sender?: string;
     senderId?: number;
     reaction?: boolean;
+    // `content_attributes.external_sender_name`, which is how the fork marks a message that came
+    // back FROM the WhatsApp session instead of out of Chatwoot — an attendant typing on the paired
+    // phone, and nobody in the `sender` field (PR #701, review round 8).
+    fromDevice?: boolean;
   }>,
 ) {
   return {
-    payload: msgs.map((m) => ({
-      id: m.id,
-      content: m.content,
-      message_type: m.type ?? 0,
-      private: m.priv ?? false,
-      ...(m.attachments ? { attachments: m.attachments } : {}),
-      ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
-      ...(m.reaction ? { content_attributes: { is_reaction: true } } : {}),
-    })),
+    payload: msgs.map((m) => {
+      const ca = {
+        ...(m.reaction ? { is_reaction: true } : {}),
+        ...(m.fromDevice ? { external_sender_name: "WhatsApp" } : {}),
+      };
+      return {
+        id: m.id,
+        content: m.content,
+        message_type: m.type ?? 0,
+        private: m.priv ?? false,
+        ...(m.attachments ? { attachments: m.attachments } : {}),
+        ...(m.sender
+          ? { sender: { id: m.senderId ?? 9, type: m.sender } }
+          : {}),
+        ...(Object.keys(ca).length > 0 ? { content_attributes: ca } : {}),
+      };
+    }),
   };
 }
 
@@ -1295,6 +1307,76 @@ describe.skipIf(!dbUp)("debounce", () => {
     // say which messages a reply of ours covered, and there are none.
     const ours = await withPage(940, "agent_bot");
     expect(ours.sent.map(([, text]) => text)).toEqual([REPLY]);
+  });
+
+  // THE SAME FENCE, BY THE OTHER ROUTE A PERSON ANSWERS THROUGH (PR #701, review round 8). An
+  // attendant who replies on the phone paired to the inbox's number never opens the CRM, and the
+  // fork stores that echo SENDER-LESS: `senderType` is null on the row, so the clause above sees
+  // nothing and the burst the person just handled goes back to the model. The only mark on it is
+  // `external_sender_name`.
+  //
+  // AND THE MARK ALONE IS NOT ENOUGH, which is what the second half measures. On a provider that
+  // does not reserve its send ids, OUR OWN reply comes back wearing exactly this shape whenever the
+  // send response was lost: read as somebody else's, it would have the agent fall silent on a
+  // customer nobody answered — this issue's own defect, arriving through its fix. So the route is
+  // refused off the reserving providers, the same refusal `isDeviceAttendantMessage` makes.
+  test("a reply typed on the PAIRED PHONE closes the burst, and only where the provider reserves its ids", async () => {
+    const withProvider = async (convId: number, provider: string) => {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider },
+      });
+      await seedConversation(convId);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      const sent: Array<[number, string]> = [];
+      await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+                {
+                  id: 3,
+                  content: "oi, aqui é a Ana",
+                  type: 1,
+                  fromDevice: true,
+                },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      return sent;
+    };
+
+    try {
+      // baileys reserves its ids, so a sender-less marked echo cannot be ours: a person answered.
+      expect(await withProvider(958, "baileys")).toEqual([]);
+      // zapi does not, so the same row can be our own answer coming back around. The customer is
+      // still owed one, and gets it.
+      expect((await withProvider(959, "zapi")).map(([, text]) => text)).toEqual(
+        [REPLY],
+      );
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider: null },
+      });
+    }
   });
 
   // THE COMMAND'S FENCE, in the selection this time (issue #698). `/reset` retires the pending burst

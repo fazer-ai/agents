@@ -172,6 +172,11 @@ export interface CoalesceTurnContext {
   // everybody else's (PR #701, review round 1). Null when the caller has no bot to name, and then
   // every outgoing message on the page counts as somebody else's.
   managedBotId: number | null;
+  // The WhatsApp provider of the inbox this conversation is on, which is the other half of the same
+  // question: on a provider that reserves its send ids, an attendant's reply typed on the paired
+  // phone is recognisable, and on one that does not, the same shape can be our own echo (PR #701,
+  // review round 8). Null refuses that route, which is the safe direction.
+  whatsappProvider: string | null;
   // Told when the claim was lost, so the caller can tell a burst that has something coming for it
   // from one that does not (issue #690, PR review round 4). Only the flush passes it.
   onClaimLost?: (
@@ -394,8 +399,9 @@ export async function coalesceAndRunTurn(
         page: latest,
         scalarFloor: targetWatermark,
         state,
+        purpose: "reply",
         managedBotId: ctx.managedBotId,
-        foreignReplyCloses: true,
+        whatsappProvider: ctx.whatsappProvider,
       }).some((m) => m.id > targetWatermark);
       // AND WHETHER THIS BURST IS STILL OURS TO ANSWER (PR #701, review round 1). The question above
       // is about what came AFTER; a person who answered the burst itself closes it without writing a
@@ -409,7 +415,10 @@ export async function coalesceAndRunTurn(
       // Asked as the BOUNDARY rather than "are my ids still in the open set": a member another TURN
       // claimed is missing from that set too, and standing down on it would take the decision away
       // from the claim, whose `partial` is what sends this flush back for the members nobody took.
-      const boundary = foreignReplyBoundary(latest, ctx.managedBotId);
+      const boundary = foreignReplyBoundary(latest, {
+        managedBotId: ctx.managedBotId,
+        whatsappProvider: ctx.whatsappProvider,
+      });
       const answeredByOther = inTurn.some((m) => m.id <= boundary);
       if (openAbove || answeredByOther) {
         logger.info(
@@ -844,8 +853,6 @@ function retryFlushOnFailedHandOver(
 // The gate-closed exit's own ask (round 15): that branch loads no config, so it reads the switch,
 // the mode and the settings itself. "not-observing" leaves the exit exactly as it was.
 async function handOverGateExitIfObserving(args: {
-  // O bot desta persona, para a seleção por identidade da ingestão (PR #701, review round 6).
-  managedBotId: number | null;
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -890,7 +897,6 @@ async function handOverGateExitIfObserving(args: {
       agentId,
       contactInboxId: args.contactInboxId,
       settings: agent.settings,
-      managedBotId: args.managedBotId,
     },
     retireDeliveries: !args.heldByAnotherBot,
     base,
@@ -908,8 +914,6 @@ async function ingestObservedBurst(args: {
     agentId: bigint;
     contactInboxId: number | null;
     settings: unknown;
-    // Para classificar saída nossa contra saída de terceiro, do mesmo jeito que o flush (PR #701).
-    managedBotId: number | null;
   };
   // Whether the burst's delivery rows are this route's to settle (default yes). False when another
   // bot holds the conversation and may be working its own delivery of the same message.
@@ -1024,12 +1028,13 @@ async function ingestObservedBurst(args: {
         page: messages,
         scalarFloor: floor,
         state: selState,
-        managedBotId: ctx.managedBotId,
-        // A pergunta aqui é "devo LEMBRAR disto?", não "posso responder a isto?" (PR #701, review
-        // round 7). O que a memória do observador guarda é o que o CLIENTE disse, e quem respondeu
-        // não muda isso: com a cerca ligada, uma resposta humana esconde da memória as perguntas
-        // atrás dela, e a passagem declara sucesso sem ter lembrado nada.
-        foreignReplyCloses: false,
+        // "Devo LEMBRAR disto?", que não é "posso responder a isto?" (PR #701, review rounds 7 e 8).
+        // As duas cercas da resposta ficam de fora, e por motivos que são o mesmo motivo: a memória
+        // do observador guarda o que o CLIENTE disse, e nem quem respondeu nem uma decisão de não
+        // responder mudam isso. Ligada a primeira, uma resposta humana esconde da memória as
+        // perguntas atrás dela; ligada a segunda, a recusa por teto esconde a rajada inteira que ela
+        // acabou de nomear. Nos dois casos a passagem declara sucesso sem ter lembrado nada.
+        purpose: "memory",
       }).filter((m) => armedLast === null || m.id <= armedLast);
       const resolveQuoted = buildQuoteResolver(messages);
       const graphThreadId = resolveGraphThreadId(
@@ -1325,9 +1330,6 @@ export async function flushDebounceJob(
           contactInboxId: conv.contactInboxId,
           watermark: conv.lastHandledMessageId,
           settings: now.settings,
-          // O bot que este inbox serve, para a ingestão classificar saída nossa contra a de terceiro
-          // do mesmo jeito que o flush (PR #701, review round 6).
-          managedBotId: agentBotId,
         };
       }
       return null;
@@ -1422,9 +1424,6 @@ export async function flushDebounceJob(
       convDbId: ctx.convDbId,
       contactInboxId: ctx.contactInboxId,
       armedLast: last,
-      // Este ramo não carrega persona: quem serve o inbox aqui é o bot do payload, que é também o
-      // único nome disponível antes de qualquer load (PR #701, review round 6).
-      managedBotId: agentBotId,
       heldByAnotherBot: ctx.heldByAnotherBot,
       base,
       deps,
@@ -1538,8 +1537,9 @@ export async function flushDebounceJob(
       // outra persona nesse meio-tempo, os dois divergem, e o aviso que ESTA persona acabou de postar
       // seria classificado como de terceiro — a fronteira fecharia a própria rajada dela e o portão
       // engoliria a resposta. Quem classifica a saída tem que ser o mesmo que a produz.
+      purpose: "reply",
       managedBotId: ctx.loaded.agentBotId,
-      foreignReplyCloses: true,
+      whatsappProvider: ctx.loaded.whatsappProvider,
     });
   };
 
@@ -1567,7 +1567,6 @@ export async function flushDebounceJob(
         agentId: ctx.loaded.agentId,
         contactInboxId: ctx.contactInboxId,
         settings: ctx.settings,
-        managedBotId: ctx.loaded.agentBotId,
       },
       base,
       deps,
@@ -2275,6 +2274,7 @@ export async function flushDebounceJob(
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
         managedBotId: ctx.loaded.agentBotId,
+        whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {
           claimLostPartial = reason === "partial";
         },

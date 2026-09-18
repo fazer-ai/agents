@@ -69,6 +69,7 @@ const CONV_TURN_UNREADABLE = 9430;
 const CONV_LADDER_FLIP = 9431;
 const CONV_CEILING_CLIENT = 9432;
 const CONV_PAST_BOUND = 9433;
+const CONV_CEILING_REMEMBERED = 9436;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
@@ -284,6 +285,7 @@ describe.skipIf(!dbUp)(
       await seedConversation(CONV_DISABLED, 94_110);
       await seedConversation(CONV_FLIPPED_MID_TURN, 94_120);
       await seedConversation(CONV_CEILING, 94_130);
+      await seedConversation(CONV_CEILING_REMEMBERED, 94_360);
       await seedConversation(CONV_PAGED, 94_140);
       await seedConversation(CONV_OUT_OF_REACH, 94_150);
       await seedConversation(CONV_NO_THREAD, null);
@@ -585,6 +587,135 @@ describe.skipIf(!dbUp)(
         const keys = (await ingestJobs()).map((j) => j.dedupeKey);
         expect(ingestedIds(keys, 94_130)).toEqual([7]);
         expect(await watermarkOf(CONV_CEILING)).toBe(7);
+      } finally {
+        await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
+        await suDb.tenant.update({
+          where: { id: tenantId },
+          data: { settings: (before.settings as object) ?? {} },
+        });
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("what the ceiling REFUSED is still the observer's to remember", async () => {
+      // PR #701, review round 8. Uma dispensa diz que ninguém vai RESPONDER àquela mensagem. Ela não
+      // diz nada sobre a memória — e a recusa por teto é justamente a que nomeia cada membro da
+      // rajada que recusou. Lida pela ingestão, ela esconde do observador exatamente o que o cliente
+      // pediu enquanto o orçamento estava estourado, e a passagem declara sucesso sem ter lembrado
+      // nada. A meia escalar desse mesmo problema é o que o `watermarkPastBurst` sempre compensou.
+      //
+      // A corrida é a outra porta de entrada: uma virada para monitoramento que caia entre o
+      // `stillWanted("settlement")` e a passagem abaixo dele chega no mesmo lugar por dois writes de
+      // distância. Esta sequência não precisa dela, e é a que o operador realmente faz: o teto
+      // recusa, ele devolve a conversa e vira o agente para observar enquanto o orçamento não volta.
+      const before = await suDb.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...((before.settings as object) ?? {}),
+            spendCeiling: {
+              enabled: true,
+              monthlyInboxUsd: 10,
+              overCeilingMessage: "Orçamento do mês esgotado.",
+            },
+          },
+        },
+      });
+      await suDb.spendCostSnapshot.create({
+        data: {
+          tenantId,
+          source: "inbox",
+          monthStart: monthStart(new Date()),
+          costUsd: 12,
+          polledAt: new Date(),
+        },
+      });
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_CEILING_REMEMBERED },
+        select: { id: true },
+      });
+      // A era por mensagem, que é onde a dispensa decide: abaixo deste piso quem decide é a escalar.
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      try {
+        const s1 = stub([page([{ id: 7, content: "quero remarcar" }])]);
+        const job1 = await claimedJob(CONV_CEILING_REMEMBERED, 7);
+        await flushDebounceJob({
+          job: job1,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("the model must not be invoked over the ceiling");
+            },
+            makeClient: s1.makeClient as never,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        // O ARRANJO, conferido em vez de suposto: a recusa aconteceu, nomeou a mensagem 7 e não
+        // lembrou nada dela. Sem isto o teste passaria medindo outra coisa.
+        expect(s1.sent).toEqual(["Orçamento do mês esgotado."]);
+        expect(await watermarkOf(CONV_CEILING_REMEMBERED)).toBe(7);
+        // NOMEADA, e a linha mora no `message_reply_claims` com a palavra `DISPENSED` — a tabela
+        // `reply_dispensals` é só para a faixa que o chamador não conseguiu enumerar, e a recusa por
+        // teto consegue.
+        expect(
+          await suDb.messageReplyClaim.findFirst({
+            where: { conversationId: conv.id, messageId: 7 },
+            select: { reason: true },
+          }),
+        ).toEqual({ reason: "DISPENSED" });
+        expect(
+          ingestedIds(
+            (await ingestJobs()).map((j) => j.dedupeKey),
+            94_360,
+          ),
+        ).toEqual([]);
+
+        // O operador devolve a conversa e vira o agente para observar enquanto o orçamento não
+        // volta; o cliente escreve de novo. A rajada seguinte reusa a chave de dedupe da thread, que
+        // é única: a linha da primeira sai como a do scheduler sairia ao terminar.
+        await suDb.schedulerJob.delete({ where: { id: job1.id } });
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: { status: "pending", assigneeType: null, assigneeId: null },
+        });
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "monitoring" },
+        });
+        const s2 = stub([
+          page([
+            { id: 7, content: "quero remarcar" },
+            { id: 8, content: "consegue para quinta?" },
+          ]),
+        ]);
+        await flushDebounceJob({
+          job: await claimedJob(CONV_CEILING_REMEMBERED, 8),
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s2.makeClient as never,
+          },
+        });
+        // As DUAS: o que o teto recusou e o que veio depois. O observador guarda o que o CLIENTE
+        // disse, e a recusa foi uma decisão sobre a resposta.
+        expect(
+          ingestedIds(
+            (await ingestJobs()).map((j) => j.dedupeKey),
+            94_360,
+          ),
+        ).toEqual([7, 8]);
       } finally {
         await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
         await suDb.tenant.update({

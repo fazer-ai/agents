@@ -2616,8 +2616,12 @@ export async function runAgentTurn(
               // Quem envia é `loaded.agentBotToken`; com o inbox religado entre o roteamento e o
               // load, o aviso que ESTA persona acabou de postar seria saída de terceiro e o portão
               // engoliria a resposta dela mesma. Mesmo conserto que o flush levou na rodada 6.
+              purpose: "reply",
               managedBotId: loaded.agentBotId,
-              foreignReplyCloses: true,
+              // E O PROVEDOR DO INBOX COM ELE (PR #701, review round 8): a resposta digitada no
+              // aparelho pareado não tem remetente nenhum, e só o provedor diz se aquela marca é de
+              // um atendente ou o eco da nossa própria resposta.
+              whatsappProvider: loaded.whatsappProvider,
             });
             // TWO QUESTIONS, and the second one is new (PR #701, review round 1). "Is anything newer
             // still open" is the supersede this gate always asked. "Is what I am about to answer
@@ -2633,7 +2637,11 @@ export async function runAgentTurn(
             // back for them.
             const openAbove = open.some((m) => m.id > triggerId);
             const answeredByOther =
-              triggerId <= foreignReplyBoundary(latest, loaded.agentBotId);
+              triggerId <=
+              foreignReplyBoundary(latest, {
+                managedBotId: loaded.agentBotId,
+                whatsappProvider: loaded.whatsappProvider,
+              });
             if (openAbove || answeredByOther) {
               logger.info(
                 "direct turn: superseded mid-turn (conv=%s), deferring",

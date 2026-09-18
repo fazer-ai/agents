@@ -187,6 +187,11 @@ export interface AgentConfig {
   // or in the playground). Decides the TTS reply container (pickTtsFormat) — Meta's Instagram
   // messaging refuses WhatsApp's Ogg/Opus.
   channelType: string | null;
+  // NOTE: the inbox's WhatsApp provider (baileys | zapi | whatsapp_cloud | …; null off WhatsApp or on
+  // an inbox that has not synced). It is what says whether an attendant's reply typed on the paired
+  // phone can be told apart from an unmatched echo of our own — see `providerReservesEchoIds` and
+  // `foreignReplyBoundary`. Selected from the row this query already reads (PR #701, review round 8).
+  whatsappProvider: string | null;
   contactDbId: bigint | null;
   // The native Chatwoot ContactInbox id (one contact on one channel) for this conversation. Keys the
   // graph memory thread (see resolveGraphThreadId). null on legacy rows / the playground.
@@ -576,6 +581,7 @@ export async function loadAgentConfig(
           chatwootInboxId: true,
           name: true,
           channelType: true,
+          provider: true,
         },
       },
     },
@@ -788,6 +794,7 @@ export async function loadAgentConfig(
     conversationDbId: conv?.id ?? null,
     inboxDbId: conv?.inbox?.id ?? null,
     channelType: conv?.inbox?.channelType ?? null,
+    whatsappProvider: conv?.inbox?.provider ?? null,
     contactDbId: conv?.contact?.id ?? null,
     contactInboxId: conv?.contactInboxId ?? null,
     systemPrompt: promptSections.length

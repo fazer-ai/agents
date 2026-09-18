@@ -63,6 +63,14 @@ export interface ChatwootMessageRow {
   // this runtime, and exempting it from the outgoing boundary would read its answers as ours
   // (PR #701, review round 1).
   senderId: number | null;
+  // `content_attributes.external_sender_name`, which is the OTHER route a person answers by: typed
+  // on the phone paired to the inbox's number, never through the CRM. The fork stores that echo
+  // sender-less, so `senderType` is null on it and the two clauses above cannot see it at all — and
+  // it is the only field on the row that separates it from the three other shapes of sender-less
+  // outgoing message Chatwoot itself writes (an automation rule, a scheduled message, a CSAT
+  // survey). Trusting it also needs the inbox's WhatsApp provider, which the page does not carry;
+  // see `foreignReplyBoundary` and `providerReservesEchoIds` (PR #701, review round 8).
+  externalSenderName: string | null;
   // The name the send gave itself on the way out (issue #499), when this message is one of ours and
   // the sender asked for one. Null on every message nobody named: everything inbound, everything a
   // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
@@ -245,6 +253,10 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       activityType: activityTypeFrom(ca),
       senderType: senderTypeOf(item.sender),
       senderId: isRecord(item.sender) ? num(item.sender.id) : null,
+      externalSenderName:
+        typeof ca?.external_sender_name === "string"
+          ? ca.external_sender_name
+          : null,
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

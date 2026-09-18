@@ -36,6 +36,7 @@ export function makeConfig(
     conversationDbId: null,
     inboxDbId: null,
     channelType: null,
+    whatsappProvider: null,
     contactDbId: null,
     contactInboxId: null,
     systemPrompt: "Você é um assistente.",

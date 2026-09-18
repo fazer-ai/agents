@@ -538,6 +538,54 @@ describe("heic-to-jpeg", () => {
     expect(probe() - before).toBe(0);
   });
 
+  test("every image handle is released, on every path out, and before the context", async () => {
+    // Review round 5, and the finding my own round 2 measurement missed: freeing the CONTEXT does not
+    // free the image handles, and what a handle retains is the decoded image. Measured over 400
+    // conversions of the 2400x1600 fixture, the wasm heap grows 4.3 -> 9.5 -> 15.75 -> 23.25 MB
+    // without `image.free()` and stays at 0 with it.
+    //
+    // Asserted here by standing in for the library, because measuring it takes a minute of real
+    // decoding and because the ORDER is part of the contract: a handle holds a reference into the
+    // context, so the context cannot go first.
+    const trail: string[] = [];
+    const fake = (n: number) =>
+      ({
+        ready: Promise.resolve(),
+        HeifDecoder: class {
+          decoder = { delete: () => trail.push("context") };
+          decode() {
+            return Array.from({ length: n }, (_, i) => ({
+              get_width: () => 10,
+              get_height: () => 10,
+              free: () => trail.push(`image ${i}`),
+              display: () => undefined,
+            }));
+          }
+        },
+      }) as unknown as Parameters<typeof withHeicFrames>[2];
+
+    await withHeicFrames(heicBytes(), async () => "ok", fake(2));
+    expect(trail).toEqual(["image 0", "image 1", "context"]);
+
+    // The refusal paths are the ones that leaked in both review rounds, so each gets its own check.
+    trail.length = 0;
+    await expect(
+      withHeicFrames(
+        heicBytes(),
+        async () => {
+          throw new Error("estourou");
+        },
+        fake(1),
+      ),
+    ).rejects.toThrow("estourou");
+    expect(trail).toEqual(["image 0", "context"]);
+
+    // And a file that parses to nothing still releases the context it allocated.
+    trail.length = 0;
+    await withHeicFrames(heicBytes(), async (f) => f.length, fake(0));
+    expect(trail).toEqual(["context"]);
+  });
+
   test("refuses a source over the pixel cap instead of allocating it", async () => {
     // The fixture is 3.84 Mpx, so a cap just under it exercises the guard without the 200 MB the
     // real cap is there to prevent.

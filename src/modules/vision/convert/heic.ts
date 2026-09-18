@@ -30,6 +30,8 @@ export type HeicFrame = {
 type HeifImage = {
   get_width(): number;
   get_height(): number;
+  // `heif_image_handle_release`, and it is NOT covered by freeing the context: see the release below.
+  free(): void;
   display(
     target: { data: Uint8ClampedArray; width: number; height: number },
     cb: (out: { data: Uint8ClampedArray } | null) => void,
@@ -92,34 +94,56 @@ export function __resetLibheifForTest(): void {
   loading = null;
 }
 
-// THE DECODER IS ALWAYS RELEASED, on every path out, because it is ours from the moment it is built.
+// EVERYTHING IS RELEASED, on every path out, because all of it is ours from the moment it is built.
 // This is what `heic-decode` could not offer: it constructs the decoder and only then decides whether
 // to hand the caller anything to release, so a file that parses to zero images strands the context
 // with no handle left to free it (measured at 6.5 KB per malformed file; PR #707 review round 2).
 //
-// `delete()` is the whole release and the only one: it is the embind destructor bound to
-// `heif_context_free`, so calling both throws "Cannot pass deleted object as a pointer". Measured
-// over 500 malformed files: no release drifts the wasm heap by 400 KB, either call alone by 440
-// bytes, which is one allocator step and not per-file. Forty full decodes of the 2400x1600 fixture
-// leave the same 440, so the wrapper releases the image handles with the context.
+// TWO RELEASES, and neither covers the other. Measured against libheif's own allocator (the boundary
+// a `malloc(1)` probe returns) and against the wasm heap's size:
+//
+//   the context, `decoder.delete()`   the embind destructor bound to `heif_context_free`. Calling it
+//                                     AND `heif_context_free` throws "Cannot pass deleted object as
+//                                     a pointer". Over 500 malformed files, no release drifts the
+//                                     heap 400 KB and this one holds it flat at 440 bytes, which is
+//                                     one allocator step and not per-file.
+//   each image, `image.free()`        `heif_image_handle_release`. Freeing the context does NOT do
+//                                     it: a single extra conversion of the 2400x1600 fixture grows
+//                                     the wasm heap 4.5 MB without it, and 0 with it, measured at
+//                                     every count from 1 to 100 (PR #707 review round 5).
+//
+// The parse-only path hides the second one completely — 100 parse-and-delete cycles drift nothing,
+// with or without the free — because what the handle retains is the DECODED image. So is RSS, in
+// both directions: the 15 MB RGBA buffer each conversion hands back dominates it, and a run that
+// releases everything can report MORE resident memory than one that leaks, purely on GC timing.
+//
+// The `lib` parameter is for the battery, and it is the only way to ask the question that matters
+// here: a release is invisible from outside, and the symptom it prevents (the heap growing in 4 MB
+// steps every ~70 conversions) needs a minute of decoding to show. Standing in for the library turns
+// "is every handle released on every path out" into an assertion instead of a measurement.
 export async function withHeicFrames<T>(
   bytes: ArrayBuffer,
   use: (frames: readonly HeicFrame[]) => Promise<T>,
+  lib?: LibHeif,
 ): Promise<T> {
-  const libheif = await loadLibheif();
+  const libheif = lib ?? (await loadLibheif());
   const decoder = new libheif.HeifDecoder();
+  let images: HeifImage[] = [];
   try {
-    const images = decoder.decode(new Uint8Array(bytes));
+    images = decoder.decode(new Uint8Array(bytes));
     return await use(
       images.map((image) => ({
         // Read eagerly: the caller needs them to apply its pixel cap BEFORE any pixel is decoded,
-        // and after `decoder.delete()` the handle is gone.
+        // and after the release below the handle is gone.
         width: image.get_width(),
         height: image.get_height(),
         decode: () => displayImage(image),
       })),
     );
   } finally {
+    // Images before the context: a handle holds a reference into it. `free()` is idempotent (it
+    // nulls its own pointer), and a `decode` that threw leaves the list empty.
+    for (const image of images) image.free();
     decoder.decoder?.delete();
   }
 }

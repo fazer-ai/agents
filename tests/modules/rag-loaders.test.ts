@@ -76,6 +76,40 @@ describe("extractText", () => {
     expect(err.translationKey).toBe("errors.documentTooLarge");
   });
 
+  test("pdf: extracts the text of a real one-page document", async () => {
+    // The success path had no test, which is what made the ownership fix invisible: the loader used
+    // to build its own `PDFDocumentProxy` and hand it to unpdf, and unpdf only destroys documents it
+    // created itself ("caller-supplied proxies keep their lifecycle with the caller"), so one parsed
+    // PDF stayed alive per upload. Passing the bytes puts the lifecycle back with unpdf, and this is
+    // what proves the two routes extract the same thing (issue #697, review round 1).
+    const objs = [
+      "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+      "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+      "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n",
+      "",
+      "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n",
+    ];
+    const stream = "BT /F1 12 Tf 20 50 Td (RECIBO 1480) Tj ET";
+    objs[3] = `4 0 obj<</Length ${stream.length}>>stream\n${stream}\nendstream endobj\n`;
+    let pdf = "%PDF-1.4\n";
+    const offsets: number[] = [];
+    for (const o of objs) {
+      offsets.push(pdf.length);
+      pdf += o;
+    }
+    const xref = pdf.length;
+    pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+    for (const o of offsets) pdf += `${String(o).padStart(10, "0")} 00000 n \n`;
+    pdf += `trailer<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF`;
+
+    const { text } = await extractText({
+      name: "recibo.pdf",
+      type: "application/pdf",
+      bytes: new Uint8Array(Buffer.from(pdf, "latin1")),
+    });
+    expect(text).toBe("RECIBO 1480");
+  });
+
   test("PDF with no extractable text throws 422 errors.noExtractableText", async () => {
     // A minimal valid PDF that contains no text streams: just the required structure,
     // no content stream. unpdf will return an empty string for this.

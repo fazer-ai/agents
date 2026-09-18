@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import decode from "heic-decode";
 import jpeg from "jpeg-js";
 import {
+  __disposeFramesForTest,
   __frameDimensionsForTest,
   __serializedForTest,
   MAX_SOURCE_PIXELS,
@@ -384,6 +385,101 @@ describe("heic-to-jpeg", () => {
     // pass for the wrong reason.
     const raw = await decode({ buffer: new Uint8Array(heicBytes()) });
     expect([raw.width, raw.height]).toEqual([2400, 1600]);
+  });
+
+  test("the library still hands its handles to us, non-enumerably", async () => {
+    // THE CONTRACT THIS PR DEPENDS ON, asserted against the real library. `decode.all()` does not
+    // dispose on its own (the one-shot `decode()` does), and it attaches `dispose` to the returned
+    // ARRAY as a non-enumerable property, so neither the types nor a key probe reveal it. An upgrade
+    // that moves or drops it has to fail here, not three weeks later as memory growth in production.
+    const frames = await decode.all({ buffer: new Uint8Array(heicBytes()) });
+    expect(Array.isArray(frames)).toBe(true);
+    expect(Object.keys(frames)).not.toContain("dispose");
+    expect(typeof (frames as unknown as { dispose?: unknown }).dispose).toBe(
+      "function",
+    );
+    __disposeFramesForTest(frames);
+  });
+
+  test("the handles are released on every path out, refusals included", async () => {
+    // The refusals are the paths that leaked most: the decoder and every handle are allocated by
+    // `decode.all()` before the cap is even read. Driven through an injected decoder, because
+    // "someone called dispose" is not visible from the bytes that come back.
+    const calls: string[] = [];
+    const framesFor = (width: number, height: number, decodes = true) => {
+      const frames: unknown[] = [
+        {
+          width,
+          height,
+          decode: async () => {
+            if (!decodes) throw new Error("decoder blew up");
+            return { data: new Uint8Array(width * height * 4), width, height };
+          },
+        },
+      ];
+      Object.defineProperty(frames, "dispose", {
+        enumerable: false,
+        value: () => calls.push("dispose"),
+      });
+      return frames;
+    };
+
+    await runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+      decodeAll: async () => framesFor(40, 30),
+    });
+    expect(calls).toEqual(["dispose"]);
+
+    calls.length = 0;
+    await expect(
+      runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+        decodeAll: async () => framesFor(4000, 3000),
+        maxSourcePixels: 100,
+      }),
+    ).rejects.toBeInstanceOf(MediaConversionError);
+    expect(calls).toEqual(["dispose"]);
+
+    calls.length = 0;
+    await expect(
+      runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+        decodeAll: async () => framesFor(40, 30, false),
+      }),
+    ).rejects.toBeInstanceOf(MediaConversionError);
+    expect(calls).toEqual(["dispose"]);
+
+    calls.length = 0;
+    await expect(
+      runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+        decodeAll: async () => {
+          const frames: unknown[] = [];
+          Object.defineProperty(frames, "dispose", {
+            enumerable: false,
+            value: () => calls.push("dispose"),
+          });
+          return frames;
+        },
+      }),
+    ).rejects.toBeInstanceOf(MediaConversionError);
+    expect(calls).toEqual(["dispose"]);
+  });
+
+  test("a collection without dispose converts anyway instead of refusing", async () => {
+    // A missing dispose costs a leak; refusing every photo over it would cost the feature.
+    const out = await runMediaConverter("heic-to-jpeg", new ArrayBuffer(8), {
+      decodeAll: async () => [
+        {
+          width: 40,
+          height: 30,
+          decode: async () => ({
+            data: new Uint8Array(40 * 30 * 4),
+            width: 40,
+            height: 30,
+          }),
+        },
+      ],
+    });
+    expect(out.byteLength).toBeGreaterThan(0);
+    expect(() => __disposeFramesForTest([])).not.toThrow();
+    expect(() => __disposeFramesForTest({ dispose: 42 })).not.toThrow();
   });
 
   test("refuses a source over the pixel cap instead of allocating it", async () => {

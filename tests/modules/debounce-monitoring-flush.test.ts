@@ -57,6 +57,7 @@ const CONV_DENIED_UNREAD = 9420;
 const CONV_THROWS = 9421;
 const CONV_GATE_TAKEN = 9422;
 const CONV_LEDGER = 9423;
+const CONV_ORPHAN = 9434;
 const CONV_OTHER_BOT = 9424;
 const CONV_OBS_FAILS = 9425;
 const CONV_HANDLED_FLOOR = 9426;
@@ -267,6 +268,7 @@ describe.skipIf(!dbUp)(
       });
       inboxDbId = inbox.id;
       await seedConversation(CONV_OBSERVED, 94_100);
+      await seedConversation(CONV_ORPHAN, 94_340);
       await seedConversation(CONV_DISABLED, 94_110);
       await seedConversation(CONV_FLIPPED_MID_TURN, 94_120);
       await seedConversation(CONV_CEILING, 94_130);
@@ -357,6 +359,57 @@ describe.skipIf(!dbUp)(
           "94100:2",
         ]);
         expect(await watermarkOf(CONV_OBSERVED)).toBe(2);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("the orphan below the mark is handed over too, not left without a row", async () => {
+      // PR #701, review round 6. A observação ingere e MARCA a rajada, então ela tem que enxergar o
+      // mesmo conjunto que o flush: a órfã abaixo da marca, que esta PR ensinou a seleção a oferecer,
+      // ficava sem ser ingerida e sem linha nenhuma, com a passagem declarada bem-sucedida. Voltando
+      // para produção, um flush depois executa aquele pedido velho.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ORPHAN },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { replyClaimFloorMessageId: 0, lastRepliedMessageId: 2 },
+      });
+      const job = await claimedJob(CONV_ORPHAN, 2);
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "monitoring" },
+      });
+      const s2 = stub([
+        page([
+          { id: 1, content: "quero cancelar meu plano" },
+          { id: 2, content: "obrigado" },
+        ]),
+      ]);
+      try {
+        await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s2.makeClient as never,
+          },
+        });
+        const keys = (await ingestJobs())
+          .map((j) => j.dedupeKey)
+          .filter((k) => k.includes("94340:"));
+        // A órfã entra na memória do observador junto com a mensagem que estava acima da marca.
+        expect(keys.map((k) => k.split(":").slice(-2).join(":"))).toEqual([
+          "94340:1",
+          "94340:2",
+        ]);
       } finally {
         await suDb.agent.update({
           where: { id: agentDbId },

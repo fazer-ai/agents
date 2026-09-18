@@ -843,6 +843,8 @@ function retryFlushOnFailedHandOver(
 // The gate-closed exit's own ask (round 15): that branch loads no config, so it reads the switch,
 // the mode and the settings itself. "not-observing" leaves the exit exactly as it was.
 async function handOverGateExitIfObserving(args: {
+  // O bot desta persona, para a seleção por identidade da ingestão (PR #701, review round 6).
+  managedBotId: number | null;
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -887,6 +889,7 @@ async function handOverGateExitIfObserving(args: {
       agentId,
       contactInboxId: args.contactInboxId,
       settings: agent.settings,
+      managedBotId: args.managedBotId,
     },
     retireDeliveries: !args.heldByAnotherBot,
     base,
@@ -904,6 +907,8 @@ async function ingestObservedBurst(args: {
     agentId: bigint;
     contactInboxId: number | null;
     settings: unknown;
+    // Para classificar saída nossa contra saída de terceiro, do mesmo jeito que o flush (PR #701).
+    managedBotId: number | null;
   };
   // Whether the burst's delivery rows are this route's to settle (default yes). False when another
   // bot holds the conversation and may be working its own delivery of the same message.
@@ -999,9 +1004,27 @@ async function ingestObservedBurst(args: {
         messages.unshift(...rows);
       }
       overlayMediaAnnotations(tenantId, instanceId, messages);
-      const burst = pendingIncoming(messages, floor).filter(
-        (m) => armedLast === null || m.id <= armedLast,
-      );
+      // POR IDENTIDADE AQUI TAMBÉM (PR #701, review round 6). A observação ingere e MARCA a rajada,
+      // então ela tem que enxergar o mesmo conjunto que o flush enxerga: a órfã abaixo da marca, que
+      // esta PR ensinou a seleção a oferecer, ficaria sem ser ingerida e sem linha nenhuma, com a
+      // troca para observação declarando a passagem bem-sucedida. Voltando para produção, um flush
+      // depois executa aquele pedido velho.
+      //
+      // A PAGINAÇÃO CONTINUA SENDO A ESCALAR, de propósito: ela alcança de volta até o piso escalar,
+      // e é o que limita o custo desta varredura. Uma mensagem aberta que esteja FORA dessa janela
+      // continua fora daqui, e é o flush seguinte que a pega.
+      const selState = await readSelectionState({
+        tenantId,
+        conversationDbId: ctx.convDbId,
+        messageIds: pendingIncoming(messages, null).map((m) => m.id),
+        base,
+      });
+      const burst = selectOpenMessages({
+        page: messages,
+        scalarFloor: floor,
+        state: selState,
+        managedBotId: ctx.managedBotId,
+      }).filter((m) => armedLast === null || m.id <= armedLast);
       const resolveQuoted = buildQuoteResolver(messages);
       const graphThreadId = resolveGraphThreadId(
         tenantId,
@@ -1296,6 +1319,9 @@ export async function flushDebounceJob(
           contactInboxId: conv.contactInboxId,
           watermark: conv.lastHandledMessageId,
           settings: now.settings,
+          // O bot que este inbox serve, para a ingestão classificar saída nossa contra a de terceiro
+          // do mesmo jeito que o flush (PR #701, review round 6).
+          managedBotId: agentBotId,
         };
       }
       return null;
@@ -1390,6 +1416,9 @@ export async function flushDebounceJob(
       convDbId: ctx.convDbId,
       contactInboxId: ctx.contactInboxId,
       armedLast: last,
+      // Este ramo não carrega persona: quem serve o inbox aqui é o bot do payload, que é também o
+      // único nome disponível antes de qualquer load (PR #701, review round 6).
+      managedBotId: agentBotId,
       heldByAnotherBot: ctx.heldByAnotherBot,
       base,
       deps,
@@ -1498,7 +1527,12 @@ export async function flushDebounceJob(
       page: messages,
       scalarFloor: floor,
       state,
-      managedBotId: agentBotId,
+      // A PERSONA CARREGADA, não o bot que o payload nomeou (PR #701, review round 6). Quem envia é
+      // `ctx.loaded.agentBotToken`, e o payload é de quando o job foi armado: com o inbox religado a
+      // outra persona nesse meio-tempo, os dois divergem, e o aviso que ESTA persona acabou de postar
+      // seria classificado como de terceiro — a fronteira fecharia a própria rajada dela e o portão
+      // engoliria a resposta. Quem classifica a saída tem que ser o mesmo que a produz.
+      managedBotId: ctx.loaded.agentBotId,
     });
   };
 
@@ -1526,6 +1560,7 @@ export async function flushDebounceJob(
         agentId: ctx.loaded.agentId,
         contactInboxId: ctx.contactInboxId,
         settings: ctx.settings,
+        managedBotId: ctx.loaded.agentBotId,
       },
       base,
       deps,
@@ -2221,7 +2256,7 @@ export async function flushDebounceJob(
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
-        managedBotId: agentBotId,
+        managedBotId: ctx.loaded.agentBotId,
         onClaimLost: (reason) => {
           claimLostPartial = reason === "partial";
         },

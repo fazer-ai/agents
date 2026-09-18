@@ -2062,6 +2062,104 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(clicked.outcome).toBe("superseded");
   });
 
+  // QUEM CLASSIFICA A SAÍDA TEM QUE SER QUEM A PRODUZ (PR #701, review round 6). O payload do job é
+  // de quando a rajada foi armada; quem envia é `ctx.loaded.agentBotToken`, da persona que o inbox
+  // serve AGORA. Religado o inbox nesse meio-tempo, os dois divergem — e classificando pelo payload,
+  // o aviso que a persona nova acabou de postar vira saída de terceiro, a fronteira fecha a rajada
+  // dela mesma e o portão engole a resposta.
+  test("the persona that sends is the one that classifies its own outgoing", async () => {
+    const convId = 956;
+    const OTHER_BOT = 77;
+    const OTHER_INBOX = 78;
+    const key2 = await suDb.vaultEntry.create({
+      data: { tenantId, name: "llm-key-2", secret: encryptJson("sk-test") },
+      select: { id: true },
+    });
+    const agent2 = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Persona nova",
+        systemPrompt: "Você é prestativa.",
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: `vault:${key2.id}`,
+        },
+        settings: {
+          debounce: { enabled: true, windowSeconds: 15 },
+          split: { enabled: false },
+        },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: agent2.id,
+        chatwootAgentBotId: OTHER_BOT,
+        accessToken: encryptJson("BOT2"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `db-route2-${process.pid}`,
+        name: "Persona nova",
+      },
+    });
+    const inbox2 = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: OTHER_INBOX,
+        name: "Outro",
+        agentId: agent2.id,
+      },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "pending",
+        inboxId: inbox2.id,
+        threadId: threadOf(convId),
+        lastEventAt: new Date(),
+        replyClaimFloorMessageId: 0,
+      },
+    });
+    const sent: Array<[number, string]> = [];
+    let midTurn = false;
+    const model = new SideEffectModel(async () => {
+      midTurn = true;
+    });
+    await flushDebounceJob({
+      // O payload nomeia o bot ANTIGO, que é o que o job carregava.
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => model,
+        makeClient: makeStub({
+          pages: [
+            page([{ id: 1, content: "consigo remarcar?" }]),
+            page([
+              { id: 1, content: "consigo remarcar?" },
+              {
+                id: 2,
+                content: "só um instante",
+                type: 1,
+                sender: "agent_bot",
+                senderId: OTHER_BOT,
+              },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    void midTurn;
+    // O aviso é da própria persona: ele não fecha a rajada dela.
+    expect(sent.length).toBe(1);
+  });
+
   // THE CEILING STILL ANSWERS BELOW THE FLOOR, which is where issue #452 keeps living: a deliberate
   // skip writes no row anywhere, so on the messages that predate this conversation's per-message era
   // the watermark is the only thing that knows anything, and it answers unrelaxed.

@@ -36,15 +36,19 @@ export function readToolGuidance(
 // equals a real label is a guard that silently protects nothing.
 export const PROTECTED_LABELS_MAX = 50;
 
-// LABELS `set_labels` MAY NEITHER ADD NOR REMOVE, and never sees (issue #568 review).
+// LABELS `set_labels` MAY NEITHER ADD NOR REMOVE (issue #568 review; issue #695 dropped the third
+// property, "and never sees").
 //
-// The tool takes the complete list a scope should end up with, so a label standing on the
-// conversation before the turn is shown to the model and survives only if the model repeats it.
-// That is the contract working as designed, and it is fine for a classification. It is not fine for
-// a label that belongs to somebody else: `agente-off` is what keeps an agent off a conversation and
-// a testing label is what keeps a rehearsal out of the metrics, both written and read back by
-// something that is not this agent. Measured, not assumed: with `["compra-de-ingresso"]` asked for,
-// the tool answered `removed "cancelamento", "agente-off", "vip"`.
+// The tool names a DELTA: `add` and `remove`, with a label nobody names left as it is. So the guard
+// is no longer what keeps another system's label alive — not naming it is — and what the guard
+// still does is refuse the two verbs, in both directions, because a tenant relies on the add half
+// to keep one agent's taxonomy out of another agent's reach.
+//
+// It stopped HIDING, and that is the point of #695. Under the replace contract a guarded label had
+// to be withdrawn from the model's sight, because being shown one was the first half of being able
+// to delete it by omission; under the delta, seeing it costs nothing and not seeing it costs a
+// fenced agent inventing a synonym for the canonical value (measured 2026-09-11: `duvidas-evento`,
+// outside the catalogue, written by an agent whose fence hid `dúvidas-evento` from it).
 //
 // Per agent rather than per instance because the console's tool panel is where an operator
 // configures this tool, and because two agents on one account can disagree about which labels are

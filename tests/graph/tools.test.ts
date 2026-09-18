@@ -1159,9 +1159,10 @@ describe("native tools", () => {
     expect(out).toContain("called off");
   });
 
-  test("set_labels task scope writes the card's labels (snapshot read + write)", async () => {
+  test("set_labels task scope reads the card fresh and writes it", async () => {
     const setCalls: unknown[][] = [];
     const client = {
+      getKanbanTask: async () => ({ labels: [] }),
       setKanbanTaskLabels: async (...args: unknown[]) => {
         setCalls.push(args);
         return {};
@@ -1180,6 +1181,61 @@ describe("native tools", () => {
     );
     expect(setCalls).toEqual([[11, ["quente"]]]);
     expect(out.toLowerCase()).toContain("card");
+  });
+
+  test("a label added to the card mid-turn survives, like in the other two scopes", async () => {
+    // ISSUE #695 HOLDOUT s6. The card used to be the turn-prep snapshot, so "not named, not
+    // touched" was a statement about that snapshot and not about the card: a label somebody put on
+    // it while the model was generating was erased by the next write. It is the one scope where the
+    // promise the whole change is built on was false, and one GET by id closes it — the id is in
+    // hand here, unlike at prep, where the card has to be resolved from the conversation.
+    const setCalls: unknown[][] = [];
+    const client = {
+      // The card moved after prep: `externa` is on it now and the snapshot never saw it.
+      getKanbanTask: async () => ({ labels: ["fila-1", "externa"] }),
+      setKanbanTaskLabels: async (...args: unknown[]) => {
+        setCalls.push(args);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: { ...kanbanCtx, card: { ...kanbanCtx.card, labels: ["fila-1"] } },
+    });
+    await byName(tools, "set_labels").invoke({
+      add: ["urgente"],
+      scope: "task",
+    });
+    expect(setCalls).toEqual([[11, ["fila-1", "externa", "urgente"]]]);
+  });
+
+  test("a card that cannot be read refuses the write instead of using the snapshot", async () => {
+    // Falling back to the snapshot would reintroduce the erasure silently, on the one path where
+    // nobody is looking. The conversation scope answers an unreadable state the same way.
+    let setCount = 0;
+    const client = {
+      getKanbanTask: async () => {
+        throw new Error("chatwoot 500");
+      },
+      setKanbanTaskLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: kanbanCtx,
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["quente"],
+        scope: "task",
+      }),
+    );
+    expect(setCount).toBe(0);
+    expect(out).toContain("could not be read");
   });
 
   test("set_labels task scope is offered only when a card is linked", () => {

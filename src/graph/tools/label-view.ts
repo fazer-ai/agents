@@ -9,9 +9,11 @@
 // the argument), so a conversation somebody bulk-labelled can push a whole observation past the
 // provider's context limit, and every retry of that tick fails the same way.
 //
-// A CAP AND NOT A REFUSAL, because it is safe by construction: a label the model was not shown is
-// unseen, and unseen never becomes a removal (see applyLabelIntent). What falls off the end keeps
-// standing exactly as it is.
+// A CAP AND NOT A REFUSAL, because it is safe by construction, and #695 made the reason simpler
+// rather than changing the answer. It used to rest on the diff: a label past the cut was not shown,
+// so it could not be "shown and left out", so it survived. It now rests on the contract itself — a
+// label the call does not name is not touched — so the cut is a display decision with no reach into
+// the write at all. What falls off the end keeps standing exactly as it is.
 export const SHOWN_LABELS_MAX = 40;
 
 // THE CEILING, and nothing else. This used to subtract `settings.setLabels.protected` as well,

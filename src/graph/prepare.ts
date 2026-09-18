@@ -267,8 +267,9 @@ export interface AgentConfig {
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
   // set_labels, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
   toolGuidance: Partial<Record<NativeToolName, string>>;
-  // Labels set_labels may neither add nor remove, and never sees (issue #568 review). See
-  // readProtectedLabels for why an operator control label is not the classifier's to touch.
+  // Labels set_labels may neither add nor remove (issue #568 review; #695 dropped "and never
+  // sees" — a protected label is shown and refused by name). See readProtectedLabels for why an
+  // operator control label is not the classifier's to touch.
   protectedLabels: string[];
   // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
@@ -1248,14 +1249,16 @@ export async function buildToolset(
       );
     }
   }
-  // WHAT THE LABELS ARE RIGHT NOW, read fresh, and the reason set_labels is allowed to remove
-  // anything: the tool takes the complete list a scope should end up with, so the labels left out
-  // of that list are removals — a claim only meaningful against a list the model actually saw. Read
-  // HERE, once, and handed to the tool as `shownLabels`, so the block in the description and the
-  // diff at write time are the same value and cannot describe different turns.
+  // WHAT THE LABELS ARE RIGHT NOW, read fresh, and since #695 this is GROUNDING rather than
+  // authority: the tool names a delta, so a removal comes from the model naming the label in
+  // `remove` and not from it being missing here. What this read buys is that the model knows which
+  // values exist on the scope, so it asks for the canonical one instead of inventing a synonym.
+  // Read HERE, once, and handed to the tool as `shownLabels`, so the block in the description and
+  // the argument's own sentence are the same value and cannot describe different turns.
   //
   // A scope that fails to read is simply ABSENT, never `[]`: an empty list says "this conversation
-  // has no labels", which a model would honour by removing everything, while absent says "we do not
+  // has no labels", which under the old contract a model would honour by removing everything, and
+  // which even now invites a redundant `add`, while absent says "we do not
   // know" and makes the call additive. This is best-effort like the vocab above, and the failure
   // mode of getting it wrong is deleting a customer's classification, so it fails to the safe side.
   //

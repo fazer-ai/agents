@@ -9,9 +9,9 @@
 // TITLES ARE NOT LOGGED, and the reason is that nothing here can tell an operator's label from one
 // the model invented. `detail` is allowlisted ids, counts and enums, never text (docs/logs.md,
 // tests/modules/flowlog-detail-pii.test.ts). A title WAS a closed vocabulary while the verdict was
-// validated against the operator's groups; it is not one now: `set_labels` takes the model's array,
-// `applyLabelIntent` only subtracts the guarded ones, and a title Chatwoot does not have is CREATED
-// there. The account's label list therefore stops being evidence one cache refresh later — the
+// validated against the operator's groups; it is not one now: `set_labels` takes the titles the
+// model names in `add`/`remove`, `applyLabelDelta` only refuses the guarded ones, and a title
+// Chatwoot does not have is CREATED there. The account's label list therefore stops being evidence one cache refresh later — the
 // invented title is in it, so a filter against that list would name, on the next tick, exactly the
 // string this fence exists to keep out (review round 2).
 //

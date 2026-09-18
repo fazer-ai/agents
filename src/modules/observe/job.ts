@@ -836,8 +836,15 @@ export function labelHistoryFromRows(
   // (round 16). `set_labels` takes an unbounded list, so a batch big enough to push its own activity
   // sentence past the scan limit is something this application produces, and dropping it quietly let
   // the block report `(nenhuma nesta janela)` over the very change the model had just made. The
-  // guard is checked FIRST and stays silent: its promise is that the string does not reach the
-  // model, and a count that only appears on conversations carrying a guarded label reports it.
+  // guard is checked FIRST and stays silent. Its ORIGINAL reason died with issue #695 — the promise
+  // used to be that the guarded string never reaches the model, and it now reaches it twice, in the
+  // tool's own description and in `<etiquetas-atuais>`. What survives is the narrower reason, which
+  // is the one that still holds here: a count that appears only on conversations carrying a guarded
+  // label is itself a signal about that label, so a visible `omitted` would announce "something you
+  // may not touch moved" on exactly those conversations and nowhere else. This block narrates WHO
+  // moved WHAT, which is not the model's business for a label it may not move; the VALUE is shown
+  // elsewhere precisely so it stops inventing a synonym for it. Relaxing this is a decision about
+  // narration rather than about the fence, and it belongs to its own issue.
   let unread = 0;
   const recognised = rows
     .filter((m) => {

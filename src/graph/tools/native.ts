@@ -244,20 +244,23 @@ export interface ToolCtx {
   // set_labels / set_custom_attribute enumerate KNOWN values in their descriptions instead of
   // letting the model guess. Absent ⇒ the tools fall back to generic descriptions.
   vocab?: ChatwootVocab;
-  // WHAT THE MODEL WAS SHOWN, per scope, and the only thing that gives `set_labels` the right to
-  // REMOVE (issue #568). The tool takes the complete list a scope should end up with, so the labels
-  // the model left out are the ones it wants gone — but "left out" is only meaningful against a
-  // list it actually saw. A scope missing here was never shown, so a call naming it can add and
-  // never subtract, which is what keeps a failed context read from wiping a conversation clean.
-  // Read at turn prep alongside the vocab; the card's set comes free with the kanban snapshot.
+  // WHAT THE MODEL WAS SHOWN, per scope. Under the replace contract (issue #568) this was the only
+  // thing that gave `set_labels` the right to REMOVE, because removal happened by omission and
+  // "left out" is only meaningful against a list the model actually saw. Since #695 a removal comes
+  // from the model naming the label in `remove`, so this is GROUNDING and no longer authority: what
+  // it buys is that the model asks for the canonical value instead of inventing a synonym for one
+  // it cannot see, and a scope missing here costs a redundant `add` rather than a deletion.
+  // Read at turn prep alongside the vocab; the card's set comes free with the kanban snapshot, and
+  // the `task` scope re-reads the card at write time (holdout s6).
   shownLabels?: {
     conversation?: string[];
     contact?: string[];
     task?: string[];
   };
-  // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE, and never sees (issue #568 review). Operator
-  // control labels live on the same conversation as the classifier's, and nothing but this list
-  // separates them: see applyLabelIntent for why the separation is a subtraction and not a branch.
+  // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE (issue #568 review). Operator control labels
+  // live on the same conversation as the classifier's, and this list is what keeps the agent from
+  // moving one on purpose — not what keeps it alive, which is now the delta's job. It stopped
+  // meaning "and never sees" in #695: see applyLabelDelta for why the refusal is reported by name.
   // Comes from `settings.setLabels.protected`; empty or absent ⇒ the tool reaches everything.
   protectedLabels?: string[];
   // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
@@ -830,11 +833,14 @@ function existingLabelsXml(labels: string[]): string {
 
 // Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card
 // (scope, default 'conversation'). Every backing endpoint REPLACES the whole set, and this tool
-// exposes that shape instead of hiding it: the model passes the complete list the scope should
-// have, so adding, removing and swapping are one gesture with one write, and a swap never leaves
-// the conversation holding both values or neither.
+// used to expose that shape instead of hiding it — the model passed the complete list the scope
+// should have. Issue #695 turned that around: the model names `add` and `remove`, and the complete
+// list is computed HERE, from a read taken at write time. Adding, removing and swapping are still
+// one gesture with one write, so a swap never leaves the scope holding both values or neither; what
+// changed is that a label the model did not name is no longer at the mercy of it remembering to
+// repeat the label back.
 //
-// What it does NOT do is send that list to Chatwoot verbatim. See applyLabelIntent below.
+// The replacement the endpoint wants is built by applyLabelDelta below.
 //
 // Shapes confirmed against the chatwoot-pro fork: conversation + contact labels GET → { payload: [] },
 // POST /{conversations|contacts}/{id}/labels { labels } replaces (LabelConcern); task labels via PATCH
@@ -962,16 +968,17 @@ function recordShown(
   ctx.shownLabels[scope] = modelVisibleLabels(next);
 }
 
-// WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the diff
-// in applyLabelIntent read the SAME `ctx.shownLabels`, on purpose: "shown" has to mean the list the
-// model was actually handed, or a removal is computed against something it never read. Rendered in
-// the tool description rather than in the system prompt for that reason — one value, one place, no
-// way for the two to describe different turns.
+// WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the `add`
+// argument's own sentence read the SAME `ctx.shownLabels`, on purpose: two statements about one
+// scope in one turn have to be one value. Rendered in the tool description rather than in the
+// system prompt for that reason — one value, one place, no way for the two to describe different
+// turns. Since #695 no WRITE is computed from it (the model names the delta), so a stale entry
+// costs a redundant `add` rather than a deletion; what it still decides is whether the model asks
+// for the canonical value or invents a synonym for one it cannot see.
 //
 // A scope absent here is a scope whose read failed or was never made, and it renders no element at
 // all rather than an empty one: `<conversation/>` would tell the model the conversation has no
-// labels, which is a different claim from "we could not find out", and it is the claim that makes a
-// model confidently drop everything.
+// labels, which is a different claim from "we could not find out".
 function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
   if (!shown) return "";
   const els: string[] = [];
@@ -1074,15 +1081,31 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the labels (this conversation has no linked card).";
         }
-        // THE CARD'S SET IS THE TURN-PREP SNAPSHOT, and the delta does NOT close that. Resolving
-        // the card again costs the two or three calls loadKanbanContext makes, so `current` here is
-        // what was read at prep: a label added to the card mid-turn is invisible to this write, and
-        // removing one that was taken off the card mid-turn is a no-op computed against a stale
-        // list. Unlike the conversation and contact scopes, "not named, not touched" is therefore a
-        // statement about the snapshot rather than about the card. Closing it means re-resolving
-        // the card before every write (issue #695 holdout s6).
+        // THE CARD IS READ FRESH, like the other two scopes. It used to be the turn-prep snapshot,
+        // on the grounds that resolving the card again costs the two or three calls
+        // `loadKanbanContext` makes — but that is the cost of resolving the card from the
+        // CONVERSATION, and the id is already in hand here, so one GET by id answers it. Under the
+        // replace contract the staleness was invisible (the model's list was the write either way);
+        // under the delta it would make "not named, not touched" false in exactly one scope, which
+        // is the promise the whole change is built on (issue #695 holdout s6).
+        //
+        // A read that fails REFUSES the write rather than falling back to the snapshot. Falling
+        // back would reintroduce the erasure silently, on the one path where nobody is looking,
+        // and the conversation scope already answers an unreadable state the same way.
+        let cardLabels: string[];
+        try {
+          const fresh = (await ctx.client.getKanbanTask(ctx.kanban.taskId)) as {
+            labels?: unknown;
+          } | null;
+          cardLabels = Array.isArray(fresh?.labels)
+            ? fresh.labels.filter((l): l is string => typeof l === "string")
+            : [];
+        } catch {
+          ctx.onNoEffect?.("set_labels");
+          return "Could not set the labels (the card could not be read just now). Try again.";
+        }
         const { next, added, removed, refusedAdd, refusedRemove } =
-          applyLabelDelta(add, remove, ctx.kanban.card.labels, guarded);
+          applyLabelDelta(add, remove, cardLabels, guarded);
         if (added.length === 0 && removed.length === 0) {
           // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
           // The dispatch was counted as an effect on the way in, and a call that changed no label
@@ -1100,8 +1123,9 @@ function setLabelsTool(ctx: ToolCtx) {
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
         ctx.onLabelsWritten?.(describeLabelWrite("task", added, removed, next));
-        // The card snapshot is this scope's only reading, so a second call in the same turn would
-        // otherwise compute its delta against the set before this write.
+        // Kept in step anyway: the snapshot still feeds the description block and anything else in
+        // the turn that reads the card, and leaving it behind the write would show the model a set
+        // its own call has already moved.
         ctx.kanban.card.labels = [...next];
         recordShown(ctx, "task", next);
         return labelWriteReport(

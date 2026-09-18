@@ -1121,6 +1121,14 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedRemove,
           );
         }
+        // ASKED AGAIN, after the GET and before the write, for the reason the two sibling scopes
+        // state above: the read is a WAIT, and `/reset` can retire the run while it is in flight.
+        // This scope had no read between the graph's dispatch check and its write until the fresh
+        // card read was added here, so the recheck arrives with it.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.("set_labels");
+          return "Could not set the card labels (the run was called off while this write waited).";
+        }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
         ctx.onLabelsWritten?.(describeLabelWrite("task", added, removed, next));
         // Kept in step anyway: the snapshot still feeds the description block and anything else in

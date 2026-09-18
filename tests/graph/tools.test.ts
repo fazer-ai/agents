@@ -1238,6 +1238,67 @@ describe("native tools", () => {
     expect(out).toContain("could not be read");
   });
 
+  test("a card write withdrawn during the fresh read does not land", async () => {
+    // The fresh read this PR added to the task scope is a WAIT, exactly like the GET the other two
+    // scopes do: `/reset` can retire the run while it is in flight, and until this recheck the
+    // task scope was the only one that wrote anyway, because the graph's dispatch check was the
+    // last word before its POST. The fence is asked AFTER the read, not before it.
+    let setCount = 0;
+    let asked = 0;
+    const client = {
+      getKanbanTask: async () => ({ labels: ["fila-1"] }),
+      setKanbanTaskLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: kanbanCtx,
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["quente"],
+        scope: "task",
+      }),
+    );
+    expect(asked).toBe(1);
+    expect(setCount).toBe(0);
+    expect(out).toContain("called off");
+  });
+
+  test("a card write with nothing to change never reaches the fence", async () => {
+    // Same rule the contact scope states: the fence guards a WRITE, and a call whose delta is
+    // empty writes nothing, so withdrawing the run must not turn it into a refusal.
+    let asked = 0;
+    const client = {
+      getKanbanTask: async () => ({ labels: ["fila-1"] }),
+      setKanbanTaskLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban: kanbanCtx,
+      stillWanted: async () => {
+        asked++;
+        return false;
+      },
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["fila-1"],
+        scope: "task",
+      }),
+    );
+    expect(asked).toBe(0);
+    expect(out).not.toContain("called off");
+  });
+
   test("set_labels task scope is offered only when a card is linked", () => {
     const { client } = recordingClient();
     const withCard = byName(
@@ -1330,7 +1391,7 @@ describe("native tools", () => {
     });
     const out = String(
       await byName(tools, "set_labels").invoke({
-        labels: ["vip"],
+        add: ["vip"],
         scope: "contact",
       }),
     );

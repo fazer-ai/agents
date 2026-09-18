@@ -1545,6 +1545,12 @@ export class ChatwootClient {
     );
   }
 
+  // GET is the SHOW action, and its body is the bare task, not an envelope: `tasks/show.json.jbuilder`
+  // is `json.partial! 'task', task: @task` and `_task.json.jbuilder:21` renders
+  // `json.labels task.cached_label_list_array`, a plain array of strings. `set_labels` reads
+  // `.labels` off this response directly (issue #695), and an envelope would make that `undefined`,
+  // so an `add` would write the card with only the added label and ZERO the rest. Read off
+  // chatwoot-pro `main` at 23ad9c6cd3, which is the fork that serves this route.
   getKanbanTask(taskId: number): Promise<unknown> {
     return this.request(
       this.config.adminToken,

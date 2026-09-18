@@ -214,12 +214,30 @@ export interface RecoverStrandedDeliveryParams {
 //                   Fora deste conjunto, a recuperação devolve a linha para DEAD, e a conversa que
 //                   uma pessoa atendeu volta para a lista de perdas que essa mesma pessoa acabou de
 //                   esvaziar — o defeito da #703 reaparecendo uma camada acima do conserto dele.
+//
+//   `taken-over-unread` — uma pessoa assumiu a conversa enquanto o turno esperava o thread, e ele
+//                   parou ANTES do invoke (issue #688). A distância para o `taken-over` acima é o
+//                   motivo de a palavra existir: lá o invoke rodou e a mensagem do cliente está no
+//                   canal; aqui nada a leu, e o que a põe na memória é a INGESTÃO, que o receptor
+//                   arma nesta mesma passada. Ela roda antes desta leitura, e quando não consegue
+//                   armar, o receptor LANÇA — o que chega aqui como `turnThrew` e devolve a linha
+//                   para DEAD. Então este desfecho, sozinho, já significa que a mensagem está
+//                   guardada (review r11).
+//
+//                   A primeira versão desta PR o deixava de fora, com o argumento de que o replay
+//                   que devia um turno não consulta a ingestão. O argumento caiu na rodada 1 de
+//                   review, que é quando a parada passou a entrar por `routeIngests`: o replay
+//                   consulta, e `onIngest` reporta. Mantido fora, a marca que a parada avança e a
+//                   linha que a recuperação devolve para DEAD se contradiziam — a mensagem voltava
+//                   para a lista de perdas com a dispensa de resposta já escrita, e nenhuma
+//                   tentativa seguinte conseguia postar.
 const TURN_SETTLED = new Set([
   "posted",
   "posted-partial",
   "taken-over",
   "answered-elsewhere",
   "blocked",
+  "taken-over-unread",
 ]);
 
 export async function recoverStrandedDelivery(
@@ -1475,16 +1493,6 @@ async function runRecovery(params: {
   //                  BECAUSE the customer was left waiting, and an empty second attempt leaves them
   //                  waiting with nothing else on the way. Not the same as `blocked`, which is a
   //                  policy deciding rather than a model running dry — see `TURN_SETTLED`.
-  //   `taken-over-unread` — uma pessoa assumiu a conversa enquanto o turno esperava o thread, e ele
-  //                   parou ANTES do invoke (issue #688). Fica de fora, e a distância para o
-  //                   `taken-over` logo acima é o motivo de a palavra existir: lá o turno rodou e a
-  //                   mensagem do cliente está no canal, então a pessoa que segura a conversa a vê e a
-  //                   responde; aqui nada leu a mensagem. No caminho AO VIVO o receptor conserta isso
-  //                   mandando-a para a ingestão e só então fechando a linha, mas esta rota não passa
-  //                   por lá: o replay que devia um turno não consulta a ingestão (`replayPosts`), de
-  //                   modo que settlar aqui tiraria da lista de perdas uma mensagem que nenhuma
-  //                   memória tem. O default honesto para um desfecho que ninguém considerou é "ainda
-  //                   devido", e este é um que foi considerado e continua devido.
   //   `no-agent` / `agent-unavailable` — the route cannot answer at all. Both write their own
   //                  operator-facing line, and both need an operator; what they must not do is take
   //                  the message off the worklist that operator reads.

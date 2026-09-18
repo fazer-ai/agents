@@ -729,18 +729,19 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
   });
 
-  // E O TURNO QUE PAROU ANTES DE LER A MENSAGEM NÃO FECHA NADA (issue #688). O oposto exato do teste
-  // acima, e a distância entre os dois é a razão de `taken-over-unread` ser uma palavra separada de
-  // `taken-over`: lá o turno rodou, a página foi lida e a mensagem do cliente entrou na memória do
-  // agente, então a linha fecha; aqui o portão de posse parou o turno ANTES do invoke e nada leu a
-  // mensagem. No caminho ao vivo o receptor cobre isso mandando a mensagem para a ingestão, mas
-  // ESTE replay devia um turno e não consulta a ingestão — settlar aqui tiraria da lista de perdas
-  // uma mensagem que nenhuma memória tem.
+  // E O TURNO QUE PAROU ANTES DO INVOKE FECHA A LINHA, PORQUE A INGESTÃO PEGOU A MENSAGEM
+  // (issue #688, review r11). `taken-over-unread` é o irmão do `taken-over` acima: lá o invoke rodou
+  // e a mensagem está no canal; aqui nada a leu, e o que a põe na memória é a ingestão que o
+  // receptor arma na MESMA passada. Ela roda antes de a recuperação ler o desfecho, e quando não
+  // consegue armar o receptor LANÇA — o que chega como `turnThrew` e devolve a linha para DEAD. Então
+  // este desfecho, sozinho, já quer dizer que a mensagem está guardada.
   //
-  // A posse é lida pelo `ownershipRead` injetado porque é a única forma de acertar a JANELA: o
-  // portão do receptor roda antes e precisa ver a conversa como nossa (senão a entrega nem chega ao
-  // turno), e o takeover tem que acontecer depois dele.
-  test("a takeover that stops the turn before the invoke does NOT close the loss", async () => {
+  // A primeira versão desta rodada o deixava de fora do `TURN_SETTLED`, com o argumento de que o
+  // replay não consulta a ingestão. O argumento caiu na rodada 1 de review, quando a parada passou a
+  // entrar por `routeIngests`. Mantido fora, a marca que a parada avança e a linha que a recuperação
+  // devolve para DEAD se contradiziam: a mensagem voltava à lista de perdas com a dispensa de
+  // resposta já escrita, e nenhuma tentativa seguinte conseguia postar.
+  test("a takeover that stops the turn before the invoke settles the row, because the ingestion has the message", async () => {
     const convId = 8998;
     const messageId = 9498;
     await seedConversation(convId);
@@ -770,10 +771,11 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(leituras).toBeGreaterThan(0);
     // Nada é dito por cima da pessoa que assumiu...
     expect(stub.sent).toEqual([]);
-    // ...e a linha VOLTA para a lista de perdas, em vez de sair dela calada.
-    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
-    // O job completa: o que retenta é a varredura, quando a conversa voltar a ser nossa.
-    expect(outcome).toBe("superseded");
+    // ...e a linha FECHA, porque a mensagem está guardada. Deixá-la DEAD com a marca já avançada era
+    // a contradição da rodada 11: a conversa voltaria para a lista de perdas sem que nenhuma
+    // tentativa seguinte pudesse responder.
+    expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+    expect(outcome).toBe("recovered");
   });
 
   test("a conversation the mirror still calls resolved is answered anyway", async () => {

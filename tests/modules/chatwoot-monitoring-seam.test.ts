@@ -925,21 +925,19 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
   }, 20_000);
 
-  // E QUANDO A INGESTÃO NÃO TEM THREAD PARA ONDE IR, QUEM GUARDA A MENSAGEM É A MARCA (issue #688,
-  // review r13). `"no-thread"` é a leitura do contact-inbox do receptor voltando vazia, e do lado da
-  // parada ela só pode significar DESACORDO: o portão mora dentro de `if (loaded.contactInboxId !=
-  // null)`, então o runtime resolveu um contact-inbox para poder parar o turno. O receptor lendo
-  // null ali é a leitura dele tendo falhado (`storedContactInboxId` engole o erro) ou a linha do
-  // espelho não existir para esta passada.
+  // E O `"no-thread"` TAMBÉM DEIXA A LINHA PARA A VARREDURA (issue #688, review r13 e r14). Ele é a
+  // leitura do contact-inbox do receptor voltando vazia, e do lado desta parada só pode significar
+  // DESACORDO entre duas leituras do mesmo fato: o portão mora dentro de `if (loaded.contactInboxId
+  // != null)`, então o runtime resolveu um contact-inbox para poder parar o turno, e o receptor
+  // lendo null ali é a leitura DELE tendo falhado (`storedContactInboxId` engole o erro) ou a linha
+  // do espelho não existir nesta passada. As duas são transitórias.
   //
-  // O desfecho não é liquidar nem lançar: a marca NÃO passa por cima da mensagem, e é isso que a
-  // guarda — é a mesma proteção que a base dá a qualquer mensagem que turno nenhum cobriu, e a
-  // próxima passada sobre a conversa a dobra para dentro. Liquidar aqui seria o oposto: a marca
-  // avançando por cima de uma mensagem que memória nenhuma tem, que é a perda desta issue.
-  //
-  // Este teste é a cerca dessa decisão. Sem ele, "liquidar também no `no-thread`" passa a suíte
-  // inteira, e o argumento de que a marca protege some junto com ele.
-  test("issue #688: with no thread to ingest into, the stand-down leaves the watermark BELOW the message", async () => {
+  // A rodada 13 parou no argumento errado, e ele convence: a marca não passa por cima da mensagem,
+  // logo ela estaria guardada. NÃO ESTÁ. Quem lê a marca é o flush do debounce, e este é o caminho
+  // DIRETO, que só existe com o debounce desligado: turno nenhum depois relê a conversa a partir
+  // dela, e a ingestão contínua folha a mensagem DO EVENTO, nunca um atraso acima da marca. Com a
+  // linha liquidada, ninguém revisita — e a mensagem do cliente não está em lugar nenhum.
+  test("issue #688: an ingestion with no thread to put the message in leaves the delivery for the sweep", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { mode: "production", settings: { debounce: { enabled: false } } },
@@ -1064,22 +1062,109 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { assigneeType: "User", assigneeId: 5, status: "open" },
     });
     clearTurnInFlight(graphThreadId);
-    await run;
 
+    await expect(run).rejects.toThrow("no thread to put the message in");
     expect(seen.outcome).toBe("taken-over-unread");
     expect(sent).toEqual([]);
     // A leitura armada aconteceu: sem isto o teste passaria com a ingestão funcionando normalmente.
     expect(leituras.falhas).toBeGreaterThan(0);
     expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
-    // O QUE ESTE TESTE GUARDA: a marca fica ABAIXO da mensagem. É ela que impede a perda quando a
-    // ingestão não tem para onde ir.
+    // A marca não passa por cima da mensagem...
     expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
       messageId,
     );
-    // A linha fecha, e fechar é o certo: o que esta entrega devia — pôr a mensagem onde algo a
-    // guarde — está feito pela marca que não passou. Uma varredura replicando o turno repetiria a
-    // mesma leitura falha sem nada novo a tentar.
-    expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
+    // ...e a linha continua RECUPERÁVEL, que é o que a marca sozinha não dá neste caminho.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
+  }, 20_000);
+
+  // A MENSAGEM SEM CONTEÚDO NEM CHEGA AO PORTÃO (issue #688, review r14), e este teste é a premissa
+  // do estreitamento do lado do receptor. A lista que deixa a entrega fechar é positiva —
+  // `ingested === "queued"`, a ingestão segurando a mensagem — e `"nothing"` ficou de fora dela. O
+  // que sustenta isso é a inalcançabilidade: com `act` entregue FALSO à ingestão, o papel é sempre
+  // `customer`, então só uma renderação vazia produziria `"nothing"`, e uma mensagem sem texto e sem
+  // anexo faz o turno devolver `skipped` antes do portão. É o que se mede aqui; se um dia deixar de
+  // ser verdade, este teste cai junto com o argumento.
+  test("issue #688: a message with nothing to render never reaches the gate at all", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 47;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      // Sem texto e sem anexo: não há o que a memória guardasse.
+      content: "",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    // O turno não para no portão: ele nem roda. É por isso que `"nothing"` não é uma saída que a
+    // parada precise tratar.
+    expect(seen.outcome).toBe("skipped");
+    expect(sent).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
   }, 20_000);
 
   // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a

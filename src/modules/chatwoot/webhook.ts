@@ -6463,13 +6463,6 @@ export async function processChatwootDelivery(
   // paid a provider for the transcription.
   const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;
   let ingested: IngestOutcome = "nothing";
-  // SE A INGESTÃO CHEGOU A CORRER, que é outra pergunta que `ingested` (issue #688, review r12).
-  // O valor inicial acima é `"nothing"`, e ele é indistinguível de "correu e não tinha o que
-  // lembrar" — o que faz a parada por posse liquidar a entrega quando a condição abaixo não foi
-  // sequer avaliada. Escrita no ponto da chamada, e não derivada de novo a partir de
-  // `routeIngests`, porque foi exatamente uma derivação paralela que abriu o buraco: a
-  // liquidação perguntava uma coisa e a ingestão outra.
-  let ingestionRan = false;
   // NOTE: WHETHER THIS ROUTE INGESTS AT ALL, hoisted out of the condition below so the two halves can
   // be told apart (issue #478 review, round 8). A route that cannot — no runtime, switched off, a
   // test agent with nobody watching — reaches no branch and says nothing, and that silence is what a
@@ -6517,7 +6510,6 @@ export async function processChatwootDelivery(
   // `rt !== null` again, and it is the type checker's rather than the logic's: `routeIngests`
   // already implies it, but the narrowing does not survive the const.
   if (rt !== null && routeIngests && !responderRemembers && !responderCommand) {
-    ingestionRan = true;
     ingested = await ingestUnhandledMessage({
       tenantId: params.tenantId,
       instanceId: params.instanceId,
@@ -6693,9 +6685,45 @@ export async function processChatwootDelivery(
   // (exige `claimFrom === "PENDING"` e uma geração gravada); um replay da varredura não satisfaz
   // nenhum dos dois. Sem isto, a liquidação da marca passava por cima de uma mensagem que memória
   // nenhuma tem, que é o defeito desta issue voltando pela terceira porta que o conserto abriu.
-  if (stoodDownUnread && (ingested === "failed" || !ingestionRan)) {
+  //
+  // UMA PERGUNTA SÓ, e a lista é positiva (review r14): a linha só fecha com a ingestão SEGURANDO a
+  // mensagem. Todo o resto — o enfileiramento que falha, a ingestão que nem correu, e o
+  // `"no-thread"` — é a mensagem sem dono, e a linha fica para a varredura.
+  //
+  // `"nothing"` não está na lista porque não chega aqui, e o argumento é de duas pontas. O papel
+  // nunca é nulo nesta parada: `act` é entregue FALSO à ingestão (é o que a faz guardar a mensagem),
+  // então `unhandledByOwnership` vale e a mensagem é sempre `customer`. E a outra ponta, a renderação
+  // vazia, não alcança o portão: uma mensagem sem texto e sem anexo faz o turno devolver `skipped`
+  // antes dele, o que está medido em tests/modules/chatwoot-monitoring-seam.test.ts. Se um dia
+  // chegar, o desfecho é uma varredura que replica o turno até o teto e uma linha de perda visível —
+  // que é o lado certo para errar.
+  //
+  // O `"no-thread"` levou duas rodadas porque o argumento errado é convincente: a marca não passa
+  // por cima da mensagem, então parecia que ela ficava guardada. Não fica. A marca é lida pelo
+  // FLUSH do debounce, e este é o caminho DIRETO, que só existe com o debounce desligado: nenhum
+  // turno seguinte relê a conversa a partir dela, e a ingestão contínua folha a mensagem DO
+  // EVENTO, não um atraso acima da marca. Com a linha liquidada, ninguém revisita nada.
+  //
+  // E do lado desta parada, `"no-thread"` só pode ser desacordo entre duas leituras do mesmo fato:
+  // o portão mora dentro de `if (loaded.contactInboxId != null)`, então o runtime resolveu um
+  // contact-inbox para poder parar o turno, e o receptor lendo null ali é a leitura DELE tendo
+  // falhado (`storedContactInboxId` engole o erro) ou a linha do espelho não existir nesta passada.
+  // As duas são transitórias, que é exatamente o que a varredura existe para retentar.
+  // `"queued"` é a ÚNICA saída em que alguma coisa ficou com a mensagem, e por ser a única ela
+  // também responde "a ingestão chegou a correr": o valor inicial de `ingested` é `"nothing"`, e só
+  // a chamada escreve `"queued"`. Uma bandeira separada dizendo o mesmo foi o que a rodada 12 pôs
+  // aqui e a mutação mostrou ser redundante — duas derivações do mesmo fato, que é o padrão de onde
+  // este buraco veio.
+  const standDownKept = ingested === "queued";
+  if (stoodDownUnread && !standDownKept) {
     throw new Error(
-      `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and ${ingested === "failed" ? "the ingestion of the message could not be armed" : "no ingestion ran over the message, so nothing holds it"}; leaving the delivery for the sweep`,
+      `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and ${
+        ingested === "failed"
+          ? "the ingestion of the message could not be armed"
+          : ingested === "no-thread"
+            ? "the ingestion found no thread to put the message in"
+            : "no ingestion ran over the message, so nothing holds it"
+      }; leaving the delivery for the sweep`,
     );
   }
   if (observerHolds) {
@@ -6742,7 +6770,9 @@ export async function processChatwootDelivery(
   // `leave-for-sweep` pela mesma razão do observador: a marca É a escrita que fecha esta parada, e
   // liquidar a linha com ela ainda abaixo da mensagem deixaria um registro terminal sobre uma
   // mensagem que o resto do sistema continua tratando como não lida.
-  if (stoodDownUnread && ingested !== "failed" && ingested !== "no-thread") {
+  // Sem termo nenhum além da parada: o throw acima já deixou passar só o caso em que a mensagem
+  // está guardada, e uma segunda condição repetindo a mesma pergunta seria um ramo que nada alcança.
+  if (stoodDownUnread) {
     await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
   }
   // THE WATCHER'S VERDICT (issue #477): a customer message on a conversation the agent observes arms

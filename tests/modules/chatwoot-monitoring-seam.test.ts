@@ -925,6 +925,163 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
   }, 20_000);
 
+  // E QUANDO A INGESTÃO NÃO TEM THREAD PARA ONDE IR, QUEM GUARDA A MENSAGEM É A MARCA (issue #688,
+  // review r13). `"no-thread"` é a leitura do contact-inbox do receptor voltando vazia, e do lado da
+  // parada ela só pode significar DESACORDO: o portão mora dentro de `if (loaded.contactInboxId !=
+  // null)`, então o runtime resolveu um contact-inbox para poder parar o turno. O receptor lendo
+  // null ali é a leitura dele tendo falhado (`storedContactInboxId` engole o erro) ou a linha do
+  // espelho não existir para esta passada.
+  //
+  // O desfecho não é liquidar nem lançar: a marca NÃO passa por cima da mensagem, e é isso que a
+  // guarda — é a mesma proteção que a base dá a qualquer mensagem que turno nenhum cobriu, e a
+  // próxima passada sobre a conversa a dobra para dentro. Liquidar aqui seria o oposto: a marca
+  // avançando por cima de uma mensagem que memória nenhuma tem, que é a perda desta issue.
+  //
+  // Este teste é a cerca dessa decisão. Sem ele, "liquidar também no `no-thread`" passa a suíte
+  // inteira, e o argumento de que a marca protege some junto com ele.
+  test("issue #688: with no thread to ingest into, the stand-down leaves the watermark BELOW the message", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 46;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    const leituras = { falhas: 0 };
+    // A leitura do contact-inbox do RECEPTOR falha; a do runtime, que tem outro `select`, não é
+    // tocada — é exatamente o desacordo que produz `"no-thread"` aqui.
+    const contactInboxUnreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (
+              sel &&
+              Object.keys(sel).length === 1 &&
+              sel.contactInboxId === true
+            ) {
+              leituras.falhas += 1;
+              throw new Error("injected: contact-inbox unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      // SEM contact_inbox no payload: é o que faz o receptor cair na leitura armada acima.
+      content: "ainda dá tempo de mudar o pagamento?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: INBOX_ID,
+        status: "pending",
+        meta: { assignee: null, sender: { id: 88, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    // A conversa existe no espelho COM contact-inbox: é dele que o runtime resolve o thread, e é o
+    // que faz o portão poder parar o turno.
+    await suDb.conversation.upsert({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+        },
+      },
+      create: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "pending",
+        contactInboxId: 81_000 + convId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+      },
+      update: {
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+        contactInboxId: 81_000 + convId,
+      },
+    });
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: contactInboxUnreadable,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    expect(seen.outcome).toBe("taken-over-unread");
+    expect(sent).toEqual([]);
+    // A leitura armada aconteceu: sem isto o teste passaria com a ingestão funcionando normalmente.
+    expect(leituras.falhas).toBeGreaterThan(0);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // O QUE ESTE TESTE GUARDA: a marca fica ABAIXO da mensagem. É ela que impede a perda quando a
+    // ingestão não tem para onde ir.
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+    // A linha fecha, e fechar é o certo: o que esta entrega devia — pôr a mensagem onde algo a
+    // guarde — está feito pela marca que não passou. Uma varredura replicando o turno repetiria a
+    // mesma leitura falha sem nada novo a tentar.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
+  }, 20_000);
+
   // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a
   // transcrição, ele NÃO atua, e o turno segue exatamente como seguia antes desta PR.
   //

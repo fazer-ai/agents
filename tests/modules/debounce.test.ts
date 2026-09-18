@@ -665,6 +665,61 @@ describe.skipIf(!dbUp)("debounce", () => {
     ).toBeUndefined();
   });
 
+  // O PORTÃO DE POSSE DA #688 É DO CAMINHO QUE ESPERA, E O FLUSH NÃO É ELE. A leitura extra existe
+  // porque o caminho direto pode ficar até `TURN_LEASE_SECONDS + 5` parado esperando outro invoke, e
+  // o portão do receptor respondeu antes disso. O flush não espera esse thread (`waitForThreadTurn`
+  // é ligado só pelo caminho direto) e já tem o seu próprio portão de posse antes do turno, então
+  // alargar aquele para cá seria uma segunda leitura por rajada sem janela nova que ela cubra.
+  //
+  // O teste prende a FRONTEIRA, e ela não se vê no comportamento: trocar a condição do portão por
+  // `true` deixa todo o resto verde, porque o flush passaria na leitura e seguiria igual. O que
+  // muda é quantas vezes o banco é perguntado, e é isso que este contador mede.
+  test("issue #688: the flush does not pay the direct path's ownership read", async () => {
+    // COM contact-inbox, e sem ele o teste é vácuo: o portão mora dentro do bloco da fronteira de
+    // atendimento, que só roda quando a conversa tem um. A primeira versão deste teste usava o
+    // default null, passava, e continuava passando com o portão alargado para todo turno — que é
+    // exatamente o mutante que ele existe para matar.
+    await seedConversation(858, { contactInboxId: 8580 });
+    const thread = threadOf(858);
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(thread),
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: { threadId: thread, agentBotId: 9, burstStartedAt: 1 },
+      },
+      select: { id: true, claimSeq: true },
+    });
+    const sent: Array<[number, string]> = [];
+    let leituras = 0;
+
+    const out = await flushDebounceJob({
+      job: { ...jobFor(858), id: row.id, claimSeq: row.claimSeq },
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+        ownershipRead: async () => {
+          leituras += 1;
+          return { ours: true };
+        },
+      },
+    });
+
+    // A rajada foi respondida do jeito de sempre...
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent.length).toBe(1);
+    // ...e o portão do caminho direto não foi consultado uma vez sequer.
+    expect(leituras).toBe(0);
+  });
+
   // And the widest window of the three: /reset arriving while the MODEL is running. Both asks above
   // have already answered by then, and the reply is a send the customer reads — into a conversation
   // the operator was told had been started over.

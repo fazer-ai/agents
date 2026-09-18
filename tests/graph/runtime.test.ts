@@ -1121,6 +1121,26 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         })
       ).lastHandledMessageId,
     ).toBeNull();
+    // E O OPERADOR VÊ. A #271 fixou que todo portão que fecha nesta pergunta escreve a MESMA linha,
+    // porque quem filtra o log por um desfecho tem que receber todos eles; este é o quarto, e sem a
+    // linha o turno para em silêncio e a conversa some do rastro de handoff. `emitFlowEvent` é
+    // fire-and-forget, daí o poll.
+    let handoff: unknown = null;
+    for (let i = 0; i < 30 && handoff === null; i++) {
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "handoff",
+          threadId: `${tenantId}:${instanceId}:9477`,
+        },
+        select: { detail: true },
+      });
+      if (rows.length > 0) handoff = rows[0]?.detail ?? null;
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    expect((handoff as { outcome?: string } | null)?.outcome).toBe(
+      "taken_over",
+    );
   }, 20_000);
 
   // E UMA LEITURA DE POSSE QUE FALHA NÃO É UMA DESISTÊNCIA (issue #688). O `botOwnsItNow` de hoje é

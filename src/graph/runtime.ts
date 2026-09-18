@@ -201,7 +201,7 @@ export type RunAgentTurnOutcome =
   // no canal, e o que foi suprimido é só o envio. Aqui o invoke não rodou, então a mensagem não está
   // em memória nenhuma — e lida como `taken-over` ela desaparece, porque a marca avança, o receptor
   // liquida a entrega como consumida e a ingestão a pula. Foi exatamente isso que fez a tentativa
-  // anterior (`1ec96449`) ser revertida em `9dce80e2`.
+  // anterior ser revertida (fazer-ai/agents#684).
   //
   // Então esta palavra fica FORA do avanço da marca abaixo, e o receptor a trata como trata o
   // observador: não liquida no gate, deixa a ingestão pegar a mensagem, e só então fecha a linha.
@@ -1587,8 +1587,13 @@ async function runTurnBody(
             // geração: ela suprime o envio e não desfaz um ticket aberto, uma etiqueta escrita ou
             // uma chamada HTTP de saída.
             //
-            // SÓ NO CAMINHO QUE ESPEROU. Todo outro caller chega nesta linha tão rápido quanto
-            // sempre chegou, e alargar o portão para eles é outra decisão, com testes próprios.
+            // SÓ NO CAMINHO QUE PODE ESPERAR, que hoje é um só: `waitForThreadTurn` é ligado pelo
+            // caminho direto e por mais ninguém, e a espera é o que abre uma janela de minutos. O
+            // flush do debounce chega nesta linha tão rápido quanto sempre chegou; alargar o portão
+            // para ele é outra decisão, com testes próprios. A condição é `turnWaitUntil !== null` e
+            // não "esperou de fato" de propósito: o `markTurnOwning` logo acima também bloqueia (no
+            // lease de um append, no lock que o /reset segura), e essa espera não entra em contador
+            // nenhum — medir a janela pelo que foi contado deixaria de fora a parte não contada.
             //
             // E A LEITURA QUE FALHA DEIXA O TURNO SEGUIR, que é o oposto do `botOwnsItNow` daqui de
             // cima. Aquele é fail-closed de propósito, porque os dois usos dele são supríveis (a
@@ -1625,11 +1630,19 @@ async function runTurnBody(
                 // fecham nesta pergunta, e este é o quarto. Escrita aqui em vez de na saída lá
                 // embaixo porque o `closed` veio junto da leitura e um segundo `findUnique`
                 // responderia sobre outro instante.
-                emitFlowEvent(flow, {
-                  stage: "handoff",
-                  status: "ok",
-                  detail: posse.closed ?? { outcome: "taken_over" },
-                });
+                //
+                // E SÓ QUANDO O LEITOR TEM O QUE DIZER. `closed` vem null num caso só: a conversa é
+                // de OUTRO AgentBot e esta rota não carrega id de bot, e ali o dono do vocabulário
+                // já decidiu que não há desfecho a declarar. Escrever um literal aqui para preencher
+                // o buraco é o que a cerca de `gate-close.test.ts` proíbe, e com razão: seria esta
+                // linha inventando "assumida por uma pessoa" para um caso em que ninguém assumiu.
+                if (posse.closed !== null) {
+                  emitFlowEvent(flow, {
+                    stage: "handoff",
+                    status: "ok",
+                    detail: posse.closed,
+                  });
+                }
                 takenOverUnread = true;
                 return null;
               }

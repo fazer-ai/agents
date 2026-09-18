@@ -1366,7 +1366,7 @@
     "promptVarsHint": "Insert a variable (dates also accept a :format suffix):",
     "promptViewToggle": "Editor or preview",
     "protectedLabels": "Labels off limits",
-    "protectedLabelsHint": "Optional, comma-separated. Labels this agent may neither add nor remove: the ones another system owns. It still sees them and is told it cannot move them.",
+    "protectedLabelsHint": "Optional, comma-separated. Labels this agent may neither add nor remove: the ones another system owns. It still sees them, is told so, and a call that tries to add one applies no removal either.",
     "protectedLabelsPlaceholder": "e.g. agente-off, testando-agente",
     "protectedLabelsTooMany": "Labels off limits takes at most {{max}} labels.",
     "provider": "Provider",

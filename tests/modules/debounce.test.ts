@@ -2151,6 +2151,18 @@ describe.skipIf(!dbUp)("debounce", () => {
         })
       ).status,
     ).toBe("PROCESSED");
+    // E A LINHA QUE FECHA A PERDA DIZ QUAL DAS DUAS COISAS ACONTECEU (issue #703, bateria de mutação,
+    // m13). O alerta da perda já foi disparado e não se recolhe, então esta linha é a única coisa que
+    // o operador tem para saber como aquilo terminou. Nós não respondemos nada aqui: dizer
+    // `answered_late` entregaria a ele uma resolução que ninguém escreveu, que é exatamente a mentira
+    // por causa da qual o vocabulário de liquidação foi partido em `answered` e `consumed`.
+    const linha = await correctionLine(convId);
+    expect((linha.detail as Record<string, unknown>).outcome).toBe(
+      "consumed_late",
+    );
+
+    await clearFlowLog(suDb, { conversationId: id });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: presa.id } });
   });
 
   // O CONTROLE QUE MANTÉM AS DUAS PALAVRAS SEPARADAS (issue #703). O conserto acima é uma palavra

@@ -217,6 +217,12 @@ async function deliverCustomerMessage(params: {
   makeClient: (cfg: { botToken: string }) => Promise<ChatwootClient>;
   makeModel?: () => BaseChatModel;
   base?: PrismaClient;
+  // Só quem pede é que recebe o lançamento do receptor como VALOR. Todo o resto continua sendo
+  // derrubado por ele, que é o que cada chamador daqui já tinha de graça quando este helper apenas
+  // dava `await`: converter toda rejeição em `erro` tiraria de quinze testes a checagem de falha que
+  // eles nunca escreveram porque não precisavam — o autorizado, por exemplo, passaria igual se o
+  // processamento lançasse depois de mandar a resposta e antes de liquidar a entrega (review r2).
+  expectFailure?: boolean;
 }): Promise<{ erro: string | null; status: string }> {
   seq += 1;
   const n = normalizeChatwootEvent({
@@ -274,7 +280,10 @@ async function deliverCustomerMessage(params: {
     },
   }).then(
     () => null,
-    (e) => String(e),
+    (e) => {
+      if (params.expectFailure !== true) throw e;
+      return String(e);
+    },
   );
   const linha = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
     where: { id: delivery.id },
@@ -671,6 +680,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       fetchImpl: auth.fetchImpl,
       makeClient: cw.makeClient,
       base: semFila,
+      expectFailure: true,
     });
 
     expect(erro ?? "a entrega nao lancou").toContain("could not be armed");

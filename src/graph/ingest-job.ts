@@ -44,7 +44,16 @@ const DEFER_ON_TURN_MS = 60_000;
 // the thread would let the second message of a burst overwrite the first — the same message loss
 // this job exists to stop, moved one layer out. Chatwoot message ids are unique per account, so the
 // thread and the id together name exactly one append.
-function dedupeKey(graphThreadId: string, messageId: number): string {
+// A CHAVE NOMEIA UMA MENSAGEM, e é exportada porque isso é um fato que os testes precisam PERGUNTAR
+// e não reconstruir (issue #723). Quarenta e dois lugares afirmavam "nenhuma ingestão foi armada para
+// esta mensagem" contando a população de linhas do tenant, uma quantidade que este módulo move de
+// propósito: a linha é apagada ao concluir (JOB_DELETE_ON_DONE) e `drainPendingIngest` drena as
+// pendentes de uma thread. Um teste que remonta o formato à mão fica igualmente certo e igualmente
+// frágil, porque o formato passa a viver em dois lugares; exportar é o que mantém um só.
+export function ingestDedupeKey(
+  graphThreadId: string,
+  messageId: number,
+): string {
   return `ingest:${graphThreadId}:${messageId}`;
 }
 
@@ -66,7 +75,7 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
   await enqueueJob({
     tenantId: params.tenantId,
     kind: "INGEST_MESSAGE",
-    dedupeKey: dedupeKey(params.graphThreadId, params.messageId),
+    dedupeKey: ingestDedupeKey(params.graphThreadId, params.messageId),
     // NOTE: The key names ONE message, so a re-arm is that same append being armed again, never a
     // second one. The row is also deleted on DONE (JOB_DELETE_ON_DONE), so a completed ingest
     // leaves nothing for a later arm to inherit in the first place.

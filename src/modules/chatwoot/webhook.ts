@@ -6607,9 +6607,14 @@ export async function processChatwootDelivery(
     // ...AND THE RECORD FOLLOWS THE OUTCOME, not only the intent (PR review, round 16). The claim
     // wrote `routeRemembers` from the runtime it resolved, and this is where that promise is either
     // kept or not: `failed` and `no-thread` are the two ways it ends unkept, and the delivery still
-    // settles PROCESSED either way. Left saying `true`, the row tells the observer beside it that
-    // this message is remembered — and for a colleague's reply nothing else will ever fold it in,
-    // since no recovery carries an outgoing body.
+    // settles PROCESSED either way — `no-thread` does; `failed` now leaves the row for the sweep, a
+    // few lines below, and the correction here is what that sweep reads. Left saying `true`, the row
+    // tells the observer beside it that this message is remembered, and the recovery armed on the
+    // strand would then be reading a row that says the append already happened.
+    //
+    // "Nothing else will ever fold it in" is what stood here, and issue #728 is exactly what made it
+    // false: the ledger names the reply, the message is read back by id and the append is armed
+    // again (./recover-human-reply.ts). The correction matters MORE for it, not less.
     //
     // `nothing` is NOT one of them: there was nothing to fold in, which is not a promise broken.
     //
@@ -6646,9 +6651,14 @@ export async function processChatwootDelivery(
     // delivery's work below. A switched-off observer stays silent: the message waits for its switch.
     params.onIngest?.("no-reader");
   }
-  // A COLLEAGUE'S REPLY nobody could remember, its retries spent (round 24). There is no recovery to
-  // leave the row for — no replay rebuilds an outgoing body today — so the loss is reported where an
-  // operator reads: an error line on the conversation, not a process warning.
+  // A COLLEAGUE'S REPLY nobody could remember, its retries spent (round 24). The loss is reported
+  // where an operator reads: an error line on the conversation, not a process warning.
+  //
+  // "There is no recovery to leave the row for" is the reason this line once gave for being the
+  // whole answer, and issue #728 made it false fifty lines below: the row IS left for the sweep now,
+  // and the sweep arms a recovery that reads the reply back by id. The line stays, and it is no
+  // longer the end of the story — it is the record that the loss happened, which an operator still
+  // needs whether or not the second chance lands.
   //
   // ON EVERY ROUTE, and not only a watcher's (issue #720). The report was gated on
   // `(observing || handedToObserver)`, which is the route that INSPIRED it and not the route that

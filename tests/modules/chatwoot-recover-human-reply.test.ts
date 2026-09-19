@@ -821,6 +821,217 @@ describe.skipIf(!dbUp)(
       expect((await ingestJobs(convId))[0]?.payload.messageId).toBe(730);
     });
 
+    // O RESET É DA THREAD, NÃO DA CONVERSA (review r2). O `/reset` limpa a memória por
+    // CONTACT-INBOX — apaga a linha de `agent_threads` e os resumos chaveados por ela — e carimba
+    // `reset_at_message_id` na única conversa em que o comando foi digitado. Um contato que escreveu
+    // duas vezes no mesmo canal tem duas conversas dividindo uma thread, então um reset na mais NOVA
+    // apaga a memória a que a resposta encalhada da antiga pertence e deixa a linha antiga sem
+    // carimbo. Perguntando só à conversa da resposta, a cerca não vê nada e restaura texto de antes
+    // da limpeza — numa thread cuja dedup foi apagada junto, então nada rio abaixo pega a duplicata.
+    test("a /reset in a sibling conversation of the same thread still stops the append", async () => {
+      const convId = 9121;
+      const siblingId = 9122;
+      pages.set(convId, [restComposerReply(724, "Texto de antes da limpeza.")]);
+      const rowId = await seedStranded(convId, { messageId: 724 });
+      // A irmã: outra conversa, o MESMO contact-inbox, e é nela que o operador digitou o comando.
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: siblingId,
+          status: "open",
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT,
+          inboxId: (
+            await suDb.inbox.findFirstOrThrow({
+              where: { tenantId, chatwootInboxId: INBOX_ID },
+              select: { id: true },
+            })
+          ).id,
+          threadId: `chatwoot:${tenantId}:${instanceId}:${siblingId}`,
+          lastEventAt: new Date(),
+          contactInboxId: 91_000 + convId,
+          resetAtMessageId: 726,
+        },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestJobs(convId)).toEqual([]);
+    });
+
+    // O APPEND QUE JÁ NÃO PODE POUSAR DIZ ISSO, em vez de terminar dizendo que deu certo (review
+    // r2). A thread lembra os últimos `INGEST_ID_WINDOW` ids por direção e, com a janela SATURADA,
+    // um id abaixo do piso é `ancient`: `ingestMessageIntoThread` recusa em vez de apendar, e recusa
+    // com SUCESSO — o job completa, a linha some no DONE, e as palavras ficam permanentemente
+    // ausentes com tudo no sistema dizendo que a recuperação funcionou.
+    test("a reply older than the thread's whole memory is reported as gone, not queued", async () => {
+      const convId = 9123;
+      pages.set(convId, [restComposerReply(700, "Velha demais para voltar.")]);
+      const rowId = await seedStranded(convId, { messageId: 700 });
+      // A janela cheia, toda acima do id perdido: é a forma que 64 respostas de atendente na mesma
+      // contact-inbox deixam enquanto a linha esperava pela varredura.
+      await suDb.agentThread.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId: 91_000 + convId,
+          threadId: `${tenantId}:${instanceId}:ci:${91_000 + convId}`,
+          recentAgentMessageIds: Array.from({ length: 64 }, (_, i) => 900 + i),
+        },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("gone");
+      expect(await ingestJobs(convId)).toEqual([]);
+    });
+
+    // E A QUE JÁ ESTÁ NA MEMÓRIA NÃO GASTA JOB NENHUM, que é a outra ponta da mesma leitura: uma
+    // linha que encalhou DEPOIS de o append ter pousado não perdeu nada, e armar a ingestão dela
+    // seria pagar um job para o `ingestVerdict` recusar do outro lado.
+    test("a reply already in the thread's memory is not queued again", async () => {
+      const convId = 9124;
+      pages.set(convId, [restComposerReply(725, "Esta já entrou.")]);
+      const rowId = await seedStranded(convId, { messageId: 725 });
+      await suDb.agentThread.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId: 91_000 + convId,
+          threadId: `${tenantId}:${instanceId}:ci:${91_000 + convId}`,
+          recentAgentMessageIds: [725],
+        },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestJobs(convId)).toEqual([]);
+    });
+
+    // UMA RAJADA, E AS TRÊS VOLTAM. Este teste não veio do holdout: os onze cenários selados são
+    // todos de mensagem única, e a lacuna foi apontada pelo verificador DEPOIS do selo, então ele não
+    // é cego ao conserto e está declarado como tal no corpo da PR.
+    //
+    // O risco que ele cobre é concreto: uma pessoa manda três mensagens seguidas e o scheduler está
+    // fora do ar para as três. Uma recuperação chaveada pela CONVERSA, ou pela thread, recuperaria
+    // uma e liquidaria as outras duas em silêncio — e silêncio é a coisa exata que esta issue existe
+    // para tirar. O que impede isso é a linha do ledger ser por ENTREGA e nomear UMA mensagem, e o
+    // append ser chaveado por `ingest:<thread>:<messageId>`, que nomeia um append e não uma conversa.
+    test("a burst of three lost replies comes back as three appends", async () => {
+      const convId = 9120;
+      const ids = [721, 722, 723];
+      pages.set(
+        convId,
+        ids.map((id) => restComposerReply(id, `parte ${id} da resposta`)),
+      );
+      const rows = [];
+      for (const [i, id] of ids.entries()) {
+        // A conversa é uma só e as linhas são três, que é a forma da rajada: `mirrored: false` a
+        // partir da segunda diz ao seed para não recriar o espelho, não que ele não exista.
+        rows.push(
+          await seedStranded(convId, {
+            messageId: id,
+            ...(i === 0 ? {} : { mirrored: false }),
+          }),
+        );
+      }
+
+      for (const rowId of rows) {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+      }
+
+      const jobs = await ingestJobs(convId);
+      // TRÊS APPENDS DISTINTOS, nomeados pelas três mensagens: uma chave por conversa deixaria um
+      // job só, com o texto do último a escrever, e os outros dois sumiriam sem erro nenhum.
+      expect(jobs.map((j) => j.payload.messageId).sort()).toEqual(ids);
+      expect(new Set(jobs.map((j) => j.dedupeKey)).size).toBe(3);
+      expect(jobs.map((j) => j.text).sort()).toEqual(
+        ids.map((id) => `parte ${id} da resposta`),
+      );
+    });
+
+    // DUAS ROTAS, UMA MENSAGEM, UM APPEND. O Chatwoot entrega a mesma mensagem ao bot da inbox e ao
+    // observador ligado nela, então uma resposta perdida numa inbox observada deixa DUAS linhas de
+    // ledger nomeando o mesmo id — e a varredura arma uma recuperação para cada. O que impede o
+    // dobro é a chave do append: `ingest:<thread>:<messageId>` nomeia UM append, o thread é o do
+    // contact-inbox (não o da conversa) e `rearm: "same-work"` mantém uma linha viva por chave.
+    //
+    // O QUE ISSO NÃO RESOLVE, e está medido aqui em vez de afirmado: o re-arme SUBSTITUI o payload,
+    // então `agentId` e `compactionEnabled` acabam sendo os da última recuperação a escrever. Medido
+    // no job de ingestão, o `agentId` tem um consumidor só — `armCompaction`, no `onAttendanceClosed`
+    // — e o job de compactação lê do agente apenas `settings`, nunca `enabled` nem `mode`. Então o
+    // pior caso é um resumo não armado naquele fechamento, não uma palavra perdida nem uma memória
+    // sob o agente errado. O mecanismo é herdado do receptor (as duas entregas ao vivo fazem o
+    // mesmo, desde a #194) e a varredura o torna comum em vez de raro, o que é issue própria: o
+    // conserto — o append pertencer ao dono da memória — vale nos dois caminhos, e aplicá-lo só aqui
+    // divergiria do receptor no caso da conversa mantida pelo bot de outra persona.
+    test("two ledger rows for one message produce one append", async () => {
+      const convId = 9125;
+      pages.set(convId, [restComposerReply(726, "Uma resposta, duas rotas.")]);
+      const respondedora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 726,
+      });
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 726,
+        mirrored: false,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: respondedora,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: observadora,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+
+      // UM append, não dois: a chave é da mensagem e não da entrega.
+      const jobs = await ingestJobs(convId);
+      expect(jobs.map((j) => j.dedupeKey)).toEqual([
+        `ingest:${tenantId}:${instanceId}:ci:${91_000 + convId}:726`,
+      ]);
+      // E o texto é o mesmo pelas duas rotas, que é o que faz a substituição ser inofensiva para o
+      // conteúdo: cada recuperação relê a mesma mensagem e renderiza com o mesmo renderizador.
+      expect(jobs[0]?.text).toContain("Uma resposta, duas rotas.");
+    });
+
     // O QUE O JOB FAZ COM CADA DESFECHO, que é onde os vereditos e os adiamentos se separam na
     // prática. Um veredito repetido gasta a escada até a dead-letter e anuncia uma perda que não
     // existe; um adiamento tratado como veredito descarta em silêncio a resposta que uma segunda

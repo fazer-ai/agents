@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { resolveGraphThreadId } from "@/graph/checkpointer";
+import { ingestVerdict } from "@/graph/ingest-dedup";
 import { armIngest } from "@/graph/ingest-job";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
@@ -23,14 +24,15 @@ import { isHumanReplyShape } from "./stranded-delivery";
 
 // Folding back into the contact's memory the colleague's reply an ingestion lost (issue #728).
 //
-// THE PREMISE THAT BLOCKED THIS FOR THREE ISSUES, and why it is no longer true. Both neighbours say,
-// in as many words, that the reply cannot be rebuilt: `recover-takeover.ts` because "the id of an
-// outgoing message is deliberately not stored", the sweep's `observer-strand` because "the delivery
-// recovery needs a customer message id to anchor on, which a colleague's reply has by construction
-// not got". That was accurate when each was written and stopped being accurate at issue #469, which
-// added `humanReplyMessageId` to the ledger and has written it at INSERT for every colleague's reply
+// THE PREMISE THAT BLOCKED THIS FOR THREE ISSUES, and why it is no longer true. Both neighbours used
+// to state it as a fact about the ledger: the takeover recovery, that no outgoing message is named
+// there at all; the sweep's `observer-strand`, that a recovery has only ever had a customer's message
+// to anchor on. Each was accurate when it was written, and both stopped being accurate at issue
+// #469, which added `humanReplyMessageId` and has written it at INSERT for every colleague's reply
 // since — for the takeover's own fence, which needed one coordinate to order a console write
-// against. One column, two readers: the fence that refuses, and now the read that rebuilds.
+// against. One column, two readers: the fence that refuses, and now the read that rebuilds. Both
+// sentences were corrected where they lived; they are paraphrased and not quoted here on purpose,
+// because a claim the tree no longer makes should not be findable in it.
 //
 // WHY NOT THE DELIVERY RECOVERY, which is the obvious place and is what recovers a customer's
 // message. That one replays the WHOLE delivery through the receiver, and it claims the row from
@@ -151,6 +153,11 @@ export type HumanReplyRecoveryOutcome =
   // The account could not be read, or answered with something unusable. Repairable, and the next
   // attempt may get a different answer.
   | "unreachable"
+  // The words are gone for good and the recovery says so instead of pretending (review r2). One
+  // cause today: the thread's dedup window has moved past this id, so the append the job would arm
+  // is one `ingestMessageIntoThread` refuses as `ancient` — and it refuses it SUCCESSFULLY, so the
+  // job completes and nothing anywhere says the reply never landed.
+  | "gone"
   // The enqueue failed — which is the very failure this recovery exists for, happening again.
   | "failed";
 
@@ -163,6 +170,42 @@ export interface RecoverHumanReplyParams {
       ? M
       : never
     : never;
+}
+
+// THE EPISODE BOUNDARY OF THE THREAD, WHICH IS NOT THE BOUNDARY OF ONE CONVERSATION (review r2).
+//
+// `/reset` clears the memory by CONTACT-INBOX — `clearContactMemory` deletes the `AgentThread` row
+// and the attendance summaries keyed by it — and stamps `reset_at_message_id` on the single
+// conversation the command was typed in (`WHERE id = ctx.conv.id`). A contact who wrote on the same
+// channel twice has two conversations sharing one thread, so a reset in the NEWER one wipes the
+// memory an older conversation's stranded reply belongs to while leaving that older row unstamped.
+// Asked of the reply's own conversation, the fence then sees nothing and restores text from before
+// the clear — into a thread whose dedup history was deleted with it, so nothing downstream catches
+// the duplicate either.
+//
+// The MAXIMUM across the thread's conversations, because the boundary is a fact about the memory and
+// Chatwoot's ids are unique per account: a stamp on any conversation of this contact-inbox orders
+// the reply the same way its own would.
+async function threadResetBoundary(
+  tenantId: bigint,
+  instanceId: bigint,
+  contactInboxId: number,
+  base: PrismaClient,
+): Promise<number | null> {
+  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findMany({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        resetAtMessageId: { not: null },
+      },
+      select: { resetAtMessageId: true },
+      orderBy: { resetAtMessageId: "desc" },
+      take: 1,
+    }),
+  );
+  return rows[0]?.resetAtMessageId ?? null;
 }
 
 export async function recoverStrandedHumanReply(
@@ -206,13 +249,7 @@ export async function recoverStrandedHumanReply(
           chatwootConversationId: conversationId,
         },
       },
-      select: {
-        id: true,
-        inboxId: true,
-        contactInboxId: true,
-        // THE EPISODE BOUNDARY (issue #447). Read here, with everything else the decision needs.
-        resetAtMessageId: true,
-      },
+      select: { id: true, inboxId: true, contactInboxId: true },
     });
     if (conv?.inboxId == null) return null;
     const inbox = await db.inbox.findUnique({
@@ -259,7 +296,6 @@ export async function recoverStrandedHumanReply(
     });
     return {
       contactInboxId: conv.contactInboxId,
-      resetAtMessageId: conv.resetAtMessageId,
       agentId: routeAgentId,
       whatsappProvider: inbox.provider,
       mode: agent.mode,
@@ -324,6 +360,11 @@ export async function recoverStrandedHumanReply(
       ? bound.responderExists
       : ingestsContinuously(bound.mode));
   if (!routeRemembers) return "not-owed";
+  // NO THREAD TO HOLD IT, which is the ingestion's own `"no-thread"` answer arriving by the other
+  // road. The receiver already reported that case as the permanent loss it is and settled the row;
+  // a recovery armed on one anyway has nothing to key a thread by.
+  if (bound.contactInboxId === null) return "not-owed";
+  const contactInboxId = bound.contactInboxId;
   // THE EPISODE BOUNDARY, and this is the one refusal here that protects against ACTIVE HARM rather
   // than against wasted work (review r1). `/reset` clears the thread and, inside the same critical
   // section, revokes every queued `INGEST_MESSAGE` for it — precisely because an append carrying
@@ -340,9 +381,17 @@ export async function recoverStrandedHumanReply(
   // before the arm: a `/reset` landing during the REST round trip is exactly the case this exists
   // for, and only that reading can see it. What this buys is the round trip itself on a conversation
   // already cleared, which on a backfill is one Chatwoot call per stranded reply of a whole episode.
-  // Stated because the mutation battery says it out loud: deleting this line alone kills no test,
-  // and a reader who takes that for "dead code" would remove the wrong one of the two.
-  if (resetLandedAfter(messageId, bound.resetAtMessageId)) {
+  //
+  // It has a test of its own for exactly that, and it needed one: on the first battery, deleting
+  // this line alone killed nothing — the second reading answered the same way and every assertion
+  // still passed. What makes it load-bearing is asserting the ABSENCE OF THE CALL, not the verdict,
+  // which is the shape a "cheap half" has to be measured by.
+  if (
+    resetLandedAfter(
+      messageId,
+      await threadResetBoundary(tenantId, instanceId, contactInboxId, base),
+    )
+  ) {
     logger.info(
       "chatwoot human-reply recovery: %s names message %d on conversation %d, which a /reset has since cleared; not restoring it",
       row.deliveryId,
@@ -351,11 +400,6 @@ export async function recoverStrandedHumanReply(
     );
     return "not-owed";
   }
-  // NO THREAD TO HOLD IT, which is the ingestion's own `"no-thread"` answer arriving by the other
-  // road. The receiver already reported that case as the permanent loss it is and settled the row;
-  // a recovery armed on one anyway has nothing to key a thread by.
-  if (bound.contactInboxId === null) return "not-owed";
-  const contactInboxId = bound.contactInboxId;
 
   let raw: unknown;
   try {
@@ -455,6 +499,48 @@ export async function recoverStrandedHumanReply(
   // An empty reply is nothing to remember, and the receiver's ingestion answers the same way.
   if (!text.trim()) return "not-owed";
 
+  // AND WHETHER THE APPEND CAN STILL LAND AT ALL (review r2). The thread remembers the last
+  // `INGEST_ID_WINDOW` ids per direction, and once that window is SATURATED an id below its floor is
+  // `ancient`: `ingestMessageIntoThread` refuses it rather than appending, because at that distance
+  // absence from the set stops being evidence of anything. That refusal is a success — the job
+  // completes, the row disappears on DONE, and the words are permanently absent with every line in
+  // the system saying the recovery worked.
+  //
+  // So it is asked HERE, where there is still somewhere to say it. `duplicate` is the ordinary happy
+  // answer for a row stranded AFTER the append landed and costs a job that would refuse anyway;
+  // `ancient` is the loss, and it gets a line an operator can act on, because at that point the only
+  // way the words reach the agent is a person putting them there.
+  //
+  // EVIDENCE, NOT A GUARANTEE, exactly like the takeover recovery's cheap ownership look: the window
+  // can move between this read and the job's own. What it buys is that the common outcomes stop
+  // being silent, not that the race is closed — the job re-asks under the thread's lock, which is
+  // where the answer is authoritative.
+  const thread = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { recentAgentMessageIds: true },
+    }),
+  );
+  const verdict =
+    thread === null
+      ? "new"
+      : ingestVerdict(thread.recentAgentMessageIds, messageId);
+  if (verdict === "duplicate") return "not-owed";
+  if (verdict === "ancient") {
+    logger.error(
+      "chatwoot human-reply recovery: %s names message %d on conversation %d, which is older than everything conversation's memory still remembers; the reply is lost for good and has to be re-entered by hand",
+      row.deliveryId,
+      messageId,
+      conversationId,
+    );
+    return "gone";
+  }
   // ASKED AGAIN, IMMEDIATELY BEFORE THE ARM, because the read above happened before a REST round
   // trip and a `/reset` inside that stretch is exactly the one this fence exists for — the command
   // revokes what is queued, and this would queue after it. It does not CLOSE the window: the reset
@@ -462,19 +548,13 @@ export async function recoverStrandedHumanReply(
   // own critical section, which holds the thread row and refuses while an append is in flight
   // (`threadBusyForResetOn`). Narrowing the gap from a network round trip to two statements is what
   // is available here; claiming it is closed would be the lie.
-  const clearedSince = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.conversation.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootConversationId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          chatwootConversationId: conversationId,
-        },
-      },
-      select: { resetAtMessageId: true },
-    }),
+  const clearedSince = await threadResetBoundary(
+    tenantId,
+    instanceId,
+    contactInboxId,
+    base,
   );
-  if (resetLandedAfter(messageId, clearedSince?.resetAtMessageId ?? null)) {
+  if (resetLandedAfter(messageId, clearedSince)) {
     logger.info(
       "chatwoot human-reply recovery: %s was cleared by a /reset while its message was being read back (conversation %d); not restoring it",
       row.deliveryId,
@@ -585,6 +665,10 @@ async function humanReplyRecoveryHandler(
       error: "human-reply recovery: the mirror does not know this conversation",
     };
   }
+  // `gone` COMPLETES, and that is not the same as succeeding: the loss is already reported at
+  // `error` by the line above, on the conversation and the message. Retrying it would ask a window
+  // that only moves further away, and dead-lettering would announce the same loss a second time
+  // through a channel that says "a job died" rather than "these words are gone".
   return { outcome: "done" };
 }
 

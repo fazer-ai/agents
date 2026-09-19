@@ -10,10 +10,11 @@ import { expectWaiverLedger } from "@/tests/utils/ledger";
 //
 // O que a forma antiga custa, medido no holdout desta rodada:
 //
-// - VERMELHO MAL ATRIBUÍDO. Injetando remoção concorrente de linhas `INGEST_MESSAGE`, o arquivo do
-//   seam foi de 38/0 para 31/7, e o teste que a issue cita NÃO estava entre os sete: caíram as
-//   irmãs. A mensagem lê como defeito da feature, e quem cai nisso na CI descarta a feature antes de
-//   suspeitar da suíte.
+// - VERMELHO MAL ATRIBUÍDO. Injetando no cliente do banco o dreno que o produto faz (some a linha
+//   `INGEST_MESSAGE` mais antiga a cada leitura, nunca a recém-armada), o arquivo do seam foi de
+//   38/0 para 33/5 na base, e o teste que a issue cita NÃO estava entre os cinco: caíram as irmãs. A
+//   mensagem lê como defeito da feature, e quem cai nisso na CI descarta a feature antes de
+//   suspeitar da suíte. Com a mesma injeção nesta árvore: 38/0.
 // - VERDE QUE NÃO PROVA NADA, que é o caro. Com uma troca 1-por-1 (apaga a linha de outra mensagem,
 //   planta a da mensagem sob teste, população constante), o arquivo passou 38/0 com a linha que ele
 //   jura não existir dentro da tabela. Nenhuma melhora de mensagem de erro alcança isso: o veredito

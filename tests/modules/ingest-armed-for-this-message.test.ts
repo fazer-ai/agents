@@ -6,7 +6,7 @@ import { ingestDedupeKey } from "@/graph/ingest-job";
 
 // ── "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" NÃO É UMA CONTAGEM (issue #723) ──
 //
-// Quarenta e dois lugares em dois arquivos fazem essa afirmação contando a POPULAÇÃO de linhas
+// Quarenta e cinco lugares em dois arquivos fazem essa afirmação contando a POPULAÇÃO de linhas
 // `INGEST_MESSAGE` do tenant, antes e depois, e comparando. A população não é uma quantidade estável,
 // e não por sujeira de teste: a linha é APAGADA ao concluir (`JOB_DELETE_ON_DONE.INGEST_MESSAGE`, cujo
 // comentário em scheduler/lanes.ts explica que essa é a exceção justamente porque a chave nomeia UMA

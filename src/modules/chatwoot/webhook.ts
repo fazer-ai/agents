@@ -6336,7 +6336,46 @@ export async function processChatwootDelivery(
       heldByAnotherBot || observer !== null ? "this-delivery" : "conversation",
     );
   };
-  if (isNewIncoming && (!act || consumed) && !observerHolds) {
+  // ...E QUANDO A INGESTÃO É QUEM VAI GUARDAR A MENSAGEM, A LIQUIDAÇÃO ESPERA POR ELA (issue #719).
+  // Esta linha liquida a entrega e avança a marca uns duzentos comandos ANTES de a ingestão contínua
+  // rodar, e era a única coisa entre o cliente e o silêncio: com o enfileiramento falhando, nada
+  // lançava, a linha fechava PROCESSED — que é o estado que a varredura não revisita — e a marca já
+  // estava por cima da mensagem. Nenhum turno depois a lê, porque o caminho direto folha a mensagem
+  // DO EVENTO e o flush coalesce a partir da marca. Medido: `err=null`, linha `PROCESSED`, marca no
+  // id da própria mensagem.
+  //
+  // Os vizinhos já tinham a cerca — a parada do observador, a transcrição tardia e a parada por
+  // posse da #688 lançam quando o enfileiramento delas falha. Esta é a mesma regra aplicada ao
+  // caminho COMUM: uma pessoa é dona da conversa, turno nenhum roda, e quem guarda a mensagem é a
+  // ingestão.
+  //
+  // SÃO DOIS SITES, e a issue nomeia um: a condição deste bloco é `!act || consumed`, e as duas
+  // metades chegam à MESMA ingestão contínua, uma ao lado da outra na lista que `ingestUnhandledMessage`
+  // documenta — a mensagem que o bot não responde porque uma pessoa tem a conversa (`!act`) e a que
+  // ele não responde porque um portão a silenciou (`act && consumed`: fora do horário, ou o contato
+  // que o gate de autorização recusou). Consertar só a primeira deixaria a segunda perdendo a
+  // mensagem pelo mesmo caminho, com outro gatilho.
+  //
+  // MEDIDO no site irmão, pelo gate de autorização recusando o contato, antes de escrever esta linha:
+  // `err=null`, a linha `PROCESSED` e a marca no id da própria mensagem — os três fatos idênticos aos
+  // da issue. E é a recusa que torna isso concreto: a mensagem que o cliente manda enquanto está
+  // bloqueado é exatamente a que faz o desbloqueio ler como uma conversa só, em vez de o agente
+  // responder um código vindo do nada.
+  //
+  // O adiamento é ESTREITO no resto: `observerHolds` já estava fora daqui, com a liquidação dele lá
+  // embaixo pelo mesmo motivo (round 20 da #209), e `routeRemembers` é o termo de `routeIngests` que
+  // vale aqui (`handedToObserver` implica `observerHolds`, e `stoodDownUnread` só existe com `act`
+  // verdadeiro). Sem ele, TODA entrega deste ramo esperaria uma ingestão que nem é tentada — agente
+  // em `test`, agente desligado, rota sem runtime —, e cada uma viraria entrega presa, depois `DEAD`,
+  // depois uma recuperação que replica o nada.
+  //
+  // O `!observerHolds` fica, e é o termo que mantém as duas paradas disjuntas: a do observador vem
+  // logo abaixo desta, com a regra de marca que só ela tem (um observador desligado não marca, issue
+  // #476). Sem o termo, uma conversa em posse humana sob observador seria liquidada aqui antes de
+  // aquele bloco decidir, e o erro diria a parada errada.
+  const settlesHere = isNewIncoming && (!act || consumed) && !observerHolds;
+  const settleAwaitsIngest = settlesHere && routeRemembers;
+  if (settlesHere && !settleAwaitsIngest) {
     await markHandledAndSettle({ onWatermarkFailure: "settle" });
   }
 
@@ -6670,6 +6709,20 @@ export async function processChatwootDelivery(
   // The observer's verdict, from the enqueue (see the note above the mark). The throw is the other
   // exit of this function that leaves the row on PROCESSING deliberately: the route logs it, and
   // the sweep's recovery re-runs the delivery.
+  // E A LIQUIDAÇÃO QUE ESPEROU A INGESTÃO ACONTECE AQUI (issue #719), com a mesma lista positiva da
+  // parada por posse: a linha fecha com a ingestão SEGURANDO a mensagem, e o enfileiramento que falha
+  // lança, deixando a linha em PROCESSING para a varredura. `"nothing"` liquida — é a ingestão tendo
+  // corrido e não havendo o que lembrar, que é o caso de uma reação, de uma nota privada e da nossa
+  // própria mensagem de saída —, e o `"no-thread"` também, porque uma conversa sem contact-inbox não
+  // tem onde guardar e a repetição diria o mesmo.
+  if (settleAwaitsIngest) {
+    if (ingested === "failed") {
+      throw new Error(
+        `chatwoot: no turn answered the customer's message (conv=${convLabel}) and the ingestion that would remember it could not be armed; leaving the delivery for the sweep`,
+      );
+    }
+    await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
+  }
   // O MESMO DE NOVO, PARA A PARADA DA #688 (review r1). O guarda abaixo é do observador, e esta
   // parada caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED — que é o estado que
   // nada revisita — e a mensagem do cliente sumia exatamente como sumia antes do conserto. Escrito

@@ -216,7 +216,8 @@ async function deliverCustomerMessage(params: {
   fetchImpl: typeof fetch;
   makeClient: (cfg: { botToken: string }) => Promise<ChatwootClient>;
   makeModel?: () => BaseChatModel;
-}): Promise<void> {
+  base?: PrismaClient;
+}): Promise<{ erro: string | null; status: string }> {
   seq += 1;
   const n = normalizeChatwootEvent({
     event: "message_created",
@@ -253,13 +254,13 @@ async function deliverCustomerMessage(params: {
     },
     select: { id: true },
   });
-  await processChatwootDelivery({
+  const erro = await processChatwootDelivery({
     tenantId,
     instanceId,
     deliveryRowId: delivery.id,
     agentBotId: 21,
     normalized: n,
-    base: appDb,
+    base: params.base ?? appDb,
     deps: {
       makeClient: params.makeClient as never,
       makeModel:
@@ -271,7 +272,15 @@ async function deliverCustomerMessage(params: {
       persistUsage: async () => {},
       contactAuthFetch: params.fetchImpl,
     },
+  }).then(
+    () => null,
+    (e) => String(e),
+  );
+  const linha = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+    where: { id: delivery.id },
+    select: { status: true },
   });
+  return { erro, status: linha.status };
 }
 
 async function flowRows(convId: number) {
@@ -626,6 +635,51 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(JSON.stringify(contactAuthNoticeEntries())).not.toContain(
       PHONE.slice(1),
     );
+  });
+
+  // O MESMO DEFEITO DA #719, NO SITE IRMÃO: a recusa também é uma mensagem de cliente que turno
+  // nenhum responde e que só a ingestão contínua guarda. O gate consome a entrega, a marca avança e a
+  // linha é liquidada — tudo isso ANTES de a ingestão rodar. Com o enfileiramento falhando, a
+  // mensagem que o cliente mandou enquanto estava bloqueado não fica em lugar nenhum, e é
+  // exatamente ela que faz o desbloqueio ler como uma conversa só: quando o código chega e o turno
+  // roda, o agente responde um código vindo do nada.
+  test("a refused customer's message is not lost when its ingestion enqueue fails", async () => {
+    const convId = 9399;
+    await seedConversation(convId, inboxFullDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(() => denied("not_customer"));
+    const semFila = appDb.$extends({
+      query: {
+        schedulerJob: {
+          $allOperations({ args, query }) {
+            const shape = JSON.stringify(args, (_k, v) =>
+              typeof v === "bigint" ? String(v) : v,
+            );
+            if (shape.includes("INGEST_MESSAGE")) {
+              throw new Error("injected: scheduler unavailable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const { erro, status } = await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 899,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+      base: semFila,
+    });
+
+    expect(erro ?? "a entrega nao lancou").toContain("could not be armed");
+    expect(status).toBe("PROCESSING");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).not.toBe(7000 + seq);
   });
 
   test("authorized: the turn runs and the model's reply reaches the customer", async () => {

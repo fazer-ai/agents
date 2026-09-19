@@ -2968,6 +2968,7 @@
     "subtitle": "Envie eventos assinados para os seus próprios endpoints quando algo acontecer neste espaço de trabalho.",
     "test": "Testar",
     "testDelivered": "Teste entregue ({{status}})",
+    "testDeliveredUnsigned": "Entregue ({{status}}), mas SEM ASSINATURA: o segredo de assinatura configurado não resolve",
     "testFailed": "Falha ao entregar o teste",
     "testFailedReason": "Falha no teste: {{reason}}",
     "title": "Webhooks",

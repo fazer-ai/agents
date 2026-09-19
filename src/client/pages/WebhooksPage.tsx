@@ -103,6 +103,22 @@ export function WebhooksPage() {
         return;
       }
       if (result.ok) {
+        // Delivered, and then the thing a bare success would let the operator believe wrongly: that
+        // it was signed. Until #724 this case never reached here — the probe refused outright, with
+        // a red toast — so a green "Test delivered" is exactly the feedback the refusal used to
+        // give, minus the reason. The probe stopped refusing because its own worker never did; that
+        // only improves the answer if the answer still carries the warning.
+        if (result.warning) {
+          showToast(
+            t(
+              "webhooks.testDeliveredUnsigned",
+              "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
+              { status: result.status ?? 200 },
+            ),
+            "warning",
+          );
+          return;
+        }
         showToast(
           t("webhooks.testDelivered", "Test delivered ({{status}})", {
             status: result.status ?? 200,

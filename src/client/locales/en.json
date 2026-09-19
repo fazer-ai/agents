@@ -2904,6 +2904,7 @@
     "subtitle": "Send signed events to your own endpoints when things happen in this workspace.",
     "test": "Test",
     "testDelivered": "Test delivered ({{status}})",
+    "testDeliveredUnsigned": "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
     "testFailed": "Test delivery failed",
     "testFailedReason": "Test failed: {{reason}}",
     "title": "Webhooks",

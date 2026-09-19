@@ -474,7 +474,22 @@ export function AlertChannelsSection() {
   const [error, setError] = useState(false);
   const modal = useModalController<ChannelModalPayload>();
   const confirm = useModalController<ConfirmPayload>();
-  const [testingId, setTestingId] = useState<string | null>(null);
+  // A SET, not the one id the webhooks list next door holds, and the reason is this feature's own
+  // subject (review round 1 of #605). With a single id, testing channel B while A is still in flight
+  // re-enables A's button, and whichever request finishes FIRST clears the spinner on the other while
+  // it is still running. Both halves cost a real external send: an enabled button invites a second
+  // POST to a destination that has not answered the first, and a button that says idle while it is
+  // working is a console lying about a delivery — which is the exact failure this PR exists to stop,
+  // one screen up.
+  const [testing, setTesting] = useState<ReadonlySet<string>>(new Set());
+  const startTesting = (id: string) =>
+    setTesting((prev) => new Set(prev).add(id));
+  const doneTesting = (id: string) =>
+    setTesting((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -520,7 +535,7 @@ export function AlertChannelsSection() {
   // The button the issue is named after (#605): before it, the only way to learn whether a channel
   // was wired correctly was to wait for an incident and watch it not arrive.
   const runTest = async (ch: AlertChannel) => {
-    setTestingId(ch.id);
+    startTesting(ch.id);
     try {
       const { data, error: err } = await api.api.v1["alert-channels"]({
         id: ch.id,
@@ -573,7 +588,7 @@ export function AlertChannelsSection() {
     } catch {
       showToast(t("alerts.testFailed", "Test alert failed"), "error");
     } finally {
-      setTestingId(null);
+      doneTesting(ch.id);
     }
   };
 
@@ -694,8 +709,8 @@ export function AlertChannelsSection() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  loading={testingId === ch.id}
-                  disabled={testingId === ch.id}
+                  loading={testing.has(ch.id)}
+                  disabled={testing.has(ch.id)}
                   onClick={() => void runTest(ch)}
                 >
                   <Send className="h-4 w-4" aria-hidden="true" />

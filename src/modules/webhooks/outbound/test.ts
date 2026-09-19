@@ -4,7 +4,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { tryResolveVaultSecret } from "@/modules/vault/service";
+import { resolveSigningSecret } from "@/modules/vault/service";
 import { OUTBOUND_ENVELOPE_VERSION } from "./events";
 import { outboundHeaders } from "./signing";
 
@@ -27,6 +27,10 @@ export interface WebhookTestResult {
   error: string | null;
   // Whether the payload was HMAC-signed (true only when the subscription has a resolvable secretRef).
   signed: boolean;
+  // Set when the sample went out UNSIGNED although a secret is configured: the sentence naming which
+  // of the two credential problems it is (issue #724). Null on the two quiet cases — it signed, or
+  // no secret is configured — so a subscription that never wanted signing gets no warning.
+  warning: string | null;
 }
 
 function errMsg(err: unknown): string {
@@ -75,35 +79,41 @@ export async function sendWebhookTest(
   try {
     await assertSafeOutboundUrl(sub.url);
   } catch (err) {
-    return { ok: false, status: null, error: errMsg(err), signed: false };
+    return {
+      ok: false,
+      status: null,
+      error: errMsg(err),
+      signed: false,
+      warning: null,
+    };
   }
 
-  // Resolve the signing secret if one is configured. A configured-but-unresolvable secret is a real
-  // problem the operator must fix (a live delivery would be rejected by a signature-verifying
-  // receiver), so we surface it instead of silently sending unsigned.
+  // THE PROBE USED TO REFUSE WHERE ITS WORKER SENDS (issue #724).
+  //
+  // A configured-but-unresolvable secret used to end this function with `ok: false` and nothing on
+  // the wire. The worker next door does the opposite — it POSTs unsigned and moves the row to
+  // DELIVERED — so the button told the operator the endpoint was unreachable while the endpoint was
+  // being reached all day, unsigned, by the code the button exists to stand in for. A probe that
+  // exercises a different path from the real send condemns what works and approves what does not.
+  //
+  // It now mirrors the worker: send, report `signed: false`, and carry the sentence that says which
+  // credential problem it is. The refusal is not the thing worth keeping here; being told is.
   let secret: string | null = null;
-  if (sub.secretRef) {
-    const ref = sub.secretRef;
-    try {
-      secret = await runScopedOn(base, ctx, (db) =>
-        tryResolveVaultSecret<string>(db, ref),
-      );
-    } catch (err) {
-      return {
-        ok: false,
-        status: null,
-        error: `secret resolution failed: ${errMsg(err)}`,
-        signed: false,
-      };
-    }
-    if (!secret) {
-      return {
-        ok: false,
-        status: null,
-        error: `secret "${ref}" not found in the vault`,
-        signed: false,
-      };
-    }
+  let warning: string | null = null;
+  try {
+    const resolved = await runScopedOn(base, ctx, (db) =>
+      resolveSigningSecret(db, sub.secretRef),
+    );
+    secret = resolved.secret;
+    warning = resolved.unsignedReason;
+  } catch (err) {
+    return {
+      ok: false,
+      status: null,
+      error: `secret resolution failed: ${errMsg(err)}`,
+      signed: false,
+      warning: null,
+    };
   }
 
   const rawBody = JSON.stringify(buildTestEnvelope(tenantId, sub.events));
@@ -130,6 +140,7 @@ export async function sendWebhookTest(
       status: res.status,
       error: ok ? null : `non-2xx response: ${res.status}`,
       signed: Boolean(secret),
+      warning,
     };
   } catch (err) {
     return {
@@ -137,6 +148,7 @@ export async function sendWebhookTest(
       status: null,
       error: `request failed: ${errMsg(err)}`,
       signed: Boolean(secret),
+      warning,
     };
   }
 }

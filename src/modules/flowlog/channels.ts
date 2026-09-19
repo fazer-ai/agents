@@ -8,7 +8,13 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
-import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
+import {
+  readableVaultRef,
+  requireVaultRef,
+  type SigningState,
+  signingStateFor,
+  vaultRefStates,
+} from "@/modules/vault/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "./stages";
 
 // CRUD for AlertChannel (external alert sinks for execution-flow warnings/errors). Mirrors the
@@ -45,9 +51,25 @@ export interface AlertChannelDto {
   // away — `hasSecret` can do neither. It is `readableVaultRef` of the column and not the column:
   // this one predates #126 and can hold arbitrary text, which a projection must never publish.
   secretRef: string | null;
+  // WHETHER THIS CHANNEL'S ALERTS ACTUALLY CARRY A SIGNATURE (issue #724).
+  //
+  // Four conditions decide it and only three can be read off the row, which is why the console used
+  // to rebuild the rule from `type` + `hasSecret` + `secretRef` and still got one case wrong: a
+  // well-formed ref whose entry was deleted, or created and never filled, resolves to nothing in the
+  // worker and the screen said "Signed". Answering it means asking the VAULT, so the list asks, once
+  // for every row.
+  //
+  // It is one field and not a fourth boolean so the client stops re-deriving the worker's rule from
+  // parts. `alert-send.ts` is the authority; this is its answer, projected.
+  signingState: AlertSigningState;
   createdAt: Date;
   updatedAt: Date;
 }
+
+// The shared states plus the one that is only an alert channel's: a secret configured on a type that
+// never signs. A channel switched to Discord keeps its ref, because the editor omits an untouched
+// picker rather than erasing it.
+export type AlertSigningState = SigningState | "ignored";
 
 const SELECT = {
   id: true,
@@ -74,18 +96,37 @@ function maskUrl(encrypted: string): string {
   }
 }
 
-function toDto(row: {
-  id: bigint;
-  name: string;
-  type: string;
-  url: string;
-  enabled: boolean;
-  minLevel: string;
-  stages: string[];
-  secretRef: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}): AlertChannelDto {
+// `alert-send.ts` signs only when the type is `webhook`, a ref is stored, and that ref resolves to a
+// filled entry. The shared rule answers the last two; the type is this family's own, and it is asked
+// FIRST on purpose: a ref on a Discord channel is `ignored` and not `missing`, even when its entry
+// really is gone, because nothing would sign with it either way and sending the operator to the
+// vault would be sending them to fix something that is not the problem.
+function signingStateOf(
+  type: string,
+  stored: string | null,
+  readable: string | null,
+  vaultStates: Map<string, "filled" | "pending">,
+): AlertSigningState {
+  if (stored !== null && type !== "webhook") return "ignored";
+  return signingStateFor(stored, readable, vaultStates);
+}
+
+function toDto(
+  row: {
+    id: bigint;
+    name: string;
+    type: string;
+    url: string;
+    enabled: boolean;
+    minLevel: string;
+    stages: string[];
+    secretRef: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  },
+  vaultStates: Map<string, "filled" | "pending">,
+): AlertChannelDto {
+  const readable = readableVaultRef(row.secretRef);
   return {
     id: row.id.toString(),
     name: row.name,
@@ -95,7 +136,13 @@ function toDto(row: {
     minLevel: row.minLevel,
     stages: row.stages,
     hasSecret: row.secretRef !== null,
-    secretRef: readableVaultRef(row.secretRef),
+    secretRef: readable,
+    signingState: signingStateOf(
+      row.type,
+      row.secretRef,
+      readable,
+      vaultStates,
+    ),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -176,14 +223,35 @@ function assertStages(stages: string[]): string[] {
   return out;
 }
 
+// The one-row form of the list's batch read. It is a second round trip after the write transaction
+// rather than a read inside it, on purpose: the write already committed, and a vault read that fails
+// must not roll back a saved channel.
+async function statesFor(
+  ctx: TenantContext,
+  base: PrismaClient,
+  secretRef: string | null,
+): Promise<Map<string, "filled" | "pending">> {
+  if (secretRef === null) return new Map();
+  return await runScopedOn(base, ctx, (db) => vaultRefStates(db, [secretRef]));
+}
+
 export async function listAlertChannels(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
 ): Promise<AlertChannelDto[]> {
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.alertChannel.findMany({ select: SELECT, orderBy: { id: "asc" } }),
-  );
-  return rows.map(toDto);
+  return await runScopedOn(base, ctx, async (db) => {
+    const rows = await db.alertChannel.findMany({
+      select: SELECT,
+      orderBy: { id: "asc" },
+    });
+    // One extra query for the whole page, inside the same scoped transaction as the rows — the vault
+    // is tenant-scoped too, so this cannot be hoisted out of the RLS fence.
+    const states = await vaultRefStates(
+      db,
+      rows.map((r) => r.secretRef),
+    );
+    return rows.map((r) => toDto(r, states));
+  });
 }
 
 export const alertChannelCreateSchema = z
@@ -252,7 +320,7 @@ export async function createAlertChannel(
     });
     return created;
   });
-  return toDto(row);
+  return toDto(row, await statesFor(ctx, base, row.secretRef));
 }
 
 export const alertChannelUpdateSchema = z
@@ -347,7 +415,7 @@ export async function updateAlertChannel(
       "alert channel not found",
       "errors.alertChannelNotFound",
     );
-  return toDto(row);
+  return toDto(row, await statesFor(ctx, base, row.secretRef));
 }
 
 export async function deleteAlertChannel(

@@ -99,9 +99,9 @@ export async function sendAlertChannelTest(
     durationMs: res.durationMs,
     // The one case where a 2xx is not the whole answer: the channel names a signing secret that no
     // longer resolves, so this delivery went out UNSIGNED and a receiver that verifies signatures
-    // will reject the real alert while this test reports success.
-    warning: res.secretUnresolved
-      ? "the configured signing secret did not resolve, so the sample was sent UNSIGNED"
-      : null,
+    // will reject the real alert while this test reports success. The sentence comes from the
+    // resolver rather than from here (issue #724), so the probe and the delivery row that a later
+    // incident is read from say the same thing, and both say WHICH of the two problems it is.
+    warning: res.unsignedReason,
   };
 }

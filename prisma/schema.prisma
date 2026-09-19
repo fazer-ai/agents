@@ -1701,6 +1701,14 @@ model OutboundWebhookDelivery {
   nextAttemptAt  DateTime?             @map("next_attempt_at")
   deliveredAt    DateTime?             @map("delivered_at")
   lastError      String?               @map("last_error")
+  // Set when the delivery went out UNSIGNED although a secret was configured (issue #724): a
+  // sentence a person can act on, because "the credential was deleted" and "it was never filled"
+  // are different errands. It sits next to `lastError` and not inside it because the delivery
+  // SUCCEEDED, and `finalizeDelivered` clears that column on purpose.
+  // Null is the quiet case and covers two of them: the send was signed, or no secret was ever
+  // configured. Marking the second would put a warning on every unsigned-by-design subscription,
+  // which is the most expensive noise available -- an operator who learns to skip the mark.
+  unsignedReason String?               @map("unsigned_reason")
   createdAt      DateTime              @default(now()) @map("created_at")
   updatedAt      DateTime              @updatedAt @map("updated_at")
 
@@ -2053,22 +2061,30 @@ model AlertChannel {
 // Alert dispatch ledger — NO PII (precedent ChatwootWebhookDelivery): only stage/level/summary +
 // a coalesced burst count. Drained by the alert worker (claim/retry/DEAD with debounced coalescing).
 model AlertDelivery {
-  id            BigInt                @id @default(autoincrement())
-  tenantId      BigInt                @map("tenant_id")
-  channelId     BigInt                @map("channel_id")
-  stage         String?
-  level         String
+  id             BigInt                @id @default(autoincrement())
+  tenantId       BigInt                @map("tenant_id")
+  channelId      BigInt                @map("channel_id")
+  stage          String?
+  level          String
   // One sanitized line (never message text) — the alert body.
-  summary       String
+  summary        String
   // Coalesced burst size (incremented while PENDING for the same channel/stage/level).
-  count         Int                   @default(1)
-  status        WebhookDeliveryStatus @default(PENDING)
-  attempts      Int                   @default(0)
-  nextAttemptAt DateTime?             @map("next_attempt_at")
-  deliveredAt   DateTime?             @map("delivered_at")
-  lastError     String?               @map("last_error")
-  createdAt     DateTime              @default(now()) @map("created_at")
-  updatedAt     DateTime              @updatedAt @map("updated_at")
+  count          Int                   @default(1)
+  status         WebhookDeliveryStatus @default(PENDING)
+  attempts       Int                   @default(0)
+  nextAttemptAt  DateTime?             @map("next_attempt_at")
+  deliveredAt    DateTime?             @map("delivered_at")
+  lastError      String?               @map("last_error")
+  // Set when the delivery went out UNSIGNED although a secret was configured (issue #724): a
+  // sentence a person can act on, because "the credential was deleted" and "it was never filled"
+  // are different errands. It sits next to `lastError` and not inside it because the delivery
+  // SUCCEEDED, and `finalizeDelivered` clears that column on purpose.
+  // Null is the quiet case and covers two of them: the send was signed, or no secret was ever
+  // configured. Marking the second would put a warning on every unsigned-by-design channel,
+  // which is the most expensive noise available -- an operator who learns to skip the mark.
+  unsignedReason String?               @map("unsigned_reason")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @updatedAt @map("updated_at")
 
   tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   channel AlertChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)

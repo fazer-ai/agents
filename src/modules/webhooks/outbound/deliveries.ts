@@ -33,6 +33,11 @@ export interface WebhookDeliveryDto {
   nextAttemptAt: string | null;
   deliveredAt: string | null;
   lastError: string | null;
+  // Set when the POST went out UNSIGNED although the subscription names a signing secret (issue
+  // #724). It rides on DELIVERED rows too, and that is the point: the receiver rejecting an unsigned
+  // request does it in ITS log, so without this field the ledger shows a clean 2xx history for
+  // deliveries nobody is accepting.
+  unsignedReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +70,7 @@ const SELECT = {
   nextAttemptAt: true,
   deliveredAt: true,
   lastError: true,
+  unsignedReason: true,
   createdAt: true,
   updatedAt: true,
   subscription: { select: { enabled: true } },
@@ -103,6 +109,7 @@ function toDto(r: DeliveryRow): WebhookDeliveryDto {
     nextAttemptAt: r.nextAttemptAt?.toISOString() ?? null,
     deliveredAt: r.deliveredAt?.toISOString() ?? null,
     lastError: r.lastError,
+    unsignedReason: r.unsignedReason,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };

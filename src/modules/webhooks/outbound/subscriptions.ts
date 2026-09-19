@@ -7,7 +7,13 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
-import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
+import {
+  readableVaultRef,
+  requireVaultRef,
+  type SigningState,
+  signingStateFor,
+  vaultRefStates,
+} from "@/modules/vault/service";
 import { isOutboundEvent, type OutboundEvent } from "./events";
 import { syncTenantHeartbeat } from "./heartbeat";
 
@@ -126,14 +132,44 @@ export async function assertUrlSafe(url: string): Promise<void> {
   await assertSafeOutboundUrl(url);
 }
 
+// WHY THE LIST HAS ITS OWN TYPE AND `toDto` DOES NOT GROW THE FIELD (issue #724).
+//
+// `signingState` cannot be read off the row: three of its values need the VAULT, and this family had
+// the same hole the alert channels had — the console drew "Signed with: vault:11" for a subscription
+// whose credential had been deleted, the same label the live one gets, on the page that now also
+// shows a delivery row saying that POST went out unsigned.
+//
+// It is NOT on `WebhookSubscriptionDto`, because `toDto` is also what `auditProjection` is built
+// from, and that runs inside the audit transaction. `readableVaultRef` stays a pure function for
+// exactly this reason, and putting a tenant-scoped query behind every projection would undo it. The
+// list is the one caller that needs the answer, so the list is the one that pays for it.
+export interface WebhookSubscriptionListItem extends WebhookSubscriptionDto {
+  signingState: SigningState;
+}
+
 export async function listWebhookSubscriptions(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
-): Promise<WebhookSubscriptionDto[]> {
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.webhookSubscription.findMany({ select: SELECT, orderBy: { id: "asc" } }),
-  );
-  return rows.map(toDto);
+): Promise<WebhookSubscriptionListItem[]> {
+  return await runScopedOn(base, ctx, async (db) => {
+    const rows = await db.webhookSubscription.findMany({
+      select: SELECT,
+      orderBy: { id: "asc" },
+    });
+    // One extra query for the whole page, inside the same scoped transaction as the rows — the vault
+    // is tenant-scoped too, so this cannot be hoisted out of the RLS fence.
+    const states = await vaultRefStates(
+      db,
+      rows.map((r) => r.secretRef),
+    );
+    return rows.map((r) => {
+      const dto = toDto(r);
+      return {
+        ...dto,
+        signingState: signingStateFor(r.secretRef, dto.secretRef, states),
+      };
+    });
+  });
 }
 
 export const webhookSubscriptionCreateSchema = z

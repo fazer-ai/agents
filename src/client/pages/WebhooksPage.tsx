@@ -30,6 +30,44 @@ import { webhookEventLabel } from "@/client/lib/webhookEvents";
 // toggles enabled inline, and deletes with a confirm. The secret value never appears here — only
 // the vault reference name. The event catalog is fetched once for the modal.
 
+// WHAT THIS SUBSCRIPTION DOES, never what its column holds. This used to decide between three
+// states off the row, and a ref whose vault entry had been DELETED fell into the first one: the same
+// "Signed with: vault:11" the live credential gets, on the page that now also shows a delivery row
+// saying that very POST went out unsigned (issue #724). Three of the four values need the vault, so
+// the server answers the whole question in one field and this reads it.
+//
+// The ref is still named in the one case where naming it helps — it resolves, so there is a
+// credential to go look at. In the three that do not resolve the ref is not the useful half; the
+// errand is: nothing to go look at, a credential to recreate, a value to fill in.
+function signingLabel(
+  sub: { signingState: string; secretRef: string | null },
+  t: (k: string, d: string, o?: Record<string, unknown>) => string,
+): string {
+  switch (sub.signingState) {
+    case "signed":
+      return t("webhooks.signedWith", "Signed with: {{ref}}", {
+        ref: sub.secretRef,
+      });
+    case "unreadable":
+      return t(
+        "webhooks.signedUnavailable",
+        "Signing secret set, but its credential is not in the vault: deliveries go unsigned",
+      );
+    case "missing":
+      return t(
+        "webhooks.signedDeleted",
+        "Signing credential was deleted: deliveries go unsigned",
+      );
+    case "pending":
+      return t(
+        "webhooks.signedPending",
+        "Signing credential has no value yet: deliveries go unsigned",
+      );
+    default:
+      return t("webhooks.unsigned", "Unsigned");
+  }
+}
+
 export function WebhooksPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -103,6 +141,22 @@ export function WebhooksPage() {
         return;
       }
       if (result.ok) {
+        // Delivered, and then the thing a bare success would let the operator believe wrongly: that
+        // it was signed. Until #724 this case never reached here — the probe refused outright, with
+        // a red toast — so a green "Test delivered" is exactly the feedback the refusal used to
+        // give, minus the reason. The probe stopped refusing because its own worker never did; that
+        // only improves the answer if the answer still carries the warning.
+        if (result.warning) {
+          showToast(
+            t(
+              "webhooks.testDeliveredUnsigned",
+              "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
+              { status: result.status ?? 200 },
+            ),
+            "warning",
+          );
+          return;
+        }
         showToast(
           t("webhooks.testDelivered", "Test delivered ({{status}})", {
             status: result.status ?? 200,
@@ -227,28 +281,7 @@ export function WebhooksPage() {
                   ))}
                 </div>
                 <span className="text-text-muted text-xs">
-                  {/* Three states, not two. `hasSecret` says a secret is CONFIGURED and `secretRef`
-                      says which one — and they come apart for a value stored before #126 that names no
-                      vault entry, which the read refuses to hand out.
-
-                      The third sentence says CONFIGURED, never "signed": such a ref resolves to no
-                      row (`vaultRefWhere` sends it to id -1), so `outboundHeaders` gets a null secret
-                      and the delivery goes out unsigned. The operator needs both halves — the setting
-                      is there, and it is not doing anything.
-
-                      Three is what the ROW can answer. A ref whose vault entry was deleted or is
-                      still `pending` resolves to null in the worker just the same, and this still
-                      names it: seeing that needs the vault, not the row. */}
-                  {sub.secretRef
-                    ? t("webhooks.signedWith", "Signed with: {{ref}}", {
-                        ref: sub.secretRef,
-                      })
-                    : sub.hasSecret
-                      ? t(
-                          "webhooks.signedUnavailable",
-                          "Signing secret set, but its credential is not in the vault: deliveries go unsigned",
-                        )
-                      : t("webhooks.unsigned", "Unsigned")}
+                  {signingLabel(sub, t)}
                   {" · "}
                   {t("webhooks.createdAt", "Created {{date}}", {
                     date: formatDate(sub.createdAt),

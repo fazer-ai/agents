@@ -270,6 +270,21 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }
 
+  // A FRASE QUE TODA AFIRMAÇÃO POSITIVA SOBRE UMA LINHA DE `scheduler_jobs` DESTE ARQUIVO CARREGA.
+  // Não é exclusiva da pergunta por chave: `ingested.some(endsWith)`, `findFirst(...) != null` e a
+  // leitura da escada de redirect afirmam a mesma coisa (a linha que o teste armou está lá) e têm a
+  // mesma exposição — um terceiro escrevendo no banco de teste compartilhado consegue tirá-la. A
+  // #723 tirou o veredito decidido pelo TAMANHO da população; esta exposição é a que sobra, e o que
+  // se pode fazer por ela é a saída dizer qual linha era e que a interferência é causa possível.
+  function porInterferencia(oQue: string) {
+    return (
+      `${oQue} não está na tabela. O teste a arma, então o vermelho é real se o conserto parou de ` +
+      `armá-la. Mas a outra causa possível é escrita concorrente de outro processo sobre ` +
+      `scheduler_jobs no banco de teste compartilhado (issue #723): confira se algo removeu linhas ` +
+      `deste tenant antes de suspeitar da feature.`
+    );
+  }
+
   // Para o único recorte em que nomear a thread seria errado: o teste cuja AFIRMAÇÃO é que não há
   // thread nenhuma para a mensagem. Ali a pergunta certa é "nada, em thread alguma, foi armado para
   // esta mensagem", e o sufixo da chave é o que a exprime. `messageSeq` é único no arquivo, então
@@ -284,6 +299,21 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
         },
       })) > 0
     );
+  }
+
+  // A linha da escada é outra que o teste cria e um terceiro consegue apagar. `findUniqueOrThrow`
+  // sobre ela estoura `P2025` cru — uma stack do Prisma que não nomeia nem a linha nem a suspeita —,
+  // e foi a única falha que a injeção de remoção do holdout deixou nesta árvore.
+  async function escadaDe(id: bigint) {
+    const row = await suDb.schedulerJob.findUnique({
+      where: { id },
+      select: { status: true, runAt: true },
+    });
+    expect(
+      row,
+      porInterferencia(`a linha da escada de redirect id=${id}`),
+    ).not.toBeNull();
+    return row as NonNullable<typeof row>;
   }
 
   async function jobs(kind: "DEBOUNCE" | "INGEST_MESSAGE") {
@@ -456,10 +486,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await jobs("DEBOUNCE")).toEqual([]);
     expect(
       await ingestArmedFor(threadOf(1), messageId),
-      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
-        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
-        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
-        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
     const conv = await row(1);
     expect(conv?.lastHandledMessageId).toBe(messageId);
@@ -486,10 +513,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await jobs("DEBOUNCE")).toEqual([]);
     expect(
       await ingestArmedFor(threadOf(2), messageId),
-      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
-        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
-        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
-        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
     const conv = await row(2);
     expect(conv?.lastHandledMessageId).toBe(messageId);
@@ -515,10 +539,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(await jobs("DEBOUNCE")).toEqual([]);
     expect(
       await ingestArmedFor(threadOf(1), messageId),
-      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
-        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
-        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
-        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
     expect((await row(1))?.lastHandledMessageId).toBe(messageId);
   });
@@ -537,7 +558,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
     expect(customerFacing()).toEqual([]);
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    expect(
+      ingested.some((k) => k.endsWith(`:${messageId}`)),
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
+    ).toBe(true);
     expect((await row(1))?.lastHandledMessageId).toBe(messageId);
   });
 
@@ -763,12 +787,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect(
       await ingestArmedFor(graphThreadId, messageId),
-      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
-        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
-        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
-        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
-    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    expect(
+      ingested.some((k) => k.endsWith(`:${messageId}`)),
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
+    ).toBe(true);
     // E SÓ ENTÃO A MARCA PASSA, que é a ordem inteira desta parada (review r10). Enquanto nada tinha
     // lido a mensagem, uma marca acima dela seria a mensagem perdida; com a ingestão tendo
     // funcionado, ela está na memória e o que falta é dizer isso — como o `agent-unavailable` sob um
@@ -1642,12 +1666,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect(
       await ingestArmedFor(graphThreadId, messageId),
-      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
-        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
-        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
-        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
     ).toBe(true);
-    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    expect(
+      ingested.some((k) => k.endsWith(`:${messageId}`)),
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
+    ).toBe(true);
     // E a marca passa, como no caminho de produção: a ingestão guardou, então dizer isso é a
     // última escrita da parada (review r10).
     expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
@@ -1743,7 +1767,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     ).rejects.toThrow("could not be advanced");
     expect(customerFacing()).toEqual([]);
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    expect(
+      ingested.some((k) => k.endsWith(`:${messageId}`)),
+      porInterferencia(`a ingestão da mensagem ${messageId}`),
+    ).toBe(true);
     expect((await row(22))?.lastHandledMessageId ?? null).not.toBe(messageId);
     const ledger = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
       where: { tenantId, deliveryId },
@@ -1900,10 +1927,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     await r.run;
     expect(r.sent).toEqual([]);
     expect(r.seen.outcome).toBe("agent-unavailable");
-    const after = await suDb.schedulerJob.findUniqueOrThrow({
-      where: { id: ladder.id },
-      select: { status: true, runAt: true },
-    });
+    const after = await escadaDe(ladder.id);
     expect(after.status).toBe("DONE");
     // Retired where it stood, never re-armed on the way: the arm would have moved its due time.
     expect(after.runAt.getTime()).toBe(ladder.runAt.getTime());
@@ -2002,7 +2026,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
         },
         select: { payloadSecret: true },
       });
-      expect(job).not.toBeNull();
+      expect(
+        job,
+        porInterferencia(`a ingestão da mensagem ${messageId}`),
+      ).not.toBeNull();
       const text = decryptJson<string>(job?.payloadSecret ?? "");
       expect(text).toContain("quero cancelar meu ingresso");
       expect((await row(25))?.lastHandledMessageId).toBe(messageId);
@@ -2276,7 +2303,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       expect(sent).toEqual([]);
       expect(seen.outcome).toBe("agent-unavailable");
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-      expect(ingested.some((k) => k.endsWith(`:${messageSeq}`))).toBe(true);
+      expect(
+        ingested.some((k) => k.endsWith(`:${messageSeq}`)),
+        porInterferencia(`a ingestão da mensagem ${messageSeq}`),
+      ).toBe(true);
       expect((await row(5))?.lastHandledMessageId).toBe(messageSeq);
     } finally {
       await suDb.agent.update({
@@ -2687,7 +2717,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       expect(seen.outcome).toBe("error");
       expect(sent).toEqual([]);
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-      expect(ingested.some((k) => k.endsWith(`:${messageSeq}`))).toBe(true);
+      expect(
+        ingested.some((k) => k.endsWith(`:${messageSeq}`)),
+        porInterferencia(`a ingestão da mensagem ${messageSeq}`),
+      ).toBe(true);
       expect((await row(10))?.lastHandledMessageId).toBe(messageSeq);
     } finally {
       await suDb.agent.update({
@@ -2806,7 +2839,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       expect(sent).toEqual([]);
       expect(seen.outcome).toBe("agent-unavailable");
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-      expect(ingested.some((k) => k.endsWith(`:${messageSeq}`))).toBe(true);
+      expect(
+        ingested.some((k) => k.endsWith(`:${messageSeq}`)),
+        porInterferencia(`a ingestão da mensagem ${messageSeq}`),
+      ).toBe(true);
     } finally {
       await suDb.agent.update({
         where: { id: agentDbId },
@@ -2947,7 +2983,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       expect(sent).toEqual([]);
       expect(seen.outcome).toBe("agent-unavailable");
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-      expect(ingested.some((k) => k.endsWith(`:${messageSeq}`))).toBe(true);
+      expect(
+        ingested.some((k) => k.endsWith(`:${messageSeq}`)),
+        porInterferencia(`a ingestão da mensagem ${messageSeq}`),
+      ).toBe(true);
       expect((await row(12))?.lastHandledMessageId).toBe(messageSeq);
       // ...AND THE ROW SAYS SO (issue #540, PR review round 4). The claim recorded `false` — the
       // runtime it resolved was a test agent, which folds in only what it answers — and this
@@ -3132,10 +3171,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       requests.length = 0;
       await deliver(13, { assigneeType: null, status: "pending" }, "voltei");
       expect(customerFacing()).toEqual([]);
-      const after = await suDb.schedulerJob.findUniqueOrThrow({
-        where: { id: ladder.id },
-        select: { status: true },
-      });
+      const after = await escadaDe(ladder.id);
       expect(after.status).toBe("DONE");
       expect(
         await suDb.schedulerJob.count({
@@ -3144,24 +3180,23 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       ).toBe(0);
       // And on a SPARSE payload, through the inbox the runtime was recovered from (round 14). The
       // same row, re-armed: the dedupe key is unique per thread.
-      await suDb.schedulerJob.update({
-        where: { id: ladder.id },
-        data: { status: "PENDING" },
-      });
+      // `update` sobre a mesma linha estoura o mesmo P2025 cru; `updateMany` devolve a contagem.
+      expect(
+        (
+          await suDb.schedulerJob.updateMany({
+            where: { id: ladder.id },
+            data: { status: "PENDING" },
+          })
+        ).count,
+        porInterferencia(`a linha da escada de redirect id=${ladder.id}`),
+      ).toBe(1);
       await deliver(
         13,
         { assigneeType: null, status: "pending" },
         "voltei de novo",
         true,
       );
-      expect(
-        (
-          await suDb.schedulerJob.findUniqueOrThrow({
-            where: { id: ladder.id },
-            select: { status: true },
-          })
-        ).status,
-      ).toBe("DONE");
+      expect((await escadaDe(ladder.id)).status).toBe("DONE");
     } finally {
       await suDb.agent.update({
         where: { id: agentDbId },
@@ -3242,7 +3277,10 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       });
       expect(sent).toEqual([]);
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-      expect(ingested.some((k) => k.endsWith(`:${messageSeq}`))).toBe(true);
+      expect(
+        ingested.some((k) => k.endsWith(`:${messageSeq}`)),
+        porInterferencia(`a ingestão da mensagem ${messageSeq}`),
+      ).toBe(true);
       expect((await row(14))?.lastHandledMessageId).toBe(messageSeq);
     } finally {
       await suDb.agent.update({

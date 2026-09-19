@@ -6349,18 +6349,23 @@ export async function processChatwootDelivery(
   // caminho COMUM: uma pessoa é dona da conversa, turno nenhum roda, e quem guarda a mensagem é a
   // ingestão.
   //
-  // SÃO DOIS SITES, e a issue nomeia um: a condição deste bloco é `!act || consumed`, e as duas
-  // metades chegam à MESMA ingestão contínua, uma ao lado da outra na lista que `ingestUnhandledMessage`
-  // documenta — a mensagem que o bot não responde porque uma pessoa tem a conversa (`!act`) e a que
-  // ele não responde porque um portão a silenciou (`act && consumed`: fora do horário, ou o contato
-  // que o gate de autorização recusou). Consertar só a primeira deixaria a segunda perdendo a
-  // mensagem pelo mesmo caminho, com outro gatilho.
+  // SÃO DOIS SITES E ESTE CONSERTO COBRE UM, POR MEDIÇÃO E NÃO POR RECORTE DA ISSUE. A condição
+  // deste bloco é `!act || consumed`, e as duas metades chegam à MESMA ingestão contínua: a mensagem
+  // que o bot não responde porque uma pessoa tem a conversa (`!act`) e a que ele não responde porque
+  // um portão a silenciou (`act && consumed`: fora do horário, ou o contato que o gate de
+  // autorização recusou). O site irmão perde a mensagem exatamente igual — medido pelo gate de
+  // autorização recusando o contato: `err=null`, linha `PROCESSED`, marca no id da própria mensagem.
   //
-  // MEDIDO no site irmão, pelo gate de autorização recusando o contato, antes de escrever esta linha:
-  // `err=null`, a linha `PROCESSED` e a marca no id da própria mensagem — os três fatos idênticos aos
-  // da issue. E é a recusa que torna isso concreto: a mensagem que o cliente manda enquanto está
-  // bloqueado é exatamente a que faz o desbloqueio ler como uma conversa só, em vez de o agente
-  // responder um código vindo do nada.
+  // E mesmo assim ele NÃO entra aqui, porque a saída deste conserto é mandar a entrega para a
+  // varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES. Isso é desenho, não defeito
+  // (docs/chatwoot.md: "a recovery answers through the gates"), e a linha não carrega nada que diga
+  // "um portão já consumiu esta mensagem" — nada a distingue de uma que ninguém atendeu, o que a
+  // suíte da recuperação já mostra ao ver o replay responder uma entrega estrandada de conversa do
+  // bot. Aplicado ao site irmão, o desfecho é o cliente recebendo o aviso de fora do horário e, meia
+  // hora depois, quando o expediente abre, a resposta do bot para a mesma mensagem. Perder a
+  // mensagem da memória é ruim; responder duas vezes uma que o operador silenciou é pior, e o
+  // conserto do site irmão precisa de uma intenção "só memória" persistida na linha e honrada pelo
+  // replay — outro desenho, outra issue.
   //
   // O adiamento é ESTREITO no resto: `observerHolds` já estava fora daqui, com a liquidação dele lá
   // embaixo pelo mesmo motivo (round 20 da #209), e `routeRemembers` é o termo de `routeIngests` que
@@ -6374,7 +6379,7 @@ export async function processChatwootDelivery(
   // #476). Sem o termo, uma conversa em posse humana sob observador seria liquidada aqui antes de
   // aquele bloco decidir, e o erro diria a parada errada.
   const settlesHere = isNewIncoming && (!act || consumed) && !observerHolds;
-  const settleAwaitsIngest = settlesHere && routeRemembers;
+  const settleAwaitsIngest = settlesHere && !consumed && routeRemembers;
   if (settlesHere && !settleAwaitsIngest) {
     await markHandledAndSettle({ onWatermarkFailure: "settle" });
   }
@@ -6718,7 +6723,7 @@ export async function processChatwootDelivery(
   if (settleAwaitsIngest) {
     if (ingested === "failed") {
       throw new Error(
-        `chatwoot: no turn answered the customer's message (conv=${convLabel}) and the ingestion that would remember it could not be armed; leaving the delivery for the sweep`,
+        `chatwoot: a person owns the conversation (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
       );
     }
     await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });

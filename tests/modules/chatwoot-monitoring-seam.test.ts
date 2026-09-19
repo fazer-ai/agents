@@ -570,6 +570,12 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // The human-held mark has its own reason (issue #8) and used to close the delivery's row ahead
     // of the ingestion; with the enqueue then failing, the row was already terminal and the sweep
     // could not recover it (review round 20). Under an observer it waits for the enqueue too.
+    //
+    // E A PARADA É A DO OBSERVADOR, não a de posse humana (issue #719), que é por que a mensagem do
+    // erro é asserida inteira. As duas existem e ambas deixariam a linha em PROCESSING, então o
+    // `status` sozinho não distingue qual delas segurou a entrega — e quem segura decide o resto: o
+    // bloco do observador tem a regra da marca de um agente desligado, que a parada de posse não
+    // tem. Sem esta asserção, remover o `!observerHolds` da parada de posse passa despercebido.
     requests.length = 0;
     const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const messageId = messageSeq + 1;
@@ -583,7 +589,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
         false,
         failingIngest(),
       ),
-    ).rejects.toThrow("could not be armed");
+    ).rejects.toThrow("the observer's ingestion could not be armed");
     expect(customerFacing()).toEqual([]);
     expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
     expect((await row(19))?.lastHandledMessageId ?? null).not.toBe(messageId);

@@ -216,7 +216,14 @@ async function deliverCustomerMessage(params: {
   fetchImpl: typeof fetch;
   makeClient: (cfg: { botToken: string }) => Promise<ChatwootClient>;
   makeModel?: () => BaseChatModel;
-}): Promise<void> {
+  base?: PrismaClient;
+  // Só quem pede é que recebe o lançamento do receptor como VALOR. Todo o resto continua sendo
+  // derrubado por ele, que é o que cada chamador daqui já tinha de graça quando este helper apenas
+  // dava `await`: converter toda rejeição em `erro` tiraria de quinze testes a checagem de falha que
+  // eles nunca escreveram porque não precisavam — o autorizado, por exemplo, passaria igual se o
+  // processamento lançasse depois de mandar a resposta e antes de liquidar a entrega (review r2).
+  expectFailure?: boolean;
+}): Promise<{ erro: string | null; status: string }> {
   seq += 1;
   const n = normalizeChatwootEvent({
     event: "message_created",
@@ -253,13 +260,13 @@ async function deliverCustomerMessage(params: {
     },
     select: { id: true },
   });
-  await processChatwootDelivery({
+  const erro = await processChatwootDelivery({
     tenantId,
     instanceId,
     deliveryRowId: delivery.id,
     agentBotId: 21,
     normalized: n,
-    base: appDb,
+    base: params.base ?? appDb,
     deps: {
       makeClient: params.makeClient as never,
       makeModel:
@@ -271,7 +278,18 @@ async function deliverCustomerMessage(params: {
       persistUsage: async () => {},
       contactAuthFetch: params.fetchImpl,
     },
+  }).then(
+    () => null,
+    (e) => {
+      if (params.expectFailure !== true) throw e;
+      return String(e);
+    },
+  );
+  const linha = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+    where: { id: delivery.id },
+    select: { status: true },
   });
+  return { erro, status: linha.status };
 }
 
 async function flowRows(convId: number) {
@@ -626,6 +644,62 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(JSON.stringify(contactAuthNoticeEntries())).not.toContain(
       PHONE.slice(1),
     );
+  });
+
+  // A LACUNA QUE A #719 MEDIU E NÃO FECHOU, TRAVADA AQUI PARA NÃO SUMIR DE VISTA.
+  //
+  // A recusa também é uma mensagem de cliente que turno nenhum responde e que só a ingestão contínua
+  // guarda. O portão consome a entrega, a marca avança e a linha é liquidada, tudo ANTES de a
+  // ingestão rodar — então com o enfileiramento falhando a mensagem que o cliente mandou enquanto
+  // estava bloqueado não fica em lugar nenhum. É exatamente o defeito da #719, no site irmão do ramo
+  // que ela nomeia, e é o que este teste MEDE: `erro` nulo, linha terminal, marca por cima.
+  //
+  // Ele trava a perda em vez de consertá-la, e o motivo está na saída que a #719 escolheu: a entrega
+  // fica em `PROCESSING` para a varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES. Nada na
+  // linha diz "um portão já consumiu esta mensagem", então quando o portão abre — o expediente
+  // começa, o contato manda o código — o replay roda o turno e responde uma mensagem que o operador
+  // tinha silenciado de propósito, depois de o cliente já ter recebido o aviso. Fechar este site
+  // exige uma intenção "só memória" gravada na linha e honrada pelo replay, que é outro desenho.
+  //
+  // Quando esse desenho chegar, este teste vira vermelho, e é para ser: a asserção é a perda.
+  test("KNOWN GAP: a refused customer's message is lost when its ingestion enqueue fails", async () => {
+    const convId = 9399;
+    await seedConversation(convId, inboxFullDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(() => denied("not_customer"));
+    const semFila = appDb.$extends({
+      query: {
+        schedulerJob: {
+          $allOperations({ args, query }) {
+            const shape = JSON.stringify(args, (_k, v) =>
+              typeof v === "bigint" ? String(v) : v,
+            );
+            if (shape.includes("INGEST_MESSAGE")) {
+              throw new Error("injected: scheduler unavailable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const { erro, status } = await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 899,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+      base: semFila,
+    });
+
+    // Nada lançou, a linha é terminal e a marca cobre a mensagem: os três fatos da #719, aqui.
+    expect(erro).toBe(null);
+    expect(status).toBe("PROCESSED");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBe(7000 + seq);
   });
 
   test("authorized: the turn runs and the model's reply reaches the customer", async () => {

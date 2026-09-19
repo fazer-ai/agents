@@ -45,11 +45,12 @@ const DEFER_ON_TURN_MS = 60_000;
 // this job exists to stop, moved one layer out. Chatwoot message ids are unique per account, so the
 // thread and the id together name exactly one append.
 // A CHAVE NOMEIA UMA MENSAGEM, e é exportada porque isso é um fato que os testes precisam PERGUNTAR
-// e não reconstruir (issue #723). Quarenta e dois lugares afirmavam "nenhuma ingestão foi armada para
-// esta mensagem" contando a população de linhas do tenant, uma quantidade que este módulo move de
-// propósito: a linha é apagada ao concluir (JOB_DELETE_ON_DONE) e `drainPendingIngest` drena as
-// pendentes de uma thread. Um teste que remonta o formato à mão fica igualmente certo e igualmente
-// frágil, porque o formato passa a viver em dois lugares; exportar é o que mantém um só.
+// e não reconstruir (issue #723). Quarenta e cinco lugares afirmavam "nenhuma ingestão foi armada
+// para esta mensagem" contando a população de linhas do tenant, uma quantidade que este módulo move
+// de propósito: a linha é apagada ao concluir (JOB_DELETE_ON_DONE) e `drainPendingIngest` drena as
+// pendentes de uma thread. Os dezessete do seam saíram na #723 e os vinte e oito do observer-route
+// na #731. Um teste que remonta o formato à mão fica igualmente certo e igualmente frágil, porque o
+// formato passa a viver em dois lugares; exportar é o que mantém um só.
 export function ingestDedupeKey(
   graphThreadId: string,
   messageId: number,

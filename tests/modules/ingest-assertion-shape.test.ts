@@ -25,11 +25,15 @@ import { expectWaiverLedger } from "@/tests/utils/ledger";
 // construtor dela é `ingestDedupeKey`, exportado nesta rodada para os testes perguntarem em vez de
 // remontarem o formato.
 //
-// O LEDGER É O DÉBITO CONHECIDO, e ele só encolhe. `chatwoot-observer-route.test.ts` tem a mesma
-// forma em 28 lugares e não foi convertido aqui: os blocos de lá não carregam o `convId` nem o
-// `messageId` em escopo, então cada site é uma leitura própria, e asserção errada num teste é
-// exatamente o que esta rodada existe para tirar. Entra como débito visível, com número, em vez de
-// entrar como conserto apressado. A issue dele é a #731, e quem a fechar baixa o número daqui.
+// O LEDGER ESTÁ VAZIO, e ele só encolhe. Ele nasceu com `chatwoot-observer-route.test.ts: 28`, que a
+// #731 converteu; o pin literal caiu de 1 para 0 na mesma passada, que é a segunda edição, em outro
+// lugar, que faz o débito ler como uma frase no diff. Um arquivo que volte a decidir pelo tamanho
+// entra aqui com o número dele e sai quando for convertido — nunca o contrário.
+//
+// A REGEX NÃO É A FRONTEIRA DO DEFEITO, e vale dizer por escrito: ela casa a leitura crua da espécie
+// seguida de `.length).toBe(`. Um `toEqual([])` sobre a mesma leitura, ou um `some()` sobre a
+// população filtrada por substring do payload, decidem o mesmo fato pelo mesmo motivo errado e
+// passam por aqui sem serem contados. A #731 achou quatro assim no arquivo que estava no ledger.
 
 const TESTS_DIR = join(import.meta.dir, "..");
 
@@ -41,9 +45,7 @@ const POPULATION_SHAPE =
 
 // Quantos sites da forma antiga cada arquivo ainda tem. Um arquivo que zerar sai da lista, e a
 // contagem fixada abaixo cai junto — que é a segunda edição, em outro lugar, que o ledger cobra.
-const POPULATION_SHAPE_WAIVED: Record<string, number> = {
-  "modules/chatwoot-observer-route.test.ts": 28,
-};
+const POPULATION_SHAPE_WAIVED: Record<string, number> = {};
 
 function walk(dir: string): string[] {
   const out: string[] = [];
@@ -85,6 +87,6 @@ describe("an assertion about one message's ingestion", () => {
 
     // O tamanho é LITERAL. Derivá-lo do próprio ledger (`Object.keys(...).length`) fixa o ledger em si
     // mesmo e não proíbe nada: é exatamente o append silencioso que `tests/utils/ledger.ts` descreve.
-    expectWaiverLedger("POPULATION_SHAPE_WAIVED", POPULATION_SHAPE_WAIVED, 1);
+    expectWaiverLedger("POPULATION_SHAPE_WAIVED", POPULATION_SHAPE_WAIVED, 0);
   });
 });

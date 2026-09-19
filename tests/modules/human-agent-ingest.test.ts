@@ -11,6 +11,7 @@ import { renderTranscript } from "@/modules/memory/summarize";
 import { claimDueTrafficJobs } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // The shape this suite exists for is the most common one in a real deployment: the agent qualifies a
 // lead, a human takes the conversation over, and the human closes the sale. Every test here drives
@@ -137,6 +138,7 @@ describe.skipIf(!dbUp)(
       globalThis.fetch = realFetch;
       if (!dbUp) return;
       for (const table of [
+        "execution_logs",
         "scheduler_jobs",
         "chatwoot_webhook_deliveries",
         "agent_threads",
@@ -243,6 +245,7 @@ describe.skipIf(!dbUp)(
       message: Record<string, unknown>,
       base: PrismaClient,
       inboxId = INBOX_ID,
+      deps?: { sleep?: (ms: number) => Promise<void> },
     ): Promise<{ erro: string | null; status: string }> {
       deliverySeq += 1;
       messageSeq += 1;
@@ -271,6 +274,7 @@ describe.skipIf(!dbUp)(
         agentBotId: 9,
         normalized: n,
         base,
+        ...(deps === undefined ? {} : { deps }),
       }).then(
         () => null,
         (e) => String(e),
@@ -571,6 +575,207 @@ describe.skipIf(!dbUp)(
       expect(thread.some((m) => String(m.content).includes("duas vezes"))).toBe(
         true,
       );
+    });
+
+    // Um cliente estendido que recusa as `falhas` primeiras escritas de INGEST_MESSAGE e deixa a
+    // seguinte passar. É o que separa "tentou uma vez" de "tentou de novo": com uma tentativa só,
+    // qualquer indisponibilidade momentânea do scheduler custa a mensagem inteira.
+    function schedulerInstavel(falhas: number): {
+      base: PrismaClient;
+      tentativas: () => number;
+    } {
+      let vistas = 0;
+      const base = appDb.$extends({
+        query: {
+          schedulerJob: {
+            $allOperations({ args, query }) {
+              const shape = JSON.stringify(args, (_k, v) =>
+                typeof v === "bigint" ? String(v) : v,
+              );
+              if (!shape.includes("INGEST_MESSAGE")) return query(args);
+              vistas += 1;
+              if (vistas <= falhas) {
+                throw new Error("injected: scheduler unavailable");
+              }
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      return { base, tentativas: () => vistas };
+    }
+
+    async function linhasDeMemoria(
+      convRowId: bigint,
+    ): Promise<{ reason: unknown; level: string }[]> {
+      const rows = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: convRowId, stage: "memory" },
+        select: { level: true, detail: true },
+      });
+      return rows.map((r) => ({
+        level: r.level,
+        reason: (r.detail as { reason?: unknown } | null)?.reason ?? null,
+      }));
+    }
+
+    async function convRowId(convId: number): Promise<bigint> {
+      return (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { id: true },
+        })
+      ).id;
+    }
+
+    // O APPEND É A ÚLTIMA CHANCE AQUI TAMBÉM (issue #720). O retry do enfileiramento existe porque
+    // nenhum turno vai cobrir aquela mensagem depois — é o que o próprio `retryArm` diz, e é
+    // literalmente verdade da resposta de um colega: o bot não a escreveu, então turno nenhum a lê.
+    // Mesmo assim ele só era armado sob observador, e na rota comum (que é a do #187: o agente
+    // qualifica, a pessoa fecha a venda) uma indisponibilidade de um segundo do scheduler custava a
+    // metade da conversa em que o negócio foi fechado.
+    test("a colleague's reply gets the retries the observer's reply gets", async () => {
+      const convId = 511;
+      await deliver(convId, fromCustomer("fechou, pode mandar o contrato"));
+      const { base, tentativas } = schedulerInstavel(3);
+
+      const { erro } = await deliverRaw(
+        convId,
+        fromHumanAgent("Fechado! Mando o contrato ainda hoje."),
+        base,
+        INBOX_ID,
+        { sleep: async () => {} },
+      );
+      await drainIngest();
+
+      expect(erro).toBe(null);
+      // Quatro tentativas, não uma: as três recusadas e a que passou.
+      expect(tentativas()).toBe(4);
+      const transcript = renderTranscript(await threadMessages(convId));
+      expect(transcript).toContain("atendente: Fechado!");
+    });
+
+    // E QUANDO AS TENTATIVAS ACABAM, A ROTA COMUM TAMBÉM É AVISADA (issue #720). O relato existia,
+    // mas atrás de `(observing || handedToObserver)`: numa instalação sem observador nenhum — a
+    // esmagadora maioria — a resposta do colega sumia da memória sem uma linha em lugar nenhum. A
+    // perda não é recuperável (nenhuma recuperação reconstrói o corpo de uma mensagem outgoing hoje),
+    // então o que resta é dizer que ela aconteceu, onde um operador lê.
+    test("the ordinary route is told when a colleague's reply reaches no memory", async () => {
+      const convId = 512;
+      await deliver(convId, fromCustomer("combinado então"));
+      const { base } = schedulerInstavel(Number.POSITIVE_INFINITY);
+
+      await deliverRaw(
+        convId,
+        fromHumanAgent("Combinado. Te mando o boleto amanhã."),
+        base,
+        INBOX_ID,
+        { sleep: async () => {} },
+      );
+
+      const linhas = await linhasDeMemoria(await convRowId(convId));
+      expect(linhas).toContainEqual({
+        level: "error",
+        reason: "human_reply_not_remembered",
+      });
+    });
+
+    // E O RELATO NÃO SE ALARGA PARA A MENSAGEM DO CLIENTE (issue #720). Tirar a guarda do observador
+    // sem pôr nada no lugar deixaria este bloco responder por qualquer ingestão que falha, e a da
+    // mensagem do cliente falha exatamente no mesmo lugar (#719) — poucas linhas antes do lançamento
+    // que a deixa para a varredura. O operador leria "a resposta de um colega não pôde ser lembrada"
+    // sobre uma mensagem que o cliente escreveu e que a varredura vai recuperar.
+    test("the customer's own lost ingestion is not reported as a colleague's reply", async () => {
+      const convId = 514;
+      await deliver(convId, fromCustomer("oi"));
+      const { base, tentativas } = schedulerInstavel(Number.POSITIVE_INFINITY);
+
+      const { erro } = await deliverRaw(
+        convId,
+        fromCustomer("continua disponível?"),
+        base,
+        INBOX_ID,
+        { sleep: async () => {} },
+      );
+
+      // A entrega da #719 lança, e é o lançamento que deixa a linha recuperável.
+      expect(erro ?? "a entrega nao lancou").toContain("could not be armed");
+      expect(await linhasDeMemoria(await convRowId(convId))).toEqual([]);
+      // E A TENTATIVA CONTINUA SENDO UMA, que é a outra metade da fronteira. O retry do colega não
+      // se alargou para todo mundo: a mensagem do cliente em rota comum é coberta por um turno na
+      // esmagadora maioria das vezes, e quando não é — como aqui — quem a salva é a varredura, não
+      // mais três tentativas de enfileiramento segurando o worker por dois segundos.
+      expect(tentativas()).toBe(1);
+    });
+
+    // E O ECO DA NOSSA PRÓPRIA RESPOSTA NÃO VIRA RELATO (issue #720, review r1). A cerca é o papel
+    // RESOLVIDO (`humanReplyBy`), não a forma do payload: a forma inclui de propósito a perna
+    // `device` antes de perguntar ao provedor, e num provedor que não reserva os ids do eco aquela
+    // forma é a nossa própria resposta voltando. Com a forma no lugar do papel, uma conversa que nem
+    // o payload nem o espelho sabem nomear um contact-inbox produz `no-thread` — devolvido ANTES de
+    // o papel ser calculado — e um operador seria paginado sobre "a resposta de um colega" que
+    // pessoa nenhuma escreveu.
+    test("an echo of our own reply is not reported as a colleague's lost reply", async () => {
+      const convId = 515;
+      deliverySeq += 1;
+      messageSeq += 1;
+      const { id: _semThread, ...semContactInbox } = conversation(convId);
+      const n = normalizeChatwootEvent({
+        event: "message_created",
+        id: messageSeq,
+        private: false,
+        content: "eco da nossa própria resposta",
+        message_type: "outgoing",
+        sender: null,
+        content_attributes: { external_sender_name: "WhatsApp" },
+        conversation: { ...semContactInbox, id: convId, contact_inbox: null },
+      });
+      if (!n) throw new Error("payload did not normalize");
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `hai-${process.pid}-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+        },
+        select: { id: true },
+      });
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: 9,
+        normalized: n,
+        base: appDb,
+      });
+
+      // A inbox deste teste não é WhatsApp, então `providerReservesEchoIds` recusa e o eco não é
+      // resposta de ninguém: a ingestão não o guarda, e não há perda a relatar.
+      expect(await linhasDeMemoria(await convRowId(convId))).toEqual([]);
+    });
+
+    // E A ENTREGA AINDA ASSIM LIQUIDA, que é a metade do desenho que um conserto vizinho desfaria
+    // (issue #720). A tentação é lançar, como a #719 fez para a mensagem do cliente, e ali aquilo
+    // compra a recuperação: a varredura replaya a entrega e a ingestão é re-armada. Para a resposta
+    // de um colega não compra nada. A linha é classificada `owed-takeover` (ou `observer-strand`), e
+    // nenhum dos dois re-arma ingestão nenhuma: o primeiro re-roda só a transição de posse, o segundo
+    // só relata. Prender a linha em PROCESSING custaria um job de takeover redundante e um `DEAD` no
+    // fim, sem salvar uma palavra — e é por isso que o relato acima é a resposta, e não o lançamento.
+    test("a colleague's reply whose ingestion fails still settles the delivery", async () => {
+      const convId = 513;
+      await deliver(convId, fromCustomer("me manda quando puder"));
+      const { base } = schedulerInstavel(Number.POSITIVE_INFINITY);
+
+      const { erro, status } = await deliverRaw(
+        convId,
+        fromHumanAgent("Mando sim."),
+        base,
+        INBOX_ID,
+        { sleep: async () => {} },
+      );
+
+      expect(erro).toBe(null);
+      expect(status).toBe("PROCESSED");
     });
 
     test("a private note is not ingested", async () => {

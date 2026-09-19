@@ -569,7 +569,11 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect(await ingestArmedFor(threadOf(17), messageId)).toBe(false);
+    // `bare` tira o contact-inbox, e a AFIRMAÇÃO deste teste é que não existe thread para a
+    // mensagem em lugar nenhum. Nomear `threadOf(17)` aqui perguntaria por uma thread que a premissa
+    // do teste diz não existir, e uma ingestão armada por engano na thread de fallback passaria
+    // invisível. A pergunta certa é a mesma do irmão de saída: nada, em thread alguma.
+    expect(await ingestArmedAnywhereFor(messageId)).toBe(false);
     const conv = await row(17);
     expect(conv).not.toBeNull();
     expect(conv?.lastHandledMessageId ?? null).not.toBe(messageId);

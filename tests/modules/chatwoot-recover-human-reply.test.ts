@@ -53,15 +53,35 @@ const suDb = su as PrismaClient;
 const INBOX_ID = 91;
 const ZAPI_INBOX_ID = 92;
 const TEST_MODE_INBOX_ID = 93;
+// An inbox NOBODY of ours answers, with a watcher on it: the route issue #620 measured as folding
+// nothing in, because there is no responder's memory for the watcher to share.
+const UNANSWERED_INBOX_ID = 94;
+// A responder of ours, with a watcher whose own agent is in `test` mode. The receiver asks a
+// row-backed watcher's SWITCH and not its mode (issue #476 review, round 19), so this route folds
+// the reply in — and it is the only shape that tells the two readings of the gate apart.
+const WATCHED_INBOX_ID = 95;
 const OUR_BOT = 31;
+// A watcher's own bot: Chatwoot fans a message to the inbox's bot AND to any observer attached to
+// it, so a strand can carry either route, and only the row says which.
+const WATCHER_BOT = 32;
+// The `test`-mode agent's own bot. Its route has to carry it, or the fixture would be a state no
+// install can be in: a delivery claimed under one agent's bot on an inbox another agent answers.
+const TEST_BOT = 33;
+// The bot of a watcher whose agent is in `test` mode.
+const QUIET_WATCHER_BOT = 34;
 let tenantId = 0n;
 let instanceId = 0n;
+let watcherAgentDbId = 0n;
+let quietWatcherAgentDbId = 0n;
 let deliverySeq = 0;
 
 // The account's messages, per conversation, in the REST spelling.
 const pages = new Map<number, Record<string, unknown>[]>();
 // Conversations whose message read fails outright.
 const failingReads = new Set<number>();
+// Conversations an operator resets WHILE the page is being served, which is the window the second
+// reading of the boundary exists for and the only one it can see.
+const resetDuringRead = new Map<number, () => Promise<void>>();
 const calls: { url: string; method: string }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -73,6 +93,8 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (list && method === "GET") {
     const id = Number(list[1]);
     if (failingReads.has(id)) return new Response("nope", { status: 502 });
+    const during = resetDuringRead.get(id);
+    if (during) await during();
     return Response.json({ payload: pages.get(id) ?? [] });
   }
   return new Response(JSON.stringify({}), {
@@ -183,10 +205,75 @@ describe.skipIf(!dbUp)(
           name: "Atendente",
         },
       });
+      // The watcher: `monitoring` and switched on, with a bot of its own, on an inbox a `test`-mode
+      // agent answers. The live receiver folds a colleague's reply in through THIS agent, and it
+      // asks the watcher's switch without asking its mode (issue #476 review, round 19).
+      const watcher = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Observadora",
+          mode: "monitoring",
+          enabled: true,
+          systemPrompt: "Você observa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: {},
+        },
+      });
+      watcherAgentDbId = watcher.id;
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: testAgent.id,
+          chatwootAgentBotId: TEST_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-test-${process.pid}`,
+          name: "Atendente (teste)",
+        },
+      });
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: watcher.id,
+          chatwootAgentBotId: WATCHER_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-watch-${process.pid}`,
+          name: "Observadora",
+        },
+      });
+      const quietWatcher = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Observadora silenciosa",
+          mode: "test",
+          enabled: true,
+          systemPrompt: "Você observa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: {},
+        },
+      });
+      quietWatcherAgentDbId = quietWatcher.id;
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: quietWatcher.id,
+          chatwootAgentBotId: QUIET_WATCHER_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-quiet-${process.pid}`,
+          name: "Observadora silenciosa",
+        },
+      });
       for (const [chatwootInboxId, provider, boundAgent] of [
         [INBOX_ID, "baileys", agent.id],
         [ZAPI_INBOX_ID, "zapi", agent.id],
         [TEST_MODE_INBOX_ID, "baileys", testAgent.id],
+        [UNANSWERED_INBOX_ID, "baileys", null],
+        [WATCHED_INBOX_ID, "baileys", agent.id],
       ] as const) {
         await suDb.inbox.create({
           data: {
@@ -241,6 +328,12 @@ describe.skipIf(!dbUp)(
         // Omitted = the mirror knows the conversation. `false` = it does not, which is what a delivery
         // that died before the mirror write leaves.
         mirrored?: boolean;
+        // The bot the delivery arrived on, as the claim recorded it, and whether that route was a
+        // watcher's (issue #476). Omitted = the inbox persona's, answering.
+        routeAgentBotId?: number | null;
+        routeObserved?: boolean;
+        // The episode boundary a `/reset` left on the conversation (issue #447).
+        resetAtMessageId?: number;
       } = {},
     ) {
       const messageId = over.messageId === undefined ? 700 : over.messageId;
@@ -264,6 +357,9 @@ describe.skipIf(!dbUp)(
               over.contactInboxId === undefined
                 ? 91_000 + convId
                 : over.contactInboxId,
+            ...(over.resetAtMessageId === undefined
+              ? {}
+              : { resetAtMessageId: over.resetAtMessageId }),
           },
         });
       }
@@ -279,7 +375,17 @@ describe.skipIf(!dbUp)(
           conversationId: convId,
           humanReplyShape: over.shape === undefined ? "composer" : over.shape,
           humanReplyMessageId: messageId,
-          routeAgentBotId: OUR_BOT,
+          // THE ROUTE THE CLAIM RECORDED. Defaulted from the inbox, so a fixture cannot quietly
+          // describe a delivery claimed under one agent's bot on an inbox another agent answers.
+          routeAgentBotId:
+            over.routeAgentBotId === undefined
+              ? (over.inboxId ?? INBOX_ID) === TEST_MODE_INBOX_ID
+                ? TEST_BOT
+                : OUR_BOT
+              : over.routeAgentBotId,
+          ...(over.routeObserved === undefined
+            ? {}
+            : { routeObserved: over.routeObserved }),
         },
         select: { id: true },
       });
@@ -548,6 +654,171 @@ describe.skipIf(!dbUp)(
         }),
       ).toBe("not-owed");
       expect(await ingestJobs(convId)).toEqual([]);
+    });
+
+    // A ROTA DA ENTREGA DECIDE DE QUEM É A MEMÓRIA, não a inbox (review r1). O Chatwoot entrega a
+    // mesma mensagem ao bot da inbox E ao observador ligado nela, então um encalhe pode ser de
+    // qualquer uma das duas rotas, e só a linha diz qual. Lida como a do respondedor, a perda do
+    // observador era descartada toda vez que o respondedor estivesse em `test` ou desligado — em
+    // silêncio, e para sempre, porque nada revisita a linha.
+    test("a watcher's lost append is recovered under the watcher, not the inbox's responder", async () => {
+      const convId = 9114;
+      pages.set(convId, [restComposerReply(713, "Já separei o seu pedido.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 713,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      // E SOB O AGENTE DA ROTA: o append armado sob o respondedor iria para a compactação e para a
+      // contabilidade do agente errado.
+      expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
+      // E O MODO DO OBSERVADOR NÃO FOI PERGUNTADO: `monitoring` não é `production`, e uma cerca que
+      // exigisse produção aqui recusaria exatamente a rota que devia o append.
+      expect(jobs[0]?.payload.messageId).toBe(713);
+    });
+
+    // E O MODO DO OBSERVADOR NÃO É PERGUNTADO, que é o que separa a leitura certa da errada. O
+    // receptor decide a rota do observador pela LINHA dele e pergunta só o interruptor — "a
+    // row-backed observer decides this whatever its mode says" (#476 review, round 19) —, então um
+    // observador cujo agente está em `test` folheia a resposta na entrega. Lido pelo modo, o append
+    // dele nunca seria recuperado, e é exatamente nessa linha que o defeito de r1 morava.
+    test("a watcher whose own agent is in test mode still had its append owed", async () => {
+      const convId = 9118;
+      pages.set(convId, [restComposerReply(716, "Anotei o pedido dela.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 716,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+        String(quietWatcherAgentDbId),
+      );
+    });
+
+    // E O OBSERVADOR SEM RESPONDEDOR NÃO PERDEU NADA (issue #620), que é a outra metade da mesma
+    // condição: numa inbox que ninguém nosso atende não há memória de respondedor para o observador
+    // dividir, então a entrega nunca ingeriu e não há o que recuperar.
+    test("a watcher with no responder beside it has nothing to recover", async () => {
+      const convId = 9115;
+      pages.set(convId, [restComposerReply(714, "Ninguém lembra disto.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: UNANSWERED_INBOX_ID,
+        messageId: 714,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestJobs(convId)).toEqual([]);
+    });
+
+    // A ÚNICA RECUSA AQUI QUE PROTEGE CONTRA DANO ATIVO, e não contra trabalho perdido (review r1).
+    // O `/reset` limpa a memória e, dentro da mesma seção crítica, revoga todo `INGEST_MESSAGE` da
+    // thread — justamente porque um append com texto de antes reconstruiria o que o operador acabou
+    // de mandar apagar. Ele não tem como revogar ESTE job: a recuperação é de um kind próprio,
+    // armada antes do comando e rodando depois dele, e apagar a thread leva junto a dedup do append,
+    // então nada rio abaixo pegaria a duplicata.
+    test("a reply cleared by a /reset is not restored into the cleared memory", async () => {
+      const convId = 9116;
+      pages.set(convId, [restComposerReply(715, "Texto de antes do reset.")]);
+      const rowId = await seedStranded(convId, {
+        messageId: 715,
+        resetAtMessageId: 720,
+      });
+      const before = calls.length;
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestJobs(convId)).toEqual([]);
+      // E SEM IR AO CHATWOOT: numa conversa já limpa, a leitura da página é uma chamada por resposta
+      // encalhada de um episódio inteiro, e a resposta não depende de nada que só a mensagem diga.
+      expect(calls.slice(before)).toEqual([]);
+    });
+
+    // O RESET QUE CHEGA DURANTE A LEITURA, que é a única janela que a segunda pergunta enxerga. A
+    // primeira é feita antes de uma ida ao Chatwoot, e um `/reset` dentro daquela ida deixa a
+    // decisão apoiada num estado que já não existe — a memória foi limpa e os `INGEST_MESSAGE`
+    // revogados, e este append entraria depois de tudo isso.
+    test("a /reset that lands during the REST read still stops the append", async () => {
+      const convId = 9119;
+      pages.set(convId, [restComposerReply(717, "Texto que o reset alcança.")]);
+      const rowId = await seedStranded(convId, { messageId: 717 });
+      resetDuringRead.set(convId, async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: convId },
+          data: { resetAtMessageId: 719 },
+        });
+      });
+
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("not-owed");
+        expect(await ingestJobs(convId)).toEqual([]);
+      } finally {
+        resetDuringRead.delete(convId);
+      }
+    });
+
+    // E A FRONTEIRA É ORDENADA, não um interruptor: uma resposta ACIMA da marca é do episódio novo
+    // e continua sendo recuperada. Uma cerca que recusasse toda conversa já resetada alguma vez
+    // trocaria um defeito pelo outro.
+    test("a reply newer than the reset boundary is still recovered", async () => {
+      const convId = 9117;
+      pages.set(convId, [restComposerReply(730, "Texto depois do reset.")]);
+      const rowId = await seedStranded(convId, {
+        messageId: 730,
+        resetAtMessageId: 720,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect((await ingestJobs(convId))[0]?.payload.messageId).toBe(730);
     });
 
     // O QUE O JOB FAZ COM CADA DESFECHO, que é onde os vereditos e os adiamentos se separam na

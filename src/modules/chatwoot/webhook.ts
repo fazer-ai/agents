@@ -6748,18 +6748,6 @@ export async function processChatwootDelivery(
   // de memória e nunca reexecuta esta entrega, então ela não pode postar (a exposição da #725) nem
   // tirar o bot de uma conversa que já voltou a ser dele. A transição de posse já aconteceu, bem
   // acima, antes da ingestão.
-  //
-  // `humanReplyBy !== null` CARREGA PESO CONTRA O OUTRO PAPEL, e só contra ele: a ingestão da
-  // mensagem do CLIENTE falha no mesmo lugar e é a #719 quem a deixa para a varredura, algumas
-  // linhas abaixo, com a mensagem que nomeia o caso dela. Sem este termo, este lançamento chegaria
-  // primeiro e o operador leria "a resposta de um colega" sobre uma mensagem que o cliente escreveu.
-  //
-  // O que ele NÃO distingue aqui é a forma do papel, e a bateria de mutação mediu: trocado por
-  // `mayBeHumanReply` nenhum teste muda, porque `"failed"` só sai de uma ingestão que resolveu um
-  // papel — e numa outgoing esse papel é esta mesma pergunta, com o mesmo provedor. O eco, que é o
-  // único lugar em que forma e papel divergem, responde `"nothing"` e nunca chega até aqui. Fica na
-  // grafia estrita porque é ela que continua verdadeira se a ingestão passar a responder `"failed"`
-  // mais cedo; o que não se pode é chamar isto de cerca contra o eco, que é a cerca do relato acima.
   if (
     ingested === "failed" &&
     humanReplyBy !== null &&

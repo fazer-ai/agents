@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { resolveGraphThreadId } from "@/graph/checkpointer";
 import { armIngest } from "@/graph/ingest-job";
+import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ingestsContinuously } from "@/modules/agents/mode";
@@ -179,6 +180,11 @@ export async function recoverStrandedHumanReply(
         conversationId: true,
         humanReplyShape: true,
         humanReplyMessageId: true,
+        // WHICH ROUTE the delivery arrived on, so the recovery asks about the SAME agent the live
+        // path did. The takeover recovery reads `routeAgentBotId` for the neighbouring reason; here
+        // it is what separates a watcher's lost append from a responder's (review r1).
+        routeObserved: true,
+        routeAgentBotId: true,
       },
     }),
   );
@@ -200,7 +206,13 @@ export async function recoverStrandedHumanReply(
           chatwootConversationId: conversationId,
         },
       },
-      select: { id: true, inboxId: true, contactInboxId: true },
+      select: {
+        id: true,
+        inboxId: true,
+        contactInboxId: true,
+        // THE EPISODE BOUNDARY (issue #447). Read here, with everything else the decision needs.
+        resetAtMessageId: true,
+      },
     });
     if (conv?.inboxId == null) return null;
     const inbox = await db.inbox.findUnique({
@@ -208,18 +220,52 @@ export async function recoverStrandedHumanReply(
       select: { agentId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
+    // THE ROUTE'S OWN AGENT, not the inbox's (review r1). Chatwoot fans a message to the inbox's bot
+    // AND to any observer attached to it, so the delivery that stranded may have been a WATCHER's —
+    // and on a watcher's route the agent that folds the reply in is the watcher, never the inbox's
+    // responder. Reading `Inbox.agentId` here asked about the wrong agent in both directions: a
+    // watcher's lost append was discarded because the responder happens to be in `test` mode, and
+    // the append that did survive would have been armed under the responder's id.
+    //
+    // Resolved from `routeAgentBotId`, which the claim writes on every delivery, the same coordinate
+    // the takeover recovery uses to ask its ownership question. A row an older build wrote carries
+    // none, and there the inbox's responder is the answer it always was.
+    const routeAgentId =
+      row.routeAgentBotId === null
+        ? inbox.agentId
+        : ((
+            await db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootAgentBotId: row.routeAgentBotId,
+              },
+              select: { agentId: true },
+            })
+          )?.agentId ?? null);
+    if (routeAgentId === null) return null;
     const agent = await db.agent.findUnique({
-      where: { id: inbox.agentId },
+      where: { id: routeAgentId },
       select: { mode: true, enabled: true, settings: true },
     });
     if (!agent) return null;
+    // WHETHER A RESPONDER OF OURS ANSWERS THIS INBOX, which is the other half of the watcher's own
+    // condition: an observer beside a responder shares that responder's memory and folds into it; an
+    // observer with none folds nothing (issue #620). Asked of the inbox's binding, which is the same
+    // reading `routeRemembers` makes.
+    const responder = await db.agent.findUnique({
+      where: { id: inbox.agentId },
+      select: { enabled: true },
+    });
     return {
       contactInboxId: conv.contactInboxId,
-      agentId: inbox.agentId,
+      resetAtMessageId: conv.resetAtMessageId,
+      agentId: routeAgentId,
       whatsappProvider: inbox.provider,
       mode: agent.mode,
       enabled: agent.enabled,
       settings: agent.settings,
+      responderExists: responder !== null,
     };
   });
   // TWO CAUSES, and only one of them is an answer. An inbox bound to no agent owes nothing and never
@@ -256,11 +302,55 @@ export async function recoverStrandedHumanReply(
   ) {
     return "not-owed";
   }
-  // WHETHER THIS ROUTE REMEMBERS AT ALL, asked of the agent and not of the row (see the header). The
-  // receiver's own condition is `rt.enabled && ingestsContinuously(rt.mode)` for a responder, and
-  // this is that condition read now. A `test`-mode agent leaves a row byte for byte like the one a
-  // failed enqueue leaves, and the difference lives here.
-  if (!bound.enabled || !ingestsContinuously(bound.mode)) return "not-owed";
+  // WHETHER THIS ROUTE REMEMBERS AT ALL, asked of the agent and not of the row (see the header), and
+  // asked PER ROUTE because the receiver asks it per route:
+  //
+  //   `routeRemembers = rt.enabled && (observer !== null ? responderRt !== null : ingestsContinuously(rt.mode))`
+  //
+  // On a WATCHER's route the mode is deliberately not asked — the row-backed observer decides this
+  // whatever its mode says, and only its switch is asked (issue #476 review, round 19) — and what IS
+  // asked is whether a responder of ours answers the inbox at all, because that responder's thread
+  // is the memory the watcher folds into (issue #620). On the responder's own route it is the mode.
+  //
+  // Read as the responder's on both, which is what shipped in the first draft of this file, the
+  // watcher's lost append is discarded whenever the responder is in `test` mode or switched off —
+  // silently, and permanently, since nothing revisits the row (review r1).
+  //
+  // A `test`-mode responder leaves a row byte for byte like the one a failed enqueue leaves, and the
+  // difference between "owed and failed" and "never owed" lives here and nowhere else.
+  const routeRemembers =
+    bound.enabled &&
+    (row.routeObserved === true
+      ? bound.responderExists
+      : ingestsContinuously(bound.mode));
+  if (!routeRemembers) return "not-owed";
+  // THE EPISODE BOUNDARY, and this is the one refusal here that protects against ACTIVE HARM rather
+  // than against wasted work (review r1). `/reset` clears the thread and, inside the same critical
+  // section, revokes every queued `INGEST_MESSAGE` for it — precisely because an append carrying
+  // text from before the reset would rebuild the memory an operator was just told had been cleared.
+  // It cannot revoke this job: the recovery is a kind of its own, armed before the command and
+  // running after it, and deleting the thread takes the append dedup with it, so nothing downstream
+  // would catch the duplicate either. Asked with the tree's own predicate, against Chatwoot's
+  // sequence, which is the order the operator actually experienced.
+  //
+  // A VERDICT, not a deferral: the boundary never moves back (`GREATEST`), so a later attempt asks
+  // the same question and gets the same answer.
+  //
+  // AND THIS ONE IS THE CHEAP HALF, not the fence. The fence is the second reading, immediately
+  // before the arm: a `/reset` landing during the REST round trip is exactly the case this exists
+  // for, and only that reading can see it. What this buys is the round trip itself on a conversation
+  // already cleared, which on a backfill is one Chatwoot call per stranded reply of a whole episode.
+  // Stated because the mutation battery says it out loud: deleting this line alone kills no test,
+  // and a reader who takes that for "dead code" would remove the wrong one of the two.
+  if (resetLandedAfter(messageId, bound.resetAtMessageId)) {
+    logger.info(
+      "chatwoot human-reply recovery: %s names message %d on conversation %d, which a /reset has since cleared; not restoring it",
+      row.deliveryId,
+      messageId,
+      conversationId,
+    );
+    return "not-owed";
+  }
   // NO THREAD TO HOLD IT, which is the ingestion's own `"no-thread"` answer arriving by the other
   // road. The receiver already reported that case as the permanent loss it is and settled the row;
   // a recovery armed on one anyway has nothing to key a thread by.
@@ -364,6 +454,34 @@ export async function recoverStrandedHumanReply(
   });
   // An empty reply is nothing to remember, and the receiver's ingestion answers the same way.
   if (!text.trim()) return "not-owed";
+
+  // ASKED AGAIN, IMMEDIATELY BEFORE THE ARM, because the read above happened before a REST round
+  // trip and a `/reset` inside that stretch is exactly the one this fence exists for — the command
+  // revokes what is queued, and this would queue after it. It does not CLOSE the window: the reset
+  // can still land between this read and the enqueue, and what bounds that residue is the command's
+  // own critical section, which holds the thread row and refuses while an append is in flight
+  // (`threadBusyForResetOn`). Narrowing the gap from a network round trip to two statements is what
+  // is available here; claiming it is closed would be the lie.
+  const clearedSince = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
+      select: { resetAtMessageId: true },
+    }),
+  );
+  if (resetLandedAfter(messageId, clearedSince?.resetAtMessageId ?? null)) {
+    logger.info(
+      "chatwoot human-reply recovery: %s was cleared by a /reset while its message was being read back (conversation %d); not restoring it",
+      row.deliveryId,
+      conversationId,
+    );
+    return "not-owed";
+  }
 
   try {
     await armIngest({

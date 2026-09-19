@@ -192,6 +192,88 @@ export async function resolveVaultRefState<T = unknown>(
 }
 
 // Resolved vault entry including metadata needed at the call site (secret, kind, baseUrl, paramName).
+// The state of MANY refs in one query, for a projection that renders a list (issue #724).
+//
+// The per-row resolvers above are the right shape for a delivery, which handles one ref at a time.
+// A screen listing channels is the other shape: without this it either asks the vault once per row
+// or, as it did, does not ask at all and calls a channel "Signed" on the strength of the column
+// alone. Keyed by the CANONICAL ref, because that is what `readableVaultRef` publishes and what the
+// caller has in hand — `vault:0007` and `vault:7` are the same entry, and a map keyed by the stored
+// spelling would miss on the second lookup.
+//
+// ABSENCE IS THE ANSWER for everything else — a ref that does not parse, and one whose entry is gone
+// — and the map holds only the two states an existing entry can be in. A third value spelled
+// `not_found` was written first and deleted: it can only ever be reached where absence would be
+// reached anyway, so it gives one fact two names and no caller could tell them apart.
+export async function vaultRefStates(
+  db: ScopedDb,
+  refs: readonly (string | null)[],
+): Promise<Map<string, "filled" | "pending">> {
+  const byId = new Map<bigint, string>();
+  for (const ref of refs) {
+    if (ref === null) continue;
+    const id = readVaultRefId(ref);
+    if (id !== null) byId.set(id, formatVaultRef(id));
+  }
+  const out = new Map<string, "filled" | "pending">();
+  if (byId.size === 0) return out;
+  const rows = await db.vaultEntry.findMany({
+    where: { id: { in: [...byId.keys()] } },
+    select: { id: true, status: true },
+  });
+  for (const row of rows) {
+    const canonical = byId.get(row.id);
+    if (canonical === undefined) continue;
+    out.set(canonical, row.status === "pending" ? "pending" : "filled");
+  }
+  return out;
+}
+
+export interface SigningSecret {
+  secret: string | null;
+  // Null in the two cases nobody needs to hear about: it signed, or no secret was ever configured.
+  unsignedReason: string | null;
+}
+
+// WHY A REF THAT STOPPED RESOLVING IS A SENTENCE AND NOT A BOOLEAN (issue #724).
+//
+// A signing secret is a vault REFERENCE, and it can stop resolving after the subscription that names
+// it was saved and verified: the entry is deleted, or it is created and never filled. Both families
+// that sign an outbound request — the alert worker and the outbound webhook worker — then POST
+// UNSIGNED rather than hold the payload back, and that is the right call in both: a receiver that
+// does not verify keeps working, and for an ALERT not arriving is the damage itself.
+//
+// What is not right is doing it silently. `tryResolveVaultSecret` returns null for both states and
+// throws for neither, so the row was written DELIVERED with `lastError` cleared and nothing anywhere
+// separated it from a send that really was signed. On the other side a verifying receiver drops the
+// request, which is a 401 in somebody else's log and nothing at all in ours.
+//
+// So the answer carries the advice, and the advice is different per state — telling someone to fill
+// in a credential that was DELETED sends them looking for a row that is not there.
+// `resolveVaultRefState` has separated the two since it was written and had no caller in the tree
+// until this one.
+//
+// Prose, not a code: the value is read by a person, on a screen, next to the row it explains, and an
+// enum would only move the translation somewhere else, in a family where every new member would have
+// to remember to translate it. The receiver-side symptom is named too, because "unsigned" only
+// alarms someone who already knows the receiver checks.
+export async function resolveSigningSecret(
+  db: ScopedDb,
+  ref: string | null | undefined,
+): Promise<SigningSecret> {
+  if (!ref) return { secret: null, unsignedReason: null };
+  const res = await resolveVaultRefState<string>(db, ref);
+  if (res.state === "filled")
+    return { secret: res.value, unsignedReason: null };
+  return {
+    secret: null,
+    unsignedReason:
+      res.state === "not_found"
+        ? "sent UNSIGNED: the signing credential this points at is no longer in the vault, so the request went out with no signature and a receiver that verifies will reject it. Recreate the credential and point this at it, or clear the signing secret if the receiver does not check."
+        : "sent UNSIGNED: the signing credential this points at has no value yet, so the request went out with no signature and a receiver that verifies will reject it. Fill the credential in on the vault page, or clear the signing secret if the receiver does not check.",
+  };
+}
+
 export interface ResolvedVaultEntry<T = unknown> {
   secret: T;
   kind: string;

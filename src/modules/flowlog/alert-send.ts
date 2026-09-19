@@ -5,7 +5,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { redactEndpoint } from "@/modules/audit/projection";
-import { tryResolveVaultSecret } from "@/modules/vault/service";
+import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 
 // THE ONE PLACE THAT TURNS AN ALERT INTO AN HTTP REQUEST (issue #605).
@@ -116,10 +116,12 @@ export interface AlertSendResult {
   error: string | null;
   // Whether the payload went out HMAC-signed.
   signed: boolean;
-  // The channel names a signing secret and it did not resolve, so this went out unsigned. Separate
-  // from `signed` on purpose: unsigned-because-none-configured and unsigned-because-the-credential-
-  // is-gone are the same wire request and opposite operator problems.
-  secretUnresolved: boolean;
+  // Set when the channel names a signing secret and it did not resolve, so this went out unsigned:
+  // the sentence to show the operator and to store on the row (issue #724). Separate from `signed`
+  // on purpose, and a sentence rather than a flag, because unsigned-because-none-configured,
+  // unsigned-because-the-credential-was-deleted and unsigned-because-it-was-never-filled are the
+  // same wire request and three different errands.
+  unsignedReason: string | null;
   // Wall time of the request itself, null when none was made.
   durationMs: number | null;
 }
@@ -166,7 +168,7 @@ function stopped(
     status: null,
     error,
     signed: false,
-    secretUnresolved: false,
+    unsignedReason: null,
     durationMs: null,
     ...over,
   };
@@ -197,13 +199,23 @@ export async function sendAlert(
   }
 
   // Optional HMAC secret (generic webhook), resolved through a tenant-scoped read.
+  //
+  // A ref that names nothing -- deleted entry, or one created and never filled -- comes back with no
+  // secret rather than throwing, and the send goes out UNSIGNED. Holding the alert back instead
+  // would be the worse trade: the receiver that does not verify loses an incident notification over
+  // a credential problem it does not care about, and nothing downstream notices this bus going
+  // quiet. What changes with #724 is that the fact travels with the answer, per state, so the probe
+  // and the delivery row can both say which errand the operator is on.
   let secret: string | null = null;
-  if (a.secretRef && a.type === "webhook") {
+  let unsignedReason: string | null = null;
+  if (a.type === "webhook") {
     try {
       const ref = a.secretRef;
-      secret = await runScopedOn(base, ctx, (db) =>
-        tryResolveVaultSecret<string>(db, ref),
+      const resolved = await runScopedOn(base, ctx, (db) =>
+        resolveSigningSecret(db, ref),
       );
+      secret = resolved.secret;
+      unsignedReason = resolved.unsignedReason;
     } catch (err) {
       return stopped(
         "secret",
@@ -211,12 +223,6 @@ export async function sendAlert(
       );
     }
   }
-  // A ref that names nothing (deleted entry, or one still awaiting its value) comes back null rather
-  // than throwing, and the send goes out UNSIGNED. That is the behaviour this module already had and
-  // it is not this issue's to change; what the flag buys is that the probe can say so instead of
-  // reporting the same success a signed send reports.
-  const secretUnresolved =
-    Boolean(a.secretRef) && a.type === "webhook" && !secret;
 
   const { rawBody, contentType } = buildAlertBody(a);
   const ts = Math.floor(now() / 1000);
@@ -243,7 +249,7 @@ export async function sendAlert(
   } catch (err) {
     return stopped("request", `request failed: ${alertErrMsg(err, url)}`, {
       signed,
-      secretUnresolved,
+      unsignedReason,
       durationMs: now() - startedAt,
     });
   }
@@ -256,14 +262,14 @@ export async function sendAlert(
       status,
       error: null,
       signed,
-      secretUnresolved,
+      unsignedReason,
       durationMs,
     };
   }
   return stopped("response", `non-2xx response: ${status}`, {
     status,
     signed,
-    secretUnresolved,
+    unsignedReason,
     durationMs,
   });
 }

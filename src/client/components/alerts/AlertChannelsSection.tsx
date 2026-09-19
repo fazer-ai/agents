@@ -431,30 +431,34 @@ function AlertChannelModal({
   );
 }
 
-// The keys of the body this form writes: the route refuses by them, and `requireVaultRef` names
-// `secretRef`. `stages` and `minLevel` are chip rows and a Select with nowhere to render a sentence.
-// What the channel DOES, never what the column holds. Three things have to line up for a delivery to
-// carry an HMAC — the type is `webhook`, a secret is configured, and its ref names a vault entry — and
-// the list used to report only the middle one. Both other cases were reachable and both read as
-// "Signed" while the worker sent nothing: a channel switched to Discord keeps its ref (the editor
-// omits an untouched picker rather than erasing it), and a ref stored before #126 may name nothing,
-// which the read hides. `alert-worker.ts` is the authority: `if (a.secretRef && a.type === "webhook")`,
-// and inside it a ref that resolves to no row leaves `secret` null.
+// What the channel DOES, never what the column holds. This used to rebuild the worker's rule out of
+// `type` + `hasSecret` + `secretRef`, and got three of the four cases right; the server now answers
+// the whole question in one field (issue #724), because the fourth needs the VAULT and no per-row
+// projection can grow that. A well-formed ref whose entry was deleted, or created and never filled,
+// resolves to nothing in `alert-send.ts` and the alert goes out unsigned — and this line said
+// "Signed" for it, which is worse than saying nothing: it is the screen an operator checks precisely
+// when they suspect the receiver is dropping deliveries.
 //
-// The three are what a ROW can answer. A fourth case is real and this cannot see it: a well-formed
-// ref whose vault entry was deleted or is still `pending` resolves to null in that same worker, so
-// "Signed" is wrong for it too. Reading it means asking the vault rather than the row, which is a
-// different mechanism and not one a per-row projection can grow.
+// The last three read the same on the wire and differ only in the errand, so they get three
+// sentences rather than one: a vault page to visit, a credential to recreate, a value to fill in.
 function signingLabel(
-  ch: { type: string; hasSecret: boolean; secretRef: string | null },
+  ch: { signingState: string },
   t: (k: string, d: string) => string,
 ): string {
-  if (!ch.hasSecret) return "";
-  if (ch.type !== "webhook")
-    return ` · ${t("alerts.signedIgnored", "Signing secret ignored on this channel type")}`;
-  if (ch.secretRef === null)
-    return ` · ${t("alerts.signedUnavailable", "Signing secret set, but its credential is not in the vault: deliveries go unsigned")}`;
-  return ` · ${t("alerts.signed", "Signed")}`;
+  switch (ch.signingState) {
+    case "signed":
+      return ` · ${t("alerts.signed", "Signed")}`;
+    case "ignored":
+      return ` · ${t("alerts.signedIgnored", "Signing secret ignored on this channel type")}`;
+    case "unreadable":
+      return ` · ${t("alerts.signedUnavailable", "Signing secret set, but its credential is not in the vault: deliveries go unsigned")}`;
+    case "missing":
+      return ` · ${t("alerts.signedDeleted", "Signing credential was deleted: deliveries go unsigned")}`;
+    case "pending":
+      return ` · ${t("alerts.signedPending", "Signing credential has no value yet: deliveries go unsigned")}`;
+    default:
+      return "";
+  }
 }
 
 const ALERT_FIELDS = ["name", "type", "url"] as const;

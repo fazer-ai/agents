@@ -52,6 +52,7 @@ function channel(over: Record<string, unknown> = {}) {
     stages: [],
     hasSecret: true,
     secretRef: "vault:7",
+    signingState: "signed",
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
     ...over,
@@ -176,27 +177,57 @@ describe("AlertChannelsSection", () => {
     return (document.body.textContent ?? "").toString();
   };
 
-  test("a webhook with a resolvable ref is the only thing called Signed", async () => {
+  // The rule itself moved to the server with issue #724: three of its four cases can be read off the
+  // row, the fourth needs the vault, and a client rebuilding it from `type` + `hasSecret` +
+  // `secretRef` could only ever get three right. What is left to check here is that every state the
+  // projection can send renders as its own sentence — a state the switch does not know falls through
+  // to the empty string, which is silence exactly where the operator is looking for an answer.
+  test("only a resolvable ref on a webhook is called Signed", async () => {
     const text = await listShows({});
     expect(text.includes("Signed")).toBe(true);
-    expect(text.includes("not in the vault")).toBe(false);
+    expect(text.includes("unsigned")).toBe(false);
     expect(text.includes("ignored on this channel type")).toBe(false);
   });
 
   test("a Discord channel holding a stranded ref is not called Signed", async () => {
-    const text = await listShows({ type: "discord" });
+    const text = await listShows({ type: "discord", signingState: "ignored" });
     expect(text.includes("ignored on this channel type")).toBe(true);
     expect(/·\s*Signed\b/.test(text)).toBe(false);
   });
 
-  test("a configured secret that names no credential is not called Signed", async () => {
-    const text = await listShows({ secretRef: null, hasSecret: true });
+  test("a stored value that names no credential is not called Signed", async () => {
+    const text = await listShows({
+      secretRef: null,
+      hasSecret: true,
+      signingState: "unreadable",
+    });
+    expect(text.includes("not in the vault")).toBe(true);
     expect(text.includes("deliveries go unsigned")).toBe(true);
     expect(/·\s*Signed\b/.test(text)).toBe(false);
   });
 
+  // The two the screen could not see before, and they are separate lines because they are separate
+  // errands: recreate a credential that is gone, or fill in one that is empty.
+  test("a deleted credential says so, and says it was deleted", async () => {
+    const text = await listShows({ signingState: "missing" });
+    expect(text.includes("was deleted")).toBe(true);
+    expect(text.includes("deliveries go unsigned")).toBe(true);
+    expect(/·\s*Signed\b/.test(text)).toBe(false);
+  });
+
+  test("a credential with no value yet says that instead", async () => {
+    const text = await listShows({ signingState: "pending" });
+    expect(text.includes("no value yet")).toBe(true);
+    expect(text.includes("was deleted")).toBe(false);
+    expect(/·\s*Signed\b/.test(text)).toBe(false);
+  });
+
   test("and a channel with no secret says nothing about signing", async () => {
-    const text = await listShows({ secretRef: null, hasSecret: false });
+    const text = await listShows({
+      secretRef: null,
+      hasSecret: false,
+      signingState: "none",
+    });
     expect(text.includes("Signed")).toBe(false);
     expect(text.includes("unsigned")).toBe(false);
   });

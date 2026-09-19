@@ -162,9 +162,14 @@ async function claimDue(
   );
 }
 
+// `unsignedReason` rides along on EVERY terminal write, including this one, because it describes the
+// attempt and not its outcome (issue #724). The delivered row is the one that needed it most: it is
+// the one nothing else marks, and a 2xx from a receiver that does not verify signatures looks
+// exactly like a 2xx from one that does and just rejected the next alert.
 async function finalizeDelivered(
   base: PrismaClient,
   a: ClaimedAlert,
+  unsignedReason: string | null,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(a.tenantId), (db) =>
     db.alertDelivery.update({
@@ -175,6 +180,7 @@ async function finalizeDelivered(
         attempts: a.attempts + 1,
         nextAttemptAt: null,
         lastError: null,
+        unsignedReason,
       },
     }),
   );
@@ -194,11 +200,12 @@ async function finalizeDead(
   a: ClaimedAlert,
   attempts: number,
   error: string,
+  unsignedReason: string | null,
 ): Promise<Outcome> {
   await runScopedOn(base, sysCtx(a.tenantId), (db) =>
     db.alertDelivery.update({
       where: { id: a.id },
-      data: { status: "DEAD", attempts, lastError: error },
+      data: { status: "DEAD", attempts, lastError: error, unsignedReason },
     }),
   );
   // NOTE: fire-and-forget, and AFTER the write — the row is the fact, the line is the notification,
@@ -231,10 +238,11 @@ async function finalizeFailure(
   a: ClaimedAlert,
   error: string,
   now: () => number,
+  unsignedReason: string | null,
 ): Promise<Outcome> {
   const attemptsAfter = a.attempts + 1;
   if (attemptsAfter >= MAX_ATTEMPTS) {
-    return finalizeDead(base, a, attemptsAfter, error);
+    return finalizeDead(base, a, attemptsAfter, error, unsignedReason);
   }
   const nextAttemptAt = new Date(now() + nextBackoffMs(attemptsAfter));
   await runScopedOn(base, sysCtx(a.tenantId), (db) =>
@@ -245,6 +253,7 @@ async function finalizeFailure(
         attempts: attemptsAfter,
         nextAttemptAt,
         lastError: error,
+        unsignedReason,
       },
     }),
   );
@@ -269,7 +278,7 @@ async function deliverClaimed(
     },
   );
   if (res.ok) {
-    await finalizeDelivered(base, a);
+    await finalizeDelivered(base, a, res.unsignedReason);
     return "delivered";
   }
   // A URL that cannot be decrypted or is not allowed to be reached is permanent: no amount of
@@ -277,9 +286,9 @@ async function deliverClaimed(
   // DEAD (which is also what writes the flow-log line about the alert that never arrived).
   const error = res.error ?? "delivery failed";
   if (res.stoppedAt === "url") {
-    return finalizeDead(base, a, a.attempts + 1, error);
+    return finalizeDead(base, a, a.attempts + 1, error, res.unsignedReason);
   }
-  return finalizeFailure(base, a, error, now);
+  return finalizeFailure(base, a, error, now, res.unsignedReason);
 }
 
 export async function processAlertBatch(

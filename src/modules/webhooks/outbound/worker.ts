@@ -6,7 +6,7 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitDeliveryDead } from "@/modules/flowlog/webhook";
-import { tryResolveVaultSecret } from "@/modules/vault/service";
+import { resolveSigningSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "./service";
 import { outboundHeaders } from "./signing";
 
@@ -164,9 +164,15 @@ async function claimDueDeliveries(
   );
 }
 
+// `unsignedReason` rides along on EVERY terminal write, including this one, because it describes the
+// attempt and not its outcome (issue #724). The delivered row is the one that needed it most: it is
+// the one nothing else marks, and the receiver rejecting an unsigned POST does it in ITS log, not
+// ours, so without this column the ledger shows a clean 2xx history against a subscription whose
+// deliveries are being thrown away on arrival.
 async function finalizeDelivered(
   base: PrismaClient,
   d: ClaimedDelivery,
+  unsignedReason: string | null,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(d.tenantId), (db) =>
     db.outboundWebhookDelivery.update({
@@ -177,6 +183,7 @@ async function finalizeDelivered(
         attempts: d.attempts + 1,
         nextAttemptAt: null,
         lastError: null,
+        unsignedReason,
       },
     }),
   );
@@ -192,11 +199,12 @@ async function finalizeDead(
   d: ClaimedDelivery,
   attempts: number,
   error: string,
+  unsignedReason: string | null,
 ): Promise<DeliveryOutcome> {
   await runScopedOn(base, sysCtx(d.tenantId), (db) =>
     db.outboundWebhookDelivery.update({
       where: { id: d.id },
-      data: { status: "DEAD", attempts, lastError: error },
+      data: { status: "DEAD", attempts, lastError: error, unsignedReason },
     }),
   );
   // Fire-and-forget, and AFTER the write: the row is the fact, the line is the notification, and a
@@ -220,10 +228,11 @@ async function finalizeFailure(
   d: ClaimedDelivery,
   error: string,
   now: () => number,
+  unsignedReason: string | null,
 ): Promise<DeliveryOutcome> {
   const attemptsAfter = d.attempts + 1;
   if (attemptsAfter >= MAX_ATTEMPTS)
-    return finalizeDead(base, d, attemptsAfter, error);
+    return finalizeDead(base, d, attemptsAfter, error, unsignedReason);
   const nextAttemptAt = new Date(now() + nextBackoffMs(attemptsAfter));
   await runScopedOn(base, sysCtx(d.tenantId), (db) =>
     db.outboundWebhookDelivery.update({
@@ -233,6 +242,7 @@ async function finalizeFailure(
         attempts: attemptsAfter,
         nextAttemptAt,
         lastError: error,
+        unsignedReason,
       },
     }),
   );
@@ -253,27 +263,35 @@ async function deliverClaimed(
   try {
     await assertSafe(d.url);
   } catch (err) {
-    return finalizeDead(base, d, d.attempts + 1, errMsg(err));
+    return finalizeDead(base, d, d.attempts + 1, errMsg(err), null);
   }
 
   // Per-tenant signing secret, resolved through a tenant-scoped read (RLS active, not the
-  // cross-tenant bypass) — least privilege. A missing/failed secret is transient (the
-  // operator may add it), so it falls through to retry/backoff.
+  // cross-tenant bypass) — least privilege. A read that THROWS is transient (the vault is down, the
+  // decryption key rotated mid-flight), so it falls through to retry/backoff.
+  //
+  // A ref that simply does not resolve is a different thing and was the silent one (issue #724): it
+  // comes back with no secret, the POST goes out UNSIGNED, and the row was written DELIVERED with
+  // `lastError` cleared. The send is kept — a receiver that does not verify keeps working, and this
+  // path has always behaved this way — but the sentence now travels to the row, per state, because a
+  // deleted credential and one that was never filled send the operator to different pages. The old
+  // comment here said a missing secret "falls through to retry/backoff"; it never did.
   let secret: string | null = null;
-  if (d.secretRef) {
-    try {
-      const ref = d.secretRef;
-      secret = await runScopedOn(base, sysCtx(d.tenantId), (db) =>
-        tryResolveVaultSecret<string>(db, ref),
-      );
-    } catch (err) {
-      return finalizeFailure(
-        base,
-        d,
-        `secret resolution failed: ${errMsg(err)}`,
-        now,
-      );
-    }
+  let unsignedReason: string | null = null;
+  try {
+    const resolved = await runScopedOn(base, sysCtx(d.tenantId), (db) =>
+      resolveSigningSecret(db, d.secretRef),
+    );
+    secret = resolved.secret;
+    unsignedReason = resolved.unsignedReason;
+  } catch (err) {
+    return finalizeFailure(
+      base,
+      d,
+      `secret resolution failed: ${errMsg(err)}`,
+      now,
+      null,
+    );
   }
 
   const ts = Math.floor(now() / 1000);
@@ -300,14 +318,26 @@ async function deliverClaimed(
     });
     status = res.status;
   } catch (err) {
-    return finalizeFailure(base, d, `request failed: ${errMsg(err)}`, now);
+    return finalizeFailure(
+      base,
+      d,
+      `request failed: ${errMsg(err)}`,
+      now,
+      unsignedReason,
+    );
   }
 
   if (status >= 200 && status < 300) {
-    await finalizeDelivered(base, d);
+    await finalizeDelivered(base, d, unsignedReason);
     return "delivered";
   }
-  return finalizeFailure(base, d, `non-2xx response: ${status}`, now);
+  return finalizeFailure(
+    base,
+    d,
+    `non-2xx response: ${status}`,
+    now,
+    unsignedReason,
+  );
 }
 
 export async function processOutboundBatch(

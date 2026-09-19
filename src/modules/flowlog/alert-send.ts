@@ -40,22 +40,40 @@ const MAX_ERROR_LEN = 500;
 // certificate verification error", "The operation timed out."). A host is what `redactEndpoint`
 // keeps, so the advice the operator needs survives the redaction.
 //
-// The pattern requires a scheme on purpose. A bare host in a DNS failure is not matched and stays
-// readable, which is the difference between telling someone their hostname does not resolve and
-// telling them "…".
-const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi;
+// TWO PASSES, AND THE FIRST ONE IS THE ONE THAT HAS TO BE RIGHT (review round 3).
+//
+// The exact destination is KNOWN here — it was just decrypted — so it is replaced by literal string
+// match, which cannot be defeated by what a URL happens to contain. A regex alone can: the first
+// version of this stopped at `]`, so `https://[2606:4700::1111]/hooks/private-token` matched only up
+// to the bracket, failed to parse, collapsed to "…" and left `]/hooks/private-token` standing. The
+// same hole opens on any path character the class excludes. Guessing where a URL ENDS is the wrong
+// job to give the thing guarding a token.
+//
+// The regex is the backstop, for URLs this function does not know: a redirect TARGET the destination
+// chose, or a second URL some future error text quotes. It now stops only at whitespace and quotes,
+// and over-matching is harmless because every match is replaced by `scheme://host/…` regardless —
+// trailing punctuation swept in with it is dropped by the same rewrite.
+//
+// It requires a scheme on purpose. A bare host in a DNS failure is not matched and stays readable,
+// which is the difference between telling someone their hostname does not resolve and telling them
+// "…".
+const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"']+/gi;
 
-function maskUrlsIn(text: string): string {
-  return text.replace(URL_IN_TEXT, (u) => redactEndpoint(u));
+function maskUrlsIn(text: string, known?: string): string {
+  const withoutKnown =
+    known && known.length > 0
+      ? text.split(known).join(redactEndpoint(known))
+      : text;
+  return withoutKnown.replace(URL_IN_TEXT, (u) => redactEndpoint(u));
 }
 
 // `sanitizeErrorMessage` rather than a bare cut: this string is stored in `last_error`, and the
 // exceptions a delivery produces wrap what the remote endpoint answered. See issue #243 and the
 // function's own header for why a NUL or an orphan surrogate costs the whole write. The masking runs
 // FIRST, so the 500-character cut cannot leave half a token behind by truncating mid-URL.
-export function alertErrMsg(err: unknown): string {
+export function alertErrMsg(err: unknown, url?: string): string {
   return sanitizeErrorMessage(
-    maskUrlsIn(err instanceof Error ? err.message : String(err)),
+    maskUrlsIn(err instanceof Error ? err.message : String(err), url),
     MAX_ERROR_LEN,
   );
 }
@@ -187,7 +205,10 @@ export async function sendAlert(
         tryResolveVaultSecret<string>(db, ref),
       );
     } catch (err) {
-      return stopped("secret", `secret resolution failed: ${alertErrMsg(err)}`);
+      return stopped(
+        "secret",
+        `secret resolution failed: ${alertErrMsg(err, url)}`,
+      );
     }
   }
   // A ref that names nothing (deleted entry, or one still awaiting its value) comes back null rather
@@ -220,7 +241,7 @@ export async function sendAlert(
     });
     status = res.status;
   } catch (err) {
-    return stopped("request", `request failed: ${alertErrMsg(err)}`, {
+    return stopped("request", `request failed: ${alertErrMsg(err, url)}`, {
       signed,
       secretUnresolved,
       durationMs: now() - startedAt,

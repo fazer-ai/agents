@@ -387,6 +387,50 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     expect(res.error ?? "").toContain("UnexpectedRedirect");
   });
 
+  test("an IPv6 destination's path is masked too, brackets and all", async () => {
+    // REVIEW ROUND 3. The first masking was a regex alone, and it stopped at `]`: an IPv6 literal
+    // matched only up to the bracket, failed to parse, collapsed to "…" and left the whole
+    // token-bearing path standing next to it. The destination is KNOWN here — it was just decrypted
+    // — so it is replaced by literal string match, which no URL spelling can defeat. The regex stays
+    // as the backstop for a URL this code does not know, such as a redirect target.
+    const url = "https://[2606:4700::1111]/hooks/PRIVATETOKENv6";
+    const id = await seed("v6", { url });
+    const { fetchImpl } = receiver(() => {
+      throw new Error(`UnexpectedRedirect fetching "${url}".`);
+    });
+
+    const res = await sendAlertChannelTest(ctx(), id, appDb, {
+      fetchImpl,
+      // The SSRF guard is stubbed here: the subject is the masking, and that address would not be
+      // reachable anyway.
+      assertSafe: allowAll,
+    });
+
+    const body = JSON.stringify(res);
+    expect(body).not.toContain("PRIVATETOKENv6");
+    expect(body).not.toContain("/hooks/");
+    expect(res.error ?? "").toContain("[2606:4700::1111]/…");
+  });
+
+  test("a path holding punctuation the regex would stop at is masked whole", async () => {
+    // The other half of the same hole, and the reason guessing where a URL ENDS is the wrong job to
+    // give the thing guarding a token: a path containing `)` or `'` used to end the match there and
+    // hand the remainder back in the clear.
+    const url = outboundUrl("/hooks/tok)en'SUFFIXSECRET");
+    const id = await seed("punct", { url });
+    const { fetchImpl } = receiver(() => {
+      throw new Error(`UnexpectedRedirect fetching "${url}".`);
+    });
+
+    const res = await sendAlertChannelTest(ctx(), id, appDb, {
+      fetchImpl,
+      assertSafe: allowAll,
+    });
+
+    expect(JSON.stringify(res)).not.toContain("SUFFIXSECRET");
+    expect(res.error ?? "").toContain("203.0.113.10/…");
+  });
+
   test("a host that does not resolve is still readable after the masking", async () => {
     // The other side of the same edit, and the reason the pattern demands a scheme: a DNS failure
     // names a bare host, which is the whole advice the message carries and is already visible in the

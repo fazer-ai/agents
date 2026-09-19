@@ -2268,7 +2268,19 @@ async function ingestUnhandledMessage(args: {
   // channel erases anything written beside it — and an ack we must return in under five seconds is
   // no place to wait for one (issue #194, ../../graph/ingest-job.ts). What the webhook still owns is
   // the RENDERING above: it reads the eager media pass, which the job cannot re-derive later.
-  const attempts = args.retryArm ? INGEST_ARM_ATTEMPTS : 1;
+  // ...E A RESPOSTA DE UM COLEGA É SEMPRE A ÚLTIMA CHANCE (issue #720), qualquer que seja a rota. O
+  // `retryArm` do chamador nomeia os casos em que uma mensagem DO CLIENTE não vai ser coberta por
+  // turno nenhum — sob observador, numa transcrição tardia, na parada do `/teste` — porque lá isso
+  // depende da rota. Aqui não depende: o bot não escreveu esta mensagem, então turno nenhum a lê, e
+  // é a mesma frase que justifica cada um daqueles três. Perguntado pelo PAPEL e não repetindo o
+  // predicado no chamador: duas grafias da mesma cláusula é como uma delas some.
+  //
+  // O que isto compra é o scheduler que pisca: com uma tentativa só, um segundo de indisponibilidade
+  // custava a metade da conversa em que o negócio foi fechado (#187), e a rota comum era justamente
+  // a que não tinha retry. O que NÃO compra é recuperação: esgotadas as tentativas a mensagem se
+  // perde, e o relato lá embaixo é o que sobra.
+  const attempts =
+    args.retryArm || role === "human_agent" ? INGEST_ARM_ATTEMPTS : 1;
   const sleep =
     args.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -6634,9 +6646,32 @@ export async function processChatwootDelivery(
     // delivery's work below. A switched-off observer stays silent: the message waits for its switch.
     params.onIngest?.("no-reader");
   }
-  // A COLLEAGUE'S REPLY the observer could not remember, its retries spent (round 24). There is no
-  // recovery to leave the row for — the sweep cannot rebuild an outgoing body — so the loss is
-  // reported where an operator reads: an error line on the conversation, not a process warning.
+  // A COLLEAGUE'S REPLY nobody could remember, its retries spent (round 24). There is no recovery to
+  // leave the row for — no replay rebuilds an outgoing body today — so the loss is reported where an
+  // operator reads: an error line on the conversation, not a process warning.
+  //
+  // ON EVERY ROUTE, and not only a watcher's (issue #720). The report was gated on
+  // `(observing || handedToObserver)`, which is the route that INSPIRED it and not the route that
+  // needs it: an observer is the rarer deployment by far, and on the ordinary one — the agent
+  // qualifies the lead, a person takes over and closes the sale (#187) — the same reply vanished from
+  // memory with nothing said anywhere. The gate was measured, not argued: with the enqueue refused on
+  // a conversation a person owns, the delivery returned no error, the row settled PROCESSED, memory
+  // held nothing and `execution_logs` was empty.
+  //
+  // `mayBeHumanReply` IS WHAT REPLACES IT, and it is exact although its name hedges: the hedge is
+  // about the `device` leg being an echo of our own reply, and an echo never reaches here — the
+  // ingestion answers `"nothing"` for it (no role), never `"failed"`. Being disjoint from a
+  // customer's message is what keeps the customer's own failed ingestion (#719, #725) out of a report
+  // that names a colleague. `!observerHolds` left with the gate, already dead here rather than
+  // load-bearing: it requires `isNewIncoming`, and an outgoing reply never is.
+  //
+  // THE LEVEL STAYS `error`, AND THAT IS A DECISION rather than what fell out of removing an `&&`:
+  // `writeFlowEvent` dispatches an alert for `warn` and `error` on an `inbox` source, so until now
+  // only a deployment with an observer could be paged by this line and from here any deployment
+  // where a person answers can. Kept at `error` for what the line is about on this route — retries
+  // spent, no replay to rebuild the body, the words gone for good — since a `warn` would file the
+  // permanent loss of the business half of an attendance (#187) below the threshold an operator
+  // reads, which is the silence this report exists to remove. The widening is the point.
   //
   // "no-thread" IS THE SAME LOSS BY A DIFFERENT ROUTE (issue #476 review, round 37), and it is the
   // permanent one: a conversation whose contact-inbox neither the payload nor the mirror names has
@@ -6647,15 +6682,14 @@ export async function processChatwootDelivery(
   // reason names which of the two happened.
   if (
     (ingested === "failed" || ingested === "no-thread") &&
-    (observing || handedToObserver) &&
-    !observerHolds &&
+    mayBeHumanReply &&
     rt !== null &&
     mirror.conversationRowId !== null
   ) {
     logger.error(
       ingested === "failed"
-        ? "chatwoot: a colleague's reply could not be remembered by the observer (conv=%s): the ingest job was not queued"
-        : "chatwoot: a colleague's reply could not be remembered by the observer (conv=%s): the conversation names no contact-inbox thread to hold it",
+        ? "chatwoot: a colleague's reply could not be remembered (conv=%s): the ingest job was not queued"
+        : "chatwoot: a colleague's reply could not be remembered (conv=%s): the conversation names no contact-inbox thread to hold it",
       convLabel,
     );
     emitFlowEvent(

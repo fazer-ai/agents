@@ -6,6 +6,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import { ingestDedupeKey } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
 import { runScopedOn } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
@@ -237,6 +238,54 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
   }
 
+  // "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" É UMA PERGUNTA SOBRE UMA LINHA (issue #723).
+  //
+  // Dezessete asserções deste arquivo faziam essa afirmação comparando o TAMANHO da população de
+  // `INGEST_MESSAGE` do tenant, antes e depois. A população não é estável, e não por sujeira de
+  // teste: a linha é apagada ao concluir (`JOB_DELETE_ON_DONE.INGEST_MESSAGE`, cujo comentário em
+  // scheduler/lanes.ts diz que essa é a exceção justamente porque a chave nomeia UMA mensagem), e
+  // `drainPendingIngest` drena as pendentes de uma thread a partir de três lugares do produto.
+  //
+  // O delta custava os dois lados. Vermelho mal atribuído: qualquer remoção por perto fazia a falha
+  // ler como "a marca de posse humana está enfileirando ingestão", que é o defeito para o qual o
+  // teste foi escrito. E verde que não prova nada, que é o caro e só apareceu quando o holdout foi
+  // medido: uma troca 1-por-1 deixa a população igual, e o arquivo passou 38/0 com a linha da
+  // própria mensagem plantada na tabela. Melhorar a mensagem de erro não tocaria nesse segundo.
+  //
+  // A chave é a identidade: thread MAIS mensagem. Só a mensagem não serve — a mesma mensagem em
+  // outra thread é outro fato, e é o que `tests/modules/ingest-armed-for-this-message.test.ts` fixa.
+  function threadOf(convId: number) {
+    return contactInboxThreadId(tenantId, instanceId, 81_000 + convId);
+  }
+
+  async function ingestArmedFor(graphThreadId: string, messageId: number) {
+    return (
+      (await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: ingestDedupeKey(graphThreadId, messageId),
+        },
+      })) > 0
+    );
+  }
+
+  // Para o único recorte em que nomear a thread seria errado: o teste cuja AFIRMAÇÃO é que não há
+  // thread nenhuma para a mensagem. Ali a pergunta certa é "nada, em thread alguma, foi armado para
+  // esta mensagem", e o sufixo da chave é o que a exprime. `messageSeq` é único no arquivo, então
+  // dentro deste tenant o sufixo nomeia uma mensagem só.
+  async function ingestArmedAnywhereFor(messageId: number) {
+    return (
+      (await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: { endsWith: `:${messageId}` },
+        },
+      })) > 0
+    );
+  }
+
   async function jobs(kind: "DEBOUNCE" | "INGEST_MESSAGE") {
     return suDb.schedulerJob.findMany({
       where: { tenantId, kind },
@@ -405,7 +454,13 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
 
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(1);
+    expect(
+      await ingestArmedFor(threadOf(1), messageId),
+      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
+        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
+        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
+        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+    ).toBe(true);
     const conv = await row(1);
     expect(conv?.lastHandledMessageId).toBe(messageId);
     const ledger = await suDb.chatwootWebhookDelivery.findUnique({
@@ -422,7 +477,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
 
   test("a message on a conversation a human holds: remembered too, and no trail line", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const { messageId } = await deliver(2, {
       assigneeType: "User",
       status: "open",
@@ -430,7 +484,13 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
 
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect(
+      await ingestArmedFor(threadOf(2), messageId),
+      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
+        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
+        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
+        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+    ).toBe(true);
     const conv = await row(2);
     expect(conv?.lastHandledMessageId).toBe(messageId);
     // The closed-gate trail is about a bot that would have answered; a watcher leaves none.
@@ -443,7 +503,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
 
   test("a payload that names no inbox reaches the agent through the mirrored conversation, and is still watched", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     // Conversation 1 was mirrored with its inbox by the first case; this message says nothing.
     const { messageId } = await deliver(
       1,
@@ -454,7 +513,13 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
 
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect(
+      await ingestArmedFor(threadOf(1), messageId),
+      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
+        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
+        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
+        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+    ).toBe(true);
     expect((await row(1))?.lastHandledMessageId).toBe(messageId);
   });
 
@@ -483,7 +548,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // answers, and a sibling delivery of it still being worked stays in the sweep's worklist
     // instead of being settled as consumed.
     requests.length = 0;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const sibling = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -505,7 +569,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     );
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(threadOf(17), messageId)).toBe(false);
     const conv = await row(17);
     expect(conv).not.toBeNull();
     expect(conv?.lastHandledMessageId ?? null).not.toBe(messageId);
@@ -527,7 +591,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // moves the watermark past it. So the delivery fails instead, and its row stays PROCESSING for
     // the sweep's recovery to re-run.
     requests.length = 0;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const failing = appDb.$extends({
       query: {
         schedulerJob: {
@@ -557,7 +620,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     ).rejects.toThrow("could not be armed");
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(threadOf(18), messageId)).toBe(false);
     expect((await row(18))?.lastHandledMessageId ?? null).not.toBe(messageId);
     const ledger = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
       where: { tenantId, deliveryId },
@@ -577,7 +640,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // bloco do observador tem a regra da marca de um agente desligado, que a parada de posse não
     // tem. Sem esta asserção, remover o `!observerHolds` da parada de posse passa despercebido.
     requests.length = 0;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const messageId = messageSeq + 1;
     const deliveryId = `mon-${process.pid}-${deliverySeq + 1}`;
     await expect(
@@ -591,7 +653,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       ),
     ).rejects.toThrow("the observer's ingestion could not be armed");
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(threadOf(19), messageId)).toBe(false);
     expect((await row(19))?.lastHandledMessageId ?? null).not.toBe(messageId);
     const ledger = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
       where: { tenantId, deliveryId },
@@ -618,7 +680,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       },
     });
     const convId = 38;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     deliverySeq += 1;
     messageSeq += 1;
     const messageId = messageSeq;
@@ -696,7 +757,13 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA. É aqui que a tentativa revertida falhava: sem isto,
     // o cliente escreveu e nenhum lugar do sistema guarda o que ele disse.
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
+    expect(
+      await ingestArmedFor(graphThreadId, messageId),
+      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
+        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
+        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
+        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+    ).toBe(true);
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
     // E SÓ ENTÃO A MARCA PASSA, que é a ordem inteira desta parada (review r10). Enquanto nada tinha
     // lido a mensagem, uma marca acima dela seria a mensagem perdida; com a ingestão tendo
@@ -721,7 +788,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { mode: "production", settings: { debounce: { enabled: false } } },
     });
     const convId = 39;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     // O ENFILEIRAMENTO É RETENTADO, e isso é uma decisão e não um detalhe: com uma tentativa só, um
     // blip do scheduler manda a entrega para a varredura e o cliente espera trinta minutos por uma
     // mensagem que uma segunda tentativa teria salvo na hora. É a mesma razão pela qual o observador
@@ -797,7 +863,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     await expect(run).rejects.toThrow("could not be armed");
     expect(sent).toEqual([]);
     expect(seen.outcome).toBe("taken-over-unread");
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
     // Uma tentativa só faz duas operações no scheduler, quatro fazem cinco: o que se mede aqui é o
     // RETRY, e sem ele este número cai para 2.
     expect(tentativas.attempts).toBe(5);
@@ -831,7 +897,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { mode: "production", settings: { debounce: { enabled: false } } },
     });
     const convId = 45;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const leituras = { inbox: 0 };
     // A rota lê o inbox uma vez, e é essa leitura que responde "sem agente". O contador é o que
     // impede o teste de passar à toa: se a leitura deixar de acontecer, o zero reprova.
@@ -922,7 +987,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // ...e a leitura da rota aconteceu de verdade.
     expect(leituras.inbox).toBeGreaterThan(0);
     // Ingestão nenhuma correu — é essa a premissa do caso, não o efeito a consertar.
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
     // O QUE ESTE TESTE GUARDA: a marca não passa por cima da mensagem, e a linha continua
     // recuperável. PROCESSED com a marca avançada era a mensagem perdida.
     expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
@@ -949,7 +1014,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { mode: "production", settings: { debounce: { enabled: false } } },
     });
     const convId = 46;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const leituras = { falhas: 0 };
     // A leitura do contact-inbox do RECEPTOR falha; a do runtime, que tem outro `select`, não é
     // tocada — é exatamente o desacordo que produz `"no-thread"` aqui.
@@ -1074,7 +1138,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(sent).toEqual([]);
     // A leitura armada aconteceu: sem isto o teste passaria com a ingestão funcionando normalmente.
     expect(leituras.falhas).toBeGreaterThan(0);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
     // A marca não passa por cima da mensagem...
     expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
       messageId,
@@ -1096,7 +1160,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { mode: "production", settings: { debounce: { enabled: false } } },
     });
     const convId = 47;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     deliverySeq += 1;
     messageSeq += 1;
     const messageId = messageSeq;
@@ -1170,7 +1233,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // parada precise tratar.
     expect(seen.outcome).toBe("skipped");
     expect(sent).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
   }, 20_000);
 
   // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a
@@ -1191,7 +1254,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { mode: "production", settings: { debounce: { enabled: false } } },
     });
     const convId = 41;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     deliverySeq += 1;
     messageSeq += 1;
     const messageId = messageSeq;
@@ -1276,7 +1338,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // para a transcrição que vem no `message_updated`.
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
   }, 20_000);
 
   // E COM UMA LEGENDA OU UM ASSUNTO O PORTÃO CONTINUA NÃO ATUANDO (issue #688, review r8). A
@@ -1302,7 +1364,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
         },
       ],
     ] as const) {
-      const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
       deliverySeq += 1;
       messageSeq += 1;
       const messageId = messageSeq;
@@ -1380,7 +1441,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       // E o dedup do thread fica livre para a transcrição que vem no `message_updated`.
       const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
       expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+      expect(await ingestArmedFor(graphThreadId, messageId)).toBe(false);
     }
   }, 30_000);
 
@@ -1503,7 +1564,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
         testActivatedAt: new Date(Date.now() - 30_000),
       },
     });
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     deliverySeq += 1;
     messageSeq += 1;
     const messageId = messageSeq;
@@ -1576,7 +1636,13 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(seen.outcome).toBe("taken-over-unread");
     // A mensagem do cliente entra na memória APESAR de o modo não ingerir continuamente.
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
-    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
+    expect(
+      await ingestArmedFor(graphThreadId, messageId),
+      "a ingestão desta mensagem não está na tabela. Ela É armada aqui, então o vermelho é real se o " +
+        "conserto parou de armá-la; mas esta é a única forma que sobrou capaz de ficar vermelha por " +
+        "interferência (issue #723), porque a linha específica pode ter sido removida por fora. " +
+        "Confira se algo removeu `INGEST_MESSAGE` deste tenant antes de suspeitar da feature.",
+    ).toBe(true);
     expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
     // E a marca passa, como no caminho de produção: a ingestão guardou, então dizer isso é a
     // última escrita da parada (review r10).
@@ -1953,7 +2019,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // once the retries are spent the loss is an error line on the conversation, not a process
     // warning (review round 24). The delivery itself completes: no recovery to leave the row for.
     requests.length = 0;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     const counter = { attempts: 0 };
     deliverySeq += 1;
     messageSeq += 1;
@@ -1991,7 +2056,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     expect(outcome).toBe("processed");
     expect(counter.attempts).toBe(4);
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    expect(await ingestArmedFor(threadOf(26), messageId)).toBe(false);
     expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
     const conv = await row(26);
     const lines = await flowLogRows(suDb, {
@@ -2008,9 +2073,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   // memory and no line anywhere, because the mark block is inbound-only and never sees this.
   test("a colleague's reply with no memory thread is reported, not settled in silence", async () => {
     requests.length = 0;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     deliverySeq += 1;
     messageSeq += 1;
+    const messageId = messageSeq;
     const convId = 27;
     const conv = conversation(convId, {
       assigneeType: "User",
@@ -2050,7 +2115,9 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       }),
     ).toBe("processed");
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // A afirmação deste teste é que NÃO existe thread para a mensagem, então a asserção não pode
+    // nomear uma: ela pergunta se algo, em thread alguma, foi armado para ela.
+    expect(await ingestArmedAnywhereFor(messageId)).toBe(false);
     const convRow = await row(convId);
     const lines = await flowLogRows(suDb, {
       where: { tenantId, stage: "memory", conversationId: convRow?.id },
@@ -2756,7 +2823,6 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       data: { enabled: false, mode: "monitoring" },
     });
     requests.length = 0;
-    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
     try {
       const { messageId } = await deliver(11, {
         assigneeType: null,
@@ -2764,7 +2830,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       });
       expect(customerFacing()).toEqual([]);
       expect(await jobs("DEBOUNCE")).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+      expect(await ingestArmedFor(threadOf(11), messageId)).toBe(false);
       const r = await row(11);
       expect(r?.lastHandledMessageId ?? null).not.toBe(messageId);
     } finally {

@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { chatwootThreadId } from "@/graph/checkpointer";
+import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
+import { ingestDedupeKey } from "@/graph/ingest-job";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   processChatwootDelivery,
@@ -52,6 +53,10 @@ let responderId = 0n;
 let observerId = 0n;
 let deliverySeq = 0;
 let messageSeq = 84_000;
+// A QUE CONVERSA CADA MENSAGEM PERTENCE, registrado onde a mensagem NASCE, que é o único lugar onde
+// isso é sabido sem inferência. É o que deixa uma asserção perguntar pela LINHA da mensagem sem
+// repetir o número da conversa em vinte e oito lugares (issue #731).
+const convOfMessage = new Map<number, number>();
 let stamp = Math.floor(Date.now() / 1000);
 
 const requests: { method: string; url: string }[] = [];
@@ -227,6 +232,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   ): Promise<{ messageId: number; deliveryRowId: bigint }> {
     deliverySeq += 1;
     messageSeq += 1;
+    convOfMessage.set(messageSeq, convId);
     // The receipt doubles as the emission for a case that names one: an event our row received an
     // hour ago was emitted at least that long ago too.
     const conv = conversation(convId, inboxId, held, receivedAt) as Record<
@@ -288,6 +294,48 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     );
   }
 
+  // "FOI ARMADA INGESTÃO PARA ESTA MENSAGEM" PERGUNTA PELA LINHA DELA, não pelo tamanho da população
+  // (issue #731). A população de `INGEST_MESSAGE` de um tenant não é estável por desenho: concluir o
+  // job apaga a linha (`JOB_DELETE_ON_DONE`) e `drainPendingIngest` drena as pendentes de uma thread
+  // a partir de três lugares do produto. Um delta sobre ela afirma sobre um número que o produto move
+  // de propósito, e erra nos dois sentidos — fica vermelho por causa de uma linha de outra mensagem,
+  // e fica VERDE com a linha da própria mensagem dentro da tabela, desde que o total não se mexa.
+  //
+  // A THREAD É A DO CONTACT-INBOX, e o construtor certo é `contactInboxThreadId`. Este arquivo também
+  // importa `chatwootThreadId`, do mesmo módulo, para a chave de OBSERVE; montada com ele, a pergunta
+  // responde "não armada" para tudo e faz os treze sites negativos passarem por construção, que é o
+  // falso verde de volta pela porta dos fundos.
+  function threadOf(convId: number) {
+    return contactInboxThreadId(tenantId, instanceId, 84_000 + convId);
+  }
+
+  async function ingestRowFor(messageId: number) {
+    const convId = convOfMessage.get(messageId);
+    expect(
+      convId,
+      `a mensagem ${messageId} não foi registrada em convOfMessage. Toda mensagem deste arquivo se ` +
+        `registra onde nasce (no \`deliver\`, ou ao lado do \`messageSeq += 1\` de quem monta a entrega ` +
+        `à mão), e sem isso não dá para saber qual thread nomeia a linha dela.`,
+    ).toBeDefined();
+    return suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: ingestDedupeKey(threadOf(convId as number), messageId),
+      },
+      select: { payload: true },
+    });
+  }
+
+  // SOB QUAL AGENTE a linha foi armada, lido do campo da própria linha.
+  function agentOf(row: { payload: unknown } | null) {
+    return (row?.payload as { agentId?: string } | undefined)?.agentId;
+  }
+
+  async function ingestArmedFor(messageId: number) {
+    return (await ingestRowFor(messageId)) !== null;
+  }
+
   async function jobs(kind: "DEBOUNCE" | "INGEST_MESSAGE") {
     return suDb.schedulerJob.findMany({
       where: { tenantId, kind },
@@ -319,6 +367,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     requests.length = 0;
     // The responder's own delivery of the same message, still being worked on its route.
     messageSeq += 1;
+    convOfMessage.set(messageSeq, 1);
     const sharedMessage = messageSeq + 1;
     const responderRow = await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -346,7 +395,9 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     expect(await jobs("DEBOUNCE")).toEqual([]);
     // The thread is the contact-inbox's, shared with the responder, whose own route appends this
     // message (its turn, or its continuous ingestion). An append from here doubled it.
-    expect(await jobs("INGEST_MESSAGE")).toEqual([]);
+    // A pergunta é pela linha DESTA mensagem: `toEqual([])` sobre a leitura falava da população
+    // inteira do tenant, então uma linha de outra mensagem decidia este veredito (issue #731).
+    expect(await ingestArmedFor(messageId)).toBe(false);
     const conv = await row(1);
     expect(conv?.lastHandledMessageId).toBeNull();
     expect(
@@ -381,7 +432,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     await suDb.schedulerJob.deleteMany({
       where: { tenantId, kind: "OBSERVE" },
     });
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const { messageId, deliveryRowId } = await deliver(
       OBSERVER_BOT,
       2,
@@ -390,7 +440,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     );
     expect(customerFacing()).toEqual([]);
     expect(await jobs("DEBOUNCE")).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    expect(await ingestArmedFor(messageId)).toBe(false);
     expect((await row(2))?.lastHandledMessageId).toBe(messageId);
     expect(await routeObservedOf(deliveryRowId)).toBe(true);
     const verdict = await suDb.schedulerJob.findMany({
@@ -420,7 +470,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       data: { mode: "production" },
     });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
       const { messageId, deliveryRowId } = await deliver(
         OBSERVER_BOT,
         90,
@@ -429,7 +478,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       );
       expect(customerFacing()).toEqual([]);
       expect(await routeObservedOf(deliveryRowId)).toBe(true);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(messageId)).toBe(false);
       expect((await row(90))?.lastHandledMessageId).toBe(messageId);
     } finally {
       await suDb.agent.update({
@@ -449,13 +498,17 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       data: { enabled: false },
     });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
-      await deliver(OBSERVER_BOT, 44, OBSERVED_ONLY_INBOX, {
-        assigneeType: "User",
-        status: "open",
-      });
+      const { messageId } = await deliver(
+        OBSERVER_BOT,
+        44,
+        OBSERVED_ONLY_INBOX,
+        {
+          assigneeType: "User",
+          status: "open",
+        },
+      );
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(messageId)).toBe(false);
       expect((await row(44))?.lastHandledMessageId).toBeNull();
     } finally {
       await suDb.agent.update({
@@ -488,14 +541,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       data: { enabled: false },
     });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
       const { messageId } = await deliver(OBSERVER_BOT, 41, SHARED_INBOX, {
         assigneeType: "User",
         status: "open",
       });
       expect(customerFacing()).toEqual([]);
       expect(await jobs("DEBOUNCE")).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
       expect((await row(41))?.lastHandledMessageId).toBe(messageId);
     } finally {
       await suDb.agent.update({
@@ -515,14 +567,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     await suDb.chatwootAgentBot.delete({ where: { id: bot.id } });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
-      await deliver(OBSERVER_BOT, 46, SHARED_INBOX, {
+      const { messageId } = await deliver(OBSERVER_BOT, 46, SHARED_INBOX, {
         assigneeType: "User",
         status: "open",
       });
       expect(customerFacing()).toEqual([]);
       expect(await jobs("DEBOUNCE")).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
     } finally {
       await suDb.chatwootAgentBot.create({
         data: {
@@ -544,14 +595,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // good: nothing scans a settled observer row again (issue #476 review, round 31).
   test("beside a responder bound after this message: remembered here, because no delivery of its own was ever fanned", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const received = new Date(Date.now() - 60_000);
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: SHARED_INBOX },
       data: { responderBoundAt: new Date(Date.now() - 30_000) },
     });
     try {
-      await deliver(
+      const { messageId } = await deliver(
         OBSERVER_BOT,
         61,
         SHARED_INBOX,
@@ -562,7 +612,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       );
       expect(customerFacing()).toEqual([]);
       expect(await jobs("DEBOUNCE")).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
       // ...AND THE MARK DOES NOT MOVE. An absent sibling row is not proof that none is coming — it
       // is also what one still in transit looks like — so the memory is paid here while the mark
       // stays the answering half's. Moved, it would put the message behind the watermark and the
@@ -581,7 +631,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // double the message in the shared thread.
   test("beside a responder bound after this message, whose own delivery is nonetheless in the ledger: NOT remembered a second time", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const received = new Date(Date.now() - 60_000);
     const sharedMessage = messageSeq + 1;
     await suDb.chatwootWebhookDelivery.create({
@@ -613,7 +662,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       );
       expect(messageId).toBe(sharedMessage);
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(messageId)).toBe(false);
       expect((await row(62))?.lastHandledMessageId).toBeNull();
     } finally {
       await suDb.inbox.updateMany({
@@ -628,7 +677,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // never reached; compared against the payload's own clock it does not.
   test("beside a responder bound after the EVENT but before our receipt of it: remembered here", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     // The event happened two minutes ago, the binding a minute later, and our row received it now:
     // `responderBoundAt <= receivedAt` holds and says nothing.
     const emitted = new Date(Date.now() - 120_000);
@@ -645,6 +693,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       );
       messageSeq += 1;
       deliverySeq += 1;
+      convOfMessage.set(messageSeq, 67);
       const n = normalizeChatwootEvent({
         event: "message_created",
         id: messageSeq,
@@ -674,7 +723,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         base: appDb,
       });
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageSeq)).toBe(true);
     } finally {
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },
@@ -690,18 +739,17 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // in flight, against losing the message if it was never coming.
   test("beside a responder bound moments before this message: remembered here, since no clock settles it", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: SHARED_INBOX },
       data: { responderBoundAt: new Date(Date.now() - 20_000) },
     });
     try {
-      await deliver(OBSERVER_BOT, 71, SHARED_INBOX, {
+      const { messageId } = await deliver(OBSERVER_BOT, 71, SHARED_INBOX, {
         assigneeType: "User",
         status: "open",
       });
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
     } finally {
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },
@@ -716,7 +764,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // shared contact-inbox thread.
   test("a colleague's reply finds the responder's sibling on the column that names it", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     // Inside the skew band, so the clocks settle nothing and the ledger is what answers.
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: SHARED_INBOX },
@@ -724,6 +771,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     deliverySeq += 1;
     messageSeq += 1;
+    convOfMessage.set(messageSeq, 72);
     const replyId = messageSeq;
     // The responder's own delivery of the SAME reply, already on the ledger.
     await suDb.chatwootWebhookDelivery.create({
@@ -774,7 +822,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       });
       expect(customerFacing()).toEqual([]);
       // The responder's route remembers it; a second append from here is the duplicate.
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(replyId)).toBe(false);
     } finally {
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },
@@ -795,13 +843,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // answer, which nothing catches.
   test("a reply whose sibling only INTENDED to remember is remembered here", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: SHARED_INBOX },
       data: { responderBoundAt: new Date(Date.now() - 20_000) },
     });
     deliverySeq += 1;
     messageSeq += 1;
+    convOfMessage.set(messageSeq, 86);
     const replyId = messageSeq;
     // The responder's own delivery, claimed while it was on: `routeRemembers` says `true` and the
     // row never got past PROCESSING, which is what a crash between the claim and the enqueue leaves.
@@ -859,7 +907,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       });
       expect(customerFacing()).toEqual([]);
       // The reply is folded in HERE, because nothing else is going to.
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(replyId)).toBe(true);
     } finally {
       await suDb.agent.update({
         where: { id: responderId },
@@ -880,13 +928,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // shared dedupe key and the `human_agent` window refuse.
   test("a reply whose sibling is still working is remembered here even with the responder on", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: SHARED_INBOX },
       data: { responderBoundAt: new Date(Date.now() - 20_000) },
     });
     deliverySeq += 1;
     messageSeq += 1;
+    convOfMessage.set(messageSeq, 87);
     const replyId = messageSeq;
     await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -938,7 +986,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       expect(customerFacing()).toEqual([]);
       // The responder is production and enabled the whole time: the mode reading would have silenced
       // this route, and the sibling's own unfinished state is what does not.
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(replyId)).toBe(true);
     } finally {
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },
@@ -953,7 +1001,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // already declined it, and NEITHER route answers or remembers.
   test("beside a responder bound after this message, whose sibling delivery already ran blind: remembered here", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const received = new Date(Date.now() - 60_000);
     const boundAt = new Date(Date.now() - 30_000);
     const sharedMessage = messageSeq + 1;
@@ -989,7 +1036,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       );
       expect(messageId).toBe(sharedMessage);
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
     } finally {
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },
@@ -1004,18 +1051,17 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // the band, so no clock skew can turn this answer around.
   test("beside a responder bound well before this message: NOT remembered here, even with no ledger row of its own yet", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: SHARED_INBOX },
       data: { responderBoundAt: new Date(Date.now() - 10 * 60_000) },
     });
     try {
-      await deliver(OBSERVER_BOT, 63, SHARED_INBOX, {
+      const { messageId } = await deliver(OBSERVER_BOT, 63, SHARED_INBOX, {
         assigneeType: "User",
         status: "open",
       });
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(messageId)).toBe(false);
       expect((await row(63))?.lastHandledMessageId).toBeNull();
     } finally {
       await suDb.inbox.updateMany({
@@ -1031,7 +1077,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // message the recovery will refuse.
   test("a transient failure resolving the route is retried, and the delivery still records its role", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     let failures = 0;
     // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
     const wrap = (target: any): any =>
@@ -1066,6 +1111,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
 
     deliverySeq += 1;
     messageSeq += 1;
+    convOfMessage.set(messageSeq, 70);
     const n = normalizeChatwootEvent({
       event: "message_created",
       id: messageSeq,
@@ -1109,7 +1155,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     // this inbox the route remembers nothing (issue #620), so the memory is no witness here.
     expect(row.routeObserved).toBe(true);
     expect(row.status).toBe("PROCESSED");
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    expect(await ingestArmedFor(messageSeq)).toBe(false);
   });
 
   // THE CLAIM STATES THE ROLE, so a row that is PROCESSING has already said what it is. Written by a
@@ -1153,14 +1199,14 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // role that would have sent it back overwritten (issue #476 review, round 53).
   test("a replay whose observer runtime is gone is left DEAD, not restated as the responder", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const bot = await suDb.chatwootAgentBot.findFirstOrThrow({
       where: { agentId: observerId },
     });
     await suDb.chatwootAgentBot.delete({ where: { id: bot.id } });
     let deliveryRowId: bigint;
+    let messageId: number;
     try {
-      ({ deliveryRowId } = await deliver(
+      ({ deliveryRowId, messageId } = await deliver(
         OBSERVER_BOT,
         73,
         SHARED_INBOX,
@@ -1195,7 +1241,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     expect(row.attempts).toBe(0);
     // And nothing ran on the responder's behalf.
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    expect(await ingestArmedFor(messageId)).toBe(false);
   });
 
   // ONE BOT SERVES EVERY ROLE ITS AGENT HOLDS. Unobserve the watcher and bind it as the responder,
@@ -1204,7 +1250,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // delivery that never existed, and closes with nothing remembering the message.
   test("a replayed observer row does not count as its own responder sibling", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const boundAt = new Date(Date.now() - 30_000);
     await suDb.inbox.updateMany({
       where: { tenantId, chatwootInboxId: OBSERVED_ONLY_INBOX },
@@ -1225,7 +1270,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         },
       );
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
       // AND THE MARK MOVES, because this is a REPLAY: the delivery got here only after the sweep
       // gave up on it, so a sibling that was ever coming has long since arrived. Held back, it
       // would be withheld from the responder bound meanwhile, which would then flush from a
@@ -1253,8 +1298,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       data: { responderBoundAt: new Date(Date.now() - 30_000) },
     });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
-      await deliver(
+      const { messageId } = await deliver(
         OBSERVER_BOT,
         66,
         SHARED_INBOX,
@@ -1264,7 +1308,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         new Date(Date.now() - 60_000),
       );
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
       // ...AND THE INBOUND MARK MOVES WITH IT. Ordinary customer text here, so suppressing
       // `lastInboundAt` would leave the follow-up episode gate and the 24h service window reading
       // the previous inbound for a message the customer just sent.
@@ -1288,14 +1332,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       data: { mode: "test" },
     });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
-      await deliver(OBSERVER_BOT, 42, SHARED_INBOX, {
+      const { messageId } = await deliver(OBSERVER_BOT, 42, SHARED_INBOX, {
         assigneeType: "User",
         status: "open",
       });
       expect(customerFacing()).toEqual([]);
       expect(await jobs("DEBOUNCE")).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+      expect(await ingestArmedFor(messageId)).toBe(true);
       expect((await row(42))?.lastHandledMessageId).toBeNull();
     } finally {
       await suDb.agent.update({
@@ -1355,8 +1398,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       data: { mode: "test" },
     });
     try {
-      const before = (await jobs("INGEST_MESSAGE")).length;
-      await deliver(
+      const { messageId } = await deliver(
         OBSERVER_BOT,
         48,
         SHARED_INBOX,
@@ -1365,7 +1407,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         "/teste",
       );
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(messageId)).toBe(false);
     } finally {
       await suDb.agent.update({
         where: { id: responderId },
@@ -1381,7 +1423,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // another bot holds — and nobody would answer at all.
   test("a monitoring bot that holds the conversation is the assigned bot's route, not an observer's", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const { messageId } = await deliver(26, 47, SHARED_INBOX, {
       assigneeType: "AgentBot",
       assigneeId: 26,
@@ -1390,18 +1431,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     expect(customerFacing()).toEqual([]);
     // Folded in under the inbox's RESPONDER, which is what the assigned bot's route does with a
     // message no turn covers — never under the monitoring bot whose route this is.
-    const armed = (
-      await suDb.schedulerJob.findMany({
-        where: { tenantId, kind: "INGEST_MESSAGE" },
-        select: { payload: true },
-      })
-    ).filter((j) => JSON.stringify(j.payload).includes(String(messageId)));
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
-    expect(
-      armed.some((j) =>
-        JSON.stringify(j.payload).includes(`"agentId":"${responderId}"`),
-      ),
-    ).toBe(true);
+    // QUAL LINHA É DESTA MENSAGEM não se decide por substring do payload: as faixas de
+    // `contactInboxId` (84012-84087) e de `messageId` (84007-84050) se sobrepõem, e no fim da
+    // suíte quatro messageIds já casam duas linhas cada nesse filtro. A linha da mensagem tem
+    // chave própria (issue #731).
+    const armed = await ingestRowFor(messageId);
+    expect(await ingestArmedFor(messageId)).toBe(true);
+    expect(agentOf(armed)).toBe(String(responderId));
   });
 
   // With NO responder there is nobody to hand it to: the assigned bot's path would resolve no
@@ -1422,7 +1458,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // conversations it was assigned back then, and those deliveries stay the assigned bot's.
   test("an observer that holds the conversation is still the assigned bot's route", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const { messageId } = await deliver(OBSERVER_BOT, 50, SHARED_INBOX, {
       assigneeType: "AgentBot",
       assigneeId: OBSERVER_BOT,
@@ -1430,23 +1465,14 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     // The message is folded in under the RESPONDER, which is what the assigned bot's route does with
     // a conversation no turn covers — never under the watcher, whose route this is not.
-    const armed = (
-      await suDb.schedulerJob.findMany({
-        where: { tenantId, kind: "INGEST_MESSAGE" },
-        select: { payload: true },
-      })
-    ).filter((j) => JSON.stringify(j.payload).includes(String(messageId)));
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
-    expect(
-      armed.some((j) =>
-        JSON.stringify(j.payload).includes(`"agentId":"${responderId}"`),
-      ),
-    ).toBe(true);
-    expect(
-      armed.some((j) =>
-        JSON.stringify(j.payload).includes(`"agentId":"${observerId}"`),
-      ),
-    ).toBe(false);
+    // QUAL LINHA É DESTA MENSAGEM não se decide por substring do payload: as faixas de
+    // `contactInboxId` (84012-84087) e de `messageId` (84007-84050) se sobrepõem, e no fim da
+    // suíte quatro messageIds já casam duas linhas cada nesse filtro. A linha da mensagem tem
+    // chave própria (issue #731).
+    const armed = await ingestRowFor(messageId);
+    expect(await ingestArmedFor(messageId)).toBe(true);
+    expect(agentOf(armed)).toBe(String(responderId));
+    expect(agentOf(armed)).not.toBe(String(observerId));
   });
 
   // An EXPLICIT unassignment is an answer, not silence: the mirror must not overrule it with a
@@ -1488,17 +1514,12 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     expect(customerFacing()).toEqual([]);
     // The route is the assigned bot's, so the message is the RESPONDER's to remember.
-    const armed = (
-      await suDb.schedulerJob.findMany({
-        where: { tenantId, kind: "INGEST_MESSAGE" },
-        select: { payload: true },
-      })
-    ).filter((j) => JSON.stringify(j.payload).includes(String(messageId)));
-    expect(
-      armed.some((j) =>
-        JSON.stringify(j.payload).includes(`"agentId":"${responderId}"`),
-      ),
-    ).toBe(true);
+    // QUAL LINHA É DESTA MENSAGEM não se decide por substring do payload: as faixas de
+    // `contactInboxId` (84012-84087) e de `messageId` (84007-84050) se sobrepõem, e no fim da
+    // suíte quatro messageIds já casam duas linhas cada nesse filtro. A linha da mensagem tem
+    // chave própria (issue #731).
+    const armed = await ingestRowFor(messageId);
+    expect(agentOf(armed)).toBe(String(responderId));
   });
 
   test("a production agent's bot with no binding on the inbox keeps the responder path it had (a mirror that drifted)", async () => {
@@ -1527,13 +1548,12 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     // On the shared inbox the responder's own path folds a human-held message in and moves the
     // watermark; the observer's path beside that responder would do neither.
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const { messageId } = await deliver(27, 44, SHARED_INBOX, {
       assigneeType: "User",
       status: "open",
     });
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect(await ingestArmedFor(messageId)).toBe(true);
     expect((await row(44))?.lastHandledMessageId).toBe(messageId);
   });
 
@@ -2528,7 +2548,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // resolved, and that is what is read.
   test("beside a responder whose own delivery recorded that it remembers nothing, the message is remembered here", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const sharedMessage = messageSeq + 1;
     // The responder's own delivery, claimed while its agent was in test mode or switched off. Its
     // agent reads as production and enabled NOW, which is the whole point: the mode moved between
@@ -2554,7 +2573,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     expect(messageId).toBe(sharedMessage);
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before + 1);
+    expect(await ingestArmedFor(messageId)).toBe(true);
   });
 
   // ...AND THE SAME READING IN THE OTHER DIRECTION. The responder's delivery folded the message in;
@@ -2563,7 +2582,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // already holds.
   test("beside a responder whose own delivery recorded that it remembers, this route stands down even though the mode has since changed", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const sharedMessage = messageSeq + 1;
     await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -2591,7 +2609,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       });
       expect(messageId).toBe(sharedMessage);
       expect(customerFacing()).toEqual([]);
-      expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+      expect(await ingestArmedFor(messageId)).toBe(false);
     } finally {
       await suDb.agent.update({
         where: { id: responderId },
@@ -2607,7 +2625,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // moved between them it is exactly the wrong one.
   test("a sibling delivery of a different event does not answer for this one", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const sharedMessage = messageSeq + 1;
     // The responder's TRANSCRIPTION delivery of the same message, claimed while its agent remembered
     // nothing. The creation this test delivers has no sibling of its own, so the mode reading — the
@@ -2632,7 +2649,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       status: "open",
     });
     expect(messageId).toBe(sharedMessage);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    expect(await ingestArmedFor(messageId)).toBe(false);
   });
 
   // ...and a sibling that has not claimed yet says nothing, so the mode reading stands — which is
@@ -2640,7 +2657,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // narrows rather than closes, and it is asserted so a later reading cannot quietly widen it.
   test("beside a responder whose delivery has not claimed yet, the mode is what answers", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const sharedMessage = messageSeq + 1;
     await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -2659,7 +2675,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       status: "open",
     });
     expect(messageId).toBe(sharedMessage);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    expect(await ingestArmedFor(messageId)).toBe(false);
   });
   // ...AND WHEN THE RESPONDER HAS SEVERAL DELIVERIES OF THE SAME EVENT, IT IS THE NEWEST THAT
   // ANSWERS — including when the newest has not claimed yet (PR review, round 6). One message can
@@ -2677,7 +2693,6 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
   // enabled now: read from the old row this route would append the message, and it must not.
   test("the newest sibling answers, even unclaimed, and an older one does not answer for it", async () => {
     requests.length = 0;
-    const before = (await jobs("INGEST_MESSAGE")).length;
     const sharedMessage = messageSeq + 1;
     await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -2714,7 +2729,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
     expect(messageId).toBe(sharedMessage);
     expect(customerFacing()).toEqual([]);
-    expect((await jobs("INGEST_MESSAGE")).length).toBe(before);
+    expect(await ingestArmedFor(messageId)).toBe(false);
   });
   // WINDOW 5 (issue #540): the attach window used to have no fact of its own. The row was written
   // only after Chatwoot agreed, so a delivery landing inside it read "no row" — and where a

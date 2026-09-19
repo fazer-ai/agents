@@ -4,6 +4,7 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { redactEndpoint } from "@/modules/audit/projection";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 
@@ -25,11 +26,38 @@ import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_ERROR_LEN = 500;
 
+// THE CHANNEL'S URL IS A SECRET, AND ONE FETCH ERROR QUOTES IT BACK (holdout of #605, s10).
+//
+// A Discord webhook URL embeds a bot token, which is why the column is an `encryptJson` blob and the
+// DTO returns `scheme://host/…`. Bun's `UnexpectedRedirect` names the URL it was fetching, in full,
+// and that string is what the worker stores in `alert_deliveries.last_error` — measured there on the
+// base, so the leak predates this change — and what the new test route, the MCP tool and the console
+// toast now put in front of an operator and into anything that logs a response.
+//
+// Every URL in the message is reduced to the same masked form the read already shows, and nothing
+// else is touched: the neighbouring failures were characterised in the same holdout and none of them
+// carries more than the host (`getaddrinfo ENOTFOUND <host>`, "Unable to connect", "unknown
+// certificate verification error", "The operation timed out."). A host is what `redactEndpoint`
+// keeps, so the advice the operator needs survives the redaction.
+//
+// The pattern requires a scheme on purpose. A bare host in a DNS failure is not matched and stays
+// readable, which is the difference between telling someone their hostname does not resolve and
+// telling them "…".
+const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>)\]]+/gi;
+
+function maskUrlsIn(text: string): string {
+  return text.replace(URL_IN_TEXT, (u) => redactEndpoint(u));
+}
+
 // `sanitizeErrorMessage` rather than a bare cut: this string is stored in `last_error`, and the
 // exceptions a delivery produces wrap what the remote endpoint answered. See issue #243 and the
-// function's own header for why a NUL or an orphan surrogate costs the whole write.
+// function's own header for why a NUL or an orphan surrogate costs the whole write. The masking runs
+// FIRST, so the 500-character cut cannot leave half a token behind by truncating mid-URL.
 export function alertErrMsg(err: unknown): string {
-  return sanitizeErrorMessage(err, MAX_ERROR_LEN);
+  return sanitizeErrorMessage(
+    maskUrlsIn(err instanceof Error ? err.message : String(err)),
+    MAX_ERROR_LEN,
+  );
 }
 
 // What a send needs to know, whichever caller asked for it. `url` is the channel's stored blob, not

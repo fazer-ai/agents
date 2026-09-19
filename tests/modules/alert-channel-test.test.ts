@@ -355,6 +355,55 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     expect(JSON.stringify(res)).not.toContain("t0k3n-in-here");
   });
 
+  test("a destination that redirects does not hand the URL back in the reason", async () => {
+    // THE HOLDOUT'S OWN FINDING (s10), and it is the sharpest thing in this file. A Discord webhook
+    // URL embeds a bot token, which is why the column is encrypted and the read returns
+    // `scheme://host/…`. Bun's `UnexpectedRedirect` names the URL it was fetching, IN FULL, and that
+    // string was going straight into this result, into the console toast that renders it, and into
+    // `alert_deliveries.last_error` where the worker stores the same one.
+    //
+    // The error text below is the one Bun actually produced against a 302, copied from the live
+    // measurement rather than invented: a fixture spelled from memory would be a test of my memory.
+    const path = "/api/webhooks/1234567890/TOKENDEDISCORDaaaSEGREDO";
+    const id = await seed("redirected", { url: outboundUrl(path) });
+    const { fetchImpl } = receiver(() => {
+      throw new Error(
+        `UnexpectedRedirect fetching "${outboundUrl(path)}". For more information, pass \`verbose: true\` in the second argument to fetch()`,
+      );
+    });
+
+    const res = await sendAlertChannelTest(ctx(), id, appDb, {
+      fetchImpl,
+      assertSafe: allowAll,
+    });
+
+    expect(res.ok).toBe(false);
+    const body = JSON.stringify(res);
+    expect(body).not.toContain("TOKENDEDISCORDaaaSEGREDO");
+    expect(body).not.toContain("/api/webhooks/");
+    // What survives is the masked form the read already shows, so the operator still learns WHICH
+    // destination refused, and the word that says what happened.
+    expect(res.error ?? "").toContain("203.0.113.10/…");
+    expect(res.error ?? "").toContain("UnexpectedRedirect");
+  });
+
+  test("a host that does not resolve is still readable after the masking", async () => {
+    // The other side of the same edit, and the reason the pattern demands a scheme: a DNS failure
+    // names a bare host, which is the whole advice the message carries and is already visible in the
+    // masked URL. Redacting it would trade a leak for a result that says nothing.
+    const id = await seed("dns");
+    const { fetchImpl } = receiver(() => {
+      throw new Error("getaddrinfo ENOTFOUND alerts.example.invalid");
+    });
+
+    const res = await sendAlertChannelTest(ctx(), id, appDb, {
+      fetchImpl,
+      assertSafe: allowAll,
+    });
+
+    expect(res.error ?? "").toContain("alerts.example.invalid");
+  });
+
   // ── the channel is not changed by being tested ──
 
   test("a disabled channel is tested, says so, and stays disabled", async () => {

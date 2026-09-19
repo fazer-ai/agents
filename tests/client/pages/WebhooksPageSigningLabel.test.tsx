@@ -7,13 +7,14 @@ import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { WebhooksPage } from "@/client/pages/WebhooksPage";
 
-// THE LIST HAS THREE STATES NOW, AND IT USED TO DECIDE BETWEEN TWO.
+// THE LIST HAS FOUR STATES, AND THE FOURTH IS WHY IT STOPPED DECIDING FOR ITSELF.
 //
-// `hasSecret` says a signing secret is CONFIGURED; `secretRef` says which credential it is. They came
-// apart the moment the read started refusing to hand out a `secret_ref` that names no vault entry —
-// the column took any string until #126, so such rows exist and their value must not be published.
-// Deciding on the ref alone then labels a subscription that signs every delivery "Unsigned", which is
-// worse than saying nothing: it is the console asserting the opposite of what the worker does.
+// It used to derive the label from `hasSecret` + `secretRef`, which are what the ROW can answer, and
+// that is three states. The fourth — a well-formed ref whose vault entry was DELETED, or created and
+// never filled — resolves to nothing in the worker just the same, and the row cannot see it: the
+// label said "Signed with: vault:11", the same sentence the live credential gets, on the page that
+// (since #724) also shows a delivery row saying that POST went out unsigned. The server now answers
+// the whole question in `signingState` and this reads it.
 //
 // NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
 // holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
@@ -29,6 +30,7 @@ function subscription(over: Record<string, unknown> = {}) {
     url: "https://ops.example.com/page-label",
     secretRef: "vault:7",
     hasSecret: true,
+    signingState: "signed",
     events: ["conversation.created"],
     enabled: true,
     createdAt: "2026-08-01T00:00:00.000Z",
@@ -94,7 +96,13 @@ describe("the webhooks list's signing label", () => {
   });
 
   test("says plain unsigned only when nothing is configured", async () => {
-    subs = [subscription({ secretRef: null, hasSecret: false })];
+    subs = [
+      subscription({
+        secretRef: null,
+        hasSecret: false,
+        signingState: "none",
+      }),
+    ];
     await show();
     expect(says(/Unsigned|Sem assinatura/)).toBe(true);
     expect(
@@ -107,7 +115,13 @@ describe("the webhooks list's signing label", () => {
     // resolves to no row, so the worker builds headers with a null secret and the delivery goes out
     // unsigned. Saying "Signed" would be the console asserting the opposite of what leaves the
     // installation — the same error as the "Unsigned" it replaced, pointing the other way.
-    subs = [subscription({ secretRef: null, hasSecret: true })];
+    subs = [
+      subscription({
+        secretRef: null,
+        hasSecret: true,
+        signingState: "unreadable",
+      }),
+    ];
     await show();
     expect(
       says(/credential is not in the vault|credencial não está no cofre/),
@@ -117,5 +131,27 @@ describe("the webhooks list's signing label", () => {
     );
     // …and it is not the plain "Unsigned" of a subscription that has nothing configured.
     expect(says(/^(Unsigned|Sem assinatura)$/)).toBe(false);
+  });
+
+  // The two the row could never answer, and the reason the derivation moved to the server. Each gets
+  // its own sentence because they are different errands: recreate a credential that is gone, or fill
+  // in one that is empty. Neither may keep naming the ref — there is nothing at that name to go look
+  // at, and naming it is what made the old label read as reassurance.
+  test("a deleted credential is not still labelled Signed with its ref", async () => {
+    subs = [subscription({ signingState: "missing" })];
+    await show();
+    expect(says(/was deleted|foi apagada/)).toBe(true);
+    expect(says(/deliveries go unsigned|entregas saem sem assinatura/)).toBe(
+      true,
+    );
+    expect(says(/vault:7/)).toBe(false);
+  });
+
+  test("and a credential with no value yet says that instead", async () => {
+    subs = [subscription({ signingState: "pending" })];
+    await show();
+    expect(says(/no value yet|ainda não tem valor/)).toBe(true);
+    expect(says(/was deleted|foi apagada/)).toBe(false);
+    expect(says(/vault:7/)).toBe(false);
   });
 });

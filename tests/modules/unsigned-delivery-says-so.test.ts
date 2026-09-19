@@ -9,7 +9,10 @@ import {
   createAlertChannel,
   listAlertChannels,
 } from "@/modules/flowlog/channels";
-import { createWebhookSubscription } from "@/modules/webhooks/outbound/subscriptions";
+import {
+  createWebhookSubscription,
+  listWebhookSubscriptions,
+} from "@/modules/webhooks/outbound/subscriptions";
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { outboundUrl } from "../utils/outbound";
@@ -483,6 +486,70 @@ describe.skipIf(!dbUp)(
       // The delivery ledger is the operator-readable surface of this family, and this is the row it
       // shows: a clean 2xx that a verifying receiver threw away.
       expect((after.unsignedReason ?? "").toLowerCase()).toContain("unsigned");
+    });
+
+    test("the subscription list stops calling a deleted credential Signed", async () => {
+      // Same hole the alert channel list had, in the other family and on the same page: the label was
+      // derived from the row, so a ref whose entry had been deleted read exactly like a live one.
+      await subscription("list-gone");
+      const live = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: "list-live",
+          kind: "generic",
+          secret: encryptJson("s3cr3t"),
+          status: "active",
+        },
+        select: { id: true },
+      });
+      const empty = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: "list-empty",
+          kind: "generic",
+          secret: encryptJson({}),
+          status: "pending",
+        },
+        select: { id: true },
+      });
+      await createWebhookSubscription(
+        ctx(),
+        {
+          url: outboundUrl("/list-live"),
+          events: ["conversation.created"],
+          secretRef: `vault:${live.id}`,
+        },
+        appDb,
+      );
+      await createWebhookSubscription(
+        ctx(),
+        {
+          url: outboundUrl("/list-empty"),
+          events: ["conversation.created"],
+          secretRef: `vault:${empty.id}`,
+        },
+        appDb,
+      );
+      await createWebhookSubscription(
+        ctx(),
+        { url: outboundUrl("/list-none"), events: ["conversation.created"] },
+        appDb,
+      );
+
+      const byUrl = new Map(
+        (await listWebhookSubscriptions(ctx(), appDb)).map((x) => [x.url, x]),
+      );
+      expect(byUrl.get(outboundUrl("/list-live"))?.signingState).toBe("signed");
+      expect(byUrl.get(outboundUrl("/list-empty"))?.signingState).toBe(
+        "pending",
+      );
+      expect(byUrl.get(outboundUrl("/list-none"))?.signingState).toBe("none");
+      expect(byUrl.get(outboundUrl("/list-gone"))?.signingState).toBe(
+        "missing",
+      );
+      // The deleted one still PUBLISHES its ref — the column holds it and the audit trail records it —
+      // and that is exactly why the state has to be a separate field rather than inferred from it.
+      expect(byUrl.get(outboundUrl("/list-gone"))?.hasSecret).toBe(true);
     });
 
     test("the Test button stops refusing what its own worker sends", async () => {

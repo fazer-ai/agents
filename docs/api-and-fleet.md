@@ -129,6 +129,10 @@ TENANT_ADMIN, RLS-scoped, keyset paginated by id desc (same shape as `/v1/logs`)
 
 `subscriptionEnabled` rides on every delivery DTO because the claim joins `enabled = true`: a delivery on a disabled subscription sits at `PENDING` untouched, and without that field a correct requeue is indistinguishable from one that did nothing.
 
+`unsignedReason` rides on it for the same kind of reason (issue #724). A signing secret is a vault reference, and it can stop resolving after the subscription was saved and verified: the entry is deleted, or it is created and never filled. The worker does **not** hold the payload back — it POSTs unsigned, which is what it has always done and what keeps a receiver that does not verify working — but the row now records it, as a sentence naming which of the two problems it is, written on every terminal write **including `DELIVERED`**. That is the one the ledger could not distinguish before: the receiver rejecting an unsigned request does it in ITS log, so without the field a subscription whose deliveries are being thrown away on arrival shows a clean 2xx history. `null` means either it signed or no secret is configured.
+
+`GET /v1/webhooks/subscriptions` answers the same question for the list, as `signingState` — `none`, `signed`, `unreadable` (a pre-#126 value naming no vault entry), `missing` (the credential was deleted), `pending` (it has no value yet). It needs the vault, not just the row, so it is on the LIST item and deliberately not on the shared subscription DTO, which the audit projection is built from inside the audit transaction.
+
 MCP: `webhook_delivery_list`, `webhook_delivery_get` (`mcp:read`), `webhook_delivery_requeue` (`mcp:write`, dry-run by default and audited on apply).
 
 ### Delivery worker — `src/modules/webhooks/outbound/worker.ts`
@@ -141,6 +145,10 @@ A single-replica tick (`WEBHOOK_WORKER_ENABLED`, `WEBHOOK_WORKER_INTERVAL_MS`) t
 4. **Records the outcome** scoped to the row's tenant: `DELIVERED` (2xx); back to `PENDING` with `nextAttemptAt` from full-jitter backoff (`nextBackoffMs`); or `DEAD` after `MAX_ATTEMPTS`. An SSRF-blocked URL goes straight to `DEAD` (it can never succeed).
 
 Headers: `x-fazerai-delivery` (the delivery id — a **stable dedupe key**, so at-least-once retries are safe for receivers), and when a secret is configured `x-fazerai-signature` (`sha256=` + HMAC-SHA256 over `"{timestamp}.{rawBody}"`, hex) + `x-fazerai-timestamp` (unix seconds). Receivers verify the timestamp window (anti-replay) and recompute over the raw body. See `signing.ts` (`signOutbound`/`verifyOutboundSignature`); every emit site builds its headers through `outboundHeaders`.
+
+**A configured secret that does not resolve does not stop the delivery.** `resolveSigningSecret` (`src/modules/vault/service.ts`) is the one place that turns a vault state into operator-facing advice for both outbound families; a ref that names nothing comes back with no secret instead of throwing, the POST goes out with no `x-fazerai-signature`, and the reason lands on the row. A read that THROWS is a different thing — the vault is down, the key rotated mid-flight — and that one does fall through to retry/backoff.
+
+**`POST /v1/webhooks/subscriptions/:id/test` behaves the same way, and did not always.** It used to refuse a configured-but-unresolvable secret with `ok: false` and nothing on the wire, while the worker next door POSTed unsigned all day — so the button reported an endpoint unreachable that was being reached. It now mirrors the worker: it sends, answers `signed: false`, and carries the same sentence as `warning` beside `{ok, status, error}`. A `warning` on a 2xx is the one case where success is not the whole answer.
 
 > **Compatibility window.** These headers were named `x-secretaria-*` before the brand rename. Both sets go out on every delivery, carrying identical values, so a receiver configured against either name keeps working. The legacy trio is dropped at `2.0` — point your receivers at `x-fazerai-*` before then.
 

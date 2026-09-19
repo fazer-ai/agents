@@ -229,6 +229,39 @@ export async function vaultRefStates(
   return out;
 }
 
+// WHETHER WHAT THIS REF NAMES CAN ACTUALLY SIGN, for a screen rather than for a delivery.
+//
+// `none` is not a problem: nothing is configured, and marking it would put a warning on every
+// unsigned-by-design subscription. The other three all mean the same thing on the wire — deliveries
+// go out unsigned — and differ only in the errand: `unreadable` is a pre-#126 column holding text
+// that names no entry at all, `missing` is a credential that was deleted, `pending` one that was
+// created and never filled.
+export type SigningState =
+  | "none"
+  | "signed"
+  | "unreadable"
+  | "missing"
+  | "pending";
+
+// The rule the workers run, read off the row plus a batch of vault states. It lives here, with
+// `resolveSigningSecret`, because it IS that function's question asked without decrypting anything:
+// two projections deriving it separately is how the console came to say "Signed" for a credential
+// the worker could not resolve (issue #724).
+export function signingStateFor(
+  stored: string | null,
+  readable: string | null,
+  states: Map<string, "filled" | "pending">,
+): SigningState {
+  if (stored === null) return "none";
+  if (readable === null) return "unreadable";
+  const state = states.get(readable);
+  if (state === "filled") return "signed";
+  if (state === "pending") return "pending";
+  // Absent: the entry is gone. Same wire behaviour as `pending`, different errand — recreate the
+  // credential rather than fill it in.
+  return "missing";
+}
+
 export interface SigningSecret {
   secret: string | null;
   // Null in the two cases nobody needs to hear about: it signed, or no secret was ever configured.

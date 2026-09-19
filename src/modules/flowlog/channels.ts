@@ -11,6 +11,8 @@ import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import {
   readableVaultRef,
   requireVaultRef,
+  type SigningState,
+  signingStateFor,
   vaultRefStates,
 } from "@/modules/vault/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "./stages";
@@ -64,19 +66,10 @@ export interface AlertChannelDto {
   updatedAt: Date;
 }
 
-// `none` and `ignored` are not problems: no secret is configured, or one is configured on a channel
-// type that never signs (a channel switched to Discord keeps its ref, because the editor omits an
-// untouched picker rather than erasing it). The last three all mean the same thing on the wire —
-// deliveries go out unsigned — and differ only in the errand: `unreadable` is a pre-#126 column
-// holding text that names no entry, `missing` is a credential that was deleted, `pending` one that
-// was never filled.
-export type AlertSigningState =
-  | "none"
-  | "ignored"
-  | "signed"
-  | "unreadable"
-  | "missing"
-  | "pending";
+// The shared states plus the one that is only an alert channel's: a secret configured on a type that
+// never signs. A channel switched to Discord keeps its ref, because the editor omits an untouched
+// picker rather than erasing it.
+export type AlertSigningState = SigningState | "ignored";
 
 const SELECT = {
   id: true,
@@ -103,26 +96,19 @@ function maskUrl(encrypted: string): string {
   }
 }
 
-// The rule the worker runs, read off the row plus the vault. `alert-send.ts` signs only when the
-// type is `webhook`, a ref is stored, and that ref resolves to a filled entry; everything else goes
-// out unsigned. The order matters: a ref on a Discord channel is `ignored` and not `missing`, even
-// when its entry really is gone, because nothing would sign with it either way and sending the
-// operator to the vault would be sending them to fix something that is not the problem.
+// `alert-send.ts` signs only when the type is `webhook`, a ref is stored, and that ref resolves to a
+// filled entry. The shared rule answers the last two; the type is this family's own, and it is asked
+// FIRST on purpose: a ref on a Discord channel is `ignored` and not `missing`, even when its entry
+// really is gone, because nothing would sign with it either way and sending the operator to the
+// vault would be sending them to fix something that is not the problem.
 function signingStateOf(
   type: string,
   stored: string | null,
   readable: string | null,
   vaultStates: Map<string, "filled" | "pending">,
 ): AlertSigningState {
-  if (stored === null) return "none";
-  if (type !== "webhook") return "ignored";
-  if (readable === null) return "unreadable";
-  const state = vaultStates.get(readable);
-  if (state === "filled") return "signed";
-  if (state === "pending") return "pending";
-  // Absent: the entry is gone. Same wire behaviour as `pending` and a different errand — recreate
-  // the credential rather than fill it in.
-  return "missing";
+  if (stored !== null && type !== "webhook") return "ignored";
+  return signingStateFor(stored, readable, vaultStates);
 }
 
 function toDto(

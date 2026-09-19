@@ -144,6 +144,12 @@
     "signedUnavailable": "Signing secret set, but its credential is not in the vault: deliveries go unsigned",
     "stages": "Stages",
     "subtitle": "Get notified on Discord or your own endpoint when an agent step warns or fails.",
+    "test": "Test",
+    "testDelivered": "Test alert delivered ({{status}})",
+    "testDeliveredDisabled": "Test alert delivered ({{status}}), but this channel is still disabled",
+    "testDeliveredUnsigned": "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
+    "testFailed": "Test alert failed",
+    "testFailedReason": "Test failed: {{reason}}",
     "title": "Alert channels",
     "type": {
       "discord": "Discord",

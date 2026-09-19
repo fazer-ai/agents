@@ -5,6 +5,7 @@ import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
+import { sendAlertChannelTest } from "@/modules/flowlog/channel-test";
 import {
   type AlertChannelCreate,
   type AlertChannelUpdate,
@@ -207,6 +208,32 @@ export const alertChannelsController = new Elysia({
     {
       requireRole: "TENANT_ADMIN",
       detail: doc("Delete alert channel", "Removes an alert channel by id."),
+      params: t.Object({
+        id: t.String({
+          description: "Alert channel id (BigInt serialized as a string).",
+        }),
+      }),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  // Synchronously POSTs a sample alert to the channel's destination, through the SAME send a queued
+  // alert takes, and returns what happened. Never enqueues a delivery and never writes a flow-log
+  // line, so the test cannot show up in the destination's history as an incident (issue #605).
+  .post(
+    "/:id/test",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      result: await sendAlertChannelTest(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Test alert channel",
+        "Synchronously posts a sample alert to the channel destination, signed when the channel has a secretRef, and returns the delivery outcome (ok/status/error/signed/enabled/durationMs). Works on a disabled channel and says so in the result; writes no delivery, no flow-log entry and no audit row.",
+      ),
       params: t.Object({
         id: t.String({
           description: "Alert channel id (BigInt serialized as a string).",

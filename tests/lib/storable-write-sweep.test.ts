@@ -384,7 +384,11 @@ const GUARD_CALLS: Record<string, number> = {
   "src/lib/redact.ts": 1,
   "src/modules/conversations/error.ts": 1,
   "src/modules/conversations/failure-note.ts": 1,
-  "src/modules/flowlog/alert-worker.ts": 1,
+  // MOVED from `alert-worker.ts` by #605, not added: the worker's send was extracted so the console's
+  // Test button could take the same one, and the sanitizer travelled with the `catch` it belongs to.
+  // The column it guards is unchanged (`alert_deliveries.last_error`), and the worker still writes it
+  // — from a string this file built.
+  "src/modules/flowlog/alert-send.ts": 1,
   "src/modules/flowlog/alerts.ts": 1,
   "src/modules/flowlog/service.ts": 2,
   "src/modules/rag/documents.ts": 1,

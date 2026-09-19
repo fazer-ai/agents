@@ -1,6 +1,7 @@
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { sendAlertChannelTest } from "@/modules/flowlog/channel-test";
 import {
   assertAlertChannelWritable,
   createAlertChannel,
@@ -531,6 +532,26 @@ export async function alertChannelDelete(
     }
     await deleteAlertChannel(ctx, id, base);
     return ok({ dryRun: false, applied: true, target });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Post a sample alert to a channel's destination. External request; runs immediately (the per-call
+// approval of the MCP client is the gate), exactly like `webhook_test` next door. Returns the
+// delivery outcome, never a state change: no delivery row, no flow-log line, no audit row.
+export async function alertChannelTest(
+  principal: VerifiedToken,
+  args: { channel_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.channel_id, "channel_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({ result: await sendAlertChannelTest(ctx, id, base) });
   } catch (e) {
     return failOf(e);
   }

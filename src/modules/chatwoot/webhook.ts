@@ -6658,12 +6658,23 @@ export async function processChatwootDelivery(
   // a conversation a person owns, the delivery returned no error, the row settled PROCESSED, memory
   // held nothing and `execution_logs` was empty.
   //
-  // `mayBeHumanReply` IS WHAT REPLACES IT, and it is exact although its name hedges: the hedge is
-  // about the `device` leg being an echo of our own reply, and an echo never reaches here — the
-  // ingestion answers `"nothing"` for it (no role), never `"failed"`. Being disjoint from a
-  // customer's message is what keeps the customer's own failed ingestion (#719, #725) out of a report
-  // that names a colleague. `!observerHolds` left with the gate, already dead here rather than
-  // load-bearing: it requires `isNewIncoming`, and an outgoing reply never is.
+  // `humanReplyBy !== null` IS WHAT REPLACES IT — the RESOLVED route and not the payload's shape,
+  // which is the same answer `ingestUnhandledMessage` decides the `human_agent` role by
+  // (`isNewHumanReplyToCustomer` is `newHumanReplyRoute(...) !== null`, the function this value came
+  // from). One spelling, so the line that reports the loss cannot disagree with the pass that
+  // suffered it, and disjoint from a customer's message, which keeps the customer's own failed
+  // ingestion (#719, #725) out of a report that names a colleague.
+  //
+  // THE SHAPE WOULD NOT DO, and the difference is a real false alarm rather than a nicety (review
+  // r1). `mayBeNewHumanReply` deliberately includes the `device` leg before the provider has been
+  // asked, and on a provider that does not reserve its echo ids that shape is OUR OWN reply coming
+  // back around. It cannot reach `"failed"` — the role is null, so the ingestion answers `"nothing"`
+  // — but `"no-thread"` is returned BEFORE the role is computed, so an echo on a conversation
+  // neither the payload nor the mirror names a contact-inbox for would page an operator about a
+  // colleague's reply that no person ever wrote.
+  //
+  // `!observerHolds` left with the gate, already dead here rather than load-bearing: it requires
+  // `isNewIncoming`, and an outgoing reply never is.
   //
   // THE LEVEL STAYS `error`, AND THAT IS A DECISION rather than what fell out of removing an `&&`:
   // `writeFlowEvent` dispatches an alert for `warn` and `error` on an `inbox` source, so until now
@@ -6682,7 +6693,7 @@ export async function processChatwootDelivery(
   // reason names which of the two happened.
   if (
     (ingested === "failed" || ingested === "no-thread") &&
-    mayBeHumanReply &&
+    humanReplyBy !== null &&
     rt !== null &&
     mirror.conversationRowId !== null
   ) {

@@ -707,6 +707,53 @@ describe.skipIf(!dbUp)(
       expect(tentativas()).toBe(1);
     });
 
+    // E O ECO DA NOSSA PRÓPRIA RESPOSTA NÃO VIRA RELATO (issue #720, review r1). A cerca é o papel
+    // RESOLVIDO (`humanReplyBy`), não a forma do payload: a forma inclui de propósito a perna
+    // `device` antes de perguntar ao provedor, e num provedor que não reserva os ids do eco aquela
+    // forma é a nossa própria resposta voltando. Com a forma no lugar do papel, uma conversa que nem
+    // o payload nem o espelho sabem nomear um contact-inbox produz `no-thread` — devolvido ANTES de
+    // o papel ser calculado — e um operador seria paginado sobre "a resposta de um colega" que
+    // pessoa nenhuma escreveu.
+    test("an echo of our own reply is not reported as a colleague's lost reply", async () => {
+      const convId = 515;
+      deliverySeq += 1;
+      messageSeq += 1;
+      const { id: _semThread, ...semContactInbox } = conversation(convId);
+      const n = normalizeChatwootEvent({
+        event: "message_created",
+        id: messageSeq,
+        private: false,
+        content: "eco da nossa própria resposta",
+        message_type: "outgoing",
+        sender: null,
+        content_attributes: { external_sender_name: "WhatsApp" },
+        conversation: { ...semContactInbox, id: convId, contact_inbox: null },
+      });
+      if (!n) throw new Error("payload did not normalize");
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `hai-${process.pid}-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+        },
+        select: { id: true },
+      });
+      await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: 9,
+        normalized: n,
+        base: appDb,
+      });
+
+      // A inbox deste teste não é WhatsApp, então `providerReservesEchoIds` recusa e o eco não é
+      // resposta de ninguém: a ingestão não o guarda, e não há perda a relatar.
+      expect(await linhasDeMemoria(await convRowId(convId))).toEqual([]);
+    });
+
     // E A ENTREGA AINDA ASSIM LIQUIDA, que é a metade do desenho que um conserto vizinho desfaria
     // (issue #720). A tentação é lançar, como a #719 fez para a mensagem do cliente, e ali aquilo
     // compra a recuperação: a varredura replaya a entrega e a ingestão é re-armada. Para a resposta

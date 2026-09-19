@@ -683,6 +683,7 @@ describe("native tools", () => {
         removed: ["b"],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -695,6 +696,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -707,6 +709,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -724,6 +727,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -738,6 +742,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -759,6 +764,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -774,6 +780,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: ["agente-off"],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
 
@@ -791,6 +798,7 @@ describe("native tools", () => {
         removed: [],
         refusedAdd: [],
         refusedRemove: ["agente-off"],
+        heldRemove: [],
       });
     });
 
@@ -814,6 +822,7 @@ describe("native tools", () => {
         removed: ["b"],
         refusedAdd: [],
         refusedRemove: [],
+        heldRemove: [],
       });
     });
   });
@@ -1299,15 +1308,18 @@ describe("native tools", () => {
     expect(out).not.toContain("called off");
   });
 
-  test("a swap whose add is guarded lands the removal alone, and says so", async () => {
-    // PINNED, not desired. The guard catches one half of a swap and the other half still applies,
-    // so a mutually-exclusive taxonomy can end a turn with NO category. Measured identical on the
-    // clean HEAD 5ae9af39 (`protected: ["cancelamento"]`, the model's complete list omitting
-    // `compra-de-ingresso`, POST `["agente-off", "testando-agente"]`), so this PR does not
-    // introduce it — it makes it ROUTINE, because a guarded label is now shown and the model
-    // therefore asks for it. Whether a guarded half should make the whole call atomic is a
-    // product decision and lives in its own issue; what this test buys is that the shape cannot
-    // change here without somebody deciding to change it.
+  test("a swap whose add is guarded writes NOTHING, and says the removal was held", async () => {
+    // Issue #712, and the decision it asked for: A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED
+    // ANY ADDITION OF THE SAME CALL. Until this commit the removal landed alone, so a mutually
+    // exclusive taxonomy ended the turn with NO category — measured identical on 5ae9af39, so the
+    // delta contract did not introduce it, it made it routine by showing the model the guarded
+    // label it now asks for.
+    //
+    // ONLY REMOVALS ARE HELD, never additions, which is what keeps this compatible with the two
+    // sealed scenarios of #695 that a fully atomic call would have reversed: s8 (`add:
+    // ["cancelamento", "reembolso"]` with `cancelamento` guarded must still write `reembolso`) and
+    // s9 (a guarded REMOVE must still let its addition through, so the "both categories" direction
+    // stays on purpose — see the sibling test below, which is not a bug this issue closes).
     const posts: unknown[][] = [];
     const client = {
       getConversationLabels: async () => [
@@ -1331,11 +1343,15 @@ describe("native tools", () => {
         remove: ["compra-de-ingresso"],
       }),
     );
-    expect(posts).toEqual([[9, ["agente-off", "testando-agente"]]]);
-    // No category at all, and the refusal is named rather than swallowed.
+    expect(posts).toEqual([]);
     expect(out).toContain("cannot be added");
     expect(out).toContain("cancelamento");
-    expect(out).toContain('removed "compra-de-ingresso"');
+    // The report is the second statement about the same fact and can lie on its own: the model
+    // records it and decides the next turn from it. It must NOT read as a removal that happened.
+    expect(out).not.toContain('removed "compra-de-ingresso"');
+    expect(out.toLowerCase()).not.toContain("already as requested");
+    // Named, because the model asked for this label and cannot guess where it ended up.
+    expect(out).toContain('"compra-de-ingresso" stays');
   });
 
   test("a swap whose remove is guarded lands the addition alone, and says so", async () => {
@@ -1393,6 +1409,400 @@ describe("native tools", () => {
     expect(posts).toBe(0);
     expect(out).toContain("cannot be added");
     expect(out).toContain("cannot be removed");
+  });
+
+  test("a free addition alongside a refused one lands, and the removal is STILL held", async () => {
+    // The hole the issue's own proposal left open, and the reason this PR states the rule over ANY
+    // refused addition rather than over a wholly refused `add`. "Classify it and mark it urgent"
+    // is how an instruction produces `add: [category, "urgente"]`, and under the narrow rule the
+    // guard would catch only the category, the `add` would not have fallen ENTIRELY, and the
+    // removal would land alone — the same conversation with no category, reached by a call the
+    // issue's table does not contain.
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento", "urgente"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    // `urgente` lands: only removals are held, so a free addition is never lost to a guarded one.
+    expect(posts).toEqual([
+      [9, ["compra-de-ingresso", "agente-off", "urgente"]],
+    ]);
+    expect(out).toContain('added "urgente"');
+    expect(out).toContain('"compra-de-ingresso" stays');
+    expect(out).not.toContain('removed "compra-de-ingresso"');
+  });
+
+  test("a call with no refused addition removes normally, including when it has no `add` at all", async () => {
+    // THE CHEAPEST REGRESSION TO CAUSE AND THE MOST EXPENSIVE TO FIND. Written as "every label in
+    // `add` was refused", the rule fires on an empty `add` — `[].every(…)` is true — and swallows
+    // the removal of every remove-only call, which is the most common use of the tool and the one
+    // an operator's prompt uses to take a wrong label off. The rule is over what the guard
+    // REFUSED, so an empty `add` refuses nothing and holds nothing.
+    for (const call of [
+      { remove: ["compra-de-ingresso"] },
+      { add: [], remove: ["compra-de-ingresso"] },
+      { add: ["reembolso"], remove: ["compra-de-ingresso"] },
+    ]) {
+      const posts: unknown[][] = [];
+      const client = {
+        getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+        setConversationLabels: async (...a: unknown[]) => {
+          posts.push(a);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      const tools = buildNativeTools({
+        client,
+        conversationId: 9,
+        protectedLabels: ["cancelamento"],
+      });
+      const out = String(await byName(tools, "set_labels").invoke(call));
+      expect(posts.length).toBe(1);
+      expect(posts[0]?.[1]).not.toContain("compra-de-ingresso");
+      expect(out).toContain('removed "compra-de-ingresso"');
+      expect(out).not.toContain("stays");
+    }
+  });
+
+  test("the same guarded label on both sides is refused once, and the report does not contradict itself", async () => {
+    let posts = 0;
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async () => {
+        posts++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["cancelamento"],
+      }),
+    );
+    expect(posts).toBe(0);
+    expect(out).toContain("cannot be added");
+    expect(out).toContain("cannot be removed");
+    // Nothing was held: the removal it names was refused by the guard on its own terms, so
+    // claiming it "stays" because of the addition would be a second, wrong reason for the same
+    // fact.
+    expect(out).not.toContain("stays");
+  });
+
+  test("the rule is about the guard REFUSING an addition, not about the addition having no effect", async () => {
+    // `add: ["a"]` where `a` is already standing asks for something and moves nothing, and #695's
+    // s14 settled that naming a label already present is a legitimate request. Conditioning the
+    // hold on "nothing was actually added" instead of "the guard refused an addition" would turn
+    // that redundant request into a block on every removal beside it.
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["a", "compra-de-ingresso"],
+      setConversationLabels: async (...x: unknown[]) => {
+        posts.push(x);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({ client, conversationId: 9 });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["a"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([[9, ["a"]]]);
+    expect(out).toContain('removed "compra-de-ingresso"');
+  });
+
+  test("a held call holds its WHOLE removal, guarded half and free half alike", async () => {
+    // The edge the issue raises and leaves open, decided here: the free half goes nowhere either.
+    // The removal was asked for as one request, and applying the part of it the guard happens not
+    // to cover would leave the conversation in a state nobody asked for — which is the thing the
+    // rule exists to stop, not a smaller version of it. Both labels are named back, because the
+    // model wrote both and cannot guess where either ended up.
+    let posts = 0;
+    const client = {
+      getConversationLabels: async () => [
+        "x",
+        "compra-de-ingresso",
+        "agente-off",
+      ],
+      setConversationLabels: async () => {
+        posts++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento", "x"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["x", "compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toBe(0);
+    expect(out).toContain('cannot be removed: "x"');
+    expect(out).toContain('"compra-de-ingresso" stays');
+  });
+
+  test("the hold belongs to the call that carried the refusal, and does not outlive it", async () => {
+    // The cost of this design, stated rather than hidden: reading the refusal, the model can still
+    // reach the no-category state with a second, removal-only call. What the rule buys is that it
+    // never gets there WITHOUT asking, which is why the refusal names the label and gives the
+    // reason. A hold that survived into the next call would be a different tool: the model would
+    // lose removals it never tied to a guarded addition.
+    let current = ["compra-de-ingresso", "agente-off"];
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => [...current],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        current = a[1] as string[];
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento"],
+    });
+    await byName(tools, "set_labels").invoke({
+      add: ["cancelamento"],
+      remove: ["compra-de-ingresso"],
+    });
+    expect(posts).toEqual([]);
+    await byName(tools, "set_labels").invoke({
+      remove: ["compra-de-ingresso"],
+    });
+    await byName(tools, "set_labels").invoke({ add: ["urgente"] });
+    expect(current).toEqual(["agente-off", "urgente"]);
+  });
+
+  test("the description states the hold, and only where there is a guard to hold for", () => {
+    // The model has two places to learn this rule and must find it in one of them: here, before it
+    // writes, or in the refusal after it (which carries the whole explanation either way). It is
+    // stated here because the alternative is the model planning a swap it cannot complete and
+    // paying a call to be told. It is NOT stated on an agent with no guard, where the rule can
+    // never fire and the sentence would be context spent on nothing, every turn.
+    const { client } = recordingClient();
+    const guarded = byName(
+      buildNativeTools({
+        client,
+        conversationId: 9,
+        protectedLabels: ["agente-off"],
+      }),
+      "set_labels",
+    ).description as string;
+    expect(guarded).toContain("when it is not already there");
+    expect(guarded).toContain("holds the call's `remove`");
+    const free = byName(
+      buildNativeTools({ client, conversationId: 9 }),
+      "set_labels",
+    ).description as string;
+    expect(free).not.toContain("holds the call's `remove`");
+  });
+
+  test("reaffirming a guarded label that is already there does not hold the swap", async () => {
+    // Found by the holdout verifier on the head this rule first shipped in. `agente-off` guarded
+    // AND standing is the real observer's configuration, and a model that reaffirms it — which it
+    // can now do, because #695 made guarded labels visible — beside a perfectly ordinary swap
+    // would otherwise end the turn with BOTH categories, which is the state the single write
+    // exists to prevent and which the same call did NOT produce before the hold existed.
+    //
+    // The refused addition asked for nothing: naming a present label moves nothing under the
+    // delta, so there was no exchange for the removal to be in service of.
+    const posts: unknown[][] = [];
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
+      setConversationLabels: async (...a: unknown[]) => {
+        posts.push(a);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["agente-off"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento", "agente-off"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toEqual([[9, ["agente-off", "cancelamento"]]]);
+    expect(out).toContain('removed "compra-de-ingresso"');
+    expect(out).not.toContain("stays");
+    // The refusal is still reported: the model asked for something it may not have.
+    expect(out).toContain("cannot be added");
+  });
+
+  test("a guarded label that is NOT standing still holds the swap", async () => {
+    // The other side of the same line, so the refinement above cannot be widened into "a refused
+    // addition never holds anything". Same call, same guard, and the only difference is that the
+    // guarded label the model named is not on the conversation, so asking for it was a real
+    // request and the removal did come with it.
+    let posts = 0;
+    const client = {
+      getConversationLabels: async () => ["compra-de-ingresso"],
+      setConversationLabels: async () => {
+        posts++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["agente-off"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["agente-off"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(posts).toBe(0);
+    expect(out).toContain('"compra-de-ingresso" stays');
+  });
+
+  test("a hold names only what was actually standing", async () => {
+    // The report claims an effect, so it is read off the scope rather than off the request. A
+    // label the model asked to remove that is not there was going nowhere either way, and saying
+    // it "stays" because of the hold would be the same lie as claiming a removal that never
+    // happened, pointing the other way.
+    const client = {
+      getConversationLabels: async () => ["agente-off"],
+      setConversationLabels: async () => ({}),
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        add: ["cancelamento"],
+        remove: ["nunca-esteve-aqui"],
+      }),
+    );
+    expect(out).toContain("cannot be added");
+    expect(out).not.toContain("stays");
+  });
+
+  test("a held call does not hold the OTHER call of the same batch", async () => {
+    // The hold is a property of the call that carried the refused addition, and the queue is what
+    // makes the other call of the batch read a world the first one did not change. Ten runs,
+    // because a result that oscillates between runs means the serialisation stopped closing and
+    // would read here as a flaky test rather than as the defect it is.
+    for (let i = 0; i < 10; i++) {
+      let current = ["compra-de-ingresso", "base"];
+      const client = {
+        getConversationLabels: async () => [...current],
+        setConversationLabels: async (...args: unknown[]) => {
+          current = [...(args[1] as string[])];
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      const tool = byName(
+        buildNativeTools({
+          client,
+          conversationId: 9,
+          protectedLabels: ["cancelamento"],
+        }),
+        "set_labels",
+      );
+      await Promise.all([
+        tool.invoke({ add: ["cancelamento"], remove: ["compra-de-ingresso"] }),
+        tool.invoke({ add: ["urgente"], remove: ["base"] }),
+      ]);
+      expect([...current].sort()).toEqual(["compra-de-ingresso", "urgente"]);
+    }
+  });
+
+  test("the hold applies in the contact scope too", async () => {
+    let setCount = 0;
+    const client = {
+      getContactLabels: async () => ["compra-de-ingresso", "vip"],
+      setContactLabels: async () => {
+        setCount++;
+        return {};
+      },
+      setConversationLabels: async () => {
+        throw new Error(
+          "a contact-scope call must never write the conversation",
+        );
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      tenantId: 1n,
+      contactDbId: 3n,
+      base: fakeContactDb(55),
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        scope: "contact",
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(setCount).toBe(0);
+    expect(out).toContain('"compra-de-ingresso" stays');
+  });
+
+  test("the hold applies in the task scope, and leaves the card snapshot standing", async () => {
+    let setCount = 0;
+    const client = {
+      getKanbanTask: async () => ({ labels: ["compra-de-ingresso", "fila-1"] }),
+      setKanbanTaskLabels: async () => {
+        setCount++;
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const kanban = {
+      ...kanbanCtx,
+      card: { ...kanbanCtx.card, labels: ["compra-de-ingresso", "fila-1"] },
+    };
+    const tools = buildNativeTools({
+      client,
+      conversationId: 9,
+      kanban,
+      protectedLabels: ["cancelamento"],
+    });
+    const out = String(
+      await byName(tools, "set_labels").invoke({
+        scope: "task",
+        add: ["cancelamento"],
+        remove: ["compra-de-ingresso"],
+      }),
+    );
+    expect(setCount).toBe(0);
+    expect(out).toContain('"compra-de-ingresso" stays');
+    // A second call in the same turn must start from the world that exists, not from the one the
+    // refused call asked for.
+    expect(kanban.card.labels).toEqual(["compra-de-ingresso", "fila-1"]);
   });
 
   test("set_labels task scope is offered only when a card is linked", () => {

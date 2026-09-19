@@ -1411,7 +1411,7 @@
     "promptVarsHint": "Inserir uma variável (datas também aceitam um sufixo :formato):",
     "promptViewToggle": "Editor ou pré-visualização",
     "protectedLabels": "Etiquetas fora do alcance",
-    "protectedLabelsHint": "Opcional, separadas por vírgula. Etiquetas que este agente não pode acrescentar nem remover: as que são de outro sistema. Ele continua vendo e é avisado disso.",
+    "protectedLabelsHint": "Opcional, separadas por vírgula. Etiquetas que este agente não pode acrescentar nem remover: as que são de outro sistema. Ele continua vendo, e pedir uma delas que esteja faltando também segura as remoções da chamada.",
     "protectedLabelsPlaceholder": "ex.: agente-off, testando-agente",
     "protectedLabelsTooMany": "Etiquetas fora do alcance aceita no máximo {{max}} etiquetas.",
     "provider": "Provedor",

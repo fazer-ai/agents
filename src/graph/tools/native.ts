@@ -879,6 +879,7 @@ export function applyLabelDelta(
   removed: string[];
   refusedAdd: string[];
   refusedRemove: string[];
+  heldRemove: string[];
 } {
   const clean = (xs: readonly string[]): string[] => [
     ...new Set(xs.map((l) => l.trim()).filter(Boolean)),
@@ -888,7 +889,38 @@ export function applyLabelDelta(
   const wantRemove = clean(remove);
   const refusedAdd = wantAdd.filter((l) => guard.has(l));
   const refusedRemove = wantRemove.filter((l) => guard.has(l));
-  const drop = new Set(wantRemove.filter((l) => !guard.has(l)));
+  // A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED ANY ADDITION OF THE SAME CALL (issue #712).
+  // The two halves used to be weighed one by one, so a swap the guard caught on one side landed
+  // the other side, and a mutually exclusive taxonomy ended the turn with NO category — the more
+  // expensive of the two half-written states, because it destroys a classification instead of
+  // adding a second one. The removal was asked for to make room for an addition; when that
+  // addition cannot happen, applying the removal alone delivers a state nobody requested.
+  //
+  // OVER WHAT THE GUARD REFUSED, never over what the write ended up doing. `add: ["a"]` where `a`
+  // already stands moves nothing and is still a legitimate request (#695 s14); conditioning on
+  // "nothing was added" would let a redundant addition block every removal beside it.
+  //
+  // REMOVALS ONLY, never additions, and that asymmetry is imposed from outside rather than
+  // chosen: #695 sealed s8 (`add: ["cancelamento", "reembolso"]` with `cancelamento` guarded must
+  // still write `reembolso`) and s9 (a guarded REMOVE must still let its addition through, so a
+  // conversation CAN still end with both categories). Holding the whole call would reverse both.
+  // The "both categories" direction is therefore still reachable, on purpose, and #712 says so.
+  //
+  // A REFUSED ADDITION OF A LABEL ALREADY STANDING DOES NOT HOLD ANYTHING. It asked for nothing:
+  // under the delta, naming a present label is a no-op, so there was no exchange for the removal
+  // to be in service of. Without this, a model that reaffirms a guarded label it can now SEE —
+  // `add: [nova-categoria, agente-off]`, `remove: [categoria-antiga]`, with `agente-off` guarded
+  // and on the conversation, which is the real observer's configuration — would hold a swap that
+  // completes perfectly well and leave BOTH categories standing, where the same call landed the
+  // single correct one before this rule existed. Still conditioned on the guard's REFUSAL and not
+  // on the write's outcome: an agent with no guard refuses nothing and holds nothing, whatever its
+  // additions end up moving.
+  const hold = refusedAdd.some((l) => !current.includes(l));
+  const free = wantRemove.filter((l) => !guard.has(l));
+  // Named back only when the label is actually standing: reporting a hold on one that was not
+  // there would claim an effect the call never had, which is the same lie in the other direction.
+  const heldRemove = hold ? free.filter((l) => current.includes(l)) : [];
+  const drop = new Set(hold ? [] : free);
   const kept = current.filter((l) => !drop.has(l));
   const next = [...new Set([...kept, ...wantAdd.filter((l) => !guard.has(l))])];
   return {
@@ -899,6 +931,7 @@ export function applyLabelDelta(
     removed: current.filter((l) => !next.includes(l)),
     refusedAdd,
     refusedRemove,
+    heldRemove,
   };
 }
 
@@ -915,6 +948,12 @@ export function applyLabelDelta(
 // the model could not ask for it, so subtracting it silently had nothing to report to. Now it sees
 // the label, will therefore ask, and answering "already as requested" would be a false statement it
 // reads back out of its own transcript one call later (issue #695).
+//
+// A HELD REMOVAL IS NAMED TOO, and separately from a refusal (issue #712). The model wrote that
+// label and has no way to guess where it ended up; a report that simply omitted it would read as
+// a removal that happened, and the model records this string and decides its next turn from it.
+// The sentence states the RULE rather than a remedy on purpose: telling it to "ask again without
+// the addition" would hand it the recipe for the very state the hold exists to prevent.
 function labelWriteReport(
   where: string,
   added: string[],
@@ -922,6 +961,7 @@ function labelWriteReport(
   next: string[],
   refusedAdd: string[] = [],
   refusedRemove: string[] = [],
+  heldRemove: string[] = [],
 ): string {
   // The report is the THIRD statement about the same list, so it is capped like the other two, and
   // it says how many it left out rather than presenting a partial set as the whole truth.
@@ -941,11 +981,14 @@ function labelWriteReport(
   const tail = refused.length
     ? ` Some labels are managed by another system and ${refused.join("; ")}.`
     : "";
+  const held = heldRemove.length
+    ? ` ${quoted(heldRemove)} stays: a removal is not applied when the same call tried to add a label that is out of reach.`
+    : "";
   if (parts.length === 0)
     return refused.length
-      ? `No label on the ${where} changed.${tail} Now set: ${now}.`
+      ? `No label on the ${where} changed.${tail}${held} Now set: ${now}.`
       : `Labels on the ${where} were already as requested. Now set: ${now}.`;
-  return `Labels on the ${where}: ${parts.join("; ")}.${tail} Now set: ${now}.`;
+  return `Labels on the ${where}: ${parts.join("; ")}.${tail}${held} Now set: ${now}.`;
 }
 
 // THE MODEL-VISIBLE SET, kept current for the rest of the turn. A turn has as many label writes as
@@ -1038,7 +1081,7 @@ function setLabelsTool(ctx: ToolCtx) {
         .map((l) => `'${l}'`)
         .join(
           ", ",
-        )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}.`
+        )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}. Naming one of them in \`add\` when it is not already there also holds the call's \`remove\`, so a swap you cannot complete does not leave the scope empty.`
     : "";
   const baseDescription = [
     `Add or remove labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
@@ -1104,7 +1147,7 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the labels (the card could not be read just now). Try again.";
         }
-        const { next, added, removed, refusedAdd, refusedRemove } =
+        const { next, added, removed, refusedAdd, refusedRemove, heldRemove } =
           applyLabelDelta(add, remove, cardLabels, guarded);
         if (added.length === 0 && removed.length === 0) {
           // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
@@ -1119,6 +1162,7 @@ function setLabelsTool(ctx: ToolCtx) {
             next,
             refusedAdd,
             refusedRemove,
+            heldRemove,
           );
         }
         // ASKED AGAIN, after the GET and before the write, for the reason the two sibling scopes
@@ -1143,6 +1187,7 @@ function setLabelsTool(ctx: ToolCtx) {
           next,
           refusedAdd,
           refusedRemove,
+          heldRemove,
         );
       }
       if (scope === "contact") {
@@ -1165,7 +1210,7 @@ function setLabelsTool(ctx: ToolCtx) {
         const current = await ctx.client.getContactLabels(
           contact.chatwootContactId,
         );
-        const { next, added, removed, refusedAdd, refusedRemove } =
+        const { next, added, removed, refusedAdd, refusedRemove, heldRemove } =
           applyLabelDelta(add, remove, current, guarded);
         if (added.length === 0 && removed.length === 0) {
           ctx.onNoEffect?.("set_labels");
@@ -1177,6 +1222,7 @@ function setLabelsTool(ctx: ToolCtx) {
             next,
             refusedAdd,
             refusedRemove,
+            heldRemove,
           );
         }
         // ASKED AGAIN, after the GET and before the write — the fourth handler in this file that
@@ -1198,6 +1244,7 @@ function setLabelsTool(ctx: ToolCtx) {
           next,
           refusedAdd,
           refusedRemove,
+          heldRemove,
         );
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
@@ -1212,8 +1259,14 @@ function setLabelsTool(ctx: ToolCtx) {
           const current = await ctx.client.getConversationLabels(
             ctx.conversationId,
           );
-          const { next, added, removed, refusedAdd, refusedRemove } =
-            applyLabelDelta(add, remove, current, guarded);
+          const {
+            next,
+            added,
+            removed,
+            refusedAdd,
+            refusedRemove,
+            heldRemove,
+          } = applyLabelDelta(add, remove, current, guarded);
           if (added.length === 0 && removed.length === 0) {
             // Nothing moved: see the sibling scopes above.
             ctx.onNoEffect?.("set_labels");
@@ -1225,6 +1278,7 @@ function setLabelsTool(ctx: ToolCtx) {
               next,
               refusedAdd,
               refusedRemove,
+              heldRemove,
             );
           }
           // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
@@ -1249,6 +1303,7 @@ function setLabelsTool(ctx: ToolCtx) {
             next,
             refusedAdd,
             refusedRemove,
+            heldRemove,
           );
         },
       );

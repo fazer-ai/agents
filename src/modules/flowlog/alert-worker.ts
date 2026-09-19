@@ -1,31 +1,30 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
-import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { sanitizeErrorMessage } from "@/lib/redact";
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { clipText } from "@/lib/text";
-import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
-import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
+import { alertErrMsg, sendAlert } from "./alert-send";
 import { emitDeadLetter } from "./dead-letter";
 
 // Alert delivery worker (claim + deliver). Mirrors the outbound-webhook worker: a single-replica
 // tick reaps stale SENDING rows, claims due PENDING deliveries cross-tenant (FOR UPDATE SKIP
-// LOCKED), decrypts the channel URL (SSRF-checked), POSTs OUTSIDE any transaction, and records the
-// outcome (DELIVERED / back to PENDING with full-jitter backoff / DEAD). A DEBOUNCE WINDOW gates
-// fresh rows: a just-created delivery (no next_attempt_at) is only claimed once it is older than
-// ALERT_COALESCE_WINDOW_MS, so concurrent burst events accumulate into its `count` before the
-// single POST. Retries (next_attempt_at set) are claimed when due, ignoring the window.
+// LOCKED), hands each one to `sendAlert` (which decrypts the channel URL, vets it, signs and POSTs,
+// OUTSIDE any transaction), and records the outcome (DELIVERED / back to PENDING with full-jitter
+// backoff / DEAD). The send itself lives in ./alert-send.ts because the console's Test button
+// performs the same one (#605), and a probe that took a different path would approve channels whose
+// real alerts never arrive.
+//
+// A DEBOUNCE WINDOW gates fresh rows: a just-created delivery (no next_attempt_at) is only claimed
+// once it is older than ALERT_COALESCE_WINDOW_MS, so concurrent burst events accumulate into its
+// `count` before the single POST. Retries (next_attempt_at set) are claimed when due, ignoring the
+// window.
 
 const MAX_ATTEMPTS = 8;
 const CLAIM_LIMIT = 50;
 const DELIVERY_CONCURRENCY = 10;
 const STALE_SENDING_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-const MAX_ERROR_LEN = 500;
 
 export interface AlertWorkerOptions {
   base?: PrismaClient;
@@ -69,13 +68,6 @@ type Outcome = "delivered" | "retried" | "dead";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
-// `sanitizeErrorMessage` rather than a bare cut: this string is stored in `last_error`, and the
-// exceptions a delivery produces wrap what the remote endpoint answered. See issue #243 and the
-// function's own header for why a NUL or an orphan surrogate costs the whole write.
-function errMsg(err: unknown): string {
-  return sanitizeErrorMessage(err, MAX_ERROR_LEN);
 }
 
 async function mapWithConcurrency<T, R>(
@@ -259,97 +251,35 @@ async function finalizeFailure(
   return "retried";
 }
 
-// Discord-native markdown (its webhook expects `{ content }`); the generic webhook gets a versioned
-// JSON envelope. Both carry the coalesced burst count, never message text/PII.
-function buildBody(a: ClaimedAlert): { rawBody: string; contentType: string } {
-  const times = a.count > 1 ? ` (×${a.count})` : "";
-  if (a.type === "discord") {
-    const icon = a.level === "error" ? "🔴" : "🟠";
-    const content = `${icon} **fazer.ai agents** \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}`;
-    return {
-      rawBody: JSON.stringify({ content: clipText(content, 1900) }),
-      contentType: "application/json",
-    };
-  }
-  return {
-    rawBody: JSON.stringify({
-      version: 1,
-      type: "alert",
-      stage: a.stage,
-      level: a.level,
-      count: a.count,
-      summary: a.summary,
-    }),
-    contentType: "application/json",
-  };
-}
-
 async function deliverClaimed(
   base: PrismaClient,
   a: ClaimedAlert,
   opts: AlertWorkerOptions,
 ): Promise<Outcome> {
-  const assertSafe = opts.assertSafe ?? assertSafeOutboundUrl;
-  const fetchImpl = opts.fetchImpl ?? fetch;
   const now = opts.now ?? (() => Date.now());
-  const timeoutMs = opts.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
-
-  // Decrypt the channel URL (a blocked/unparseable URL can never succeed → permanent failure).
-  let url: string;
-  try {
-    url = decryptJson<string>(a.url);
-    await assertSafe(url);
-  } catch (err) {
-    return finalizeDead(base, a, a.attempts + 1, errMsg(err));
-  }
-
-  // Optional HMAC secret (generic webhook), resolved through a tenant-scoped read (RLS active).
-  let secret: string | null = null;
-  if (a.secretRef && a.type === "webhook") {
-    try {
-      const ref = a.secretRef;
-      secret = await runScopedOn(base, sysCtx(a.tenantId), (db) =>
-        tryResolveVaultSecret<string>(db, ref),
-      );
-    } catch (err) {
-      return finalizeFailure(
-        base,
-        a,
-        `secret resolution failed: ${errMsg(err)}`,
-        now,
-      );
-    }
-  }
-
-  const { rawBody, contentType } = buildBody(a);
-  const ts = Math.floor(now() / 1000);
-  const headers = outboundHeaders({
-    contentType,
-    deliveryId: String(a.id),
-    timestampSeconds: ts,
-    rawBody,
-    secret,
-  });
-
-  let status: number;
-  try {
-    const res = await fetchImpl(url, {
-      method: "POST",
-      headers,
-      body: rawBody,
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    status = res.status;
-  } catch (err) {
-    return finalizeFailure(base, a, `request failed: ${errMsg(err)}`, now);
-  }
-
-  if (status >= 200 && status < 300) {
+  const res = await sendAlert(
+    base,
+    sysCtx(a.tenantId),
+    { ...a, deliveryId: String(a.id) },
+    {
+      fetchImpl: opts.fetchImpl,
+      assertSafe: opts.assertSafe,
+      now: opts.now,
+      requestTimeoutMs: opts.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+    },
+  );
+  if (res.ok) {
     await finalizeDelivered(base, a);
     return "delivered";
   }
-  return finalizeFailure(base, a, `non-2xx response: ${status}`, now);
+  // A URL that cannot be decrypted or is not allowed to be reached is permanent: no amount of
+  // retrying turns it into a deliverable one, so the ladder is skipped and the row goes straight to
+  // DEAD (which is also what writes the flow-log line about the alert that never arrived).
+  const error = res.error ?? "delivery failed";
+  if (res.stoppedAt === "url") {
+    return finalizeDead(base, a, a.attempts + 1, error);
+  }
+  return finalizeFailure(base, a, error, now);
 }
 
 export async function processAlertBatch(
@@ -414,7 +344,7 @@ async function tick(base: PrismaClient, state: WorkerState): Promise<void> {
       );
     }
   } catch (err) {
-    logger.error("Alert tick failed: %s", errMsg(err));
+    logger.error("Alert tick failed: %s", alertErrMsg(err));
   } finally {
     state.running = false;
   }

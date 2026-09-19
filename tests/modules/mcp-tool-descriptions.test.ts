@@ -581,6 +581,25 @@ describe("MCP tool descriptions", () => {
   // every Behavior save, so by this schema's own rule the value must parse; REST now asks this schema,
   // and without the null the editor's own save would be refused on its first write. 57,178 measured,
   // same 16.
+  //
+  // BOTH MOVED by `alert_channel_test` (#605), the one tool this branch adds, and both remeasured on
+  // this tree rather than summed: 30,447 and 57,092, so the ceilings go to 30,462 and 57,108, keeping
+  // the same 15 and 16 the paragraphs above hold. The tool itself costs 238 and 141, measured by
+  // registering it and not, on this same tree.
+  //
+  // WHICH MEANS THE SCHEMA CEILING COMES DOWN, from 57,194, and that is the ratchet working rather
+  // than an error: this branch's BASE measures 30,209 and 56,951, so the tree had already shrunk 223
+  // and 243 under both ceilings since the readings above were taken. Carrying that slack forward
+  // would let a future tool spend it without being measured, which is the one thing these numbers
+  // exist to prevent.
+  //
+  // The description is 238 characters and its first draft was 297. What came out is the half a caller
+  // can read off the schema it is already being served, plus the three record-nothings spelled one by
+  // one. What stayed is the half that cannot be guessed and would otherwise be learned by trying:
+  // that this REACHES the destination rather than previewing it (so there is no `dry_run` to look
+  // for), and that a DISABLED channel is TESTED rather than refused — the one answer a client would
+  // assume the other way round, and the reason the tool exists, since testing before enabling is the
+  // normal order.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -589,8 +608,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_432);
-    expect(schema).toBeLessThanOrEqual(57_194);
+    expect(desc).toBeLessThanOrEqual(30_462);
+    expect(schema).toBeLessThanOrEqual(57_108);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

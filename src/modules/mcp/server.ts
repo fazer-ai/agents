@@ -184,6 +184,7 @@ import {
 import {
   alertChannelCreate,
   alertChannelDelete,
+  alertChannelTest,
   alertChannelUpdate,
   integrationCreate,
   integrationDelete,
@@ -2343,6 +2344,19 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { channel_id: string; dry_run?: boolean }, eff) =>
         writeContent(await alertChannelDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "alert_channel_test",
+      {
+        description:
+          "Post a sample alert to an alert channel's EXTERNAL destination and return the outcome (ok/status/error/signed/enabled/durationMs). Works on a DISABLED channel, reporting that it is. Sends a real request; runs immediately; records nothing.",
+        inputSchema: { channel_id: z.string() },
+      },
+      async (args: { channel_id: string }, eff) =>
+        writeContent(await alertChannelTest(eff, args)),
     );
 
     registerTenantTool(

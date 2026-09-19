@@ -6,6 +6,7 @@ import { listCatalog } from "@/modules/integrations/service";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   alertChannelCreate,
+  alertChannelTest,
   integrationCreate,
   integrationUpdate,
   webhookCreate,
@@ -218,6 +219,111 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
       where: { tenantId: tenantA, name: "broken" },
     });
     expect(row).toBeNull();
+  });
+
+  // ── the test send on this transport (issue #605) ──
+  //
+  // `alert_channel_test` sits beside `webhook_test` and takes the same shape: one argument, no
+  // `dry_run`, acts on the call. A preview of a test would be a preview of a preview, and the whole
+  // value of the thing is that it ACTUALLY reaches the destination.
+
+  async function withStubbedFetch<T>(
+    reply: () => Response,
+    fn: (sent: string[]) => Promise<T>,
+  ): Promise<T> {
+    const sent: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      sent.push(String(url));
+      return reply();
+    }) as unknown as typeof fetch;
+    try {
+      return await fn(sent);
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  test("alert_channel_test sends on the call and returns the outcome", async () => {
+    const p = principal({ tenantId: tenantA });
+    const created = await alertChannelCreate(
+      p,
+      {
+        name: "mcp-tested",
+        type: "discord",
+        url_ref: "discord-url",
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(created.ok).toBe(true);
+    const row = await suDb.alertChannel.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "mcp-tested" },
+    });
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM audit_logs WHERE tenant_id = ${tenantA}`,
+    );
+
+    const r = await withStubbedFetch(
+      () => new Response(null, { status: 204 }),
+      async (sent) => {
+        const res = await alertChannelTest(
+          p,
+          { channel_id: String(row.id) },
+          { base: appDb },
+        );
+        // One argument and it went out: no second call with an apply flag.
+        expect(sent).toHaveLength(1);
+        return res;
+      },
+    );
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const result = (r.data as { result: Record<string, unknown> }).result;
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe(204);
+      expect(typeof result.durationMs).toBe("number");
+      // The channel's URL embeds a Discord bot token, and this response is what an MCP client puts
+      // in a transcript.
+      expect(JSON.stringify(r.data)).not.toContain("abcdefTOKEN");
+    }
+    // Nothing recorded, same decision as `webhook_test`: the trail records changes.
+    expect(await suDb.auditLog.count({ where: { tenantId: tenantA } })).toBe(0);
+    expect(
+      await suDb.alertDelivery.count({ where: { channelId: row.id } }),
+    ).toBe(0);
+  });
+
+  test("alert_channel_test does not reach another tenant's channel", async () => {
+    const mine = await alertChannelCreate(
+      principal({ tenantId: tenantA }),
+      {
+        name: "mcp-fenced",
+        type: "discord",
+        url_ref: "discord-url",
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(mine.ok).toBe(true);
+    const row = await suDb.alertChannel.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "mcp-fenced" },
+    });
+
+    await withStubbedFetch(
+      () => new Response(null, { status: 204 }),
+      async (sent) => {
+        const r = await alertChannelTest(
+          principal({ tenantId: tenantB }),
+          { channel_id: String(row.id) },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(false);
+        // And the refusal is a refusal, not a delivery to somebody else's destination.
+        expect(sent).toHaveLength(0);
+      },
+    );
   });
 
   test("integration_create applies but never returns the raw route token", async () => {

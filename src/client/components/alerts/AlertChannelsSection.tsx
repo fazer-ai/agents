@@ -1,4 +1,4 @@
-import { BellRing, Pencil, Plus, Trash2 } from "lucide-react";
+import { BellRing, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -474,6 +474,7 @@ export function AlertChannelsSection() {
   const [error, setError] = useState(false);
   const modal = useModalController<ChannelModalPayload>();
   const confirm = useModalController<ConfirmPayload>();
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -513,6 +514,66 @@ export function AlertChannelsSection() {
           t("alerts.saveFailed", "Could not save the channel"),
         "error",
       );
+    }
+  };
+
+  // The button the issue is named after (#605): before it, the only way to learn whether a channel
+  // was wired correctly was to wait for an incident and watch it not arrive.
+  const runTest = async (ch: AlertChannel) => {
+    setTestingId(ch.id);
+    try {
+      const { data, error: err } = await api.api.v1["alert-channels"]({
+        id: ch.id,
+      }).test.post();
+      const result = data?.result;
+      if (err || !result) {
+        showToast(
+          apiErrorMessage(err) || t("alerts.testFailed", "Test alert failed"),
+          "error",
+        );
+        return;
+      }
+      if (!result.ok) {
+        // A 200 carrying the DESTINATION's refusal, not a refusal of ours: `err` is null by the
+        // guard above, and `result.error` is the reason. Saying only "failed" here would reproduce
+        // the issue one level up, with the operator unable to tell a bad URL from a dead endpoint.
+        showToast(
+          t("alerts.testFailedReason", "Test failed: {{reason}}", {
+            reason: result.error ?? String(result.status ?? "unknown"),
+          }),
+          "error",
+        );
+        return;
+      }
+      // Delivered, and then the two things a bare success would let the operator believe wrongly:
+      // that the channel is already watching, and that it is signing.
+      if (result.warning) {
+        showToast(
+          t(
+            "alerts.testDeliveredUnsigned",
+            "Delivered ({{status}}), but UNSIGNED: the configured signing secret did not resolve",
+            { status: result.status ?? 200 },
+          ),
+          "warning",
+        );
+        return;
+      }
+      showToast(
+        result.enabled
+          ? t("alerts.testDelivered", "Test alert delivered ({{status}})", {
+              status: result.status ?? 200,
+            })
+          : t(
+              "alerts.testDeliveredDisabled",
+              "Test alert delivered ({{status}}), but this channel is still disabled",
+              { status: result.status ?? 200 },
+            ),
+        result.enabled ? "success" : "info",
+      );
+    } catch {
+      showToast(t("alerts.testFailed", "Test alert failed"), "error");
+    } finally {
+      setTestingId(null);
     }
   };
 
@@ -630,6 +691,16 @@ export function AlertChannelsSection() {
                   onCheckedChange={() => void toggleEnabled(ch)}
                   aria-label={t("common.enabled", "Enabled")}
                 />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={testingId === ch.id}
+                  disabled={testingId === ch.id}
+                  onClick={() => void runTest(ch)}
+                >
+                  <Send className="h-4 w-4" aria-hidden="true" />
+                  {t("alerts.test", "Test")}
+                </Button>
                 <Button
                   variant="secondary"
                   size="sm"

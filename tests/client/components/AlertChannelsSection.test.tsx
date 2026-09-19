@@ -67,6 +67,15 @@ describe("AlertChannelsSection", () => {
   const realFetch = globalThis.fetch;
   const calls: { method: string; url: string; body: unknown }[] = [];
   let channels: ReturnType<typeof channel>[] = [];
+  let testResult: Record<string, unknown> = {
+    ok: true,
+    status: 204,
+    error: null,
+    signed: true,
+    enabled: true,
+    durationMs: 12,
+    warning: null,
+  };
 
   const patches = () =>
     calls.filter(
@@ -92,6 +101,7 @@ describe("AlertChannelsSection", () => {
     if (url.includes("/api/v1/vault")) return json({ entries: [VAULT_ENTRY] });
     if (url.includes("/api/v1/alert-channels")) {
       if (method === "GET") return json({ channels });
+      if (url.endsWith("/test")) return json({ result: testResult });
       return json({ channel: channels[0] });
     }
     return json({});
@@ -100,6 +110,15 @@ describe("AlertChannelsSection", () => {
   beforeEach(() => {
     invalidateVault();
     channels = [channel()];
+    testResult = {
+      ok: true,
+      status: 204,
+      error: null,
+      signed: true,
+      enabled: true,
+      durationMs: 12,
+      warning: null,
+    };
   });
   afterEach(() => {
     cleanup();
@@ -306,6 +325,87 @@ describe("AlertChannelsSection", () => {
     // what lets the operator see, and keep, the credential they configured.
     await waitFor(() =>
       expect(screen.queryAllByText("ops-hmac").length > 0).toBe(true),
+    );
+  });
+
+  // ── THE BUTTON (issue #605) ──
+  //
+  // Before it, an operator had no way to learn whether a channel worked short of waiting for an
+  // incident. The three tests here are not "the button posts"; they are the three answers a bare
+  // "delivered" would let the operator read wrongly.
+
+  const pressTest = async (over: Record<string, unknown> = {}) => {
+    testResult = { ...testResult, ...over };
+    render(
+      <ToastProvider>
+        <AlertChannelsSection />
+      </ToastProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText("Ops webhook").length > 0).toBe(true),
+    );
+    screen.getByRole("button", { name: /^(Test|Testar)$/ }).click();
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "POST" && c.url.endsWith("/alert-channels/3/test"),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect((document.body.textContent ?? "").includes("204")).toBe(true),
+    );
+    return (document.body.textContent ?? "").toString();
+  };
+
+  test("a delivered sample says so, with the status the destination gave", async () => {
+    const text = await pressTest();
+    expect(/delivered|entregue/i.test(text)).toBe(true);
+  });
+
+  test("a delivered sample on a DISABLED channel does not read as watching", async () => {
+    // The trap this closes: the operator tests before enabling, which is the normal order, sees a
+    // green toast and leaves believing production is being watched by a channel that is off.
+    const text = await pressTest({ enabled: false });
+    expect(/still disabled|continua desabilitado/i.test(text)).toBe(true);
+  });
+
+  test("a delivered sample that went out UNSIGNED says that instead of success", async () => {
+    // Same failure one layer in: the destination took it, so the channel is reachable, and a
+    // receiver that verifies signatures will still drop every real alert.
+    const text = await pressTest({
+      signed: false,
+      warning: "the configured signing secret did not resolve",
+    });
+    expect(/UNSIGNED|SEM ASSINATURA/i.test(text)).toBe(true);
+  });
+
+  test("a refusal from the destination carries its reason, not just a failure", async () => {
+    render(
+      <ToastProvider>
+        <AlertChannelsSection />
+      </ToastProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText("Ops webhook").length > 0).toBe(true),
+    );
+    testResult = {
+      ok: false,
+      status: 404,
+      error: "non-2xx response: 404",
+      signed: false,
+      enabled: true,
+      durationMs: 8,
+      warning: null,
+    };
+    screen.getByRole("button", { name: /^(Test|Testar)$/ }).click();
+    // Refusing to say WHY would reproduce the issue one level up: the operator learns the channel is
+    // broken and still cannot tell a deleted Discord webhook from a blocked host.
+    await waitFor(() =>
+      expect(
+        (document.body.textContent ?? "").includes("non-2xx response: 404"),
+      ).toBe(true),
     );
   });
 

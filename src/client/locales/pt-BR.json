@@ -146,6 +146,12 @@
     "signedUnavailable": "Segredo de assinatura definido, mas a credencial não está no cofre: as entregas saem sem assinatura",
     "stages": "Etapas",
     "subtitle": "Receba avisos no Discord ou no seu próprio endpoint quando uma etapa do agente gerar aviso ou falha.",
+    "test": "Testar",
+    "testDelivered": "Alerta de teste entregue ({{status}})",
+    "testDeliveredDisabled": "Alerta de teste entregue ({{status}}), mas este canal continua desabilitado",
+    "testDeliveredUnsigned": "Entregue ({{status}}), mas SEM ASSINATURA: o segredo configurado não resolve",
+    "testFailed": "O alerta de teste falhou",
+    "testFailedReason": "O teste falhou: {{reason}}",
     "title": "Canais de alerta",
     "type": {
       "discord": "Discord",

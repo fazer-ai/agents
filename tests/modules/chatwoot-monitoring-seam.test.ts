@@ -4,6 +4,8 @@ import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { contactInboxThreadId } from "@/graph/checkpointer";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { loadAgentConfig } from "@/graph/prepare";
 import { runScopedOn } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
@@ -591,6 +593,989 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     });
     expect(ledger.status).toBe("PROCESSING");
   });
+
+  // A METADE QUE A REVERSÃO COMPROU (issue #688). Um portão de posse do outro lado da espera é
+  // metade do conserto; a outra metade é a mensagem do cliente não sumir por causa dele. A tentativa
+  // anterior (`1ec96449`, revertida em `9dce80e2`) parava antes do invoke e perdia a mensagem: ela
+  // nunca entra no canal, a marca avança mesmo assim, a entrega é liquidada como consumida, e a
+  // ingestão do fim do `processChatwootDelivery` a pula, porque o `act` foi decidido lá atrás,
+  // quando ainda se esperava que um turno a cobrisse.
+  //
+  // O caminho é o mesmo que a #209 abriu para o `agent-unavailable`: quem parou sem ler a mensagem
+  // não liquida aqui, deixa a ingestão pegá-la, e só então a linha fecha.
+  test("issue #688: a takeover during the wait leaves the message to the ingestion instead of losing it", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: {
+        mode: "production",
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    const convId = 38;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "consigo trocar o endereço da entrega?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    // O thread ocupado é o que faz o turno ESPERAR, que é a janela inteira desta issue.
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Claro, posso trocar."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    // Uma pessoa assume enquanto o turno espera o thread.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    // Nada é dito por cima da pessoa, e o turno parou antes do invoke.
+    expect(sent).toEqual([]);
+    expect(seen.outcome).toBe("taken-over-unread");
+    // E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA. É aqui que a tentativa revertida falhava: sem isto,
+    // o cliente escreveu e nenhum lugar do sistema guarda o que ele disse.
+    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
+    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    // E SÓ ENTÃO A MARCA PASSA, que é a ordem inteira desta parada (review r10). Enquanto nada tinha
+    // lido a mensagem, uma marca acima dela seria a mensagem perdida; com a ingestão tendo
+    // funcionado, ela está na memória e o que falta é dizer isso — como o `agent-unavailable` sob um
+    // observador diz, e como o takeover comum sempre disse. Sem esta escrita a mensagem fica acima
+    // da marca com a memória já contendo-a, e a conversa voltando ao bot o flush seguinte a
+    // seleciona de novo: a mesma pergunta duas vezes no prompt.
+    expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
+    // A linha fecha, e fecha DEPOIS da ingestão — nunca no portão, onde a mensagem ainda não era de
+    // ninguém.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
+  }, 20_000);
+
+  // E SE O ENFILEIRAMENTO FALHAR, A LINHA NÃO FECHA (issue #688, review r1). A mensagem ir para a
+  // ingestão é metade do conserto; a outra é o que acontece quando essa ingestão não consegue ser
+  // armada. O guarda que existia para isso era só do observador (`observerHolds`), então esta parada
+  // caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED, e a mensagem sumia do mesmo
+  // jeito que sumia antes — o defeito da issue voltando por uma porta que o conserto abriu.
+  test("issue #688: a takeover during the wait whose ingestion FAILS leaves the delivery for the sweep", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 39;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    // O ENFILEIRAMENTO É RETENTADO, e isso é uma decisão e não um detalhe: com uma tentativa só, um
+    // blip do scheduler manda a entrega para a varredura e o cliente espera trinta minutos por uma
+    // mensagem que uma segunda tentativa teria salvo na hora. É a mesma razão pela qual o observador
+    // e a transcrição tardia retentam — o append é a última chance, nenhum turno vai cobrir isto.
+    const tentativas = { attempts: 0 };
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "cadê meu pedido?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: failingIngest(tentativas),
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+
+    await expect(run).rejects.toThrow("could not be armed");
+    expect(sent).toEqual([]);
+    expect(seen.outcome).toBe("taken-over-unread");
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // Uma tentativa só faz duas operações no scheduler, quatro fazem cinco: o que se mede aqui é o
+    // RETRY, e sem ele este número cai para 2.
+    expect(tentativas.attempts).toBe(5);
+    // A LINHA CONTINUA RECUPERÁVEL, que é o ponto inteiro: PROCESSING é o estado que a varredura
+    // revisita, e PROCESSED é o que ninguém revisita nunca mais.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+  }, 20_000);
+
+  // E SE INGESTÃO NENHUMA CORREU, A LINHA TAMBÉM NÃO FECHA (issue #688, review r12). O teste acima é
+  // sobre o enfileiramento que FALHA; este é sobre a ingestão que nem chega a ser tentada, porque a
+  // rota não resolveu runtime nenhum. `routeIngests` é falso ali, `ingested` fica no valor inicial
+  // `"nothing"` — indistinguível de "correu e não tinha o que lembrar" — e a liquidação da marca
+  // disparava mesmo assim, por cima de uma mensagem que memória nenhuma tem.
+  //
+  // A corrida que produz isso é real e tem nome no repo: `resolveRoute` lê a vinculação do inbox
+  // cedo, `runAgentTurn` carrega a configuração dele sozinho muito depois, e quem decide se o turno
+  // roda é `act`, que pergunta pela POSSE da conversa e não pela rota. Uma vinculação feita entre as
+  // duas leituras deixa `rt` nulo com o turno rodando (é a janela da #540, que a `bindingGeneration`
+  // nomeia). O throw que existe para ela não cobre esta: ele exige `claimFrom === "PENDING"` e uma
+  // geração gravada no recibo, e um replay da varredura não tem nenhum dos dois.
+  //
+  // Encenada pela leitura, não pelo relógio: a PRIMEIRA leitura do inbox — a de `resolveRoute` —
+  // responde sem vinculação, e todas as seguintes respondem a linha real. Qualquer espera de tempo
+  // real aqui seria uma corrida contra o próprio teste.
+  test("issue #688: a takeover during the wait on a route that resolved NO runtime leaves the delivery for the sweep", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 45;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    const leituras = { inbox: 0 };
+    // A rota lê o inbox uma vez, e é essa leitura que responde "sem agente". O contador é o que
+    // impede o teste de passar à toa: se a leitura deixar de acontecer, o zero reprova.
+    const routeSeesNoBinding = appDb.$extends({
+      query: {
+        inbox: {
+          async findUnique({ args, query }) {
+            const row = await query(args);
+            leituras.inbox += 1;
+            return leituras.inbox === 1 && row !== null
+              ? { ...(row as Record<string, unknown>), agentId: null }
+              : row;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "consigo trocar o endereço?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: routeSeesNoBinding,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+
+    await expect(run).rejects.toThrow("no ingestion ran over the message");
+    // O turno parou no portão, como no caminho normal...
+    expect(seen.outcome).toBe("taken-over-unread");
+    expect(sent).toEqual([]);
+    // ...e a leitura da rota aconteceu de verdade.
+    expect(leituras.inbox).toBeGreaterThan(0);
+    // Ingestão nenhuma correu — é essa a premissa do caso, não o efeito a consertar.
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // O QUE ESTE TESTE GUARDA: a marca não passa por cima da mensagem, e a linha continua
+    // recuperável. PROCESSED com a marca avançada era a mensagem perdida.
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
+  }, 20_000);
+
+  // E O `"no-thread"` TAMBÉM DEIXA A LINHA PARA A VARREDURA (issue #688, review r13 e r14). Ele é a
+  // leitura do contact-inbox do receptor voltando vazia, e do lado desta parada só pode significar
+  // DESACORDO entre duas leituras do mesmo fato: o portão mora dentro de `if (loaded.contactInboxId
+  // != null)`, então o runtime resolveu um contact-inbox para poder parar o turno, e o receptor
+  // lendo null ali é a leitura DELE tendo falhado (`storedContactInboxId` engole o erro) ou a linha
+  // do espelho não existir nesta passada. As duas são transitórias.
+  //
+  // A rodada 13 parou no argumento errado, e ele convence: a marca não passa por cima da mensagem,
+  // logo ela estaria guardada. NÃO ESTÁ. Quem lê a marca é o flush do debounce, e este é o caminho
+  // DIRETO, que só existe com o debounce desligado: turno nenhum depois relê a conversa a partir
+  // dela, e a ingestão contínua folha a mensagem DO EVENTO, nunca um atraso acima da marca. Com a
+  // linha liquidada, ninguém revisita — e a mensagem do cliente não está em lugar nenhum.
+  test("issue #688: an ingestion with no thread to put the message in leaves the delivery for the sweep", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 46;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    const leituras = { falhas: 0 };
+    // A leitura do contact-inbox do RECEPTOR falha; a do runtime, que tem outro `select`, não é
+    // tocada — é exatamente o desacordo que produz `"no-thread"` aqui.
+    const contactInboxUnreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (
+              sel &&
+              Object.keys(sel).length === 1 &&
+              sel.contactInboxId === true
+            ) {
+              leituras.falhas += 1;
+              throw new Error("injected: contact-inbox unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      // SEM contact_inbox no payload: é o que faz o receptor cair na leitura armada acima.
+      content: "ainda dá tempo de mudar o pagamento?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: INBOX_ID,
+        status: "pending",
+        meta: { assignee: null, sender: { id: 88, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    // A conversa existe no espelho COM contact-inbox: é dele que o runtime resolve o thread, e é o
+    // que faz o portão poder parar o turno.
+    await suDb.conversation.upsert({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+        },
+      },
+      create: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "pending",
+        contactInboxId: 81_000 + convId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+      },
+      update: {
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+        contactInboxId: 81_000 + convId,
+      },
+    });
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: contactInboxUnreadable,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+
+    await expect(run).rejects.toThrow("no thread to put the message in");
+    expect(seen.outcome).toBe("taken-over-unread");
+    expect(sent).toEqual([]);
+    // A leitura armada aconteceu: sem isto o teste passaria com a ingestão funcionando normalmente.
+    expect(leituras.falhas).toBeGreaterThan(0);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    // A marca não passa por cima da mensagem...
+    expect((await row(convId))?.lastHandledMessageId ?? null).not.toBe(
+      messageId,
+    );
+    // ...e a linha continua RECUPERÁVEL, que é o que a marca sozinha não dá neste caminho.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
+  }, 20_000);
+
+  // A MENSAGEM SEM CONTEÚDO NEM CHEGA AO PORTÃO (issue #688, review r14), e este teste é a premissa
+  // do estreitamento do lado do receptor. A lista que deixa a entrega fechar é positiva —
+  // `ingested === "queued"`, a ingestão segurando a mensagem — e `"nothing"` ficou de fora dela. O
+  // que sustenta isso é a inalcançabilidade: com `act` entregue FALSO à ingestão, o papel é sempre
+  // `customer`, então só uma renderação vazia produziria `"nothing"`, e uma mensagem sem texto e sem
+  // anexo faz o turno devolver `skipped` antes do portão. É o que se mede aqui; se um dia deixar de
+  // ser verdade, este teste cai junto com o argumento.
+  test("issue #688: a message with nothing to render never reaches the gate at all", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 47;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      // Sem texto e sem anexo: não há o que a memória guardasse.
+      content: "",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    // O turno não para no portão: ele nem roda. É por isso que `"nothing"` não é uma saída que a
+    // parada precise tratar.
+    expect(seen.outcome).toBe("skipped");
+    expect(sent).toEqual([]);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+  }, 20_000);
+
+  // O RECORTE DO PORTÃO (issue #688, review r4-r7): sobre uma nota de voz que ainda espera a
+  // transcrição, ele NÃO atua, e o turno segue exatamente como seguia antes desta PR.
+  //
+  // O caminho até aqui é o argumento. Parar o turno significa mandar a mensagem para a ingestão
+  // contínua, e a ingestão grava o id no dedup do thread (`recentSyncedMessageIds`), o que faz a
+  // transcrição do `message_updated` ser descartada como duplicata. As duas saídas para um áudio são
+  // então perder o que ele já traz, ou perder a transcrição — e a terceira, a ingestão aprender a
+  // ENRIQUECER uma mensagem já folhada, mexe no dedup compartilhado e é issue própria.
+  //
+  // Então aqui o desfecho é `taken-over`, o da re-checagem pós-geração, e não `taken-over-unread`:
+  // o turno rodou. É o comportamento de hoje, preservado de propósito, e o conserto vale para toda a
+  // população que a issue descreve.
+  test("issue #688: the gate does not act on an audio still waiting on STT, so the transcription survives", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 41;
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      // Áudio SEM transcrição: o placeholder.
+      attachments: [
+        {
+          id: 900 + messageId,
+          file_type: "audio",
+          data_url: "https://chat.late.example/audio.ogg",
+        },
+      ],
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    // Nada é dito por cima da pessoa — isso a re-checagem pós-geração já garantia...
+    expect(sent).toEqual([]);
+    // ...mas o desfecho é o de SEMPRE, e não o da parada: o portão não atuou.
+    expect(seen.outcome).toBe("taken-over");
+    // E NENHUM job de ingestão foi armado para este id, que é o ponto: o dedup do thread fica livre
+    // para a transcrição que vem no `message_updated`.
+    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
+    expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+  }, 20_000);
+
+  // E COM UMA LEGENDA OU UM ASSUNTO O PORTÃO CONTINUA NÃO ATUANDO (issue #688, review r8). A
+  // pergunta que ele faz NÃO é se a mensagem já tem palavras — uma legenda de áudio e o assunto de um
+  // e-mail são palavras, e a transcrição ainda vem —, é se ainda vem mais. Perguntando pelas palavras,
+  // o portão atuava sobre um áudio legendado, a ingestão gravava o id no dedup do thread, e a
+  // transcrição chegava depois para ser descartada como duplicata: as palavras do áudio perdidas para
+  // sempre, que é a perda desta issue por mais uma porta.
+  test("issue #688: a caption or a subject does not make the gate act on an audio awaiting STT", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    for (const [convId, extra] of [
+      [42, { content: "queria saber se ainda dá pra trocar" }],
+      [
+        44,
+        {
+          content: "",
+          content_attributes: {
+            email: { subject: "recuperar o acesso à minha conta" },
+          },
+        },
+      ],
+    ] as const) {
+      const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+      deliverySeq += 1;
+      messageSeq += 1;
+      const messageId = messageSeq;
+      const seen = { outcome: null as string | null };
+      const n = normalizeChatwootEvent({
+        event: "message_created",
+        id: messageId,
+        private: false,
+        message_type: "incoming",
+        sender: { id: 88, name: "Cliente", type: null },
+        attachments: [
+          {
+            id: 900 + messageId,
+            file_type: "audio",
+            data_url: "https://chat.late.example/audio.ogg",
+          },
+        ],
+        conversation: conversation(convId, {
+          assigneeType: null,
+          status: "pending",
+        }),
+        ...extra,
+      });
+      if (!n) throw new Error("payload did not normalize");
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `mon-${process.pid}-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+          conversationId: convId,
+          inboundMessageId: messageId,
+        },
+        select: { id: true },
+      });
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        81_000 + convId,
+      );
+      markTurnInFlight(graphThreadId);
+      const run = processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: OUR_BOT,
+        normalized: n,
+        base: appDb,
+        onDirectTurn: (r) => {
+          seen.outcome =
+            r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+        },
+        deps: {
+          makeClient: (async () =>
+            ({
+              sendMessage: async () => ({}),
+              sendPrivateNote: async () => ({}),
+              toggleTyping: async () => ({}),
+            }) as unknown as ChatwootClient) as never,
+          makeModel: () =>
+            new FakeListChatModel({ responses: ["Já te digo."] }),
+        },
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: convId },
+        data: { assigneeType: "User", assigneeId: 5, status: "open" },
+      });
+      clearTurnInFlight(graphThreadId);
+      await run;
+
+      // O desfecho é o de SEMPRE, e não o da parada.
+      expect(seen.outcome).toBe("taken-over");
+      // E o dedup do thread fica livre para a transcrição que vem no `message_updated`.
+      const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+      expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(false);
+      expect((await jobs("INGEST_MESSAGE")).length).toBe(ingestBefore);
+    }
+  }, 30_000);
+
+  // E A LINHA DIZ QUE NENHUM TURNO COBRIU A MENSAGEM (issue #688, review r5). Quem escrevia esse
+  // fato era o `settleDelivery`, que esta parada deliberadamente não chama. Sem ele a coluna
+  // `turn_covered` fica NULA, e null é "nenhuma linha sabe": a ingestão da transcrição tardia cai no
+  // fallback de POSSE ATUAL, e se a conversa já voltou para o bot ela lê "um turno vai cobrir isto" e
+  // descarta a transcrição. O fato é escrito separado, sem liquidar a entrega.
+  test("issue #688: the stand-down records that no turn covered the message", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "production", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 43;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "e o rastreio do meu pedido?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    expect(seen.outcome).toBe("taken-over-unread");
+    // FALSE e não null: null é "nenhuma linha sabe", e é sobre o null que o leitor cai no fallback
+    // de posse — que, com a conversa de volta ao bot, responde exatamente o contrário da verdade.
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: delivery.id },
+      select: { turnCovered: true },
+    });
+    expect(row.turnCovered).toBe(false);
+  }, 20_000);
+
+  // E O MODO DO AGENTE NÃO PODE DECIDIR ISTO (issue #688, review r1). `routeIngests` é a porta da
+  // ingestão, e ela pergunta se a ROTA ingere CONTINUAMENTE — o que um agente em `test` não faz. O
+  // portão novo, porém, alcança um agente em teste numa conversa ativada com `/teste`: ali o turno
+  // parava antes do invoke e a mensagem não ia para lugar nenhum, o que é PIOR que a base, onde o
+  // invoke ao menos a colocava no canal antes da re-checagem pós-geração recusar o envio.
+  //
+  // A ingestão desta parada não é a ingestão contínua: é a última chance daquela mensagem, igual à
+  // do observador e à da transcrição tardia.
+  test("issue #688: a takeover during the wait reaches the ingestion even for a test-mode agent", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "test", settings: { debounce: { enabled: false } } },
+    });
+    const convId = 40;
+    // A conversa ATIVADA, que é o que faz um agente de teste responder nela. Criada aqui e não por
+    // update depois: o espelho da conversa só nasce quando o receptor processa a entrega, e um
+    // `updateMany` antes disso acerta zero linhas em silêncio.
+    const inbox40 = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inbox40.id,
+        chatwootConversationId: convId,
+        contactInboxId: 81_000 + convId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(Date.now() - 60_000),
+        testActivatedAt: new Date(Date.now() - 30_000),
+      },
+    });
+    const ingestBefore = (await jobs("INGEST_MESSAGE")).length;
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const sent: string[] = [];
+    const seen = { outcome: null as string | null };
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "e o meu pedido?",
+      message_type: "incoming",
+      sender: { id: 88, name: "Cliente", type: null },
+      conversation: conversation(convId, {
+        assigneeType: null,
+        status: "pending",
+      }),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `mon-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      81_000 + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      base: appDb,
+      onDirectTurn: (r) => {
+        seen.outcome =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              sent.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Já te digo."] }),
+      },
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    expect(sent).toEqual([]);
+    expect(seen.outcome).toBe("taken-over-unread");
+    // A mensagem do cliente entra na memória APESAR de o modo não ingerir continuamente.
+    const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
+    expect((await jobs("INGEST_MESSAGE")).length).toBeGreaterThan(ingestBefore);
+    expect(ingested.some((k) => k.endsWith(`:${messageId}`))).toBe(true);
+    // E a marca passa, como no caminho de produção: a ingestão guardou, então dizer isso é a
+    // última escrita da parada (review r10).
+    expect((await row(convId))?.lastHandledMessageId).toBe(messageId);
+  }, 20_000);
 
   test("a turn that stood down for the observer settles nothing until the ingestion has the message", async () => {
     // The stand-down's own settlement closed the row before the observer was asked (review

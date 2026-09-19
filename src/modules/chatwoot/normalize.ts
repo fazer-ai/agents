@@ -812,6 +812,38 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // second answer to one question, and the two would drift the first time a marker or a field is
 // added — which is exactly what happened to the email subject (issue #598), read by the renderer,
 // the burst and the gate while the memory fold went on dropping the message whole.
+// UMA MENSAGEM QUE AINDA VAI RECEBER MAIS CONTEÚDO (issue #688). O áudio sem transcrição é o único
+// caso hoje: as palavras dele chegam depois, num `message_updated` que o STT dispara, e sobre o
+// MESMO id de mensagem.
+//
+// Quem faz a pergunta é o portão de posse do caminho direto: parar o turno manda a mensagem para a
+// ingestão contínua, a ingestão grava o id no dedup do thread, e a transcrição que vem depois é
+// descartada como duplicata. A pergunta NÃO é se a mensagem já tem palavras — uma legenda, ou o
+// assunto de um e-mail, são palavras e ainda assim a transcrição vem —, é se ainda vem mais.
+//
+// PELO TIPO DO ARQUIVO, e não por `firstAudioAttachment`, que é a mesma armadilha que
+// `turnHadTheWords` documenta do lado dele: aquele exige um id e um `data_url` utilizáveis, ou seja,
+// responde se o STT PODE RODAR. Um anexo cujo url ainda não chegou reprova esse teste e mesmo assim
+// alcança o grafo como placeholder — lido assim, a mensagem passaria por "sem áudio nenhum", o
+// portão atuaria, e a transcrição seria perdida exatamente pela porta que esta exceção fecha. Custou
+// uma rodada de review lá (#576) e outra aqui.
+//
+// `hasPendingInboundMediaUpdate` (../chatwoot/webhook.ts) continua com a pergunta DELE, que é outra e
+// mais estreita: ali o que se decide é armar a ingestão sobre um evento de atualização, e alargá-la é
+// outra decisão, com testes próprios.
+export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
+  if (!isIncomingMessage(n)) return false;
+  // O PRIMEIRO áudio, que é o que a transcrição cobre: `firstAudioAttachment` e `runEagerMedia`
+  // selecionam esse mesmo, e uma transcrição pendurada em OUTRO anexo não diz nada sobre ele. Com
+  // dois áudios, o segundo transcrito e o primeiro não, ler "algum está transcrito" como cobertura
+  // deixaria o portão atuar sobre a mensagem cuja transcrição ainda vem (review r10).
+  const audios = (n.message?.attachments ?? []).filter(
+    (a) => a.fileType === "audio",
+  );
+  if (audios.length === 0) return false;
+  return !(audios[0]?.transcribedText || n.message?.transcribedText);
+}
+
 export function incomingRenderable(
   n: NormalizedChatwootEvent,
 ): RenderableMessage {

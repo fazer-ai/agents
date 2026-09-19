@@ -39,7 +39,9 @@ let su: PrismaClient | undefined;
 
 if (appUrl && suUrl) {
   try {
-    su = new PrismaClient({ adapter: new PrismaPg({ connectionString: suUrl }) });
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
     await su.$queryRaw`SELECT 1`;
     dbUp = true;
   } catch {
@@ -126,7 +128,10 @@ describe.skipIf(!dbUp)("an ingestion armed for THIS message", () => {
 
     // O que um vizinho (ou o próprio produto, ao concluir uma ingestão) faz o tempo todo.
     await suDb.schedulerJob.deleteMany({
-      where: { tenantId, dedupeKey: ingestDedupeKey(thread, others[0] as number) },
+      where: {
+        tenantId,
+        dedupeKey: ingestDedupeKey(thread, others[0] as number),
+      },
     });
 
     // A forma antiga decide por isto, e isto mudou.

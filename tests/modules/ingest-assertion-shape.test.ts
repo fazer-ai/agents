@@ -1,6 +1,6 @@
+import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // ── UMA AFIRMAÇÃO SOBRE UMA MENSAGEM NÃO SE DECIDE PELO TAMANHO DA POPULAÇÃO (issue #723) ──
@@ -28,7 +28,7 @@ import { expectWaiverLedger } from "@/tests/utils/ledger";
 // forma em 28 lugares e não foi convertido aqui: os blocos de lá não carregam o `convId` nem o
 // `messageId` em escopo, então cada site é uma leitura própria, e asserção errada num teste é
 // exatamente o que esta rodada existe para tirar. Entra como débito visível, com número, em vez de
-// entrar como conserto apressado.
+// entrar como conserto apressado. A issue dele é a #731, e quem a fechar baixa o número daqui.
 
 const TESTS_DIR = join(import.meta.dir, "..");
 
@@ -66,7 +66,8 @@ describe("an assertion about one message's ingestion", () => {
         rel === "modules/ingest-armed-for-this-message.test.ts"
       )
         continue;
-      const n = (readFileSync(file, "utf8").match(POPULATION_SHAPE) ?? []).length;
+      const n = (readFileSync(file, "utf8").match(POPULATION_SHAPE) ?? [])
+        .length;
       if (n > 0) found[rel] = n;
     }
 

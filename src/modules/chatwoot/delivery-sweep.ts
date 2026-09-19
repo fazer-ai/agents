@@ -7,6 +7,10 @@ import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { TURN_BEARING_EVENT } from "./normalize";
 import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
+import {
+  armHumanReplyRecovery,
+  namesRecoverableHumanReply,
+} from "./recover-human-reply";
 import { armTakeoverRecovery } from "./recover-takeover";
 import {
   classifyStrandedDelivery,
@@ -475,6 +479,9 @@ interface StrandedRow {
   conversationId: number | null;
   inboundMessageId: number | null;
   humanReplyShape: string | null;
+  // The reply's own id, written at INSERT since issue #469. It is what lets the words be read back
+  // and folded into memory (issue #728) — see `armReplyMemory` below.
+  humanReplyMessageId: number | null;
   routeObserved: boolean | null;
   routeRemembers: boolean | null;
 }
@@ -670,6 +677,7 @@ export async function sweepStrandedDeliveries(
         conversationId: true,
         inboundMessageId: true,
         humanReplyShape: true,
+        humanReplyMessageId: true,
         routeObserved: true,
         routeRemembers: true,
       },
@@ -714,6 +722,47 @@ export async function sweepStrandedDeliveries(
     await record(verdict, row, tenantId, mirror, counts, base);
   }
   return counts;
+}
+
+// THE WORDS, WHICH ARE A SECOND DEBT ON THE SAME ROW (issue #728).
+//
+// Not a verdict of its own, and that is the design rather than an omission: the three verdicts below
+// answer "what was owed the CONVERSATION" — a handover, or nothing, or an answer we cannot give —
+// and each of them can sit on a row that ALSO owed a memory append. The two are independent, they
+// are armed together, and neither waits on the other. A verdict would have had to choose between
+// them.
+//
+// Asked of the row alone, which is all this pass has: it names a conversation, a reply id and a
+// shape this build knows. Everything the row CANNOT say — whether the shape resolves to a reply on
+// this provider, whether the route remembers anything at all, whether the thread exists — is
+// re-asked by the recovery against the state as it stands then (./recover-human-reply.ts). That
+// split is deliberate: `route_remembers = false` on the row is the same signature for "the arm
+// failed" and for "this route never remembers", and nothing here can tell them apart.
+//
+// FREE WHERE IT WAS NOT OWED, exactly like the takeover beside it: the job re-asks every gate and
+// answers `not-owed` having written nothing. And harmless where it was already DONE — a row
+// stranded after a successful ingestion re-arms the same append, which the ingest job's own dedup
+// refuses (`ingestVerdict`, ../../graph/ingest.ts).
+async function armReplyMemory(
+  row: StrandedRow,
+  tenantId: bigint,
+  base: PrismaClient,
+  label: string,
+): Promise<boolean | null> {
+  if (!namesRecoverableHumanReply(row)) return null;
+  try {
+    await armHumanReplyRecovery(tenantId, row.id, base);
+    return true;
+  } catch (error) {
+    // `warn` and not `error`, because the receiver has already reported this loss at `error` on the
+    // conversation itself (issue #720): this is the SECOND attempt failing to be armed, and the line
+    // an operator acts on is the first one.
+    logger.warn(
+      { error },
+      `chatwoot delivery sweep: ${label} was stranded owing a colleague's reply and the recovery of its memory could not be armed; the words stay out of the conversation's memory`,
+    );
+    return false;
+  }
 }
 
 async function record(
@@ -801,6 +850,10 @@ async function record(
       // one level, `warn`, that says what is known and no more. An `error` on the read alone would
       // page an operator for the ordinary shared inbox; an `info` would file the real gap where
       // nobody looks.
+      // ...AND IT CAN BE REPLAYED NOW (issue #728), which is exactly what the sentence below used to
+      // deny. The claim that it could not rested on the delivery recovery needing a customer message
+      // id — true of THAT recovery, and never true of the row, which has named the reply since #469.
+      const memoryArmed = await armReplyMemory(row, tenantId, base, label);
       logger.warn(
         "chatwoot delivery sweep: %s stranded on an observer's route carrying a colleague's reply (%s) on conversation %s; %s. The inbox %s NOW, which is not what it had when the event arrived",
         label,
@@ -808,7 +861,9 @@ async function record(
         String(row.conversationId),
         row.routeRemembers === false
           ? "its claim recorded that the route remembers nothing (no responder of ours on the inbox, or the watcher switched off), so nothing was owed unless an arm failed after the claim"
-          : "the watcher never folded it into its memory and nothing can replay it",
+          : memoryArmed === true
+            ? "the watcher never folded it into its memory, and the recovery of that append is armed"
+            : "the watcher never folded it into its memory, and this row names no reply to go back for",
         mirror === null
           ? "could not be read"
           : mirror.responderHasRoute === true
@@ -836,6 +891,9 @@ async function record(
       // the row is already PROCESSED — nothing revisits it (PR review, round 6). Stated
       // unconditionally, that line told an operator a takeover was armed on the exact reading where
       // it was not, which is the one case they would have had to act on themselves.
+      // AND THE WORDS TOO, on the same both-honest-things reading (issue #728): whichever of the two
+      // routes this was, the append it owed is the one thing the row can still name.
+      await armReplyMemory(row, tenantId, base, label);
       let armed = true;
       try {
         await armTakeoverRecovery(tenantId, row.id, base);
@@ -847,13 +905,13 @@ async function record(
         );
       }
       logger.warn(
-        "chatwoot delivery sweep: %s stranded on %s carrying a colleague's reply (%s) on conversation %s BEFORE anything named its route — the claim that states the role never ran. %s; if it was a watcher's, that watcher never folded the reply into its memory and nothing can replay it. The inbox %s NOW, which is not necessarily what it had when the event arrived",
+        "chatwoot delivery sweep: %s stranded on %s carrying a colleague's reply (%s) on conversation %s BEFORE anything named its route — the claim that states the role never ran. %s; if it was a watcher's, that watcher never folded the reply into its memory. The inbox %s NOW, which is not necessarily what it had when the event arrived",
         label,
         row.status,
         String(row.humanReplyShape),
         String(row.conversationId),
         armed
-          ? "A takeover is armed in case it was the responder's"
+          ? "A takeover is armed in case it was the responder's, and so is the reply's memory append"
           : "A takeover COULD NOT BE ARMED, so if it was the responder's the conversation stays with the bot until the next human reply",
         mirror === null
           ? "could not be read"
@@ -877,6 +935,11 @@ async function record(
           `chatwoot delivery sweep: ${label} was stranded owing a handover and its recovery could not be armed; the conversation stays with the bot until the next human reply`,
         );
       }
+      // TWO DEBTS, TWO JOBS (issue #728). The handover is what this row was stranded OWING; the
+      // append is what it was stranded CARRYING, and until the ledger's reply id was read back
+      // nothing could go get it. Armed independently of the takeover's own result: a handover that
+      // could not be armed says nothing about whether the words can still be remembered.
+      await armReplyMemory(row, tenantId, base, label);
       logger.info(
         "chatwoot delivery sweep: %s stranded on %s owing a human-reply handover (%s) on conversation %s; closing and arming the recovery",
         label,

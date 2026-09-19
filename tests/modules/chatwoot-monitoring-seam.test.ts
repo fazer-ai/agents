@@ -2044,11 +2044,16 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     }
   });
 
-  test("a colleague's reply the observer cannot remember is retried, then reported on the conversation", async () => {
-    // The enqueue of a human reply's append failed; nothing recovers an outgoing message's body
-    // (the sweep cannot rebuild one), so the append is retried inline as the ledger claim is, and
-    // once the retries are spent the loss is an error line on the conversation, not a process
-    // warning (review round 24). The delivery itself completes: no recovery to leave the row for.
+  test("a colleague's reply the observer cannot remember is retried, reported, and left for the sweep", async () => {
+    // The enqueue of a human reply's append failed, so it is retried inline as the ledger claim is,
+    // and once the retries are spent the loss is an error line on the conversation rather than a
+    // process warning (review round 24).
+    //
+    // AND THE DELIVERY NO LONGER COMPLETES (issue #728). "Nothing recovers an outgoing message's
+    // body" is what stood here, and it was a statement about the DELIVERY recovery: the ledger has
+    // named the reply since issue #469, so the sweep arms a memory-only recovery that reads the
+    // message back by id. The row has to stay non-terminal to reach that sweep, which is what the
+    // throw buys — the line and the recovery are now both, instead of the line instead of it.
     requests.length = 0;
     const counter = { attempts: 0 };
     deliverySeq += 1;
@@ -2075,7 +2080,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       },
       select: { id: true },
     });
-    const outcome = await processChatwootDelivery({
+    const erro = await processChatwootDelivery({
       tenantId,
       instanceId,
       deliveryRowId: delivery.id,
@@ -2083,12 +2088,17 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       normalized: n,
       base: failingIngest(counter),
       deps: { sleep: async () => {} },
-    });
-    expect(outcome).toBe("processed");
+    }).then(
+      () => null,
+      (e) => String(e),
+    );
+    expect(erro ?? "a entrega nao lancou").toContain("could not be remembered");
     expect(counter.attempts).toBe(4);
     expect(customerFacing()).toEqual([]);
     expect(await ingestArmedFor(threadOf(26), messageId)).toBe(false);
-    expect(await deliveryStatus(delivery.id)).toBe("PROCESSED");
+    // PROCESSING, not PROCESSED: the sweep only revisits a non-terminal row, and it is the sweep
+    // that arms the reply's memory recovery.
+    expect(await deliveryStatus(delivery.id)).toBe("PROCESSING");
     const conv = await row(26);
     const lines = await flowLogRows(suDb, {
       where: { tenantId, stage: "memory", conversationId: conv?.id },

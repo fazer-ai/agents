@@ -72,6 +72,7 @@ export type SchedulerJobKind =
   | "DELIVERY_SWEEP"
   | "DELIVERY_RECOVERY"
   | "TAKEOVER_RECOVERY"
+  | "HUMAN_REPLY_RECOVERY"
   | "SPEND_CEILING_POLL"
   | "OBSERVE";
 

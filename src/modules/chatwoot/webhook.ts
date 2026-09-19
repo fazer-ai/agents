@@ -6727,6 +6727,49 @@ export async function processChatwootDelivery(
       },
     );
   }
+  // E A LINHA FICA PARA A VARREDURA (issue #728), que é a metade que a #720 decidiu ao contrário.
+  // Ela liquidava aqui de propósito, e disse por quê: "para a resposta de um colega não compra
+  // nada", porque `owed-takeover` só re-rodava a transição de posse e `observer-strand` só relatava.
+  // Nenhum dos dois re-armava ingestão, então prender a linha custava um job redundante e um veredito
+  // no fim sem salvar uma palavra. A premissa caiu: `human_reply_message_id` está na linha desde a
+  // #469, a mensagem é relida por id e a varredura arma a recuperação dela (./recover-human-reply.ts).
+  //
+  // POR QUE LANÇAR EM VEZ DE ARMAR AQUI MESMO. O arme usaria o mesmo enfileiramento que acabou de
+  // falhar quatro vezes, que é a única coisa que se sabe do ambiente neste ponto. A varredura é a
+  // segunda chance porque ela roda meia hora depois, quando o blip passou; o lançamento é só o que
+  // mantém a linha não-terminal até lá, e é o mesmo par que a transcrição tardia usa logo abaixo.
+  //
+  // `no-thread` NÃO ENTRA, e é a mesma fronteira que a transcrição traça: uma conversa que nem o
+  // payload nem o espelho sabem nomear um contact-inbox não tem onde guardar a resposta, e a
+  // releitura acharia o mesmo nada. Prender a linha ali trocaria uma perda permanente RELATADA — o
+  // bloco acima, com a razão que a nomeia — por um limbo que a varredura re-arma sem fim.
+  //
+  // O QUE O REPLAY NÃO FAZ, e é o que separa este lançamento do da #719: a recuperação armada é só
+  // de memória e nunca reexecuta esta entrega, então ela não pode postar (a exposição da #725) nem
+  // tirar o bot de uma conversa que já voltou a ser dele. A transição de posse já aconteceu, bem
+  // acima, antes da ingestão.
+  //
+  // `humanReplyBy !== null` CARREGA PESO CONTRA O OUTRO PAPEL, e só contra ele: a ingestão da
+  // mensagem do CLIENTE falha no mesmo lugar e é a #719 quem a deixa para a varredura, algumas
+  // linhas abaixo, com a mensagem que nomeia o caso dela. Sem este termo, este lançamento chegaria
+  // primeiro e o operador leria "a resposta de um colega" sobre uma mensagem que o cliente escreveu.
+  //
+  // O que ele NÃO distingue aqui é a forma do papel, e a bateria de mutação mediu: trocado por
+  // `mayBeHumanReply` nenhum teste muda, porque `"failed"` só sai de uma ingestão que resolveu um
+  // papel — e numa outgoing esse papel é esta mesma pergunta, com o mesmo provedor. O eco, que é o
+  // único lugar em que forma e papel divergem, responde `"nothing"` e nunca chega até aqui. Fica na
+  // grafia estrita porque é ela que continua verdadeira se a ingestão passar a responder `"failed"`
+  // mais cedo; o que não se pode é chamar isto de cerca contra o eco, que é a cerca do relato acima.
+  if (
+    ingested === "failed" &&
+    humanReplyBy !== null &&
+    rt !== null &&
+    mirror.conversationRowId !== null
+  ) {
+    throw new Error(
+      `chatwoot: a colleague's reply could not be remembered (conv=${convLabel}); leaving the delivery for the sweep`,
+    );
+  }
   // NOTE: A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,
   // round 2). `observerHolds` is inbound-only — a `message_updated` is not `isNewIncoming` — so on
   // its own it settles this delivery PROCESSED whatever the enqueue answered, and a scheduler blip

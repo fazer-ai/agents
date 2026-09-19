@@ -6720,6 +6720,27 @@ export async function processChatwootDelivery(
   // corrido e não havendo o que lembrar, que é o caso de uma reação, de uma nota privada e da nossa
   // própria mensagem de saída —, e o `"no-thread"` também, porque uma conversa sem contact-inbox não
   // tem onde guardar e a repetição diria o mesmo.
+  // O QUE ESTE THROW COMPRA, E O QUE ELE CUSTA (review r4, e o custo é real).
+  //
+  // Compra: a linha fica em `PROCESSING`, que é o estado que a varredura revisita, então a mensagem
+  // tem caminho de volta em vez de sumir com a linha liquidada.
+  //
+  // Custa: a varredura REPLICA A ENTREGA, e o replay chama este mesmo receptor de novo, com a posse
+  // lida AGORA. Se no meio a pessoa respondeu o cliente e devolveu a conversa ao bot, e nenhuma
+  // mensagem nova chegou (o freshness check passa), o turno roda sobre a mensagem da era humana e
+  // POSTA — nada na linha diz "esta mensagem já foi atendida por gente", e a marca, que é o que
+  // faria `shouldPost` recusar, é justamente o que este caminho não avança.
+  //
+  // Fica assim de propósito, e a conta é esta: hoje a mensagem se perde SEMPRE e em silêncio; com o
+  // conserto ela se recupera na maioria dos casos e, numa conjunção (enfileiramento falhando, a
+  // pessoa respondendo, a conversa voltando ao bot, nenhuma mensagem nova, tudo dentro da janela da
+  // varredura), o bot responde uma vez a mais numa conversa que já é dele de novo. A mesma exposição
+  // existe desde a #711 na parada por posse logo abaixo, pelo mesmo motivo e com a mesma saída.
+  //
+  // O que fecha isso é uma intenção "só memória" gravada na linha E honrada pelo replay — e não
+  // basta a coluna: o `replayPosts` do recover-delivery decide a leitura da página, não o POST, que
+  // quem faz é este receptor sendo reexecutado. Precisa de um parâmetro novo no contrato dele.
+  // Issue #725, que carrega os três sites (este, a parada da #711 e o `act && consumed`).
   if (settleAwaitsIngest) {
     if (ingested === "failed") {
       throw new Error(

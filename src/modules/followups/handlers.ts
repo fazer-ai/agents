@@ -30,6 +30,7 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   type FollowUpStep,
   isNewFollowUpEpisode,
+  lastActivityAt,
   readFollowUpConfig,
   silenceStartedAt,
   stepDelayMinutes,
@@ -165,7 +166,11 @@ async function sweepHandler(
         -- batch the handler would only drop — LIMIT below is over eligible rows or it is nothing.
         AND a.mode <> 'monitoring'
         AND (a.mode <> 'test' OR c.test_activated_at IS NOT NULL)
-        AND c.last_event_at < ${cutoff}
+        -- Inactivity counts OUR reply too (issue #750): last_event_at comes from Chatwoot and only
+        -- advances when the webhook for the message we sent comes back, and the conversation
+        -- recovered from the backlog carries an old one. Without the floor it is selected as idle for
+        -- days at the very instant the customer receives the answer. Mirrors lastActivityAt() in TS.
+        AND GREATEST(c.last_event_at, c.last_replied_at) < ${cutoff}
         -- WHEN THE CURRENT SILENCE BEGAN, and not "when the customer last spoke" (issue #750). The
         -- two disagree on exactly the conversation this sweep is for: a row the mirror created from
         -- an event that is not a message carries NO inbound instant, so the old form answered "no
@@ -482,7 +487,10 @@ export async function followUpHandler(
 
   // Cadence: step 0 measures inactivity from the last conversation activity; later steps measure from
   // when the previous step fired (lastFollowUpAt). Not due yet → reschedule precisely (same payload).
-  const anchor = stepIndex === 0 ? lastEventAt : lastFollowUpAt;
+  const anchor =
+    stepIndex === 0
+      ? lastActivityAt(lastEventAt, ctx.conv.lastRepliedAt)
+      : lastFollowUpAt;
   if (anchor) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
     if (Date.now() < dueAt) {

@@ -47,6 +47,7 @@ import {
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
   isNewFollowUpEpisode,
+  lastActivityAt,
   readFollowUpConfig,
   silenceStartedAt,
   stepDelayMinutes,
@@ -1101,6 +1102,33 @@ export async function getConversationDetail(
       conv.lastInboundAt,
       conv.lastRepliedAt,
     );
+    // The episode, through the same function the other two readers use. It moves UP here, instead of
+    // living only in the branch below, because of issue #750: before it a fresh episode was born from
+    // the customer speaking, and the inbound webhook cancels the pending job in the same movement. Our
+    // own reply now opens an episode too, and cancels nothing — so the state "pending later-step job +
+    // fresh episode" became reachable, and the handler drops that job (`else if (newEpisode) return
+    // done`). Without the mirror here, the console counts down a step that will never fire.
+    const newEpisode = isNewFollowUpEpisode(
+      conv.lastFollowUpAt,
+      conv.lastInboundAt,
+      conv.lastRepliedAt,
+    );
+    //
+    // DELIBERATELY NARROW: only the episode opened by OUR reply. When the customer is the one who
+    // opens it, the console also counts down a step the handler would drop, but that state predates
+    // this issue and does not survive in production — the inbound webhook cancels the pending job in
+    // the same movement that advances `lastInboundAt`. Widening here would change a case this issue
+    // does not treat and that two tests on another axis already fix; that is issue #752.
+    const restartedByOurReply =
+      newEpisode &&
+      conv.lastRepliedAt != null &&
+      conv.lastFollowUpAt != null &&
+      conv.lastRepliedAt > conv.lastFollowUpAt &&
+      !(conv.lastInboundAt != null && conv.lastInboundAt > conv.lastFollowUpAt);
+    const supersededLaterStepJob =
+      job != null && jobStepIndex > 0 && restartedByOurReply;
+    // The inactivity floor, the same one the handler and the SQL use: our reply counts as movement.
+    const movedAt = lastActivityAt(conv.lastEventAt, conv.lastRepliedAt);
     const fencedStep0Job =
       job != null &&
       jobStepIndex === 0 &&
@@ -1119,7 +1147,12 @@ export async function getConversationDetail(
     const jobStepGone = job != null && cfg.steps[jobStepIndex] === undefined;
     if (jobStepGone) {
       nextStep = null;
-    } else if (job && !fencedStep0Job && followUpLive) {
+    } else if (
+      job &&
+      !fencedStep0Job &&
+      !supersededLaterStepJob &&
+      followUpLive
+    ) {
       const stepIndex = jobStepIndex;
       nextStep = stepIndex + 1;
       // job.runAt is NOT the firing time yet — the sweep enqueues step 0 with runAt=now (and re-arms
@@ -1129,9 +1162,9 @@ export async function getConversationDetail(
       // out-of-window time to the next open window. Without this the indicator flickers to "imminent /
       // out-of-hours" right after each sweep and only resyncs once the worker rewrites run_at.
       let dueAt = job.runAt;
-      if (stepIndex === 0 && firstStep && conv.lastEventAt) {
+      if (stepIndex === 0 && firstStep && movedAt) {
         const floor = new Date(
-          conv.lastEventAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
+          movedAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
         );
         if (floor.getTime() > dueAt.getTime()) dueAt = floor;
       }
@@ -1155,21 +1188,17 @@ export async function getConversationDetail(
       // (managedByRedirect already forces job=null; guard the estimate too so it stays suppressed.)
       followUpLive &&
       firstStep &&
-      isNewFollowUpEpisode(
-        conv.lastFollowUpAt,
-        conv.lastInboundAt,
-        conv.lastRepliedAt,
-      ) &&
+      newEpisode &&
       // NOTE: Activation fence (mirrors the sweep SQL): no estimate for an episode that began before
       // follow-up was armed — the sweep will never enqueue it, so the indicator must not promise it.
       agent?.followUpArmedAt != null &&
       fencedSilenceStart != null &&
       fencedSilenceStart >= agent.followUpArmedAt &&
-      conv.lastEventAt
+      movedAt
     ) {
       nextStep = 1;
       const dueAt = new Date(
-        conv.lastEventAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
+        movedAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
       );
       const ungated = dueAt.getTime();
       // Mirror the handler's business-hours gate: a follow-up coming due outside the configured window

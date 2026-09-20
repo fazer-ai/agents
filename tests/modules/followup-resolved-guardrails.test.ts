@@ -1006,6 +1006,63 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.sent.length).toBe(1);
   });
 
+  // (4f) O outro lado da mesma moeda, e o que impede a correção de virar um defeito pior: a conversa
+  // que acabamos de responder NÃO está parada. `lastEventAt` vem do Chatwoot e só avança quando o
+  // webhook da nossa mensagem volta; a conversa recuperada do backlog tem esse campo com dias de
+  // idade, então sem o piso a varredura a seleciona como inativa no mesmo instante em que o cliente
+  // recebe a resposta, e o primeiro passo dispara em cima dela.
+  test("(4f) a varredura não pega a conversa que acabamos de responder, por mais antigo que seja o evento", async () => {
+    const CONV = 4394;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 4 * HOUR),
+      lastInboundAt: null,
+      lastRepliedAt: new Date(),
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    if (!sweep) throw new Error("unreachable");
+    await sweep(
+      {
+        id: phantomJobId,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "FOLLOWUP", status: "PENDING" },
+      select: { payload: true },
+    });
+    const threads = jobs.map(
+      (j) => (j.payload as { threadId?: string }).threadId,
+    );
+    expect(threads).not.toContain(threadOf(CONV));
+  });
+
+  // (4g) E se ela for enfileirada mesmo assim (job de uma passagem anterior, webhook que chegou no
+  // meio), o handler mede a cadência pelo mesmo piso e REMARCA em vez de postar. O que o cliente
+  // não pode receber é "ainda posso ajudar?" cinco minutos depois da resposta que ele pediu.
+  test("(4g) o handler remarca em vez de cobrar a conversa respondida agora", async () => {
+    const CONV = 4395;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 4 * HOUR),
+      lastInboundAt: null,
+      lastRepliedAt: new Date(),
+    });
+    const s = stubClient(() => ({ id: CONV, status: "pending", meta: {} }));
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    // E a remarcação é para uma hora à frente (o passo do Agente A), não para o passado.
+    const runAt = (result as { runAt?: Date }).runAt;
+    expect(runAt).toBeInstanceOf(Date);
+    expect((runAt as Date).getTime()).toBeGreaterThan(Date.now() + 55 * 60_000);
+  });
+
   // (7) Issue #652: o relato da comunidade. Um agente que decide, corretamente, não responder (um
   // relatório DMARC, uma notificação de pagamento, uma newsletter) chama `skip_reply`, que encerra o
   // turno e deixa a conversa exatamente como a varredura a seleciona: pending, do bot, silenciosa.

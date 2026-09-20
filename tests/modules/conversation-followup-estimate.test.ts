@@ -69,6 +69,9 @@ let convUnidentifiedBotArmed = 0n;
 let convStepOptOutEstimate = 0n;
 let convStepOptOutArmedStep1 = 0n;
 let convStepOptOutStepGone = 0n;
+let convOurReplyRestartedEpisode = 0n;
+let convRepliedAtFloorsTheCadence = 0n;
+let cadenceFloorDueAt = "";
 let convNoBotRowArmed = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
@@ -581,6 +584,67 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:332`, stepIndex: 4 },
       },
     });
+
+    // Issue #750: o episódio novo aberto pela NOSSA resposta. Até ela, quem abria episódio era o
+    // cliente, e o webhook de entrada cancela o job pendente no mesmo movimento — o estado abaixo era
+    // inalcançável. Uma resposta nossa (um religamento, por exemplo) não cancela nada, então o job do
+    // passo tardio continua pendente enquanto o handler já o descarta por episódio novo. O console
+    // tem que chegar na mesma resposta, senão conta o tempo de um passo que não vai acontecer.
+    const c750 = await suDb.conversation.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootConversationId: 333,
+        inboxId: stepOptOutInbox.id,
+        status: "pending",
+        assigneeType: null,
+        threadId: `${tenant}:${inst}:333`,
+        lastRepliedMessageId: 1,
+        // O cliente falou ANTES da cobrança, e não voltou: só a nossa fala é posterior a ela.
+        lastInboundAt: new Date(FOLLOW_UP_AT.getTime() - 3_600_000),
+        lastFollowUpAt: FOLLOW_UP_AT,
+        lastRepliedAt: new Date(FOLLOW_UP_AT.getTime() + 5 * 60_000),
+        lastEventAt: new Date(FOLLOW_UP_AT.getTime() + 5 * 60_000),
+      },
+    });
+    convOurReplyRestartedEpisode = c750.id;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:333`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:333`, stepIndex: 1 },
+      },
+    });
+
+    // Issue #750, o outro lado: a contagem tem que sair da NOSSA fala quando ela é mais nova que o
+    // evento espelhado. `lastEventAt` vem do Chatwoot e só avança quando o webhook da mensagem que
+    // mandamos volta; a conversa recuperada do backlog tem esse campo com dias de idade, e um console
+    // que mede por ele mostra um follow-up vencido enquanto o cliente acabou de ser respondido.
+    const RESPONDIDA_AS = new Date("2026-06-18T23:30:00Z");
+    const c334 = await suDb.conversation.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootConversationId: 334,
+        inboxId: stepOptOutInbox.id,
+        status: "pending",
+        assigneeType: null,
+        threadId: `${tenant}:${inst}:334`,
+        lastRepliedMessageId: 1,
+        lastInboundAt: new Date("2026-06-10T10:00:00Z"),
+        // Oito dias mais velho que a resposta: é o estado de quem foi religada antes de o webhook voltar.
+        lastEventAt: new Date("2026-06-10T10:00:05Z"),
+        lastRepliedAt: RESPONDIDA_AS,
+        lastFollowUpAt: null,
+      },
+    });
+    convRepliedAtFloorsTheCadence = c334.id;
+    cadenceFloorDueAt = new Date(
+      RESPONDIDA_AS.getTime() + 2 * 60_000,
+    ).toISOString();
 
     // ── A PENDING job the handler will drop at claim time (issue #72). A multi-step sequence leaves
     //    one armed between steps with runAt days out, and nothing cancels it when the ground shifts.
@@ -1158,6 +1222,31 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.pausedByAppointment).toBe(false);
     expect(d.followUp?.lastFollowUpAt).not.toBeNull();
     expect(d.followUp?.abandoned).toBe(true);
+  });
+
+  // Issue #750: a nossa resposta abriu episódio novo com um job de passo tardio ainda pendente. O
+  // handler descarta esse job (`else if (newEpisode) return done`) e a varredura recomeça do passo 0;
+  // o console mostra o passo 1 da sequência nova, e não o countdown do job condenado.
+  test("a nossa resposta reabriu o episódio com job de passo tardio armado → conta o passo 1, não o 2", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convOurReplyRestartedEpisode,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).not.toBe(ARMED_STEP1_RUN_AT.toISOString());
+  });
+
+  // Issue #750: o piso da cadência. Sem ele o console mede oito dias de silêncio numa conversa
+  // respondida há dois minutos, e mostra um follow-up vencido em vez do countdown real.
+  test("a contagem sai da nossa resposta, não do evento antigo do espelho", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convRepliedAtFloorsTheCadence,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).toBe(cadenceFloorDueAt);
   });
 
   test("the agent was disabled with a job already armed → no countdown", async () => {

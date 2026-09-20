@@ -5,7 +5,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
-import { contactInboxThreadId } from "@/graph/checkpointer";
+import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { armIngest, ingestDedupeKey, ingestHandler } from "@/graph/ingest-job";
 import { runScopedOn } from "@/lib/tenancy";
@@ -297,7 +297,6 @@ describe.skipIf(!dbUp)("an ingestion armed after a /reset", () => {
 
   test("s5: a recusa também vale quando quem roda o job é a DRENAGEM", async () => {
     const ci = 71_005_1;
-    const saver = new MemorySaver();
     await mirror(5051, ci, 200);
     // Armada e deixada PENDING: a drenagem é quem reivindica e executa, a pedido de um turno, de um
     // nudge ou da compactação. A cerca mora no job justamente para não depender de cada chamador.
@@ -315,14 +314,21 @@ describe.skipIf(!dbUp)("an ingestion armed after a /reset", () => {
       base: appDb,
     });
 
-    const drained = await drainPendingIngest(
-      tenantId,
-      threadOf(ci),
-      appDb,
-      saver,
-    );
+    // SEM `MemorySaver` AQUI, e é uma diferença que importa. `drainPendingIngest` toma três
+    // argumentos e resolve o checkpointer de produção por dentro: um quarto argumento não compila e,
+    // se compilasse, seria ignorado — a asserção contra um saver que ninguém escreveu passaria
+    // vazia, provando nada. Então a leitura é do checkpointer de verdade, e a linha de
+    // `agent_threads` é a outra metade, que é o que o /reset apaga.
+    const drained = await drainPendingIngest(tenantId, threadOf(ci), appDb);
     expect(drained).not.toBe("deferred");
-    expect(await reader(saver, ci)()).toEqual([]);
+    const cp = await getCheckpointer();
+    const estado = await cp.get({
+      configurable: { thread_id: threadOf(ci) },
+    });
+    expect(
+      ((estado?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[],
+    ).toEqual([]);
     expect(await threadRow(ci)).toBeNull();
     // E não fica devendo: uma recusa que devolvesse "adiado" deixaria o turno drenando para sempre.
     const restando = await suDb.schedulerJob.count({

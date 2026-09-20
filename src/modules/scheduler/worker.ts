@@ -3,7 +3,6 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { Semaphore } from "@/lib/semaphore";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
@@ -13,11 +12,13 @@ import {
 } from "@/modules/scheduler/lanes";
 import {
   type ClaimedJob,
+  claimDeadLetterAnnouncement,
   claimDueJobs,
   claimDueObserveJobs,
   claimDueTrafficJobs,
   completeJob,
   failJob,
+  REAPED_DEATH_ERROR,
   type ReapedJob,
   reapStaleJobs,
   rescheduleJob,
@@ -93,10 +94,6 @@ export function getDeadLetterHandler(
   return deadLetterHandlers.get(kind);
 }
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -131,34 +128,27 @@ async function dispatchDeadLetter(
       await hook(job, error, base);
       return;
     }
-    // NOTE: RE-READ rather than trust the dead-letter that got us here, which is what both
-    // hand-written hooks do and for the same reason (../memory/compact.ts spells it out). A re-arm
-    // lands on THIS row — `upsertJobRow` keys on (tenant, kind, dedupeKey) — so a FOLLOWUP the
-    // sweep re-arms in the window between the DEAD write and this line is work that is queued
-    // again, and announcing it would page an operator about a loss that did not happen. Suppressing
-    // costs nothing: a cause that is still broken fails the new arm too, and announces then.
+    // NOTE: CLAIM the announcement rather than trust the dead-letter that got us here, which is
+    // what both hand-written hooks do by re-reading, and for the same reason (../memory/compact.ts
+    // spells it out). A re-arm lands on THIS row — `upsertJobRow` keys on (tenant, kind, dedupeKey)
+    // — so a FOLLOWUP the sweep re-arms in the window between the DEAD write and this line is work
+    // that is queued again, and announcing it would page an operator about a loss that did not
+    // happen. Suppressing costs nothing: a cause that is still broken fails the new arm too, and
+    // announces then.
     //
-    // It NARROWS the window and cannot close it: the trail write is fire-and-forget, so a re-arm
-    // landing between this read and that insert still gets announced over. What is left is a line
-    // the next pass's own outcome follows, which is legible; closing it would mean writing the row
-    // inside the job's transaction.
+    // A CLAIM and not a read, because the read could not tell an erased death from a completed one
+    // and both look like a missing row (issue #737). `claimDeadLetterAnnouncement` asks the same
+    // three questions the read asked — DEAD, DEAD for THIS claim (`claimSeq` is the token the claim
+    // handed out, and a row re-armed, re-claimed and dead AGAIN belongs to a later attempt, which
+    // announces its own death with its own error) — and leaves a token behind, so the revoke that
+    // deletes the row can see whether this line was already owed to someone. It is one round trip,
+    // the same as the read it replaced.
     //
-    // Any status but DEAD suppresses, and a MISSING row suppresses too: for a kind with
-    // JOB_DELETE_ON_DONE the row is gone precisely because the work completed, and no row is not
-    // evidence that work was lost.
-    //
-    // And the row has to be DEAD for THIS claim. `claimSeq` is the token the claim handed out, and
-    // the module already treats a moved one as "this run was retired" (`isRetired`, ../scheduler
-    // /service.ts): a row re-armed, re-claimed by another drain and dead AGAIN reads as DEAD here
-    // while belonging to a later attempt — which announces its own death with its own error. Status
-    // alone would report the old error and let the new one report a second time.
-    const row = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
-      db.schedulerJob.findUnique({
-        where: { id: job.id },
-        select: { status: true, claimSeq: true },
-      }),
-    );
-    if (row?.status !== "DEAD" || row.claimSeq !== job.claimSeq) return;
+    // It NARROWS the re-arm window and cannot close it: the trail write is fire-and-forget, so a
+    // re-arm landing between the claim and the insert still gets announced over. What is left is a
+    // line the next pass's own outcome follows, which is legible; closing it would mean writing the
+    // row inside the job's transaction.
+    if (!(await claimDeadLetterAnnouncement(job, base))) return;
     // NOTE: the attempt count is deliberately absent, for the reason measured in
     // ../memory/compact.ts: the two roads to DEAD disagree about the number while meaning the same
     // thing (failJob hands the hook the claim it was given, the reaper increments in SQL). What
@@ -205,7 +195,7 @@ export async function announceReaped(
 ): Promise<void> {
   for (const job of reaped) {
     if (job.status === "DEAD") {
-      await dispatchDeadLetter(job, "reaped: the claim never finished", base);
+      await dispatchDeadLetter(job, REAPED_DEATH_ERROR, base);
     }
   }
 }

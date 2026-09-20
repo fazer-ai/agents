@@ -3474,10 +3474,15 @@ async function maybeConsumeCommandOrGate(params: {
               // transaction would wait for a connection this one cannot release until it returns,
               // and `DB_POOL_MAX=1` is a supported setting: the reset would time out and report a
               // partial failure of the very step that had nothing wrong with it.
+              // `base` as the fourth argument, and it is NOT the connection that deletes: the
+              // revoke now announces the deaths it erases (issue #737), and that emit is
+              // fire-and-forget, so it must land on the pool rather than on the locked connection
+              // this step is holding, which is gone by the time the row is written.
               await revokeJobsByKeyPrefixOn(
                 db,
                 "INGEST_MESSAGE",
                 `ingest:${graphThreadId}:`,
+                base,
               );
               // AND THE FACT THAT IT WORKED, written by the transaction that does it (issue #728,
               // review r7/r8). `reset_at_message_id` above says the operator TYPED the command; it

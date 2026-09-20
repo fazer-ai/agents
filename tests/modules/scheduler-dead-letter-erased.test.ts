@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   claimPendingByKeyPrefix,
@@ -54,6 +55,8 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
+let outroTenantId = 0n;
+let channelId = 0n;
 const ctx = (): TenantContext => ({
   tenantId,
   userId: null,
@@ -68,10 +71,12 @@ const past = () => new Date(Date.now() - 60_000);
 async function claimedAndStale(
   kind: "INGEST_MESSAGE" | "DELIVERY_RECOVERY",
   dedupeKey: string,
+  dono: bigint = tenantId,
+  claimedAt: Date = past(),
 ): Promise<bigint> {
   const id = await enqueueJob({
     rearm: "same-work",
-    tenantId,
+    tenantId: dono,
     kind,
     dedupeKey,
     runAt: past(),
@@ -79,7 +84,7 @@ async function claimedAndStale(
   });
   await suDb.$executeRaw`
     UPDATE scheduler_jobs
-       SET status = 'CLAIMED', claimed_at = ${past()}, attempts = 20,
+       SET status = 'CLAIMED', claimed_at = ${claimedAt}, attempts = 20,
            last_error = 'ingest: the model refused five times'
      WHERE id = ${id}`;
   return id;
@@ -99,12 +104,29 @@ async function morreComoReaper(
   await announceReaped(reaped, appDb);
 }
 
+// O reap de UM dono, e o motivo de o argumento vir nomeado: a cerca de
+// `scheduler-tenant-fence.test.ts` exige que toda chamada de `reapStaleJobs` num teste carregue um
+// tenant, e ela lê o TEXTO do argumento, então `outroTenantId` passaria por chamada solta. Nomeando
+// o campo, a cerca vê o que é verdade — os dois reaps são cercados, um por dono.
+async function ceifa(dono: { tenantId: bigint }) {
+  return reapStaleJobs(
+    1_000,
+    appDb,
+    new Date(),
+    dono.tenantId,
+    "INGEST_MESSAGE",
+  );
+}
+
 async function revoga(
   prefix: string,
   kind: "INGEST_MESSAGE" | "DELIVERY_RECOVERY",
 ) {
+  // O quarto argumento é o cliente em que o anúncio pousa, e NÃO o que apaga a linha: o emit é
+  // fire-and-forget, então ele não pode viajar na conexão travada do /reset. Em produção o padrão
+  // é o cliente do app; aqui é o do banco de teste.
   return runScopedOn(appDb, ctx(), (db) =>
-    revokeJobsByKeyPrefixOn(db, kind, prefix),
+    revokeJobsByKeyPrefixOn(db, kind, prefix, appDb),
   );
 }
 
@@ -128,13 +150,34 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
       data: { name: "DLERASED", slug: `dlerased-${process.pid}` },
     });
     tenantId = t.id;
+    outroTenantId = (
+      await suDb.tenant.create({
+        data: { name: "DLERASED-B", slug: `dlerased-b-${process.pid}` },
+      })
+    ).id;
+    channelId = (
+      await suDb.alertChannel.create({
+        data: {
+          tenantId,
+          name: "dead-letter-sink",
+          type: "webhook",
+          url: encryptJson("https://example.com/alert-sink"),
+          enabled: true,
+          minLevel: "error",
+          stages: [],
+        },
+      })
+    ).id;
   });
 
   afterAll(async () => {
-    if (tenantId) {
-      await clearFlowLog(suDb, { tenantId });
-      await suDb.$executeRaw`DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`;
-      await suDb.$executeRaw`DELETE FROM tenants WHERE id = ${tenantId}`;
+    for (const t of [tenantId, outroTenantId]) {
+      if (!t) continue;
+      await clearFlowLog(suDb, { tenantId: t });
+      await suDb.$executeRaw`DELETE FROM alert_deliveries WHERE tenant_id = ${t}`;
+      await suDb.$executeRaw`DELETE FROM alert_channels WHERE tenant_id = ${t}`;
+      await suDb.$executeRaw`DELETE FROM scheduler_jobs WHERE tenant_id = ${t}`;
+      await suDb.$executeRaw`DELETE FROM tenants WHERE id = ${t}`;
     }
     await su?.$disconnect();
     await app?.$disconnect();
@@ -261,6 +304,93 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
       (l) => (l.detail as Record<string, unknown>).dedupeKey,
     );
     expect(new Set(chaves).size).toBe(chaves.length);
+  });
+
+  // s3 — as duas ordens no mesmo caso, que é o que a s3 pede: a mesma thread perde duas mensagens,
+  // uma com o revoke DENTRO da janela e outra com ele depois do anúncio. Duas linhas, uma por
+  // mensagem, nenhuma chave repetida.
+  test("a ordem em que revoke e anúncio caíram não muda o que o operador vê", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s3b:33");
+    await morreComoReaper("INGEST_MESSAGE", async () => {
+      expect(await revoga("ingest:t-s3b:", "INGEST_MESSAGE")).toBe(1);
+    });
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s3b:34");
+    await morreComoReaper("INGEST_MESSAGE", async () => {});
+    expect(await revoga("ingest:t-s3b:", "INGEST_MESSAGE")).toBe(1);
+
+    const linhas = await mortesAnunciadas();
+    expect(linhas).toHaveLength(2);
+    const chaves = linhas.map(
+      (l) => (l.detail as Record<string, unknown>).dedupeKey,
+    );
+    expect(chaves.sort()).toEqual(["ingest:t-s3b:33", "ingest:t-s3b:34"]);
+    expect(new Set(chaves).size).toBe(2);
+  });
+
+  // s6 — a linha tem que ALCANÇAR o canal, não só a página de Logs. `dead_letter` existe como stage
+  // justamente porque é a ele que um canal se inscreve; uma linha que não chega ao ledger de
+  // entregas não é anúncio nenhum.
+  test("o anúncio da morte apagada chega ao canal de alerta", async () => {
+    await limpa();
+    await suDb.$executeRaw`DELETE FROM alert_deliveries WHERE tenant_id = ${tenantId}`;
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s6:99");
+    await morreComoReaper("INGEST_MESSAGE", async () => {
+      expect(await revoga("ingest:t-s6:", "INGEST_MESSAGE")).toBe(1);
+    });
+    expect(await mortesAnunciadas()).toHaveLength(1);
+    const entregas = await suDb.alertDelivery.findMany({
+      where: { tenantId, channelId, stage: "dead_letter" },
+    });
+    expect(entregas).toHaveLength(1);
+    expect(entregas[0]?.level).toBe("error");
+    expect(entregas[0]?.summary.startsWith("[dead_letter]")).toBe(true);
+  });
+
+  // s7 — a atribuição. Em produção o reaper varre `scheduler_jobs` cross-tenant, então duas mortes
+  // de tenants diferentes saem no mesmo lote e cada linha tem que ficar sob o dono do job que
+  // morreu.
+  //
+  // O reap aqui é CERCADO por tenant, um por vez, e as duas metades viram um lote só na hora de
+  // anunciar. Não é frouxidão: `scheduler-tenant-fence.test.ts` proíbe um reap sem tenant em teste,
+  // porque o banco é um por checkout e sob `--parallel` a varredura rouba a linha de outro arquivo,
+  // que falha sem nomear quem roubou. O que a s7 pergunta é de quem é cada linha, e isso o lote
+  // único do `announceReaped` responde inteiro.
+  test("a linha anunciada é do tenant dono do job, e de mais ninguém", async () => {
+    await limpa();
+    await clearFlowLog(suDb, { tenantId: outroTenantId });
+    await suDb.$executeRaw`DELETE FROM scheduler_jobs WHERE tenant_id = ${outroTenantId}`;
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-a:1", tenantId);
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-b:1", outroTenantId);
+    const lote = [
+      ...(await ceifa({ tenantId })),
+      ...(await ceifa({ tenantId: outroTenantId })),
+    ];
+    expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(2);
+    expect(await revoga("ingest:t-a:", "INGEST_MESSAGE")).toBe(1);
+    expect(
+      await runScopedOn(
+        appDb,
+        { tenantId: outroTenantId, userId: null, role: "TENANT_ADMIN" },
+        (db) =>
+          revokeJobsByKeyPrefixOn(db, "INGEST_MESSAGE", "ingest:t-b:", appDb),
+      ),
+    ).toBe(1);
+    await announceReaped(lote, appDb);
+
+    const deA = await mortesAnunciadas();
+    expect(deA).toHaveLength(1);
+    const dA = deA[0]?.detail as Record<string, unknown>;
+    expect(dA.dedupeKey).toBe("ingest:t-a:1");
+    const deB = await flowLogRows(suDb, {
+      // flowlog-scope: tenant-wide — o sujeito é sob QUAL tenant a linha caiu, e uma leitura presa
+      // a um turno não teria como responder: nenhuma destas unidades tem turno.
+      where: { tenantId: outroTenantId, stage: "dead_letter" },
+      orderBy: { id: "asc" },
+    });
+    expect(deB).toHaveLength(1);
+    const dB = deB[0]?.detail as Record<string, unknown>;
+    expect(dB.dedupeKey).toBe("ingest:t-b:1");
   });
 
   // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um

@@ -8,7 +8,9 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
+  JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
   kindsInLane,
   type SchedulerLane,
@@ -541,6 +543,74 @@ export function jobNotRetiredSql(job: ClaimedJob): Prisma.Sql {
        ))`;
 }
 
+// WHO OWES THE ANNOUNCEMENT OF A DEATH, WRITTEN ON THE ROW BECAUSE THE ROW IS WHAT GETS ERASED
+// (issue #737).
+//
+// The generic dead-letter line re-reads the row before writing, and used to treat a MISSING row as
+// "the work completed" — true for a `JOB_DELETE_ON_DONE` kind only while the completion is the ONLY
+// thing that deletes it. For `INGEST_MESSAGE` it is not: the revoke below deletes `DEAD` rows too,
+// deliberately, because the row holds the encrypted message body and a `/reset` that left it would
+// confirm "memory cleared" over a stored copy of the conversation. A reset landing between the DEAD
+// write and that re-read therefore erased the evidence, and the loss went unannounced in BOTH
+// places at once — no job row, and no `dead_letter` line either.
+//
+// "No row" has two origins and cannot classify on its own, which is why the answer is not a smarter
+// read. The other origin is a genuine re-do: after the DEAD write the only road back to a deleted
+// row is re-arm → re-claim → `completeJob` (which CASes on `CLAIMED`), so a missing row can also
+// mean the message WAS ingested, by a later attempt. Announcing every missing row would page an
+// operator about losses that did not happen and turn a `/reset` into a burst of errors.
+//
+// So the two candidates claim the announcement instead, and the claim is a token written INTO the
+// row: whoever stamps it first owns the line, and the loser stays quiet. They serialize on the row
+// lock, so under READ COMMITTED the orderings are exhaustive — if this UPDATE commits first the
+// DELETE re-evaluates `jsonb_exists` against the stamped version and skips its own announcement; if
+// the DELETE commits first this UPDATE matches nothing and returns 0.
+//
+// `payload` rather than a column of its own, and not only to save a migration: the token is about a
+// single run of a single row, and `retireJobsByDedupeKeyOn` already writes `cancelledAt` there for
+// the same reason. A re-arm wipes the payload wholesale, which is the correct behaviour here — the
+// row is alive again, and its NEXT death is a different death with a token of its own.
+export const DEAD_LETTER_ANNOUNCED = "deadLetterAnnouncedAt";
+
+// What the reaper's road to DEAD says about itself, in ONE place because it is now said TWICE: to
+// the announcement (../scheduler/worker.ts, `announceReaped`) and onto the row. The row has to carry
+// it because the row is what the revoke reads when it announces a death whose own caller is no
+// longer around to explain it — and `failJob` is the only other road to DEAD and always writes
+// `last_error`, so a DEAD row with an empty one came from here.
+export const REAPED_DEATH_ERROR = "reaped: the claim never finished";
+
+// The claim, for the announcer. `true` means this call owns the line and must write it; `false`
+// means the row moved on, was re-armed, or somebody else already owns it — and in every one of those
+// the right thing is silence.
+//
+// It REPLACES the re-read it descends from rather than adding to it, so the announcement costs the
+// same one round trip it always did. The three conditions are the ones that read were already
+// making: DEAD, and DEAD for THIS claim (a row re-armed, re-claimed and dead AGAIN belongs to a later
+// attempt, which announces its own death with its own error), plus the token.
+//
+// `updated_at` is deliberately left where it is. Stamping is bookkeeping about the announcement, not
+// a transition of the work, and moving the column would make a dead row look like it did something.
+export async function claimDeadLetterAnnouncement(
+  job: { id: bigint; tenantId: bigint; claimSeq: number },
+  base: PrismaClient = basePrisma,
+): Promise<boolean> {
+  const stamp = JSON.stringify({
+    [DEAD_LETTER_ANNOUNCED]: new Date().toISOString(),
+  });
+  const count = await runScopedOn(
+    base,
+    sysCtx(job.tenantId),
+    (db) => db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET payload = payload || ${stamp}::jsonb
+       WHERE id = ${job.id}
+         AND status = 'DEAD'
+         AND claim_seq = ${job.claimSeq}
+         AND NOT jsonb_exists(payload, ${DEAD_LETTER_ANNOUNCED})`,
+  );
+  return count > 0;
+}
+
 // REVOKED, not merely cancelled: PENDING **and** CLAIMED rows under a dedupeKey prefix are retired.
 //
 // The last and strongest of the four, and the difference is deliberate. The two cancels reach PENDING
@@ -563,6 +633,11 @@ export async function revokeJobsByKeyPrefixOn(
   db: ScopedDb,
   kind: SchedulerJobKind,
   prefix: string,
+  // For the announcement below, and NOT for the delete: the emit is fire-and-forget, so it must not
+  // ride the caller's connection — that transaction is gone by the time the row is written. The
+  // default is what production uses; a caller threads its own client the way the rest of this module
+  // lets one.
+  base: PrismaClient = basePrisma,
 ): Promise<number> {
   {
     const where = {
@@ -583,7 +658,67 @@ export async function revokeJobsByKeyPrefixOn(
     // would sit there forever holding the encrypted message body the reset was asked to erase, on a
     // table nothing sweeps. Reading the same map is what keeps the two answers from drifting.
     if (JOB_DELETE_ON_DONE[kind]) {
-      return (await db.schedulerJob.deleteMany({ where })).count;
+      // AND THE ROW IT ERASES MAY BE THE ONLY RECORD THAT A DEATH HAPPENED (issue #737). Deleting a
+      // DEAD row destroys the evidence the generic announcement re-reads, so this statement owes
+      // the line that announcement can no longer write — see DEAD_LETTER_ANNOUNCED above for why
+      // the two cannot both write it and cannot both stay quiet.
+      //
+      // ONE statement with RETURNING, never a read followed by a delete: the announcement decision
+      // has to be made by the statement that deletes, or a concurrent announcer slips between the
+      // two and the death is reported twice.
+      //
+      // The stamp is tested in RETURNING and NOT in the WHERE, which is the whole difference between
+      // announcing and erasing. Under READ COMMITTED a DELETE blocked on a concurrent UPDATE
+      // re-evaluates its WHERE against the updated row, so a stamp in there would make the row
+      // SURVIVE the revoke the moment the announcer won the race — trading the erasure the operator
+      // asked for against a log line. RETURNING hands back the post-UPDATE version either way, so
+      // the row always goes and only the announcement is conditional.
+      //
+      // Raw, so the prefix is escaped by hand: this function takes any prefix, and `_` and `%` are
+      // ordinary characters in a dedupe key.
+      const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
+      const erased = await db.$queryRaw<
+        Array<{
+          id: bigint;
+          tenant_id: bigint;
+          dedupe_key: string;
+          last_error: string | null;
+          unannounced_death: boolean;
+        }>
+      >(Prisma.sql`
+        DELETE FROM scheduler_jobs
+         WHERE kind = ${kind}::"SchedulerJobKind"
+           AND status IN ('PENDING', 'CLAIMED', 'DEAD')
+           AND dedupe_key LIKE ${like}
+        RETURNING id, tenant_id, dedupe_key, last_error,
+                  (status = 'DEAD'
+                   AND NOT jsonb_exists(payload, ${DEAD_LETTER_ANNOUNCED}))
+                  AS unannounced_death`);
+      for (const row of erased) {
+        // Only a DEATH, and only one nobody has claimed. A PENDING or CLAIMED row is work the
+        // operator asked to call off, and calling it a loss would turn one `/reset` into a burst of
+        // errors about messages that were never owed.
+        if (!row.unannounced_death) continue;
+        emitDeadLetter({
+          tenantId: row.tenant_id,
+          unit: "job",
+          level: JOB_DEATH_LEVEL[kind],
+          // What the ROW remembers, because whoever could explain this death is not here. Empty only
+          // for the reaper's road, which is why that road now writes its sentence down.
+          error: row.last_error || REAPED_DEATH_ERROR,
+          detail: {
+            kind,
+            jobId: String(row.id),
+            dedupeKey: row.dedupe_key,
+            // Not required by the line's contract, and kept because the operator would otherwise go
+            // looking for a job row that no longer exists: it says the death is real and the record
+            // of it was erased on purpose.
+            erasedBy: "revoke",
+          },
+          base,
+        });
+      }
+      return erased.length;
     }
     // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
     // would erase the dead-letter the operator may still need to see.
@@ -1052,6 +1187,11 @@ export async function reapStaleJobs(
   // the row already re-pended.
   kind?: ClaimedJob["kind"],
 ): Promise<ReapedJob[]> {
+  // `last_error` IS WRITTEN DOWN HERE, because this road's explanation used to exist only as an
+  // argument passed to the announcement (issue #737). A claim that crashed leaves no error of its
+  // own — nothing reached `failJob` — so a DEAD row from this road said nothing about why it died,
+  // and the revoke that erases such a row has only the row to quote. Stamped on the DEAD transition
+  // alone: a row going back to PENDING keeps whatever its last real failure said.
   const cutoff = new Date(now.getTime() - staleMs);
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
@@ -1075,6 +1215,7 @@ export async function reapStaleJobs(
       SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
           attempts = attempts + 1,
           claimed_at = NULL,
+          last_error = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN ${REAPED_DEATH_ERROR} ELSE last_error END,
           updated_at = now()
       WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
       RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,

@@ -185,8 +185,8 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
   // modelo emite a decisão junto com a ferramenta que fala, esse lote NÃO encerra o turno
   // (`onlySkipped`), e o modelo é perguntado de novo e responde com a decisão sozinha. A primeira
   // linha foi escrita enquanto a companheira ainda rodava, e diz "nada ainda", o que é verdade sobre
-  // aquele instante e mentira sobre o turno, que é o que o marcador afirma. Nada des-entrega, então
-  // a resposta do turno é o OU das linhas dele.
+  // aquele instante e mentira sobre o turno, que é o que o marcador afirma. Quem responde pelo turno
+  // é a decisão TERMINAL, que é a mais bem informada que ele tem.
   test("duas decisões no mesmo turno leem o turno, não o instante", async () => {
     await clearFlowLog(suDb, { tenantId });
     await linhaDeFerramenta("turno-lote", "skip_reply", {
@@ -200,6 +200,25 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     const decisoes = t.filter((e) => e.name === "skip_reply");
     expect(decisoes).toHaveLength(2);
     expect(decisoes.map((e) => e.turnDelivered)).toEqual([true, true]);
+  });
+
+  // O OUTRO LADO, e o achado da rodada 1 de review: a primeira linha do lote pode ter lido uma
+  // RESERVA (o anexo é reservado antes do download), e um download que falha desfaz a reserva sem
+  // nada ter saído. A decisão terminal é a mais bem informada do turno — quando ela é escrita, tudo
+  // a que o turno se comprometeu já aconteceu — então é ela que responde pelo turno, e uma resposta
+  // provisória mais velha não pode sobreviver a ela.
+  test("a decisão terminal vence a provisória que leu uma reserva", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await linhaDeFerramenta("turno-reservou", "skip_reply", {
+      turnDelivered: true,
+    });
+    await linhaDeFerramenta("turno-reservou", "send_image");
+    await linhaDeFerramenta("turno-reservou", "skip_reply", {
+      turnDelivered: false,
+    });
+    const decisoes = (await trilha()).filter((e) => e.name === "skip_reply");
+    expect(decisoes).toHaveLength(2);
+    expect(decisoes.map((e) => e.turnDelivered)).toEqual([false, false]);
   });
 
   // O OU é do turno, não da conversa: o turno mudo ao lado do turno que entregou continua mudo.

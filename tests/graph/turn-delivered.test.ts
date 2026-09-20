@@ -116,6 +116,37 @@ describe("o turno botou alguma coisa na frente do cliente?", () => {
     expect(turnDeliveredToCustomer(turno(), transferiu())).toBe(false);
   });
 
+  // O ACHADO DA RODADA 1 DE REVIEW. O silêncio declarado não é só "a linha de fechamento está
+  // vazia": o runtime dropa a fila de anexos junto (`handoffDeclaredSilence`, runtime.ts), porque
+  // "este caso não recebe resposta nenhuma" não pode significar "nenhum texto, mais o documento que
+  // você enfileirou dois passos atrás". Então um turno que enfileirou uma imagem E declarou silêncio
+  // não entrega nada, e ler só a fila responderia que entregou.
+  test("silêncio declarado leva a fila junto: não", () => {
+    expect(
+      turnDeliveredToCustomer(
+        turno({ pendingAttachments: [anexo()] }),
+        transferiu({
+          customerMessage: "",
+          completed: true,
+          declinedToSpeak: true,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("silêncio declarado com reserva em voo: não", () => {
+    expect(
+      turnDeliveredToCustomer(
+        turno({ imagesInFlight: 1 }),
+        transferiu({
+          customerMessage: "",
+          completed: true,
+          declinedToSpeak: true,
+        }),
+      ),
+    ).toBe(false);
+  });
+
   test("turno sem estado nenhum: não", () => {
     expect(turnDeliveredToCustomer(undefined, undefined)).toBe(false);
   });

@@ -36,40 +36,46 @@ export interface TurnFacts {
 // t('conversation.activity.skipAfterDelivery', 'Nothing further to add')
 // t('conversation.activity.search', 'Searching the knowledge base')
 // t('conversation.activity.suggest', 'Preparing a knowledge suggestion')
-const BY_TOOL: Record<string, ToolLabel> = {
-  handoff_to_human: {
-    key: "conversation.activity.handoff",
-    fallback: "Transferring to a human",
-  },
-  private_note: {
-    key: "conversation.activity.note",
-    fallback: "Writing an internal note",
-  },
-  set_custom_attribute: {
-    key: "conversation.activity.attr",
-    fallback: "Updating details",
-  },
-  resolve_conversation: {
-    key: "conversation.activity.resolve",
-    fallback: "Wrapping up the conversation",
-  },
-  react_to_message: {
-    key: "conversation.activity.react",
-    fallback: "Reacting to a message",
-  },
-  skip_reply: {
-    key: "conversation.activity.skip",
-    fallback: "Decided not to respond",
-  },
-  search_knowledge: {
-    key: "conversation.activity.search",
-    fallback: "Searching the knowledge base",
-  },
-  suggest_kb_entry: {
-    key: "conversation.activity.suggest",
-    fallback: "Preparing a knowledge suggestion",
-  },
-};
+// A Map and not an object literal, because the key comes from the OPERATOR: a custom HTTP tool or
+// an MCP server may be named `constructor` or `toString`, and an object literal answers those with
+// the inherited member, which is truthy. The label would come out as `t(undefined, undefined)` — an
+// empty phrase, and not even the humanized name an unknown tool gets (review round 1).
+const BY_TOOL = new Map<string, ToolLabel>(
+  Object.entries({
+    handoff_to_human: {
+      key: "conversation.activity.handoff",
+      fallback: "Transferring to a human",
+    },
+    private_note: {
+      key: "conversation.activity.note",
+      fallback: "Writing an internal note",
+    },
+    set_custom_attribute: {
+      key: "conversation.activity.attr",
+      fallback: "Updating details",
+    },
+    resolve_conversation: {
+      key: "conversation.activity.resolve",
+      fallback: "Wrapping up the conversation",
+    },
+    react_to_message: {
+      key: "conversation.activity.react",
+      fallback: "Reacting to a message",
+    },
+    skip_reply: {
+      key: "conversation.activity.skip",
+      fallback: "Decided not to respond",
+    },
+    search_knowledge: {
+      key: "conversation.activity.search",
+      fallback: "Searching the knowledge base",
+    },
+    suggest_kb_entry: {
+      key: "conversation.activity.suggest",
+      fallback: "Preparing a knowledge suggestion",
+    },
+  }),
+);
 
 // The decision to stay quiet, said about a turn that had already spoken. The plain phrase asserts a
 // silence, and on that turn the reply is on the screen one line above it — which is the reading that
@@ -90,5 +96,5 @@ export function toolLabel(
   if (tool === "skip_reply" && turn?.delivered === true) {
     return SKIP_AFTER_DELIVERY;
   }
-  return (tool && BY_TOOL[tool]) || null;
+  return (tool && BY_TOOL.get(tool)) || null;
 }

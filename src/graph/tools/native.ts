@@ -193,6 +193,12 @@ export function turnDeliveredToCustomer(
   turnState: TurnState | undefined,
   handoffState: HandoffTurnState | undefined,
 ): boolean {
+  // The declared silence answers FIRST, and it answers for the whole turn. It is not only "the
+  // closing line is empty": the runtime drops the attachment queue with it, because "this case
+  // receives no reply at all" cannot mean "no text, plus the document you queued two hops ago". So a
+  // turn that queued a picture AND declared the silence delivers nothing, and asking the queue alone
+  // would answer that it did (review round 1).
+  if (handoffDeclaredSilence(handoffState)) return false;
   if (handoffAnsweredTheTurn(handoffState)) return true;
   if (!turnState) return false;
   return (

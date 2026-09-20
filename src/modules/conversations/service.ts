@@ -1316,17 +1316,18 @@ export async function getConversationDetail(
   // still running, and reads "nothing yet" — truthfully about that instant, and misleadingly about
   // the turn, which is what the marker is read as being about.
   //
-  // An OR and not a last-writer-wins, because the two lines disagree in one direction only: nothing
-  // un-delivers. A turn with no line claiming delivery stays unknown, which is what keeps the silent
-  // turn saying it stayed silent.
+  // THE LAST LINE OF THE TURN WINS, and the rows arrive newest-first, so the first one seen is it.
+  // Round 1 of review asked for an OR instead, and an OR is wrong in the direction that reservations
+  // create: an attachment is reserved BEFORE its download, so a line written mid-batch can read
+  // "delivered" over a download that then fails and releases the reservation with nothing sent. The
+  // terminal line is the best-informed one the turn has — everything it committed to has happened by
+  // the time it is written — so an older, more provisional answer must not outlive it.
   const deliveredByTurn = new Map<string, boolean>();
   for (const r of trailRows) {
     const d = (r.detail ?? null) as Record<string, unknown> | null;
     if (typeof d?.turnDelivered !== "boolean") continue;
-    deliveredByTurn.set(
-      r.turnId,
-      (deliveredByTurn.get(r.turnId) ?? false) || d.turnDelivered,
-    );
+    if (deliveredByTurn.has(r.turnId)) continue;
+    deliveredByTurn.set(r.turnId, d.turnDelivered);
   }
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {

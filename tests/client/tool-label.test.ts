@@ -42,6 +42,24 @@ describe("a regra do rótulo de ferramenta", () => {
     expect(toolLabel(null)).toBeNull();
   });
 
+  // O ACHADO DA RODADA 1 DE REVIEW. O nome vem do operador (ferramenta HTTP, servidor MCP), e num
+  // objeto literal `BY_TOOL["constructor"]` devolve o construtor herdado, que é truthy: o rótulo sai
+  // como `t(undefined, undefined)`, uma string vazia, e o operador perde até o nome humanizado que a
+  // ferramenta desconhecida teria. O `switch` de antes não tinha esse buraco, então ele entrou com
+  // esta entrega.
+  test("nome herdado do Object não vira rótulo", async () => {
+    const toolLabel = await regra();
+    for (const nome of [
+      "constructor",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "__proto__",
+    ]) {
+      expect(toolLabel(nome)).toBeNull();
+    }
+  });
+
   test("silêncio de um turno que entregou tem rótulo PRÓPRIO", async () => {
     const toolLabel = await regra();
     const entregou = toolLabel("skip_reply", { delivered: true });

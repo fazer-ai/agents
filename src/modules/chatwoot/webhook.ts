@@ -3028,6 +3028,11 @@ async function maybeConsumeCommandOrGate(params: {
           // message re-anchors it, and there is no proactive send pending at the instant of activation.
           lastInboundAt: null,
           lastFollowUpAt: null,
+          // A cerca do silêncio lê a MAIS RECENTE entre a fala do cliente e a nossa (issue #750), então
+          // limpar só a do cliente deixa a nossa de pé e a varredura recria o episódio que este comando
+          // acabou de encerrar — sem mensagem nova de ninguém. Os dois eixos saem juntos ou o slate não
+          // está limpo.
+          lastRepliedAt: null,
         },
       }),
     );
@@ -3360,6 +3365,9 @@ async function maybeConsumeCommandOrGate(params: {
           data: {
             lastInboundAt: null,
             lastFollowUpAt: null,
+            // O outro eixo da cerca do silêncio (issue #750): de pé, ele sozinho reabre a passagem e a
+            // varredura ressuscita a sequência que o /reset encerrou.
+            lastRepliedAt: null,
             testNoticeSentAt: null,
             outOfHoursNoticeSentAt: null,
             awayMessageSentAt: null,

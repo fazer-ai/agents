@@ -469,6 +469,12 @@ export interface ConversationTrailEntry {
   // tool → the sanitized error message when the tool FAILED (status "error"), so the operator sees WHY
   // it failed inline instead of just a ✗. null on success and for follow-up/reminder rows.
   errorMessage: string | null;
+  // `skip_reply` only → whether that TURN had put something in front of the customer (a handoff's
+  // closing line, an attachment) when the agent decided to stay quiet. The marker is the one entry
+  // that asserts a silence, and the name of the tool cannot tell a transfer that answered from a
+  // transfer that declared it had nothing to say (issue #726). null on every other row, and null on
+  // a `skip_reply` row written before this shipped: unknown, so the screen keeps the plain label.
+  turnDelivered: boolean | null;
   at: string;
 }
 
@@ -1291,6 +1297,7 @@ export async function getConversationDetail(
       take: 60,
       select: {
         id: true,
+        turnId: true,
         stage: true,
         status: true,
         durationMs: true,
@@ -1300,6 +1307,27 @@ export async function getConversationDetail(
       },
     }),
   );
+  // THE DELIVERY FACT IS THE TURN'S, so it is folded over the turn before any row is shaped.
+  //
+  // Each `skip_reply` line records what the turn had delivered at the instant that line was written,
+  // and a turn can write more than one: a model may emit the decision alongside the tool that speaks,
+  // and such a batch does not end the turn (`onlySkipped` in graph.ts), so the model is asked again
+  // and answers with the decision alone. The first of those lines is written while the companion is
+  // still running, and reads "nothing yet" — truthfully about that instant, and misleadingly about
+  // the turn, which is what the marker is read as being about.
+  //
+  // An OR and not a last-writer-wins, because the two lines disagree in one direction only: nothing
+  // un-delivers. A turn with no line claiming delivery stays unknown, which is what keeps the silent
+  // turn saying it stayed silent.
+  const deliveredByTurn = new Map<string, boolean>();
+  for (const r of trailRows) {
+    const d = (r.detail ?? null) as Record<string, unknown> | null;
+    if (typeof d?.turnDelivered !== "boolean") continue;
+    deliveredByTurn.set(
+      r.turnId,
+      (deliveredByTurn.get(r.turnId) ?? false) || d.turnDelivered,
+    );
+  }
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
     const detail = (r.detail ?? null) as Record<string, unknown> | null;
@@ -1319,7 +1347,14 @@ export async function getConversationDetail(
             : rawOutput != null
               ? JSON.stringify(rawOutput)
               : null,
+        // The turn's answer, but only on a row that ASKED the question. The stamp is written by the
+        // silence tool's line and by no other, so a row without one keeps null: the fact is about
+        // the turn, and the claim is the silence marker's alone to make.
         errorMessage: r.status === "error" ? r.errorMessage : null,
+        turnDelivered:
+          typeof detail?.turnDelivered === "boolean"
+            ? (deliveredByTurn.get(r.turnId) ?? null)
+            : null,
         at: r.createdAt.toISOString(),
       });
     } else if (
@@ -1338,6 +1373,7 @@ export async function getConversationDetail(
         args: null,
         output: null,
         errorMessage: null,
+        turnDelivered: null,
         at: r.createdAt.toISOString(),
       });
     }

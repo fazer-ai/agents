@@ -126,6 +126,12 @@ export interface AgentActivityEvent {
   // On phase "finished": how many balloons a split reply produced. >1 lets the UI hold a "delivering"
   // indicator until the balloons arrive over the webhook→mirror roundtrip (which lags the finish).
   balloons?: number | null;
+  // On the `skip_reply` tool step: whether the TURN had already put something in front of the
+  // customer when the decision to stay quiet was taken. It rides here because this indicator has no
+  // history to consult — the trail is written for the timeline, and mid-turn there is no timeline
+  // yet (issue #726). ABSENT means the question was not answered, which is not the same as "no": the
+  // UI keeps the plain label rather than claiming either.
+  delivered?: boolean;
 }
 
 // NOTE: Async RAG ingest progress (PENDING → PROCESSING → READY|FAILED). Fans out on the

@@ -203,6 +203,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/nudge.test.ts": 3,
   "tests/graph/runtime.test.ts": 12,
   "tests/graph/side-effect-flowlog.test.ts": 1,
+  // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's
+  // delivery is read — that one drives the callback by hand, so it cannot go through the helper.
+  "tests/graph/skip-reply-turn-delivered.test.ts": 2,
   "tests/graph/tool-flowlog.test.ts": 1,
   "tests/graph/tool-schema-refusal.test.ts": 2,
   // #605: two readers in one test, and the second is the first one's control. The alert-channel test

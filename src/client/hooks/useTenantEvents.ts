@@ -76,6 +76,9 @@ export interface AgentActivityRealtimeEvent {
   tool: string | null;
   runAt?: string | null;
   balloons?: number | null;
+  // On the silence tool's step: whether that turn had already put something in front of the
+  // customer. Absent means unanswered, never "no" (issue #726).
+  delivered?: boolean;
 }
 
 export interface KnowledgeDocumentRealtimeEvent {

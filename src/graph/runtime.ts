@@ -111,6 +111,7 @@ import {
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
   type TurnState,
+  turnDeliveredToCustomer,
 } from "./tools/native";
 import type { UsagePersist } from "./usage";
 
@@ -1160,14 +1161,20 @@ async function runTurnBody(
   // `started` before the first token (instant feedback), `step` events from the
   // graph callbacks (thinking / tool), and a GUARANTEED `finished` in the finally
   // (every exit — posted, empty, taken-over, superseded, or thrown — clears it).
+  // ONE reader for the two surfaces that label the silence. The trail and the live bubble answer the
+  // same question at different instants, and giving each its own way of guessing is how one of them
+  // gets fixed and the other keeps saying the turn ignored the customer (issue #726).
+  const turnDelivered = () => turnDeliveredToCustomer(turnState, handoffState);
   const status = new AgentStatusReporter({
     tenantId,
     conversationDbId: loaded.conversationDbId,
+    turnDelivered,
   });
   // Logs each tool call (name/status/duration) under this turn's flow group.
   const toolLogger = new ToolFlowLogger(flow, {
     logValues: loaded.logToolValues,
     tools,
+    turnDelivered,
   });
 
   // Guardrails (input/output moderation): one gate, shared with the proactive path (see

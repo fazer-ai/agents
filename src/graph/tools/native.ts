@@ -172,6 +172,36 @@ export function handoffDeclaredSilence(
   return !!state && state.completed && !!state.declinedToSpeak;
 }
 
+// WHETHER THIS TURN PUT SOMETHING IN FRONT OF THE CUSTOMER, asked of the turn's own state rather
+// than of what ran. The question exists for one reader — the marker `skip_reply` leaves behind,
+// which asserts a silence — and the surface it answers for is the operator's timeline (issue #726).
+//
+// It is not "which tools were called", and that distinction is the whole of it. `handoff_to_human`
+// is the reported case and it answers BOTH ways: with a `customerMessage` the customer reads a line,
+// and with the empty one (#662) nobody is spoken to, which is the turn where the silence sentence is
+// the only true thing on the screen. Reading the name would pass the first and invert the second.
+//
+// Neither half has been SENT when this is asked, and both are still the right answer. The runtime is
+// the single writer of customer-facing text, so a handoff's line goes out after the graph returns,
+// and `send_image` queues bytes the delivery loop posts later. What the turn has done is commit to
+// putting something there, and by the time the operator reads the marker it is on the screen.
+//
+// `imagesInFlight`/`documentsInFlight` are counted alongside the queue for the reason they exist:
+// the reservation is taken before the download, so a batch that has not finished downloading yet has
+// already decided to send. Reading only the queue would answer "nothing" for the window in between.
+export function turnDeliveredToCustomer(
+  turnState: TurnState | undefined,
+  handoffState: HandoffTurnState | undefined,
+): boolean {
+  if (handoffAnsweredTheTurn(handoffState)) return true;
+  if (!turnState) return false;
+  return (
+    turnState.pendingAttachments.length > 0 ||
+    turnState.imagesInFlight > 0 ||
+    turnState.documentsInFlight > 0
+  );
+}
+
 export interface PendingAttachment {
   bytes: ArrayBuffer;
   mime: string;

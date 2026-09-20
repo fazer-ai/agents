@@ -2,6 +2,7 @@ import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { Serialized } from "@langchain/core/load/serializable";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type DeclaredKeys, describeShape } from "@/modules/flowlog/shape";
@@ -111,6 +112,14 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   // cause is a string the operator has to be able to read, not a shape.
   private readonly logValues: boolean;
   private readonly declaredKeys: Map<string, ReadonlySet<string>>;
+  // Whether the TURN has put something in front of the customer, asked at the moment a line is
+  // written. Only `skip_reply` carries the answer, because only its marker asserts a silence: the
+  // operator's timeline reads "decided not to respond" off a turn that transferred WITH a closing
+  // line, and no tool name and no recorded argument can tell that turn from the one that transferred
+  // with nothing to say (issue #726). Absent on the paths that have no turn to ask (playground, the
+  // observe runner), and absent is not `false`: the reader treats it as unknown and keeps today's
+  // label rather than claiming a silence it cannot check.
+  private readonly turnDelivered?: () => boolean;
   private readonly starts = new Map<
     string,
     { tool: string; at: number; args: unknown }
@@ -121,10 +130,12 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     opts: {
       logValues?: boolean;
       tools?: readonly StructuredToolInterface[];
+      turnDelivered?: () => boolean;
     } = {},
   ) {
     super();
     this.flow = flow;
+    this.turnDelivered = opts.turnDelivered;
     this.logValues = opts.logValues === true;
     this.describe = this.logValues ? (value) => value : describeShape;
     this.declaredKeys = declaredKeysByTool(opts.tools ?? []);
@@ -168,6 +179,10 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         tool: s.tool,
         args: s.args,
         output: this.describe(value, null),
+        // NOTE: Asked HERE and not at handleToolStart, because a model may emit `skip_reply`
+        // alongside the tool that speaks (the documented parallel batch), and ToolNode runs a batch
+        // concurrently: at the start of a 0ms decision the companion has not recorded anything yet.
+        ...this.deliveryStamp(s.tool),
       },
       ...(failed
         ? {
@@ -177,6 +192,14 @@ export class ToolFlowLogger extends BaseCallbackHandler {
           }
         : {}),
     });
+  }
+
+  // The stamp, as a fragment so the key is ABSENT rather than null on every other line: a reader
+  // that sees the key at all reads it as an answer, and `false` on a line nobody asked about would
+  // claim the turn stayed silent.
+  private deliveryStamp(tool: string): { turnDelivered?: boolean } {
+    if (tool !== SKIP_REPLY_TOOL || !this.turnDelivered) return {};
+    return { turnDelivered: this.turnDelivered() };
   }
 
   override handleToolError(err: unknown, runId: string): void {

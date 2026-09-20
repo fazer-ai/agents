@@ -200,6 +200,9 @@ export async function recoverStrandedHumanReply(
         // it is what separates a watcher's lost append from a responder's (review r1).
         routeObserved: true,
         routeAgentBotId: true,
+        // WHEN THE MESSAGE ARRIVED, which is what dates the evidence used to recover an unstated
+        // role: a binding younger than the delivery describes another moment.
+        receivedAt: true,
       },
     }),
   );
@@ -223,7 +226,15 @@ export async function recoverStrandedHumanReply(
       },
       select: { id: true, inboxId: true, contactInboxId: true },
     });
-    if (conv?.inboxId == null) return null;
+    if (!conv) return null;
+    // THE MIRROR KNOWS THE CONVERSATION AND NOT ITS INBOX, which is a THIRD state and not the
+    // absence of an inbox (review r6). `upsertInbox` answers null for an event whose payload names
+    // no inbox, and the row is created with `inbox_id` null; a later event fills it in
+    // (`decision.unversioned && inboxRowId != null`). Collapsed into the "no route" answer below, a
+    // conversation in that state resolved `not-owed` — terminal, so the reply was never read back
+    // and nothing ever revisited the row, on a mirror that Chatwoot could have completed a minute
+    // later.
+    if (conv.inboxId === null) return "sparse" as const;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
       select: { id: true, agentId: true, provider: true },
@@ -279,7 +290,22 @@ export async function recoverStrandedHumanReply(
       (routeBotAgentId !== null &&
         routeBotAgentId !== inbox.agentId &&
         (await db.inboxObserver.count({
-          where: { tenantId, inboxId: inbox.id, agentId: routeBotAgentId },
+          where: {
+            tenantId,
+            inboxId: inbox.id,
+            agentId: routeBotAgentId,
+            // AND OLDER THAN THE DELIVERY, which is the rule this subsystem already states for the
+            // other piece of after-the-fact evidence: "bot equality is evidence about the role only
+            // while the binding is OLDER than the delivery" (docs/chatwoot.md). An agent attached
+            // as an observer AFTER this message arrived says nothing about the route it arrived on,
+            // and reading it as one would arm the append under an agent that was not there. The
+            // sweep runs half an hour later, so that window is real.
+            //
+            // The other direction is left conservative on purpose: an attachment the fork had not
+            // confirmed when the message landed reads as the responder's route, which is the answer
+            // this recovery gave for every null before r4.
+            createdAt: { lte: row.receivedAt },
+          },
         })) > 0);
     const routeAgentId = observed ? routeBotAgentId : inbox.agentId;
     if (routeAgentId === null) return null;
@@ -312,6 +338,16 @@ export async function recoverStrandedHumanReply(
       observed,
     };
   });
+  // THE MIRROR HAS THE CONVERSATION AND NOT THE INBOX: a row another event completes, so the same
+  // answer the unknown conversation gets (review r6).
+  if (bound === "sparse") {
+    logger.warn(
+      "chatwoot human-reply recovery: %s names conversation %d, whose mirrored row carries no inbox yet; retrying",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unresolved";
+  }
   // TWO CAUSES, and only one of them is an answer. An inbox bound to no agent owes nothing and never
   // will; a conversation the mirror has never seen is a row that does not exist YET.
   if (!bound) {

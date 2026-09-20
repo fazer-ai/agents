@@ -76,6 +76,7 @@ let tenantId = 0n;
 let instanceId = 0n;
 let agentDbId = 0n;
 let watcherAgentDbId = 0n;
+let testAgentDbId = 0n;
 let quietWatcherAgentDbId = 0n;
 let deliverySeq = 0;
 
@@ -198,6 +199,7 @@ describe.skipIf(!dbUp)(
           settings: {},
         },
       });
+      testAgentDbId = testAgent.id;
       await suDb.chatwootAgentBot.create({
         data: {
           tenantId,
@@ -305,7 +307,15 @@ describe.skipIf(!dbUp)(
           select: { id: true },
         });
         await suDb.inboxObserver.create({
-          data: { tenantId, inboxId: inbox.id, agentId: observerAgentId },
+          data: {
+            tenantId,
+            inboxId: inbox.id,
+            agentId: observerAgentId,
+            // ANTERIOR ÀS ENTREGAS que este arquivo semeia (o `seedStranded` data cada uma em 40
+            // minutos atrás). Uma ligação mais NOVA que a entrega não diz nada sobre a rota em que
+            // ela chegou, e o produto a ignora de propósito — o que tem teste próprio abaixo.
+            createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+          },
         });
       }
     });
@@ -804,6 +814,72 @@ describe.skipIf(!dbUp)(
       const jobs = await ingestJobs(convId);
       expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
       expect(jobs[0]?.payload.messageId).toBe(728);
+    });
+
+    // E A LIGAÇÃO MAIS NOVA QUE A ENTREGA NÃO É EVIDÊNCIA (review r6), que é a regra que o próprio
+    // subsistema já escreve para a outra evidência a posteriori: "bot equality is evidence about the
+    // role only while the binding is OLDER than the delivery". Um agente anexado como observador
+    // DEPOIS de a mensagem chegar não diz nada sobre a rota em que ela chegou, e a varredura roda
+    // meia hora depois, então essa janela é real.
+    test("an observer binding younger than the delivery is not evidence of the role", async () => {
+      const convId = 9133;
+      const LATE_INBOX_ID = 96;
+      pages.set(convId, [restComposerReply(731, "Chegou antes da ligação.")]);
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: LATE_INBOX_ID,
+          name: `WhatsApp ${LATE_INBOX_ID}`,
+          provider: "baileys",
+          agentId: testAgentDbId,
+        },
+        select: { id: true },
+      });
+      // A ligação nasce AGORA; a entrega é de quarenta minutos atrás.
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: watcherAgentDbId },
+      });
+      const rowId = await seedStranded(convId, {
+        inboxId: LATE_INBOX_ID,
+        messageId: 731,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 731)).toBe(false);
+    });
+
+    // E O ESPELHO QUE CONHECE A CONVERSA E NÃO A INBOX É UM TERCEIRO ESTADO (review r6). Um evento
+    // cujo payload não nomeia inbox cria a linha com `inbox_id` nulo, e um evento posterior a
+    // preenche. Dobrado no "sem rota" do vizinho, isso virava `not-owed` — terminal, com a resposta
+    // nunca relida, num espelho que o Chatwoot completaria um minuto depois.
+    test("a mirrored conversation with no inbox yet is retried, not discarded", async () => {
+      const convId = 9134;
+      pages.set(convId, [restComposerReply(732, "O espelho ainda não sabe.")]);
+      const rowId = await seedStranded(convId, { messageId: 732 });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: convId },
+        data: { inboxId: null },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unresolved");
+      expect(await ingestArmedFor(convId, 732)).toBe(false);
     });
 
     // E O CONTROLE DA MESMA PERGUNTA: o mesmo nulo, o mesmo respondedor em `test`, e um bot que NÃO

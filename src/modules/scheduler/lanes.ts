@@ -86,6 +86,16 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // thread for the sweep's whole staleness window, so a shared tick is not what anyone feels.
   // Budget: it spends no model — one Chatwoot read and one enqueue — so a lane of its own would
   // reserve capacity nothing is contending for.
+  //
+  // AND WHAT THE DEFERRAL ACTUALLY BUYS IS THIRTY-NINE SECONDS, measured (issue #728, verifier round
+  // 6): `MAX_ATTEMPTS` is 5 and `backoffMs` is base 2s, so the five tries of an `unreachable` run
+  // inside a minute and the row then goes DEAD. The delivery row is PROCESSED by the sweep that
+  // armed this, so nothing revisits it — a Chatwoot down for longer than a restart consumes the
+  // whole recovery, and the verdict that exists to outlast an outage outlasts less than one. The
+  // loss is still REPORTED, by the receiver's own `error` line on the conversation, which is why
+  // this is a named limit rather than a hole; the remedy, when it is wanted, is a backoff in minutes
+  // for the recovery family (this kind and `TAKEOVER_RECOVERY`, which carries the same numbers),
+  // not more attempts at the same spacing.
   HUMAN_REPLY_RECOVERY: "shared",
   // A cap of its own, drained by the shared tick (issue #621). Cadence is not the reason: a label that
   // lands one shared tick after the burst it describes is not a delay anyone feels. The cap is. On

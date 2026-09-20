@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { codeOnly } from "@/tests/utils/source-text";
+import { JOB_DELETE_ON_DONE } from "@/modules/scheduler/lanes";
+import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
 // QUEM APAGA UMA MORTE DEVE O ANÚNCIO DELA, e a dívida é cobrada aqui (issue #737).
 //
@@ -24,6 +25,14 @@ import { codeOnly } from "@/tests/utils/source-text";
 const OWNER = "src/modules/scheduler/service.ts";
 const REVOKE = "revokeJobsByKeyPrefixOn";
 const ANNOUNCE = "announceErasedDeaths";
+
+// E A OUTRA METADE DA MESMA OBRIGAÇÃO: a linha que o revoke devolve é a GENÉRICA, e `emitDeadLetter`
+// diz de si que ela não é para kind que registrou hook próprio ("a richer, conversation-attached
+// line already exists for those, and a generic second one would be the same death reported twice in
+// two vocabularies"). O revoke não consegue perguntar ao registro sem ciclo de import (worker.ts já
+// importa service.ts), e hoje a pergunta não se coloca: nenhum dos dois kinds `JOB_DELETE_ON_DONE`
+// registra hook. É um fato sobre a árvore, não uma garantia, e um fato se cerca.
+const REGISTRA = /registerDeadLetterHandler\(\s*"([A-Z_]+)"/g;
 
 // Chama o revoke. O nome basta, e o import conta: um arquivo que só importa o símbolo e nunca o usa
 // não tem dívida, mas também não passa por aqui sem anunciar, e o custo de um falso positivo é uma
@@ -73,6 +82,29 @@ describe("quem revoga uma ingestão anuncia as mortes que apagou", () => {
     expect(
       announcesErasedDeaths(`// announceErasedDeaths é chamado pelo /reset`),
     ).toBe(false);
+  });
+
+  test("nenhum kind delete-on-done registra hook de dead-letter", async () => {
+    const root = join(import.meta.dir, "..", "..");
+    const files = await tsFilesUnder(join(root, "src"));
+    expect(files.length).toBeGreaterThan(200);
+    const comHook: string[] = [];
+    for (const file of files) {
+      // `withoutComments` e não `codeOnly`: o segundo apaga o CONTEÚDO das strings, que aqui é
+      // exatamente o que se quer ler. Comentário continua fora, que é o que importa (uma menção em
+      // prosa não registra hook nenhum).
+      const code = withoutComments(await Bun.file(file).text());
+      for (const m of code.matchAll(REGISTRA)) {
+        if (m[1]) comHook.push(m[1]);
+      }
+    }
+    // Controle positivo da varredura: os dois hooks que existem têm que aparecer, senão a cerca
+    // estaria passando sobre um conjunto vazio.
+    expect(comHook.sort()).toEqual(["DEBOUNCE", "MEMORY_COMPACT"]);
+    const conflito = comHook.filter(
+      (k) => JOB_DELETE_ON_DONE[k as keyof typeof JOB_DELETE_ON_DONE],
+    );
+    expect(conflito).toEqual([]);
   });
 
   test("todo chamador do revoke também anuncia", async () => {

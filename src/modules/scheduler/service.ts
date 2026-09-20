@@ -728,6 +728,15 @@ async function announceErasedDeathsOrThrow(
   // cannot: the commit log catches the reset whose row a SECOND reset deleted and announced, where
   // absence proves nothing; the row catches the statement undone inside a committed transaction,
   // where the commit log proves nothing.
+  //
+  // O QUE O PAR AINDA NÃO FECHA, medido e registrado em vez de escondido: as duas perguntas passam
+  // individualmente e a combinação erra quando um TERCEIRO ator satisfaz a segunda. Revoke 1 tem o
+  // `DELETE` desfeito por savepoint numa transação que commita; revoke 2 apaga a linha restaurada de
+  // verdade e anuncia; revoke 1 então vê `committed` e a linha ausente, e escreve a segunda linha.
+  // Fecharia conferindo um efeito que só ESTE statement poderia ter produzido, e o statement apaga,
+  // ou seja, não deixa nenhum. Continua precisando de um savepoint em volta do revoke, que nada
+  // emite hoje: o custo de fechá-lo é uma tabela ou coluna nova para registrar a própria exclusão, e
+  // a condição está escrita aqui para quem for escrever o segundo chamador.
   const vivos = new Set<bigint>();
   const porTenant = new Map<bigint, bigint[]>();
   for (const death of deaths) {

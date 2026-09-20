@@ -11,6 +11,10 @@ import { agentStillSpeaks } from "@/modules/agents/speaks";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import {
+  describeClosedGate,
+  type GateCloseDetail,
+} from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
@@ -766,14 +770,23 @@ export async function runAgentNudge(
   // section, and an HTTP round trip there holds the per-thread queue for the length of somebody
   // else's network. The mirror is what the assignment webhook writes, so it is the same source
   // `canMessagePre` used — just read at the moment it is used instead of half a minute earlier.
-  const botOwnsItNow = async (): Promise<boolean> => {
-    // LIVE WHERE THE CALLER ASKED FOR LIVE (issue #457, review round 7). `requireLiveBotOwnership`
-    // exists because in that mode the mirror is not trusted: the assignment webhook can be delayed or
-    // lost, and the send path re-probes Chatwoot rather than reading the row. A note is durable and
-    // the post-invoke probe cannot unwrite it, so it gets the same certainty the send does — and only
-    // that mode pays the round trip inside the claim. An unanswerable probe leaves the note owed.
+  //
+  // A FORMA DETALHADA, porque dois leitores para a mesma pergunta é o defeito que a #271 achou. A
+  // nota de hand-back precisa só do sim/não; o portão pós-espera (issue #689) precisa também do
+  // DESFECHO, porque um operador que filtra o log por "a conversa saiu do bot" tem que receber todos
+  // os portões que fecham nessa pergunta, e este é mais um. `closed` vem da MESMA leitura que
+  // respondeu `ours`: um segundo `findUnique` lá embaixo responderia sobre outro instante.
+  //
+  // No modo live não há linha do espelho para classificar, e ali o dono do vocabulário já decidiu que
+  // não há desfecho a declarar: `closed` é null e nada é escrito, em vez de um literal inventado
+  // para preencher o buraco (que é o que a cerca de gate-close.test.ts proíbe).
+  const botOwnsItNowDetailed = async (): Promise<
+    { ours: true } | { ours: false; closed: GateCloseDetail | null }
+  > => {
     if (params.requireLiveBotOwnership) {
-      return (await probeLiveOwnership()) === "owned";
+      return (await probeLiveOwnership()) === "owned"
+        ? { ours: true }
+        : { ours: false, closed: null };
     }
     return await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
@@ -786,6 +799,10 @@ export async function runAgentNudge(
         },
         select: { assigneeType: true, status: true, assigneeId: true },
       });
+      // O ESTADO ESCRITO INLINE, e não por uma variável que junte os três campos: a varredura de
+      // tests/modules/chatwoot-receiver.test.ts anda a lista de argumentos deste `shouldBotHandle`
+      // atrás do `assigneeId` e não segue variável nenhuma, de propósito — é ela que impede um site
+      // de comparar posse sem o id que decide. A repetição logo abaixo é o preço dela.
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
@@ -793,8 +810,29 @@ export async function runAgentNudge(
           status: conv?.status ?? null,
         },
         { ourAgentBotId: cfg.agentBotId },
-      );
+      )
+        ? { ours: true as const }
+        : {
+            ours: false as const,
+            // Da MESMA leitura que respondeu acima: um segundo `findUnique` responderia sobre outro
+            // instante, que é a regra que o próprio `describeClosedGate` enuncia do lado dele.
+            closed: describeClosedGate({
+              assigneeType: conv?.assigneeType ?? null,
+              status: conv?.status ?? null,
+            }),
+          };
     });
+  };
+
+  const botOwnsItNow = async (): Promise<boolean> => {
+    // LIVE WHERE THE CALLER ASKED FOR LIVE (issue #457, review round 7). `requireLiveBotOwnership`
+    // exists because in that mode the mirror is not trusted: the assignment webhook can be delayed or
+    // lost, and the send path re-probes Chatwoot rather than reading the row. A note is durable and
+    // the post-invoke probe cannot unwrite it, so it gets the same certainty the send does — and only
+    // that mode pays the round trip inside the claim. An unanswerable probe leaves the note owed.
+    //
+    // Ambos os modos vêm da forma detalhada acima: este é o mesmo leitor, pedindo menos.
+    return (await botOwnsItNowDetailed()).ours;
   };
 
   const handoffState = {
@@ -1499,6 +1537,53 @@ export async function runAgentNudge(
           // claim lands, and a reset releasing that lock hands it straight to this waiter. Last moment
           // before the divider and the marker below write the cleared thread back.
           if (!(await stillWanted(true))) return null;
+          // QUEM É O DONO DA CONVERSA DO OUTRO LADO DA ESPERA (issue #688, aplicada aqui pela #689,
+          // achado da rodada 1 de review). A espera nova abre uma janela de até cinco minutos entre o
+          // `canMessagePre` lá de cima e o invoke daqui de baixo, e a re-checagem que já existia fica
+          // DEPOIS da geração: ela suprime o ENVIO e não desfaz uma etiqueta escrita, um card movido,
+          // um ticket aberto ou uma chamada HTTP de saída que as ferramentas do modelo fizeram. Tudo
+          // daqui para baixo escreve o thread e depois chama o modelo, então este é o último instante
+          // em que a pergunta ainda é sobre um turno que não escreveu nada.
+          //
+          // SÓ QUANDO ESTE NUDGE IA FALAR COMO BOT. `canMessagePre` falso é o nudge rodando em modo
+          // de atendimento humano DE PROPÓSITO — ele pede uma nota interna ao modelo, e "uma pessoa
+          // detém a conversa" é a condição em que ele foi preparado, não uma mudança.
+          //
+          // E SÓ NO CAMINHO QUE PODE ESPERAR, pela mesma medida que ./runtime.ts usa: a condição é
+          // `turnWaitUntil !== null` e não "esperou de fato", porque o `markTurnOwning` logo acima
+          // também bloqueia (no lease de um append, no lock do /reset) e essa espera não entra em
+          // contador nenhum.
+          //
+          // E A LEITURA QUE FALHA DEIXA O TURNO SEGUIR, ao contrário do `botOwnsItNow` da nota de
+          // hand-back. Lá o fail-closed é de graça (a nota fica devida e nada se perde); aqui parar
+          // custa a ocasião inteira, e um `false` vindo de um banco que piscou viraria desistência
+          // para todo nudge que esperou. Foi exatamente o fail-closed que derrubou a tentativa
+          // anterior do lado reativo (fazer-ai/agents#684, revertida), e a sonda pós-modelo ainda
+          // segura o envio.
+          if (turnWaitUntil !== null && canMessagePre) {
+            const posse = await botOwnsItNowDetailed().catch((err: unknown) => {
+              logger.warn(
+                { err, conv: conversationId },
+                "nudge: ownership after the wait could not be read; carrying on rather than standing the turn down",
+              );
+              return { ours: true as const };
+            });
+            if (!posse.ours) {
+              // A MESMA LINHA QUE OS OUTROS PORTÕES ESCREVEM, pela regra que a #271 fixou: um
+              // operador filtrando o log por este desfecho tem que receber TODOS os portões que
+              // fecham nesta pergunta. E só quando o leitor tem o que dizer — no modo live não há
+              // linha do espelho para classificar, e inventar um literal ali é o que a cerca de
+              // gate-close.test.ts proíbe.
+              if (posse.closed !== null) {
+                emitFlowEvent(flow, {
+                  stage: "handoff",
+                  status: "ok",
+                  detail: posse.closed,
+                });
+              }
+              return null;
+            }
+          }
           // READ AFTER THE CLAIM, for the reason ./runtime.ts states at the same seam: the claim can
           // wait out an append that writes this very marker, so a row read before the wait is stale.
           // Whether another invoke was already reading comes from the claim itself.

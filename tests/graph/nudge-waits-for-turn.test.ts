@@ -396,6 +396,68 @@ describe.skipIf(!dbUp)(
       expect(canal.some((t) => t.includes("RESP-B"))).toBe(true);
     }, 30_000);
 
+    // O PORTÃO DO OUTRO LADO DA ESPERA (#688 aplicada aqui, achado da rodada 1 de review da #689). A
+    // espera abre uma janela de minutos entre o `canMessagePre` e o invoke, e a re-checagem que já
+    // existia fica DEPOIS da geração: ela suprime o envio e não desfaz uma etiqueta escrita nem uma
+    // chamada HTTP que as ferramentas do modelo fizeram. Uma pessoa que assume a conversa durante a
+    // espera tem que parar o turno ANTES de o modelo rodar.
+    test("quem assume a conversa durante a espera para o turno antes do modelo", async () => {
+      const contactInboxId = 8907;
+      await seedConv(8907, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const invokeMaisVelho = await markTurnOwning(owner, appDb);
+      await clearFlowLog(suDb, { tenantId });
+
+      const s = stub();
+      const modelo = new FakeListChatModel({ responses: ["RESP-N"] });
+      const nudge = runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:8907`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => modelo,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+
+      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      // A pessoa assume DENTRO da espera. O espelho é o que a webhook de atribuição escreve.
+      await suDb.conversation.updateMany({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 8907,
+        },
+        data: { assigneeType: "User", assigneeId: 4242, status: "open" },
+      });
+      await clearTurnOwning(owner, appDb, invokeMaisVelho);
+
+      expect(await nudge).toBe("stale");
+      expect(s.messages).toHaveLength(0);
+      // ANTES DO MODELO, e não só antes do envio: é o que separa este portão da sonda pós-geração.
+      // Um turno que rodou o modelo já rodou as ferramentas dele.
+      expect(modelo.i).toBe(0);
+      // E o portão escreve a linha do vocabulário compartilhado, para o operador que filtra por ela.
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "handoff",
+          threadId: `${tenantId}:${instanceId}:8907`,
+        },
+      });
+      expect(
+        rows.map((r) => ((r.detail ?? {}) as Record<string, unknown>).outcome),
+      ).toContain("taken_over");
+    }, 15_000);
+
     // O TETO. Passado ele o nudge segue ao lado de quem está lá, que é o comportamento de hoje e
     // portanto não é uma regressão — mas ali a entrega PODE não ser lembrada, e é a única porta por
     // onde o defeito desta issue ainda passa depois do conserto. Então ela não sai calada: uma linha
@@ -532,6 +594,17 @@ describe("o laço da espera é o mesmo nos dois turnos", () => {
     expect(espera).toBeGreaterThanOrEqual(0);
     expect(espera).toBeLessThan(barreira);
     expect(barreira).toBeLessThan(fila);
+  });
+
+  // O PORTÃO PÓS-ESPERA FALHA ABERTO, e isto é cerca e não gosto: foi o fail-closed que derrubou a
+  // tentativa anterior do lado reativo (fazer-ai/agents#684, revertida). Uma leitura que falha ali
+  // vira desistência para TODO nudge que esperou, e a sonda pós-modelo ainda segura o envio.
+  test("a leitura de posse que falha deixa o nudge seguir", async () => {
+    const src = codeOnly(await Bun.file("src/graph/nudge.ts").text());
+    const i = src.indexOf("botOwnsItNowDetailed().catch(");
+    expect(i).toBeGreaterThanOrEqual(0);
+    // O catch devolve posse, em vez de devolver o oposto ou relançar.
+    expect(src.slice(i, src.indexOf("});", i))).toInclude("ours: true");
   });
 
   // A devolução do hold fica DEPOIS da declaração que adquire e ANTES de qualquer escrita: é a

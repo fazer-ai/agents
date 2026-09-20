@@ -3479,6 +3479,30 @@ async function maybeConsumeCommandOrGate(params: {
                 contactInboxId,
                 threadId: graphThreadId,
               });
+              // AND THE FACT THAT IT WORKED, written by the transaction that did it (issue #728,
+              // review r7/r8). `reset_at_message_id` above says the operator TYPED the command; it
+              // is committed by an earlier, independent statement and stays put when this step
+              // refuses — which it does by design, on the thread a turn is already writing, with the
+              // acknowledgement naming what did not clear. Four fences read that column as proof the
+              // memory was cleared (the direct turn's, the debounce watermark, the observe tick and
+              // the ingestion append), and an append refused on the strength of a clearing that did
+              // not happen is a colleague's reply dropped from a memory nobody ever emptied.
+              //
+              // So the append's fence reads THIS one, which cannot exist without the deletions
+              // beside it: the same transaction, after them, rolled back with them. The other three
+              // keep the old column deliberately — their question is about the operator's intent
+              // ("do not answer what the command erased"), which a failed clear does not take back,
+              // while the append's question is about the memory itself.
+              //
+              // `GREATEST` for the reason the boundary above has it: two `/reset` deliveries are
+              // dispatched detached and the older one can finish last.
+              if (commandMessageId !== null) {
+                await db.$executeRaw`
+                  UPDATE conversations
+                     SET memory_cleared_at_message_id =
+                           GREATEST(memory_cleared_at_message_id, ${commandMessageId})
+                   WHERE id = ${ctx.conv.id}`;
+              }
             }),
         ),
       );

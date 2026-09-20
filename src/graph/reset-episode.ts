@@ -68,6 +68,18 @@ export function resetLandedAfter(
 // Chatwoot's ids are unique per account: a stamp on any conversation of this contact-inbox orders
 // the message the same way its own would. What that costs is a late arrival on a sibling being
 // refused by a reset it predates, which is the answer this fence exists to give.
+//
+// AND IT READS THE COLUMN THE CLEARING ITSELF WRITES (review r7/r8). `reset_at_message_id` records
+// that the operator typed the command: the command commits it in an earlier, independent statement,
+// and the memory-clearing step that follows refuses by design when a turn is already writing the
+// thread, so that column can name a boundary whose memory was never emptied. Every append refused on
+// the strength of it would then be a colleague's reply dropped from a memory nobody cleared.
+// `memory_cleared_at_message_id` is written inside the transaction that deletes the thread, the
+// summaries and the checkpoint, so it cannot exist without them.
+//
+// A conversation cleared before that column existed carries null and is not fenced, which is the
+// permissive side on purpose: the fence exists to stop a restore, and there is nothing to restore
+// into a memory this process never saw cleared.
 export async function threadResetBoundary(
   tenantId: bigint,
   instanceId: bigint,
@@ -80,14 +92,14 @@ export async function threadResetBoundary(
         tenantId,
         chatwootInstanceId: instanceId,
         contactInboxId,
-        resetAtMessageId: { not: null },
+        memoryClearedAtMessageId: { not: null },
       },
-      select: { resetAtMessageId: true },
-      orderBy: { resetAtMessageId: "desc" },
+      select: { memoryClearedAtMessageId: true },
+      orderBy: { memoryClearedAtMessageId: "desc" },
       take: 1,
     }),
   );
-  return rows[0]?.resetAtMessageId ?? null;
+  return rows[0]?.memoryClearedAtMessageId ?? null;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {

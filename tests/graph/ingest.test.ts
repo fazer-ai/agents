@@ -350,8 +350,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
         lastEventAt: new Date(),
         contactInboxId,
-        // O comando foi digitado na mensagem 500: tudo em ou abaixo dela é do episódio anterior.
+        // O comando foi digitado na mensagem 500 E a limpeza deu certo: tudo em ou abaixo dela é do
+        // episódio anterior. As duas colunas, porque é isso que um `/reset` que limpou deixa — a
+        // cerca lê a segunda, e o teste logo abaixo é o que prova a diferença.
         resetAtMessageId: 500,
+        memoryClearedAtMessageId: 500,
       },
     });
 
@@ -368,6 +371,55 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       select: { recentAgentMessageIds: true },
     });
     expect(row.recentAgentMessageIds).toEqual([501]);
+
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+  });
+
+  // O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO FECHA NADA (review r7/r8). `reset_at_message_id` diz que
+  // o operador DIGITOU `/reset`: ele é commitado por um statement anterior e independente, e o passo
+  // que limpa a memória recusa por desenho quando um turno já está escrevendo a thread — a ack
+  // nomeia o que não limpou e o carimbo fica. Uma cerca apoiada nele descartaria a resposta de um
+  // colega de uma memória que ninguém esvaziou; a coluna que a transação da limpeza escreve é a que
+  // vale.
+  test("a boundary from a /reset whose memory step failed does not fence the append", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12451;
+    const convId = 895;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+        contactInboxId,
+        // O comando foi digitado, a limpeza recusou: só o primeiro carimbo existe.
+        resetAtMessageId: 700,
+      },
+    });
+
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId: 699,
+        text: "a resposta que ninguém apagou",
+      }),
+    ).toBe("ingested");
 
     await suDb.conversation.deleteMany({
       where: { tenantId, chatwootConversationId: convId },
@@ -417,7 +469,12 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
           threadId: `chatwoot:${tenantId}:${instanceId}:${id}`,
           lastEventAt: new Date(),
           contactInboxId,
-          ...(resetAt === null ? {} : { resetAtMessageId: resetAt }),
+          ...(resetAt === null
+            ? {}
+            : {
+                resetAtMessageId: resetAt,
+                memoryClearedAtMessageId: resetAt,
+              }),
         },
       });
     }

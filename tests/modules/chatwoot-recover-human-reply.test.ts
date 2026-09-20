@@ -367,7 +367,9 @@ describe.skipIf(!dbUp)(
         // `null` é o que a coluna carrega numa entrega que morreu ANTES da reivindicação: papel não
         // declarado, que é um dos três vereditos pelos quais a varredura arma a recuperação.
         routeObserved?: boolean | null;
-        // The episode boundary a `/reset` left on the conversation (issue #447).
+        // The episode boundary a `/reset` left on the conversation (issue #447), written as a
+        // SUCCESSFUL clear leaves it: the command's own stamp plus the one the clearing transaction
+        // writes, which is the one the fences read (review r7/r8).
         resetAtMessageId?: number;
       } = {},
     ) {
@@ -394,7 +396,10 @@ describe.skipIf(!dbUp)(
                 : over.contactInboxId,
             ...(over.resetAtMessageId === undefined
               ? {}
-              : { resetAtMessageId: over.resetAtMessageId }),
+              : {
+                  resetAtMessageId: over.resetAtMessageId,
+                  memoryClearedAtMessageId: over.resetAtMessageId,
+                }),
           },
         });
       }
@@ -960,6 +965,31 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 714)).toBe(false);
     });
 
+    // E O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO RECUSA NADA (review r7/r8): o carimbo do comando é
+    // commitado por um statement anterior e independente, e o passo da memória recusa por desenho
+    // quando um turno já escreve a thread. A cerca lê a coluna que a transação da limpeza escreve,
+    // então a resposta encalhada volta para uma memória que ninguém esvaziou.
+    test("a /reset whose memory step failed does not discard the stranded reply", async () => {
+      const convId = 9135;
+      pages.set(convId, [restComposerReply(733, "Ninguém apagou isto.")]);
+      const rowId = await seedStranded(convId, { messageId: 733 });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: convId },
+        // Só o carimbo do COMANDO: a limpeza recusou.
+        data: { resetAtMessageId: 740 },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect(await ingestArmedFor(convId, 733)).toBe(true);
+    });
+
     // A ÚNICA RECUSA AQUI QUE PROTEGE CONTRA DANO ATIVO, e não contra trabalho perdido (review r1).
     // O `/reset` limpa a memória e, dentro da mesma seção crítica, revoga todo `INGEST_MESSAGE` da
     // thread — justamente porque um append com texto de antes reconstruiria o que o operador acabou
@@ -1000,7 +1030,10 @@ describe.skipIf(!dbUp)(
       resetDuringRead.set(convId, async () => {
         await suDb.conversation.updateMany({
           where: { tenantId, chatwootConversationId: convId },
-          data: { resetAtMessageId: 719 },
+          data: {
+            resetAtMessageId: 719,
+            memoryClearedAtMessageId: 719,
+          },
         });
       });
 
@@ -1072,6 +1105,7 @@ describe.skipIf(!dbUp)(
           lastEventAt: new Date(),
           contactInboxId: 91_000 + convId,
           resetAtMessageId: 726,
+          memoryClearedAtMessageId: 726,
         },
       });
 

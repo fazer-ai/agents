@@ -699,18 +699,54 @@ async function announceErasedDeathsOrThrow(
   // one cannot be retracted. `in progress` also means the caller announced before its own
   // transaction ended, which is a misuse worth naming out loud.
   //
-  // One query, and none at all in the ordinary case, where nothing was erased.
+  // ONE QUERY PER TRANSACTION, not one for the batch, and the difference is a whole batch (measured
+  // by the scenario runner). `pg_xact_status` RAISES on an id in the future instead of answering
+  // null, so a single `unnest` over the batch loses every death in it to the one id that could not
+  // be read — and the outer catch that keeps this from breaking the caller is exactly what makes
+  // that silent. The ids are few (the deaths one `/reset` erased on one thread), so asking one at a
+  // time costs nothing and contains the damage to the row it belongs to. Anything unreadable stays
+  // quiet, on the same trade as everything else here.
   const xids = [...new Set(deaths.map((d) => d.xid))];
   const status = new Map<string, string | null>();
-  const rows = await asSuperAdminOn(base, (db) =>
-    db.$queryRaw<Array<{ xid: string; st: string | null }>>(Prisma.sql`
-      SELECT x::text AS xid, pg_xact_status(x) AS st
-        FROM unnest(${xids}::xid8[]) AS x`),
-  );
-  for (const row of rows) status.set(row.xid, row.st);
+  for (const xid of xids) {
+    try {
+      const rows = await asSuperAdminOn(base, (db) =>
+        db.$queryRaw<Array<{ st: string | null }>>(Prisma.sql`
+          SELECT pg_xact_status(${xid}::xid8) AS st`),
+      );
+      status.set(xid, rows[0]?.st ?? null);
+    } catch (err) {
+      logger.warn({ err, xid }, "scheduler: unreadable transaction id");
+      status.set(xid, null);
+    }
+  }
+  // AND THE ROW, which is a SECOND question and not the same one asked twice. The commit log says
+  // the transaction committed; it does not say this DELETE survived it, because a `ROLLBACK TO
+  // SAVEPOINT` undoes the statement inside a transaction that goes on to commit (constructed and
+  // measured: `committed` with the row back). Nothing in the app issues savepoints today, so this
+  // too would hold by ABSENCE — and the pair is not redundant, because each covers what the other
+  // cannot: the commit log catches the reset whose row a SECOND reset deleted and announced, where
+  // absence proves nothing; the row catches the statement undone inside a committed transaction,
+  // where the commit log proves nothing.
+  const vivos = new Set<bigint>();
+  const porTenant = new Map<bigint, bigint[]>();
+  for (const death of deaths) {
+    const ids = porTenant.get(death.tenantId);
+    if (ids) ids.push(death.jobId);
+    else porTenant.set(death.tenantId, [death.jobId]);
+  }
+  for (const [tenantId, ids] of porTenant) {
+    const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.schedulerJob.findMany({
+        where: { id: { in: ids } },
+        select: { id: true },
+      }),
+    );
+    for (const row of rows) vivos.add(row.id);
+  }
   for (const death of deaths) {
     const st = status.get(death.xid) ?? null;
-    if (st !== "committed") {
+    if (st !== "committed" || vivos.has(death.jobId)) {
       if (st === "in progress") {
         logger.warn(
           { jobId: String(death.jobId), kind: death.kind },

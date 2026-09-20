@@ -684,6 +684,86 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(await mortesAnunciadas()).toHaveLength(0);
   });
 
+  // ACHADO DO EXECUTOR DOS CENÁRIOS. `pg_xact_status` LEVANTA sobre um id no futuro, em vez de
+  // responder nulo, então uma consulta só sobre o lote inteiro perde TODAS as mortes por causa da
+  // única que não deu para ler, e o catch que impede o estrago de vazar para o chamador é o que
+  // torna isso silencioso. Uma morte ilegível cala a si mesma, e mais ninguém.
+  test("um id de transação ilegível não leva o lote junto", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s19:1");
+    const lote = await reapStaleJobs(
+      1_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(1);
+
+    const boas = await runScopedOn(appDb, ctx(), (db) =>
+      revokeJobsByKeyPrefixOn(db, "INGEST_MESSAGE", "ingest:t-s19:"),
+    );
+    expect(boas.erasedDeaths).toHaveLength(1);
+
+    const futuro = await suDb.$queryRaw<Array<{ x: string }>>`
+      SELECT (pg_current_xact_id()::text::bigint + 1000000)::text AS x`;
+    const ilegivel = {
+      tenantId,
+      kind: "INGEST_MESSAGE" as const,
+      jobId: 999_999_999n,
+      dedupeKey: "ingest:t-s19:ilegivel",
+      error: "qualquer",
+      xid: futuro[0]?.x as string,
+    };
+
+    await announceErasedDeaths([ilegivel, ...boas.erasedDeaths], appDb);
+    const linhas = await mortesAnunciadas();
+    expect(linhas).toHaveLength(1);
+    const d = linhas[0]?.detail as Record<string, unknown>;
+    expect(d.dedupeKey).toBe("ingest:t-s19:1");
+  });
+
+  // O MESMO EXECUTOR, o outro alvo. O commit log diz que a TRANSAÇÃO commitou; ele não diz que
+  // ESTE `DELETE` sobreviveu a ela, porque um `ROLLBACK TO SAVEPOINT` desfaz o statement dentro de
+  // uma transação que segue e commita. Nada no app emite savepoint hoje, e é por isso que a linha
+  // também é perguntada.
+  test("um DELETE desfeito por savepoint dentro de uma transação que commita não anuncia", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s20:1");
+    const lote = await reapStaleJobs(
+      1_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(1);
+
+    const mortes = await runScopedOn(appDb, ctx(), async (db) => {
+      await db.$executeRawUnsafe("SAVEPOINT sp_s20");
+      const { erasedDeaths } = await revokeJobsByKeyPrefixOn(
+        db,
+        "INGEST_MESSAGE",
+        "ingest:t-s20:",
+      );
+      await db.$executeRawUnsafe("ROLLBACK TO SAVEPOINT sp_s20");
+      return erasedDeaths;
+    });
+    expect(mortes).toHaveLength(1);
+
+    // A transação commitou, e a linha está de volta: o commit log sozinho anunciaria.
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: "ingest:t-s20:1" },
+      }),
+    ).toBe(1);
+    await announceErasedDeaths(mortes, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(0);
+    // E a morte segue devida a quem a encontrar.
+    await announceReaped(lote, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(1);
+  });
+
   // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um
   // chamador só — mas um conserto amarrado ao literal `INGEST_MESSAGE` deixaria este exposto no dia
   // em que aparecer o segundo, e o dia não avisa.

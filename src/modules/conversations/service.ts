@@ -1331,6 +1331,14 @@ export async function getConversationDetail(
   // Among the stamps, the LAST of the turn, and the rows arrive newest-first so the first one seen
   // is it. It is the fallback: a turn written before this shipped has no `generate` answer, and an
   // older, more provisional stamp must not outlive a later one.
+  //
+  // AND BOTH FIT IN THE SAME WINDOW, which is what makes the preference mean anything: this read is
+  // capped at the 60 newest rows, so a turn's answer would be worthless if the cap could take it
+  // while leaving the marker it answers for. It cannot — the answer is written when the turn ends,
+  // so it is NEWER than the decision it governs, and nothing newer than a row inside a newest-first
+  // window falls outside it. That ordering is a claim about what happens rather than about what the
+  // code says, since `emitFlowEvent` does not await its write, so it is measured on a real turn
+  // (`tests/graph/runtime.test.ts`, "silêncio decidido e transferência depois").
   const deliveredByTurn = new Map<string, boolean>();
   const finalByTurn = new Map<string, boolean>();
   for (const r of trailRows) {

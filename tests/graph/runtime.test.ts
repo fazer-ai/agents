@@ -2163,6 +2163,32 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).trail;
     const marcador = trail.find((e) => e.name === "skip_reply");
     expect(marcador?.turnDelivered).toBe(true);
+
+    // A FRASE QUE O DESENHO APOIA E QUE NINGUÉM TINHA EXECUTADO: a trilha lê uma JANELA (as 60 linhas
+    // mais novas de `tool`/`generate`), e o fato do turno só governa o marcador se os dois couberem
+    // nela. O argumento é que o fato é escrito no FIM do turno, então ele é mais novo que a linha da
+    // decisão — e, numa leitura do mais novo para o mais velho, nada que seja mais novo que uma linha
+    // dentro da janela fica de fora dela. O argumento inteiro se apoia nessa ordem, e `emitFlowEvent`
+    // não espera a escrita, então ela é uma afirmação sobre o que acontece, não sobre o que o código
+    // diz. Medida aqui, num turno de verdade.
+    // Procurada, nunca tomada por ordem: um turno escreve várias linhas `generate`, e "a última" é
+    // aquela em que a etapa por acaso terminou.
+    const geradas = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { id: true, detail: true },
+    });
+    const doFato = geradas.filter((r) =>
+      Object.hasOwn(
+        (r.detail ?? {}) as Record<string, unknown>,
+        "turnDelivered",
+      ),
+    );
+    expect(doFato).toHaveLength(1);
+    const linhaDaDecisao = await flowLogRow(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "tool" },
+      select: { id: true, detail: true },
+    });
+    expect(Number(doFato[0]?.id)).toBeGreaterThan(Number(linhaDaDecisao?.id));
   });
 
   // A OUTRA PORTA, e a que prova que o fato não é "quantos balões saíram": um turno que decidiu calar

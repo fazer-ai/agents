@@ -385,6 +385,16 @@ export async function claimReplyBurst(params: {
           ...(row.claimed === null || params.toMessageId > row.claimed
             ? { lastRepliedMessageId: params.toMessageId }
             : {}),
+          // WHEN, beside WHICH, and unconditionally where the id is conditional (issue #750). The id
+          // is a watermark and must not go backwards; the instant is not a watermark at all, it is
+          // "the last time our side spoke here", and a claim below the mark is still our side
+          // speaking. The follow-up's activation fence reads it to tell a conversation that became
+          // live after arming from one sitting in the historical backlog, and on that question a
+          // claim below the mark counts exactly as much as one above it.
+          //
+          // HERE and not at delivery, because here is where the turn is one statement short of a
+          // send (see the note above this update) and a turn that never sends never reaches it.
+          lastRepliedAt: new Date(),
           // THE ERA STARTS HERE, once, at the highest message the old era had already decided —
           // which is the MAX of the two scalars and not either alone, the same floor
           // `readAnsweredFloor` computes below and for the same reason: one of them carries

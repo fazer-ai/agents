@@ -197,7 +197,9 @@ async function seedConversation(
   over: {
     status?: string;
     lastEventAt: Date;
-    lastInboundAt: Date;
+    // NULO é um estado real, não uma folga do fixture: a linha que o espelho cria a partir de um
+    // evento que não é mensagem nunca recebeu instante de entrada (issue #750).
+    lastInboundAt: Date | null;
     lastFollowUpAt?: Date | null;
     // O que o ESPELHO diz sobre quem detém a conversa. Default: ninguém.
     assigneeType?: string | null;
@@ -207,6 +209,9 @@ async function seedConversation(
     // #652 descreve e se pedem explicitamente.
     lastRepliedMessageId?: number | null;
     chatwootFirstReplyAt?: Date | null;
+    // QUANDO o nosso lado falou (issue #750). Default nulo: é o estado de toda linha anterior à
+    // coluna, e é nele que a cerca tem de continuar caindo em `lastInboundAt`.
+    lastRepliedAt?: Date | null;
   },
 ) {
   await suDb.conversation.create({
@@ -225,6 +230,7 @@ async function seedConversation(
       lastRepliedMessageId:
         over.lastRepliedMessageId === undefined ? 1 : over.lastRepliedMessageId,
       chatwootFirstReplyAt: over.chatwootFirstReplyAt ?? null,
+      lastRepliedAt: over.lastRepliedAt ?? null,
     },
   });
 }
@@ -874,6 +880,130 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     );
     expect(threads).toContain(threadOf(POST));
     expect(threads).not.toContain(threadOf(PRE));
+  });
+
+  // (4b) Issue #750. A cerca de (4) pergunta "este episódio começou depois do arme?" e responde
+  // datando o episódio pela última fala do CLIENTE. Para a conversa que o agente acabou de
+  // responder, essa é a pergunta errada: o silêncio que o follow-up cobra é o que NÓS abrimos ao
+  // pedir um dado, e ele começa na nossa resposta.
+  //
+  // Medido em produção em 20/09/2026, numa caixa de e-mail: 19 conversas antigas religadas por
+  // `conversation_reengage`, 13 delas deixadas em `pending` segurando um pedido de documento, e
+  // nenhuma entrou na varredura — o inbound delas é de antes do arme, como o de PRE acima.
+  //
+  // O eixo do EPISÓDIO não muda junto, e isso é de propósito: `isNewFollowUpEpisode` encerra o
+  // episódio quando o cliente fala, e trocá-lo pela nossa fala faria a própria cutucada encerrar a
+  // escada no degrau seguinte.
+  test("(4b) a conversa que o agente respondeu DEPOIS do arm entra, mesmo com o inbound anterior", async () => {
+    const RELIGADA = 4390;
+    await seedConversation(RELIGADA, inboxAId, {
+      // Igual a PRE: o cliente falou antes do arm, e é só isso que a cerca de hoje enxerga.
+      lastEventAt: new Date(Date.now() - 4 * HOUR),
+      lastInboundAt: new Date(Date.now() - 4 * HOUR),
+      // O que PRE não tem: nós respondemos depois do arm, que é o que torna esta conversa viva.
+      lastRepliedAt: new Date(Date.now() - 2 * HOUR),
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    if (!sweep) throw new Error("unreachable");
+    await sweep(
+      {
+        id: phantomJobId,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "FOLLOWUP", status: "PENDING" },
+      select: { payload: true },
+    });
+    const threads = jobs.map(
+      (j) => (j.payload as { threadId?: string }).threadId,
+    );
+    expect(threads).toContain(threadOf(RELIGADA));
+  });
+
+  // (4c) O caso de produção inteiro, sem o atalho: a linha que o espelho criou a partir de uma troca
+  // de status não tem instante de entrada NENHUM, e não se inventa um. A elegibilidade tem de sair da
+  // nossa própria fala, e o campo do cliente continua nulo no fim.
+  test("(4c) inbound NULO com resposta nossa depois do arm entra, e o campo continua nulo", async () => {
+    const SO_NOSSA_FALA = 4391;
+    await seedConversation(SO_NOSSA_FALA, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: null,
+      lastRepliedAt: new Date(Date.now() - 2 * HOUR),
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    if (!sweep) throw new Error("unreachable");
+    await sweep(
+      {
+        id: phantomJobId,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "FOLLOWUP", status: "PENDING" },
+      select: { payload: true },
+    });
+    const threads = jobs.map(
+      (j) => (j.payload as { threadId?: string }).threadId,
+    );
+    expect(threads).toContain(threadOf(SO_NOSSA_FALA));
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: SO_NOSSA_FALA },
+      select: { lastInboundAt: true },
+    });
+    expect(row.lastInboundAt).toBeNull();
+  });
+
+  // (4d) O SEGUNDO portão, que a varredura não cobre. Enfileirada é meio caminho: o handler do passo
+  // 0 refaz a cerca antes de postar, e se ele continuar datando o silêncio pela fala do cliente a
+  // conversa recuperada é descartada aqui, calada, depois de ter passado no SQL. Os dois leem o
+  // mesmo eixo ou discordam sobre a conversa que motivou a issue.
+  //
+  // O que sai é uma NOTA, e não porque a cerca hesitou: a inbox A é WhatsApp oficial, e sem instante
+  // de entrada a janela de 24h não pode ser provada aberta, então o nudge cai no ramo conservador
+  // (free-form fora da janela o provedor recusa). Na inbox de e-mail que motivou a issue não há
+  // janela de serviço nenhuma e o mesmo caminho manda a mensagem. O que este teste mede é o portão:
+  // recusar teria postado ZERO artefatos.
+  test("(4d) o handler do passo 0 atende a conversa cuja única data é a nossa resposta", async () => {
+    const CONV = 4392;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: null,
+      lastRepliedAt: new Date(Date.now() - 2 * HOUR),
+    });
+    const s = stubClient(() => ({ id: CONV, status: "pending", meta: {} }));
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.notes.length).toBe(1);
+  });
+
+  // (4e) O mesmo portão com as DUAS datas na mesa, que é o caso comum: o cliente falou antes do arm,
+  // nós respondemos depois. Quem decide é a mais recente das duas; preferir a do cliente por ser a do
+  // cliente descarta a conversa aqui, depois de ela ter passado na varredura.
+  test("(4e) no handler, a mais recente decide: cliente antes do arm, nossa resposta depois", async () => {
+    const CONV = 4393;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 4 * HOUR),
+      lastRepliedAt: new Date(Date.now() - 2 * HOUR),
+    });
+    const s = stubClient(() => ({ id: CONV, status: "pending", meta: {} }));
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toEqual({ outcome: "done" });
+    // 4h desde a fala do cliente: fora da janela de 24h ela não está, então aqui sai mensagem.
+    expect(s.sent.length).toBe(1);
   });
 
   // (7) Issue #652: o relato da comunidade. Um agente que decide, corretamente, não responder (um

@@ -809,6 +809,53 @@ describe.skipIf(!dbUp)("debounce", () => {
   // burst twice, and that protection survives in a stronger form: identity. The same ids collide on
   // the unique index however they are ordered, and a set that OVERLAPS a claimed one loses whole
   // rather than in part. Both are asserted below, so the rewrite does not trade a proof for a hole.
+  // Issue #750. The claim records WHICH message we answered; the follow-up's activation fence needs
+  // WHEN we answered, and the two are not the same column. The id is a watermark and refuses to move
+  // backwards; the instant is not — a claim below the mark is still our side speaking, and on "did
+  // this conversation become live after the agent was armed" it counts exactly as much.
+  test("the claim also records WHEN our side spoke, including below the mark", async () => {
+    const convId = 8977;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (messageIds: number[]) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId: Math.max(...messageIds),
+        maxHandledAllowed: null,
+        messageIds,
+        initiatedBy: "automatic",
+        base: appDb,
+      });
+    const row = async () =>
+      await suDb.conversation.findUniqueOrThrow({
+        where: { id },
+        select: { lastRepliedMessageId: true, lastRepliedAt: true },
+      });
+
+    expect((await row()).lastRepliedAt).toBeNull();
+    const before = new Date();
+    expect(await claim([30])).toEqual({ won: true });
+    const first = await row();
+    expect(first.lastRepliedMessageId).toBe(30);
+    expect(first.lastRepliedAt).not.toBeNull();
+    expect(first.lastRepliedAt?.getTime()).toBeGreaterThanOrEqual(
+      before.getTime() - 1000,
+    );
+
+    // BELOW THE MARK: the id holds at 30 (monotonic), the instant moves anyway, because the question
+    // it answers is "when did we last speak here" and we just did.
+    const mid = first.lastRepliedAt as Date;
+    await Bun.sleep(5);
+    expect(await claim([20])).toEqual({ won: true });
+    const second = await row();
+    expect(second.lastRepliedMessageId).toBe(30);
+    expect(second.lastRepliedAt?.getTime()).toBeGreaterThan(mid.getTime());
+  });
+
   test("the reply claim is per message, all or nothing, and still monotonic", async () => {
     const convId = 892;
     await seedConversation(convId);

@@ -48,6 +48,7 @@ import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
   isNewFollowUpEpisode,
   readFollowUpConfig,
+  silenceStartedAt,
   stepDelayMinutes,
 } from "@/modules/followups/settings";
 
@@ -580,6 +581,9 @@ async function loadConvRef(
   contactId: bigint | null;
   lastFollowUpAt: Date | null;
   lastRepliedMessageId: number | null;
+  // When OUR side last spoke here (issue #750): the estimate's fence and episode predicate read
+  // it, and they have to read what the sweep reads.
+  lastRepliedAt: Date | null;
   chatwootFirstReplyAt: Date | null;
   inbox: {
     id: bigint;
@@ -612,6 +616,9 @@ async function loadConvRef(
         contactId: true,
         lastFollowUpAt: true,
         lastRepliedMessageId: true,
+        // The estimate's fence and episode predicate read it, and they have to read what the sweep
+        // reads or the indicator promises a follow-up that never fires (issue #750).
+        lastRepliedAt: true,
         chatwootFirstReplyAt: true,
         inbox: {
           select: {
@@ -1089,12 +1096,17 @@ export async function getConversationDetail(
     const rawStep = (job?.payload as { stepIndex?: unknown } | null)?.stepIndex;
     const jobStepIndex =
       typeof rawStep === "number" && Number.isInteger(rawStep) ? rawStep : 0;
+    // Same expression the sweep and the handler use: the LATER of the two words spoken here.
+    const fencedSilenceStart = silenceStartedAt(
+      conv.lastInboundAt,
+      conv.lastRepliedAt,
+    );
     const fencedStep0Job =
       job != null &&
       jobStepIndex === 0 &&
       (agent?.followUpArmedAt == null ||
-        conv.lastInboundAt == null ||
-        conv.lastInboundAt < agent.followUpArmedAt);
+        fencedSilenceStart == null ||
+        fencedSilenceStart < agent.followUpArmedAt);
     // NOTE: a job whose step no longer exists is a sequence that is OVER, and the handler says so
     // by returning `done` on its very first look (issue #103 moved that check to the top). An
     // operator who shortens a sequence with a later-step job still pending leaves exactly that
@@ -1143,12 +1155,16 @@ export async function getConversationDetail(
       // (managedByRedirect already forces job=null; guard the estimate too so it stays suppressed.)
       followUpLive &&
       firstStep &&
-      isNewFollowUpEpisode(conv.lastFollowUpAt, conv.lastInboundAt) &&
+      isNewFollowUpEpisode(
+        conv.lastFollowUpAt,
+        conv.lastInboundAt,
+        conv.lastRepliedAt,
+      ) &&
       // NOTE: Activation fence (mirrors the sweep SQL): no estimate for an episode that began before
       // follow-up was armed — the sweep will never enqueue it, so the indicator must not promise it.
       agent?.followUpArmedAt != null &&
-      conv.lastInboundAt != null &&
-      conv.lastInboundAt >= agent.followUpArmedAt &&
+      fencedSilenceStart != null &&
+      fencedSilenceStart >= agent.followUpArmedAt &&
       conv.lastEventAt
     ) {
       nextStep = 1;

@@ -817,6 +817,20 @@ model Conversation {
   // watermark, and RELEASED when the turn throws before delivering, because that path does not
   // advance the watermark either. NULL = nothing has ever claimed a reply here.
   lastRepliedMessageId     Int?      @map("last_replied_message_id")
+  // WHEN our side last spoke here, and it is a different question from `lastInboundAt` below rather
+  // than a second spelling of it. Stamped beside the claim above, which is one statement short of a
+  // send, so a turn that never sends leaves it untouched.
+  //
+  // It exists because the follow-up's activation fence was asking the wrong one. That fence says
+  // "only episodes of silence that began after follow-up was armed", and it dated the episode by the
+  // CUSTOMER's last message — so a conversation the agent answered today, on an inbound from before
+  // the arming, was fenced out of the sweep it most belongs in (issue #750: 19 conversations
+  // re-engaged in production, 13 left holding a request for documents nobody would ever chase).
+  //
+  // NULL on every row that predates the column, and the fence falls back to `lastInboundAt` there:
+  // a backfilled value would assert a moment nobody measured, and the fallback keeps today's
+  // behaviour for everything already in flight.
+  lastRepliedAt            DateTime? @map("last_replied_at")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

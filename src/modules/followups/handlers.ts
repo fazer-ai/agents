@@ -299,11 +299,14 @@ export function inactivityNudge(params: {
   // window the ceiling's occasion key spans, the second refusal would then lose its `error` row and
   // its alert to the first — two customers unreached, one on the record.
   //
-  // `lastInboundAt` is what an episode IS here: the silence that began after the customer's last
-  // message. Stable across the steps of one episode by construction (the customer speaking is what
-  // ends it) and the same column `isNewFollowUpEpisode` judges freshness by. Null means they have
-  // never written, which is one episode and not two.
-  lastInboundAt: Date | null;
+  // WHEN THE SILENCE BEGAN is what an episode IS here, and since issue #750 that is the LATER of the
+  // customer's last message and our own last reply — the same expression `isNewFollowUpEpisode`
+  // judges freshness by, which is the whole reason this field exists. Reading the customer's column
+  // alone would hand two genuinely distinct episodes one key the moment the second is opened by our
+  // reply with no new inbound behind it: a re-engagement on a conversation the customer never
+  // answered again. Stable across the steps of one episode by construction (either side speaking is
+  // what ends it). Null means neither side ever spoke, which is one episode and not two.
+  episodeStartedAt: Date | null;
 }): AgentNudge {
   return {
     source: "followup",
@@ -311,7 +314,7 @@ export function inactivityNudge(params: {
     summary: `The customer has been inactive for about ${params.idleMin} minutes.`,
     instructions: params.instructions || undefined,
     step: params.step,
-    occasionId: `episode:${params.lastInboundAt?.toISOString() ?? "none"}`,
+    occasionId: `episode:${params.episodeStartedAt?.toISOString() ?? "none"}`,
   };
 }
 
@@ -575,7 +578,7 @@ export async function followUpHandler(
       idleMin,
       instructions: step.instructions,
       step: stepIndex + 1,
-      lastInboundAt,
+      episodeStartedAt: silenceStartedAt(lastInboundAt, ctx.conv.lastRepliedAt),
     }),
     // Deterministic, system-applied actions for this step (fire even if the agent stays silent);
     // resolve is honored only on the LAST step (settings already strips it from earlier ones).

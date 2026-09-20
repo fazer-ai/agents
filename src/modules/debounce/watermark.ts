@@ -394,6 +394,15 @@ export async function claimReplyBurst(params: {
           //
           // HERE and not at delivery, because here is where the turn is one statement short of a
           // send (see the note above this update) and a turn that never sends never reaches it.
+          //
+          // A SEND THAT FAILS LEAVES IT SET, exactly as it leaves the id set, and that is the answer
+          // and not an oversight: the claim is taken before the send and never given back
+          // (`runLoadedTurn`, and the note there on the release that was built and removed), so the
+          // id beside this column already says "our side spoke" for a failed send. Moving only the
+          // instant to a confirmed delivery would split two columns written in one statement and hand
+          // the three readers of the fence two contradicting answers about the same event. Making a
+          // failed send retryable is the change that note defers to an issue of its own, and when it
+          // lands both columns move together.
           lastRepliedAt: new Date(),
           // THE ERA STARTS HERE, once, at the highest message the old era had already decided —
           // which is the MAX of the two scalars and not either alone, the same floor

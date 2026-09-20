@@ -977,6 +977,17 @@ model Conversation {
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
+  // The episode reset boundary of a THREAD, which `threadResetBoundary` reads on every ingest job,
+  // inside the `ingest:<thread>` critical section. The mark lives on conversation rows and a thread
+  // can hold several, so the lookup is keyed by contact inbox and neither index above serves it: the
+  // unique leads with the same two columns but its third is the conversation id, so the prefix scan
+  // narrows only to the instance -- to every conversation it ever had, which nothing prunes. Measured on
+  // 400k conversations across 80k threads (PG 17.10): Parallel Seq Scan, 6558 buffers, 11.3 ms,
+  // 400,000 rows read to keep 5 -- and forcing the unique's prefix instead is worse, 8534 buffers and
+  // 29.4 ms, because the bitmap heap scan then rechecks every row of the instance. With this index,
+  // 4 buffers and 0.03 ms, against +1.1 buffer accesses per insert, +3.1 per update and 6 MB on
+  // disk. The full measurement is in the migration that creates it.
+  @@index([tenantId, chatwootInstanceId, contactInboxId])
   @@map("conversations")
 }
 

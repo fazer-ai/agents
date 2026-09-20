@@ -1,0 +1,45 @@
+-- THE THREAD'S EPISODE RESET BOUNDARY GETS ITS OWN INDEX (issue #718, PR review round 2).
+--
+-- `threadResetBoundary` asks, for one thread, what the newest `reset_at_message_id` on it is. That
+-- runs on EVERY ingest job, inside the `ingest:<thread>` critical section, so whatever it costs is
+-- paid once per inbound message with the lock held.
+--
+-- The mark lives on conversation rows and a thread can hold several of them (`clearContactMemory`
+-- clears by contact inbox, not by conversation), so the lookup is keyed by
+-- `(tenant_id, chatwoot_instance_id, contact_inbox_id)` and nothing on the table served it. The
+-- unique that leads with the same two columns does NOT: its third column is the conversation id, so
+-- a prefix scan narrows to the instance and then rechecks every row of it. Narrowing to the instance
+-- buys nothing that matters: what the lookup has to read is every conversation that instance ever
+-- had, and nothing prunes conversations, so it grows for the life of the install no matter how many
+-- tenants share the table.
+--
+-- Measured on PostgreSQL 17.10, 400,000 conversations across 80,000 threads (109 MB), the lookup
+-- returning 5 rows:
+--
+--   no index          Parallel Seq Scan    6558 buffers   11.3  ms   400,000 rows read to keep 5
+--   unique's prefix   Bitmap Heap Scan     8534 buffers   29.4  ms   the instance rechecked row by row
+--   this index        Index Scan              4 buffers    0.03  ms
+--
+-- The middle row is what the planner does when forced off the sequential scan, and it is the WORSE
+-- of the two: a prefix that matches everything buys nothing and pays for the bitmap. Both grow with
+-- the install for as long as it runs, because nothing prunes conversations.
+--
+-- WHAT IT COSTS, measured the same way (20,000 rows per arm, inside a rolled-back transaction, the
+-- index dropped and rebuilt between arms so both saw the same table): +1.1 buffer accesses per
+-- inserted row and +3.1 per updated row, and 6 MB on disk beside the 16 MB of the unique it sits
+-- next to. That is the ordinary price of a fourth btree on a written table; it buys back a
+-- 6,558-buffer scan from inside a lock held once per inbound message.
+--
+-- CONCURRENTLY and IDEMPOTENT, both forced by how this file runs: `prisma migrate deploy` does not
+-- wrap a migration in a transaction, so CONCURRENTLY is accepted here -- and it has to be, because a
+-- plain build takes a SHARE lock that blocks every INSERT on `conversations` for its duration, which
+-- on a rolling deploy runs while the old container is still serving webhooks. A build that fails
+-- leaves an INVALID index behind, never used for a query and still maintained on every write, so the
+-- DROP is what makes a re-run possible rather than a name collision.
+--
+-- The name is the one Prisma's convention generates for the `@@index` in schema.prisma (verified
+-- with `migrate diff`), truncated to 63 characters the way `agent_threads_tenant_id_chatwoot_instance_id_contact_inbox__key`
+-- already is; anything else and the next `migrate dev` emits a RENAME INDEX.
+DROP INDEX IF EXISTS "conversations_tenant_id_chatwoot_instance_id_contact_inbox__idx";
+CREATE INDEX CONCURRENTLY "conversations_tenant_id_chatwoot_instance_id_contact_inbox__idx"
+    ON "conversations"("tenant_id", "chatwoot_instance_id", "contact_inbox_id");

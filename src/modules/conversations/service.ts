@@ -469,6 +469,12 @@ export interface ConversationTrailEntry {
   // tool → the sanitized error message when the tool FAILED (status "error"), so the operator sees WHY
   // it failed inline instead of just a ✗. null on success and for follow-up/reminder rows.
   errorMessage: string | null;
+  // `skip_reply` only → whether that TURN had put something in front of the customer (a handoff's
+  // closing line, an attachment) when the agent decided to stay quiet. The marker is the one entry
+  // that asserts a silence, and the name of the tool cannot tell a transfer that answered from a
+  // transfer that declared it had nothing to say (issue #726). null on every other row, and null on
+  // a `skip_reply` row written before this shipped: unknown, so the screen keeps the plain label.
+  turnDelivered: boolean | null;
   at: string;
 }
 
@@ -1291,6 +1297,7 @@ export async function getConversationDetail(
       take: 60,
       select: {
         id: true,
+        turnId: true,
         stage: true,
         status: true,
         durationMs: true,
@@ -1300,6 +1307,47 @@ export async function getConversationDetail(
       },
     }),
   );
+  // THE DELIVERY FACT IS THE TURN'S, so it is folded over the turn before any row is shaped.
+  //
+  // Each `skip_reply` line records what the turn had delivered at the instant that line was written,
+  // and a turn can write more than one: a model may emit the decision alongside the tool that speaks,
+  // and such a batch does not end the turn (`onlySkipped` in graph.ts), so the model is asked again
+  // and answers with the decision alone. The first of those lines is written while the companion is
+  // still running, and reads "nothing yet" — truthfully about that instant, and misleadingly about
+  // the turn, which is what the marker is read as being about.
+  //
+  // TWO WRITERS, AND THE TURN'S OWN ANSWER WINS. The `skip_reply` line carries what the turn had
+  // committed to at the instant that line was written, which is all the live indicator can ever
+  // have; the `generate` line the runtime writes when the turn ENDS carries what actually reached
+  // the customer.
+  //
+  // The stamp alone is not enough, and round 2 of review is why. Since issue #639 a lone
+  // `skip_reply` no longer ends the turn, so the batch after the decision still runs: a transfer
+  // with a closing line delivers a message AFTER the only line that carried a stamp, and reading the
+  // stamps would answer "nothing was delivered" about a reply on the screen. The stamps are also
+  // provisional in the other direction — an attachment is reserved before its download — which is
+  // why the turn's own answer, taken after everything landed, is preferred to all of them.
+  //
+  // Among the stamps, the LAST of the turn, and the rows arrive newest-first so the first one seen
+  // is it. It is the fallback: a turn written before this shipped has no `generate` answer, and an
+  // older, more provisional stamp must not outlive a later one.
+  //
+  // AND BOTH FIT IN THE SAME WINDOW, which is what makes the preference mean anything: this read is
+  // capped at the 60 newest rows, so a turn's answer would be worthless if the cap could take it
+  // while leaving the marker it answers for. It cannot — the answer is written when the turn ends,
+  // so it is NEWER than the decision it governs, and nothing newer than a row inside a newest-first
+  // window falls outside it. That ordering is a claim about what happens rather than about what the
+  // code says, since `emitFlowEvent` does not await its write, so it is measured on a real turn
+  // (`tests/graph/runtime.test.ts`, "silêncio decidido e transferência depois").
+  const deliveredByTurn = new Map<string, boolean>();
+  const finalByTurn = new Map<string, boolean>();
+  for (const r of trailRows) {
+    const d = (r.detail ?? null) as Record<string, unknown> | null;
+    if (typeof d?.turnDelivered !== "boolean") continue;
+    const into = r.stage === "generate" ? finalByTurn : deliveredByTurn;
+    if (into.has(r.turnId)) continue;
+    into.set(r.turnId, d.turnDelivered);
+  }
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
     const detail = (r.detail ?? null) as Record<string, unknown> | null;
@@ -1319,7 +1367,16 @@ export async function getConversationDetail(
             : rawOutput != null
               ? JSON.stringify(rawOutput)
               : null,
+        // The turn's answer, but only on a row that ASKED the question. The stamp is written by the
+        // silence tool's line and by no other, so a row without one keeps null: the fact is about
+        // the turn, and the claim is the silence marker's alone to make.
         errorMessage: r.status === "error" ? r.errorMessage : null,
+        turnDelivered:
+          typeof detail?.turnDelivered === "boolean"
+            ? (finalByTurn.get(r.turnId) ??
+              deliveredByTurn.get(r.turnId) ??
+              null)
+            : null,
         at: r.createdAt.toISOString(),
       });
     } else if (
@@ -1338,6 +1395,7 @@ export async function getConversationDetail(
         args: null,
         output: null,
         errorMessage: null,
+        turnDelivered: null,
         at: r.createdAt.toISOString(),
       });
     }

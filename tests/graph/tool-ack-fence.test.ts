@@ -139,6 +139,64 @@ describe.skipIf(!dbUp)(
       expect(r.requests.length).toBe(1);
     });
 
+    // ── AND THE ACK IS A MESSAGE THE TURN PUT IN FRONT OF THE CUSTOMER (issue #726) ──
+    //
+    // Nothing else in the turn state knows: the ack counts no balloon and queues no attachment, so a
+    // turn that said "just a moment" and then called `skip_reply` had the operator's timeline saying
+    // it decided not to respond. Recorded here, where the send happens, because this is the only
+    // place that knows it happened.
+    async function comTurnState(fenceAnswers: boolean, muted = false) {
+      const turnState = {
+        resolveRequested: false,
+        pendingAttachments: [],
+        imagesInFlight: 0,
+        documentsInFlight: 0,
+        attachmentsSeq: 0,
+      };
+      const client = {
+        muted,
+        sendMessage: async () => ({}),
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const tools = await buildToolset(
+        config(),
+        {
+          tenantId: 1n,
+          instanceId: 1n,
+          base: appDb,
+          client,
+          conversationId: 77,
+          threadId: `t-ts-${process.pid}-${fenceAnswers}-${muted}`,
+          stillWanted: async () => fenceAnswers,
+          turnState,
+        },
+        { buildNativeTools: () => [] },
+      );
+      const tool = tools.find((t) => t.name === "consulta_lenta");
+      if (!tool) throw new Error("the HTTP tool was not built");
+      await tool.invoke({ __wait_message: "Só um momento!" });
+      return turnState as { spokeOutsideTheReply?: boolean };
+    }
+
+    test("the ack records that this turn spoke to the customer", async () => {
+      expect((await comTurnState(true)).spokeOutsideTheReply).toBe(true);
+    });
+
+    // The one that decides the ORDER of the question: a run called off inside the ack's own send
+    // stops the tool, and the message is on the customer's phone either way. Recording it only on
+    // the happy path would call that turn silent.
+    test("a run called off after the ack still counts as having spoken", async () => {
+      expect((await comTurnState(false)).spokeOutsideTheReply).toBe(true);
+    });
+
+    // The muted transport refuses a customer-facing message by design, so there is no ack to record
+    // — and claiming one would be the observation runner reporting a delivery it never made.
+    test("a muted turn sends no ack and records none", async () => {
+      expect(
+        (await comTurnState(true, true)).spokeOutsideTheReply,
+      ).toBeUndefined();
+    });
+
     test("the fence reaches the HTTP tool itself, not only the ack", async () => {
       // The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
       // fence down. Without an ack there is nothing else that could stop the request, so a call

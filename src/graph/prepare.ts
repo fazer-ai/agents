@@ -942,6 +942,9 @@ export interface ToolsetCtx {
     imagesInFlight: number;
     documentsInFlight: number;
     attachmentsSeq: number;
+    // Mirror of TurnState.spokeOutsideTheReply: the slow-tool ack below records here that a message
+    // already reached the customer from outside the reply path.
+    spokeOutsideTheReply?: boolean;
   };
   // Structural mirror of HandoffTurnState in tools/native.ts, for the same reason as turnState.
   // Two fields, not one: the line the model wants delivered, and whether the transfer completed.
@@ -969,6 +972,7 @@ export interface ToolBuildDeps {
         imagesInFlight: number;
         documentsInFlight: number;
         attachmentsSeq: number;
+        spokeOutsideTheReply?: boolean;
       };
       handoffState?: { customerMessage: string | null; completed: boolean };
       transferWithSummary?: boolean;
@@ -1095,6 +1099,10 @@ export async function buildToolset(
       ? async (message: string): Promise<boolean> => {
           try {
             await ctx.client.sendMessage(ctx.conversationId, message);
+            // NOTE: recorded the instant it lands, and before the withdrawal check below: the
+            // message is on the customer's phone either way, and the operator's timeline must not
+            // call that turn silent (issue #726).
+            if (ctx.turnState) ctx.turnState.spokeOutsideTheReply = true;
             if (ctx.stillWanted && !(await ctx.stillWanted())) {
               logger.info(
                 "tool ack: the run was called off after the acknowledgement (conv=%s); the tool will not run",

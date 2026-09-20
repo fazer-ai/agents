@@ -320,6 +320,108 @@ export class HandoffThenReplyModel {
 // Hands off successfully and then blows up on the next step. The transfer is done, the closing line
 // is recorded, and the exception leaves through the graph — the shape where the promise has nobody
 // left to deliver it unless the caller delivers on its failure path too.
+// Decides silence ALONE and then keeps working, which is the shape issue #639 made reachable: a lone
+// `skip_reply` no longer ends the turn (ending it and keeping it SILENT are two different
+// guarantees), so the batch after the decision still runs. Here it is a transfer that writes a
+// closing line, so the turn stays textless from the MODEL and still puts a message in the thread.
+export class SkipThenHandoffModel {
+  constructor(private customerMessage: string) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+          });
+        }
+        if (n === 2) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: self.customerMessage },
+                id: "call_handoff",
+              },
+            ],
+          });
+        }
+        return new AIMessage("");
+      },
+    };
+  }
+}
+
+// Decides silence alone and then queues a picture, which is the other door the issue names: nothing
+// the MODEL wrote reaches the customer, and an attachment does. The text-balloon count stays null on
+// such a turn, so anything that asks only about balloons reports that nobody was answered.
+export class SkipThenImageModel {
+  constructor(
+    private url: string,
+    private caption: string,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+          });
+        }
+        if (n === 2) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "send_image",
+                args: { url: self.url, caption: self.caption },
+                id: "call_send_image",
+              },
+            ],
+          });
+        }
+        return new AIMessage("");
+      },
+    };
+  }
+}
+
+// The control for the model above: decides silence alone and does nothing else. Nothing reaches the
+// customer, and the marker's plain sentence is the only true thing the screen has about this turn.
+export class SkipOnlyModel {
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+            })
+          : new AIMessage("");
+      },
+    };
+  }
+}
+
 export class HandoffThenThrowModel {
   constructor(private customerMessage: string) {}
   async invoke(): Promise<AIMessage> {

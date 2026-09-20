@@ -564,6 +564,7 @@
       "resolve": "Encerrando o atendimento",
       "search": "Consultando a base de conhecimento",
       "skip": "Decidiu não responder",
+      "skipAfterDelivery": "Nada mais a acrescentar",
       "suggest": "Preparando uma sugestão de conhecimento",
       "thinking": "Pensando",
       "tool": "Usando uma ferramenta"

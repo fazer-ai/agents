@@ -201,8 +201,13 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,
   "tests/graph/nudge.test.ts": 3,
-  "tests/graph/runtime.test.ts": 12,
+  // #726: dois leitores novos, o carimbo provisorio da linha de `skip_reply` e a ausencia do fato do
+  // turno num turno que nao decidiu silencio.
+  "tests/graph/runtime.test.ts": 16,
   "tests/graph/side-effect-flowlog.test.ts": 1,
+  // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's
+  // delivery is read — that one drives the callback by hand, so it cannot go through the helper.
+  "tests/graph/skip-reply-turn-delivered.test.ts": 2,
   "tests/graph/tool-flowlog.test.ts": 1,
   "tests/graph/tool-schema-refusal.test.ts": 2,
   // #605: two readers in one test, and the second is the first one's control. The alert-channel test

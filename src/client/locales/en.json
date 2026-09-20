@@ -548,6 +548,7 @@
       "resolve": "Wrapping up the conversation",
       "search": "Searching the knowledge base",
       "skip": "Decided not to respond",
+      "skipAfterDelivery": "Nothing further to add",
       "suggest": "Preparing a knowledge suggestion",
       "thinking": "Thinking",
       "tool": "Using a tool"

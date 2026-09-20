@@ -4,6 +4,7 @@ import {
   type AgentActivityStage,
   broadcastAgentActivity,
 } from "@/api/features/realtime/realtime.service";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 
 // Surfaces COARSE, real-time agent progress to the operator as a transient
 // "typing indicator" on the per-tenant realtime channel. It is a LangChain
@@ -18,6 +19,12 @@ import {
 export interface StatusTarget {
   tenantId: bigint;
   conversationDbId: bigint | null;
+  // Whether the TURN has already put something in front of the customer. Rides on the `skip_reply`
+  // step and on nothing else, because that indicator is the one that asserts a silence: mid-turn the
+  // operator has no trail to consult, and this bubble is exactly what they are looking at a second
+  // after a transfer landed in their queue (issue #726). Absent ⇒ the question was not answered, and
+  // the UI keeps today's label rather than inventing either answer.
+  turnDelivered?: () => boolean;
 }
 
 export class AgentStatusReporter extends BaseCallbackHandler {
@@ -25,18 +32,20 @@ export class AgentStatusReporter extends BaseCallbackHandler {
 
   private readonly tenantId: bigint;
   private readonly conversationDbId: bigint | null;
+  private readonly turnDelivered?: () => boolean;
 
   constructor(target: StatusTarget) {
     super();
     this.tenantId = target.tenantId;
     this.conversationDbId = target.conversationDbId;
+    this.turnDelivered = target.turnDelivered;
   }
 
   private emit(
     phase: "started" | "step" | "finished",
     stage: AgentActivityStage | null,
     tool: string | null = null,
-    extra?: { balloons?: number | null },
+    extra?: { balloons?: number | null; delivered?: boolean },
   ): void {
     if (this.conversationDbId == null) return;
     broadcastAgentActivity(this.tenantId, {
@@ -45,6 +54,10 @@ export class AgentStatusReporter extends BaseCallbackHandler {
       stage,
       tool,
       balloons: extra?.balloons ?? null,
+      // A fragment and not a null, for the same reason the flow line spells it that way: a client
+      // that sees the key reads it as an answer, and `false` everywhere would have every step
+      // asserting that nothing was delivered.
+      ...(extra && "delivered" in extra ? { delivered: extra.delivered } : {}),
     });
   }
 
@@ -85,6 +98,8 @@ export class AgentStatusReporter extends BaseCallbackHandler {
     _metadata?: Record<string, unknown>,
     runName?: string,
   ): void {
-    this.emit("step", "tool", runName && runName.length > 0 ? runName : null);
+    const tool = runName && runName.length > 0 ? runName : null;
+    const ask = tool === SKIP_REPLY_TOOL ? this.turnDelivered : undefined;
+    this.emit("step", "tool", tool, ask ? { delivered: ask() } : undefined);
   }
 }

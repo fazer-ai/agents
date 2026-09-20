@@ -57,6 +57,7 @@ import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { type TurnFacts, toolLabel } from "@/client/lib/tool-label";
 import { cn, formatRelativeTime } from "@/client/lib/utils";
 
 // Eden-derived types for the dynamic /conversations/:id routes (metadata shell + the separate
@@ -357,31 +358,14 @@ function prettyToolName(name: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function useToolLabel(tool: string | null): string | null {
+// The rule itself lives in `lib/tool-label`, callable without a React tree; this only translates
+// what it picked. The turn facts are what make the phrase depend on more than the tool's name, and
+// both surfaces below hand theirs in.
+function useToolLabel(tool: string | null, turn?: TurnFacts): string | null {
   const { t } = useTranslation();
-  switch (tool) {
-    case "handoff_to_human":
-      return t("conversation.activity.handoff", "Transferring to a human");
-    case "private_note":
-      return t("conversation.activity.note", "Writing an internal note");
-    case "set_custom_attribute":
-      return t("conversation.activity.attr", "Updating details");
-    case "resolve_conversation":
-      return t("conversation.activity.resolve", "Wrapping up the conversation");
-    case "react_to_message":
-      return t("conversation.activity.react", "Reacting to a message");
-    case "skip_reply":
-      return t("conversation.activity.skip", "Decided not to respond");
-    case "search_knowledge":
-      return t("conversation.activity.search", "Searching the knowledge base");
-    case "suggest_kb_entry":
-      return t(
-        "conversation.activity.suggest",
-        "Preparing a knowledge suggestion",
-      );
-    default:
-      return null;
-  }
+  const label = toolLabel(tool, turn);
+  // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in lib/tool-label
+  return label ? t(label.key, label.fallback) : null;
 }
 
 type ActivityStage = "thinking" | "tool" | "debounce" | "delivering";
@@ -390,6 +374,10 @@ type ActivityState = {
   tool: string | null;
   // For "debounce": ISO flush time, drives a live countdown. Absent otherwise.
   runAt?: string | null;
+  // For the silence tool: whether that turn had already put something in front of the customer.
+  // Absent when the turn did not answer (an older server, a path with no turn to ask), and absent
+  // has to read as unknown — see `TurnFacts`.
+  delivered?: boolean | null;
 } | null;
 
 // A compact, persistent activity marker drawn inline in the timeline (a tool call that ran, or a
@@ -399,7 +387,9 @@ type ActivityState = {
 function TrailMarker({ entry }: { entry: TrailEntry }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const toolLabel = useToolLabel(entry.kind === "tool" ? entry.name : null);
+  const toolPhrase = useToolLabel(entry.kind === "tool" ? entry.name : null, {
+    delivered: entry.turnDelivered,
+  });
   const failed = entry.status === "error";
   let label: string;
   let Icon = Wrench;
@@ -416,7 +406,7 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
         : t("conversation.trail.followUpSent", "Follow-up sent");
   } else {
     label =
-      toolLabel ??
+      toolPhrase ??
       (entry.kind === "tool" && entry.name
         ? prettyToolName(entry.name)
         : t("conversation.trail.tool", "Used a tool"));
@@ -495,8 +485,11 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
 // land. Pulsing dots are CSS-only (animate-bounce) so nothing inline trips the CSP.
 function AgentActivityIndicator({ activity }: { activity: ActivityState }) {
   const { t } = useTranslation();
-  const toolLabel = useToolLabel(
+  const toolPhrase = useToolLabel(
     activity?.stage === "tool" ? activity.tool : null,
+    {
+      delivered: activity?.stage === "tool" ? activity.delivered : null,
+    },
   );
   const [remaining, setRemaining] = useState<number | null>(null);
   const runAt =
@@ -518,7 +511,7 @@ function AgentActivityIndicator({ activity }: { activity: ActivityState }) {
   let label: string;
   if (activity.stage === "tool") {
     label =
-      toolLabel ??
+      toolPhrase ??
       (activity.tool
         ? prettyToolName(activity.tool)
         : t("conversation.activity.tool", "Using a tool"));
@@ -1306,6 +1299,7 @@ export function ConversationDetailPage() {
         stage: event.stage,
         tool: event.tool,
         runAt: event.runAt ?? null,
+        delivered: event.delivered ?? null,
       });
     },
   });

@@ -42,6 +42,7 @@ export type TenantRealtimeEvent =
       tool: string | null;
       runAt?: string | null;
       balloons?: number | null;
+      delivered?: boolean;
     }
   | {
       type: "knowledge-document";
@@ -76,6 +77,9 @@ export interface AgentActivityRealtimeEvent {
   tool: string | null;
   runAt?: string | null;
   balloons?: number | null;
+  // On the silence tool's step: whether that turn had already put something in front of the
+  // customer. Absent means unanswered, never "no" (issue #726).
+  delivered?: boolean;
 }
 
 export interface KnowledgeDocumentRealtimeEvent {
@@ -145,6 +149,10 @@ export function useTenantEvents(options: UseTenantEventsOptions = {}) {
           tool: msg.tool,
           runAt: msg.runAt ?? null,
           balloons: msg.balloons ?? null,
+          // NOTE: `?? undefined` and not `?? null`, unlike the two above: absent has to stay absent
+          // here, because the consumer reads it as "the turn did not answer this question" and a
+          // `null` would be indistinguishable — see `TurnFacts` (issue #726).
+          delivered: msg.delivered ?? undefined,
         });
       } else if (msg.type === "knowledge-document") {
         onKnowledgeDocument?.({

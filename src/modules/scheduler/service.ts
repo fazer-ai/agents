@@ -579,11 +579,18 @@ export function jobNotRetiredSql(job: ClaimedJob): Prisma.Sql {
 // which is whether THIS death was announced, and a stale token names a claim that no longer exists.
 export const DEAD_LETTER_ANNOUNCED = "deadLetterAnnouncedFor";
 
-// What the reaper's road to DEAD says about itself, in ONE place because it is now said TWICE: to
-// the announcement (../scheduler/worker.ts, `announceReaped`) and onto the row. The row has to carry
-// it because the row is what the revoke reads when it announces a death whose own caller is no
-// longer around to explain it — and `failJob` is the only other road to DEAD and always writes
-// `last_error`, so a DEAD row with an empty one came from here.
+// What the reaper's road to DEAD says about itself, in ONE place because it is said TWICE: by
+// `announceReaped` (../scheduler/worker.ts), which has the reaped job in hand, and by the revoke,
+// which has only the row. The row is what is left when the death's own caller is gone, and this road
+// writes no `last_error` — nothing reaches `failJob` when a claim crashes — so a DEAD row with an
+// empty one came from here, `failJob` being the only other road and one that always writes it.
+//
+// Writing the sentence ONTO the row was tried and dropped. It made the row self-describing, which is
+// worth something, but it is not what this issue is about, and it made the fallback below
+// untestable: with the row carrying the sentence the fallback never fires, and the two mutations
+// then mask each other (each alone is invisible because the other covers it). The fallback is the
+// one that has to stay, because a row that was already DEAD before any of this shipped carries a
+// null and is exactly the case the operator cannot afford to see announced blank.
 export const REAPED_DEATH_ERROR = "reaped: the claim never finished";
 
 // The claim, for the announcer. `true` means this call owns the line and must write it; `false`
@@ -1232,11 +1239,6 @@ export async function reapStaleJobs(
   // the row already re-pended.
   kind?: ClaimedJob["kind"],
 ): Promise<ReapedJob[]> {
-  // `last_error` IS WRITTEN DOWN HERE, because this road's explanation used to exist only as an
-  // argument passed to the announcement (issue #737). A claim that crashed leaves no error of its
-  // own — nothing reached `failJob` — so a DEAD row from this road said nothing about why it died,
-  // and the revoke that erases such a row has only the row to quote. Stamped on the DEAD transition
-  // alone: a row going back to PENDING keeps whatever its last real failure said.
   const cutoff = new Date(now.getTime() - staleMs);
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
@@ -1260,7 +1262,6 @@ export async function reapStaleJobs(
       SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
           attempts = attempts + 1,
           claimed_at = NULL,
-          last_error = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN ${REAPED_DEATH_ERROR} ELSE last_error END,
           updated_at = now()
       WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
       RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,

@@ -407,15 +407,42 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
   test("a morte sem erro registrado ainda chega nomeando o que a matou", async () => {
     await limpa();
     const id = await claimedAndStale("INGEST_MESSAGE", "ingest:t-s9:91");
-    await suDb.$executeRaw`UPDATE scheduler_jobs SET last_error = NULL WHERE id = ${id}`;
-    await morreComoReaper("INGEST_MESSAGE", async () => {
-      expect(await revoga("ingest:t-s9:", "INGEST_MESSAGE")).toBe(1);
-    });
+    // A linha DEAD que não diz por que morreu se monta aqui, e não pelo reaper. O reaper não grava
+    // `last_error` (nada chega ao `failJob` quando um claim trava), mas ele deixa a linha pronta
+    // para o anunciante, que a carimbaria antes de o revoke chegar. O estado que interessa é o de
+    // uma linha que JÁ estava DEAD, sem erro e sem recibo, que é o que uma morte anterior a esta
+    // entrega é no banco de um operador.
+    await suDb.$executeRaw`
+      UPDATE scheduler_jobs
+         SET status = 'DEAD', attempts = 5, claimed_at = NULL, last_error = NULL
+       WHERE id = ${id}`;
+    expect(await revoga("ingest:t-s9:", "INGEST_MESSAGE")).toBe(1);
     const linhas = await mortesAnunciadas();
     expect(linhas).toHaveLength(1);
     expect(linhas[0]?.errorMessage ?? "").toBe(
       "reaped: the claim never finished",
     );
+  });
+
+  // O recibo também protege contra a MESMA passada ser repetida. `announceReaped` caminha um lote,
+  // e um chamador que o repita (uma lane que reaproveita o array, uma retentativa) não pode
+  // transformar uma morte em duas linhas: a s3 proíbe a mesma morte relatada duas vezes, e nada em
+  // `scheduler_jobs` muda entre as duas chamadas para distingui-las.
+  test("anunciar o mesmo lote duas vezes escreve uma linha só", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s14:1");
+    const lote = await reapStaleJobs(
+      1_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(1);
+    await announceReaped(lote, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(1);
+    await announceReaped(lote, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(1);
   });
 
   // O `LIKE` do revoke é montado à mão agora que a exclusão precisa de RETURNING, e `_` e `%` são

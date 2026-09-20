@@ -458,6 +458,31 @@ model ChatwootWebhookDelivery {
   // settlement never reached it. All three are "this row cannot say", and the reader falls back to
   // the ownership reading every delivery made before this column.
   turnCovered         Boolean?              @map("turn_covered")
+  // WHETHER THIS PASS OWED MEMORY AND NOTHING ELSE (issue #725), written by the receiver at the
+  // moment it decides no turn will run on this delivery and BEFORE it arms the ingestion — which is
+  // the only order that works, because arming is what fails on the rows this fact exists for.
+  //
+  // The receiver already knows it: `(act && consumed) || !act` is the gate that sends a message to
+  // continuous ingestion, and both halves mean the same thing for the reply — a person holds the
+  // conversation, or a gate (out of hours, a contact the authorization gate refused) already
+  // silenced it. What no other column can say is that the pass was like that, because every one of
+  // them describes the ROUTE or the SETTLEMENT: `routeRemembers` is stated at the claim and
+  // corrected only after a successful arm, so a stranded row carries `false` regardless (MEASURED on
+  // this issue: the same delivery records `true` when the arm works and `false` when it does not),
+  // and `turnCovered` is written where the settlement is decided, which a row left for the sweep
+  // never reaches.
+  //
+  // WITHOUT IT THE REPLAY RE-DERIVES OWNERSHIP FROM NOW. Half an hour later the conversation can be
+  // back with the bot, `shouldBotHandle` answers yes to a question nobody asked again, and the
+  // recovery posts a reply over an attendance a person already gave. The same missing fact has a
+  // second face: the freshness fence refuses a replay standing behind a newer customer message, and
+  // that fence is reasoning about a REPLY — on a pass that owes memory only there is no reply to be
+  // late, and the refusal costs the message every memory it could have reached.
+  //
+  // Null on a row an older build wrote and on one whose pass did run a turn, which read the same
+  // way: "nothing here says this pass was memory-only", and the reader falls back to the event and
+  // the role, which is what every delivery had before this column.
+  owesMemoryOnly      Boolean?              @map("owes_memory_only")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

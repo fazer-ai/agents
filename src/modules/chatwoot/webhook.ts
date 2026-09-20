@@ -1655,6 +1655,17 @@ export interface ProcessChatwootParams {
   // and re-deriving would let a delivery that belonged to a watcher be replayed as the responder —
   // which answers. A live delivery leaves it undefined and the route is read as it always is.
   routeObserved?: boolean;
+  // WHAT THE STRANDED PASS OWED (issue #725), from the ledger's `owesMemoryOnly`. Only a recovery
+  // passes it, and it is the one thing a replay cannot re-derive: the pass that stranded ran on a
+  // conversation a person was holding, or on a message a gate had already silenced, and both facts
+  // are about a moment that is gone. Re-derived here, the answer is about the conversation NOW —
+  // which can be back with the bot, half an hour later, with nobody having asked anything new.
+  //
+  // What it disarms is the TURN and nothing else: the pass still owes its append, and the row's
+  // settlement, the watermark and the takeover keep reading `act` exactly as they always did. The
+  // same shape the observer's route uses (`observing`), for the same reason — a fact that silences
+  // the reply must not be smuggled into the word that means "the bot holds this conversation".
+  owesMemoryOnly?: boolean;
   // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), as the ledger row
   // holds it. Both callers pass the ROW's value — the live path from the insert it just made or the
   // duplicate it found, the recovery from the row it took back — because the question it answers is
@@ -5682,7 +5693,21 @@ export async function processChatwootDelivery(
   // same reason. The fence stays `commandActive` (`command !== null && mode === "test"`): for any
   // other agent these are ordinary customer text and never reach here.
 
-  if ((act || commandActive) && isNewIncoming && !observing) {
+  if (
+    (act || commandActive) &&
+    isNewIncoming &&
+    !observing &&
+    // THE REPLAY OF A PASS THAT OWED MEMORY ONLY DOES NOT SPEAK (issue #725). Nothing about this
+    // conversation as it stands now can tell that the message was already attended to by a person,
+    // or silenced by a gate, half an hour ago; the row is the only witness, and the receiver reads
+    // it here rather than re-deciding from ownership that has moved since.
+    //
+    // It is NOT redundant with the replay's own `replayPosts`, although both read the same column:
+    // that one decides which page the recovery reads and whether the freshness fence is asked, and
+    // the POST is made here, by the re-execution. MEASURED on this round, by a mutant that removes
+    // this term alone: the reply goes out.
+    params.owesMemoryOnly !== true
+  ) {
     // Test-mode gate + /teste and /reset commands — may consume the delivery (skip all agent work).
     consumed = await maybeConsumeCommandOrGate({
       tenantId: params.tenantId,
@@ -6376,6 +6401,40 @@ export async function processChatwootDelivery(
   // aquele bloco decidir, e o erro diria a parada errada.
   const settlesHere = isNewIncoming && (!act || consumed) && !observerHolds;
   const settleAwaitsIngest = settlesHere && !consumed && routeRemembers;
+  // WHAT THIS PASS OWES, RECORDED WHERE IT IS DECIDED AND BEFORE THE ARM THAT CAN FAIL (issue #725).
+  //
+  // `settlesHere` is already this file's own answer to "no turn ran on this delivery": a person
+  // holds the conversation (`!act`) or a gate silenced the message (`act && consumed`). Where it is
+  // true the only thing this delivery owes is an append — and where arming that append throws, the
+  // row is left for the sweep with nothing on it saying so. The replay then rebuilds ownership from
+  // the conversation as it stands half an hour later, finds the bot back on it, and posts a reply
+  // nobody is owed.
+  //
+  // HERE AND NOT BESIDE THE ARM, which is where this started: a message the gate CONSUMED returns
+  // before reaching the arm, so a write down there missed that half entirely (MEASURED: the row of
+  // an out-of-hours delivery came back with the column null). Only the human-owned half is left for
+  // the sweep TODAY, because `settleAwaitsIngest` asks `!consumed` — but the column describes what
+  // the PASS owed, not what became of the row, and writing both halves is what keeps the fact true
+  // if that branch is ever deferred too. Which is exactly the repair the sibling site needs.
+  //
+  // Best-effort and not thrown, like the `routeRemembers` correction below: the delivery's own work
+  // is the ingestion, and taking that away to record an intention would trade a reply nobody asked
+  // for against a memory nobody has. A row that misses this write reads null, which is the reading
+  // every delivery had before the column.
+  if (settlesHere) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId },
+        data: { owesMemoryOnly: true },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that this delivery owes memory only (conv=%s): %s; a replay of it may answer a message nobody is waiting on",
+        n.conversationId === null ? "?" : String(n.conversationId),
+        errMsg(err),
+      );
+    });
+  }
   if (settlesHere && !settleAwaitsIngest) {
     await markHandledAndSettle({ onWatermarkFailure: "settle" });
   }

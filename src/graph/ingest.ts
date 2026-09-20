@@ -5,6 +5,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { writeFlowEvent } from "@/modules/flowlog/service";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -12,12 +13,17 @@ import {
   needsAttendanceStartProbe,
 } from "./attendance-boundary";
 import { getCheckpointer } from "./checkpointer";
-import { ingestVerdict, rememberIngested } from "./ingest-dedup";
+import {
+  INGEST_ID_WINDOW,
+  ingestVerdict,
+  rememberIngested,
+} from "./ingest-dedup";
 import {
   conversationDividerMessage,
   conversationStamp,
   humanAgentMessage,
 } from "./markers";
+import { resetLandedAfter, threadResetBoundary } from "./reset-episode";
 import {
   claimIngestWrite,
   type IngestWriteClaim,
@@ -235,7 +241,13 @@ export async function ingestMessageIntoThread(
         params.role === "human_agent"
           ? (preRow?.recentAgentMessageIds ?? [])
           : (preRow?.recentSyncedMessageIds ?? []);
-      if (ingestVerdict(seenAlready, messageId) !== "new") {
+      // `duplicate` ONLY, and `ancient` deliberately falls through to the claim (issue #728,
+      // verifier round 4). The two answers are not the same kind of thing: a duplicate is work
+      // already done and there is nothing to say about it, while an `ancient` is an append that will
+      // NOT land and that nobody downstream reports. Refusing it out here would save a claim and
+      // cost the only line that names it, and this read can be stale besides — the answer that gets
+      // reported has to be the one taken under the claim.
+      if (ingestVerdict(seenAlready, messageId) === "duplicate") {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
@@ -289,13 +301,130 @@ export async function ingestMessageIntoThread(
         }),
       );
 
+      // THE EPISODE BOUNDARY, ASKED FROM IN HERE (issue #728 review, round 3), for the same reason
+      // the stand-down above is asked from in here rather than by the caller: a check made before
+      // the claim is staggered, not exclusive.
+      //
+      // `/reset` clears this thread and, inside its own critical section, revokes every queued
+      // `INGEST_MESSAGE` for it — precisely because an append carrying text from before the command
+      // would rebuild the memory an operator was just told had been cleared. What it cannot revoke
+      // is a job ARMED AFTER the revocation, and there are two of those: the receiver's own arm,
+      // racing the command since issue #194, and the recovery of a stranded reply, which decides
+      // minutes earlier and across a REST round trip (../modules/chatwoot/recover-human-reply.ts).
+      // Both asked the boundary where it could go stale; this is the one place it cannot, because
+      // the command waits on the very claim held above (`threadBusyForResetOn`).
+      //
+      // THE THREAD'S MAXIMUM, not the conversation's own (review r4, correcting r3). The first
+      // version of this fence asked the message's own conversation and called the difference
+      // deliberate, on the grounds that a caller reasoning about SIBLING conversations does it
+      // before arming. That is the very argument moving the fence in here refutes: what this closes
+      // is the window between any caller's decision and this write, and a `/reset` typed in a
+      // sibling DURING that window stamps the sibling, leaving this conversation unstamped while
+      // the memory both share is gone. Asked of one conversation, the fence then sees nothing and
+      // restores pre-reset text into a thread whose dedup history was deleted with it.
+      //
+      // The memory is the contact-inbox's, so the boundary is too.
+      const cleared = await threadResetBoundary(
+        tenantId,
+        instanceId,
+        contactInboxId,
+        base,
+      );
+      if (resetLandedAfter(messageId, cleared)) {
+        logger.info(
+          "ingest: message %s on conversation %s predates the /reset that cleared this thread; not restoring it",
+          String(messageId),
+          String(conversationId),
+        );
+        return { outcome: "skipped" as const, closedConversationId: null };
+      }
+
       // The same question, now on the row this call is entitled to trust. Another append may have
       // folded this very id in while this one waited for the claim.
       const recent =
         params.role === "human_agent"
           ? (row?.recentAgentMessageIds ?? [])
           : (row?.recentSyncedMessageIds ?? []);
-      if (ingestVerdict(recent, messageId) !== "new") {
+      const verdict = ingestVerdict(recent, messageId);
+      if (verdict !== "new") {
+        // AND AN `ancient` IS REPORTED FROM HERE, where the answer is authoritative (issue #728,
+        // verifier round 4, measured). The window remembers the last `INGEST_ID_WINDOW` ids per
+        // direction; past its floor this refuses the append — and refuses it SUCCESSFULLY, so the
+        // job completes, its row disappears on DONE, and until this line nothing anywhere said the
+        // words never landed. The recovery asks the same question before it arms and reports what
+        // it sees, but its read is minutes older than this one and cannot cover the window moving
+        // in between: measured live by holding the job back and saturating the window in the gap,
+        // the message was absent from memory, the job was green, and the only durable line naming
+        // it was the receiver's `human_reply_not_remembered`, which says a retry is coming.
+        //
+        // UNDECIDABLE rather than lost, for the reason its sibling carries (review r5): eviction is
+        // not absence — a reply that landed sixty-four messages ago reads exactly like one that
+        // never landed — so the line says the machinery cannot decide and a person has to read the
+        // conversation.
+        //
+        // BOTH DIRECTIONS, and the first draft of this had it wrong (verifier round 5, which
+        // refuted it from the tree). It reported only a colleague's reply, on the grounds that a
+        // customer's message has a delivery ledger of its own behind it and that an unanswered
+        // customer is what the loss list is for. Neither holds for the population that reaches this
+        // append: the arm that queues a customer's message is, by construction, only for the ones no
+        // turn covers — silenced by a gate (out of hours, an authorization refusal) or not
+        // bot-handled (a human owns the conversation, or it is not pending), with an answered or
+        // debounced message covered by its own turn and never re-ingested here
+        // (../modules/chatwoot/webhook.ts, above `armIngest`). In every one of those, a customer
+        // with no answer is the expected state, so the loss list shows nothing; and the delivery
+        // settled PROCESSED the moment the ARM succeeded, so the ledger shows nothing either. The
+        // loss happens here, later, and nothing revisits it: the customer writes three times while a
+        // human runs the attendance, the window overtakes those appends, and the bot resumes reading
+        // an attendance in which the customer never said any of it.
+        //
+        // THE VOLUME RISK IS NAMED RATHER THAN TRADED FOR THE SILENCE. The #194 migration seeded
+        // every existing window SATURATED with the old high-water mark
+        // (`array_fill(last_synced_message_id, ARRAY[64])`), so on a freshly migrated installation
+        // the floor IS that mark and any re-delivery below it reads `ancient`. Each real ingestion
+        // pushes one filler out, so a window becomes genuine history within a cap's worth of
+        // messages. If that ever shows up as noise, the answer is a rate limit, not dropping a
+        // direction — dropping one is what makes the line missing exactly where nobody else looks.
+        if (verdict === "ancient") {
+          const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.conversation.findUnique({
+              where: {
+                tenantId_chatwootInstanceId_chatwootConversationId: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  chatwootConversationId: conversationId,
+                },
+              },
+              select: { id: true, inbox: { select: { agentId: true } } },
+            }),
+          );
+          logger.error(
+            "ingest: message %s (%s) on conversation %s is older than everything this thread's memory still remembers; it was not appended, and whether it ever was cannot be decided from here",
+            String(messageId),
+            params.role,
+            String(conversationId),
+          );
+          await writeFlowEvent(
+            {
+              tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              conversationId: conv?.id ?? null,
+              agentId: conv?.inbox?.agentId ?? null,
+              base,
+            },
+            {
+              stage: "memory",
+              level: "error",
+              status: "error",
+              detail: {
+                reason: "ingest_append_undecidable",
+                messageId,
+                role: params.role,
+                window: INGEST_ID_WINDOW,
+              },
+            },
+          );
+        }
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 

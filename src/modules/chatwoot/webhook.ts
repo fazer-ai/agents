@@ -3471,6 +3471,37 @@ async function maybeConsumeCommandOrGate(params: {
                 "INGEST_MESSAGE",
                 `ingest:${graphThreadId}:`,
               );
+              // AND THE FACT THAT IT WORKED, written by the transaction that does it (issue #728,
+              // review r7/r8). `reset_at_message_id` above says the operator TYPED the command; it
+              // is committed by an earlier, independent statement and stays put when this step
+              // refuses — which it does by design, on the thread a turn is already writing, with the
+              // acknowledgement naming what did not clear. Four fences read that column as proof the
+              // memory was cleared (the direct turn's, the debounce watermark, the observe tick and
+              // the ingestion append), and an append refused on the strength of a clearing that did
+              // not happen is a colleague's reply dropped from a memory nobody ever emptied.
+              //
+              // So the append's fence reads THIS one, which cannot survive without the deletions
+              // beside it: same transaction, rolled back with them.
+              //
+              // BEFORE `clearContactMemory` AND NOT AFTER (review r12), which is not a style
+              // preference: that helper deletes the rows first and the CHECKPOINT last precisely so
+              // a failed checkpoint delete rolls the rows back, and the checkpoint goes through a
+              // SEPARATE pool that no rollback of ours reaches. A statement of ours after it can
+              // still fail — a concurrent update on this conversation holding the row until the
+              // scoped transaction times out is enough — and the rollback would then restore the
+              // thread and its summaries beside a checkpoint that is already gone, which is exactly
+              // the half-erased state the helper's ordering exists to prevent. Written here, a
+              // failed clear takes the boundary back with everything else.
+              //
+              // `GREATEST` for the reason the boundary above has it: two `/reset` deliveries are
+              // dispatched detached and the older one can finish last.
+              if (commandMessageId !== null) {
+                await db.$executeRaw`
+                  UPDATE conversations
+                     SET memory_cleared_at_message_id =
+                           GREATEST(memory_cleared_at_message_id, ${commandMessageId})
+                   WHERE id = ${ctx.conv.id}`;
+              }
               await clearContactMemory({
                 db,
                 checkpointer: await getCheckpointer(),
@@ -6607,9 +6638,14 @@ export async function processChatwootDelivery(
     // ...AND THE RECORD FOLLOWS THE OUTCOME, not only the intent (PR review, round 16). The claim
     // wrote `routeRemembers` from the runtime it resolved, and this is where that promise is either
     // kept or not: `failed` and `no-thread` are the two ways it ends unkept, and the delivery still
-    // settles PROCESSED either way. Left saying `true`, the row tells the observer beside it that
-    // this message is remembered — and for a colleague's reply nothing else will ever fold it in,
-    // since no recovery carries an outgoing body.
+    // settles PROCESSED either way — `no-thread` does; `failed` now leaves the row for the sweep, a
+    // few lines below, and the correction here is what that sweep reads. Left saying `true`, the row
+    // tells the observer beside it that this message is remembered, and the recovery armed on the
+    // strand would then be reading a row that says the append already happened.
+    //
+    // "Nothing else will ever fold it in" is what stood here, and issue #728 is exactly what made it
+    // false: the ledger names the reply, the message is read back by id and the append is armed
+    // again (./recover-human-reply.ts). The correction matters MORE for it, not less.
     //
     // `nothing` is NOT one of them: there was nothing to fold in, which is not a promise broken.
     //
@@ -6646,9 +6682,14 @@ export async function processChatwootDelivery(
     // delivery's work below. A switched-off observer stays silent: the message waits for its switch.
     params.onIngest?.("no-reader");
   }
-  // A COLLEAGUE'S REPLY nobody could remember, its retries spent (round 24). There is no recovery to
-  // leave the row for — no replay rebuilds an outgoing body today — so the loss is reported where an
-  // operator reads: an error line on the conversation, not a process warning.
+  // A COLLEAGUE'S REPLY nobody could remember, its retries spent (round 24). The loss is reported
+  // where an operator reads: an error line on the conversation, not a process warning.
+  //
+  // "There is no recovery to leave the row for" is the reason this line once gave for being the
+  // whole answer, and issue #728 made it false fifty lines below: the row IS left for the sweep now,
+  // and the sweep arms a recovery that reads the reply back by id. The line stays, and it is no
+  // longer the end of the story — it is the record that the loss happened, which an operator still
+  // needs whether or not the second chance lands.
   //
   // ON EVERY ROUTE, and not only a watcher's (issue #720). The report was gated on
   // `(observing || handedToObserver)`, which is the route that INSPIRED it and not the route that
@@ -6725,6 +6766,37 @@ export async function processChatwootDelivery(
           ...(ingested === "failed" ? { attempts: INGEST_ARM_ATTEMPTS } : {}),
         },
       },
+    );
+  }
+  // E A LINHA FICA PARA A VARREDURA (issue #728), que é a metade que a #720 decidiu ao contrário.
+  // Ela liquidava aqui de propósito, e disse por quê: "para a resposta de um colega não compra
+  // nada", porque `owed-takeover` só re-rodava a transição de posse e `observer-strand` só relatava.
+  // Nenhum dos dois re-armava ingestão, então prender a linha custava um job redundante e um veredito
+  // no fim sem salvar uma palavra. A premissa caiu: `human_reply_message_id` está na linha desde a
+  // #469, a mensagem é relida por id e a varredura arma a recuperação dela (./recover-human-reply.ts).
+  //
+  // POR QUE LANÇAR EM VEZ DE ARMAR AQUI MESMO. O arme usaria o mesmo enfileiramento que acabou de
+  // falhar quatro vezes, que é a única coisa que se sabe do ambiente neste ponto. A varredura é a
+  // segunda chance porque ela roda meia hora depois, quando o blip passou; o lançamento é só o que
+  // mantém a linha não-terminal até lá, e é o mesmo par que a transcrição tardia usa logo abaixo.
+  //
+  // `no-thread` NÃO ENTRA, e é a mesma fronteira que a transcrição traça: uma conversa que nem o
+  // payload nem o espelho sabem nomear um contact-inbox não tem onde guardar a resposta, e a
+  // releitura acharia o mesmo nada. Prender a linha ali trocaria uma perda permanente RELATADA — o
+  // bloco acima, com a razão que a nomeia — por um limbo que a varredura re-arma sem fim.
+  //
+  // O QUE O REPLAY NÃO FAZ, e é o que separa este lançamento do da #719: a recuperação armada é só
+  // de memória e nunca reexecuta esta entrega, então ela não pode postar (a exposição da #725) nem
+  // tirar o bot de uma conversa que já voltou a ser dele. A transição de posse já aconteceu, bem
+  // acima, antes da ingestão.
+  if (
+    ingested === "failed" &&
+    humanReplyBy !== null &&
+    rt !== null &&
+    mirror.conversationRowId !== null
+  ) {
+    throw new Error(
+      `chatwoot: a colleague's reply could not be remembered (conv=${convLabel}); leaving the delivery for the sweep`,
     );
   }
   // NOTE: A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,

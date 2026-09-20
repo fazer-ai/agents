@@ -17,6 +17,7 @@ import {
 import { setConnectedAccounts } from "@/modules/chatwoot/management";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
+import { humanReplyRecoveryDedupeKey } from "@/modules/chatwoot/recover-human-reply";
 import { takeoverRecoveryDedupeKey } from "@/modules/chatwoot/recover-takeover";
 import {
   processChatwootDelivery,
@@ -116,6 +117,8 @@ async function seedStrandedDelivery(over: {
   routeObserved?: boolean | null;
   // Whether that route's claim said it folds into memory what it does not answer (issue #540).
   routeRemembers?: boolean | null;
+  // The reply's own id, which is what makes its lost memory append recoverable (issue #728).
+  humanReplyMessageId?: number | null;
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -133,6 +136,7 @@ async function seedStrandedDelivery(over: {
       conversationId: over.conversationId,
       inboundMessageId: over.inboundMessageId ?? null,
       humanReplyShape: over.humanReplyShape ?? null,
+      humanReplyMessageId: over.humanReplyMessageId ?? null,
       routeObserved: over.routeObserved ?? null,
       routeRemembers: over.routeRemembers ?? null,
     },
@@ -893,6 +897,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       conversationId: 8807,
       inboundMessageId: 9601,
       humanReplyShape: null,
+      humanReplyMessageId: null,
       routeObserved: false,
       routeRemembers: null,
     };
@@ -2661,6 +2666,86 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // absence is what the owed-takeover case below proves with a rider row rather than a deadline.
 
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  // ISSUE #728. THE WORDS ARE A SECOND DEBT, and the row has named them since issue #469. Each of
+  // the three colleague's-reply verdicts can sit on a row that also owed a memory append, so the
+  // recovery of that append is armed alongside whatever the verdict decided about the CONVERSATION —
+  // including on the observer's strand just above, where the tree said out loud that nothing could
+  // replay it.
+  test.each([
+    ["owed-takeover", { routeObserved: false }, "owed"],
+    ["observer-strand", { routeObserved: true }, "observerStrands"],
+    ["role-unstated", { claimed: false }, "roleUnstated"],
+  ] as const)(
+    "a %s strand that names the reply arms the recovery of its memory",
+    async (_verdict, shape, counter) => {
+      const convId =
+        counter === "owed" ? 8971 : counter === "observerStrands" ? 8972 : 8973;
+      await seedConversation(convId);
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs: STALE_MS * 3,
+        // Unclaimed AND still PENDING, which is what "nothing ever stated the role" looks like: an
+        // unclaimed row that is already PROCESSING is an older build's and reads as `lost`.
+        ...("claimed" in shape
+          ? { status: "PENDING" as const }
+          : { claimedAgoMs: STALE_MS * 3 }),
+        humanReplyShape: "composer",
+        humanReplyMessageId: 7280 + convId,
+        ...("routeObserved" in shape
+          ? { routeObserved: shape.routeObserved }
+          : {}),
+      });
+
+      const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+      expect(counts[counter]).toBe(1);
+      expect(
+        await suDb.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "HUMAN_REPLY_RECOVERY",
+            dedupeKey: humanReplyRecoveryDedupeKey(rowId),
+          },
+        }),
+      ).toBe(1);
+      // AND THE ROW STAYS OFF THE WORKLIST. `DEAD` is the list of customers who wrote and were never
+      // answered, and a colleague's own reply belongs on no such list — recovering its memory must
+      // not put it there.
+      expect((await statusOf(rowId)).status).toBe("PROCESSED");
+
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "HUMAN_REPLY_RECOVERY" },
+      });
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+      await clearFlowLog(suDb, { tenantId });
+    },
+  );
+
+  // E A LINHA QUE NÃO NOMEIA RESPOSTA NENHUMA não ganha job, que é a leitura tentadora deste
+  // conserto: "entrega encalhada de `message_created`, vamos reler a mensagem". `human_reply_message_id`
+  // fica NULO por construção para a saída do nosso próprio bot, para a nota privada e para a reação,
+  // e é ele que as mantém fora.
+  test("a strand that names no reply arms no memory recovery", async () => {
+    const convId = 8974;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 3,
+      claimedAgoMs: STALE_MS * 3,
+      humanReplyShape: "composer",
+      humanReplyMessageId: null,
+    });
+
+    await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, kind: "HUMAN_REPLY_RECOVERY" },
+      }),
+    ).toBe(0);
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   // ISSUE #620. The same two strands on an observer whose claim recorded that its route remembers

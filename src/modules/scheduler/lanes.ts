@@ -81,6 +81,22 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // notices. Budget: it spends no model at all, only two or three Chatwoot calls, and the shared
   // lane's provider concurrency is not the resource that bounds those.
   TAKEOVER_RECOVERY: "shared",
+  // Shared, for the same two answers as the takeover recovery beside it and with the same arithmetic.
+  // Cadence: what it recovers is a memory append, and the reply has already been missing from the
+  // thread for the sweep's whole staleness window, so a shared tick is not what anyone feels.
+  // Budget: it spends no model — one Chatwoot read and one enqueue — so a lane of its own would
+  // reserve capacity nothing is contending for.
+  //
+  // AND WHAT THE DEFERRAL ACTUALLY BUYS IS THIRTY-NINE SECONDS, measured (issue #728, verifier round
+  // 6): `MAX_ATTEMPTS` is 5 and `backoffMs` is base 2s, so the five tries of an `unreachable` run
+  // inside a minute and the row then goes DEAD. The delivery row is PROCESSED by the sweep that
+  // armed this, so nothing revisits it — a Chatwoot down for longer than a restart consumes the
+  // whole recovery, and the verdict that exists to outlast an outage outlasts less than one. The
+  // loss is still REPORTED, by the receiver's own `error` line on the conversation, which is why
+  // this is a named limit rather than a hole; the remedy, when it is wanted, is a backoff in minutes
+  // for the recovery family (this kind and `TAKEOVER_RECOVERY`, which carries the same numbers),
+  // not more attempts at the same spacing.
+  HUMAN_REPLY_RECOVERY: "shared",
   // A cap of its own, drained by the shared tick (issue #621). Cadence is not the reason: a label that
   // lands one shared tick after the burst it describes is not a delay anyone feels. The cap is. On
   // the traffic share it waited behind every ingestion row armed before it, and one busy observed
@@ -136,6 +152,10 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // model. Folded into DELIVERY_RECOVERY it would take a permit from the semaphore a customer's turn
   // queues on, to make two HTTP calls.
   TAKEOVER_RECOVERY: false,
+  // It reads one page of messages and arms an ingest job. The MODEL is spent later, by whatever turn
+  // reads the thread next — and by then the append is just another message in the channel, which is
+  // the whole point of the ingestion being a job rather than a turn (issue #194).
+  HUMAN_REPLY_RECOVERY: false,
   // One model call per tick, on the agent's own model.
   OBSERVE: true,
 };
@@ -199,6 +219,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // Same key, same shape, same answer: it names ONE ledger row, nothing reuses it, and the row that
   // records the work is the ledger row.
   TAKEOVER_RECOVERY: true,
+  // Same key, same shape, same answer: it names ONE ledger row, nothing reuses it, and the record of
+  // the work is the ledger row plus the ingest job it arms.
+  HUMAN_REPLY_RECOVERY: true,
   // The key names ONE CONVERSATION (`observe:<thread>`), like DEBOUNCE's, and the row is re-armed by
   // every burst on it; a DONE row is the record of the last verdict.
   OBSERVE: false,
@@ -259,6 +282,10 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // no age ceiling to discard it, because what it recovers does not go stale (recover-takeover.ts).
   // A conversation the agent is wrongly holding stays wrong however long the queue was.
   TAKEOVER_RECOVERY: true,
+  // Armed by the same pass on the same rows as the takeover recovery, so the count follows the same
+  // traffic — one per stranded delivery that was carrying a colleague's reply. The two are armed
+  // together and neither waits on the other: they answer different questions about the same row.
+  HUMAN_REPLY_RECOVERY: true,
   // FALSE now that it has a lane of its own (issue #621), which is DEBOUNCE's answer for DEBOUNCE's
   // reason: its row count does follow traffic, one row per observed conversation re-armed by every
   // burst, but no claim that holds a fixed-rate kind ever holds it, so there is nothing for it to
@@ -342,6 +369,11 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // NEXT reply from that person takes over on its own. An `error` here would announce, at the level
   // of a customer's lost message, something that self-heals.
   TAKEOVER_RECOVERY: "warn",
+  // `warn`, by the rule its neighbour reads the other way round: what dies with the job is the
+  // SECOND attempt at an append the receiver already reported losing, at `error`, on the
+  // conversation — so the operator has been told, and telling them again at the same level is the
+  // same reply waking somebody twice.
+  HUMAN_REPLY_RECOVERY: "warn",
   // `warn`, by the rule above: what dies is a label that was not refreshed, on a conversation a person
   // is already reading and can label by hand, and the next burst on it arms the same row again. No
   // customer message was lost and nothing they wait on stopped.

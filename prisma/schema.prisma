@@ -69,6 +69,7 @@ enum SchedulerJobKind {
   DELIVERY_SWEEP
   DELIVERY_RECOVERY
   TAKEOVER_RECOVERY
+  HUMAN_REPLY_RECOVERY
   SPEND_CEILING_POLL
   OBSERVE
 }
@@ -875,6 +876,15 @@ model Conversation {
   // `lastHandledMessageId` above is one. Written with GREATEST, so two commands landing out of order
   // cannot move the boundary back. NULL = never reset.
   resetAtMessageId         Int?      @map("reset_at_message_id")
+  /// THE SAME BOUNDARY, BUT WRITTEN BY THE CLEARING ITSELF (issue #728, review r7/r8). The column
+  /// above records that the operator TYPED `/reset`: it is committed by an earlier, independent
+  /// statement, and the memory-clearing step that follows refuses by design when a turn is already
+  /// writing the thread, so a conversation can carry that boundary with its memory untouched. This
+  /// one is written inside the transaction that deletes the thread, the summaries and the
+  /// checkpoint, so it cannot exist without them. The ingestion fence reads THIS one, because its
+  /// question is about the memory; the fences whose question is about the operator's intent (the
+  /// direct turn's, the debounce watermark, the observe tick) keep reading the one above.
+  memoryClearedAtMessageId Int?      @map("memory_cleared_at_message_id")
   // THE LABELS THAT `/reset` REMOVED, so the observer can tell the command's own removal line from
   // real history (issue #645). Chatwoot narrates a label change as an activity row that carries no
   // `content_attributes` at all, and the row is written by `ActivityMessageJob.perform_later`, so on
@@ -977,6 +987,14 @@ model Conversation {
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
+  /// THE THREAD'S CONVERSATIONS, which is how the episode boundary is read (issue #728, review r5).
+  /// `/reset` clears the memory of a CONTACT-INBOX and stamps `reset_at_message_id` on the one
+  /// conversation it was typed in, so the fence that decides whether a message predates the command
+  /// takes the maximum across the contact-inbox's conversations — and it runs on every append that
+  /// gets as far as the thread's lock. The unique above narrows only to the account, so without this
+  /// each append walks that account's whole conversation history to find the handful of rows sharing
+  /// one contact-inbox.
+  @@index([tenantId, chatwootInstanceId, contactInboxId])
   @@map("conversations")
 }
 

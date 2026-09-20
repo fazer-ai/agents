@@ -96,6 +96,10 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // concurrency rather than a budget independent of the turns live customers are queueing for.
   DELIVERY_RECOVERY: "shared",
   TAKEOVER_RECOVERY: "shared",
+  // Shared, for the same pair of answers as the takeover recovery: the reply has already been
+  // missing from the thread for the sweep's staleness window, and it spends no model — one Chatwoot
+  // read and one enqueue.
+  HUMAN_REPLY_RECOVERY: "shared",
   SPEND_CEILING_POLL: "shared",
   // A cap of its own, drained by the shared tick (issue #621): on the traffic share it waited behind
   // every ingestion row armed before it, five rows a tick for the whole install.
@@ -129,6 +133,9 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // takeover and never reaches a model. Flipped to `true` it would hold a permit in the semaphore a
   // customer's turn queues on, to make two HTTP calls.
   TAKEOVER_RECOVERY: false,
+  // It reads one page of messages and arms an ingest job (issue #728). The model is spent later, by
+  // whatever turn reads the thread next, which is the whole point of the ingestion being a job.
+  HUMAN_REPLY_RECOVERY: false,
   SPEND_CEILING_POLL: false,
   OBSERVE: true,
 };
@@ -159,6 +166,9 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // Same pass, same deploy, same traffic: one row per delivery that was carrying a colleague's reply
   // when the process died.
   TAKEOVER_RECOVERY: true,
+  // Armed by the same pass on the same rows as the takeover recovery, so the count follows the same
+  // traffic (issue #728).
+  HUMAN_REPLY_RECOVERY: true,
   SPEND_CEILING_POLL: false,
   // One row per observed CONVERSATION, which is the same shape as DEBOUNCE's, and now the same answer:
   // with a lane of its own (issue #621) no claim that holds a fixed-rate kind ever holds it.
@@ -184,6 +194,8 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   DELIVERY_RECOVERY: true,
   // Same key, same shape, same answer.
   TAKEOVER_RECOVERY: true,
+  // Same key, same shape, same answer.
+  HUMAN_REPLY_RECOVERY: true,
   SPEND_CEILING_POLL: false,
   OBSERVE: false,
 };
@@ -210,6 +222,11 @@ const EXPECTED_DEATH_LEVEL: Record<
   // the DEAD ledger row is still the operator's worklist. What died is the automatic second attempt.
   DELIVERY_RECOVERY: "warn",
   TAKEOVER_RECOVERY: "warn",
+  // `warn`, by the same rule read the other way round: the receiver already reported this loss at
+  // `error`, on the conversation, before the row ever reached the sweep (issue #720). What dies here
+  // is the second attempt at the append, and an `error` would wake the same person about the same
+  // reply twice.
+  HUMAN_REPLY_RECOVERY: "warn",
   SPEND_CEILING_POLL: "error",
   OBSERVE: "warn",
 };

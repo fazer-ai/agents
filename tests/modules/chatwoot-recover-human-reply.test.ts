@@ -1,0 +1,1467 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
+import { ingestDedupeKey } from "@/graph/ingest-job";
+import { createChatwootClient } from "@/modules/chatwoot/client";
+import {
+  recoverStrandedHumanReply,
+  registerHumanReplyRecoveryHandler,
+} from "@/modules/chatwoot/recover-human-reply";
+import { getJobHandler } from "@/modules/scheduler/worker";
+import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
+
+// RECOVERING THE COLLEAGUE'S REPLY AN INGESTION LOST (issue #728).
+//
+// What the delivery loses is one effect: the words reaching the contact's memory. The ledger has
+// named the reply since issue #469 (`human_reply_message_id`, written at INSERT for the takeover's
+// own fence), so the message can be read back by id and the append armed again — which three places
+// in the tree said was impossible, on a premise that was true when each was written.
+//
+// WHAT IS ASSERTED HERE is the job the recovery arms and the payload it carries, not the append
+// itself: the append is the ingest job's, and it is the SAME job the live path would have armed,
+// dedup included. Asserting it here would be asserting `../../src/graph/ingest.ts`'s behaviour
+// through two layers.
+//
+// The Chatwoot side serves the message page in the REST spelling, which is the one thing this
+// recovery depends on and the one the issue says nobody had measured: `message_type` as an INTEGER
+// (`message_type_before_type_cast`) and the sender rendered by `push_event_data`. Serving the
+// webhook spelling instead would make every one of these pass by construction.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+const INBOX_ID = 91;
+const ZAPI_INBOX_ID = 92;
+const TEST_MODE_INBOX_ID = 93;
+// An inbox NOBODY of ours answers, with a watcher on it: the route issue #620 measured as folding
+// nothing in, because there is no responder's memory for the watcher to share.
+const UNANSWERED_INBOX_ID = 94;
+// A responder of ours, with a watcher whose own agent is in `test` mode. The receiver asks a
+// row-backed watcher's SWITCH and not its mode (issue #476 review, round 19), so this route folds
+// the reply in — and it is the only shape that tells the two readings of the gate apart.
+const WATCHED_INBOX_ID = 95;
+const OUR_BOT = 31;
+// A watcher's own bot: Chatwoot fans a message to the inbox's bot AND to any observer attached to
+// it, so a strand can carry either route, and only the row says which.
+const WATCHER_BOT = 32;
+// The `test`-mode agent's own bot. Its route has to carry it, or the fixture would be a state no
+// install can be in: a delivery claimed under one agent's bot on an inbox another agent answers.
+const TEST_BOT = 33;
+// The bot of a watcher whose agent is in `test` mode.
+const QUIET_WATCHER_BOT = 34;
+let tenantId = 0n;
+let instanceId = 0n;
+let agentDbId = 0n;
+let watcherAgentDbId = 0n;
+let testAgentDbId = 0n;
+let quietWatcherAgentDbId = 0n;
+let deliverySeq = 0;
+
+// The account's messages, per conversation, in the REST spelling.
+const pages = new Map<number, Record<string, unknown>[]>();
+// Conversations whose message read fails outright.
+const failingReads = new Set<number>();
+// Conversations whose read answers 200 with a body that is not a message page, which is what a
+// degraded account looks like from here (review r10).
+const unusableReads = new Set<number>();
+// Conversations an operator resets WHILE the page is being served, which is the window the second
+// reading of the boundary exists for and the only one it can see.
+const resetDuringRead = new Map<number, () => Promise<void>>();
+const calls: { url: string; method: string }[] = [];
+const realFetch = globalThis.fetch;
+
+const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = typeof input === "string" ? input : input.toString();
+  const method = init?.method ?? "GET";
+  calls.push({ url, method });
+  const list = url.match(/\/conversations\/(\d+)\/messages/);
+  if (list && method === "GET") {
+    const id = Number(list[1]);
+    if (failingReads.has(id)) return new Response("nope", { status: 502 });
+    if (unusableReads.has(id)) return Response.json({});
+    const during = resetDuringRead.get(id);
+    if (during) await during();
+    return Response.json({ payload: pages.get(id) ?? [] });
+  }
+  return new Response(JSON.stringify({}), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}) as typeof fetch;
+
+const makeClient = async (config: Parameters<typeof createChatwootClient>[0]) =>
+  createChatwootClient(config, {
+    assertSafe: async (url: string) => new URL(url),
+    fetchImpl: stubFetch,
+  });
+
+// THE REST SPELLING, which is what the fork actually serves on this endpoint and is not the webhook
+// one. `message_type` renders through `message_type_before_type_cast` (an integer), and the sender
+// through `User#push_event_data` — which carries `available_name`, `avatar_url`,
+// `availability_status` and `thumbnail` beside the four fields the webhook's `webhook_data` gives.
+// MEASURED against the local fork (4.16.0) before this test was written; the discriminator everything
+// depends on, `sender.type === "user"`, is present in both.
+function restComposerReply(id: number, content: string) {
+  return {
+    id,
+    content,
+    message_type: 1,
+    private: false,
+    content_attributes: {},
+    sender: {
+      id: 5,
+      name: "Ana",
+      available_name: "Ana",
+      avatar_url: "",
+      type: "user",
+      availability_status: null,
+      thumbnail: "",
+    },
+    attachments: [],
+  };
+}
+
+// The `device` leg: a reply typed on the paired phone reaches Chatwoot with no sender at all, and the
+// fork records who wrote it in `content_attributes`. Byte for byte, this is also what the ECHO of our
+// own reply looks like on a provider that does not reserve its send ids.
+function restDeviceReply(id: number, content: string) {
+  return {
+    id,
+    content,
+    message_type: 1,
+    private: false,
+    content_attributes: {
+      external_sender_name: "WhatsApp",
+      external_created_at: Math.floor(Date.now() / 1000),
+    },
+    sender: null,
+    attachments: [],
+  };
+}
+
+describe.skipIf(!dbUp)(
+  "recovering a colleague's reply an ingestion lost",
+  () => {
+    beforeAll(async () => {
+      globalThis.fetch = stubFetch as typeof globalThis.fetch;
+      const t = await suDb.tenant.create({
+        data: { name: "HRR", slug: `hrr-${process.pid}` },
+      });
+      tenantId = t.id;
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId,
+        accountId: 41,
+        baseUrl: "https://chat.hrr.example",
+        adminToken: encryptJson("ADMIN"),
+      });
+      instanceId = inst.id;
+      const agent = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Atendente",
+          mode: "production",
+          enabled: true,
+          systemPrompt: "Você é prestativa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: { debounce: { enabled: false } },
+        },
+      });
+      agentDbId = agent.id;
+      // The route that does NOT remember: a `test`-mode agent leaves a ledger row byte for byte like
+      // the one a failed enqueue leaves, `route_remembers = false` included.
+      const testAgent = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Atendente (teste)",
+          mode: "test",
+          enabled: true,
+          systemPrompt: "Você é prestativa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: {},
+        },
+      });
+      testAgentDbId = testAgent.id;
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: agent.id,
+          chatwootAgentBotId: OUR_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-route-${process.pid}`,
+          name: "Atendente",
+        },
+      });
+      // The watcher: `monitoring` and switched on, with a bot of its own, on an inbox a `test`-mode
+      // agent answers. The live receiver folds a colleague's reply in through THIS agent, and it
+      // asks the watcher's switch without asking its mode (issue #476 review, round 19).
+      const watcher = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Observadora",
+          mode: "monitoring",
+          enabled: true,
+          systemPrompt: "Você observa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: {},
+        },
+      });
+      watcherAgentDbId = watcher.id;
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: testAgent.id,
+          chatwootAgentBotId: TEST_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-test-${process.pid}`,
+          name: "Atendente (teste)",
+        },
+      });
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: watcher.id,
+          chatwootAgentBotId: WATCHER_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-watch-${process.pid}`,
+          name: "Observadora",
+        },
+      });
+      const quietWatcher = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Observadora silenciosa",
+          mode: "test",
+          enabled: true,
+          systemPrompt: "Você observa.",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          settings: {},
+        },
+      });
+      quietWatcherAgentDbId = quietWatcher.id;
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: quietWatcher.id,
+          chatwootAgentBotId: QUIET_WATCHER_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `hrr-quiet-${process.pid}`,
+          name: "Observadora silenciosa",
+        },
+      });
+      for (const [chatwootInboxId, provider, boundAgent] of [
+        [INBOX_ID, "baileys", agent.id],
+        [ZAPI_INBOX_ID, "zapi", agent.id],
+        [TEST_MODE_INBOX_ID, "baileys", testAgent.id],
+        [UNANSWERED_INBOX_ID, "baileys", null],
+        [WATCHED_INBOX_ID, "baileys", agent.id],
+      ] as const) {
+        await suDb.inbox.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootInboxId,
+            name: `WhatsApp ${chatwootInboxId}`,
+            provider,
+            agentId: boundAgent,
+          },
+        });
+      }
+      // A LIGAÇÃO QUE FAZ DE UMA ROTA A DO OBSERVADOR, e sem ela não existe observador nenhum: é a
+      // linha de `inbox_observers` que `observerRuntimeForRoute` exige antes de chamar uma rota de
+      // observada, e é por ela que uma entrega encalhada ANTES da reivindicação — que não declarou
+      // papel — recupera o papel que teve (review r4).
+      for (const [chatwootInboxId, observerAgentId] of [
+        [TEST_MODE_INBOX_ID, watcher.id],
+        [WATCHED_INBOX_ID, watcher.id],
+        [UNANSWERED_INBOX_ID, quietWatcher.id],
+      ] as const) {
+        const inbox = await suDb.inbox.findFirstOrThrow({
+          where: { tenantId, chatwootInboxId },
+          select: { id: true },
+        });
+        await suDb.inboxObserver.create({
+          data: {
+            tenantId,
+            inboxId: inbox.id,
+            agentId: observerAgentId,
+            // ANTERIOR ÀS ENTREGAS que este arquivo semeia (o `seedStranded` data cada uma em 40
+            // minutos atrás). Uma ligação mais NOVA que a entrega não diz nada sobre a rota em que
+            // ela chegou, e o produto a ignora de propósito — o que tem teste próprio abaixo.
+            createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+          },
+        });
+      }
+    });
+
+    afterAll(async () => {
+      globalThis.fetch = realFetch;
+      if (!dbUp) return;
+      for (const table of [
+        "execution_logs",
+        "scheduler_jobs",
+        "chatwoot_webhook_deliveries",
+        "conversations",
+        "contacts",
+        "inbox_observers",
+        "inboxes",
+        "chatwoot_agent_bots",
+        "agents",
+        "chatwoot_instances",
+        "chatwoot_deployments",
+      ]) {
+        await suDb
+          .$executeRawUnsafe(
+            `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+          )
+          .catch(() => {});
+      }
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+      await suDb.$disconnect();
+      await appDb.$disconnect();
+    });
+
+    // The row exactly as the receiver leaves it: the reply's shape and id written at INSERT, the
+    // conversation mirrored, the delivery closed by the sweep.
+    async function seedStranded(
+      convId: number,
+      over: {
+        inboxId?: number;
+        shape?: string | null;
+        messageId?: number | null;
+        contactInboxId?: number | null;
+        // Quem DETÉM a conversa no espelho. O default é o bot da inbox; um encalhe numa conversa que
+        // o bot da ROTA ainda segura é o caso em que a ligação de observação não faz dela uma rota
+        // de observador (review r9).
+        assigneeId?: number;
+        // Omitted = the mirror knows the conversation. `false` = it does not, which is what a delivery
+        // that died before the mirror write leaves.
+        mirrored?: boolean;
+        // The bot the delivery arrived on, as the claim recorded it, and whether that route was a
+        // watcher's (issue #476). Omitted = the inbox persona's, answering.
+        routeAgentBotId?: number | null;
+        // `null` é o que a coluna carrega numa entrega que morreu ANTES da reivindicação: papel não
+        // declarado, que é um dos três vereditos pelos quais a varredura arma a recuperação.
+        routeObserved?: boolean | null;
+        // The episode boundary a `/reset` left on the conversation (issue #447), written as a
+        // SUCCESSFUL clear leaves it: the command's own stamp plus the one the clearing transaction
+        // writes, which is the one the fences read (review r7/r8).
+        resetAtMessageId?: number;
+      } = {},
+    ) {
+      const messageId = over.messageId === undefined ? 700 : over.messageId;
+      if (over.mirrored !== false) {
+        const inbox = await suDb.inbox.findFirstOrThrow({
+          where: { tenantId, chatwootInboxId: over.inboxId ?? INBOX_ID },
+          select: { id: true },
+        });
+        await suDb.conversation.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: convId,
+            status: "open",
+            assigneeType: "AgentBot",
+            assigneeId: over.assigneeId ?? OUR_BOT,
+            inboxId: inbox.id,
+            threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+            lastEventAt: new Date(),
+            contactInboxId:
+              over.contactInboxId === undefined
+                ? 91_000 + convId
+                : over.contactInboxId,
+            ...(over.resetAtMessageId === undefined
+              ? {}
+              : {
+                  resetAtMessageId: over.resetAtMessageId,
+                  memoryClearedAtMessageId: over.resetAtMessageId,
+                }),
+          },
+        });
+      }
+      deliverySeq += 1;
+      const row = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `hrr-${process.pid}-${deliverySeq}`,
+          event: "message_created",
+          status: "PROCESSED",
+          receivedAt: new Date(Date.now() - 40 * 60 * 1000),
+          conversationId: convId,
+          humanReplyShape: over.shape === undefined ? "composer" : over.shape,
+          humanReplyMessageId: messageId,
+          // THE ROUTE THE CLAIM RECORDED. Defaulted from the inbox, so a fixture cannot quietly
+          // describe a delivery claimed under one agent's bot on an inbox another agent answers.
+          routeAgentBotId:
+            over.routeAgentBotId === undefined
+              ? (over.inboxId ?? INBOX_ID) === TEST_MODE_INBOX_ID
+                ? TEST_BOT
+                : OUR_BOT
+              : over.routeAgentBotId,
+          ...(over.routeObserved === undefined
+            ? {}
+            : { routeObserved: over.routeObserved }),
+        },
+        select: { id: true },
+      });
+      return row.id;
+    }
+
+    // Scoped to ONE conversation, because the rows are shared by the whole file: a helper that reads
+    // every INGEST_MESSAGE row would make each test's "nothing was queued" depend on the tests before
+    // it, which is exactly the assertion these negatives exist to make.
+    async function ingestJobs(convId: number) {
+      const rows = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_MESSAGE" },
+        select: { payload: true, payloadSecret: true, dedupeKey: true },
+      });
+      return rows
+        .map((r) => ({
+          dedupeKey: r.dedupeKey,
+          payload: r.payload as Record<string, unknown>,
+          text:
+            r.payloadSecret === null
+              ? null
+              : decryptJson<string>(r.payloadSecret),
+        }))
+        .filter((r) => r.payload.conversationId === convId);
+    }
+
+    // PELA IDENTIDADE DO APPEND, e não pelo tamanho de uma população. `ingest:<thread>:<messageId>`
+    // nomeia exatamente um append (../../src/graph/ingest-job.ts), e a chave é pedida ao construtor
+    // que o produto usa, em vez de remontada à mão: o formato passa a viver num lugar só (#723,
+    // #731). Uma negativa contada — "a leitura desta conversa voltou vazia" — afirma sobre um número
+    // que este módulo move de propósito, porque a linha é apagada ao concluir e `drainPendingIngest`
+    // drena as pendentes da thread.
+    //
+    // A THREAD É A DO CONTACT-INBOX, que é por onde a memória é chaveada, e a convenção deste
+    // arquivo é `91_000 + convId` (o `seedStranded` acima). Montada com a thread da CONVERSA, a
+    // pergunta responde "não armada" para tudo e faz as treze negativas passarem por construção.
+    function threadOf(convId: number) {
+      return contactInboxThreadId(tenantId, instanceId, 91_000 + convId);
+    }
+
+    async function ingestArmedOn(graphThreadId: string, messageId: number) {
+      return (
+        (await suDb.schedulerJob.findFirst({
+          where: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: ingestDedupeKey(graphThreadId, messageId),
+          },
+          select: { id: true },
+        })) !== null
+      );
+    }
+
+    async function ingestArmedFor(convId: number, messageId: number) {
+      return ingestArmedOn(threadOf(convId), messageId);
+    }
+
+    // O INSTRUMENTO ANTES DO PRIMEIRO CENÁRIO. Treze testes deste arquivo provam uma AUSÊNCIA com
+    // esta pergunta, e uma pergunta errada responde "não armada" para tudo: o verde delas seria a
+    // chave não casar, não a ausência do append. Aqui a chave é plantada de propósito nas duas
+    // grafias que o arquivo usa, e o que se afirma é que a pergunta ACHA o que existe e não acha o
+    // vizinho de id.
+    test("the question the negatives ask fires on a row that exists", async () => {
+      const convId = 9199;
+      for (const threadId of [
+        threadOf(convId),
+        chatwootThreadId(tenantId, instanceId, convId),
+      ]) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: ingestDedupeKey(threadId, 799),
+            payload: { conversationId: convId, messageId: 799 },
+            runAt: new Date(),
+          },
+        });
+        expect(await ingestArmedOn(threadId, 799)).toBe(true);
+        expect(await ingestArmedOn(threadId, 798)).toBe(false);
+      }
+      expect(await ingestArmedFor(convId, 799)).toBe(true);
+    });
+
+    // O QUE A ISSUE CONSERTA. A resposta se perdeu porque o enfileiramento estava fora do ar, e a
+    // varredura arma a releitura: a mensagem é lida de volta pelo id que a linha guarda desde a #469, e
+    // o append é armado com o PAPEL certo — `human_agent`, que é o que põe a resposta em
+    // `recent_agent_message_ids` em vez de fingir que o cliente a escreveu (#187).
+    test("the lost reply is read back by id and queued for the contact's memory", async () => {
+      const convId = 9101;
+      pages.set(convId, [
+        restComposerReply(700, "Mando o contrato ainda hoje."),
+      ]);
+      const rowId = await seedStranded(convId);
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+
+      const jobs = await ingestJobs(convId);
+      // BY THE APPEND'S OWN IDENTITY, not by how many rows came back: `ingest:<thread>:<messageId>`
+      // names exactly one append (../../src/graph/ingest-job.ts), so this says "the ingestion of
+      // THIS message is queued" instead of "one more job than before exists", which would keep
+      // agreeing with itself if a neighbour armed the wrong message on the same conversation.
+      expect(jobs.map((j) => j.dedupeKey)).toEqual([
+        ingestDedupeKey(threadOf(convId), 700),
+      ]);
+      expect(jobs[0]?.payload.role).toBe("human_agent");
+      expect(jobs[0]?.payload.messageId).toBe(700);
+      expect(jobs[0]?.text).toContain("Mando o contrato ainda hoje.");
+      // The thread the append lands on is the CONTACT-INBOX's, which is what the memory is keyed by.
+      // The conversation's own thread id is a DIFFERENT thread (`resolveGraphThreadId` falls back to
+      // it when no contact-inbox is known), so a recovery that keyed by it would write the reply
+      // into a memory no later turn reads — a green run with the words still missing.
+      expect(jobs[0]?.payload.contactInboxId).toBe(91_000 + convId);
+      expect(jobs[0]?.payload.graphThreadId).toBe(
+        `${tenantId}:${instanceId}:ci:${91_000 + convId}`,
+      );
+      // AND NOTHING WAS WRITTEN TO THE CONVERSATION. The recovery of the memory is not the recovery of
+      // the handover: a conversation an operator handed back to the bot in the meantime must not be
+      // taken away from it again to close a memory gap (issue #469). The takeover has a recovery of its
+      // own, armed beside this one.
+      expect(calls.filter((c) => c.url.includes("toggle_status"))).toEqual([]);
+    });
+
+    // A ARMADILHA MAIS CARA DESTE CONSERTO. Num provedor que não reserva os ids do eco, a nossa própria
+    // resposta volta como um `message_created` sem sender e com `external_sender_name` — byte a byte a
+    // forma `device` que um colega digitando no telefone pareado produz. A linha guarda a FORMA, então
+    // ancorar nela sem re-perguntar ao provedor arquivaria a fala do próprio agente na memória do
+    // contato como se um atendente humano a tivesse escrito.
+    test("our own echo on an unreserved provider is never folded into memory", async () => {
+      const convId = 9102;
+      pages.set(convId, [restDeviceReply(701, "Posso ajudar em algo mais?")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: ZAPI_INBOX_ID,
+        shape: "device",
+        messageId: 701,
+      });
+      const before = calls.length;
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+
+      expect(await ingestArmedFor(convId, 701)).toBe(false);
+      // E RECUSADO ANTES DA REDE, que é o outro lado da mesma decisão: a rota resolvida não depende de
+      // nada que só a mensagem diga, então ler a página primeiro custaria uma ida ao Chatwoot por eco,
+      // em toda instalação com um provedor desses.
+      expect(calls.slice(before)).toEqual([]);
+    });
+
+    // E A MESMA FORMA NUM PROVEDOR QUE RESERVA OS IDS É UMA PESSOA, que é a outra metade da fronteira:
+    // ali o eco tem id nosso e não chega aqui, então uma `device` é o colega digitando no telefone.
+    test("the same shape on a reserving provider is a colleague at the paired phone", async () => {
+      const convId = 9103;
+      pages.set(convId, [restDeviceReply(702, "Já estou indo aí.")]);
+      const rowId = await seedStranded(convId, {
+        shape: "device",
+        messageId: 702,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      expect(jobs.map((j) => j.payload.messageId)).toContain(702);
+    });
+
+    // A ROTA QUE NÃO LEMBRA NADA NÃO PERDEU NADA (a ressalva que a coluna não resolve). Uma inbox em
+    // modo `test` deixa `route_remembers = false` na linha, que é EXATAMENTE a assinatura de uma
+    // ingestão que falhou. Nada na linha separa as duas histórias, então a pergunta não é feita à
+    // linha: é feita ao agente, agora, do jeito que o receptor a faz.
+    test("a route that remembers nothing is not a loss to recover", async () => {
+      const convId = 9104;
+      pages.set(convId, [restComposerReply(703, "Testando por aqui.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 703,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 703)).toBe(false);
+    });
+
+    // A PERDA PERMANENTE NÃO VIRA REARME. Uma conversa que nem o payload nem o espelho sabem nomear um
+    // contact-inbox não tem onde guardar a resposta: o receptor já relatou isso como a perda definitiva
+    // que é, e uma recuperação armada mesmo assim não tem por onde chavear o thread.
+    test("a conversation with no contact-inbox thread is not retried forever", async () => {
+      const convId = 9105;
+      pages.set(convId, [restComposerReply(704, "Te mando por aqui.")]);
+      const rowId = await seedStranded(convId, {
+        messageId: 704,
+        contactInboxId: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(
+        await ingestArmedOn(
+          chatwootThreadId(tenantId, instanceId, convId),
+          704,
+        ),
+      ).toBe(false);
+    });
+
+    // A CERCA DA LEITURA DEGRADADA, que espelha a `rebuiltInbound` da recuperação vizinha. A linha é a
+    // prova de que aquilo FOI resposta de colega; uma releitura que volta como outra coisa descreve uma
+    // resposta REST que perdeu um campo — um `message_type` ausente normaliza para "other" —, e passar
+    // isso adiante appenda na memória permanente do contato palavras que ninguém escreveu.
+    test("a degraded REST read is refused instead of appended", async () => {
+      const convId = 9106;
+      pages.set(convId, [
+        { ...restComposerReply(705, "Confirmado."), message_type: undefined },
+      ]);
+      const rowId = await seedStranded(convId, { messageId: 705 });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unreachable");
+      expect(await ingestArmedFor(convId, 705)).toBe(false);
+    });
+
+    // A MENSAGEM QUE O CHATWOOT NÃO TEM MAIS é um veredito, não uma falha: apagada, ou a conversa foi.
+    // Nenhuma tentativa muda isso, e insistir gastaria a escada até a dead-letter sobre nada.
+    test("a message Chatwoot no longer has is a verdict, not a retry", async () => {
+      const convId = 9107;
+      pages.set(convId, [restComposerReply(999, "Outra mensagem qualquer.")]);
+      const rowId = await seedStranded(convId, { messageId: 706 });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 706)).toBe(false);
+    });
+
+    // A CONTA QUE NÃO RESPONDE É ADIAMENTO. Reparável por um operador, e a próxima tentativa pode ter
+    // outra resposta — ao contrário de todo veredito acima, que pergunta as mesmas linhas a mesma coisa.
+    test("an account that cannot be read is a deferral", async () => {
+      const convId = 9108;
+      failingReads.add(convId);
+      const rowId = await seedStranded(convId, { messageId: 707 });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unreachable");
+      expect(await ingestArmedFor(convId, 707)).toBe(false);
+    });
+
+    // E A CONTA QUE RESPONDE 200 COM ALGO QUE NÃO É UMA PÁGINA também é adiamento (review r10). As
+    // duas formas que o Chatwoot responde são um array e `{ payload: [...] }`; um corpo vazio, um
+    // `{}` ou um objeto de erro renderizado com 200 é resposta que esta leitura não sabe ler, e lê-la
+    // como página VAZIA transformava uma conta degradada em veredito: a recuperação concluía que a
+    // mensagem tinha sido apagada e liquidava a linha para sempre.
+    test("an account answering with something that is not a page is a deferral", async () => {
+      const convId = 9137;
+      unusableReads.add(convId);
+      const rowId = await seedStranded(convId, { messageId: 735 });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unreachable");
+      expect(await ingestArmedFor(convId, 735)).toBe(false);
+    });
+
+    // E A PÁGINA VÁLIDA QUE NÃO TRAZ A MENSAGEM continua sendo veredito, que é a outra metade do par:
+    // o Chatwoot não tem mais aquela mensagem, e nenhuma tentativa muda isso.
+    // O ESPELHO QUE AINDA NÃO CONHECE A CONVERSA não é veredito: uma entrega que morreu antes da
+    // escrita do espelho não deixa linha, e o próximo evento naquela conversa cria uma.
+    test("a conversation the mirror has never seen is retried, not discarded", async () => {
+      const convId = 9109;
+      const rowId = await seedStranded(convId, {
+        messageId: 708,
+        mirrored: false,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unresolved");
+    });
+
+    // E A LINHA QUE NÃO NOMEIA RESPOSTA NENHUMA não ganha recuperação por estar encalhada. É a leitura
+    // tentadora deste conserto — "linha de `message_created` parada, vamos reler a mensagem" — e ela
+    // varreria para dentro a saída do nosso próprio bot, a nota privada e a reação, que são as três
+    // coisas que `human_reply_message_id` fica NULO para manter fora por construção.
+    test("a row that names no reply gets no recovery", async () => {
+      const convId = 9110;
+      pages.set(convId, [restComposerReply(709, "não deveria ser lido")]);
+      const rowId = await seedStranded(convId, {
+        messageId: null,
+        shape: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 709)).toBe(false);
+    });
+
+    // A ROTA DA ENTREGA DECIDE DE QUEM É A MEMÓRIA, não a inbox (review r1). O Chatwoot entrega a
+    // mesma mensagem ao bot da inbox E ao observador ligado nela, então um encalhe pode ser de
+    // qualquer uma das duas rotas, e só a linha diz qual. Lida como a do respondedor, a perda do
+    // observador era descartada toda vez que o respondedor estivesse em `test` ou desligado — em
+    // silêncio, e para sempre, porque nada revisita a linha.
+    test("a watcher's lost append is recovered under the watcher, not the inbox's responder", async () => {
+      const convId = 9114;
+      pages.set(convId, [restComposerReply(713, "Já separei o seu pedido.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 713,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      // E SOB O AGENTE DA ROTA: o append armado sob o respondedor iria para a compactação e para a
+      // contabilidade do agente errado.
+      expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
+      // E O MODO DO OBSERVADOR NÃO FOI PERGUNTADO: `monitoring` não é `production`, e uma cerca que
+      // exigisse produção aqui recusaria exatamente a rota que devia o append.
+      expect(jobs[0]?.payload.messageId).toBe(713);
+    });
+
+    // O PAPEL QUE A LINHA NÃO DECLAROU SE RECUPERA DA LIGAÇÃO (review r4). `route_observed` é escrito
+    // pela reivindicação, então uma entrega que encalhou ANTES dela carrega NULO — e `role-unstated`
+    // é um dos três vereditos pelos quais a varredura arma esta recuperação, ou seja, o nulo não é
+    // caso de borda aqui, é um terço do trabalho de entrada. Lido como `false`, o append perdido de
+    // um observador ao lado de um respondedor em `test` é descartado no portão do respondedor, para
+    // sempre, porque nada revisita a linha terminal: o defeito da r1 entrando pela porta que a r1
+    // deixou aberta.
+    test("an unstated role is recovered from the observer binding, not read as the responder's", async () => {
+      const convId = 9131;
+      pages.set(convId, [restComposerReply(728, "Anotado, já encaminhei.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 728,
+        routeAgentBotId: WATCHER_BOT,
+        // A entrega morreu antes da reivindicação: o papel não foi declarado.
+        routeObserved: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
+      expect(jobs[0]?.payload.messageId).toBe(728);
+    });
+
+    // E SEGURAR A CONVERSA ENCERRA A PERGUNTA, com linha de observação ou sem ela (review r9, que
+    // traz para cá a exceção das rodadas 8 e 11 da #476). O fork entrega também ao bot ASSINADO da
+    // conversa, e um agente que respondia esta inbox continua segurando o que lhe foi atribuído,
+    // inclusive depois de virar observador. `observerRuntimeForRoute` recusa chamar essa rota de
+    // observadora sempre que a inbox tem respondedor próprio; recuperada como do observador, ela
+    // folhearia memória numa rota que o caminho ao vivo resolve para o respondedor da inbox — em
+    // `test`, que não lembra nada.
+    test("a conversation the route's own bot holds is not an observer's route", async () => {
+      const convId = 9136;
+      pages.set(convId, [
+        restComposerReply(734, "Ninguém devia lembrar disto."),
+      ]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 734,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: null,
+        // O próprio bot da rota segura a conversa.
+        assigneeId: WATCHER_BOT,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 734)).toBe(false);
+    });
+
+    // E A LIGAÇÃO MAIS NOVA QUE A ENTREGA NÃO É EVIDÊNCIA (review r6), que é a regra que o próprio
+    // subsistema já escreve para a outra evidência a posteriori: "bot equality is evidence about the
+    // role only while the binding is OLDER than the delivery". Um agente anexado como observador
+    // DEPOIS de a mensagem chegar não diz nada sobre a rota em que ela chegou, e a varredura roda
+    // meia hora depois, então essa janela é real.
+    test("an observer binding younger than the delivery is not evidence of the role", async () => {
+      const convId = 9133;
+      const LATE_INBOX_ID = 96;
+      pages.set(convId, [restComposerReply(731, "Chegou antes da ligação.")]);
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: LATE_INBOX_ID,
+          name: `WhatsApp ${LATE_INBOX_ID}`,
+          provider: "baileys",
+          agentId: testAgentDbId,
+        },
+        select: { id: true },
+      });
+      // A ligação nasce AGORA; a entrega é de quarenta minutos atrás.
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: watcherAgentDbId },
+      });
+      const rowId = await seedStranded(convId, {
+        inboxId: LATE_INBOX_ID,
+        messageId: 731,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 731)).toBe(false);
+    });
+
+    // E O ESPELHO QUE CONHECE A CONVERSA E NÃO A INBOX É UM TERCEIRO ESTADO (review r6). Um evento
+    // cujo payload não nomeia inbox cria a linha com `inbox_id` nulo, e um evento posterior a
+    // preenche. Dobrado no "sem rota" do vizinho, isso virava `not-owed` — terminal, com a resposta
+    // nunca relida, num espelho que o Chatwoot completaria um minuto depois.
+    test("a mirrored conversation with no inbox yet is retried, not discarded", async () => {
+      const convId = 9134;
+      pages.set(convId, [restComposerReply(732, "O espelho ainda não sabe.")]);
+      const rowId = await seedStranded(convId, { messageId: 732 });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: convId },
+        data: { inboxId: null },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unresolved");
+      expect(await ingestArmedFor(convId, 732)).toBe(false);
+    });
+
+    // E O CONTROLE DA MESMA PERGUNTA: o mesmo nulo, o mesmo respondedor em `test`, e um bot que NÃO
+    // observa esta inbox. Aí não há observador a quem a perda pertença, a rota é a do respondedor, e
+    // o veredito volta a ser `not-owed`. Sem este par, a correção acima passaria também se ela
+    // simplesmente tivesse parado de perguntar o modo.
+    test("an unstated role with no observer binding stays the responder's", async () => {
+      const convId = 9132;
+      pages.set(convId, [restComposerReply(729, "Ninguém devia isto.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 729,
+        // O bot do observador SILENCIOSO, ligado a outra inbox.
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 729)).toBe(false);
+    });
+
+    // E O MODO DO OBSERVADOR NÃO É PERGUNTADO, que é o que separa a leitura certa da errada. O
+    // receptor decide a rota do observador pela LINHA dele e pergunta só o interruptor — "a
+    // row-backed observer decides this whatever its mode says" (#476 review, round 19) —, então um
+    // observador cujo agente está em `test` folheia a resposta na entrega. Lido pelo modo, o append
+    // dele nunca seria recuperado, e é exatamente nessa linha que o defeito de r1 morava.
+    test("a watcher whose own agent is in test mode still had its append owed", async () => {
+      const convId = 9118;
+      pages.set(convId, [restComposerReply(716, "Anotei o pedido dela.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 716,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+        String(quietWatcherAgentDbId),
+      );
+    });
+
+    // E O OBSERVADOR SEM RESPONDEDOR NÃO PERDEU NADA (issue #620), que é a outra metade da mesma
+    // condição: numa inbox que ninguém nosso atende não há memória de respondedor para o observador
+    // dividir, então a entrega nunca ingeriu e não há o que recuperar.
+    test("a watcher with no responder beside it has nothing to recover", async () => {
+      const convId = 9115;
+      pages.set(convId, [restComposerReply(714, "Ninguém lembra disto.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: UNANSWERED_INBOX_ID,
+        messageId: 714,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 714)).toBe(false);
+    });
+
+    // E O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO RECUSA NADA (review r7/r8): o carimbo do comando é
+    // commitado por um statement anterior e independente, e o passo da memória recusa por desenho
+    // quando um turno já escreve a thread. A cerca lê a coluna que a transação da limpeza escreve,
+    // então a resposta encalhada volta para uma memória que ninguém esvaziou.
+    test("a /reset whose memory step failed does not discard the stranded reply", async () => {
+      const convId = 9135;
+      pages.set(convId, [restComposerReply(733, "Ninguém apagou isto.")]);
+      const rowId = await seedStranded(convId, { messageId: 733 });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: convId },
+        // Só o carimbo do COMANDO: a limpeza recusou.
+        data: { resetAtMessageId: 740 },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect(await ingestArmedFor(convId, 733)).toBe(true);
+    });
+
+    // A ÚNICA RECUSA AQUI QUE PROTEGE CONTRA DANO ATIVO, e não contra trabalho perdido (review r1).
+    // O `/reset` limpa a memória e, dentro da mesma seção crítica, revoga todo `INGEST_MESSAGE` da
+    // thread — justamente porque um append com texto de antes reconstruiria o que o operador acabou
+    // de mandar apagar. Ele não tem como revogar ESTE job: a recuperação é de um kind próprio,
+    // armada antes do comando e rodando depois dele, e apagar a thread leva junto a dedup do append,
+    // então nada rio abaixo pegaria a duplicata.
+    test("a reply cleared by a /reset is not restored into the cleared memory", async () => {
+      const convId = 9116;
+      pages.set(convId, [restComposerReply(715, "Texto de antes do reset.")]);
+      const rowId = await seedStranded(convId, {
+        messageId: 715,
+        resetAtMessageId: 720,
+      });
+      const before = calls.length;
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 715)).toBe(false);
+      // E SEM IR AO CHATWOOT: numa conversa já limpa, a leitura da página é uma chamada por resposta
+      // encalhada de um episódio inteiro, e a resposta não depende de nada que só a mensagem diga.
+      expect(calls.slice(before)).toEqual([]);
+    });
+
+    // O RESET QUE CHEGA DURANTE A LEITURA, que é a única janela que a segunda pergunta enxerga. A
+    // primeira é feita antes de uma ida ao Chatwoot, e um `/reset` dentro daquela ida deixa a
+    // decisão apoiada num estado que já não existe — a memória foi limpa e os `INGEST_MESSAGE`
+    // revogados, e este append entraria depois de tudo isso.
+    test("a /reset that lands during the REST read still stops the append", async () => {
+      const convId = 9119;
+      pages.set(convId, [restComposerReply(717, "Texto que o reset alcança.")]);
+      const rowId = await seedStranded(convId, { messageId: 717 });
+      resetDuringRead.set(convId, async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: convId },
+          data: {
+            resetAtMessageId: 719,
+            memoryClearedAtMessageId: 719,
+          },
+        });
+      });
+
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("not-owed");
+        expect(await ingestArmedFor(convId, 717)).toBe(false);
+      } finally {
+        resetDuringRead.delete(convId);
+      }
+    });
+
+    // E A FRONTEIRA É ORDENADA, não um interruptor: uma resposta ACIMA da marca é do episódio novo
+    // e continua sendo recuperada. Uma cerca que recusasse toda conversa já resetada alguma vez
+    // trocaria um defeito pelo outro.
+    test("a reply newer than the reset boundary is still recovered", async () => {
+      const convId = 9117;
+      pages.set(convId, [restComposerReply(730, "Texto depois do reset.")]);
+      const rowId = await seedStranded(convId, {
+        messageId: 730,
+        resetAtMessageId: 720,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect((await ingestJobs(convId))[0]?.payload.messageId).toBe(730);
+    });
+
+    // O RESET É DA THREAD, NÃO DA CONVERSA (review r2). O `/reset` limpa a memória por
+    // CONTACT-INBOX — apaga a linha de `agent_threads` e os resumos chaveados por ela — e carimba
+    // `reset_at_message_id` na única conversa em que o comando foi digitado. Um contato que escreveu
+    // duas vezes no mesmo canal tem duas conversas dividindo uma thread, então um reset na mais NOVA
+    // apaga a memória a que a resposta encalhada da antiga pertence e deixa a linha antiga sem
+    // carimbo. Perguntando só à conversa da resposta, a cerca não vê nada e restaura texto de antes
+    // da limpeza — numa thread cuja dedup foi apagada junto, então nada rio abaixo pega a duplicata.
+    test("a /reset in a sibling conversation of the same thread still stops the append", async () => {
+      const convId = 9121;
+      const siblingId = 9122;
+      pages.set(convId, [restComposerReply(724, "Texto de antes da limpeza.")]);
+      const rowId = await seedStranded(convId, { messageId: 724 });
+      // A irmã: outra conversa, o MESMO contact-inbox, e é nela que o operador digitou o comando.
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: siblingId,
+          status: "open",
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT,
+          inboxId: (
+            await suDb.inbox.findFirstOrThrow({
+              where: { tenantId, chatwootInboxId: INBOX_ID },
+              select: { id: true },
+            })
+          ).id,
+          threadId: `chatwoot:${tenantId}:${instanceId}:${siblingId}`,
+          lastEventAt: new Date(),
+          contactInboxId: 91_000 + convId,
+          resetAtMessageId: 726,
+          memoryClearedAtMessageId: 726,
+        },
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 724)).toBe(false);
+    });
+
+    // O APPEND QUE JÁ NÃO PODE POUSAR DIZ ISSO, em vez de terminar dizendo que deu certo (review
+    // r2). A thread lembra os últimos `INGEST_ID_WINDOW` ids por direção e, com a janela SATURADA,
+    // um id abaixo do piso é `ancient`: `ingestMessageIntoThread` recusa em vez de apendar, e recusa
+    // com SUCESSO — o job completa, a linha some no DONE, e as palavras ficam permanentemente
+    // ausentes com tudo no sistema dizendo que a recuperação funcionou.
+    //
+    // E O QUE SE RELATA É INCERTEZA, não perda (review r5), pelo motivo que este teste não consegue
+    // montar de outro jeito: o estado que ele monta é EXATAMENTE o mesmo que uma entrega que armou a
+    // ingestão e morreu antes de liquidar deixa depois de 64 mensagens de atendente — o id fora da
+    // janela, a resposta na memória. Não há teste que separe os dois porque não há banco que os
+    // separe, e é daí que sai o nome do desfecho: relatado como perda, esta linha manda um operador
+    // redigitar palavras que podem já estar lá.
+    test("a reply older than the thread's whole memory is reported as undecidable, not as lost", async () => {
+      const convId = 9123;
+      pages.set(convId, [restComposerReply(700, "Velha demais para voltar.")]);
+      const rowId = await seedStranded(convId, { messageId: 700 });
+      // A janela cheia, toda acima do id perdido: é a forma que 64 respostas de atendente na mesma
+      // contact-inbox deixam enquanto a linha esperava pela varredura.
+      await suDb.agentThread.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId: 91_000 + convId,
+          threadId: `${tenantId}:${instanceId}:ci:${91_000 + convId}`,
+          recentAgentMessageIds: Array.from({ length: 64 }, (_, i) => 900 + i),
+        },
+      });
+
+      const before = calls.length;
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("undecided");
+      expect(await ingestArmedFor(convId, 700)).toBe(false);
+      // E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo (verificador,
+      // rodada 2). Sem isto, a única linha nomeando esta mensagem continua sendo
+      // `human_reply_not_remembered`, escrita pelo receptor no instante da perda — e aquela razão diz
+      // o OPOSTO do que é verdade agora: que a perda é transitória e que uma retentativa vem aí.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      const linhas = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "memory" },
+        select: { level: true, detail: true },
+      });
+      expect(
+        linhas.map((l) => ({
+          level: l.level,
+          reason: (l.detail as { reason?: string } | null)?.reason ?? null,
+        })),
+      ).toEqual([
+        { level: "error", reason: "human_reply_recovery_undecidable" },
+      ]);
+      // E SEM IR AO CHATWOOT: a janela é lida antes da rede, e `ancient` é um dos dois desfechos que
+      // uma varredura de backlog produz em massa.
+      expect(calls.slice(before)).toEqual([]);
+    });
+
+    // E A QUE JÁ ESTÁ NA MEMÓRIA NÃO GASTA JOB NENHUM, que é a outra ponta da mesma leitura: uma
+    // linha que encalhou DEPOIS de o append ter pousado não perdeu nada, e armar a ingestão dela
+    // seria pagar um job para o `ingestVerdict` recusar do outro lado.
+    test("a reply already in the thread's memory is not queued again", async () => {
+      const convId = 9124;
+      pages.set(convId, [restComposerReply(725, "Esta já entrou.")]);
+      const rowId = await seedStranded(convId, { messageId: 725 });
+      await suDb.agentThread.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId: 91_000 + convId,
+          threadId: `${tenantId}:${instanceId}:ci:${91_000 + convId}`,
+          recentAgentMessageIds: [725],
+        },
+      });
+      const before = calls.length;
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 725)).toBe(false);
+      // Nem esta: a resposta já está na memória e a página não decide nada disso.
+      expect(calls.slice(before)).toEqual([]);
+    });
+
+    // UMA RAJADA, E AS TRÊS VOLTAM. Este teste não veio do holdout: os onze cenários selados são
+    // todos de mensagem única, e a lacuna foi apontada pelo verificador DEPOIS do selo, então ele não
+    // é cego ao conserto e está declarado como tal no corpo da PR.
+    //
+    // O risco que ele cobre é concreto: uma pessoa manda três mensagens seguidas e o scheduler está
+    // fora do ar para as três. Uma recuperação chaveada pela CONVERSA, ou pela thread, recuperaria
+    // uma e liquidaria as outras duas em silêncio — e silêncio é a coisa exata que esta issue existe
+    // para tirar. O que impede isso é a linha do ledger ser por ENTREGA e nomear UMA mensagem, e o
+    // append ser chaveado por `ingest:<thread>:<messageId>`, que nomeia um append e não uma conversa.
+    test("a burst of three lost replies comes back as three appends", async () => {
+      const convId = 9120;
+      const ids = [721, 722, 723];
+      pages.set(
+        convId,
+        ids.map((id) => restComposerReply(id, `parte ${id} da resposta`)),
+      );
+      const rows = [];
+      for (const [i, id] of ids.entries()) {
+        // A conversa é uma só e as linhas são três, que é a forma da rajada: `mirrored: false` a
+        // partir da segunda diz ao seed para não recriar o espelho, não que ele não exista.
+        rows.push(
+          await seedStranded(convId, {
+            messageId: id,
+            ...(i === 0 ? {} : { mirrored: false }),
+          }),
+        );
+      }
+
+      for (const rowId of rows) {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: rowId,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+      }
+
+      const jobs = await ingestJobs(convId);
+      // TRÊS APPENDS DISTINTOS, nomeados pelas três mensagens: uma chave por conversa deixaria um
+      // job só, com o texto do último a escrever, e os outros dois sumiriam sem erro nenhum.
+      expect(jobs.map((j) => j.payload.messageId).sort()).toEqual(ids);
+      expect(new Set(jobs.map((j) => j.dedupeKey)).size).toBe(3);
+      expect(jobs.map((j) => j.text).sort()).toEqual(
+        ids.map((id) => `parte ${id} da resposta`),
+      );
+    });
+
+    // E A ROTA DO RESPONDEDOR RESOLVE PELA INBOX, NÃO PELO BOT (review r3). As duas rotas do receptor
+    // não são simétricas: `responder` sai de `inboxAgentRuntime(…, n.inboxId, …)` e `watcher` de
+    // `observerRuntimeForRoute(…, params.agentBotId, …)`. O Chatwoot entrega a mensagem ao bot
+    // ATRIBUÍDO à conversa e ao da inbox, então numa conversa que o bot de outra persona mantém o
+    // `route_agent_bot_id` nomeia aquela persona enquanto a ingestão correu sob o respondedor da
+    // inbox. Perguntando pelo bot nas duas rotas, um agente atribuído em `test` descarta um append
+    // que o respondedor em produção devia.
+    test("a responder route resolves through the inbox, not the assigned bot", async () => {
+      const convId = 9126;
+      pages.set(convId, [
+        restComposerReply(727, "Sob o respondedor da inbox."),
+      ]);
+      const rowId = await seedStranded(convId, {
+        messageId: 727,
+        // A inbox é a 70 (respondedor em produção); o bot que trouxe a entrega é o do agente em
+        // `test`, que é o que uma conversa mantida por outra persona produz. A rota NÃO é observada.
+        routeAgentBotId: TEST_BOT,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      // Sob o agente da INBOX, e não sob o do bot atribuído.
+      expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+        String(agentDbId),
+      );
+    });
+
+    // DUAS ROTAS, UMA MENSAGEM, UM APPEND. O Chatwoot entrega a mesma mensagem ao bot da inbox e ao
+    // observador ligado nela, então uma resposta perdida numa inbox observada deixa DUAS linhas de
+    // ledger nomeando o mesmo id — e a varredura arma uma recuperação para cada. O que impede o
+    // dobro é a chave do append: `ingest:<thread>:<messageId>` nomeia UM append, o thread é o do
+    // contact-inbox (não o da conversa) e `rearm: "same-work"` mantém uma linha viva por chave.
+    //
+    // O QUE ISSO NÃO RESOLVE, e está medido aqui em vez de afirmado: o re-arme SUBSTITUI o payload,
+    // então `agentId` e `compactionEnabled` acabam sendo os da última recuperação a escrever. Medido
+    // no job de ingestão, o `agentId` tem um consumidor só — `armCompaction`, no `onAttendanceClosed`
+    // — e o job de compactação lê do agente apenas `settings`, nunca `enabled` nem `mode`. Então o
+    // pior caso é um resumo não armado naquele fechamento, não uma palavra perdida nem uma memória
+    // sob o agente errado. O mecanismo é herdado do receptor (as duas entregas ao vivo fazem o
+    // mesmo, desde a #194) e a varredura o torna comum em vez de raro, o que é issue própria: o
+    // conserto — o append pertencer ao dono da memória — vale nos dois caminhos, e aplicá-lo só aqui
+    // divergiria do receptor no caso da conversa mantida pelo bot de outra persona.
+    test("two ledger rows for one message produce one append", async () => {
+      const convId = 9125;
+      pages.set(convId, [restComposerReply(726, "Uma resposta, duas rotas.")]);
+      const respondedora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 726,
+      });
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 726,
+        mirrored: false,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: respondedora,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: observadora,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+
+      // UM append, não dois: a chave é da mensagem e não da entrega.
+      const jobs = await ingestJobs(convId);
+      expect(jobs.map((j) => j.dedupeKey)).toEqual([
+        `ingest:${tenantId}:${instanceId}:ci:${91_000 + convId}:726`,
+      ]);
+      // E o texto é o mesmo pelas duas rotas, que é o que faz a substituição ser inofensiva para o
+      // conteúdo: cada recuperação relê a mesma mensagem e renderiza com o mesmo renderizador.
+      expect(jobs[0]?.text).toContain("Uma resposta, duas rotas.");
+    });
+
+    // O QUE O JOB FAZ COM CADA DESFECHO, que é onde os vereditos e os adiamentos se separam na
+    // prática. Um veredito repetido gasta a escada até a dead-letter e anuncia uma perda que não
+    // existe; um adiamento tratado como veredito descarta em silêncio a resposta que uma segunda
+    // tentativa salvaria — e a segunda tentativa é a razão de este job existir.
+    test("the job retries what can change and settles what cannot", async () => {
+      registerHumanReplyRecoveryHandler();
+      const handler = getJobHandler("HUMAN_REPLY_RECOVERY");
+      if (!handler) throw new Error("handler não registrado");
+
+      // The verdict is reached WITHOUT the network on all three, deliberately: the handler builds
+      // its own client, so a case that needs a REST read would be measuring SafeFetch here instead
+      // of the mapping this test is about. The `test`-mode route refuses before any call, and the
+      // unreadable account is the account itself being unreachable.
+      const settled = await seedStranded(9111, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 710,
+      });
+      const unreadable = await seedStranded(9112, { messageId: 711 });
+      const unmirrored = await seedStranded(9113, {
+        messageId: 712,
+        mirrored: false,
+      });
+
+      const run = async (rowId: bigint) =>
+        (
+          await handler(
+            {
+              id: 1n,
+              tenantId,
+              kind: "HUMAN_REPLY_RECOVERY",
+              payload: { deliveryRowId: String(rowId) },
+              attempts: 0,
+            } as never,
+            appDb,
+          )
+        ).outcome;
+
+      expect(await run(settled)).toBe("done");
+      expect(await run(unreadable)).toBe("fail");
+      expect(await run(unmirrored)).toBe("fail");
+      // E UM PAYLOAD QUE ESTE PROCESSO NÃO SABE LER nunca vira legível: `done`, não `fail`, porque
+      // repetir só adia a dead-letter sem mudar a resposta.
+      expect(
+        (await handler({ id: 2n, tenantId, payload: {} } as never, appDb))
+          .outcome,
+      ).toBe("done");
+    });
+  },
+);

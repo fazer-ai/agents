@@ -199,6 +199,7 @@ export function isScoped(reader: Reader, scoping: Scoping): boolean {
 const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
+  "tests/graph/ingest.test.ts": 2,
   "tests/graph/nudge.test.ts": 3,
   "tests/graph/runtime.test.ts": 12,
   "tests/graph/side-effect-flowlog.test.ts": 1,
@@ -232,6 +233,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // colleague's reply nobody remembered, and its absence on the customer's own lost ingestion, which
   // is what keeps the widened report from naming the wrong message.
   "tests/modules/human-agent-ingest.test.ts": 1,
+  // A recuperação da resposta de um colega lê a linha que diz que ela NÃO volta mais
+  // (`human_reply_recovery_gone`), que é o único registro durável daquele desfecho (issue #728).
+  "tests/modules/chatwoot-recover-human-reply.test.ts": 1,
   "tests/modules/memory-compaction.test.ts": 3,
   "tests/modules/memory-dead-letter.test.ts": 1,
   "tests/modules/observe-job.test.ts": 1,

@@ -104,12 +104,25 @@ export type StrandedVerdict =
   // reply carries the shape and owes the takeover there, so this row owes nothing at all; on an
   // inbox nobody of ours answers, there is no takeover to owe and no responder to hand back to.
   //
-  // What it DID owe is the observer's ingestion — the colleague's reply folded into the memory the
-  // observer keeps — and that cannot be recovered from here: the payload is never stored (issue
-  // #228) and the delivery recovery needs a customer message id to anchor on, which a colleague's
-  // reply has by construction not got. So the row is terminal like its neighbours and the gap is
-  // REPORTED rather than replayed: on an observer-only inbox the observer's memory is the only one
-  // there is, and a hole in it that nothing names is the silence this sweep exists to remove.
+  // What it DID owe, WHERE IT OWED ANYTHING, is the observer's ingestion — the colleague's reply
+  // folded into the memory the observer keeps. Two corrections to what stood here, and they pull in
+  // opposite directions.
+  //
+  // It owes LESS than this said: beside no responder of ours, the route folds nothing in at all
+  // (issue #620), and the claim records exactly that as `route_remembers = false`. Measured on this
+  // tree: `routeRemembers` asks `responderRt !== null` on a watcher's route, and `routeIngests` is
+  // its only reader on an outgoing delivery — `handedToObserver` is written by a turn that stood
+  // down, which an outgoing has none of. So on an observer-only inbox the ingestion never ran, and
+  // nothing was lost to recover.
+  //
+  // And where it DOES owe — the watcher beside a responder, sharing that responder's memory — it is
+  // now recoverable, which this used to deny outright (issue #728). The denial rested on the
+  // DELIVERY recovery's anchor, and that is a fact about that recovery rather than about the row:
+  // the ledger has named the reply since issue #469 (`humanReplyMessageId`, written at INSERT for
+  // the takeover's fence), so a recovery that only needs the words reads them back by id
+  // (./recover-human-reply.ts). The row stays terminal like its neighbours — `DEAD` is the worklist
+  // of customers nobody answered, and a colleague's reply belongs on no such list — and the memory
+  // job is armed beside it.
   | "observer-strand"
   // Stranded carrying a colleague's reply on a route NOTHING EVER NAMED (issue #540, window 2). The
   // process died between the INSERT and the claim, and this build writes `claimedAt` and

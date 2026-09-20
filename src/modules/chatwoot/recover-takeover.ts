@@ -23,13 +23,20 @@ import { isHumanReplyShape } from "./stranded-delivery";
 // that steps the agent off the conversation (issue #430).
 //
 // WHY NOT THE DELIVERY PATH, which is what the other recovery does and is the obvious answer here
-// too. That path takes a webhook body, and the body of an OUTGOING message is the one thing the
-// ledger cannot rebuild: `buildRecoveryPayload` reads the message over REST by its id, and the id of
-// an outgoing message is deliberately not stored (only a new INCOMING one is — see the ledger's
-// `inboundMessageId`). Rebuilding a body with a synthetic message would then drive the continuous
-// ingestion with content nobody wrote, into the contact's permanent memory. So this runs the
-// takeover itself, through the same unit the live delivery runs (./human-takeover.ts) — not a second
-// implementation of it, which is the defect this repo keeps paying for.
+// too. Not because the body cannot be rebuilt — that is what this paragraph used to say, and it was
+// wrong about its own neighbour: the ledger names the reply in `humanReplyMessageId`, written at
+// INSERT since issue #469 for the very fence a few lines below, so `buildRecoveryPayload` can read
+// an outgoing message back over REST exactly as it reads an incoming one, and issue #728 does that
+// to recover the memory append this delivery also lost.
+//
+// The reason is what the delivery path WOULD DO with it. It re-runs the takeover, the ownership
+// gates and, on a creation, a turn — and what is owed here is one effect, the status transition. A
+// conversation an operator handed back to the bot while the row sat stranded would be taken away
+// from it again, which is the defect issue #469 exists to prevent, bought with the fix. So this runs
+// the takeover itself, through the same unit the live delivery runs (./human-takeover.ts) — not a
+// second implementation of it, which is the defect this repo keeps paying for — and the memory half
+// has a job of its own beside it (./recover-human-reply.ts), for the same reason read the other way:
+// neither effect's refusal is a verdict about the other.
 //
 // NO MODEL AND NO ALERT, which is the whole reason the sweep needed a verdict of its own for it. The
 // alternative on the table was to classify these rows `lost`, and that is wrong in both directions

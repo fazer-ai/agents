@@ -14,6 +14,7 @@ import {
   registerDeliverySweepHandler,
 } from "@/modules/chatwoot/delivery-sweep";
 import { registerDeliveryRecoveryHandler } from "@/modules/chatwoot/recover-delivery";
+import { registerHumanReplyRecoveryHandler } from "@/modules/chatwoot/recover-human-reply";
 import { registerTakeoverRecoveryHandler } from "@/modules/chatwoot/recover-takeover";
 import { registerDebounceHandler } from "@/modules/debounce/handler";
 import {
@@ -183,6 +184,7 @@ if (config.schedulerWorker.enabled) {
   registerDeliverySweepHandler();
   registerDeliveryRecoveryHandler();
   registerTakeoverRecoveryHandler();
+  registerHumanReplyRecoveryHandler();
   registerSpendPollHandler();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a

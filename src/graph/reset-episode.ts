@@ -32,6 +32,15 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 //
 // AT OR BELOW, not below: the command's own message carries the boundary, and a turn answering that
 // same id would be a turn on the command itself.
+//
+// AND THE BOUNDARY IS NOT PROOF THAT THE MEMORY WAS CLEARED, which every reader of it assumes and
+// none of them checks (issue #728, review r7). The command writes this column in its own statement
+// and clears the memory in a LATER step, and that step refuses by design when a turn is already
+// invoking — `step()` catches it, the acknowledgement names what did not clear, and the column stays
+// where it was put. A message at or below it is then refused by all four fences (this one, the
+// debounce watermark, the observe tick and the ingestion append) on the strength of a clearing that
+// did not happen. Closing it belongs to the COLUMN rather than to any one reader: a fifth semantics
+// for the same field would be worse than the defect. Measured and written up as its own issue.
 export function resetLandedAfter(
   triggerMessageId: number | null,
   resetAtMessageId: number | null,
@@ -41,6 +50,56 @@ export function resetLandedAfter(
   // test), and the fence has nothing to order.
   if (triggerMessageId === null) return false;
   return triggerMessageId <= resetAtMessageId;
+}
+
+// THE EPISODE BOUNDARY OF THE THREAD, WHICH IS NOT THE BOUNDARY OF ONE CONVERSATION (review r2, and
+// r4 for the second caller).
+//
+// `/reset` clears the memory by CONTACT-INBOX — `clearContactMemory` deletes the `AgentThread` row
+// and the attendance summaries keyed by it — and stamps `reset_at_message_id` on the single
+// conversation the command was typed in (`WHERE id = ctx.conv.id`). A contact who wrote on the same
+// channel twice has two conversations sharing one thread, so a reset in the NEWER one wipes the
+// memory an older conversation's message belongs to while leaving that older row unstamped. Asked of
+// the message's own conversation, the fence then sees nothing and restores text from before the
+// clear — into a thread whose dedup history was deleted with it, so nothing downstream catches the
+// duplicate either.
+//
+// The MAXIMUM across the thread's conversations, because the boundary is a fact about the MEMORY and
+// Chatwoot's ids are unique per account: a stamp on any conversation of this contact-inbox orders
+// the message the same way its own would. What that costs is a late arrival on a sibling being
+// refused by a reset it predates, which is the answer this fence exists to give.
+//
+// AND IT READS THE COLUMN THE CLEARING ITSELF WRITES (review r7/r8). `reset_at_message_id` records
+// that the operator typed the command: the command commits it in an earlier, independent statement,
+// and the memory-clearing step that follows refuses by design when a turn is already writing the
+// thread, so that column can name a boundary whose memory was never emptied. Every append refused on
+// the strength of it would then be a colleague's reply dropped from a memory nobody cleared.
+// `memory_cleared_at_message_id` is written inside the transaction that deletes the thread, the
+// summaries and the checkpoint, so it cannot exist without them.
+//
+// A conversation cleared before that column existed carries null and is not fenced, which is the
+// permissive side on purpose: the fence exists to stop a restore, and there is nothing to restore
+// into a memory this process never saw cleared.
+export async function threadResetBoundary(
+  tenantId: bigint,
+  instanceId: bigint,
+  contactInboxId: number,
+  base: PrismaClient,
+): Promise<number | null> {
+  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findMany({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        memoryClearedAtMessageId: { not: null },
+      },
+      select: { memoryClearedAtMessageId: true },
+      orderBy: { memoryClearedAtMessageId: "desc" },
+      take: 1,
+    }),
+  );
+  return rows[0]?.memoryClearedAtMessageId ?? null;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {

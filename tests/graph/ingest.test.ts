@@ -21,6 +21,7 @@ import {
   ingestedMessages,
   ingestMessageIntoThread,
 } from "@/graph/ingest";
+import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
 import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
@@ -31,6 +32,7 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -193,6 +195,317 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  // O APPEND QUE A JANELA JÁ NÃO ALCANÇA RELATA DAQUI (issue #728, verificador rodada 4, medido ao
+  // vivo). Passado o piso da janela, este append é recusado — e recusado com SUCESSO, então o job
+  // completa, a linha some no DONE, e até esta linha nada em lugar nenhum dizia que as palavras não
+  // pousaram. O recuperador faz a mesma pergunta antes de armar, mas a leitura dele é minutos mais
+  // velha e não cobre a janela se mexendo no intervalo: segurando o job e saturando a janela na
+  // brecha, a mensagem ficou fora da memória com tudo verde.
+  //
+  // INDECIDÍVEL e não perdida: despejo não é ausência, e uma resposta que pousou 64 mensagens atrás
+  // lê exatamente como uma que nunca pousou.
+  test("an append the window has moved past is reported from inside the claim", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12441;
+    const convId = 896;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+        contactInboxId,
+      },
+      select: { id: true },
+    });
+    // A janela CHEIA e toda acima do id perdido, que é a forma que 64 respostas de atendente na
+    // mesma thread deixam.
+    await suDb.agentThread.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        threadId: graphThreadId,
+        recentAgentMessageIds: Array.from(
+          { length: INGEST_ID_WINDOW },
+          (_, i) => 5000 + i,
+        ),
+      },
+    });
+
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId: 4000,
+        text: "a resposta que a janela já não alcança",
+      }),
+    ).toBe("skipped");
+
+    const linhas = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "memory" },
+      select: { level: true, detail: true },
+    });
+    expect(
+      linhas.map((l) => ({
+        level: l.level,
+        reason: (l.detail as { reason?: string } | null)?.reason ?? null,
+        role: (l.detail as { role?: string } | null)?.role ?? null,
+      })),
+    ).toEqual([
+      {
+        level: "error",
+        reason: "ingest_append_undecidable",
+        role: "human_agent",
+      },
+    ]);
+
+    // E A DIREÇÃO DO CLIENTE RELATA IGUAL (verificador rodada 5, que refutou a primeira versão disto
+    // pela própria árvore). A população de mensagens do cliente que CHEGA a este append é, por
+    // construção, só a que turno nenhum cobre: silenciada por um portão (fora do horário, o gate de
+    // autorização) ou não tratada pelo bot (um humano detém a conversa, ou ela não está pendente).
+    // Em todas elas "cliente sem resposta" é o estado esperado, então a lista de perdas não mostra
+    // nada, e a entrega liquidou PROCESSED no instante em que o ARME deu certo, então o livro de
+    // entregas também não. O caso é o cliente escrevendo três vezes durante um atendimento humano.
+    await suDb.agentThread.updateMany({
+      where: { tenantId, contactInboxId },
+      data: {
+        recentSyncedMessageIds: Array.from(
+          { length: INGEST_ID_WINDOW },
+          (_, i) => 5000 + i,
+        ),
+      },
+    });
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "customer" as const,
+        messageId: 4001,
+        text: "a mensagem do cliente que a janela já não alcança",
+      }),
+    ).toBe("skipped");
+    expect(
+      (
+        await flowLogRows(suDb, {
+          where: { tenantId, conversationId: conv.id, stage: "memory" },
+          select: { detail: true },
+        })
+      ).map((l) => (l.detail as { role?: string } | null)?.role ?? null),
+    ).toEqual(["human_agent", "customer"]);
+
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+  });
+
+  // A MENSAGEM ANTERIOR AO `/reset` NÃO VOLTA PARA A MEMÓRIA QUE O COMANDO LIMPOU (issue #728 review,
+  // round 3).
+  //
+  // O comando apaga a thread e, dentro da sua seção crítica, revoga todo `INGEST_MESSAGE` dela,
+  // porque um append com texto de antes reconstrói o que o operador acabou de mandar apagar. O que
+  // ele não revoga é o job armado DEPOIS da revogação, e existem dois: o arme do próprio receptor,
+  // que corre com o comando desde a #194, e a recuperação de uma resposta encalhada, que decide
+  // minutos antes e atravessa uma ida ao Chatwoot. Os dois perguntam a fronteira onde ela envelhece;
+  // aqui dentro ela não envelhece, porque o comando espera pela mesma reivindicação que este append
+  // segura.
+  test("a message from before a /reset is not folded back into the cleared thread", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12422;
+    const convId = 899;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId,
+        text,
+      });
+
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+        contactInboxId,
+        // O comando foi digitado na mensagem 500 E a limpeza deu certo: tudo em ou abaixo dela é do
+        // episódio anterior. As duas colunas, porque é isso que um `/reset` que limpou deixa — a
+        // cerca lê a segunda, e o teste logo abaixo é o que prova a diferença.
+        resetAtMessageId: 500,
+        memoryClearedAtMessageId: 500,
+      },
+    });
+
+    // Antes da fronteira: recusado, e recusado em silêncio para quem chamou — `skipped` é o que o
+    // job de ingestão trata como sucesso, porque não há nada a retentar.
+    expect(await ingest(499, "texto de antes do reset")).toBe("skipped");
+    // A PRÓPRIA mensagem do comando também: ela carrega a fronteira.
+    expect(await ingest(500, "/reset")).toBe("skipped");
+    // Acima dela: o episódio novo, que entra normalmente.
+    expect(await ingest(501, "texto do episódio novo")).toBe("ingested");
+
+    const row = await suDb.agentThread.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
+      select: { recentAgentMessageIds: true },
+    });
+    expect(row.recentAgentMessageIds).toEqual([501]);
+
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+  });
+
+  // O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO FECHA NADA (review r7/r8). `reset_at_message_id` diz que
+  // o operador DIGITOU `/reset`: ele é commitado por um statement anterior e independente, e o passo
+  // que limpa a memória recusa por desenho quando um turno já está escrevendo a thread — a ack
+  // nomeia o que não limpou e o carimbo fica. Uma cerca apoiada nele descartaria a resposta de um
+  // colega de uma memória que ninguém esvaziou; a coluna que a transação da limpeza escreve é a que
+  // vale.
+  test("a boundary from a /reset whose memory step failed does not fence the append", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12451;
+    const convId = 895;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+        contactInboxId,
+        // O comando foi digitado, a limpeza recusou: só o primeiro carimbo existe.
+        resetAtMessageId: 700,
+      },
+    });
+
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId: 699,
+        text: "a resposta que ninguém apagou",
+      }),
+    ).toBe("ingested");
+
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+  });
+
+  // O MESMO COMANDO, DIGITADO NA CONVERSA IRMÃ (review r4). `/reset` limpa a memória por
+  // contact-inbox e carimba `reset_at_message_id` na única conversa em que foi digitado, então duas
+  // conversas do mesmo contato dividem uma thread e só uma carrega a fronteira. Perguntando à
+  // conversa da mensagem, esta cerca via null e restaurava texto de antes da limpeza — numa thread
+  // cuja dedup foi apagada junto, de modo que nada rio abaixo pegaria a duplicata.
+  test("a message from before a /reset typed in a sibling conversation is refused too", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12431;
+    const convId = 897;
+    const siblingId = 898;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId,
+        text,
+      });
+
+    for (const [id, resetAt] of [
+      [convId, null],
+      // A irmã: o mesmo contact-inbox, e é nela que o operador digitou o comando.
+      [siblingId, 600],
+    ] as const) {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: id,
+          status: "open",
+          threadId: `chatwoot:${tenantId}:${instanceId}:${id}`,
+          lastEventAt: new Date(),
+          contactInboxId,
+          ...(resetAt === null
+            ? {}
+            : {
+                resetAtMessageId: resetAt,
+                memoryClearedAtMessageId: resetAt,
+              }),
+        },
+      });
+    }
+
+    // A conversa desta mensagem NÃO tem carimbo nenhum: a fronteira é a da thread.
+    expect(await ingest(599, "texto de antes da limpeza")).toBe("skipped");
+    expect(await ingest(601, "texto do episódio novo")).toBe("ingested");
+
+    const row = await suDb.agentThread.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
+      select: { recentAgentMessageIds: true },
+    });
+    expect(row.recentAgentMessageIds).toEqual([601]);
+
+    await suDb.conversation.deleteMany({
+      where: {
+        tenantId,
+        chatwootConversationId: { in: [convId, siblingId] },
+      },
+    });
   });
 
   // A conversation can be REOPENED after another has already run on this thread — an operator picking

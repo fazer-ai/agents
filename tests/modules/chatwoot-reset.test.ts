@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 import { createHmac } from "node:crypto";
+import { join } from "node:path";
 import { HumanMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -507,6 +508,47 @@ describe.skipIf(!dbUp)(
       });
       // cancelPendingJob retires a row as DONE (its vocabulary for "this will not run").
       expect(job?.status).toBe("DONE");
+    });
+
+    // E ELE É ESCRITO ANTES DA LIMPEZA, o que este teste afirma pelo FONTE porque o comportamento
+    // que a ordem protege não é montável aqui (review r12). `clearContactMemory` apaga as linhas
+    // primeiro e o CHECKPOINT por último, de propósito: uma falha na deleção do checkpoint rola as
+    // linhas de volta. Só que o checkpoint vive em outro pool, e nenhum rollback nosso o alcança —
+    // então um statement NOSSO depois dele, falhando (um update concorrente segurando a linha da
+    // conversa até o timeout da transação escopada basta), restauraria a thread e os resumos ao lado
+    // de um checkpoint que já foi, que é exatamente o estado meio-apagado que a ordem do helper
+    // existe para impedir. Escrito antes, uma limpeza que falha leva a fronteira junto.
+    //
+    // Separar as duas ordens por observação exigiria forjar a falha DAQUELE statement, e o dano que
+    // as separa é no checkpoint, não na coluna: nos dois casos ela termina como estava. Uma asserção
+    // sobre a ordem no arquivo é o que sobra, e ela é honesta sobre o que prova.
+    test("the clear's own boundary is written before the memory is deleted", async () => {
+      const fonte = await Bun.file(
+        join(import.meta.dir, "../../src/modules/chatwoot/webhook.ts"),
+      ).text();
+      const carimbo = fonte.indexOf("SET memory_cleared_at_message_id");
+      const limpeza = fonte.indexOf("await clearContactMemory({");
+      expect(carimbo).toBeGreaterThan(0);
+      expect(limpeza).toBeGreaterThan(0);
+      expect(carimbo).toBeLessThan(limpeza);
+    });
+
+    // E O FATO DE QUE A LIMPEZA ACONTECEU fica na conversa, escrito pela transação que apagou a
+    // thread, os resumos e o checkpoint (issue #728, review r7/r8). `reset_at_message_id` registra
+    // que o operador DIGITOU o comando: ele é commitado por um statement anterior e independente, e
+    // este passo recusa por desenho quando um turno já escreve a thread, deixando a conversa com
+    // aquele carimbo e a memória intacta. A cerca da ingestão pergunta por esta coluna justamente
+    // porque ela não pode existir sem as deleções ao lado dela.
+    test("a successful clear records itself on the conversation, beside the command's own stamp", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetAtMessageId: true, memoryClearedAtMessageId: true },
+      });
+      expect(conv.memoryClearedAtMessageId).toBe(conv.resetAtMessageId);
     });
 
     // Compaction was the only queued writer of this memory when the step above was written.
@@ -2167,6 +2209,12 @@ describe.skipIf(!dbUp)(
       // The same key the reset locks on: the conversation's contact-inbox, seeded as 301.
       const graphThreadId = contactInboxThreadId(tenantId, instanceId, 301);
       markTurnInFlight(graphThreadId);
+      // ANTES, porque a conversa é compartilhada pelo arquivo e um `/reset` bem-sucedido de outro
+      // teste já pode ter carimbado a coluna: o que este teste afirma é que a recusa não a MOVE.
+      const antes = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { memoryClearedAtMessageId: true },
+      });
       const cw = fakeChatwoot();
       globalThis.fetch = cw.impl as typeof fetch;
       try {
@@ -2176,6 +2224,22 @@ describe.skipIf(!dbUp)(
           .map((c) => (c.body as { content?: string })?.content ?? "")
           .join(" ");
         expect(ack).toContain("memória");
+        // E O CARIMBO DA LIMPEZA VOLTA COM ELA (issue #728, review r12). Ele é escrito na transação
+        // deste passo e ANTES de `clearContactMemory`, justamente para ser desfeito quando o passo
+        // recusa: a cerca da ingestão o lê como prova de que a memória foi esvaziada, e uma prova
+        // que sobrevive à recusa descartaria a resposta de um colega de uma memória intacta. O
+        // carimbo do COMANDO, escrito por um statement anterior e independente, fica.
+        const conv = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          select: { resetAtMessageId: true, memoryClearedAtMessageId: true },
+        });
+        expect(conv.memoryClearedAtMessageId).toBe(
+          antes.memoryClearedAtMessageId,
+        );
+        // Enquanto o carimbo do COMANDO, escrito por um statement anterior e independente, avançou.
+        expect(conv.resetAtMessageId).toBeGreaterThan(
+          antes.memoryClearedAtMessageId ?? 0,
+        );
       } finally {
         clearTurnInFlight(graphThreadId);
         globalThis.fetch = originalFetch;

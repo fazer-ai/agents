@@ -754,14 +754,15 @@ describe.skipIf(!dbUp)(
       expect(await linhasDeMemoria(await convRowId(convId))).toEqual([]);
     });
 
-    // E A ENTREGA AINDA ASSIM LIQUIDA, que é a metade do desenho que um conserto vizinho desfaria
-    // (issue #720). A tentação é lançar, como a #719 fez para a mensagem do cliente, e ali aquilo
-    // compra a recuperação: a varredura replaya a entrega e a ingestão é re-armada. Para a resposta
-    // de um colega não compra nada. A linha é classificada `owed-takeover` (ou `observer-strand`), e
-    // nenhum dos dois re-arma ingestão nenhuma: o primeiro re-roda só a transição de posse, o segundo
-    // só relata. Prender a linha em PROCESSING custaria um job de takeover redundante e um `DEAD` no
-    // fim, sem salvar uma palavra — e é por isso que o relato acima é a resposta, e não o lançamento.
-    test("a colleague's reply whose ingestion fails still settles the delivery", async () => {
+    // E A ENTREGA DEIXA DE LIQUIDAR (issue #728), que é a metade do desenho que a #720 decidiu ao
+    // contrário e disse por quê: "para a resposta de um colega não compra nada", porque nem
+    // `owed-takeover` nem `observer-strand` re-armavam ingestão nenhuma. Passaram a re-armar, e a
+    // premissa daquela frase caiu: a linha guarda `human_reply_message_id` desde a #469, então a
+    // mensagem pode ser relida por id e folheada. Prender a linha em PROCESSING é o que a põe na
+    // frente da varredura, que é a única coisa que roda DEPOIS do blip do scheduler — e por isso o
+    // lançamento é a resposta, e não um arme aqui mesmo, que usaria o enfileiramento que acabou de
+    // falhar quatro vezes.
+    test("a colleague's reply whose ingestion fails is left for the sweep", async () => {
       const convId = 513;
       await deliver(convId, fromCustomer("me manda quando puder"));
       const { base } = schedulerInstavel(Number.POSITIVE_INFINITY);
@@ -774,8 +775,62 @@ describe.skipIf(!dbUp)(
         { sleep: async () => {} },
       );
 
+      expect(erro ?? "a entrega nao lancou").toContain(
+        "could not be remembered",
+      );
+      expect(status).toBe("PROCESSING");
+    });
+
+    // E O `no-thread` CONTINUA LIQUIDANDO (issue #728), que é a fronteira do lançamento acima. Uma
+    // conversa que nem o payload nem o espelho sabem nomear um contact-inbox não tem onde guardar a
+    // resposta, e a releitura por id acharia o mesmo nada: prender a linha ali trocaria uma perda
+    // permanente relatada por um limbo que a varredura re-arma para sempre. É o mesmo par que a
+    // transcrição tardia tem logo ao lado — lança no `failed`, avisa no `no-thread`.
+    test("a colleague's reply with no thread to hold it still settles", async () => {
+      const convId = 516;
+      deliverySeq += 1;
+      messageSeq += 1;
+      const { id: _semThread, ...semContactInbox } = conversation(convId);
+      const n = normalizeChatwootEvent({
+        event: "message_created",
+        id: messageSeq,
+        private: false,
+        ...fromHumanAgent("Te mando por aqui mesmo."),
+        conversation: { ...semContactInbox, id: convId, contact_inbox: null },
+      });
+      if (!n) throw new Error("payload did not normalize");
+      const delivery = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `hai-${process.pid}-${deliverySeq}`,
+          event: "message_created",
+          status: "PENDING",
+        },
+        select: { id: true },
+      });
+      const erro = await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: delivery.id,
+        agentBotId: 9,
+        normalized: n,
+        base: appDb,
+      }).then(
+        () => null,
+        (e) => String(e),
+      );
+      const linha = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        select: { status: true },
+      });
+
       expect(erro).toBe(null);
-      expect(status).toBe("PROCESSED");
+      expect(linha.status).toBe("PROCESSED");
+      expect(await linhasDeMemoria(await convRowId(convId))).toContainEqual({
+        level: "error",
+        reason: "human_reply_no_thread",
+      });
     });
 
     test("a private note is not ingested", async () => {

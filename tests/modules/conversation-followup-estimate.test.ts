@@ -71,6 +71,7 @@ let convStepOptOutArmedStep1 = 0n;
 let convStepOptOutStepGone = 0n;
 let convOurReplyRestartedEpisode = 0n;
 let convRepliedAtFloorsTheCadence = 0n;
+let convGoneStepAndOurReply = 0n;
 let cadenceFloorDueAt = "";
 let convNoBotRowArmed = 0n;
 
@@ -645,6 +646,39 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     cadenceFloorDueAt = new Date(
       RESPONDIDA_AS.getTime() + 2 * 60_000,
     ).toISOString();
+
+    // Issue #750, rodada 4: os dois estados juntos. O operador encurtou a sequência (o job pendente
+    // aponta para um passo que não existe mais) E a nossa resposta abriu episódio novo. O ramo do
+    // passo inexistente responde "nada agendado", que é a resposta certa para o job velho e a errada
+    // para a conversa: a varredura vai recomeçar do passo 0 e o console tem que dizer isso.
+    const c335 = await suDb.conversation.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootConversationId: 335,
+        inboxId: stepOptOutInbox.id,
+        status: "pending",
+        assigneeType: null,
+        threadId: `${tenant}:${inst}:335`,
+        lastRepliedMessageId: 1,
+        lastInboundAt: new Date(FOLLOW_UP_AT.getTime() - 3_600_000),
+        lastFollowUpAt: FOLLOW_UP_AT,
+        lastRepliedAt: new Date(FOLLOW_UP_AT.getTime() + 5 * 60_000),
+        lastEventAt: new Date(FOLLOW_UP_AT.getTime() + 5 * 60_000),
+      },
+    });
+    convGoneStepAndOurReply = c335.id;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:335`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        // Passo 4 numa sequência de dois: o que sobra de um encurtamento.
+        payload: { threadId: `${tenant}:${inst}:335`, stepIndex: 4 },
+      },
+    });
 
     // ── A PENDING job the handler will drop at claim time (issue #72). A multi-step sequence leaves
     //    one armed between steps with runAt days out, and nothing cancels it when the ground shifts.
@@ -1247,6 +1281,17 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.nextStep).toBe(1);
     expect(d.followUp?.nextRunAt).toBe(cadenceFloorDueAt);
+  });
+
+  // Issue #750: um job de passo inexistente não pode esconder o episódio que a nossa resposta abriu.
+  test("passo encurtado E episódio novo pela nossa resposta → conta o passo 1", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convGoneStepAndOurReply,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).not.toBeNull();
   });
 
   test("the agent was disabled with a job already armed → no countdown", async () => {

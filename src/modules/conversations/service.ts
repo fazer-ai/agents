@@ -1145,7 +1145,11 @@ export async function getConversationDetail(
     // Its own arm, ahead of both others, because falling through is not the same answer: the
     // estimate arm below would offer step 1, which is a countdown for a sequence about to end.
     const jobStepGone = job != null && cfg.steps[jobStepIndex] === undefined;
-    if (jobStepGone) {
+    // ...unless that job was already superseded by an episode our own reply opened (issue #750): the
+    // sequence it belonged to is over on both counts, and the sweep is about to start a fresh step 0.
+    // Suppressing here would hide the countdown of the NEW episode behind a job from the old one,
+    // and the operator would read "nothing scheduled" for a conversation that is about to be chased.
+    if (jobStepGone && !supersededLaterStepJob) {
       nextStep = null;
     } else if (
       job &&

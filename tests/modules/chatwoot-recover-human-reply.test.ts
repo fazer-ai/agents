@@ -354,7 +354,9 @@ describe.skipIf(!dbUp)(
         // The bot the delivery arrived on, as the claim recorded it, and whether that route was a
         // watcher's (issue #476). Omitted = the inbox persona's, answering.
         routeAgentBotId?: number | null;
-        routeObserved?: boolean;
+        // `null` é o que a coluna carrega numa entrega que morreu ANTES da reivindicação: papel não
+        // declarado, que é um dos três vereditos pelos quais a varredura arma a recuperação.
+        routeObserved?: boolean | null;
         // The episode boundary a `/reset` left on the conversation (issue #447).
         resetAtMessageId?: number;
       } = {},
@@ -1013,7 +1015,14 @@ describe.skipIf(!dbUp)(
     // um id abaixo do piso é `ancient`: `ingestMessageIntoThread` recusa em vez de apendar, e recusa
     // com SUCESSO — o job completa, a linha some no DONE, e as palavras ficam permanentemente
     // ausentes com tudo no sistema dizendo que a recuperação funcionou.
-    test("a reply older than the thread's whole memory is reported as gone, not queued", async () => {
+    //
+    // E O QUE SE RELATA É INCERTEZA, não perda (review r5), pelo motivo que este teste não consegue
+    // montar de outro jeito: o estado que ele monta é EXATAMENTE o mesmo que uma entrega que armou a
+    // ingestão e morreu antes de liquidar deixa depois de 64 mensagens de atendente — o id fora da
+    // janela, a resposta na memória. Não há teste que separe os dois porque não há banco que os
+    // separe, e é daí que sai o nome do desfecho: relatado como perda, esta linha manda um operador
+    // redigitar palavras que podem já estar lá.
+    test("a reply older than the thread's whole memory is reported as undecidable, not as lost", async () => {
       const convId = 9123;
       pages.set(convId, [restComposerReply(700, "Velha demais para voltar.")]);
       const rowId = await seedStranded(convId, { messageId: 700 });
@@ -1037,7 +1046,7 @@ describe.skipIf(!dbUp)(
           base: appDb,
           makeClient,
         }),
-      ).toBe("gone");
+      ).toBe("undecided");
       expect(await ingestArmedFor(convId, 700)).toBe(false);
       // E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo (verificador,
       // rodada 2). Sem isto, a única linha nomeando esta mensagem continua sendo
@@ -1056,7 +1065,9 @@ describe.skipIf(!dbUp)(
           level: l.level,
           reason: (l.detail as { reason?: string } | null)?.reason ?? null,
         })),
-      ).toEqual([{ level: "error", reason: "human_reply_recovery_gone" }]);
+      ).toEqual([
+        { level: "error", reason: "human_reply_recovery_undecidable" },
+      ]);
       // E SEM IR AO CHATWOOT: a janela é lida antes da rede, e `ancient` é um dos dois desfechos que
       // uma varredura de backlog produz em massa.
       expect(calls.slice(before)).toEqual([]);

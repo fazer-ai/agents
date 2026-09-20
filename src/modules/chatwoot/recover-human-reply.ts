@@ -154,11 +154,18 @@ export type HumanReplyRecoveryOutcome =
   // The account could not be read, or answered with something unusable. Repairable, and the next
   // attempt may get a different answer.
   | "unreachable"
-  // The words are gone for good and the recovery says so instead of pretending (review r2). One
-  // cause today: the thread's dedup window has moved past this id, so the append the job would arm
-  // is one `ingestMessageIntoThread` refuses as `ancient` — and it refuses it SUCCESSFULLY, so the
-  // job completes and nothing anywhere says the reply never landed.
-  | "gone"
+  // NOBODY CAN TELL ANY MORE, and the recovery says that instead of guessing (review r2, narrowed in
+  // r5). The thread's dedup window has moved past this id, so the append the job would arm is one
+  // `ingestMessageIntoThread` refuses as `ancient` — SUCCESSFULLY, so a job armed anyway completes
+  // and nothing anywhere says the reply never landed.
+  //
+  // What the window CANNOT say is which of the two happened. Eviction is not absence: a delivery
+  // that crashed after arming its ingestion and before settling leaves a row exactly like this one,
+  // and its reply is already in the memory — sixty-four attendant messages later, that remembered
+  // reply reads `ancient` too. The first version of this outcome was called `gone` and told the
+  // operator the words were lost and had to be re-entered by hand, which on that path is an
+  // instruction to duplicate a message that is already there.
+  | "undecided"
   // The enqueue failed — which is the very failure this recovery exists for, happening again.
   | "failed";
 
@@ -440,7 +447,7 @@ export async function recoverStrandedHumanReply(
   if (verdict === "duplicate") return "not-owed";
   if (verdict === "ancient") {
     logger.error(
-      "chatwoot human-reply recovery: %s names message %d on conversation %d, which is older than everything that conversation's memory still remembers; the reply is lost for good and has to be re-entered by hand",
+      "chatwoot human-reply recovery: %s names message %d on conversation %d, which is older than everything that thread's memory still remembers; whether the reply reached the agent cannot be decided from here and a person has to read the conversation",
       row.deliveryId,
       messageId,
       conversationId,
@@ -449,13 +456,18 @@ export async function recoverStrandedHumanReply(
     // a process log is not durable, not queryable by conversation, and gone with the container —
     // which is the standard this repo's own reports are held to. Without this, the only line naming
     // this message stays `human_reply_not_remembered`, written by the receiver at the moment of the
-    // loss, and that reason means the OPPOSITE of what is true now: it says the loss is transient
-    // and a retry is coming. Somebody reading the conversation would wait for words that are never
-    // coming back.
+    // loss, and that reason means something this one does not: it says the loss is transient and a
+    // retry is coming. Nothing is coming; this is where the retrying stops.
     //
-    // A reason of its own, so the two are distinguishable in a query, and at `error` for the same
-    // cause the receiver's line is: this is the permanent half of a business message lost, and the
-    // only remedy left is a person putting the words back by hand.
+    // AND IT REPORTS THE UNCERTAINTY, NOT A LOSS (review r5). Eviction from the window is not
+    // evidence of absence: past the floor the set answers "I no longer carry this id", which is the
+    // same answer for a reply that never landed and for one that landed sixty-four messages ago —
+    // and the second is reachable, from a delivery that armed its ingestion and crashed before
+    // settling. Reported as a permanent loss, this line tells an operator to re-type words that may
+    // already be in the memory, which is the duplicate the whole dedup window exists to prevent.
+    //
+    // At `error` all the same, and for the level's own reason: this is the one path where the
+    // machinery stops and a person has to read the conversation to decide.
     await writeFlowEvent(
       {
         tenantId,
@@ -470,13 +482,13 @@ export async function recoverStrandedHumanReply(
         level: "error",
         status: "error",
         detail: {
-          reason: "human_reply_recovery_gone",
+          reason: "human_reply_recovery_undecidable",
           messageId,
           window: INGEST_ID_WINDOW,
         },
       },
     );
-    return "gone";
+    return "undecided";
   }
 
   let raw: unknown;
@@ -701,10 +713,10 @@ async function humanReplyRecoveryHandler(
       error: "human-reply recovery: the mirror does not know this conversation",
     };
   }
-  // `gone` COMPLETES, and that is not the same as succeeding: the loss is already reported at
-  // `error` by the line above, on the conversation and the message. Retrying it would ask a window
-  // that only moves further away, and dead-lettering would announce the same loss a second time
-  // through a channel that says "a job died" rather than "these words are gone".
+  // `undecided` COMPLETES, and that is not the same as succeeding: the uncertainty is already
+  // reported at `error` by the line above, on the conversation and the message. Retrying it would
+  // ask a window that only moves further away, and dead-lettering would announce the same thing a
+  // second time through a channel that says "a job died" rather than "a person has to look".
   return { outcome: "done" };
 }
 

@@ -7,7 +7,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { drainPendingIngest } from "@/graph/ingest-drain";
-import { armIngest, ingestHandler } from "@/graph/ingest-job";
+import { armIngest, ingestDedupeKey, ingestHandler } from "@/graph/ingest-job";
 import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
@@ -278,6 +278,199 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(
       await suDb.agentThread.count({
         where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
+      }),
+    ).toBe(0);
+  });
+
+  // THE REVOKE ORDERS ROWS AGAINST THE COMMAND (issue #736). `/reset` is not instantaneous: it waits
+  // for `withKeyedQueue('ingest:<thread>')` behind whatever ingestion is in flight, and `armIngest`
+  // does not take that queue, so a customer message landing in that stretch arms its own ingestion
+  // and is above the command by id. Unqualified, the revoke deleted it — and deleted, not retired,
+  // because INGEST_MESSAGE is JOB_DELETE_ON_DONE, so nothing afterwards says it ever existed.
+  test("revoking up to a message spares the rows above it, in every status", async () => {
+    const contactInboxId = 12_520;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const semear = async (
+      messageId: number,
+      status: "PENDING" | "CLAIMED" | "DEAD",
+    ) =>
+      suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: ingestDedupeKey(graphThreadId, messageId),
+          runAt: new Date(),
+          status,
+          payload: { messageId },
+        },
+      });
+    for (const [id, st] of [
+      [700, "PENDING"],
+      [701, "CLAIMED"],
+      [702, "DEAD"],
+      // ON the boundary, which is the command's own message: `/reset` arrives as an incoming
+      // message like any other and arms its own ingestion, and that one has to go. This is the row
+      // that separates `lte` from `lt`, and without it an off-by-one leaves the command text itself
+      // queued to be appended to the thread it just cleared.
+      [800, "PENDING"],
+      [900, "PENDING"],
+      [901, "CLAIMED"],
+      [902, "DEAD"],
+    ] as const) {
+      await semear(id, st);
+    }
+
+    const apagadas = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        revokeJobsByKeyPrefixOn(
+          db,
+          "INGEST_MESSAGE",
+          `ingest:${graphThreadId}:`,
+          800,
+        ),
+    );
+    expect(apagadas).toBe(4);
+    const restantes = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { startsWith: `ingest:${graphThreadId}:` },
+      },
+      select: { dedupeKey: true, status: true },
+      orderBy: { dedupeKey: "asc" },
+    });
+    // DEAD is spared on this side for the same reason it is taken on the other: the revoke takes
+    // DEAD because the row holds the encrypted body of a message the reset was asked to erase, and a
+    // DEAD row for a message that arrived AFTER the command holds a body it was never asked to
+    // erase — plus a dead-letter the operator may still need to read.
+    expect(restantes.map((r) => `${r.dedupeKey}=${r.status}`)).toEqual([
+      `ingest:${graphThreadId}:900=PENDING`,
+      `ingest:${graphThreadId}:901=CLAIMED`,
+      `ingest:${graphThreadId}:902=DEAD`,
+    ]);
+  });
+
+  // THE KEY DECIDES, NOT THE PAYLOAD, and the two fabricated rows below are why. `payload` is a
+  // convenience copy that a row could be missing; the key cannot be, because `ingestDedupeKey`
+  // builds it and the prefix is everything up to the message id. Deciding by the payload gets one
+  // of the two sides wrong whichever way it is written: "delete what is at or below" leaves the
+  // undecidable row BELOW the boundary holding text the reset was asked to erase, and "delete what
+  // is not provably above" deletes the undecidable row ABOVE it, which is the customer message this
+  // fence exists to save. The blind scenario set of #736 asked for both clauses in one scenario,
+  // and only the key answers both.
+  //
+  // These rows are fabricated: `armIngest` writes key and payload from the same variable, so no
+  // route produces a disagreement. What is pinned is the direction the code fails in if a second
+  // writer ever appears.
+  test("the key decides, so a payload that names no message spares nothing and loses nothing", async () => {
+    const contactInboxId = 12_522;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const semear = async (messageId: number, payload: unknown) =>
+      suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: ingestDedupeKey(graphThreadId, messageId),
+          runAt: new Date(),
+          status: "PENDING",
+          payload: payload as never,
+        },
+      });
+    // Below the boundary with nothing in the payload: goes, because the key says 700.
+    await semear(700, {});
+    // Above it with nothing in the payload: STAYS, because the key says 900. This is the clause a
+    // payload-driven fence fails, and it is the expensive half — a customer message disappearing.
+    await semear(900, {});
+    // Explicit null behaves like the absent key, and the key still answers.
+    await semear(901, { messageId: null });
+    // And when the two disagree, the key wins: this payload claims to be from before the boundary.
+    await semear(902, { messageId: 1 });
+
+    const apagadas = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        revokeJobsByKeyPrefixOn(
+          db,
+          "INGEST_MESSAGE",
+          `ingest:${graphThreadId}:`,
+          800,
+        ),
+    );
+    expect(apagadas).toBe(1);
+    const restantes = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { startsWith: `ingest:${graphThreadId}:` },
+      },
+      select: { dedupeKey: true },
+      orderBy: { dedupeKey: "asc" },
+    });
+    expect(restantes.map((r) => r.dedupeKey)).toEqual([
+      `ingest:${graphThreadId}:900`,
+      `ingest:${graphThreadId}:901`,
+      `ingest:${graphThreadId}:902`,
+    ]);
+  });
+
+  // ...AND A COMMAND THAT NAMED NO MESSAGE STILL TAKES EVERYTHING. `commandMessageId` is
+  // `params.n.message?.id ?? null`, so a reset that did not arrive as a message writes no boundary
+  // and has nothing to order rows against. The OBSERVE cancel SKIPS itself in that case, and this
+  // one must not: its job is to stop text from before the reset landing back in a cleared thread,
+  // and that duty does not depend on the command having an id. The two look alike and part here, so
+  // the asymmetry is asserted rather than left to be re-aligned by shape.
+  test("revoking with no boundary takes every row under the prefix", async () => {
+    const contactInboxId = 12_521;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    for (const [id, st] of [
+      [700, "PENDING"],
+      [901, "CLAIMED"],
+      [902, "DEAD"],
+    ] as const) {
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: ingestDedupeKey(graphThreadId, id),
+          runAt: new Date(),
+          status: st,
+          payload: { messageId: id },
+        },
+      });
+    }
+    const apagadas = await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        revokeJobsByKeyPrefixOn(
+          db,
+          "INGEST_MESSAGE",
+          `ingest:${graphThreadId}:`,
+        ),
+    );
+    expect(apagadas).toBe(3);
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: { startsWith: `ingest:${graphThreadId}:` },
+        },
       }),
     ).toBe(0);
   });

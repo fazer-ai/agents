@@ -15,7 +15,7 @@ import {
 } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
-import { armIngest } from "@/graph/ingest-job";
+import { armIngest, ingestKeyPrefix } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
@@ -3466,10 +3466,23 @@ async function maybeConsumeCommandOrGate(params: {
               // transaction would wait for a connection this one cannot release until it returns,
               // and `DB_POOL_MAX=1` is a supported setting: the reset would time out and report a
               // partial failure of the very step that had nothing wrong with it.
+              // UP TO THE COMMAND'S OWN MESSAGE (issue #736), and not past it. This step is early
+              // — before the Chatwoot client even exists — but it is not instant: the
+              // `withKeyedQueue` above waits behind whatever ingestion is in flight on this thread,
+              // and `armIngest` does not take that queue. A customer message landing in that stretch
+              // is AFTER the reset and is wanted; unqualified, this deleted it, and deleted it
+              // without trace.
+              //
+              // `commandMessageId` and not the conversation's `reset_at_message_id`: they agree here
+              // (the watermark step above writes GREATEST of the two, and this runs after it), and
+              // the command's own id is the one this call is entitled to act on. Undefined when the
+              // command named no message, which is the unqualified sweep this always was — see the
+              // parameter's own note for why that differs from the OBSERVE cancel below.
               await revokeJobsByKeyPrefixOn(
                 db,
                 "INGEST_MESSAGE",
-                `ingest:${graphThreadId}:`,
+                ingestKeyPrefix(graphThreadId),
+                commandMessageId ?? undefined,
               );
               await clearContactMemory({
                 db,

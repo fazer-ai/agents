@@ -558,10 +558,61 @@ export function jobNotRetiredSql(job: ClaimedJob): Prisma.Sql {
 // starting a second transaction there is a deadlock the moment the pool is down to its last one, and
 // `DB_POOL_MAX=1` is a supported setting. Nothing here needs a transaction of its own anyway: the
 // caller's is the one whose atomicity matters.
+// Does this key name a message ABOVE the boundary? Anything else is false, and the asymmetry is the
+// point: "above" is what SPARES a row, so a key that cannot be read does not get spared on evidence
+// nobody has. `ingestDedupeKey` makes that unreachable for the one caller with a boundary (the
+// suffix is always decimal digits), and stating the unreadable case here is what keeps a second
+// writer from inheriting a silent spare.
+//
+// Exported for the test that reads it directly: the rule is one line and the round that wrote it
+// got the direction wrong twice before landing here.
+export function aboveKeyedMessageId(
+  dedupeKey: string,
+  prefix: string,
+  atOrBelowMessageId: number,
+): boolean {
+  if (!dedupeKey.startsWith(prefix)) return false;
+  const suffix = dedupeKey.slice(prefix.length);
+  if (!/^\d+$/.test(suffix)) return false;
+  const id = Number(suffix);
+  return Number.isSafeInteger(id) && id > atOrBelowMessageId;
+}
+
 export async function revokeJobsByKeyPrefixOn(
   db: ScopedDb,
   kind: SchedulerJobKind,
   prefix: string,
+  // UP TO THIS MESSAGE, when the caller has one (issue #736). `/reset` is not instantaneous: its
+  // memory step waits for `withKeyedQueue('ingest:<thread>')` behind whatever ingestion is in
+  // flight, and `armIngest` does NOT take that queue — it calls `enqueueJob` straight through. So a
+  // customer message landing in that stretch arrives AFTER the command, arms its own ingestion, and
+  // unqualified this deleted it. The loss is silent twice over: the row is deleted rather than
+  // retired, and INGEST_MESSAGE is JOB_DELETE_ON_DONE, so afterwards "deleted by the revoke",
+  // "ingested" and "never armed" are the same zero rows.
+  //
+  // OMITTED MEANS EVERYTHING, and that is not the same choice `cancelPendingJobsByPrefixUpToMessage`
+  // makes. A command that named no message writes no boundary, and the OBSERVE cancel SKIPS itself
+  // there because a verdict with nothing to order against is better left to the tick's own fence.
+  // This one must still run: its duty is to stop text from BEFORE the reset landing back in a
+  // cleared thread, and that duty does not depend on the command having an id. The two are one line
+  // apart and part company here, which is why it is said out loud.
+  //
+  // READ FROM THE KEY, not from `payload.messageId`, and that is the whole reason this is not a
+  // one-line `where` clause. `payload` is a convenience copy: a row whose payload does not name a
+  // message is undecidable, and Prisma renders every JSON path comparison with a
+  // `JSONB_TYPEOF(...) = 'number'` guard — inside a `NOT` as much as outside it, measured — so no
+  // filter the query builder can express even sees such a row. Whichever way it is written, the
+  // payload form gets one of the two sides wrong: as `lte` the undecidable row below the boundary
+  // survives holding text the reset was asked to erase, and as "delete what is not provably above"
+  // the undecidable row ABOVE it is deleted, which is the customer message this fence exists to
+  // save.
+  //
+  // The key always answers. `ingestDedupeKey` builds `ingest:<thread>:<messageId>` and the caller's
+  // prefix is `ingest:<thread>:`, so what follows the prefix IS the message id, in decimal — and
+  // the trailing colon is what keeps thread 10's prefix from matching thread 100's rows. That makes
+  // this parameter meaningful only for a kind whose key ends in the message id, which is the one
+  // caller it has.
+  atOrBelowMessageId?: number,
 ): Promise<number> {
   {
     const where = {
@@ -570,11 +621,42 @@ export async function revokeJobsByKeyPrefixOn(
       // before the reset is not going to run, but its row still holds the encrypted message body,
       // and nothing sweeps this table — so a reset that left it would confirm "memory cleared" over
       // a stored copy of the conversation.
+      //
+      // And spared on the other side of the boundary for the same reason: a DEAD row for a message
+      // that arrived AFTER the command holds a body the reset was never asked to erase, and deleting
+      // it also throws away a dead-letter the operator may still need to read.
       status: {
         in: ["PENDING" as const, "CLAIMED" as const, "DEAD" as const],
       },
       dedupeKey: { startsWith: prefix },
     };
+    // Read, decide here, delete by id — two statements inside the caller's transaction, so nothing
+    // can be armed between them. The rows come back in full because the decision lives in the key
+    // and Postgres would need a cast and a regex to make the same comparison; this reads one
+    // thread's queued ingestions, which is a handful of rows, not a table scan.
+    const alvo =
+      atOrBelowMessageId === undefined
+        ? where
+        : {
+            ...where,
+            id: {
+              in: (
+                await db.schedulerJob.findMany({
+                  where,
+                  select: { id: true, dedupeKey: true },
+                })
+              )
+                .filter(
+                  (r) =>
+                    !aboveKeyedMessageId(
+                      r.dedupeKey,
+                      prefix,
+                      atOrBelowMessageId,
+                    ),
+                )
+                .map((r) => r.id),
+            },
+          };
     // DELETED where the kind says a finished row leaves nothing behind. Marking it DONE is how the
     // two cancellations above retire a row, and for a reusable key that is exactly right — but a
     // revoked ingestion can never reach `completeJob`, which is where JOB_DELETE_ON_DONE is normally
@@ -582,13 +664,13 @@ export async function revokeJobsByKeyPrefixOn(
     // would sit there forever holding the encrypted message body the reset was asked to erase, on a
     // table nothing sweeps. Reading the same map is what keeps the two answers from drifting.
     if (JOB_DELETE_ON_DONE[kind]) {
-      return (await db.schedulerJob.deleteMany({ where })).count;
+      return (await db.schedulerJob.deleteMany({ where: alvo })).count;
     }
     // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
     // would erase the dead-letter the operator may still need to see.
     return (
       await db.schedulerJob.updateMany({
-        where: { ...where, status: { in: ["PENDING", "CLAIMED"] } },
+        where: { ...alvo, status: { in: ["PENDING", "CLAIMED"] } },
         data: { status: "DONE" },
       })
     ).count;

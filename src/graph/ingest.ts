@@ -18,6 +18,7 @@ import {
   conversationStamp,
   humanAgentMessage,
 } from "./markers";
+import { resetLandedAfter } from "./reset-episode";
 import {
   claimIngestWrite,
   type IngestWriteClaim,
@@ -288,6 +289,45 @@ export async function ingestMessageIntoThread(
           },
         }),
       );
+
+      // THE EPISODE BOUNDARY, ASKED FROM IN HERE (issue #728 review, round 3), for the same reason
+      // the stand-down above is asked from in here rather than by the caller: a check made before
+      // the claim is staggered, not exclusive.
+      //
+      // `/reset` clears this thread and, inside its own critical section, revokes every queued
+      // `INGEST_MESSAGE` for it — precisely because an append carrying text from before the command
+      // would rebuild the memory an operator was just told had been cleared. What it cannot revoke
+      // is a job ARMED AFTER the revocation, and there are two of those: the receiver's own arm,
+      // racing the command since issue #194, and the recovery of a stranded reply, which decides
+      // minutes earlier and across a REST round trip (../modules/chatwoot/recover-human-reply.ts).
+      // Both asked the boundary where it could go stale; this is the one place it cannot, because
+      // the command waits on the very claim held above (`threadBusyForResetOn`).
+      //
+      // THE CONVERSATION'S OWN, not the thread's maximum, and that difference is deliberate here:
+      // this fence is about the message being older than the command that cleared it, and the id
+      // that orders them is Chatwoot's, which is unique per account. The caller that has to reason
+      // about SIBLING conversations sharing one thread does that before arming; what this closes is
+      // the window between any decision and this write.
+      const cleared = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conversationId,
+            },
+          },
+          select: { resetAtMessageId: true },
+        }),
+      );
+      if (resetLandedAfter(messageId, cleared?.resetAtMessageId ?? null)) {
+        logger.info(
+          "ingest: message %s on conversation %s predates the /reset that cleared this thread; not restoring it",
+          String(messageId),
+          String(conversationId),
+        );
+        return { outcome: "skipped" as const, closedConversationId: null };
+      }
 
       // The same question, now on the row this call is entitled to trust. Another append may have
       // folded this very id in while this one waited for the claim.

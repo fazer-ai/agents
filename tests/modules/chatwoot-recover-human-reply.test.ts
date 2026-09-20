@@ -9,6 +9,7 @@ import {
 } from "@/modules/chatwoot/recover-human-reply";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // RECOVERING THE COLLEAGUE'S REPLY AN INGESTION LOST (issue #728).
 //
@@ -71,6 +72,7 @@ const TEST_BOT = 33;
 const QUIET_WATCHER_BOT = 34;
 let tenantId = 0n;
 let instanceId = 0n;
+let agentDbId = 0n;
 let watcherAgentDbId = 0n;
 let quietWatcherAgentDbId = 0n;
 let deliverySeq = 0;
@@ -180,6 +182,7 @@ describe.skipIf(!dbUp)(
           settings: { debounce: { enabled: false } },
         },
       });
+      agentDbId = agent.id;
       // The route that does NOT remember: a `test`-mode agent leaves a ledger row byte for byte like
       // the one a failed enqueue leaves, `route_remembers = false` included.
       const testAgent = await suDb.agent.create({
@@ -887,6 +890,7 @@ describe.skipIf(!dbUp)(
         },
       });
 
+      const before = calls.length;
       expect(
         await recoverStrandedHumanReply({
           tenantId,
@@ -896,6 +900,27 @@ describe.skipIf(!dbUp)(
         }),
       ).toBe("gone");
       expect(await ingestJobs(convId)).toEqual([]);
+      // E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo (verificador,
+      // rodada 2). Sem isto, a única linha nomeando esta mensagem continua sendo
+      // `human_reply_not_remembered`, escrita pelo receptor no instante da perda — e aquela razão diz
+      // o OPOSTO do que é verdade agora: que a perda é transitória e que uma retentativa vem aí.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      const linhas = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "memory" },
+        select: { level: true, detail: true },
+      });
+      expect(
+        linhas.map((l) => ({
+          level: l.level,
+          reason: (l.detail as { reason?: string } | null)?.reason ?? null,
+        })),
+      ).toEqual([{ level: "error", reason: "human_reply_recovery_gone" }]);
+      // E SEM IR AO CHATWOOT: a janela é lida antes da rede, e `ancient` é um dos dois desfechos que
+      // uma varredura de backlog produz em massa.
+      expect(calls.slice(before)).toEqual([]);
     });
 
     // E A QUE JÁ ESTÁ NA MEMÓRIA NÃO GASTA JOB NENHUM, que é a outra ponta da mesma leitura: uma
@@ -914,6 +939,7 @@ describe.skipIf(!dbUp)(
           recentAgentMessageIds: [725],
         },
       });
+      const before = calls.length;
 
       expect(
         await recoverStrandedHumanReply({
@@ -924,6 +950,8 @@ describe.skipIf(!dbUp)(
         }),
       ).toBe("not-owed");
       expect(await ingestJobs(convId)).toEqual([]);
+      // Nem esta: a resposta já está na memória e a página não decide nada disso.
+      expect(calls.slice(before)).toEqual([]);
     });
 
     // UMA RAJADA, E AS TRÊS VOLTAM. Este teste não veio do holdout: os onze cenários selados são
@@ -972,6 +1000,39 @@ describe.skipIf(!dbUp)(
       expect(new Set(jobs.map((j) => j.dedupeKey)).size).toBe(3);
       expect(jobs.map((j) => j.text).sort()).toEqual(
         ids.map((id) => `parte ${id} da resposta`),
+      );
+    });
+
+    // E A ROTA DO RESPONDEDOR RESOLVE PELA INBOX, NÃO PELO BOT (review r3). As duas rotas do receptor
+    // não são simétricas: `responder` sai de `inboxAgentRuntime(…, n.inboxId, …)` e `watcher` de
+    // `observerRuntimeForRoute(…, params.agentBotId, …)`. O Chatwoot entrega a mensagem ao bot
+    // ATRIBUÍDO à conversa e ao da inbox, então numa conversa que o bot de outra persona mantém o
+    // `route_agent_bot_id` nomeia aquela persona enquanto a ingestão correu sob o respondedor da
+    // inbox. Perguntando pelo bot nas duas rotas, um agente atribuído em `test` descarta um append
+    // que o respondedor em produção devia.
+    test("a responder route resolves through the inbox, not the assigned bot", async () => {
+      const convId = 9126;
+      pages.set(convId, [
+        restComposerReply(727, "Sob o respondedor da inbox."),
+      ]);
+      const rowId = await seedStranded(convId, {
+        messageId: 727,
+        // A inbox é a 70 (respondedor em produção); o bot que trouxe a entrega é o do agente em
+        // `test`, que é o que uma conversa mantida por outra persona produz. A rota NÃO é observada.
+        routeAgentBotId: TEST_BOT,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      // Sob o agente da INBOX, e não sob o do bot atribuído.
+      expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+        String(agentDbId),
       );
     });
 

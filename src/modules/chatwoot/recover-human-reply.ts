@@ -2,12 +2,13 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { resolveGraphThreadId } from "@/graph/checkpointer";
-import { ingestVerdict } from "@/graph/ingest-dedup";
+import { INGEST_ID_WINDOW, ingestVerdict } from "@/graph/ingest-dedup";
 import { armIngest } from "@/graph/ingest-job";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ingestsContinuously } from "@/modules/agents/mode";
+import { writeFlowEvent } from "@/modules/flowlog/service";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -257,20 +258,26 @@ export async function recoverStrandedHumanReply(
       select: { agentId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
-    // THE ROUTE'S OWN AGENT, not the inbox's (review r1). Chatwoot fans a message to the inbox's bot
-    // AND to any observer attached to it, so the delivery that stranded may have been a WATCHER's —
-    // and on a watcher's route the agent that folds the reply in is the watcher, never the inbox's
-    // responder. Reading `Inbox.agentId` here asked about the wrong agent in both directions: a
-    // watcher's lost append was discarded because the responder happens to be in `test` mode, and
-    // the append that did survive would have been armed under the responder's id.
+    // THE ROUTE'S OWN AGENT, AND THE TWO ROUTES RESOLVE IT DIFFERENTLY — which is not symmetry the
+    // receiver could have had, it is what `resolveRoute` actually does (review r1, corrected in r3):
     //
-    // Resolved from `routeAgentBotId`, which the claim writes on every delivery, the same coordinate
-    // the takeover recovery uses to ask its ownership question. A row an older build wrote carries
-    // none, and there the inbox's responder is the answer it always was.
+    //   const responder = await inboxAgentRuntime(tenantId, instanceId, n.inboxId, …)
+    //   const watcher   = await observerRuntimeForRoute(tenantId, instanceId, params.agentBotId, …)
+    //   const rt        = watcher ?? responder
+    //
+    // So a WATCHER's runtime comes from the bot the delivery arrived on, and a RESPONDER's comes
+    // from the INBOX — never from the bot. The difference is reachable: Chatwoot fans a message to
+    // the conversation's assigned bot and to the inbox's, so on a conversation another persona's bot
+    // holds, `routeAgentBotId` names that persona while the ingestion ran under the inbox's
+    // responder. Asked through the bot on both routes, a `test`-mode or switched-off assigned agent
+    // discards an append the inbox's production responder owed — and a responder rebind does the
+    // same to every row written before it.
+    //
+    // Reading `Inbox.agentId` on BOTH routes was the r1 defect and it is not what this restores: the
+    // watcher's half stays resolved through the bot, because there the bot IS the route.
     const routeAgentId =
-      row.routeAgentBotId === null
-        ? inbox.agentId
-        : ((
+      row.routeObserved === true && row.routeAgentBotId !== null
+        ? ((
             await db.chatwootAgentBot.findFirst({
               where: {
                 tenantId,
@@ -279,7 +286,8 @@ export async function recoverStrandedHumanReply(
               },
               select: { agentId: true },
             })
-          )?.agentId ?? null);
+          )?.agentId ?? null)
+        : inbox.agentId;
     if (routeAgentId === null) return null;
     const agent = await db.agent.findUnique({
       where: { id: routeAgentId },
@@ -296,6 +304,9 @@ export async function recoverStrandedHumanReply(
     });
     return {
       contactInboxId: conv.contactInboxId,
+      // The MIRROR's row id, which is what a flow-log line hangs on — the reports an operator reads
+      // are keyed by it, not by Chatwoot's display id.
+      conversationRowId: conv.id,
       agentId: routeAgentId,
       whatsappProvider: inbox.provider,
       mode: agent.mode,
@@ -401,6 +412,85 @@ export async function recoverStrandedHumanReply(
     return "not-owed";
   }
 
+  // AND WHETHER THE APPEND CAN STILL LAND AT ALL (review r2). The thread remembers the last
+  // `INGEST_ID_WINDOW` ids per direction, and once that window is SATURATED an id below its floor is
+  // `ancient`: `ingestMessageIntoThread` refuses it rather than appending, because at that distance
+  // absence from the set stops being evidence of anything. That refusal is a success — the job
+  // completes, the row disappears on DONE, and the words are permanently absent with every line in
+  // the system saying the recovery worked.
+  //
+  // So it is asked HERE, where there is still somewhere to say it. `duplicate` is the ordinary happy
+  // answer for a row stranded AFTER the append landed and costs a job that would refuse anyway;
+  // `ancient` is the loss, and it gets a line an operator can act on, because at that point the only
+  // way the words reach the agent is a person putting them there.
+  //
+  // ASKED BEFORE THE NETWORK, and that ordering is a correction rather than a preference (issue
+  // #728, verifier round 2): the first draft read the page and asked afterwards, so `duplicate` and
+  // `ancient` each cost a Chatwoot round trip — and those are precisely the two answers a backlog
+  // produces in bulk. Nothing in the message decides either of them; the thread's own row does.
+  //
+  // EVIDENCE, NOT A GUARANTEE, exactly like the takeover recovery's cheap ownership look: the window
+  // can move between this read and the job's own. What it buys is that the common outcomes stop
+  // being silent, not that the race is closed — the job re-asks under the thread's lock, which is
+  // where the answer is authoritative.
+  const thread = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { recentAgentMessageIds: true },
+    }),
+  );
+  const verdict =
+    thread === null
+      ? "new"
+      : ingestVerdict(thread.recentAgentMessageIds, messageId);
+  if (verdict === "duplicate") return "not-owed";
+  if (verdict === "ancient") {
+    logger.error(
+      "chatwoot human-reply recovery: %s names message %d on conversation %d, which is older than everything that conversation's memory still remembers; the reply is lost for good and has to be re-entered by hand",
+      row.deliveryId,
+      messageId,
+      conversationId,
+    );
+    // AND WHERE AN OPERATOR ACTUALLY LOOKS (verifier round 2). The line above is a process log, and
+    // a process log is not durable, not queryable by conversation, and gone with the container —
+    // which is the standard this repo's own reports are held to. Without this, the only line naming
+    // this message stays `human_reply_not_remembered`, written by the receiver at the moment of the
+    // loss, and that reason means the OPPOSITE of what is true now: it says the loss is transient
+    // and a retry is coming. Somebody reading the conversation would wait for words that are never
+    // coming back.
+    //
+    // A reason of its own, so the two are distinguishable in a query, and at `error` for the same
+    // cause the receiver's line is: this is the permanent half of a business message lost, and the
+    // only remedy left is a person putting the words back by hand.
+    await writeFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: bound.conversationRowId,
+        agentId: bound.agentId,
+        base,
+      },
+      {
+        stage: "memory",
+        level: "error",
+        status: "error",
+        detail: {
+          reason: "human_reply_recovery_gone",
+          messageId,
+          window: INGEST_ID_WINDOW,
+        },
+      },
+    );
+    return "gone";
+  }
+
   let raw: unknown;
   try {
     const client = await loadChatwootClient(tenantId, instanceId, {
@@ -499,48 +589,6 @@ export async function recoverStrandedHumanReply(
   // An empty reply is nothing to remember, and the receiver's ingestion answers the same way.
   if (!text.trim()) return "not-owed";
 
-  // AND WHETHER THE APPEND CAN STILL LAND AT ALL (review r2). The thread remembers the last
-  // `INGEST_ID_WINDOW` ids per direction, and once that window is SATURATED an id below its floor is
-  // `ancient`: `ingestMessageIntoThread` refuses it rather than appending, because at that distance
-  // absence from the set stops being evidence of anything. That refusal is a success — the job
-  // completes, the row disappears on DONE, and the words are permanently absent with every line in
-  // the system saying the recovery worked.
-  //
-  // So it is asked HERE, where there is still somewhere to say it. `duplicate` is the ordinary happy
-  // answer for a row stranded AFTER the append landed and costs a job that would refuse anyway;
-  // `ancient` is the loss, and it gets a line an operator can act on, because at that point the only
-  // way the words reach the agent is a person putting them there.
-  //
-  // EVIDENCE, NOT A GUARANTEE, exactly like the takeover recovery's cheap ownership look: the window
-  // can move between this read and the job's own. What it buys is that the common outcomes stop
-  // being silent, not that the race is closed — the job re-asks under the thread's lock, which is
-  // where the answer is authoritative.
-  const thread = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.agentThread.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_contactInboxId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          contactInboxId,
-        },
-      },
-      select: { recentAgentMessageIds: true },
-    }),
-  );
-  const verdict =
-    thread === null
-      ? "new"
-      : ingestVerdict(thread.recentAgentMessageIds, messageId);
-  if (verdict === "duplicate") return "not-owed";
-  if (verdict === "ancient") {
-    logger.error(
-      "chatwoot human-reply recovery: %s names message %d on conversation %d, which is older than everything conversation's memory still remembers; the reply is lost for good and has to be re-entered by hand",
-      row.deliveryId,
-      messageId,
-      conversationId,
-    );
-    return "gone";
-  }
   // ASKED AGAIN, IMMEDIATELY BEFORE THE ARM, because the read above happened before a REST round
   // trip and a `/reset` inside that stretch is exactly the one this fence exists for — the command
   // revokes what is queued, and this would queue after it. It does not CLOSE the window: the reset

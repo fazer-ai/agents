@@ -195,6 +195,72 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     await appDb.$disconnect();
   });
 
+  // A MENSAGEM ANTERIOR AO `/reset` NÃO VOLTA PARA A MEMÓRIA QUE O COMANDO LIMPOU (issue #728 review,
+  // round 3).
+  //
+  // O comando apaga a thread e, dentro da sua seção crítica, revoga todo `INGEST_MESSAGE` dela,
+  // porque um append com texto de antes reconstrói o que o operador acabou de mandar apagar. O que
+  // ele não revoga é o job armado DEPOIS da revogação, e existem dois: o arme do próprio receptor,
+  // que corre com o comando desde a #194, e a recuperação de uma resposta encalhada, que decide
+  // minutos antes e atravessa uma ida ao Chatwoot. Os dois perguntam a fronteira onde ela envelhece;
+  // aqui dentro ela não envelhece, porque o comando espera pela mesma reivindicação que este append
+  // segura.
+  test("a message from before a /reset is not folded back into the cleared thread", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12422;
+    const convId = 899;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId,
+        text,
+      });
+
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+        contactInboxId,
+        // O comando foi digitado na mensagem 500: tudo em ou abaixo dela é do episódio anterior.
+        resetAtMessageId: 500,
+      },
+    });
+
+    // Antes da fronteira: recusado, e recusado em silêncio para quem chamou — `skipped` é o que o
+    // job de ingestão trata como sucesso, porque não há nada a retentar.
+    expect(await ingest(499, "texto de antes do reset")).toBe("skipped");
+    // A PRÓPRIA mensagem do comando também: ela carrega a fronteira.
+    expect(await ingest(500, "/reset")).toBe("skipped");
+    // Acima dela: o episódio novo, que entra normalmente.
+    expect(await ingest(501, "texto do episódio novo")).toBe("ingested");
+
+    const row = await suDb.agentThread.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
+      select: { recentAgentMessageIds: true },
+    });
+    expect(row.recentAgentMessageIds).toEqual([501]);
+
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+  });
+
   // A conversation can be REOPENED after another has already run on this thread — an operator picking
   // an old one back up, a human agent replying in it. The probe that decides whether to write the
   // divider used to ask "does this conversation appear ANYWHERE in the thread", and the earlier run

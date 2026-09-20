@@ -291,6 +291,23 @@ describe.skipIf(!dbUp)(
           },
         });
       }
+      // A LIGAÇÃO QUE FAZ DE UMA ROTA A DO OBSERVADOR, e sem ela não existe observador nenhum: é a
+      // linha de `inbox_observers` que `observerRuntimeForRoute` exige antes de chamar uma rota de
+      // observada, e é por ela que uma entrega encalhada ANTES da reivindicação — que não declarou
+      // papel — recupera o papel que teve (review r4).
+      for (const [chatwootInboxId, observerAgentId] of [
+        [TEST_MODE_INBOX_ID, watcher.id],
+        [WATCHED_INBOX_ID, watcher.id],
+        [UNANSWERED_INBOX_ID, quietWatcher.id],
+      ] as const) {
+        const inbox = await suDb.inbox.findFirstOrThrow({
+          where: { tenantId, chatwootInboxId },
+          select: { id: true },
+        });
+        await suDb.inboxObserver.create({
+          data: { tenantId, inboxId: inbox.id, agentId: observerAgentId },
+        });
+      }
     });
 
     afterAll(async () => {
@@ -302,6 +319,7 @@ describe.skipIf(!dbUp)(
         "chatwoot_webhook_deliveries",
         "conversations",
         "contacts",
+        "inbox_observers",
         "inboxes",
         "chatwoot_agent_bots",
         "agents",
@@ -753,6 +771,63 @@ describe.skipIf(!dbUp)(
       // E O MODO DO OBSERVADOR NÃO FOI PERGUNTADO: `monitoring` não é `production`, e uma cerca que
       // exigisse produção aqui recusaria exatamente a rota que devia o append.
       expect(jobs[0]?.payload.messageId).toBe(713);
+    });
+
+    // O PAPEL QUE A LINHA NÃO DECLAROU SE RECUPERA DA LIGAÇÃO (review r4). `route_observed` é escrito
+    // pela reivindicação, então uma entrega que encalhou ANTES dela carrega NULO — e `role-unstated`
+    // é um dos três vereditos pelos quais a varredura arma esta recuperação, ou seja, o nulo não é
+    // caso de borda aqui, é um terço do trabalho de entrada. Lido como `false`, o append perdido de
+    // um observador ao lado de um respondedor em `test` é descartado no portão do respondedor, para
+    // sempre, porque nada revisita a linha terminal: o defeito da r1 entrando pela porta que a r1
+    // deixou aberta.
+    test("an unstated role is recovered from the observer binding, not read as the responder's", async () => {
+      const convId = 9131;
+      pages.set(convId, [restComposerReply(728, "Anotado, já encaminhei.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 728,
+        routeAgentBotId: WATCHER_BOT,
+        // A entrega morreu antes da reivindicação: o papel não foi declarado.
+        routeObserved: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
+      expect(jobs[0]?.payload.messageId).toBe(728);
+    });
+
+    // E O CONTROLE DA MESMA PERGUNTA: o mesmo nulo, o mesmo respondedor em `test`, e um bot que NÃO
+    // observa esta inbox. Aí não há observador a quem a perda pertença, a rota é a do respondedor, e
+    // o veredito volta a ser `not-owed`. Sem este par, a correção acima passaria também se ela
+    // simplesmente tivesse parado de perguntar o modo.
+    test("an unstated role with no observer binding stays the responder's", async () => {
+      const convId = 9132;
+      pages.set(convId, [restComposerReply(729, "Ninguém devia isto.")]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 729,
+        // O bot do observador SILENCIOSO, ligado a outra inbox.
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: null,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 729)).toBe(false);
     });
 
     // E O MODO DO OBSERVADOR NÃO É PERGUNTADO, que é o que separa a leitura certa da errada. O

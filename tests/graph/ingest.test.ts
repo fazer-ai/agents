@@ -261,6 +261,72 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
   });
 
+  // O MESMO COMANDO, DIGITADO NA CONVERSA IRMÃ (review r4). `/reset` limpa a memória por
+  // contact-inbox e carimba `reset_at_message_id` na única conversa em que foi digitado, então duas
+  // conversas do mesmo contato dividem uma thread e só uma carrega a fronteira. Perguntando à
+  // conversa da mensagem, esta cerca via null e restaurava texto de antes da limpeza — numa thread
+  // cuja dedup foi apagada junto, de modo que nada rio abaixo pegaria a duplicata.
+  test("a message from before a /reset typed in a sibling conversation is refused too", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12431;
+    const convId = 897;
+    const siblingId = 898;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId,
+        text,
+      });
+
+    for (const [id, resetAt] of [
+      [convId, null],
+      // A irmã: o mesmo contact-inbox, e é nela que o operador digitou o comando.
+      [siblingId, 600],
+    ] as const) {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: id,
+          status: "open",
+          threadId: `chatwoot:${tenantId}:${instanceId}:${id}`,
+          lastEventAt: new Date(),
+          contactInboxId,
+          ...(resetAt === null ? {} : { resetAtMessageId: resetAt }),
+        },
+      });
+    }
+
+    // A conversa desta mensagem NÃO tem carimbo nenhum: a fronteira é a da thread.
+    expect(await ingest(599, "texto de antes da limpeza")).toBe("skipped");
+    expect(await ingest(601, "texto do episódio novo")).toBe("ingested");
+
+    const row = await suDb.agentThread.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
+      select: { recentAgentMessageIds: true },
+    });
+    expect(row.recentAgentMessageIds).toEqual([601]);
+
+    await suDb.conversation.deleteMany({
+      where: {
+        tenantId,
+        chatwootConversationId: { in: [convId, siblingId] },
+      },
+    });
+  });
+
   // A conversation can be REOPENED after another has already run on this thread — an operator picking
   // an old one back up, a human agent replying in it. The probe that decides whether to write the
   // divider used to ask "does this conversation appear ANYWHERE in the thread", and the earlier run

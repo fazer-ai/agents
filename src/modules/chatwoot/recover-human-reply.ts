@@ -4,7 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { resolveGraphThreadId } from "@/graph/checkpointer";
 import { INGEST_ID_WINDOW, ingestVerdict } from "@/graph/ingest-dedup";
 import { armIngest } from "@/graph/ingest-job";
-import { resetLandedAfter } from "@/graph/reset-episode";
+import { resetLandedAfter, threadResetBoundary } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ingestsContinuously } from "@/modules/agents/mode";
@@ -173,42 +173,6 @@ export interface RecoverHumanReplyParams {
     : never;
 }
 
-// THE EPISODE BOUNDARY OF THE THREAD, WHICH IS NOT THE BOUNDARY OF ONE CONVERSATION (review r2).
-//
-// `/reset` clears the memory by CONTACT-INBOX — `clearContactMemory` deletes the `AgentThread` row
-// and the attendance summaries keyed by it — and stamps `reset_at_message_id` on the single
-// conversation the command was typed in (`WHERE id = ctx.conv.id`). A contact who wrote on the same
-// channel twice has two conversations sharing one thread, so a reset in the NEWER one wipes the
-// memory an older conversation's stranded reply belongs to while leaving that older row unstamped.
-// Asked of the reply's own conversation, the fence then sees nothing and restores text from before
-// the clear — into a thread whose dedup history was deleted with it, so nothing downstream catches
-// the duplicate either.
-//
-// The MAXIMUM across the thread's conversations, because the boundary is a fact about the memory and
-// Chatwoot's ids are unique per account: a stamp on any conversation of this contact-inbox orders
-// the reply the same way its own would.
-async function threadResetBoundary(
-  tenantId: bigint,
-  instanceId: bigint,
-  contactInboxId: number,
-  base: PrismaClient,
-): Promise<number | null> {
-  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.conversation.findMany({
-      where: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        contactInboxId,
-        resetAtMessageId: { not: null },
-      },
-      select: { resetAtMessageId: true },
-      orderBy: { resetAtMessageId: "desc" },
-      take: 1,
-    }),
-  );
-  return rows[0]?.resetAtMessageId ?? null;
-}
-
 export async function recoverStrandedHumanReply(
   params: RecoverHumanReplyParams,
 ): Promise<HumanReplyRecoveryOutcome> {
@@ -255,7 +219,7 @@ export async function recoverStrandedHumanReply(
     if (conv?.inboxId == null) return null;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true, provider: true },
+      select: { id: true, agentId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
     // THE ROUTE'S OWN AGENT, AND THE TWO ROUTES RESOLVE IT DIFFERENTLY — which is not symmetry the
@@ -275,9 +239,25 @@ export async function recoverStrandedHumanReply(
     //
     // Reading `Inbox.agentId` on BOTH routes was the r1 defect and it is not what this restores: the
     // watcher's half stays resolved through the bot, because there the bot IS the route.
-    const routeAgentId =
-      row.routeObserved === true && row.routeAgentBotId !== null
-        ? ((
+    //
+    // AND `routeObserved` HAS A THIRD VALUE (review r4). The claim is what states the role
+    // (`routeObserved: observer !== null`, written by the very UPDATE that takes the row), so a
+    // delivery stranded BEFORE its claim carries null — and `role-unstated` is one of the three
+    // verdicts the sweep arms this recovery from, which is to say the null is not an edge case here,
+    // it is a whole third of the inbound work. Read as `false`, an observer's lost append beside a
+    // `test`-mode or switched-off responder is discarded on the responder's gate, permanently, since
+    // the terminal row is never revisited: the r1 defect arriving by the one door r1 left open.
+    //
+    // The evidence that survives an unclaimed row is `routeAgentBotId`, written at INSERT, and the
+    // question the receiver asks of it is whether that bot's agent OBSERVES this inbox — the same
+    // row `observerRuntimeForRoute` requires before it will call a route a watcher's. So the role is
+    // recovered from the binding rather than assumed, and a pending attachment counts, for the
+    // reason the schema states: every reader that asks whether an agent observes an inbox counts a
+    // pending row, because the attachment may already be live upstream.
+    const routeBotAgentId =
+      row.routeAgentBotId === null
+        ? null
+        : ((
             await db.chatwootAgentBot.findFirst({
               where: {
                 tenantId,
@@ -286,8 +266,15 @@ export async function recoverStrandedHumanReply(
               },
               select: { agentId: true },
             })
-          )?.agentId ?? null)
-        : inbox.agentId;
+          )?.agentId ?? null);
+    const observed =
+      row.routeObserved ??
+      (routeBotAgentId !== null &&
+        routeBotAgentId !== inbox.agentId &&
+        (await db.inboxObserver.count({
+          where: { tenantId, inboxId: inbox.id, agentId: routeBotAgentId },
+        })) > 0);
+    const routeAgentId = observed ? routeBotAgentId : inbox.agentId;
     if (routeAgentId === null) return null;
     const agent = await db.agent.findUnique({
       where: { id: routeAgentId },
@@ -313,6 +300,9 @@ export async function recoverStrandedHumanReply(
       enabled: agent.enabled,
       settings: agent.settings,
       responderExists: responder !== null,
+      // The role as this recovery RESOLVED it, which is the ledger's when the claim stated one and
+      // the binding's when it did not.
+      observed,
     };
   });
   // TWO CAUSES, and only one of them is an answer. An inbox bound to no agent owes nothing and never
@@ -367,9 +357,7 @@ export async function recoverStrandedHumanReply(
   // difference between "owed and failed" and "never owed" lives here and nowhere else.
   const routeRemembers =
     bound.enabled &&
-    (row.routeObserved === true
-      ? bound.responderExists
-      : ingestsContinuously(bound.mode));
+    (bound.observed ? bound.responderExists : ingestsContinuously(bound.mode));
   if (!routeRemembers) return "not-owed";
   // NO THREAD TO HOLD IT, which is the ingestion's own `"no-thread"` answer arriving by the other
   // road. The receiver already reported that case as the permanent loss it is and settled the row;

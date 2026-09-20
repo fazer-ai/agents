@@ -18,7 +18,7 @@ import {
   conversationStamp,
   humanAgentMessage,
 } from "./markers";
-import { resetLandedAfter } from "./reset-episode";
+import { resetLandedAfter, threadResetBoundary } from "./reset-episode";
 import {
   claimIngestWrite,
   type IngestWriteClaim,
@@ -303,24 +303,23 @@ export async function ingestMessageIntoThread(
       // Both asked the boundary where it could go stale; this is the one place it cannot, because
       // the command waits on the very claim held above (`threadBusyForResetOn`).
       //
-      // THE CONVERSATION'S OWN, not the thread's maximum, and that difference is deliberate here:
-      // this fence is about the message being older than the command that cleared it, and the id
-      // that orders them is Chatwoot's, which is unique per account. The caller that has to reason
-      // about SIBLING conversations sharing one thread does that before arming; what this closes is
-      // the window between any decision and this write.
-      const cleared = await runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.conversation.findUnique({
-          where: {
-            tenantId_chatwootInstanceId_chatwootConversationId: {
-              tenantId,
-              chatwootInstanceId: instanceId,
-              chatwootConversationId: conversationId,
-            },
-          },
-          select: { resetAtMessageId: true },
-        }),
+      // THE THREAD'S MAXIMUM, not the conversation's own (review r4, correcting r3). The first
+      // version of this fence asked the message's own conversation and called the difference
+      // deliberate, on the grounds that a caller reasoning about SIBLING conversations does it
+      // before arming. That is the very argument moving the fence in here refutes: what this closes
+      // is the window between any caller's decision and this write, and a `/reset` typed in a
+      // sibling DURING that window stamps the sibling, leaving this conversation unstamped while
+      // the memory both share is gone. Asked of one conversation, the fence then sees nothing and
+      // restores pre-reset text into a thread whose dedup history was deleted with it.
+      //
+      // The memory is the contact-inbox's, so the boundary is too.
+      const cleared = await threadResetBoundary(
+        tenantId,
+        instanceId,
+        contactInboxId,
+        base,
       );
-      if (resetLandedAfter(messageId, cleared?.resetAtMessageId ?? null)) {
+      if (resetLandedAfter(messageId, cleared)) {
         logger.info(
           "ingest: message %s on conversation %s predates the /reset that cleared this thread; not restoring it",
           String(messageId),

@@ -43,6 +43,44 @@ export function resetLandedAfter(
   return triggerMessageId <= resetAtMessageId;
 }
 
+// THE EPISODE BOUNDARY OF THE THREAD, WHICH IS NOT THE BOUNDARY OF ONE CONVERSATION (review r2, and
+// r4 for the second caller).
+//
+// `/reset` clears the memory by CONTACT-INBOX — `clearContactMemory` deletes the `AgentThread` row
+// and the attendance summaries keyed by it — and stamps `reset_at_message_id` on the single
+// conversation the command was typed in (`WHERE id = ctx.conv.id`). A contact who wrote on the same
+// channel twice has two conversations sharing one thread, so a reset in the NEWER one wipes the
+// memory an older conversation's message belongs to while leaving that older row unstamped. Asked of
+// the message's own conversation, the fence then sees nothing and restores text from before the
+// clear — into a thread whose dedup history was deleted with it, so nothing downstream catches the
+// duplicate either.
+//
+// The MAXIMUM across the thread's conversations, because the boundary is a fact about the MEMORY and
+// Chatwoot's ids are unique per account: a stamp on any conversation of this contact-inbox orders
+// the message the same way its own would. What that costs is a late arrival on a sibling being
+// refused by a reset it predates, which is the answer this fence exists to give.
+export async function threadResetBoundary(
+  tenantId: bigint,
+  instanceId: bigint,
+  contactInboxId: number,
+  base: PrismaClient,
+): Promise<number | null> {
+  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findMany({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        resetAtMessageId: { not: null },
+      },
+      select: { resetAtMessageId: true },
+      orderBy: { resetAtMessageId: "desc" },
+      take: 1,
+    }),
+  );
+  return rows[0]?.resetAtMessageId ?? null;
+}
+
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }

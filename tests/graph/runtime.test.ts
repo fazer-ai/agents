@@ -41,6 +41,7 @@ import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { reengageConversation } from "@/modules/conversations/reengage";
+import { getConversationDetail } from "@/modules/conversations/service";
 import {
   advanceHandledWatermark,
   claimReplyBurst,
@@ -69,6 +70,9 @@ import {
   SendImageThenHandoffModel,
   SendImageThenReplyModel,
   SetVoiceThenHandoffModel,
+  SkipOnlyModel,
+  SkipThenHandoffModel,
+  SkipThenImageModel,
 } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -2098,6 +2102,181 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       select: { resolvedBy: true },
     });
     expect(row.resolvedBy).toBeNull();
+  });
+
+  // ── A DECISÃO DE SILÊNCIO NÃO É O FIM DO TURNO, E O MARCADOR DELA AFIRMA UM (issue #726) ──
+  //
+  // Achado da rodada 2 de review, e a premissa que ele derrubou: "a última linha de `skip_reply` do
+  // turno responde pelo turno". Desde a #639 um `skip_reply` SOZINHO não encerra o turno (encerrar e
+  // manter calado são garantias diferentes), então o lote seguinte ainda roda — e quando ele é uma
+  // transferência com linha de fechamento, o turno entrega uma mensagem DEPOIS da única decisão que
+  // deixou carimbo. Ler só os carimbos de `skip_reply` responde "não entregou" sobre uma resposta
+  // que está na tela.
+  //
+  // Então o carimbo da chamada continua sendo o que ele é — a melhor resposta NAQUELE instante, que
+  // é tudo que o balão ao vivo pode ter — e o turno escreve um fato próprio quando acaba, sobre o
+  // que de fato saiu. A trilha prefere o fato do turno.
+  test("silêncio decidido e transferência depois: o fato do turno diz que saiu mensagem", async () => {
+    await seedConversation(9726, null);
+    const CLOSING = "Já chamo uma pessoa do time.";
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9726 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SkipThenHandoffModel(CLOSING) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    // (0) validade do fixture: a linha de fechamento saiu mesmo, DEPOIS da decisão de silêncio.
+    expect(calls).toEqual([
+      ["toggleStatus", 9726, "open"],
+      ["sendMessage", 9726, CLOSING],
+    ]);
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9726 },
+    });
+    // O carimbo da chamada, que é provisório por construção: quando `skip_reply` rodou, a
+    // transferência ainda não tinha acontecido.
+    const decisao = await flowLogRow(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "tool" },
+      select: { detail: true },
+    });
+    expect(
+      (decisao?.detail as Record<string, unknown> | null)?.turnDelivered,
+    ).toBe(false);
+
+    // E o que a tela lê: o fato do turno, escrito quando o turno acabou.
+    const trail = (
+      await getConversationDetail(
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        conv.id,
+        appDb,
+      )
+    ).trail;
+    const marcador = trail.find((e) => e.name === "skip_reply");
+    expect(marcador?.turnDelivered).toBe(true);
+  });
+
+  // A OUTRA PORTA, e a que prova que o fato não é "quantos balões saíram": um turno que decidiu calar
+  // e depois mandou uma foto entrega alguma coisa ao cliente sem nenhum balão de texto. Contar balões
+  // responderia que ninguém foi atendido.
+  test("silêncio decidido e imagem depois: o fato do turno conta o anexo", async () => {
+    await allowImageHost();
+    await seedConversation(9729, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9729 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SkipThenImageModel(
+            IMG_URL,
+            "Camiseta azul",
+          ) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("posted");
+    // (0) validade do fixture: só o anexo saiu, nenhum balão de texto.
+    expect(calls).toEqual([["sendFileAttachment", 9729, "imagem.png"]]);
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9729 },
+    });
+    const trail = (
+      await getConversationDetail(
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        conv.id,
+        appDb,
+      )
+    ).trail;
+    expect(trail.find((e) => e.name === "skip_reply")?.turnDelivered).toBe(
+      true,
+    );
+  });
+
+  // O PAR OBRIGATÓRIO: o turno que decidiu calar e não fez mais nada continua dizendo que calou. Uma
+  // correção que neutralize os dois apaga um fato verdadeiro para consertar um falso.
+  test("silêncio decidido e nada depois: o fato do turno diz que nada saiu", async () => {
+    await seedConversation(9727, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9727 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new SkipOnlyModel() as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([]);
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9727 },
+    });
+    const trail = (
+      await getConversationDetail(
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        conv.id,
+        appDb,
+      )
+    ).trail;
+    expect(trail.find((e) => e.name === "skip_reply")?.turnDelivered).toBe(
+      false,
+    );
+  });
+
+  // O fato do turno é uma LINHA A MAIS numa tabela de escrita quente, então ele só é escrito no turno
+  // em que alguém pergunta. Um turno que respondeu normalmente não tem marcador de silêncio nenhum
+  // para rotular, e não paga por isso.
+  test("turno sem decisão de silêncio não escreve o fato do turno", async () => {
+    await seedConversation(9728, null);
+    const sent: Array<[number, string]> = [];
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9728 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([[9728, "Claro!"]]);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9728 },
+    });
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter((r) =>
+        Object.hasOwn(
+          (r.detail ?? {}) as Record<string, unknown>,
+          "turnDelivered",
+        ),
+      ),
+    ).toEqual([]);
   });
 
   test("handoff customerMessage is terminal when the mirror status event lags", async () => {

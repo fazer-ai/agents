@@ -75,6 +75,23 @@ async function linhaDeFerramenta(
   });
 }
 
+// A linha que o turno escreve quando acaba, com o que de fato saiu. Ela não vira marcador na tela
+// (um `generate` só é marcador quando carrega `detail.trigger`), ela responde por eles.
+async function fatoDoTurno(turnId: string, turnDelivered: boolean) {
+  await suDb.executionLog.create({
+    data: {
+      tenantId,
+      conversationId: convId,
+      turnId,
+      source: "inbox",
+      stage: "generate",
+      level: "info",
+      status: "ok",
+      detail: { turnDelivered },
+    },
+  });
+}
+
 async function trilha() {
   const d = await getConversationDetail(ctx(), convId, appDb);
   return d.trail;
@@ -200,6 +217,61 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     const decisoes = t.filter((e) => e.name === "skip_reply");
     expect(decisoes).toHaveLength(2);
     expect(decisoes.map((e) => e.turnDelivered)).toEqual([true, true]);
+  });
+
+  // O ACHADO DA RODADA 2 DE REVIEW. Um `skip_reply` sozinho não encerra o turno desde a #639, então
+  // o lote seguinte ainda roda: a transferência entrega uma mensagem DEPOIS da única linha que
+  // carimbou, e ler só os carimbos responde "não entregou" sobre uma resposta que está na tela. O
+  // fato que o turno escreve no fim responde por eles.
+  test("o fato do turno vence o carimbo, quando a entrega veio depois da decisão", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await linhaDeFerramenta("turno-depois", "skip_reply", {
+      turnDelivered: false,
+    });
+    await linhaDeFerramenta("turno-depois", "handoff_to_human");
+    await fatoDoTurno("turno-depois", true);
+    const t = await trilha();
+    expect(t.find((e) => e.name === "skip_reply")?.turnDelivered).toBe(true);
+  });
+
+  // E vence nos DOIS sentidos, que é o que o torna um fato e não um reforço: um carimbo que leu uma
+  // reserva não sobrevive ao turno que terminou sem nada ter saído.
+  test("o fato do turno vence o carimbo, quando nada chegou a sair", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await linhaDeFerramenta("turno-nada", "send_image");
+    await linhaDeFerramenta("turno-nada", "skip_reply", {
+      turnDelivered: true,
+    });
+    await fatoDoTurno("turno-nada", false);
+    const t = await trilha();
+    expect(t.find((e) => e.name === "skip_reply")?.turnDelivered).toBe(false);
+  });
+
+  // O fato é do TURNO: o de um turno não responde pelo marcador de outro.
+  test("o fato do turno não atravessa a fronteira do turno", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await linhaDeFerramenta("turno-a", "skip_reply", { turnDelivered: false });
+    await fatoDoTurno("turno-a", true);
+    await linhaDeFerramenta("turno-b", "skip_reply", { turnDelivered: false });
+    const t = await trilha();
+    expect(
+      t.filter((e) => e.name === "skip_reply").map((e) => e.turnDelivered),
+    ).toEqual([true, false]);
+  });
+
+  // A linha antiga não ganha o fato por vizinhança: sem carimbo próprio ela não afirma nada, mesmo
+  // num turno cujo fato existe.
+  test("o fato do turno não carimba quem não perguntou", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    await linhaDeFerramenta("turno-misto", "handoff_to_human");
+    await linhaDeFerramenta("turno-misto", "skip_reply", {
+      turnDelivered: false,
+    });
+    await fatoDoTurno("turno-misto", true);
+    const t = await trilha();
+    expect(
+      t.find((e) => e.name === "handoff_to_human")?.turnDelivered,
+    ).toBeNull();
   });
 
   // O OUTRO LADO, e o achado da rodada 1 de review: a primeira linha do lote pode ter lido uma

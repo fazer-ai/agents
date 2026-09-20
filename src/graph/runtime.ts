@@ -1164,7 +1164,15 @@ async function runTurnBody(
   // ONE reader for the two surfaces that label the silence. The trail and the live bubble answer the
   // same question at different instants, and giving each its own way of guessing is how one of them
   // gets fixed and the other keeps saying the turn ignored the customer (issue #726).
-  const turnDelivered = () => turnDeliveredToCustomer(turnState, handoffState);
+  // Asked ONLY by the silence tool's own line and by its live step, so it doubles as the record that
+  // the question was asked at all — which is what decides whether this turn owes the closing fact
+  // below. `execution_logs` is a high-write table, and a turn with no silence marker has nothing to
+  // label.
+  let silenceAsked = false;
+  const turnDelivered = () => {
+    silenceAsked = true;
+    return turnDeliveredToCustomer(turnState, handoffState);
+  };
   const status = new AgentStatusReporter({
     tenantId,
     conversationDbId: loaded.conversationDbId,
@@ -1322,6 +1330,9 @@ async function runTurnBody(
   // How many balloons the (text) reply was delivered as, surfaced on `finished` so the UI can hold a
   // "delivering" indicator until the paced balloons land. 1 for audio / single send; null on no post.
   let deliveredBalloons: number | null = null;
+  // Whether a FILE reached the customer this turn. Separate from the balloon count, which counts
+  // text: an attachment-only turn delivers with `deliveredBalloons` still null.
+  let sentAttachment = false;
 
   // The sentence the transfer promised the customer, delivered on the way OUT of the turn — whatever
   // the way out is. Nothing downstream may take it back, and nothing downstream can be retried into
@@ -2355,6 +2366,7 @@ async function runTurnBody(
         writeCalledOff,
         claimBeforeSend,
       );
+      sentAttachment ||= sent;
       // The files WERE this turn, and another turn holds the burst: nothing went out, and the whole
       // turn stands down rather than reporting an empty answer it did not choose.
       if (lostClaim) return refuse("superseded");
@@ -2436,6 +2448,7 @@ async function runTurnBody(
       writeCalledOff,
       claimBeforeSend,
     );
+    sentAttachment ||= attachments.sent;
     if (attachments.lostClaim) return refuse("superseded");
     // Called off mid-batch with something already out: the text below would stand down anyway, and
     // returning "stale" from there would replay a burst whose attachment the customer has. The turn
@@ -2635,6 +2648,27 @@ async function runTurnBody(
           "turn: could not roll back a token-silenced turn",
         );
       }
+    }
+    // THE TURN'S OWN ANSWER ABOUT WHAT REACHED THE CUSTOMER, written when the turn is over and only
+    // when the silence tool asked during it (issue #726, review round 2).
+    //
+    // The stamp on the `skip_reply` line cannot be this. Since issue #639 a LONE `skip_reply` no
+    // longer ends the turn — ending it and keeping it SILENT are two different guarantees — so the
+    // batch after the decision still runs, and when that batch is a transfer with a closing line,
+    // the turn delivers a message AFTER the only line that carried a stamp. Reading the stamps alone
+    // answers "nothing was delivered" about a reply sitting on the screen.
+    //
+    // And this one is not the same question asked later: it is what actually WENT OUT, where the
+    // stamp is what the turn had committed to at that instant. A reservation released by a failed
+    // download, or a queue the declared silence dropped, are both a commitment that never landed;
+    // here there is nothing left to guess about.
+    if (silenceAsked) {
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: { turnDelivered: deliveredBalloons != null || sentAttachment },
+      });
     }
     status.finished(deliveredBalloons);
   }

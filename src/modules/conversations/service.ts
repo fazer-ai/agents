@@ -1316,18 +1316,29 @@ export async function getConversationDetail(
   // still running, and reads "nothing yet" — truthfully about that instant, and misleadingly about
   // the turn, which is what the marker is read as being about.
   //
-  // THE LAST LINE OF THE TURN WINS, and the rows arrive newest-first, so the first one seen is it.
-  // Round 1 of review asked for an OR instead, and an OR is wrong in the direction that reservations
-  // create: an attachment is reserved BEFORE its download, so a line written mid-batch can read
-  // "delivered" over a download that then fails and releases the reservation with nothing sent. The
-  // terminal line is the best-informed one the turn has — everything it committed to has happened by
-  // the time it is written — so an older, more provisional answer must not outlive it.
+  // TWO WRITERS, AND THE TURN'S OWN ANSWER WINS. The `skip_reply` line carries what the turn had
+  // committed to at the instant that line was written, which is all the live indicator can ever
+  // have; the `generate` line the runtime writes when the turn ENDS carries what actually reached
+  // the customer.
+  //
+  // The stamp alone is not enough, and round 2 of review is why. Since issue #639 a lone
+  // `skip_reply` no longer ends the turn, so the batch after the decision still runs: a transfer
+  // with a closing line delivers a message AFTER the only line that carried a stamp, and reading the
+  // stamps would answer "nothing was delivered" about a reply on the screen. The stamps are also
+  // provisional in the other direction — an attachment is reserved before its download — which is
+  // why the turn's own answer, taken after everything landed, is preferred to all of them.
+  //
+  // Among the stamps, the LAST of the turn, and the rows arrive newest-first so the first one seen
+  // is it. It is the fallback: a turn written before this shipped has no `generate` answer, and an
+  // older, more provisional stamp must not outlive a later one.
   const deliveredByTurn = new Map<string, boolean>();
+  const finalByTurn = new Map<string, boolean>();
   for (const r of trailRows) {
     const d = (r.detail ?? null) as Record<string, unknown> | null;
     if (typeof d?.turnDelivered !== "boolean") continue;
-    if (deliveredByTurn.has(r.turnId)) continue;
-    deliveredByTurn.set(r.turnId, d.turnDelivered);
+    const into = r.stage === "generate" ? finalByTurn : deliveredByTurn;
+    if (into.has(r.turnId)) continue;
+    into.set(r.turnId, d.turnDelivered);
   }
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
@@ -1354,7 +1365,9 @@ export async function getConversationDetail(
         errorMessage: r.status === "error" ? r.errorMessage : null,
         turnDelivered:
           typeof detail?.turnDelivered === "boolean"
-            ? (deliveredByTurn.get(r.turnId) ?? null)
+            ? (finalByTurn.get(r.turnId) ??
+              deliveredByTurn.get(r.turnId) ??
+              null)
             : null,
         at: r.createdAt.toISOString(),
       });

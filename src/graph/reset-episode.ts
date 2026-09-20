@@ -32,6 +32,15 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 //
 // AT OR BELOW, not below: the command's own message carries the boundary, and a turn answering that
 // same id would be a turn on the command itself.
+//
+// AND THE BOUNDARY IS NOT PROOF THAT THE MEMORY WAS CLEARED, which every reader of it assumes and
+// none of them checks (issue #728, review r7). The command writes this column in its own statement
+// and clears the memory in a LATER step, and that step refuses by design when a turn is already
+// invoking — `step()` catches it, the acknowledgement names what did not clear, and the column stays
+// where it was put. A message at or below it is then refused by all four fences (this one, the
+// debounce watermark, the observe tick and the ingestion append) on the strength of a clearing that
+// did not happen. Closing it belongs to the COLUMN rather than to any one reader: a fifth semantics
+// for the same field would be worse than the defect. Measured and written up as its own issue.
 export function resetLandedAfter(
   triggerMessageId: number | null,
   resetAtMessageId: number | null,

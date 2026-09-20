@@ -21,6 +21,7 @@ import {
   ingestedMessages,
   ingestMessageIntoThread,
 } from "@/graph/ingest";
+import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
 import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
@@ -31,6 +32,7 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -193,6 +195,117 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
+  });
+
+  // O APPEND QUE A JANELA JÁ NÃO ALCANÇA RELATA DAQUI (issue #728, verificador rodada 4, medido ao
+  // vivo). Passado o piso da janela, este append é recusado — e recusado com SUCESSO, então o job
+  // completa, a linha some no DONE, e até esta linha nada em lugar nenhum dizia que as palavras não
+  // pousaram. O recuperador faz a mesma pergunta antes de armar, mas a leitura dele é minutos mais
+  // velha e não cobre a janela se mexendo no intervalo: segurando o job e saturando a janela na
+  // brecha, a mensagem ficou fora da memória com tudo verde.
+  //
+  // INDECIDÍVEL e não perdida: despejo não é ausência, e uma resposta que pousou 64 mensagens atrás
+  // lê exatamente como uma que nunca pousou.
+  test("an append the window has moved past is reported from inside the claim", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12441;
+    const convId = 896;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "open",
+        threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: new Date(),
+        contactInboxId,
+      },
+      select: { id: true },
+    });
+    // A janela CHEIA e toda acima do id perdido, que é a forma que 64 respostas de atendente na
+    // mesma thread deixam.
+    await suDb.agentThread.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        threadId: graphThreadId,
+        recentAgentMessageIds: Array.from(
+          { length: INGEST_ID_WINDOW },
+          (_, i) => 5000 + i,
+        ),
+      },
+    });
+
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "human_agent" as const,
+        messageId: 4000,
+        text: "a resposta que a janela já não alcança",
+      }),
+    ).toBe("skipped");
+
+    const linhas = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "memory" },
+      select: { level: true, detail: true },
+    });
+    expect(
+      linhas.map((l) => ({
+        level: l.level,
+        reason: (l.detail as { reason?: string } | null)?.reason ?? null,
+      })),
+    ).toEqual([{ level: "error", reason: "human_reply_append_undecidable" }]);
+
+    // E A MENSAGEM DO CLIENTE NÃO PASSA POR AQUI: ela tem o próprio livro de entregas atrás dela, e
+    // um cliente sem resposta é o que a lista de perdas existe para mostrar. Quem não tem mais
+    // ninguém para relatar é a resposta do colega, que nenhum turno cobre.
+    await suDb.agentThread.updateMany({
+      where: { tenantId, contactInboxId },
+      data: {
+        recentSyncedMessageIds: Array.from(
+          { length: INGEST_ID_WINDOW },
+          (_, i) => 5000 + i,
+        ),
+      },
+    });
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        role: "customer" as const,
+        messageId: 4001,
+        text: "a mensagem do cliente que a janela já não alcança",
+      }),
+    ).toBe("skipped");
+    expect(
+      (
+        await flowLogRows(suDb, {
+          where: { tenantId, conversationId: conv.id, stage: "memory" },
+          select: { id: true },
+        })
+      ).length,
+    ).toBe(1);
+
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
   });
 
   // A MENSAGEM ANTERIOR AO `/reset` NÃO VOLTA PARA A MEMÓRIA QUE O COMANDO LIMPOU (issue #728 review,

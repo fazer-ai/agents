@@ -5,6 +5,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { writeFlowEvent } from "@/modules/flowlog/service";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -12,7 +13,11 @@ import {
   needsAttendanceStartProbe,
 } from "./attendance-boundary";
 import { getCheckpointer } from "./checkpointer";
-import { ingestVerdict, rememberIngested } from "./ingest-dedup";
+import {
+  INGEST_ID_WINDOW,
+  ingestVerdict,
+  rememberIngested,
+} from "./ingest-dedup";
 import {
   conversationDividerMessage,
   conversationStamp,
@@ -236,7 +241,13 @@ export async function ingestMessageIntoThread(
         params.role === "human_agent"
           ? (preRow?.recentAgentMessageIds ?? [])
           : (preRow?.recentSyncedMessageIds ?? []);
-      if (ingestVerdict(seenAlready, messageId) !== "new") {
+      // `duplicate` ONLY, and `ancient` deliberately falls through to the claim (issue #728,
+      // verifier round 4). The two answers are not the same kind of thing: a duplicate is work
+      // already done and there is nothing to say about it, while an `ancient` is an append that will
+      // NOT land and that nobody downstream reports. Refusing it out here would save a claim and
+      // cost the only line that names it, and this read can be stale besides — the answer that gets
+      // reported has to be the one taken under the claim.
+      if (ingestVerdict(seenAlready, messageId) === "duplicate") {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
@@ -334,7 +345,66 @@ export async function ingestMessageIntoThread(
         params.role === "human_agent"
           ? (row?.recentAgentMessageIds ?? [])
           : (row?.recentSyncedMessageIds ?? []);
-      if (ingestVerdict(recent, messageId) !== "new") {
+      const verdict = ingestVerdict(recent, messageId);
+      if (verdict !== "new") {
+        // AND AN `ancient` IS REPORTED FROM HERE, where the answer is authoritative (issue #728,
+        // verifier round 4, measured). The window remembers the last `INGEST_ID_WINDOW` ids per
+        // direction; past its floor this refuses the append — and refuses it SUCCESSFULLY, so the
+        // job completes, its row disappears on DONE, and until this line nothing anywhere said the
+        // words never landed. The recovery asks the same question before it arms and reports what
+        // it sees, but its read is minutes older than this one and cannot cover the window moving
+        // in between: measured live by holding the job back and saturating the window in the gap,
+        // the message was absent from memory, the job was green, and the only durable line naming
+        // it was the receiver's `human_reply_not_remembered`, which says a retry is coming.
+        //
+        // UNDECIDABLE rather than lost, for the reason its sibling carries (review r5): eviction is
+        // not absence — a reply that landed sixty-four messages ago reads exactly like one that
+        // never landed — so the line says the machinery cannot decide and a person has to read the
+        // conversation.
+        //
+        // A COLLEAGUE'S REPLY ONLY. The customer's direction reaches this same refusal, and it is
+        // not silent in the same way: that message has a delivery ledger of its own behind it, and
+        // an unanswered customer is what the loss list is for. What has nobody else to report it is
+        // the attendant's reply, which no turn ever covers because the bot did not write it.
+        if (verdict === "ancient" && params.role === "human_agent") {
+          const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.conversation.findUnique({
+              where: {
+                tenantId_chatwootInstanceId_chatwootConversationId: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  chatwootConversationId: conversationId,
+                },
+              },
+              select: { id: true, inbox: { select: { agentId: true } } },
+            }),
+          );
+          logger.error(
+            "ingest: message %s on conversation %s is older than everything this thread's memory still remembers; it was not appended, and whether it ever was cannot be decided from here",
+            String(messageId),
+            String(conversationId),
+          );
+          await writeFlowEvent(
+            {
+              tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              conversationId: conv?.id ?? null,
+              agentId: conv?.inbox?.agentId ?? null,
+              base,
+            },
+            {
+              stage: "memory",
+              level: "error",
+              status: "error",
+              detail: {
+                reason: "human_reply_append_undecidable",
+                messageId,
+                window: INGEST_ID_WINDOW,
+              },
+            },
+          );
+        }
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 

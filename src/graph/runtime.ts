@@ -112,6 +112,7 @@ import {
   handoffDeclaredSilence,
   type TurnState,
   turnDeliveredToCustomer,
+  turnReachedTheCustomer,
 } from "./tools/native";
 import type { UsagePersist } from "./usage";
 
@@ -2667,7 +2668,13 @@ async function runTurnBody(
         stage: "generate",
         level: "info",
         status: "ok",
-        detail: { turnDelivered: deliveredBalloons != null || sentAttachment },
+        detail: {
+          turnDelivered: turnReachedTheCustomer({
+            balloons: deliveredBalloons,
+            attachment: sentAttachment,
+            spokeOutsideTheReply: turnState.spokeOutsideTheReply,
+          }),
+        },
       });
     }
     status.finished(deliveredBalloons);

@@ -115,6 +115,13 @@ export interface TurnState {
   // captions written for them — in whatever order the hosts happened to answer. The order the model
   // asked for is the one that matches the words around them.
   attachmentsSeq: number;
+  // A message this turn put in front of the customer from OUTSIDE the reply path, and the one thing
+  // here that has already LEFT: the slow-tool acknowledgement ("só um instante"), which `emitAck`
+  // (prepare.ts) sends straight through the Chatwoot client. It counts no balloon and queues no
+  // attachment, so nothing else in this state knows it happened. Optional for the reason
+  // `declinedToSpeak` is: the shape is spelled out by hand at several call sites, and absent means
+  // exactly what it says — nobody recorded an ack.
+  spokeOutsideTheReply?: boolean;
 }
 
 // Isolated from TurnState on purpose: reactive turns and proactive nudges share handoff delivery,
@@ -172,6 +179,27 @@ export function handoffDeclaredSilence(
   return !!state && state.completed && !!state.declinedToSpeak;
 }
 
+// WHAT ACTUALLY REACHED THE CUSTOMER, asked when the turn is over — the other half of the pair, and
+// a different question from the one below.
+//
+// Below is what the turn had COMMITTED to at some instant mid-turn, which is all a live indicator
+// can ever have. This one is asked after the sends: the closing line and the queue have either gone
+// out or been dropped, and nothing is left to walk back. THREE sources and not one, because the
+// three ways a turn reaches a customer are counted in three different units: text in balloons, files
+// in the attachment loop, and the slow-tool acknowledgement in neither, since it goes straight out
+// through the Chatwoot client (issue #726, review round 3).
+export function turnReachedTheCustomer(sent: {
+  balloons: number | null;
+  attachment: boolean;
+  spokeOutsideTheReply?: boolean;
+}): boolean {
+  return (
+    sent.balloons != null ||
+    sent.attachment ||
+    sent.spokeOutsideTheReply === true
+  );
+}
+
 // WHETHER THIS TURN PUT SOMETHING IN FRONT OF THE CUSTOMER, asked of the turn's own state rather
 // than of what ran. The question exists for one reader — the marker `skip_reply` leaves behind,
 // which asserts a silence — and the surface it answers for is the operator's timeline (issue #726).
@@ -193,11 +221,16 @@ export function turnDeliveredToCustomer(
   turnState: TurnState | undefined,
   handoffState: HandoffTurnState | undefined,
 ): boolean {
-  // The declared silence answers FIRST, and it answers for the whole turn. It is not only "the
-  // closing line is empty": the runtime drops the attachment queue with it, because "this case
-  // receives no reply at all" cannot mean "no text, plus the document you queued two hops ago". So a
-  // turn that queued a picture AND declared the silence delivers nothing, and asking the queue alone
-  // would answer that it did (review round 1).
+  // ASKED FIRST, and the order here is the order of irreversibility. Everything below is a
+  // commitment the turn can still walk back — the closing line and the queue have not left when this
+  // is asked — and a slow-tool acknowledgement is already on the customer's phone. So it outranks
+  // the declared silence, which drops what has NOT gone out and cannot un-send what has.
+  if (turnState?.spokeOutsideTheReply) return true;
+  // The declared silence answers for everything BELOW it, and it is not only "the closing line is
+  // empty": the runtime drops the attachment queue with it, because "this case receives no reply at
+  // all" cannot mean "no text, plus the document you queued two hops ago". So a turn that queued a
+  // picture AND declared the silence delivers nothing, and asking the queue alone would answer that
+  // it did (review round 1).
   if (handoffDeclaredSilence(handoffState)) return false;
   if (handoffAnsweredTheTurn(handoffState)) return true;
   if (!turnState) return false;

@@ -358,6 +358,10 @@ describe.skipIf(!dbUp)(
         shape?: string | null;
         messageId?: number | null;
         contactInboxId?: number | null;
+        // Quem DETÉM a conversa no espelho. O default é o bot da inbox; um encalhe numa conversa que
+        // o bot da ROTA ainda segura é o caso em que a ligação de observação não faz dela uma rota
+        // de observador (review r9).
+        assigneeId?: number;
         // Omitted = the mirror knows the conversation. `false` = it does not, which is what a delivery
         // that died before the mirror write leaves.
         mirrored?: boolean;
@@ -386,7 +390,7 @@ describe.skipIf(!dbUp)(
             chatwootConversationId: convId,
             status: "open",
             assigneeType: "AgentBot",
-            assigneeId: OUR_BOT,
+            assigneeId: over.assigneeId ?? OUR_BOT,
             inboxId: inbox.id,
             threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
             lastEventAt: new Date(),
@@ -819,6 +823,38 @@ describe.skipIf(!dbUp)(
       const jobs = await ingestJobs(convId);
       expect(jobs[0]?.payload.agentId).toBe(String(watcherAgentDbId));
       expect(jobs[0]?.payload.messageId).toBe(728);
+    });
+
+    // E SEGURAR A CONVERSA ENCERRA A PERGUNTA, com linha de observação ou sem ela (review r9, que
+    // traz para cá a exceção das rodadas 8 e 11 da #476). O fork entrega também ao bot ASSINADO da
+    // conversa, e um agente que respondia esta inbox continua segurando o que lhe foi atribuído,
+    // inclusive depois de virar observador. `observerRuntimeForRoute` recusa chamar essa rota de
+    // observadora sempre que a inbox tem respondedor próprio; recuperada como do observador, ela
+    // folhearia memória numa rota que o caminho ao vivo resolve para o respondedor da inbox — em
+    // `test`, que não lembra nada.
+    test("a conversation the route's own bot holds is not an observer's route", async () => {
+      const convId = 9136;
+      pages.set(convId, [
+        restComposerReply(734, "Ninguém devia lembrar disto."),
+      ]);
+      const rowId = await seedStranded(convId, {
+        inboxId: TEST_MODE_INBOX_ID,
+        messageId: 734,
+        routeAgentBotId: WATCHER_BOT,
+        routeObserved: null,
+        // O próprio bot da rota segura a conversa.
+        assigneeId: WATCHER_BOT,
+      });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(await ingestArmedFor(convId, 734)).toBe(false);
     });
 
     // E A LIGAÇÃO MAIS NOVA QUE A ENTREGA NÃO É EVIDÊNCIA (review r6), que é a regra que o próprio

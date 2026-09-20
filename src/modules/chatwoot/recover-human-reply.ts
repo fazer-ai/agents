@@ -224,7 +224,16 @@ export async function recoverStrandedHumanReply(
           chatwootConversationId: conversationId,
         },
       },
-      select: { id: true, inboxId: true, contactInboxId: true },
+      select: {
+        id: true,
+        inboxId: true,
+        contactInboxId: true,
+        // WHO HOLDS IT, which is half of the answer to "was this an observer's route?" — see the
+        // exception below. The mirror is the only source here: there is no payload to prefer, which
+        // is the same fallback the receiver makes for a silent one.
+        assigneeType: true,
+        assigneeId: true,
+      },
     });
     if (!conv) return null;
     // THE MIRROR KNOWS THE CONVERSATION AND NOT ITS INBOX, which is a THIRD state and not the
@@ -285,9 +294,22 @@ export async function recoverStrandedHumanReply(
               select: { agentId: true },
             })
           )?.agentId ?? null);
+    // HOLDING THE CONVERSATION ENDS THE QUESTION, row or no row (issue #476 review, rounds 8 and 11,
+    // brought here by review r9). The fork delivers to the conversation's assignee bot as well, and
+    // an agent that used to answer this inbox keeps holding what it was assigned — including after
+    // it becomes the watcher. `observerRuntimeForRoute` refuses to call that route an observer's
+    // whenever the inbox has a responder of its own, which it does here by construction (the read
+    // above returns null without one). Recovered as an observer's, a strand on a conversation this
+    // bot holds would fold a reply into memory on a route the live path resolves to the inbox's
+    // responder — a `test`-mode one remembering nothing.
+    const heldByRouteBot =
+      conv.assigneeType === "AgentBot" &&
+      conv.assigneeId !== null &&
+      conv.assigneeId === row.routeAgentBotId;
     const observed =
       row.routeObserved ??
-      (routeBotAgentId !== null &&
+      (!heldByRouteBot &&
+        routeBotAgentId !== null &&
         routeBotAgentId !== inbox.agentId &&
         (await db.inboxObserver.count({
           where: {

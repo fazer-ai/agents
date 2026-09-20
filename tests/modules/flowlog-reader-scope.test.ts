@@ -247,6 +247,10 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/playground-guardrails.test.ts": 1,
   "tests/modules/reengage.test.ts": 3,
   "tests/modules/model-fallback-turn.test.ts": 1,
+  // #737: duas leituras, e as duas são tenant-wide de propósito. O sujeito de uma é QUANTAS linhas
+  // uma morte escreveu, e o da outra é sob QUAL tenant a linha caiu; nenhuma das unidades que morrem
+  // ali tem turno para uma leitura mais estreita se prender.
+  "tests/modules/scheduler-dead-letter-erased.test.ts": 2,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,
   "tests/modules/spend-ceiling-poll.test.ts": 6,

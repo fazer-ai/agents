@@ -395,6 +395,42 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await semear(901, { messageId: null });
     // And when the two disagree, the key wins: this payload claims to be from before the boundary.
     await semear(902, { messageId: 1 });
+    // Three keys the reader cannot parse, seeded by hand because `ingestDedupeKey` cannot produce
+    // them: no suffix at all, a suffix that is not decimal, and one too long for the bigint the
+    // comparison casts to. All three go, because "above" is what spares and none of them proves it.
+    // The last one also says why the parse is bounded rather than `[0-9]+`: an unbounded cast would
+    // abort the whole reset on a row like this instead of deleting it.
+    for (const chave of [
+      `ingest:${graphThreadId}:`,
+      `ingest:${graphThreadId}:9a0`,
+      `ingest:${graphThreadId}:99999999999999999999`,
+    ]) {
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: chave,
+          runAt: new Date(),
+          status: "PENDING",
+          payload: {},
+        },
+      });
+    }
+    // And a neighbouring thread whose id starts with this one's, which only the trailing colon on
+    // the prefix keeps out: `…:ci:12522` against `…:ci:125220`.
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: ingestDedupeKey(
+          contactInboxThreadId(tenantId, instanceId, 125_220),
+          700,
+        ),
+        runAt: new Date(),
+        status: "PENDING",
+        payload: {},
+      },
+    });
 
     const apagadas = await runScopedOn(
       appDb,
@@ -407,7 +443,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
           800,
         ),
     );
-    expect(apagadas).toBe(1);
+    expect(apagadas).toBe(4);
     const restantes = await suDb.schedulerJob.findMany({
       where: {
         tenantId,
@@ -421,6 +457,85 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       `ingest:${graphThreadId}:900`,
       `ingest:${graphThreadId}:901`,
       `ingest:${graphThreadId}:902`,
+    ]);
+  });
+
+  // ONE STATEMENT, AND THAT IS THE ASSERTION (PR review round 1). The first version of this fence
+  // read the ids with `findMany` and deleted by id, which reads correctly and is still wrong: the
+  // caller's transaction runs at READ COMMITTED and `armIngest` takes neither the thread's queue
+  // nor its conversation row, so a delayed pre-reset delivery arming BETWEEN the two statements is
+  // absent from the id list and survives the reset, free to put pre-reset text back into the
+  // cleared thread. One statement sees rows committed up to its own start, which is the window the
+  // unqualified sweep always had rather than a wider one.
+  //
+  // Asserted structurally because the race itself is not reachable from a test: it needs a second
+  // connection committing at a controlled instant inside the reset. What IS checkable is the shape
+  // the review asked for, and the shape is what the fix is. A count alone would not catch a form
+  // that reads once and deletes once under a different name, so the kind is asserted too.
+  test("the bounded revoke is a single DELETE, not a read followed by a delete", async () => {
+    const contactInboxId = 12_523;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    for (const id of [700, 900]) {
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: ingestDedupeKey(graphThreadId, id),
+          runAt: new Date(),
+          status: "PENDING",
+          payload: { messageId: id },
+        },
+      });
+    }
+    // Its own client, because the shared one is built without the query log and the count has to
+    // come from what Postgres was actually asked, not from reading the source.
+    const espiao = new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: process.env.TEST_APP_DATABASE_URL,
+      }),
+      log: [{ emit: "event", level: "query" }],
+    } as never);
+    const sql: string[] = [];
+    (
+      espiao as unknown as {
+        $on: (e: string, f: (q: { query: string }) => void) => void;
+      }
+    ).$on("query", (q) => {
+      if (q.query.includes("scheduler_jobs")) sql.push(q.query);
+    });
+    try {
+      await runScopedOn(
+        espiao,
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        (db) =>
+          revokeJobsByKeyPrefixOn(
+            db,
+            "INGEST_MESSAGE",
+            `ingest:${graphThreadId}:`,
+            800,
+          ),
+      );
+    } finally {
+      await espiao.$disconnect();
+    }
+    expect(sql).toHaveLength(1);
+    expect(sql[0]).toMatch(/^\s*DELETE FROM scheduler_jobs/i);
+    // And it did the work, so the assertion is about a statement that ran rather than one that was
+    // skipped: 700 goes, 900 stays.
+    const restantes = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { startsWith: `ingest:${graphThreadId}:` },
+      },
+      select: { dedupeKey: true },
+    });
+    expect(restantes.map((r) => r.dedupeKey)).toEqual([
+      ingestDedupeKey(graphThreadId, 900),
     ]);
   });
 

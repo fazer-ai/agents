@@ -558,26 +558,6 @@ export function jobNotRetiredSql(job: ClaimedJob): Prisma.Sql {
 // starting a second transaction there is a deadlock the moment the pool is down to its last one, and
 // `DB_POOL_MAX=1` is a supported setting. Nothing here needs a transaction of its own anyway: the
 // caller's is the one whose atomicity matters.
-// Does this key name a message ABOVE the boundary? Anything else is false, and the asymmetry is the
-// point: "above" is what SPARES a row, so a key that cannot be read does not get spared on evidence
-// nobody has. `ingestDedupeKey` makes that unreachable for the one caller with a boundary (the
-// suffix is always decimal digits), and stating the unreadable case here is what keeps a second
-// writer from inheriting a silent spare.
-//
-// Exported for the test that reads it directly: the rule is one line and the round that wrote it
-// got the direction wrong twice before landing here.
-export function aboveKeyedMessageId(
-  dedupeKey: string,
-  prefix: string,
-  atOrBelowMessageId: number,
-): boolean {
-  if (!dedupeKey.startsWith(prefix)) return false;
-  const suffix = dedupeKey.slice(prefix.length);
-  if (!/^\d+$/.test(suffix)) return false;
-  const id = Number(suffix);
-  return Number.isSafeInteger(id) && id > atOrBelowMessageId;
-}
-
 export async function revokeJobsByKeyPrefixOn(
   db: ScopedDb,
   kind: SchedulerJobKind,
@@ -597,21 +577,28 @@ export async function revokeJobsByKeyPrefixOn(
   // cleared thread, and that duty does not depend on the command having an id. The two are one line
   // apart and part company here, which is why it is said out loud.
   //
-  // READ FROM THE KEY, not from `payload.messageId`, and that is the whole reason this is not a
-  // one-line `where` clause. `payload` is a convenience copy: a row whose payload does not name a
-  // message is undecidable, and Prisma renders every JSON path comparison with a
-  // `JSONB_TYPEOF(...) = 'number'` guard — inside a `NOT` as much as outside it, measured — so no
-  // filter the query builder can express even sees such a row. Whichever way it is written, the
-  // payload form gets one of the two sides wrong: as `lte` the undecidable row below the boundary
-  // survives holding text the reset was asked to erase, and as "delete what is not provably above"
-  // the undecidable row ABOVE it is deleted, which is the customer message this fence exists to
-  // save.
+  // READ FROM THE KEY, not from `payload.messageId`, and evaluated INSIDE the delete. Two things
+  // forced that, and they pull in the same direction.
   //
-  // The key always answers. `ingestDedupeKey` builds `ingest:<thread>:<messageId>` and the caller's
-  // prefix is `ingest:<thread>:`, so what follows the prefix IS the message id, in decimal — and
-  // the trailing colon is what keeps thread 10's prefix from matching thread 100's rows. That makes
-  // this parameter meaningful only for a kind whose key ends in the message id, which is the one
-  // caller it has.
+  // The key, because `payload` is a convenience copy a row could be missing, and Prisma renders
+  // every JSON path comparison with a `JSONB_TYPEOF(...) = 'number'` guard — inside a `NOT` as much
+  // as outside it, measured — so no filter the query builder can express even sees such a row.
+  // Whichever way the payload form is written it gets one of the two sides wrong: as `lte` the
+  // undecidable row BELOW the boundary survives holding text the reset was asked to erase, and as
+  // "delete what is not provably above" the one ABOVE it is deleted, which is the customer message
+  // this fence exists to save. `ingestDedupeKey` builds `ingest:<thread>:<messageId>` from
+  // `ingestKeyPrefix`, so what follows the prefix IS the message id, in decimal.
+  //
+  // Inside the delete, because reading the ids first and deleting by id opens a window this
+  // statement does not have (PR review round 1): `runScopedOn` runs at READ COMMITTED and
+  // `armIngest` takes neither the ingestion queue nor the thread row, so a delayed pre-reset
+  // delivery arming between the read and the delete is absent from the id list and SURVIVES the
+  // reset. One statement sees rows committed up to its own start, which is the same window the
+  // unqualified sweep always had rather than a wider one.
+  //
+  // The unreadable suffix is DELETED, and that asymmetry is deliberate: "above" is what spares a
+  // row, so a key this cannot parse is not spared on evidence nobody has. The bound is therefore
+  // meaningful only for a kind whose key ends in the message id, which is the one caller it has.
   atOrBelowMessageId?: number,
 ): Promise<number> {
   {
@@ -630,33 +617,6 @@ export async function revokeJobsByKeyPrefixOn(
       },
       dedupeKey: { startsWith: prefix },
     };
-    // Read, decide here, delete by id — two statements inside the caller's transaction, so nothing
-    // can be armed between them. The rows come back in full because the decision lives in the key
-    // and Postgres would need a cast and a regex to make the same comparison; this reads one
-    // thread's queued ingestions, which is a handful of rows, not a table scan.
-    const alvo =
-      atOrBelowMessageId === undefined
-        ? where
-        : {
-            ...where,
-            id: {
-              in: (
-                await db.schedulerJob.findMany({
-                  where,
-                  select: { id: true, dedupeKey: true },
-                })
-              )
-                .filter(
-                  (r) =>
-                    !aboveKeyedMessageId(
-                      r.dedupeKey,
-                      prefix,
-                      atOrBelowMessageId,
-                    ),
-                )
-                .map((r) => r.id),
-            },
-          };
     // DELETED where the kind says a finished row leaves nothing behind. Marking it DONE is how the
     // two cancellations above retire a row, and for a reusable key that is exactly right — but a
     // revoked ingestion can never reach `completeJob`, which is where JOB_DELETE_ON_DONE is normally
@@ -664,13 +624,36 @@ export async function revokeJobsByKeyPrefixOn(
     // would sit there forever holding the encrypted message body the reset was asked to erase, on a
     // table nothing sweeps. Reading the same map is what keeps the two answers from drifting.
     if (JOB_DELETE_ON_DONE[kind]) {
-      return (await db.schedulerJob.deleteMany({ where: alvo })).count;
+      if (atOrBelowMessageId === undefined) {
+        return (await db.schedulerJob.deleteMany({ where })).count;
+      }
+      // Raw because the boundary lives in the key and Prisma cannot express the parse; the tenant
+      // fence is the same one every statement here relies on, `SET LOCAL app.tenant_id` under the
+      // caller's transaction (../../lib/tenancy/multi-tenant.ts), which RLS applies to raw SQL
+      // exactly as it does to the query builder.
+      //
+      // `{1,18}` and not `+`: a suffix of thirty digits would overflow the bigint cast and abort
+      // the reset, and a message id that long is not a message id. It falls to the unreadable side,
+      // which deletes.
+      //
+      // The LIKE pattern is escaped because this function takes any prefix; the one caller's is
+      // digits and colons, and the next one's may not be.
+      const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
+      return await db.$executeRaw`
+        DELETE FROM scheduler_jobs
+         WHERE kind::text = ${kind}
+           AND status::text IN ('PENDING', 'CLAIMED', 'DEAD')
+           AND dedupe_key LIKE ${like}
+           AND NOT (
+                 substring(dedupe_key from char_length(${prefix}) + 1) ~ '^[0-9]{1,18}$'
+             AND (substring(dedupe_key from char_length(${prefix}) + 1))::bigint > ${atOrBelowMessageId}
+           )`;
     }
     // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
     // would erase the dead-letter the operator may still need to see.
     return (
       await db.schedulerJob.updateMany({
-        where: { ...alvo, status: { in: ["PENDING", "CLAIMED"] } },
+        where: { ...where, status: { in: ["PENDING", "CLAIMED"] } },
         data: { status: "DONE" },
       })
     ).count;

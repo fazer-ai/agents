@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
+import { ingestDedupeKey } from "@/graph/ingest-job";
 import { createChatwootClient } from "@/modules/chatwoot/client";
 import {
   recoverStrandedHumanReply,
@@ -415,6 +417,63 @@ describe.skipIf(!dbUp)(
         .filter((r) => r.payload.conversationId === convId);
     }
 
+    // PELA IDENTIDADE DO APPEND, e não pelo tamanho de uma população. `ingest:<thread>:<messageId>`
+    // nomeia exatamente um append (../../src/graph/ingest-job.ts), e a chave é pedida ao construtor
+    // que o produto usa, em vez de remontada à mão: o formato passa a viver num lugar só (#723,
+    // #731). Uma negativa contada — "a leitura desta conversa voltou vazia" — afirma sobre um número
+    // que este módulo move de propósito, porque a linha é apagada ao concluir e `drainPendingIngest`
+    // drena as pendentes da thread.
+    //
+    // A THREAD É A DO CONTACT-INBOX, que é por onde a memória é chaveada, e a convenção deste
+    // arquivo é `91_000 + convId` (o `seedStranded` acima). Montada com a thread da CONVERSA, a
+    // pergunta responde "não armada" para tudo e faz as treze negativas passarem por construção.
+    function threadOf(convId: number) {
+      return contactInboxThreadId(tenantId, instanceId, 91_000 + convId);
+    }
+
+    async function ingestArmedOn(graphThreadId: string, messageId: number) {
+      return (
+        (await suDb.schedulerJob.findFirst({
+          where: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: ingestDedupeKey(graphThreadId, messageId),
+          },
+          select: { id: true },
+        })) !== null
+      );
+    }
+
+    async function ingestArmedFor(convId: number, messageId: number) {
+      return ingestArmedOn(threadOf(convId), messageId);
+    }
+
+    // O INSTRUMENTO ANTES DO PRIMEIRO CENÁRIO. Treze testes deste arquivo provam uma AUSÊNCIA com
+    // esta pergunta, e uma pergunta errada responde "não armada" para tudo: o verde delas seria a
+    // chave não casar, não a ausência do append. Aqui a chave é plantada de propósito nas duas
+    // grafias que o arquivo usa, e o que se afirma é que a pergunta ACHA o que existe e não acha o
+    // vizinho de id.
+    test("the question the negatives ask fires on a row that exists", async () => {
+      const convId = 9199;
+      for (const threadId of [
+        threadOf(convId),
+        chatwootThreadId(tenantId, instanceId, convId),
+      ]) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: ingestDedupeKey(threadId, 799),
+            payload: { conversationId: convId, messageId: 799 },
+            runAt: new Date(),
+          },
+        });
+        expect(await ingestArmedOn(threadId, 799)).toBe(true);
+        expect(await ingestArmedOn(threadId, 798)).toBe(false);
+      }
+      expect(await ingestArmedFor(convId, 799)).toBe(true);
+    });
+
     // O QUE A ISSUE CONSERTA. A resposta se perdeu porque o enfileiramento estava fora do ar, e a
     // varredura arma a releitura: a mensagem é lida de volta pelo id que a linha guarda desde a #469, e
     // o append é armado com o PAPEL certo — `human_agent`, que é o que põe a resposta em
@@ -441,7 +500,7 @@ describe.skipIf(!dbUp)(
       // THIS message is queued" instead of "one more job than before exists", which would keep
       // agreeing with itself if a neighbour armed the wrong message on the same conversation.
       expect(jobs.map((j) => j.dedupeKey)).toEqual([
-        `ingest:${tenantId}:${instanceId}:ci:${91_000 + convId}:700`,
+        ingestDedupeKey(threadOf(convId), 700),
       ]);
       expect(jobs[0]?.payload.role).toBe("human_agent");
       expect(jobs[0]?.payload.messageId).toBe(700);
@@ -485,7 +544,7 @@ describe.skipIf(!dbUp)(
         }),
       ).toBe("not-owed");
 
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 701)).toBe(false);
       // E RECUSADO ANTES DA REDE, que é o outro lado da mesma decisão: a rota resolvida não depende de
       // nada que só a mensagem diga, então ler a página primeiro custaria uma ida ao Chatwoot por eco,
       // em toda instalação com um provedor desses.
@@ -534,7 +593,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 703)).toBe(false);
     });
 
     // A PERDA PERMANENTE NÃO VIRA REARME. Uma conversa que nem o payload nem o espelho sabem nomear um
@@ -556,7 +615,12 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(
+        await ingestArmedOn(
+          chatwootThreadId(tenantId, instanceId, convId),
+          704,
+        ),
+      ).toBe(false);
     });
 
     // A CERCA DA LEITURA DEGRADADA, que espelha a `rebuiltInbound` da recuperação vizinha. A linha é a
@@ -578,7 +642,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("unreachable");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 705)).toBe(false);
     });
 
     // A MENSAGEM QUE O CHATWOOT NÃO TEM MAIS é um veredito, não uma falha: apagada, ou a conversa foi.
@@ -596,7 +660,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 706)).toBe(false);
     });
 
     // A CONTA QUE NÃO RESPONDE É ADIAMENTO. Reparável por um operador, e a próxima tentativa pode ter
@@ -614,7 +678,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("unreachable");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 707)).toBe(false);
     });
 
     // O ESPELHO QUE AINDA NÃO CONHECE A CONVERSA não é veredito: uma entrega que morreu antes da
@@ -656,7 +720,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 709)).toBe(false);
     });
 
     // A ROTA DA ENTREGA DECIDE DE QUEM É A MEMÓRIA, não a inbox (review r1). O Chatwoot entrega a
@@ -740,7 +804,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 714)).toBe(false);
     });
 
     // A ÚNICA RECUSA AQUI QUE PROTEGE CONTRA DANO ATIVO, e não contra trabalho perdido (review r1).
@@ -766,7 +830,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 715)).toBe(false);
       // E SEM IR AO CHATWOOT: numa conversa já limpa, a leitura da página é uma chamada por resposta
       // encalhada de um episódio inteiro, e a resposta não depende de nada que só a mensagem diga.
       expect(calls.slice(before)).toEqual([]);
@@ -796,7 +860,7 @@ describe.skipIf(!dbUp)(
             makeClient,
           }),
         ).toBe("not-owed");
-        expect(await ingestJobs(convId)).toEqual([]);
+        expect(await ingestArmedFor(convId, 717)).toBe(false);
       } finally {
         resetDuringRead.delete(convId);
       }
@@ -866,7 +930,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 724)).toBe(false);
     });
 
     // O APPEND QUE JÁ NÃO PODE POUSAR DIZ ISSO, em vez de terminar dizendo que deu certo (review
@@ -899,7 +963,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("gone");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 700)).toBe(false);
       // E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo (verificador,
       // rodada 2). Sem isto, a única linha nomeando esta mensagem continua sendo
       // `human_reply_not_remembered`, escrita pelo receptor no instante da perda — e aquela razão diz
@@ -949,7 +1013,7 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("not-owed");
-      expect(await ingestJobs(convId)).toEqual([]);
+      expect(await ingestArmedFor(convId, 725)).toBe(false);
       // Nem esta: a resposta já está na memória e a página não decide nada disso.
       expect(calls.slice(before)).toEqual([]);
     });

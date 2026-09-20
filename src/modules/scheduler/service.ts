@@ -650,46 +650,75 @@ export interface ErasedDeath {
   jobId: bigint;
   dedupeKey: string;
   error: string;
+  // A TRANSAÇÃO que apagou a linha, para o anúncio poder perguntar ao Postgres se ela durou. É o
+  // `xid8` da transação do CHAMADOR, porque é nela que o `DELETE` corre.
+  xid: string;
 }
 
 export async function announceErasedDeaths(
   deaths: ErasedDeath[],
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  if (deaths.length === 0) return;
-  // THE DELETION IS CONFIRMED, NOT INFERRED (review round 3, measured by the scenario runner).
-  //
-  // The caller's transaction may have rolled the DELETE back, and the obvious way to know is to ask
-  // the caller whether its step threw. That answer is not reliable: a Postgres block already in the
-  // aborted state accepts `COMMIT` and replies `ROLLBACK` without an error, so a `try/catch` around
-  // any statement inside the caller's callback makes the promise resolve over a transaction that
-  // kept nothing. The reset has no such catch today, which means the invariant stands on the
-  // ABSENCE of one — the shape that holds until somebody adds a guard for an unrelated reason.
-  //
-  // So the row is asked instead. A death whose row is back is a death nobody erased, and the
-  // announcement it was owed is owed again to whoever finds it next: the generic announcer still
-  // holds the claim, and the receipt is not there for it to trip on.
-  //
-  // One query per tenant, and none at all in the ordinary case, where nothing was erased.
-  const porTenant = new Map<bigint, ErasedDeath[]>();
-  for (const death of deaths) {
-    const lista = porTenant.get(death.tenantId);
-    if (lista) lista.push(death);
-    else porTenant.set(death.tenantId, [death]);
-  }
-  const voltaram = new Set<bigint>();
-  for (const [tenantId, doTenant] of porTenant) {
-    const ids = doTenant.map((d) => d.jobId);
-    const vivos = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.schedulerJob.findMany({
-        where: { id: { in: ids } },
-        select: { id: true },
-      }),
+  // NEVER THROWS, and the boundary is here rather than at each call site (review round 5). This is
+  // the one place in the announcement that AWAITS a query, so a pool timeout on it would propagate
+  // into whatever the caller was doing — for `/reset`, aborting the cleanup steps and the
+  // acknowledgement AFTER the memory was already deleted, which is the one outcome the command's
+  // step-by-step error handling exists to prevent. A trail line that cannot be written is not a
+  // reason to fail the work it describes (docs/logs.md), and the same rule already governs
+  // `dispatchDeadLetter`.
+  try {
+    await announceErasedDeathsOrThrow(deaths, base);
+  } catch (err) {
+    logger.warn(
+      { err, deaths: deaths.length },
+      "scheduler: erased-death announcement failed",
     );
-    for (const row of vivos) voltaram.add(row.id);
   }
+}
+
+async function announceErasedDeathsOrThrow(
+  deaths: ErasedDeath[],
+  base: PrismaClient,
+): Promise<void> {
+  if (deaths.length === 0) return;
+  // THE DELETION IS CONFIRMED BY THE DATABASE, NOT INFERRED FROM ANYTHING ELSE (review rounds 3
+  // and 5).
+  //
+  // Two inferences were tried and both are wrong. Asking the CALLER whether its step threw fails
+  // because a Postgres block already in the aborted state accepts `COMMIT` and replies `ROLLBACK`
+  // without an error, so any `try/catch` inside the caller's callback makes the promise resolve
+  // over a transaction that kept nothing (measured). Asking whether the ROW is back fails because
+  // absence proves that SOMEBODY deleted it, not that THIS revoke did: a reset that rolled back,
+  // with a second queued reset deleting the restored row and announcing it, leaves the first one
+  // looking at an absent row and announcing the same death again.
+  //
+  // `pg_xact_status` answers the actual question. The revoke's DELETE runs in the caller's
+  // transaction and hands back its `xid8`; here the commit log says `committed`, `aborted` or
+  // `in progress`, and only the first earns a line. Anything else stays quiet, which is the cheap
+  // side of the trade: a lost line leaves the death where the next reader finds it, a duplicated
+  // one cannot be retracted. `in progress` also means the caller announced before its own
+  // transaction ended, which is a misuse worth naming out loud.
+  //
+  // One query, and none at all in the ordinary case, where nothing was erased.
+  const xids = [...new Set(deaths.map((d) => d.xid))];
+  const status = new Map<string, string | null>();
+  const rows = await asSuperAdminOn(base, (db) =>
+    db.$queryRaw<Array<{ xid: string; st: string | null }>>(Prisma.sql`
+      SELECT x::text AS xid, pg_xact_status(x) AS st
+        FROM unnest(${xids}::xid8[]) AS x`),
+  );
+  for (const row of rows) status.set(row.xid, row.st);
   for (const death of deaths) {
-    if (voltaram.has(death.jobId)) continue;
+    const st = status.get(death.xid) ?? null;
+    if (st !== "committed") {
+      if (st === "in progress") {
+        logger.warn(
+          { jobId: String(death.jobId), kind: death.kind },
+          "scheduler: erased-death announcement asked before the caller's transaction ended",
+        );
+      }
+      continue;
+    }
     emitDeadLetter({
       tenantId: death.tenantId,
       unit: "job",
@@ -778,6 +807,7 @@ export async function revokeJobsByKeyPrefixOn(
           tenant_id: bigint;
           dedupe_key: string;
           last_error: string | null;
+          xid: string;
           unannounced_death: boolean;
         }>
       >(Prisma.sql`
@@ -786,6 +816,7 @@ export async function revokeJobsByKeyPrefixOn(
            AND status IN ('PENDING', 'CLAIMED', 'DEAD')
            AND dedupe_key LIKE ${like}
         RETURNING id, tenant_id, dedupe_key, last_error,
+                  pg_current_xact_id()::text AS xid,
                   (status = 'DEAD'
                    AND payload->>${DEAD_LETTER_ANNOUNCED}
                        IS DISTINCT FROM claim_seq::text)
@@ -808,6 +839,7 @@ export async function revokeJobsByKeyPrefixOn(
               row.last_error === null
                 ? REAPED_DEATH_ERROR
                 : row.last_error || UNRECORDED_DEATH_ERROR,
+            xid: row.xid,
           })),
       };
     }

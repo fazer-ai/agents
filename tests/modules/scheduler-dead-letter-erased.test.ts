@@ -624,6 +624,66 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     );
   });
 
+  // ACHADO DA RODADA 5. Ausência de linha prova que ALGUÉM apagou, não que foi ESTE revoke: um
+  // /reset que desfez, com um segundo /reset apagando a linha restaurada e anunciando, deixa o
+  // primeiro olhando para uma linha ausente e anunciando a mesma morte de novo. Quem responde isso
+  // é o Postgres, sobre a transação em que o DELETE correu.
+  test("o revoke desfeito não anuncia nem quando OUTRO reset apagou a linha depois", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s17:1");
+    const lote = await reapStaleJobs(
+      1_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(1);
+
+    // Reset A: revoga e desfaz.
+    let mortesA: Awaited<
+      ReturnType<typeof revokeJobsByKeyPrefixOn>
+    >["erasedDeaths"] = [];
+    await expect(
+      runScopedOn(appDb, ctx(), async (db) => {
+        mortesA = (
+          await revokeJobsByKeyPrefixOn(db, "INGEST_MESSAGE", "ingest:t-s17:")
+        ).erasedDeaths;
+        throw new Error("o delete do checkpoint falhou");
+      }),
+    ).rejects.toThrow("o delete do checkpoint falhou");
+    expect(mortesA).toHaveLength(1);
+
+    // Reset B: a linha voltou, e este commita e anuncia.
+    expect(await revoga("ingest:t-s17:", "INGEST_MESSAGE")).toBe(1);
+    expect(await mortesAnunciadas()).toHaveLength(1);
+
+    // Só então A anuncia, olhando para uma linha que de fato não está lá. Uma linha, não duas.
+    await announceErasedDeaths(mortesA, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(1);
+  });
+
+  // O anúncio é trilha, e trilha que não consegue ser escrita não derruba o trabalho que ela
+  // descreve. Aqui a própria pergunta ao Postgres falha (transação no futuro), que é o degrau em
+  // que um timeout de pool cairia.
+  test("uma falha ao conferir a exclusão não escapa para o chamador", async () => {
+    await limpa();
+    const futuro = await suDb.$queryRaw<Array<{ x: string }>>`
+      SELECT (pg_current_xact_id()::text::bigint + 1000000)::text AS x`;
+    const morte = {
+      tenantId,
+      kind: "INGEST_MESSAGE" as const,
+      jobId: 1n,
+      dedupeKey: "ingest:t-s18:1",
+      error: "qualquer",
+      xid: futuro[0]?.x as string,
+    };
+    // Não lança...
+    await announceErasedDeaths([morte], appDb);
+    // ...e não escreve nada, porque a exclusão não foi confirmada.
+    expect(await mortesAnunciadas()).toHaveLength(0);
+  });
+
   // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um
   // chamador só — mas um conserto amarrado ao literal `INGEST_MESSAGE` deixaria este exposto no dia
   // em que aparecer o segundo, e o dia não avisa.

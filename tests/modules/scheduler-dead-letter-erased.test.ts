@@ -393,6 +393,38 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(dB.dedupeKey).toBe("ingest:t-b:1");
   });
 
+  // A morte que o reaper matou sem NINGUÉM ter registrado um erro: um claim que travou não chega ao
+  // `failJob`, então a linha não diz por que morreu, e o revoke que a apaga só tem a linha para
+  // citar. Sem a sentença gravada, o operador recebe um anúncio sem causa.
+  test("a morte sem erro registrado ainda chega nomeando o que a matou", async () => {
+    await limpa();
+    const id = await claimedAndStale("INGEST_MESSAGE", "ingest:t-s9:91");
+    await suDb.$executeRaw`UPDATE scheduler_jobs SET last_error = NULL WHERE id = ${id}`;
+    await morreComoReaper("INGEST_MESSAGE", async () => {
+      expect(await revoga("ingest:t-s9:", "INGEST_MESSAGE")).toBe(1);
+    });
+    const linhas = await mortesAnunciadas();
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]?.errorMessage ?? "").toBe(
+      "reaped: the claim never finished",
+    );
+  });
+
+  // O `LIKE` do revoke é montado à mão agora que a exclusão precisa de RETURNING, e `_` e `%` são
+  // caracteres comuns numa dedupeKey. Sem escapar, o `_` vira coringa e o revoke de uma thread leva
+  // a morte da vizinha junto — apagada e anunciada sob a chave errada.
+  test("um sublinhado na chave não faz o revoke alcançar a thread vizinha", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t_s10:1");
+    await claimedAndStale("INGEST_MESSAGE", "ingest:txs10:1");
+    expect(await revoga("ingest:t_s10:", "INGEST_MESSAGE")).toBe(1);
+    const restante = await suDb.schedulerJob.findMany({
+      where: { tenantId },
+      select: { dedupeKey: true },
+    });
+    expect(restante.map((r) => r.dedupeKey)).toEqual(["ingest:txs10:1"]);
+  });
+
   // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um
   // chamador só — mas um conserto amarrado ao literal `INGEST_MESSAGE` deixaria este exposto no dia
   // em que aparecer o segundo, e o dia não avisa.

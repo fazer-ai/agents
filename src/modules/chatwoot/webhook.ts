@@ -3471,15 +3471,7 @@ async function maybeConsumeCommandOrGate(params: {
                 "INGEST_MESSAGE",
                 `ingest:${graphThreadId}:`,
               );
-              await clearContactMemory({
-                db,
-                checkpointer: await getCheckpointer(),
-                tenantId,
-                instanceId,
-                contactInboxId,
-                threadId: graphThreadId,
-              });
-              // AND THE FACT THAT IT WORKED, written by the transaction that did it (issue #728,
+              // AND THE FACT THAT IT WORKED, written by the transaction that does it (issue #728,
               // review r7/r8). `reset_at_message_id` above says the operator TYPED the command; it
               // is committed by an earlier, independent statement and stays put when this step
               // refuses — which it does by design, on the thread a turn is already writing, with the
@@ -3488,11 +3480,18 @@ async function maybeConsumeCommandOrGate(params: {
               // the ingestion append), and an append refused on the strength of a clearing that did
               // not happen is a colleague's reply dropped from a memory nobody ever emptied.
               //
-              // So the append's fence reads THIS one, which cannot exist without the deletions
-              // beside it: the same transaction, after them, rolled back with them. The other three
-              // keep the old column deliberately — their question is about the operator's intent
-              // ("do not answer what the command erased"), which a failed clear does not take back,
-              // while the append's question is about the memory itself.
+              // So the append's fence reads THIS one, which cannot survive without the deletions
+              // beside it: same transaction, rolled back with them.
+              //
+              // BEFORE `clearContactMemory` AND NOT AFTER (review r12), which is not a style
+              // preference: that helper deletes the rows first and the CHECKPOINT last precisely so
+              // a failed checkpoint delete rolls the rows back, and the checkpoint goes through a
+              // SEPARATE pool that no rollback of ours reaches. A statement of ours after it can
+              // still fail — a concurrent update on this conversation holding the row until the
+              // scoped transaction times out is enough — and the rollback would then restore the
+              // thread and its summaries beside a checkpoint that is already gone, which is exactly
+              // the half-erased state the helper's ordering exists to prevent. Written here, a
+              // failed clear takes the boundary back with everything else.
               //
               // `GREATEST` for the reason the boundary above has it: two `/reset` deliveries are
               // dispatched detached and the older one can finish last.
@@ -3503,6 +3502,14 @@ async function maybeConsumeCommandOrGate(params: {
                            GREATEST(memory_cleared_at_message_id, ${commandMessageId})
                    WHERE id = ${ctx.conv.id}`;
               }
+              await clearContactMemory({
+                db,
+                checkpointer: await getCheckpointer(),
+                tenantId,
+                instanceId,
+                contactInboxId,
+                threadId: graphThreadId,
+              });
             }),
         ),
       );

@@ -6399,7 +6399,16 @@ export async function processChatwootDelivery(
   // logo abaixo desta, com a regra de marca que só ela tem (um observador desligado não marca, issue
   // #476). Sem o termo, uma conversa em posse humana sob observador seria liquidada aqui antes de
   // aquele bloco decidir, e o erro diria a parada errada.
-  const settlesHere = isNewIncoming && (!act || consumed) && !observerHolds;
+  // ...E O REPLAY QUE SÓ DEVE MEMÓRIA ENTRA POR `!act` (issue #725, rodada 1 de review). A pergunta
+  // deste termo é "nenhum turno atendeu esta mensagem nesta passada", e no replay isso é verdade por
+  // decisão gravada na linha em vez de por posse: o gate do turno lá em cima já o calou. Fora daqui,
+  // a marca não avança e a linha fecha assim mesmo — e aí, com o debounce ligado, a rajada seguinte
+  // coalesce esta mensagem e o turno a responde, que é o defeito desta issue voltando por outra
+  // porta. MEDIDO: `last_handled_message_id` ficava nulo com a linha em `PROCESSED`.
+  const settlesHere =
+    isNewIncoming &&
+    (!act || consumed || params.owesMemoryOnly === true) &&
+    !observerHolds;
   const settleAwaitsIngest = settlesHere && !consumed && routeRemembers;
   // WHAT THIS PASS OWES, RECORDED WHERE IT IS DECIDED AND BEFORE THE ARM THAT CAN FAIL (issue #725).
   //
@@ -6616,7 +6625,21 @@ export async function processChatwootDelivery(
       n,
       // `stoodDownUnread` entra pela mesma porta que o observador (issue #688): `act` é o que diz à
       // ingestão "um turno cobriu isto", e aqui nenhum cobriu.
-      act: act && !observing && !handedToObserver && !stoodDownUnread,
+      //
+      // E O REPLAY QUE SÓ DEVE MEMÓRIA ENTRA PELA MESMA PORTA (issue #725, rodada 1 de review), que é
+      // a razão de esta subtração existir e não uma cortesia. O gate do turno lá em cima já o calou,
+      // mas `act` continua verdadeiro, e daqui em diante `act` quer dizer "um turno cobriu esta
+      // mensagem" — o que é falso. Sem isto `unhandledByOwnership` recusa a mensagem, a ingestão
+      // devolve "nothing", e o replay fecha a linha como recuperada sem ter enfileirado append
+      // nenhum: a mensagem sai da lista de perdas e não está em memória nenhuma. MEDIDO: zero jobs
+      // `INGEST_MESSAGE` na conversa, com o desfecho dizendo `recovered`. Trocar a resposta duplicada
+      // por uma perda silenciosa é o pior dos dois (issue #228).
+      act:
+        act &&
+        !observing &&
+        !handedToObserver &&
+        !stoodDownUnread &&
+        params.owesMemoryOnly !== true,
       consumed,
       agentId: rt.agentId,
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
@@ -6866,10 +6889,13 @@ export async function processChatwootDelivery(
   // varredura), o bot responde uma vez a mais numa conversa que já é dele de novo. A mesma exposição
   // existe desde a #711 na parada por posse logo abaixo, pelo mesmo motivo e com a mesma saída.
   //
-  // O que fecha isso é uma intenção "só memória" gravada na linha E honrada pelo replay — e não
-  // basta a coluna: o `replayPosts` do recover-delivery decide a leitura da página, não o POST, que
-  // quem faz é este receptor sendo reexecutado. Precisa de um parâmetro novo no contrato dele.
-  // Issue #725, que carrega os três sites (este, a parada da #711 e o `act && consumed`).
+  // FECHADO NA #725, e a forma é a que este parágrafo previa: uma intenção "só memória" gravada na
+  // linha (`owes_memory_only`) e honrada pelo replay. A coluna sozinha não bastava — o `replayPosts`
+  // do recover-delivery decide a leitura da página, não o POST, que quem faz é este receptor sendo
+  // reexecutado —, então ela chega aqui como `params.owesMemoryOnly` e desarma três coisas: o turno,
+  // o `act` que a ingestão lê como "um turno cobriu isto", e a metade de `settlesHere` que faz a
+  // marca andar. Os três foram medidos na rodada: sem o segundo a linha fecha sem append nenhum, e
+  // sem o terceiro a rajada seguinte coalesce a mensagem e o turno a responde.
   if (settleAwaitsIngest) {
     if (ingested === "failed") {
       throw new Error(

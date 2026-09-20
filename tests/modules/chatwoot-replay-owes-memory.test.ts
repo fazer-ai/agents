@@ -462,6 +462,29 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     // E a perda fecha: a mensagem alcançou a memória, que era tudo o que aquela passada devia. É o
     // mesmo desfecho que o replay de um observador já tem, pela mesma razão.
     expect(outcome).toBe("recovered");
+    // E "recuperada" TEM QUE QUERER DIZER GUARDADA: o desfecho sozinho não distingue um replay que
+    // enfileirou o append de um que fechou a linha sem nada. Esta é a asserção que separa os dois.
+    // Escopado por contact-inbox: os outros casos deste arquivo enfileiram os seus, e uma leitura
+    // solta responderia sobre a conversa do vizinho.
+    const jobs = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { contains: `:ci:${CONTACT_INBOX_BASE + convId}:` },
+      },
+      select: { dedupeKey: true },
+    });
+    // E A MARCA ANDA ATÉ ELA. Sem isto a linha fecharia com a mensagem ainda abaixo do watermark, e
+    // com o debounce ligado a rajada seguinte a coalesceria — o turno então responderia a mensagem
+    // da era humana, que é este mesmo defeito voltando por outra porta.
+    const marca = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastHandledMessageId: true },
+    });
+    expect(marca.lastHandledMessageId).toBe(messageId);
+    expect(jobs.map((j) => j.dedupeKey)).toEqual([
+      `ingest:${tenantId}:${instanceId}:ci:${CONTACT_INBOX_BASE + convId}:${messageId}`,
+    ]);
   });
 
   // A SEGUNDA DIREÇÃO DO MESMO FATO QUE FALTAVA: a cerca de frescor existe para não responder por

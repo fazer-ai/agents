@@ -47,7 +47,9 @@ import {
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
   isNewFollowUpEpisode,
+  lastActivityAt,
   readFollowUpConfig,
+  silenceStartedAt,
   stepDelayMinutes,
 } from "@/modules/followups/settings";
 
@@ -580,6 +582,9 @@ async function loadConvRef(
   contactId: bigint | null;
   lastFollowUpAt: Date | null;
   lastRepliedMessageId: number | null;
+  // When OUR side last spoke here (issue #750): the estimate's fence and episode predicate read
+  // it, and they have to read what the sweep reads.
+  lastRepliedAt: Date | null;
   chatwootFirstReplyAt: Date | null;
   inbox: {
     id: bigint;
@@ -612,6 +617,9 @@ async function loadConvRef(
         contactId: true,
         lastFollowUpAt: true,
         lastRepliedMessageId: true,
+        // The estimate's fence and episode predicate read it, and they have to read what the sweep
+        // reads or the indicator promises a follow-up that never fires (issue #750).
+        lastRepliedAt: true,
         chatwootFirstReplyAt: true,
         inbox: {
           select: {
@@ -1089,12 +1097,44 @@ export async function getConversationDetail(
     const rawStep = (job?.payload as { stepIndex?: unknown } | null)?.stepIndex;
     const jobStepIndex =
       typeof rawStep === "number" && Number.isInteger(rawStep) ? rawStep : 0;
+    // Same expression the sweep and the handler use: the LATER of the two words spoken here.
+    const fencedSilenceStart = silenceStartedAt(
+      conv.lastInboundAt,
+      conv.lastRepliedAt,
+    );
+    // The episode, through the same function the other two readers use. It moves UP here, instead of
+    // living only in the branch below, because of issue #750: before it a fresh episode was born from
+    // the customer speaking, and the inbound webhook cancels the pending job in the same movement. Our
+    // own reply now opens an episode too, and cancels nothing — so the state "pending later-step job +
+    // fresh episode" became reachable, and the handler drops that job (`else if (newEpisode) return
+    // done`). Without the mirror here, the console counts down a step that will never fire.
+    const newEpisode = isNewFollowUpEpisode(
+      conv.lastFollowUpAt,
+      conv.lastInboundAt,
+      conv.lastRepliedAt,
+    );
+    //
+    // DELIBERATELY NARROW: only the episode opened by OUR reply. When the customer is the one who
+    // opens it, the console also counts down a step the handler would drop, but that state predates
+    // this issue and does not survive in production — the inbound webhook cancels the pending job in
+    // the same movement that advances `lastInboundAt`. Widening here would change a case this issue
+    // does not treat and that two tests on another axis already fix; that is issue #752.
+    const restartedByOurReply =
+      newEpisode &&
+      conv.lastRepliedAt != null &&
+      conv.lastFollowUpAt != null &&
+      conv.lastRepliedAt > conv.lastFollowUpAt &&
+      !(conv.lastInboundAt != null && conv.lastInboundAt > conv.lastFollowUpAt);
+    const supersededLaterStepJob =
+      job != null && jobStepIndex > 0 && restartedByOurReply;
+    // The inactivity floor, the same one the handler and the SQL use: our reply counts as movement.
+    const movedAt = lastActivityAt(conv.lastEventAt, conv.lastRepliedAt);
     const fencedStep0Job =
       job != null &&
       jobStepIndex === 0 &&
       (agent?.followUpArmedAt == null ||
-        conv.lastInboundAt == null ||
-        conv.lastInboundAt < agent.followUpArmedAt);
+        fencedSilenceStart == null ||
+        fencedSilenceStart < agent.followUpArmedAt);
     // NOTE: a job whose step no longer exists is a sequence that is OVER, and the handler says so
     // by returning `done` on its very first look (issue #103 moved that check to the top). An
     // operator who shortens a sequence with a later-step job still pending leaves exactly that
@@ -1105,9 +1145,18 @@ export async function getConversationDetail(
     // Its own arm, ahead of both others, because falling through is not the same answer: the
     // estimate arm below would offer step 1, which is a countdown for a sequence about to end.
     const jobStepGone = job != null && cfg.steps[jobStepIndex] === undefined;
-    if (jobStepGone) {
+    // ...unless that job was already superseded by an episode our own reply opened (issue #750): the
+    // sequence it belonged to is over on both counts, and the sweep is about to start a fresh step 0.
+    // Suppressing here would hide the countdown of the NEW episode behind a job from the old one,
+    // and the operator would read "nothing scheduled" for a conversation that is about to be chased.
+    if (jobStepGone && !supersededLaterStepJob) {
       nextStep = null;
-    } else if (job && !fencedStep0Job && followUpLive) {
+    } else if (
+      job &&
+      !fencedStep0Job &&
+      !supersededLaterStepJob &&
+      followUpLive
+    ) {
       const stepIndex = jobStepIndex;
       nextStep = stepIndex + 1;
       // job.runAt is NOT the firing time yet — the sweep enqueues step 0 with runAt=now (and re-arms
@@ -1117,9 +1166,9 @@ export async function getConversationDetail(
       // out-of-window time to the next open window. Without this the indicator flickers to "imminent /
       // out-of-hours" right after each sweep and only resyncs once the worker rewrites run_at.
       let dueAt = job.runAt;
-      if (stepIndex === 0 && firstStep && conv.lastEventAt) {
+      if (stepIndex === 0 && firstStep && movedAt) {
         const floor = new Date(
-          conv.lastEventAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
+          movedAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
         );
         if (floor.getTime() > dueAt.getTime()) dueAt = floor;
       }
@@ -1143,17 +1192,17 @@ export async function getConversationDetail(
       // (managedByRedirect already forces job=null; guard the estimate too so it stays suppressed.)
       followUpLive &&
       firstStep &&
-      isNewFollowUpEpisode(conv.lastFollowUpAt, conv.lastInboundAt) &&
+      newEpisode &&
       // NOTE: Activation fence (mirrors the sweep SQL): no estimate for an episode that began before
       // follow-up was armed — the sweep will never enqueue it, so the indicator must not promise it.
       agent?.followUpArmedAt != null &&
-      conv.lastInboundAt != null &&
-      conv.lastInboundAt >= agent.followUpArmedAt &&
-      conv.lastEventAt
+      fencedSilenceStart != null &&
+      fencedSilenceStart >= agent.followUpArmedAt &&
+      movedAt
     ) {
       nextStep = 1;
       const dueAt = new Date(
-        conv.lastEventAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
+        movedAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
       );
       const ungated = dueAt.getTime();
       // Mirror the handler's business-hours gate: a follow-up coming due outside the configured window

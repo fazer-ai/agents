@@ -64,12 +64,52 @@ export const FOLLOW_UP_DEFAULTS: FollowUpConfig = cloneDefaults();
 // fired (a reply restarts the sequence at step 0). Shared by the sweep's eligibility (its raw SQL
 // mirrors this), the handler's episode gate, and the conversation-detail estimate — keeping all three
 // in lockstep so the operator-facing indicator never disagrees with what the worker will actually do.
+// WHEN THE CURRENT SILENCE BEGAN: the later of the two things that can end a silence, which is the
+// customer speaking or us speaking. NULL when neither has ever happened here.
+//
+// One expression, three readers (the sweep's SQL, this handler's re-check, the console's estimate),
+// and it has to be one or they disagree about the same conversation. Postgres GREATEST ignores
+// NULLs, and so does this.
+//
+// It used to be `lastInboundAt` alone, and that reads the conversation the agent just answered as
+// if nothing had happened in it (issue #750): a row the mirror created from an event that is not a
+// message carries no inbound instant at all, so "when did the silence start" answered NULL for a
+// conversation whose silence had started minutes ago, with our own question in it.
+function laterOf(a: Date | null, b: Date | null): Date | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return b > a ? b : a;
+}
+
+export function silenceStartedAt(
+  lastInboundAt: Date | null,
+  lastRepliedAt: Date | null,
+): Date | null {
+  return laterOf(lastInboundAt, lastRepliedAt);
+}
+
+// WHEN THE CONVERSATION LAST MOVED, our own reply included. `lastEventAt` is mirrored from Chatwoot
+// and only advances when the webhook for the message we just sent comes back; between the send and
+// that return it still describes the OLD activity. A reader of the cadence in that gap concludes the
+// conversation has been idle for days and fires the first step at once, minutes after the customer
+// received the answer — and the conversation recovered from the backlog, which is the one issue #750
+// admits, is exactly the one whose `lastEventAt` is old. We know firsthand that we spoke: that is the
+// floor. Identical in SQL: GREATEST(c.last_event_at, c.last_replied_at).
+export function lastActivityAt(
+  lastEventAt: Date | null,
+  lastRepliedAt: Date | null,
+): Date | null {
+  return laterOf(lastEventAt, lastRepliedAt);
+}
+
 export function isNewFollowUpEpisode(
   lastFollowUpAt: Date | null,
   lastInboundAt: Date | null,
+  lastRepliedAt: Date | null = null,
 ): boolean {
-  if (lastInboundAt === null) return false;
-  return lastFollowUpAt === null || lastInboundAt > lastFollowUpAt;
+  const started = silenceStartedAt(lastInboundAt, lastRepliedAt);
+  if (started === null) return false;
+  return lastFollowUpAt === null || started > lastFollowUpAt;
 }
 
 // Converts a step's delayValue + delayUnit to minutes. Clamped to [1, 43200]. For step 0 this is the

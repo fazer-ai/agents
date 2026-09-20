@@ -169,3 +169,30 @@ describe('mirrorHolder: "not-asked" — who may say it', () => {
     }
   });
 });
+
+// O slate limpo dos comandos (`/reset` e `/teste`) encerra o episódio zerando as âncoras que a cerca
+// do silêncio lê. Desde a issue #750 são DUAS — a fala do cliente e a nossa, e a cerca toma a mais
+// recente —, então limpar uma só devolve a passagem pela outra: a varredura recria o follow-up que o
+// comando acabou de cancelar, sem ninguém ter falado.
+//
+// Cerca por fonte porque o defeito é de OMISSÃO num `data: {}` novo, e nenhuma asserção de
+// comportamento alcança o terceiro call site que ainda não existe. Ela mede uma GRAFIA: quem zerar as
+// âncoras por caminho diferente (um `$executeRaw`, um spread) passa por aqui sem ser visto, e é por
+// isso que o bloco vizinho, no `chatwoot-reset`, exerce o comportamento de um deles de verdade.
+describe("slate limpo: as duas âncoras do silêncio saem juntas", () => {
+  test("todo bloco que zera lastFollowUpAt também zera lastRepliedAt", () => {
+    const src = readFileSync("src/modules/chatwoot/webhook.ts", "utf8");
+    const blocos = [...src.matchAll(/lastFollowUpAt: null,/g)];
+    // Zero casamentos seria a cerca envelhecida (campo renomeado, bloco movido), não a regra valendo.
+    expect(blocos.length).toBeGreaterThanOrEqual(2);
+    for (const m of blocos) {
+      // A janela é generosa de propósito: o que importa é os dois estarem no MESMO `data`, e a ordem
+      // entre eles é de quem escreve.
+      const janela = src.slice(
+        Math.max(0, (m.index ?? 0) - 800),
+        (m.index ?? 0) + 800,
+      );
+      expect(janela).toContain("lastRepliedAt: null,");
+    }
+  });
+});

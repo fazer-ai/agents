@@ -12,6 +12,7 @@ import {
 } from "@/graph/nudge-retry";
 import { chatFollowupNudge } from "@/modules/channel-redirect/followup";
 import { inactivityNudge } from "@/modules/followups/handlers";
+import { silenceStartedAt } from "@/modules/followups/settings";
 
 // Every outcome `runAgentNudge` can answer, and whether a caller that owns an occasion may spend it.
 // The `false` rows are the design decision, not filler: the two that mean "there is nothing here to
@@ -193,12 +194,12 @@ describe("the occasion a nudge refusal belongs to", () => {
   // the key cannot fail on a field its caller never set — the same reason the inbound receptor's own
   // wiring is asserted in its suite.
   test("two follow-up episodes at the same step are two occasions", () => {
-    const step = (lastInboundAt: Date | null) =>
+    const step = (episodeStartedAt: Date | null) =>
       inactivityNudge({
         idleMin: 30,
         instructions: "diga oi",
         step: 1,
-        lastInboundAt,
+        episodeStartedAt,
       });
     const first = new Date("2026-08-27T10:00:00.000Z");
     const second = new Date("2026-08-27T11:00:00.000Z");
@@ -206,6 +207,25 @@ describe("the occasion a nudge refusal belongs to", () => {
     // ...and the rungs of ONE episode still keep their own windows apart from each other.
     expect(key(step(first))).toBe(key(step(first)));
     expect(key(step(first))).not.toBe(key({ ...step(first), step: 2 }));
+  });
+
+  // Issue #750: o episódio que a NOSSA resposta abre, sem o cliente ter voltado a falar. Os dois
+  // episódios têm o mesmo `lastInboundAt` — é justamente o que os deixaria com uma chave só, e dentro
+  // da janela de duas horas do teto o segundo perde a linha de erro e o alerta para o primeiro. O que
+  // os separa é o eixo que a cerca passou a ler: quando o silêncio COMEÇOU.
+  test("um episódio aberto pela nossa resposta não herda a janela do anterior", () => {
+    const falouEm = new Date("2026-08-27T09:00:00.000Z");
+    const respondemosEm = new Date("2026-08-27T12:00:00.000Z");
+    const passo = (episodeStartedAt: Date | null) =>
+      inactivityNudge({
+        idleMin: 30,
+        instructions: "diga oi",
+        step: 1,
+        episodeStartedAt,
+      });
+    expect(key(passo(silenceStartedAt(falouEm, null)))).not.toBe(
+      key(passo(silenceStartedAt(falouEm, respondemosEm))),
+    );
   });
 
   test("two redirect episodes on one conversation are two occasions", () => {

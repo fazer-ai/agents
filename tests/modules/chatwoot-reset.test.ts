@@ -703,7 +703,14 @@ describe.skipIf(!dbUp)(
             chatwootConversationId: CONV_ID,
           },
         },
-        data: { testNoticeSentAt: new Date(), lastFollowUpAt: new Date() },
+        data: {
+          testNoticeSentAt: new Date(),
+          lastFollowUpAt: new Date(),
+          // O eixo que a issue #750 acrescentou à cerca do silêncio. Ele entra aqui porque o /reset
+          // encerra o episódio limpando as âncoras: sobrevivendo, ele sozinho faz a varredura passar
+          // e recriar o follow-up cancelado, sem ninguém ter falado.
+          lastRepliedAt: new Date(),
+        },
       });
       const cw = fakeChatwoot(/\/kanban\/tasks\//);
       globalThis.fetch = cw.impl;
@@ -719,10 +726,15 @@ describe.skipIf(!dbUp)(
             chatwootConversationId: CONV_ID,
           },
         },
-        select: { testNoticeSentAt: true, lastFollowUpAt: true },
+        select: {
+          testNoticeSentAt: true,
+          lastFollowUpAt: true,
+          lastRepliedAt: true,
+        },
       });
       expect(conv.testNoticeSentAt).toBeNull();
       expect(conv.lastFollowUpAt).toBeNull();
+      expect(conv.lastRepliedAt).toBeNull();
       const acks = ackCalls(cw.calls);
       expect(acks).toHaveLength(1);
       expect(

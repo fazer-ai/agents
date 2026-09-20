@@ -30,7 +30,9 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   type FollowUpStep,
   isNewFollowUpEpisode,
+  lastActivityAt,
   readFollowUpConfig,
+  silenceStartedAt,
   stepDelayMinutes,
 } from "./settings";
 
@@ -164,8 +166,19 @@ async function sweepHandler(
         -- batch the handler would only drop — LIMIT below is over eligible rows or it is nothing.
         AND a.mode <> 'monitoring'
         AND (a.mode <> 'test' OR c.test_activated_at IS NOT NULL)
-        AND c.last_event_at < ${cutoff}
-        AND c.last_inbound_at IS NOT NULL
+        -- Inactivity counts OUR reply too (issue #750): last_event_at comes from Chatwoot and only
+        -- advances when the webhook for the message we sent comes back, and the conversation
+        -- recovered from the backlog carries an old one. Without the floor it is selected as idle for
+        -- days at the very instant the customer receives the answer. Mirrors lastActivityAt() in TS.
+        AND GREATEST(c.last_event_at, c.last_replied_at) < ${cutoff}
+        -- WHEN THE CURRENT SILENCE BEGAN, and not "when the customer last spoke" (issue #750). The
+        -- two disagree on exactly the conversation this sweep is for: a row the mirror created from
+        -- an event that is not a message carries NO inbound instant, so the old form answered "no
+        -- silence here" about a conversation whose silence had started minutes ago, with our own
+        -- request for a document sitting in it. GREATEST ignores NULLs, and silenceStartedAt() is
+        -- the same expression in TS, because the handler re-checks this and the console estimates
+        -- from it: three readers of one question.
+        AND GREATEST(c.last_inbound_at, c.last_replied_at) IS NOT NULL
         -- Mirrors ourSideHasSpoken (issue #652), whose header carries the measurement and why the OR
         -- is not redundancy. Asked here as well because this is the SELECTION: a conversation that
         -- can never be sent to must not hold a slot of the LIMIT below.
@@ -175,15 +188,41 @@ async function sweepHandler(
         )
         AND (
           c.last_follow_up_at IS NULL
-          OR c.last_inbound_at > c.last_follow_up_at
+          OR GREATEST(c.last_inbound_at, c.last_replied_at) > c.last_follow_up_at
         )
-        -- Activation fence: only episodes of silence that BEGAN after follow-up was armed for this
+        -- Activation fence: only conversations that became LIVE after follow-up was armed for this
         -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition and re-stamped
         -- on promotion to production). Without it, flipping an agent to production with follow-up
         -- on would blast every eligible conversation in the historical backlog at once.
         -- NULL = never armed → fail-safe skip.
+        --
+        -- DATED BY OUR OWN LAST REPLY, and the customer's only when we have never spoken (issue
+        -- #750). The fence used to read c.last_inbound_at, which dates the SILENCE, and for a
+        -- conversation the agent answered today on an old inbound the two dates disagree by the
+        -- whole age of the conversation: the silence the ladder chases is the one WE opened by
+        -- asking for a document, and it starts at our reply. Measured in production on 20/09/2026,
+        -- an email inbox: 19 old conversations re-engaged, last_replied_message_id set on all 19,
+        -- 13 left pending holding a request for documents — and not one entered this sweep,
+        -- because every inbound predated the arming.
+        --
+        -- The fence's own purpose survives intact, which is why this is the right column and not a
+        -- relaxation: on the historical backlog we have not spoken since arming either, so flipping
+        -- an agent on still blasts nobody.
+        --
+        -- GREATEST and not COALESCE, which was the first shape of this and is a bug: on a
+        -- conversation whose customer spoke AFTER arming but whose last reply of ours predates it,
+        -- COALESCE would take the old reply and fence out a conversation that is eligible today.
+        -- The question is "is the latest word here after the arming", and that is a max.
+        --
+        -- NULL on both sides is the row that predates the column and was never answered: GREATEST
+        -- answers NULL, the IS NOT NULL clause above drops it, and nothing eligible today stops
+        -- being eligible.
+        --
+        -- The nudge itself does NOT move last_replied_at (it never claims a reply burst), so a
+        -- ladder cannot feed itself through this column: step 2 reads the same instant step 1 read,
+        -- and only a real new word, the client's or ours, opens the next episode.
         AND a.follow_up_armed_at IS NOT NULL
-        AND c.last_inbound_at >= a.follow_up_armed_at
+        AND GREATEST(c.last_inbound_at, c.last_replied_at) >= a.follow_up_armed_at
         -- NOTE: Pause re-engagement while the conversation holds a LIVE appointment, unless this
         -- agent is exempt (unfencedAgentIds above, issue #103).
         --
@@ -260,11 +299,14 @@ export function inactivityNudge(params: {
   // window the ceiling's occasion key spans, the second refusal would then lose its `error` row and
   // its alert to the first — two customers unreached, one on the record.
   //
-  // `lastInboundAt` is what an episode IS here: the silence that began after the customer's last
-  // message. Stable across the steps of one episode by construction (the customer speaking is what
-  // ends it) and the same column `isNewFollowUpEpisode` judges freshness by. Null means they have
-  // never written, which is one episode and not two.
-  lastInboundAt: Date | null;
+  // WHEN THE SILENCE BEGAN is what an episode IS here, and since issue #750 that is the LATER of the
+  // customer's last message and our own last reply — the same expression `isNewFollowUpEpisode`
+  // judges freshness by, which is the whole reason this field exists. Reading the customer's column
+  // alone would hand two genuinely distinct episodes one key the moment the second is opened by our
+  // reply with no new inbound behind it: a re-engagement on a conversation the customer never
+  // answered again. Stable across the steps of one episode by construction (either side speaking is
+  // what ends it). Null means neither side ever spoke, which is one episode and not two.
+  episodeStartedAt: Date | null;
 }): AgentNudge {
   return {
     source: "followup",
@@ -272,7 +314,7 @@ export function inactivityNudge(params: {
     summary: `The customer has been inactive for about ${params.idleMin} minutes.`,
     instructions: params.instructions || undefined,
     step: params.step,
-    occasionId: `episode:${params.lastInboundAt?.toISOString() ?? "none"}`,
+    occasionId: `episode:${params.episodeStartedAt?.toISOString() ?? "none"}`,
   };
 }
 
@@ -308,6 +350,8 @@ export async function followUpHandler(
         inboxId: true,
         testActivatedAt: true,
         lastRepliedMessageId: true,
+        // The fence's own axis (issue #750); see the note beside it below.
+        lastRepliedAt: true,
         chatwootFirstReplyAt: true,
       },
     });
@@ -419,7 +463,11 @@ export async function followUpHandler(
   // Episode gate (defense in depth + covers a job already CLAIMED when the client replied). True when
   // the conversation is at the START of a fresh episode of silence — either it was never followed up,
   // or the client has spoken since the last follow-up. Shared with the sweep SQL + the detail estimate.
-  const newEpisode = isNewFollowUpEpisode(lastFollowUpAt, lastInboundAt);
+  const newEpisode = isNewFollowUpEpisode(
+    lastFollowUpAt,
+    lastInboundAt,
+    ctx.conv.lastRepliedAt,
+  );
   if (stepIndex === 0) {
     // Step 0 (sequence start) only proceeds for a fresh episode — the sweep's SQL filter already
     // enforces this; re-checking here blocks a stale step-0 job on an already-handled conversation.
@@ -428,11 +476,10 @@ export async function followUpHandler(
     // after follow-up was armed. Catches a step-0 job enqueued before a re-arm (disable → re-enable)
     // and any agent never armed (NULL → fail-safe). Later steps are exempt: an in-flight sequence
     // legitimately outlives a re-arm.
-    if (
-      ctx.armedAt == null ||
-      lastInboundAt == null ||
-      lastInboundAt < ctx.armedAt
-    ) {
+    // Same axis as the sweep's SQL, and it has to be the same or the two disagree on the conversation
+    // that motivated it: our reply when we have one, the client's message when we do not (issue #750).
+    const fenceAt = silenceStartedAt(lastInboundAt, ctx.conv.lastRepliedAt);
+    if (ctx.armedAt == null || fenceAt == null || fenceAt < ctx.armedAt) {
       return { outcome: "done" };
     }
   } else if (newEpisode) {
@@ -443,7 +490,10 @@ export async function followUpHandler(
 
   // Cadence: step 0 measures inactivity from the last conversation activity; later steps measure from
   // when the previous step fired (lastFollowUpAt). Not due yet → reschedule precisely (same payload).
-  const anchor = stepIndex === 0 ? lastEventAt : lastFollowUpAt;
+  const anchor =
+    stepIndex === 0
+      ? lastActivityAt(lastEventAt, ctx.conv.lastRepliedAt)
+      : lastFollowUpAt;
   if (anchor) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
     if (Date.now() < dueAt) {
@@ -528,7 +578,7 @@ export async function followUpHandler(
       idleMin,
       instructions: step.instructions,
       step: stepIndex + 1,
-      lastInboundAt,
+      episodeStartedAt: silenceStartedAt(lastInboundAt, ctx.conv.lastRepliedAt),
     }),
     // Deterministic, system-applied actions for this step (fire even if the agent stays silent);
     // resolve is honored only on the LAST step (settings already strips it from earlier ones).

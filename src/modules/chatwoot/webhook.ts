@@ -3028,6 +3028,11 @@ async function maybeConsumeCommandOrGate(params: {
           // message re-anchors it, and there is no proactive send pending at the instant of activation.
           lastInboundAt: null,
           lastFollowUpAt: null,
+          // The silence fence reads the LATER of the customer's word and ours (issue #750), so
+          // clearing only the customer's leaves ours standing and the sweep recreates the episode this
+          // command just ended — with nobody having spoken. Both axes go together or the slate is not
+          // clean.
+          lastRepliedAt: null,
         },
       }),
     );
@@ -3360,6 +3365,9 @@ async function maybeConsumeCommandOrGate(params: {
           data: {
             lastInboundAt: null,
             lastFollowUpAt: null,
+            // The other axis of the silence fence (issue #750): left standing, it reopens the gate on
+            // its own and the sweep revives the sequence /reset ended.
+            lastRepliedAt: null,
             testNoticeSentAt: null,
             outOfHoursNoticeSentAt: null,
             awayMessageSentAt: null,

@@ -17,6 +17,7 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { followUpHandler } from "@/modules/followups/handlers";
 import { clearSpendCeilingFlights } from "@/modules/spend-ceiling/notice";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
@@ -367,6 +368,98 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     const note = s.notesOn(9401)[0]?.content ?? "";
     expect(note).toContain("1.200");
     expect(note).toContain("1.000");
+  });
+
+  // Issue #750: A FIAÇÃO, e não o construtor. A chave da ocasião nomeia o episódio de silêncio, e a
+  // cerca passou a datar esse episódio pela MAIS RECENTE entre a fala do cliente e a nossa. Quem
+  // passa o valor é o handler, e um handler que continue passando só a coluna do cliente dá a dois
+  // episódios distintos uma chave só: dentro da janela de duas horas do teto, o segundo perde a linha
+  // de erro e o alerta para o primeiro — dois clientes sem resposta, um no registro. Aqui o segundo
+  // episódio nasce sem mensagem nova do cliente, que é exatamente o caso que a issue admite.
+  test("dois episódios separados só pela nossa resposta são duas ocasiões (pelo handler)", async () => {
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
+    await spend("inbox", 1200);
+    const CONV = 9430;
+    await seedConversation(CONV);
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        followUpArmedAt: new Date(Date.now() - 10 * 3_600_000),
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          followUp: {
+            enabled: true,
+            steps: [{ delayValue: 60, delayUnit: "minutes", instructions: "" }],
+          },
+        },
+      },
+    });
+    // Instantes FIXOS, calculados uma vez: recalcular `Date.now()` a cada escrita dá ao cliente duas
+    // datas diferentes por alguns milissegundos, e aí os dois episódios têm chaves distintas mesmo
+    // com o defeito no lugar — o teste passaria sem medir nada.
+    const CLIENTE_FALOU = new Date(Date.now() - 5 * 3_600_000);
+    const NOS_RESPONDEMOS = new Date(Date.now() - 2 * 3_600_000);
+    const marcas = async (over: {
+      lastInboundAt: Date | null;
+      lastRepliedAt: Date | null;
+    }) => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV },
+        data: {
+          lastEventAt: CLIENTE_FALOU,
+          lastRepliedMessageId: 1,
+          lastFollowUpAt: null,
+          ...over,
+        },
+      });
+    };
+    const s = stubChatwoot();
+    // A sonda ao vivo do nudge, que este stub não tem porque nenhum outro teste daqui passa pelo
+    // handler: sem ela o caminho falha fechado ANTES do teto e a ocasião nunca é gasta.
+    const makeClientComSonda = async (cfg: { botToken: string }) => {
+      const c = (await s.makeClient(cfg)) as unknown as Record<string, unknown>;
+      c.getConversation = async () => ({
+        id: CONV,
+        status: "pending",
+        meta: {},
+      });
+      return c as unknown as ChatwootClient;
+    };
+    const rodar = () =>
+      followUpHandler(
+        {
+          id: -1n,
+          tenantId,
+          kind: "FOLLOWUP",
+          payload: { threadId: `${tenantId}:${instanceId}:${CONV}` },
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+        {
+          makeClient: makeClientComSonda as never,
+          makeModel: () => {
+            throw new Error("o modelo não pode ser invocado acima do teto");
+          },
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      );
+
+    // Episódio A: só o cliente falou, há cinco horas.
+    await marcas({ lastInboundAt: CLIENTE_FALOU, lastRepliedAt: null });
+    await rodar();
+    expect(await ceilingRows(CONV)).toHaveLength(1);
+
+    // Episódio B: o cliente não voltou; quem falou fomos nós, há duas horas. Mesma conversa, mesmo
+    // passo, episódio outro.
+    await marcas({
+      lastInboundAt: CLIENTE_FALOU,
+      lastRepliedAt: NOS_RESPONDEMOS,
+    });
+    await rodar();
+    expect(await ceilingRows(CONV)).toHaveLength(2);
   });
 
   // ONE LINE PER REFUSED OCCASION, and for a proactive nudge the occasion is the JOB, not the

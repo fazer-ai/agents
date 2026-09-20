@@ -734,9 +734,15 @@ async function announceErasedDeathsOrThrow(
   // `DELETE` desfeito por savepoint numa transação que commita; revoke 2 apaga a linha restaurada de
   // verdade e anuncia; revoke 1 então vê `committed` e a linha ausente, e escreve a segunda linha.
   // Fecharia conferindo um efeito que só ESTE statement poderia ter produzido, e o statement apaga,
-  // ou seja, não deixa nenhum. Continua precisando de um savepoint em volta do revoke, que nada
-  // emite hoje: o custo de fechá-lo é uma tabela ou coluna nova para registrar a própria exclusão, e
-  // a condição está escrita aqui para quem for escrever o segundo chamador.
+  // ou seja, não deixa nenhum: o preço de fechá-lo é uma tabela ou coluna nova para registrar a
+  // própria exclusão, e contra um caminho que ninguém percorre ele não se paga agora.
+  //
+  // E a tranca que segura isso NÃO é o savepoint ser raro, que é a leitura fácil e a errada. É não
+  // existir um segundo chamador: enquanto o `/reset` for o único, o revoke 2 da sequência só pode
+  // ser outro `/reset` na mesma thread, e `withKeyedQueue` os serializa no mesmo processo. Num
+  // segundo chamador, ou em duas réplicas, essa serialização some ANTES de o savepoint entrar na
+  // conta. Por isso a condição está escrita aqui e a obrigação de anunciar tem cerca de fonte: as
+  // duas apontam para a mesma pessoa, a que for escrever o segundo chamador.
   const vivos = new Set<bigint>();
   const porTenant = new Map<bigint, bigint[]>();
   for (const death of deaths) {

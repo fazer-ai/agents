@@ -43,6 +43,39 @@ export function resetLandedAfter(
   return triggerMessageId <= resetAtMessageId;
 }
 
+// A MARCA É DE UMA CONVERSA, A LIMPEZA É DA THREAD INTEIRA, e é por isso que esta leitura não é
+// `conversation.findUnique` (issue #718).
+//
+// `/reset` escreve `reset_at_message_id` na linha da conversa em que o operador digitou o comando, e
+// logo depois apaga a memória por `(tenant, instance, contact_inbox)` — `clearContactMemory`, que é
+// a thread toda. Um contact-inbox com duas conversas fica com as marcas em `[{5000: null}, {5001:
+// 200}]`, e uma cerca que leia a marca APENAS da conversa que o job nomeia encontra NULL em 5000 e
+// deixa o defeito inteiro de pé para toda thread com mais de uma conversa. Medido no holdout desta
+// rodada: com o comando digitado na segunda conversa e o job nomeando a primeira, a mensagem
+// pré-reset entrou.
+//
+// O máximo, e não a marca da conversa mais recente: o que a pergunta quer saber é se ALGUMA limpeza
+// desta thread já passou por cima desta mensagem, e duas conversas podem ter sido resetadas em
+// ordens diferentes.
+export async function threadResetBoundary(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  contactInboxId: number,
+): Promise<number | null> {
+  const agg = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.aggregate({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+      },
+      _max: { resetAtMessageId: true },
+    }),
+  );
+  return agg._max.resetAtMessageId ?? null;
+}
+
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }

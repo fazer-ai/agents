@@ -7,6 +7,7 @@ import { armCompaction } from "@/modules/memory/compact";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type IngestRole, ingestMessageIntoThread } from "./ingest";
+import { resetLandedAfter, threadResetBoundary } from "./reset-episode";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -174,6 +175,16 @@ export async function ingestHandler(
   // has to be taken under the `ingest:<thread>` lock to be exclusive with a turn marking itself, and
   // that lock lives inside ./ingest.ts — a check made out here would only be staggered: the turn can
   // take the lock, mark itself and release it between our check and the append.
+  // POR QUE A RECUSA PRECISA DE NOME. A passada termina em `done` nos dois casos, e
+  // `JOB_DELETE_ON_DONE` apaga a linha, então depois do fato a tabela responde igual para "recusou
+  // pelo reset", "ingeriu" e "nunca foi armada" — os três são zero linhas. Sem um rastro que nomeie
+  // a thread, o id e o motivo, um operador que veja a mensagem sumir da memória não tem como saber
+  // se ela foi recusada de propósito (issue #718).
+  // Num objeto, e não numa variável solta: o TypeScript estreita uma `let` pelo inicializador e
+  // não enxerga a atribuição feita dentro do callback, então lá embaixo `refusal === "reset"`
+  // comparava contra o tipo `null` e não compilava.
+  const seen: { refusal: "revoked" | "reset" | null } = { refusal: null };
+
   const outcome = await ingestMessageIntoThread({
     deferIfTurnInFlight: true,
     // THE GENERATION FENCE THIS JOB LACKED (round-9 review). Compaction has two defenses against a
@@ -193,6 +204,17 @@ export async function ingestHandler(
     // could deadlock a busy shared lane against its own pool. The section holds no transaction while
     // this runs any more (issue #225), so the read stands on its own; what still matters is that it
     // happens INSIDE the critical section, which is what makes it exclusive with the reset.
+    //
+    // E A SEGUNDA PERGUNTA, que a da linha não responde (issue #718). A cerca acima cobre
+    // arm-then-reset: o `/reset` revoga as linhas que existem, e uma passada já em memória relê a
+    // sua e desiste. Não cobre RESET-THEN-ARM: a entrega arma o job no fim da própria passada, bem
+    // depois de o turno soltar a posse da thread, e um job nascido depois da revogação é `CLAIMED`
+    // pela própria reivindicação, com o `claimSeq` dela. Ele passa nesta cerca carregando texto de
+    // antes do reset, recria a linha de `agent_threads` e o checkpoint, e o operador foi informado
+    // que a thread estava limpa.
+    //
+    // Perguntar no ARM não resolveria: o reset cai entre a leitura e a escrita. A pergunta é pela
+    // marca VIGENTE NA EXECUÇÃO, feita aqui dentro, que é o que torna as duas exclusivas.
     stillWanted: async () => {
       const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.schedulerJob.findUnique({
@@ -200,7 +222,21 @@ export async function ingestHandler(
           select: { status: true, claimSeq: true },
         }),
       );
-      return row?.status === "CLAIMED" && row.claimSeq === job.claimSeq;
+      if (!(row?.status === "CLAIMED" && row.claimSeq === job.claimSeq)) {
+        seen.refusal = "revoked";
+        return false;
+      }
+      const boundary = await threadResetBoundary(
+        base,
+        tenantId,
+        p.instanceId,
+        p.contactInboxId,
+      );
+      if (resetLandedAfter(p.messageId, boundary)) {
+        seen.refusal = "reset";
+        return false;
+      }
+      return true;
     },
     tenantId,
     instanceId: p.instanceId,
@@ -237,6 +273,19 @@ export async function ingestHandler(
       outcome: "reschedule",
       runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
     };
+  }
+  // `done` e não `fail`: a recusa é TERMINAL e não é erro. Gastar tentativa faria a mensagem
+  // virar dead-letter e alertar o operador sobre uma perda que não houve, e `JOB_DELETE_ON_DONE`
+  // apaga a linha, que é o que impede uma cópia do texto pré-reset de ficar guardada numa tabela
+  // que nada varre — a mesma regra que a revogação do próprio `/reset` já segue.
+  if (seen.refusal === "reset") {
+    // Literal único de propósito: concatenado, o formato deixa de ser um literal para os tipos do
+    // logger, que então escolhem a sobrecarga sem argumentos e recusam os dois que vêm depois.
+    logger.info(
+      "ingest: skipped by episode reset (thread=%s message=%s): at or below the thread's reset boundary, appending it would put pre-reset text back into a cleared thread",
+      p.graphThreadId,
+      String(p.messageId),
+    );
   }
   return { outcome: "done" };
 }

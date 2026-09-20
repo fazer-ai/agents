@@ -265,12 +265,23 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       linhas.map((l) => ({
         level: l.level,
         reason: (l.detail as { reason?: string } | null)?.reason ?? null,
+        role: (l.detail as { role?: string } | null)?.role ?? null,
       })),
-    ).toEqual([{ level: "error", reason: "human_reply_append_undecidable" }]);
+    ).toEqual([
+      {
+        level: "error",
+        reason: "ingest_append_undecidable",
+        role: "human_agent",
+      },
+    ]);
 
-    // E A MENSAGEM DO CLIENTE NÃO PASSA POR AQUI: ela tem o próprio livro de entregas atrás dela, e
-    // um cliente sem resposta é o que a lista de perdas existe para mostrar. Quem não tem mais
-    // ninguém para relatar é a resposta do colega, que nenhum turno cobre.
+    // E A DIREÇÃO DO CLIENTE RELATA IGUAL (verificador rodada 5, que refutou a primeira versão disto
+    // pela própria árvore). A população de mensagens do cliente que CHEGA a este append é, por
+    // construção, só a que turno nenhum cobre: silenciada por um portão (fora do horário, o gate de
+    // autorização) ou não tratada pelo bot (um humano detém a conversa, ou ela não está pendente).
+    // Em todas elas "cliente sem resposta" é o estado esperado, então a lista de perdas não mostra
+    // nada, e a entrega liquidou PROCESSED no instante em que o ARME deu certo, então o livro de
+    // entregas também não. O caso é o cliente escrevendo três vezes durante um atendimento humano.
     await suDb.agentThread.updateMany({
       where: { tenantId, contactInboxId },
       data: {
@@ -298,10 +309,10 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       (
         await flowLogRows(suDb, {
           where: { tenantId, conversationId: conv.id, stage: "memory" },
-          select: { id: true },
+          select: { detail: true },
         })
-      ).length,
-    ).toBe(1);
+      ).map((l) => (l.detail as { role?: string } | null)?.role ?? null),
+    ).toEqual(["human_agent", "customer"]);
 
     await suDb.conversation.deleteMany({
       where: { tenantId, chatwootConversationId: convId },

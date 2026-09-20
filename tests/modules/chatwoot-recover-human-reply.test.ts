@@ -84,6 +84,9 @@ let deliverySeq = 0;
 const pages = new Map<number, Record<string, unknown>[]>();
 // Conversations whose message read fails outright.
 const failingReads = new Set<number>();
+// Conversations whose read answers 200 with a body that is not a message page, which is what a
+// degraded account looks like from here (review r10).
+const unusableReads = new Set<number>();
 // Conversations an operator resets WHILE the page is being served, which is the window the second
 // reading of the boundary exists for and the only one it can see.
 const resetDuringRead = new Map<number, () => Promise<void>>();
@@ -98,6 +101,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (list && method === "GET") {
     const id = Number(list[1]);
     if (failingReads.has(id)) return new Response("nope", { status: 502 });
+    if (unusableReads.has(id)) return Response.json({});
     const during = resetDuringRead.get(id);
     if (during) await during();
     return Response.json({ payload: pages.get(id) ?? [] });
@@ -720,6 +724,29 @@ describe.skipIf(!dbUp)(
       expect(await ingestArmedFor(convId, 707)).toBe(false);
     });
 
+    // E A CONTA QUE RESPONDE 200 COM ALGO QUE NÃO É UMA PÁGINA também é adiamento (review r10). As
+    // duas formas que o Chatwoot responde são um array e `{ payload: [...] }`; um corpo vazio, um
+    // `{}` ou um objeto de erro renderizado com 200 é resposta que esta leitura não sabe ler, e lê-la
+    // como página VAZIA transformava uma conta degradada em veredito: a recuperação concluía que a
+    // mensagem tinha sido apagada e liquidava a linha para sempre.
+    test("an account answering with something that is not a page is a deferral", async () => {
+      const convId = 9137;
+      unusableReads.add(convId);
+      const rowId = await seedStranded(convId, { messageId: 735 });
+
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("unreachable");
+      expect(await ingestArmedFor(convId, 735)).toBe(false);
+    });
+
+    // E A PÁGINA VÁLIDA QUE NÃO TRAZ A MENSAGEM continua sendo veredito, que é a outra metade do par:
+    // o Chatwoot não tem mais aquela mensagem, e nenhuma tentativa muda isso.
     // O ESPELHO QUE AINDA NÃO CONHECE A CONVERSA não é veredito: uma entrega que morreu antes da
     // escrita do espelho não deixa linha, e o próximo evento naquela conversa cria uma.
     test("a conversation the mirror has never seen is retried, not discarded", async () => {

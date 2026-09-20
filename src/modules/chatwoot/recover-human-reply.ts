@@ -570,10 +570,34 @@ export async function recoverStrandedHumanReply(
     return "unreachable";
   }
 
-  const message = findRawMessage(raw, messageId);
+  const page = readMessagePage(raw);
+  if (page === null) {
+    logger.warn(
+      "chatwoot human-reply recovery: %s read conversation %d back and the account answered with something that is not a message page; deferring",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unreachable";
+  }
+  const message = findRawMessage(page, messageId);
   // Chatwoot no longer has the message: deleted, or the conversation was. Nothing to fold in, and no
   // number of retries changes that.
-  if (!message) return "not-owed";
+  //
+  // SAID OUT LOUD, because one other thing produces this exact answer (verifier round 5): a page
+  // that ignores `before` and returns some other stretch of the conversation. The two are
+  // indistinguishable from here and the verdict is the same either way, so this is a process log and
+  // not a durable line — a deleted message is nothing an operator can act on, and it is not on the
+  // conversation for them to miss. What the line buys is the second cause being findable at all,
+  // since it would otherwise be a `not-owed` with no trace anywhere.
+  if (!message) {
+    logger.warn(
+      "chatwoot human-reply recovery: %s read conversation %d back and the page did not carry message %d; treating it as gone from the account",
+      row.deliveryId,
+      conversationId,
+      messageId,
+    );
+    return "not-owed";
+  }
 
   // REBUILT THROUGH THE SAME BUILDER THE OTHER RECOVERY USES, so the two cannot drift about what a
   // webhook body looks like — the REST and webhook spellings differ in both fields this depends on
@@ -715,16 +739,23 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// THE PAGE, OR NULL FOR A BODY THAT IS NOT ONE (review r10). The two shapes Chatwoot answers with
+// are a bare array and `{ payload: [...] }`; anything else — an empty body, `{}`, an error object
+// rendered with a 200 — is a response this cannot read, and reading it as an EMPTY page is what
+// turned a degraded account into a verdict: the caller concluded the message was deleted and settled
+// the ledger row for good. An unreadable answer is the account failing, which is the one thing here
+// that a later attempt can find repaired.
+function readMessagePage(raw: unknown): unknown[] | null {
+  if (Array.isArray(raw)) return raw;
+  if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload;
+  return null;
+}
+
 function findRawMessage(
-  raw: unknown,
+  page: unknown[],
   id: number,
 ): Record<string, unknown> | null {
-  const list: unknown[] = Array.isArray(raw)
-    ? raw
-    : isRecord(raw) && Array.isArray(raw.payload)
-      ? raw.payload
-      : [];
-  for (const item of list) {
+  for (const item of page) {
     if (isRecord(item) && item.id === id) return item;
   }
   return null;

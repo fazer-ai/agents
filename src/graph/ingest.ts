@@ -362,11 +362,29 @@ export async function ingestMessageIntoThread(
         // never landed — so the line says the machinery cannot decide and a person has to read the
         // conversation.
         //
-        // A COLLEAGUE'S REPLY ONLY. The customer's direction reaches this same refusal, and it is
-        // not silent in the same way: that message has a delivery ledger of its own behind it, and
-        // an unanswered customer is what the loss list is for. What has nobody else to report it is
-        // the attendant's reply, which no turn ever covers because the bot did not write it.
-        if (verdict === "ancient" && params.role === "human_agent") {
+        // BOTH DIRECTIONS, and the first draft of this had it wrong (verifier round 5, which
+        // refuted it from the tree). It reported only a colleague's reply, on the grounds that a
+        // customer's message has a delivery ledger of its own behind it and that an unanswered
+        // customer is what the loss list is for. Neither holds for the population that reaches this
+        // append: the arm that queues a customer's message is, by construction, only for the ones no
+        // turn covers — silenced by a gate (out of hours, an authorization refusal) or not
+        // bot-handled (a human owns the conversation, or it is not pending), with an answered or
+        // debounced message covered by its own turn and never re-ingested here
+        // (../modules/chatwoot/webhook.ts, above `armIngest`). In every one of those, a customer
+        // with no answer is the expected state, so the loss list shows nothing; and the delivery
+        // settled PROCESSED the moment the ARM succeeded, so the ledger shows nothing either. The
+        // loss happens here, later, and nothing revisits it: the customer writes three times while a
+        // human runs the attendance, the window overtakes those appends, and the bot resumes reading
+        // an attendance in which the customer never said any of it.
+        //
+        // THE VOLUME RISK IS NAMED RATHER THAN TRADED FOR THE SILENCE. The #194 migration seeded
+        // every existing window SATURATED with the old high-water mark
+        // (`array_fill(last_synced_message_id, ARRAY[64])`), so on a freshly migrated installation
+        // the floor IS that mark and any re-delivery below it reads `ancient`. Each real ingestion
+        // pushes one filler out, so a window becomes genuine history within a cap's worth of
+        // messages. If that ever shows up as noise, the answer is a rate limit, not dropping a
+        // direction — dropping one is what makes the line missing exactly where nobody else looks.
+        if (verdict === "ancient") {
           const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
             db.conversation.findUnique({
               where: {
@@ -380,8 +398,9 @@ export async function ingestMessageIntoThread(
             }),
           );
           logger.error(
-            "ingest: message %s on conversation %s is older than everything this thread's memory still remembers; it was not appended, and whether it ever was cannot be decided from here",
+            "ingest: message %s (%s) on conversation %s is older than everything this thread's memory still remembers; it was not appended, and whether it ever was cannot be decided from here",
             String(messageId),
+            params.role,
             String(conversationId),
           );
           await writeFlowEvent(
@@ -398,8 +417,9 @@ export async function ingestMessageIntoThread(
               level: "error",
               status: "error",
               detail: {
-                reason: "human_reply_append_undecidable",
+                reason: "ingest_append_undecidable",
                 messageId,
+                role: params.role,
                 window: INGEST_ID_WINDOW,
               },
             },

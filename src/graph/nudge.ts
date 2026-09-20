@@ -780,13 +780,29 @@ export async function runAgentNudge(
   // No modo live não há linha do espelho para classificar, e ali o dono do vocabulário já decidiu que
   // não há desfecho a declarar: `closed` é null e nada é escrito, em vez de um literal inventado
   // para preencher o buraco (que é o que a cerca de gate-close.test.ts proíbe).
+  //
+  // TRÊS RESPOSTAS E NÃO DUAS, e a terceira é o achado da rodada 2 de review. `probeLiveOwnership`
+  // responde `unavailable` quando não conseguiu VERIFICAR, e ele engole a falha por dentro — um
+  // `.catch` em volta desta função nunca vê nada. Dobrar `unavailable` em "não é nosso" faz uma
+  // indisponibilidade do Chatwoot virar posse perdida, e os dois consumidores querem o oposto um do
+  // outro nesse caso: a nota de hand-back fica DEVIDA (fail-closed, e não custa nada, porque nada
+  // foi consumido para escrevê-la), e o portão pós-espera SEGUE (fail-open, porque parar custa a
+  // ocasião inteira e a sonda pós-modelo ainda segura o envio). Uma resposta binária serviria
+  // errado a um dos dois, em silêncio.
   const botOwnsItNowDetailed = async (): Promise<
-    { ours: true } | { ours: false; closed: GateCloseDetail | null }
+    | { ours: true }
+    | { ours: false; closed: GateCloseDetail | null }
+    // Não deu para verificar. Nem posse nem perda: cada consumidor decide para que lado erra.
+    | { ours: null }
   > => {
     if (params.requireLiveBotOwnership) {
-      return (await probeLiveOwnership()) === "owned"
-        ? { ours: true }
-        : { ours: false, closed: null };
+      const live = await probeLiveOwnership();
+      if (live === "owned") return { ours: true };
+      // No modo live não há linha do espelho para classificar, e ali o dono do vocabulário já
+      // decidiu que não há desfecho a declarar: `closed` é null em vez de um literal inventado.
+      return live === "not-owned"
+        ? { ours: false, closed: null }
+        : { ours: null };
     }
     return await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
@@ -831,8 +847,10 @@ export async function runAgentNudge(
     // the post-invoke probe cannot unwrite it, so it gets the same certainty the send does — and only
     // that mode pays the round trip inside the claim. An unanswerable probe leaves the note owed.
     //
-    // Ambos os modos vêm da forma detalhada acima: este é o mesmo leitor, pedindo menos.
-    return (await botOwnsItNowDetailed()).ours;
+    // Ambos os modos vêm da forma detalhada acima: este é o mesmo leitor, pedindo menos. E o
+    // `=== true` é o fail-closed desta ponta: uma sonda que não conseguiu verificar deixa a nota
+    // DEVIDA, que é o que este site já fazia e custa nada.
+    return (await botOwnsItNowDetailed()).ours === true;
   };
 
   const handoffState = {
@@ -1568,7 +1586,10 @@ export async function runAgentNudge(
               );
               return { ours: true as const };
             });
-            if (!posse.ours) {
+            // FECHA SÓ NO `false`, nunca no `null`: "não deu para verificar" não é "uma pessoa
+            // assumiu". Esta é a mesma decisão que o `.catch` acima toma para o throw, e a rodada 2
+            // de review achou que faltava para o caminho que não lança (o modo live).
+            if (posse.ours === false) {
               // A MESMA LINHA QUE OS OUTROS PORTÕES ESCREVEM, pela regra que a #271 fixou: um
               // operador filtrando o log por este desfecho tem que receber TODOS os portões que
               // fecham nesta pergunta. E só quando o leitor tem o que dizer — no modo live não há

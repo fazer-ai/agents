@@ -414,14 +414,16 @@ describe.skipIf(!dbUp)(
       await clearFlowLog(suDb, { tenantId });
 
       const s = stub();
-      const modelo = new FakeListChatModel({ responses: ["RESP-N"] });
+      // Mesmo motivo do teste de baixo: o contador é do `SlowReplyModel`, porque o `i` do
+      // FakeListChatModel fica em 0 mesmo quando o modelo respondeu.
+      const modelo = new SlowReplyModel("RESP-N", 0);
       const nudge = runAgentNudge({
         tenantId,
         threadId: `${tenantId}:${instanceId}:8907`,
         nudge: { source: "followup", kind: "inactivity", step: 1 },
         base: appDb,
         deps: {
-          makeModel: () => modelo,
+          makeModel: () => modelo as never,
           makeClient: s.makeClient,
           checkpointer: new MemorySaver(),
           persistUsage: async () => {},
@@ -444,7 +446,7 @@ describe.skipIf(!dbUp)(
       expect(s.messages).toHaveLength(0);
       // ANTES DO MODELO, e não só antes do envio: é o que separa este portão da sonda pós-geração.
       // Um turno que rodou o modelo já rodou as ferramentas dele.
-      expect(modelo.i).toBe(0);
+      expect(modelo.calls).toBe(0);
       // E o portão escreve a linha do vocabulário compartilhado, para o operador que filtra por ela.
       const rows = await flowLogRows(suDb, {
         where: {
@@ -456,6 +458,62 @@ describe.skipIf(!dbUp)(
       expect(
         rows.map((r) => ((r.detail ?? {}) as Record<string, unknown>).outcome),
       ).toContain("taken_over");
+    }, 15_000);
+
+    // "NÃO DEU PARA VERIFICAR" NÃO É "UMA PESSOA ASSUMIU" — achado da rodada 2 de review, e ele
+    // atravessa o `.catch` do portão sem tocá-lo. No modo `requireLiveBotOwnership` a sonda engole a
+    // falha por dentro e responde `unavailable`; dobrar isso em "não é nosso" faria uma
+    // indisponibilidade do Chatwoot encerrar o episódio, que é o fail-closed que derrubou a
+    // fazer-ai/agents#684 voltando por uma porta que não lança.
+    test("a sonda live indisponível no portão deixa o turno seguir", async () => {
+      const contactInboxId = 8908;
+      await seedConv(8908, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const invokeMaisVelho = await markTurnOwning(owner, appDb);
+
+      const s = stub();
+      // A primeira leitura passa (é ela que deixa o run começar); da segunda em diante o Chatwoot
+      // some. A segunda é a do portão pós-espera.
+      let leituras = 0;
+      const client = {
+        ...(await s.makeClient()),
+        getConversation: async (c: number) => {
+          if (++leituras > 1) throw new Error("chatwoot fora do ar");
+          return { id: c, status: "pending", meta: {} };
+        },
+      } as unknown as ChatwootClient;
+      // `SlowReplyModel` e não `FakeListChatModel` porque este conta as chamadas: o `i` do
+      // FakeList existe e fica em 0 mesmo num turno que respondeu, então uma asserção sobre ele
+      // passaria verde sobre um modelo que nunca rodou e sobre um que rodou.
+      const modelo = new SlowReplyModel("RESP-N", 0);
+      const nudge = runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:8908`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        requireLiveBotOwnership: true,
+        base: appDb,
+        deps: {
+          makeModel: () => modelo as never,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+
+      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      await clearTurnOwning(owner, appDb, invokeMaisVelho);
+      await nudge;
+
+      // A PROVA: o portão deixou passar, e o turno rodou. O que ele faz depois é assunto da sonda
+      // pós-modelo, que é fail-closed de propósito e segura o envio.
+      expect(modelo.calls).toBeGreaterThan(0);
+      expect(leituras).toBeGreaterThan(1);
+      expect(s.messages).toHaveLength(0);
     }, 15_000);
 
     // O TETO. Passado ele o nudge segue ao lado de quem está lá, que é o comportamento de hoje e

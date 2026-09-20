@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
+  announceErasedDeaths,
   claimPendingByKeyPrefix,
   completeJob,
   enqueueJob,
@@ -118,16 +119,28 @@ async function ceifa(dono: { tenantId: bigint }) {
   );
 }
 
+// O par que o chamador de verdade forma: o revoke devolve as mortes que apagou, e o anúncio sai
+// DEPOIS, quando a transação de quem chamou já é durável. Em produção o /reset separa os dois pela
+// mesma razão; aqui eles ficam juntos porque não há transação de fora para desfazer nada.
+async function revogaDe(
+  dono: bigint,
+  prefix: string,
+  kind: "INGEST_MESSAGE" | "DELIVERY_RECOVERY",
+): Promise<number> {
+  const { count, erasedDeaths } = await runScopedOn(
+    appDb,
+    { tenantId: dono, userId: null, role: "TENANT_ADMIN" },
+    (db) => revokeJobsByKeyPrefixOn(db, kind, prefix),
+  );
+  announceErasedDeaths(erasedDeaths, appDb);
+  return count;
+}
+
 async function revoga(
   prefix: string,
   kind: "INGEST_MESSAGE" | "DELIVERY_RECOVERY",
 ) {
-  // O quarto argumento é o cliente em que o anúncio pousa, e NÃO o que apaga a linha: o emit é
-  // fire-and-forget, então ele não pode viajar na conexão travada do /reset. Em produção o padrão
-  // é o cliente do app; aqui é o do banco de teste.
-  return runScopedOn(appDb, ctx(), (db) =>
-    revokeJobsByKeyPrefixOn(db, kind, prefix, appDb),
-  );
+  return revogaDe(tenantId, prefix, kind);
 }
 
 async function mortesAnunciadas() {
@@ -368,14 +381,9 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     ];
     expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(2);
     expect(await revoga("ingest:t-a:", "INGEST_MESSAGE")).toBe(1);
-    expect(
-      await runScopedOn(
-        appDb,
-        { tenantId: outroTenantId, userId: null, role: "TENANT_ADMIN" },
-        (db) =>
-          revokeJobsByKeyPrefixOn(db, "INGEST_MESSAGE", "ingest:t-b:", appDb),
-      ),
-    ).toBe(1);
+    expect(await revogaDe(outroTenantId, "ingest:t-b:", "INGEST_MESSAGE")).toBe(
+      1,
+    );
     await announceReaped(lote, appDb);
 
     const deA = await mortesAnunciadas();
@@ -423,6 +431,115 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
       select: { dedupeKey: true },
     });
     expect(restante.map((r) => r.dedupeKey)).toEqual(["ingest:txs10:1"]);
+  });
+
+  // ACHADO DA RODADA 1 DE REVIEW. O carimbo não pode ser "existe uma marca": ele nomeia a CLAIM
+  // cuja morte foi anunciada. Um re-arm SEM payload preserva o payload (é o que `upsertJobRow`
+  // promete, e três chamadores de produção não passam payload), então uma marca por presença
+  // sobreviveria à ressurreição e calaria para sempre a SEGUNDA morte da mesma linha.
+  test("a segunda morte da mesma linha é anunciada, mesmo com o recibo da primeira no payload", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s11:1");
+    await morreComoReaper("INGEST_MESSAGE", async () => {});
+    expect(await mortesAnunciadas()).toHaveLength(1);
+    const comRecibo = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: "ingest:t-s11:1" },
+      select: { id: true, payload: true },
+    });
+    // O recibo da primeira morte está no payload, e é ele que o re-arm sem payload preserva.
+    expect(
+      (comRecibo.payload as Record<string, unknown>).deadLetterAnnouncedFor,
+    ).toBeDefined();
+
+    // Ressuscita SEM payload, como `ensureTenantSweep` e companhia fazem.
+    await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "INGEST_MESSAGE",
+      dedupeKey: "ingest:t-s11:1",
+      runAt: past(),
+      base: appDb,
+    });
+    expect(
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: { id: comRecibo.id },
+          select: { payload: true },
+        })
+      ).payload as Record<string, unknown>,
+    ).toHaveProperty("deadLetterAnnouncedFor");
+
+    await suDb.$executeRaw`
+      UPDATE scheduler_jobs
+         SET status = 'CLAIMED', claimed_at = ${past()}, attempts = 20,
+             claim_seq = claim_seq + 1,
+             last_error = 'ingest: falhou de novo'
+       WHERE id = ${comRecibo.id}`;
+    await morreComoReaper("INGEST_MESSAGE", async () => {});
+    // Duas mortes, dois anúncios. Com a marca por presença, a segunda some.
+    expect(await mortesAnunciadas()).toHaveLength(2);
+  });
+
+  // O MESMO ACHADO pelo outro lado: o revoke tem que julgar o recibo contra a claim da linha que
+  // ele está apagando, e não contra a mera existência da chave.
+  test("o revoke anuncia a morte nova de uma linha que já carregava o recibo de uma antiga", async () => {
+    await limpa();
+    const id = await claimedAndStale("INGEST_MESSAGE", "ingest:t-s12:1");
+    // O recibo de uma claim ANTERIOR, que é o que um re-arm sem payload deixa para trás.
+    await suDb.$executeRaw`
+      UPDATE scheduler_jobs
+         SET payload = payload || '{"deadLetterAnnouncedFor": "0"}'::jsonb,
+             claim_seq = 7
+       WHERE id = ${id}`;
+    await morreComoReaper("INGEST_MESSAGE", async () => {
+      expect(await revoga("ingest:t-s12:", "INGEST_MESSAGE")).toBe(1);
+    });
+    const linhas = await mortesAnunciadas();
+    expect(linhas).toHaveLength(1);
+    const d = linhas[0]?.detail as Record<string, unknown>;
+    expect(d.dedupeKey).toBe("ingest:t-s12:1");
+  });
+
+  // SEGUNDO ACHADO DA RODADA 1. O revoke não escreve a linha: ele devolve a morte, e quem chamou
+  // anuncia quando a própria escrita é durável. Sem isso, um /reset cuja transação desfaz o DELETE
+  // já teria anunciado, a linha DEAD voltaria sem recibo, e o próximo anunciante escreveria a mesma
+  // morte de novo — que é exatamente o que a s3 proíbe.
+  test("um revoke desfeito não anuncia nada, e a morte segue anunciável", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s13:1");
+    const reaped = await reapStaleJobs(
+      1_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(reaped.filter((r) => r.status === "DEAD")).toHaveLength(1);
+
+    // A transação do chamador desfaz a exclusão, como o /reset faz quando o delete do checkpoint
+    // falha. As mortes devolvidas morrem com ela.
+    await expect(
+      runScopedOn(appDb, ctx(), async (db) => {
+        const { count } = await revokeJobsByKeyPrefixOn(
+          db,
+          "INGEST_MESSAGE",
+          "ingest:t-s13:",
+        );
+        expect(count).toBe(1);
+        throw new Error("o delete do checkpoint falhou");
+      }),
+    ).rejects.toThrow("o delete do checkpoint falhou");
+
+    // A linha voltou, sem recibo...
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId, dedupeKey: "ingest:t-s13:1" },
+      }),
+    ).toBe(1);
+    expect(await mortesAnunciadas()).toHaveLength(0);
+    // ...e o anunciante que estava esperando ainda escreve a linha, uma vez só.
+    await announceReaped(reaped, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(1);
   });
 
   // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um

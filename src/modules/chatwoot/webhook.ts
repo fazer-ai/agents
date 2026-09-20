@@ -112,8 +112,10 @@ import { readMemoryConfig } from "@/modules/memory/settings";
 import { armObserve, observeKeyPrefix } from "@/modules/observe/job";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 import {
+  announceErasedDeaths,
   cancelPendingJob,
   cancelPendingJobsByPrefixUpToMessage,
+  type ErasedDeath,
   retireJobsByDedupeKey,
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
@@ -3386,6 +3388,9 @@ async function maybeConsumeCommandOrGate(params: {
     // their own threads), which matches where the operator typed /reset.
     if (ctx.conv.contactInboxId !== null) {
       const contactInboxId = ctx.conv.contactInboxId;
+      // Filled INSIDE the transaction below and drained after it, which is the whole point: see the
+      // revoke's call site for why an announcement may not be written from in there.
+      const erasedDeaths: ErasedDeath[] = [];
       // ALL THREE deletions under the lock a compaction takes, and in one step, because a reset that
       // clears them in separate critical sections loses to a job already CLAIMED (past
       // cancelPendingJob, provider call in flight):
@@ -3414,7 +3419,7 @@ async function maybeConsumeCommandOrGate(params: {
       //
       // The order the three deletions run in is load-bearing and lives with its reasoning in
       // src/modules/memory/reset.ts.
-      await step("clear agent memory", "memória", () =>
+      const memoriaLimpa = await step("clear agent memory", "memória", () =>
         withKeyedQueue(
           `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
           () =>
@@ -3474,15 +3479,20 @@ async function maybeConsumeCommandOrGate(params: {
               // transaction would wait for a connection this one cannot release until it returns,
               // and `DB_POOL_MAX=1` is a supported setting: the reset would time out and report a
               // partial failure of the very step that had nothing wrong with it.
-              // `base` as the fourth argument, and it is NOT the connection that deletes: the
-              // revoke now announces the deaths it erases (issue #737), and that emit is
-              // fire-and-forget, so it must land on the pool rather than on the locked connection
-              // this step is holding, which is gone by the time the row is written.
-              await revokeJobsByKeyPrefixOn(
-                db,
-                "INGEST_MESSAGE",
-                `ingest:${graphThreadId}:`,
-                base,
+              // The deaths this revoke ERASES come back rather than being announced here (issue
+              // #737): deleting a DEAD row destroys the only record that the ingestion of that
+              // message was lost. They are announced after this step returns, because THIS
+              // transaction is the reset's safety net — a failed checkpoint delete below rolls the
+              // deletion back, and a line written from in here would survive a rollback that put
+              // the DEAD row back unannounced, so the next announcer would write it a second time.
+              erasedDeaths.push(
+                ...(
+                  await revokeJobsByKeyPrefixOn(
+                    db,
+                    "INGEST_MESSAGE",
+                    `ingest:${graphThreadId}:`,
+                  )
+                ).erasedDeaths,
               );
               // AND THE FACT THAT IT WORKED, written by the transaction that does it (issue #728,
               // review r7/r8). `reset_at_message_id` above says the operator TYPED the command; it
@@ -3526,6 +3536,16 @@ async function maybeConsumeCommandOrGate(params: {
             }),
         ),
       );
+      // ...AND THE DEATHS IT ERASED, now that the transaction has committed. `step` returns null on
+      // failure, which is the rolled-back case: the DELETE was undone, the DEAD rows are back
+      // unannounced, and whoever announces them next is the one that should. Announcing here would
+      // be the duplicate.
+      //
+      // A crash between the commit and this line loses the announcement instead, which is the same
+      // exposure every fire-and-forget emit already carries and the cheaper of the two mistakes: a
+      // lost line leaves the death where the next reader finds it, a duplicated one cannot be
+      // retracted.
+      if (memoriaLimpa !== null) announceErasedDeaths(erasedDeaths, base);
       // The compacted memory of past attendances lives in its own table, not in the thread, so
       // deleting the thread alone would resurrect every one of them on the next compaction (the head
       // is rendered from these rows). "Starts this channel's conversation over" has to include them,

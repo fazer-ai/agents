@@ -14,6 +14,19 @@
 -- oportunidade se perdeu com ela no dia, e ressuscitá-la meses depois pelo caminho do revoke seria
 -- comportamento novo, não reparo.
 --
+-- O QUE ESTA MIGRAÇÃO NÃO ALCANÇA, dito aqui porque é o operador que decide se importa (rodada 4 de
+-- review). Na ordem de boot de `docs/deploy.md` o `migrate deploy` roda no contêiner NOVO com o
+-- VELHO ainda servindo, e o worker velho é quem ainda detém a liderança. Uma morte que ele declarar
+-- entre o COMMIT daqui e o corte escreve a linha de anúncio sem carimbo, e o primeiro `/reset`
+-- daquela thread depois do corte anuncia a mesma morte de novo. Não há sinal na linha que separe
+-- "o código velho anunciou" de "ninguém anunciou": é o mesmo problema desta issue um degrau acima.
+--
+-- Fica como resíduo assumido, e não como um deploy com parada, porque a conta não fecha do outro
+-- lado: para a duplicata acontecer é preciso uma ingestão esgotar cinco tentativas DENTRO da janela
+-- de corte E aquela thread receber um `/reset` depois, e o que sai disso é uma linha repetida de um
+-- evento que de fato aconteceu. Parar o contêiner velho antes de migrar elimina o resíduo, e é a
+-- instrução para quem quiser zero: não é o padrão porque custa indisponibilidade em toda release.
+--
 -- `NO FORCE ROW LEVEL SECURITY` em volta, porque `scheduler_jobs` é FORCE-RLS e o dono da tabela é
 -- sujeito à própria policy de tenant: sem isto o UPDATE decide sobre zero linhas e relata sucesso,
 -- que é o modo de falhar mais caro que existe aqui (foi o que a migration de rename de ferramentas

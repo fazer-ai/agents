@@ -593,6 +593,14 @@ export const DEAD_LETTER_ANNOUNCED = "deadLetterAnnouncedFor";
 // null and is exactly the case the operator cannot afford to see announced blank.
 export const REAPED_DEATH_ERROR = "reaped: the claim never finished";
 
+// And the OTHER empty, which is not the same empty. `failJob` writes `sanitizeErrorMessage(error)`,
+// and a handler that throws an empty (or whitespace-only) message makes that the empty STRING — a
+// death by the `failJob` road that says nothing about itself. Folding it into the sentence above
+// with a `||` was wrong in the one way this line cannot afford: it tells the operator the claim
+// never finished, about a claim that finished and failed. NULL is the reaper, `''` is this.
+export const UNRECORDED_DEATH_ERROR =
+  "dead-lettered: the failure recorded no message";
+
 // The claim, for the announcer. `true` means this call owns the line and must write it; `false`
 // means the row moved on, was re-armed, or somebody else already owns it — and in every one of those
 // the right thing is silence.
@@ -644,11 +652,44 @@ export interface ErasedDeath {
   error: string;
 }
 
-export function announceErasedDeaths(
+export async function announceErasedDeaths(
   deaths: ErasedDeath[],
   base: PrismaClient = basePrisma,
-): void {
+): Promise<void> {
+  if (deaths.length === 0) return;
+  // THE DELETION IS CONFIRMED, NOT INFERRED (review round 3, measured by the scenario runner).
+  //
+  // The caller's transaction may have rolled the DELETE back, and the obvious way to know is to ask
+  // the caller whether its step threw. That answer is not reliable: a Postgres block already in the
+  // aborted state accepts `COMMIT` and replies `ROLLBACK` without an error, so a `try/catch` around
+  // any statement inside the caller's callback makes the promise resolve over a transaction that
+  // kept nothing. The reset has no such catch today, which means the invariant stands on the
+  // ABSENCE of one — the shape that holds until somebody adds a guard for an unrelated reason.
+  //
+  // So the row is asked instead. A death whose row is back is a death nobody erased, and the
+  // announcement it was owed is owed again to whoever finds it next: the generic announcer still
+  // holds the claim, and the receipt is not there for it to trip on.
+  //
+  // One query per tenant, and none at all in the ordinary case, where nothing was erased.
+  const porTenant = new Map<bigint, ErasedDeath[]>();
   for (const death of deaths) {
+    const lista = porTenant.get(death.tenantId);
+    if (lista) lista.push(death);
+    else porTenant.set(death.tenantId, [death]);
+  }
+  const voltaram = new Set<bigint>();
+  for (const [tenantId, doTenant] of porTenant) {
+    const ids = doTenant.map((d) => d.jobId);
+    const vivos = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.schedulerJob.findMany({
+        where: { id: { in: ids } },
+        select: { id: true },
+      }),
+    );
+    for (const row of vivos) voltaram.add(row.id);
+  }
+  for (const death of deaths) {
+    if (voltaram.has(death.jobId)) continue;
     emitDeadLetter({
       tenantId: death.tenantId,
       unit: "job",
@@ -761,9 +802,12 @@ export async function revokeJobsByKeyPrefixOn(
             kind,
             jobId: row.id,
             dedupeKey: row.dedupe_key,
-            // What the ROW remembers, because whoever could explain this death is not here. Empty
-            // only for the reaper's road, which is why that road now writes its sentence down.
-            error: row.last_error || REAPED_DEATH_ERROR,
+            // What the ROW remembers, because whoever could explain this death is not here. The
+            // two empties are told apart on purpose: see UNRECORDED_DEATH_ERROR.
+            error:
+              row.last_error === null
+                ? REAPED_DEATH_ERROR
+                : row.last_error || UNRECORDED_DEATH_ERROR,
           })),
       };
     }

@@ -132,7 +132,7 @@ async function revogaDe(
     { tenantId: dono, userId: null, role: "TENANT_ADMIN" },
     (db) => revokeJobsByKeyPrefixOn(db, kind, prefix),
   );
-  announceErasedDeaths(erasedDeaths, appDb);
+  await announceErasedDeaths(erasedDeaths, appDb);
   return count;
 }
 
@@ -567,6 +567,61 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     // ...e o anunciante que estava esperando ainda escreve a linha, uma vez só.
     await announceReaped(reaped, appDb);
     expect(await mortesAnunciadas()).toHaveLength(1);
+  });
+
+  // O `/reset` não pode DEDUZIR que a transação durou, porque um bloco já abortado no Postgres
+  // aceita o COMMIT e responde ROLLBACK sem erro: qualquer try/catch acrescentado lá dentro depois
+  // faria a dedução mentir, e a mentira sai como linha duplicada. Então o anúncio confere a
+  // exclusão contra a linha, e o chamador pode chamá-lo sem saber de nada.
+  test("anunciar depois de um rollback não escreve nada, porque a linha voltou", async () => {
+    await limpa();
+    await claimedAndStale("INGEST_MESSAGE", "ingest:t-s15:1");
+    const lote = await reapStaleJobs(
+      1_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(lote.filter((r) => r.status === "DEAD")).toHaveLength(1);
+
+    let mortes: Awaited<
+      ReturnType<typeof revokeJobsByKeyPrefixOn>
+    >["erasedDeaths"] = [];
+    await expect(
+      runScopedOn(appDb, ctx(), async (db) => {
+        mortes = (
+          await revokeJobsByKeyPrefixOn(db, "INGEST_MESSAGE", "ingest:t-s15:")
+        ).erasedDeaths;
+        throw new Error("o delete do checkpoint falhou");
+      }),
+    ).rejects.toThrow("o delete do checkpoint falhou");
+    expect(mortes).toHaveLength(1);
+
+    // O chamador anuncia do mesmo jeito, sem perguntar se a transação durou.
+    await announceErasedDeaths(mortes, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(0);
+    // E a morte segue devida a quem a encontrar: a linha voltou sem recibo.
+    await announceReaped(lote, appDb);
+    expect(await mortesAnunciadas()).toHaveLength(1);
+  });
+
+  // As duas formas de uma linha DEAD não dizer por que morreu são DIFERENTES, e confundi-las conta
+  // ao operador que o claim não terminou sobre um claim que terminou e falhou. `last_error` null é
+  // o reaper; string vazia é o `failJob` sobre um erro sem mensagem.
+  test("a morte do failJob sem mensagem não é relatada como claim que não terminou", async () => {
+    await limpa();
+    const id = await claimedAndStale("INGEST_MESSAGE", "ingest:t-s16:1");
+    await suDb.$executeRaw`
+      UPDATE scheduler_jobs
+         SET status = 'DEAD', attempts = 5, claimed_at = NULL, last_error = ''
+       WHERE id = ${id}`;
+    expect(await revoga("ingest:t-s16:", "INGEST_MESSAGE")).toBe(1);
+    const linhas = await mortesAnunciadas();
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0]?.errorMessage).toBe(
+      "dead-lettered: the failure recorded no message",
+    );
   });
 
   // O OUTRO kind `JOB_DELETE_ON_DONE`. Hoje o operador não alcança este caso — o revoke tem um

@@ -3419,7 +3419,7 @@ async function maybeConsumeCommandOrGate(params: {
       //
       // The order the three deletions run in is load-bearing and lives with its reasoning in
       // src/modules/memory/reset.ts.
-      const memoriaLimpa = await step("clear agent memory", "memória", () =>
+      await step("clear agent memory", "memória", () =>
         withKeyedQueue(
           `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
           () =>
@@ -3536,16 +3536,19 @@ async function maybeConsumeCommandOrGate(params: {
             }),
         ),
       );
-      // ...AND THE DEATHS IT ERASED, now that the transaction has committed. `step` returns null on
-      // failure, which is the rolled-back case: the DELETE was undone, the DEAD rows are back
-      // unannounced, and whoever announces them next is the one that should. Announcing here would
-      // be the duplicate.
+      // ...AND THE DEATHS IT ERASED, now that the transaction is over. Unconditionally, and that is
+      // the point: `announceErasedDeaths` confirms each deletion against the row before writing
+      // anything, so a rollback suppresses the line by evidence rather than by this call site
+      // guessing from the absence of a throw. `step` returning null would be the obvious guard and
+      // it is not a sound one — a Postgres block already aborted accepts `COMMIT` and replies
+      // `ROLLBACK` without an error, so any `try/catch` added inside the callback later would make
+      // the guard lie. Asking twice would also put the two guards in front of each other, where
+      // neither can be tested.
       //
-      // A crash between the commit and this line loses the announcement instead, which is the same
-      // exposure every fire-and-forget emit already carries and the cheaper of the two mistakes: a
-      // lost line leaves the death where the next reader finds it, a duplicated one cannot be
-      // retracted.
-      if (memoriaLimpa !== null) announceErasedDeaths(erasedDeaths, base);
+      // A crash between the commit and this line loses the announcement, which is the same exposure
+      // every fire-and-forget emit already carries and the cheaper of the two mistakes: a lost line
+      // leaves the death where the next reader finds it, a duplicated one cannot be retracted.
+      await announceErasedDeaths(erasedDeaths, base);
       // The compacted memory of past attendances lives in its own table, not in the thread, so
       // deleting the thread alone would resurrect every one of them on the next compaction (the head
       // is rendered from these rows). "Starts this channel's conversation over" has to include them,

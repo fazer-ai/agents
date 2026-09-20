@@ -509,6 +509,24 @@ describe.skipIf(!dbUp)(
       expect(job?.status).toBe("DONE");
     });
 
+    // E O FATO DE QUE A LIMPEZA ACONTECEU fica na conversa, escrito pela transação que apagou a
+    // thread, os resumos e o checkpoint (issue #728, review r7/r8). `reset_at_message_id` registra
+    // que o operador DIGITOU o comando: ele é commitado por um statement anterior e independente, e
+    // este passo recusa por desenho quando um turno já escreve a thread, deixando a conversa com
+    // aquele carimbo e a memória intacta. A cerca da ingestão pergunta por esta coluna justamente
+    // porque ela não pode existir sem as deleções ao lado dela.
+    test("a successful clear records itself on the conversation, beside the command's own stamp", async () => {
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: { resetAtMessageId: true, memoryClearedAtMessageId: true },
+      });
+      expect(conv.memoryClearedAtMessageId).toBe(conv.resetAtMessageId);
+    });
+
     // Compaction was the only queued writer of this memory when the step above was written.
     // Continuous ingestion is one too (issue #194): at any moment this thread can owe an append
     // carrying text from before the reset, and both shapes have to stop — the row still waiting, and

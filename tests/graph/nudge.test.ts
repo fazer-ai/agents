@@ -1385,6 +1385,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
         makeClient: s.makeClient,
         checkpointer: saver,
+        // DEPOIS DO TETO DA ESPERA (issue #689). O nudge agora espera um invoke mais velho
+        // sair, então este estado — reivindicar o thread com outro invoke lendo — só existe
+        // passado o teto de `TURN_WAIT_MS`, que são cinco minutos. Um teto já vencido põe o teste
+        // exatamente lá, que é o caso que este arquivo mede.
+        turnWaitDeadline: () => Date.now(),
         persistUsage: async () => {},
       },
     });

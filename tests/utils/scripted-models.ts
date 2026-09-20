@@ -894,3 +894,31 @@ export class SlowFailingModel extends BaseChatModel {
     throw this.error;
   }
 }
+
+// Um modelo que DEMORA e responde. O par do `SlowFailingModel` acima: onde aquele existe para medir
+// o que um erro tardio faz, este existe para manter um turno vivo enquanto outro roda em cima dele
+// (issue #689), que é a única forma de duas invocações se sobreporem de verdade num teste.
+export class SlowReplyModel extends BaseChatModel {
+  calls = 0;
+  constructor(
+    private readonly reply: string,
+    private readonly delayMs: number,
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "fake-slow-reply";
+  }
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(): Promise<ChatResult> {
+    this.calls += 1;
+    await new Promise((r) => setTimeout(r, this.delayMs));
+    return {
+      generations: [
+        { text: this.reply, message: new AIMessage({ content: this.reply }) },
+      ],
+    };
+  }
+}

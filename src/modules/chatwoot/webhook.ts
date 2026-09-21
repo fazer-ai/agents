@@ -6462,7 +6462,16 @@ export async function processChatwootDelivery(
   // (adiar a liquidação e lançar quando o arme falha, deixando a linha em `PROCESSING`), e o que
   // impedia de usá-la aqui era o risco do replay responder duas vezes — que é justamente o que a
   // coluna desta PR remove. Com ele removido, a saída passa a valer nas duas.
-  const settleAwaitsIngest = settlesHere && routeRemembers;
+  // E ELA ESPERA PELO DEVER TAMBÉM, não só pela rota (review r5, site irmão). `routeRemembers`
+  // responde "esta rota vai ingerir", e desde o parágrafo acima o portão da ingestão também abre
+  // pelo dever gravado na linha — então numa rota que não lembra continuamente (modo teste) o replay
+  // passava a enfileirar o append e a liquidação NÃO esperava por ele: com o arme falhando também no
+  // replay, a linha fechava terminal com a marca por cima de uma mensagem que memória nenhuma tem,
+  // que é o trio que o corpo da issue mede, de volta por outra porta. Medido antes do conserto.
+  //
+  // Só o replay muda: na passada original `params.owesMemoryOnly` é `undefined`.
+  const settleAwaitsIngest =
+    settlesHere && (routeRemembers || params.owesMemoryOnly === true);
   // WHAT THIS PASS OWES, RECORDED WHERE IT IS DECIDED AND BEFORE THE ARM THAT CAN FAIL (issue #725).
   //
   // `settlesHere` is already this file's own answer to "no turn ran on this delivery": a person

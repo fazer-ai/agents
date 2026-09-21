@@ -740,6 +740,116 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     ]);
   });
 
+  // O SITE IRMÃO DO ACHADO DA RODADA 5. Com o dever abrindo o portão da ingestão, o replay de uma
+  // rota que não lembra continuamente passa a enfileirar o append — mas a LIQUIDAÇÃO ainda espera
+  // `routeRemembers`, não o dever. Se o arme falhar TAMBÉM no replay, a linha fecha terminal com a
+  // marca por cima de uma mensagem que memória nenhuma tem, que é exatamente o trio que o corpo da
+  // issue mede, de volta por outra porta.
+  test("no modo teste um arme que falha no replay não fecha a linha nem passa a marca", async () => {
+    const convId = 9412;
+    const texto = "e esse aqui funciona?";
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        contactInboxId: CONTACT_INBOX_BASE + convId,
+        inboxId: inboxTestDbId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        testActivatedAt: new Date(),
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: texto,
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: heldByBot(convId, INBOX_TEST),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `rom-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      CONTACT_INBOX_BASE + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: BOT_ID,
+      normalized: n,
+      base: semFila(),
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Funciona!"] }),
+      },
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    const assumiu = await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    expect(assumiu.count).toBe(1);
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: delivery.id },
+      data: { status: "DEAD" },
+    });
+    const stub = stubChatwoot(convId, messageId, texto, undefined, INBOX_TEST);
+    // O ARME FALHA NO REPLAY TAMBÉM, que é a condição do caso: o scheduler continua recusando.
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: delivery.id,
+      base: semFila(),
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: ["Funciona!"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: delivery.id },
+      select: { status: true, owesMemoryOnly: true },
+    });
+    const marca = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastHandledMessageId: true },
+    });
+    // NADA FOI DITO, e a linha continua devendo: não é terminal e a marca não passou por cima.
+    expect(stub.sent).toEqual([]);
+    expect(row.owesMemoryOnly).toBe(true);
+    expect(row.status).not.toBe("PROCESSED");
+    expect(marca.lastHandledMessageId ?? 0).toBeLessThan(messageId);
+  });
+
   test("a mensagem que uma pessoa já tratou não é respondida quando a conversa volta ao bot", async () => {
     const convId = 9401;
     const texto = "consigo pagar em duas vezes?";

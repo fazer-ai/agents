@@ -152,6 +152,13 @@ async function requireTenantExists(
 // given time" is `maxWait`; "a query cannot be executed on an expired transaction" is `timeout`),
 // and neither number appeared anywhere in this repository. Naming them here is what makes the
 // budget greppable from the error, and tunable in one place if it ever has to move.
+//
+// THE OTHER HALF OF THE SAME EQUATION IS `DB_POOL_MAX` (issue #668): this says how long to wait for a
+// connection, and that says how many there are. An operator who arrives here from the `maxWait`
+// error is usually looking at a POOL that is too small for a burst rather than at a wait that is too
+// short, and the two pools (Prisma's and the checkpointer's) are each sized by it, so connections per
+// leader replica are about twice it. `docs/deploy.md` carries the arithmetic against `max_connections`
+// and the reason `connection_limit` in the URL is not that knob.
 export const SCOPED_TX_OPTIONS = {
   // Time to WAIT for a free connection before giving up.
   maxWait: 2_000,

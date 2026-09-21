@@ -625,15 +625,14 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
     }
   });
 
-  test("anexo já extraído ao lado de um novo: só o novo custa uma chamada", async () => {
+  test("mensagem meio lida não é reaberta: a chegada já passou por ela", async () => {
     await comCredencial(async () => {
       const id = await seedConversation(947);
       await clearFlowLog(suDb, { tenantId });
-      clearMediaAnnotations();
       const sent: Array<[number, string]> = [];
       const metaEscrita: Array<[number, string]> = [];
       const modelo = new TurnCapturingModel(REPLY);
-      const fetchFalso = visionFetch(["Comprovante de PIX de R$ 115,00."]);
+      const fetchFalso = visionFetch(["NÃO DEVERIA SER CHAMADO."]);
 
       const res = await reengageConversation(
         ctx(),
@@ -661,14 +660,13 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       );
 
       expect(res.outcome).toBe("posted");
-      // UMA chamada, não duas: o anexo que já carrega a extração é reaproveitado. É aqui que a
-      // conta aparece — na caixa que motivou a issue, metade das conversas com anexo traz mais de
-      // um, e reextrair o que já está em mãos dobraria o custo de cada religada.
-      expect(chamadasDoProvedor.n).toBe(1);
-      // E o modelo recebe OS DOIS, o reaproveitado e o novo.
-      const turno = modelo.humanTexts.join("\n");
-      expect(turno).toContain("Print do pedido 21607129");
-      expect(turno).toContain("Comprovante de PIX");
+      // ZERO chamadas. Um anexo com meta e outro sem é a assinatura de uma mensagem que a CHEGADA
+      // já processou e cujo write-back pousou pela metade: o stash daquela passagem tem o agregado
+      // dos dois. Reabrir o que falta reextrai o que já existe, e uma segunda tentativa que perca
+      // um arquivo publica um agregado mais pobre por cima do completo.
+      expect(chamadasDoProvedor.n).toBe(0);
+      // O que a meta tem continua chegando ao modelo.
+      expect(modelo.humanTexts.join("\n")).toContain("Print do pedido 21607129");
     });
   });
 
@@ -719,6 +717,56 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       expect(modelo.humanTexts.join("\n")).toContain(
         "Print do pedido 21607129",
       );
+    });
+  });
+
+  test("o stash expira no meio da rajada e a leitura não se perde", async () => {
+    await comCredencial(async () => {
+      const id = await seedConversation(950);
+      await clearFlowLog(suDb, { tenantId });
+      clearMediaAnnotations();
+      const sent: Array<[number, string]> = [];
+      const metaEscrita: Array<[number, string]> = [];
+      const modelo = new TurnCapturingModel(REPLY);
+      // O laço é sequencial e o stash tem TTL de 15 minutos: numa rajada de mensagens com
+      // documento, a extração da PRIMEIRA pode vencer antes de o overlay final rodar. Aqui a
+      // segunda chamada ao provedor apaga a loja inteira, que é essa expiração encenada.
+      const base = visionFetch([
+        "Comprovante de PIX de R$ 115,00.",
+        "Print do pedido 21607129.",
+      ]);
+      const fetchFalso = (async (...args: unknown[]) => {
+        const r = await (base as (...a: unknown[]) => Promise<Response>)(
+          ...args,
+        );
+        if (chamadasDoProvedor.n >= 2) clearMediaAnnotations();
+        return r;
+      }) as unknown as typeof fetch;
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => modelo,
+          makeClient: stubComAnexos({
+            page: page([
+              { id: 801, content: "", anexos: [{ id: 81 }] },
+              { id: 802, content: "", anexos: [{ id: 82 }] },
+            ]),
+            sent,
+            metaEscrita,
+          }),
+          visionFetch: fetchFalso,
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+
+      expect(res.outcome).toBe("posted");
+      const turno = modelo.humanTexts.join("\n");
+      // A primeira leitura chega ao modelo mesmo tendo saído da loja antes do fim do laço.
+      expect(turno).toContain("Comprovante de PIX");
+      expect(turno).toContain("Print do pedido 21607129");
     });
   });
 

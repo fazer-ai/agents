@@ -400,25 +400,6 @@ export async function selectAnswerableBurst(
 //
 // Best-effort inteiro: um anexo que não abre, uma vision desligada ou uma credencial que sumiu
 // deixam o turno acontecer com o que havia antes. O que esta função nunca faz é impedir a resposta.
-// SE A LEITURA DESTA MENSAGEM VEIO DO STASH, E NÃO DA META DOS ANEXOS. `m.visuals` traz o que a
-// meta do anexo diz, e no Chatwoot upstream a rota de write-back não existe: ali uma extração
-// bem-sucedida da chegada volta SÓ pelo stash em memória, que o overlay pousa no agregado da
-// mensagem sem dizer de quais anexos ele saiu. Perguntando apenas aos anexos, essa mensagem parece
-// intocada e o religar pagaria o provedor de novo pelo texto que já está em mãos — e pior: numa
-// segunda passagem em que um dos arquivos falhe, o agregado completo é trocado por um mais pobre.
-//
-// Não basta, porém, pular toda mensagem que já tem agregado: quando ALGUM anexo carrega a extração
-// na própria meta, o agregado é dali, sabe-se exatamente o que falta, e `extractMessageVisuals`
-// reusa o lido e abre só o resto. É a diferença entre "já foi lida, não sei o quê" e "já foi lida,
-// e é isto".
-function leituraSoNoStash(m: ChatwootMessageRow): boolean {
-  const temAgregado = Boolean(m.imageDescription || m.extractedText);
-  const algumAnexoExtraido = m.visuals.some(
-    (v) => v.imageDescription || v.extractedText,
-  );
-  return temAgregado && !algumAnexoExtraido;
-}
-
 async function fillMissingVisuals(args: {
   tenantId: bigint;
   instanceId: bigint;
@@ -442,8 +423,22 @@ async function fillMissingVisuals(args: {
   // respondida — um agente desligado não tem turno.
   const cfg = readVisionConfig(args.settings);
   if (!cfg.enabled) return;
+  // O RELIGAR ABRE O QUE NINGUÉM NUNCA ABRIU. Não refaz, não complementa e não corrige passagem
+  // anterior: mensagem que já carrega QUALQUER leitura — na meta do anexo, ou no agregado que o
+  // overlay acabou de pousar vindo do stash — fica como está.
+  //
+  // A cerca é pelo agregado da mensagem porque é o único lugar onde as duas origens se encontram, e
+  // porque uma leitura parcial não é convite para completar: uma mensagem cuja meta traz um anexo de
+  // dois é uma mensagem que a chegada JÁ processou, e cujo stash tem o agregado dos dois. Reabrir o
+  // que falta ali reextrai o que já existe e, se essa segunda tentativa perder um arquivo, publica um
+  // agregado mais pobre por cima do completo — troca uma leitura boa por uma pior. O que a chegada
+  // deixou por ler de propósito (o teto por mensagem) ou por falha está dito na contagem de não
+  // lidos, que é o que o modelo recebe.
   const alvos = args.pending.filter(
-    (m) => hasUnextractedVisual(m.visuals) && !leituraSoNoStash(m),
+    (m) =>
+      hasUnextractedVisual(m.visuals) &&
+      !m.imageDescription &&
+      !m.extractedText,
   );
   if (alvos.length === 0) return;
 
@@ -453,7 +448,7 @@ async function fillMissingVisuals(args: {
   // todas juntas multiplicaria o teto por mensagem sem nenhum ganho de latência que o cliente veja.
   for (const m of alvos) {
     try {
-      await extractMessageVisuals({
+      const lido = await extractMessageVisuals({
         tenantId: args.tenantId,
         instanceId: args.instanceId,
         conversationId: args.conversationId,
@@ -477,6 +472,18 @@ async function fillMissingVisuals(args: {
         },
         convLabel: String(args.conversationId),
       });
+      // NA LINHA, NA HORA, sem esperar o fim do laço. O stash tem TTL de 15 minutos e este laço é
+      // sequencial: uma rajada com vinte mensagens de documento (60s de orçamento cada) leva a
+      // extração da primeira a expirar antes de o overlay final rodar, e no Chatwoot upstream, onde
+      // não há write-back de meta, aquela mensagem renderizaria como não lida depois de ter sido
+      // lida com sucesso. Aplicado aqui, o stash deixa de ser o carregador do resultado e não há
+      // overlay no fim do laço: as outras linhas da página já foram sobrepostas na leitura, e entre
+      // aquele instante e este nada mudou para elas.
+      if (lido) {
+        if (lido.imageDescription) m.imageDescription = lido.imageDescription;
+        if (lido.extractedText) m.extractedText = lido.extractedText;
+        m.attachmentsUnread = lido.attachmentsUnread;
+      }
     } catch (err) {
       logger.warn(
         "vision fill failed (conv=%s msg=%s): %s",
@@ -486,8 +493,6 @@ async function fillMissingVisuals(args: {
       );
     }
   }
-  // O que a extração stashou entra nas linhas aqui, sobre a página já lida.
-  overlayMediaAnnotations(args.tenantId, args.instanceId, args.messages);
 }
 
 // The instant of the newest message in the turn's input, or null when nothing in it carries one

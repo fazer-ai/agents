@@ -1,0 +1,248 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { Client } from "pg";
+
+// A `CREATE INDEX CONCURRENTLY` THAT DIES LEAVES AN INDEX POSTGRES REFUSES TO USE (issue #759).
+//
+// Without a transaction the build is not atomic, so a deploy interrupted mid-build leaves
+// `indisvalid = false` behind: never chosen for a query, still maintained on every write. Nothing
+// else in the suite can see it, because an index changes no result, only a cost, and nothing in the
+// schema or in `migrate status` says a word.
+//
+// The interruption itself is LOUD, and the `DROP INDEX IF EXISTS` every one of those migrations
+// opens with is NOT the defence, which is what `20260919140000_conversations_contact_inbox_index`
+// claims in its own header. Measured against a scratch database: the file whose connection dies
+// leaves its `_prisma_migrations` row with `finished_at = NULL`, and the next deploy stops with
+// `P3009`, so the container never serves. The silence is in the way OUT of P3009 —
+// `migrate resolve --applied` marks the file applied without running it, the app boots, and the
+// corpse stays in the catalog for good. The DROP only ever helps the other door
+// (`resolve --rolled-back` plus a re-deploy), which reruns the file.
+//
+// So the defence is a FOLLOWING migration that asks the catalog, and this file holds both halves of
+// keeping it: that the guard FIRES against a real invalid index (not merely that its text mentions
+// `indisvalid`), and that no table gets a concurrent build without one.
+
+const MIGRATIONS = "prisma/migrations";
+const ASSERT_FILE = `${MIGRATIONS}/20260921120000_assert_conversation_indexes_valid/migration.sql`;
+const INDEX = "conversations_tenant_id_chatwoot_instance_id_contact_inbox__idx";
+// Distinctive on purpose: the sweep below would report it as an unguarded build if it ever reached a
+// migration file, and the cleanup has to be able to name it after a crash.
+const PROBE = "conversations_invalid_index_probe_idx";
+
+type File = { name: string; sql: string };
+
+// A comment carries the very words this sweep looks for: three migrations explain the rule in prose
+// above their statements, and each assertion file quotes the command an operator has to run. Strip
+// whole-line comments before asking anything of the SQL. Nothing in this tree puts a `--` after code
+// on the same line, and no string literal holds one.
+function statementsOf(sql: string): string {
+  return sql
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("--"))
+    .join("\n");
+}
+
+// THE SWEEP, as a function over files rather than over the directory, so the cases that do not exist
+// in this tree can still be tested: a guard that runs BEFORE its build, and a build whose `ON` sits
+// on the next line. Both of those are how a sweep like this passes while the hole it exists to close
+// stays open, and neither can be reached by pointing it at `prisma/migrations`.
+function sweep(files: File[]): {
+  builds: Map<string, string>;
+  asserts: Map<string, string[]>;
+  unguarded: string[];
+} {
+  const builds = new Map<string, string>(); // table -> last migration that builds on it
+  const asserts = new Map<string, string[]>(); // table -> migrations that assert it
+  for (const { name, sql } of [...files].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    // Anything may sit between the index name and its `ON`, INCLUDING A NEWLINE: two of the three
+    // files in this tree are written that way, so a per-line pattern reads one build and misses two.
+    for (const m of statementsOf(sql).matchAll(
+      /CREATE\s+INDEX\s+CONCURRENTLY[\s\S]*?\bON\s+"?([a-z0-9_]+)"?/gi,
+    )) {
+      builds.set(m[1] as string, name); // sorted, so the last write is the last build
+    }
+    // NOT over `statementsOf`: the check lives inside a `DO $$ … $$` body, and a sweep that strips
+    // those bodies (as the statement counter in tenant-index-redundancy.test.ts does) would strip
+    // the table name with it.
+    if (/\bindisvalid\b/.test(sql)) {
+      for (const m of sql.matchAll(/t\.relname\s*=\s*'([a-z0-9_]+)'/g)) {
+        const table = m[1] as string;
+        asserts.set(table, [...(asserts.get(table) ?? []), name]);
+      }
+    }
+  }
+  const unguarded: string[] = [];
+  for (const [table, lastBuild] of builds) {
+    // LATER, not merely present: a guard that runs before the build asks about a table the index has
+    // not been added to yet, and it can never be the same file — a `DO $$` block puts the migration
+    // in an implicit transaction, which `CREATE INDEX CONCURRENTLY` cannot share.
+    const after = (asserts.get(table) ?? []).filter((a) => a > lastBuild);
+    if (after.length === 0)
+      unguarded.push(
+        `${table} (last built in ${lastBuild}, asserted by ${
+          (asserts.get(table) ?? []).join(", ") || "nothing"
+        })`,
+      );
+  }
+  return { builds, asserts, unguarded };
+}
+
+function migrationFiles(): File[] {
+  const out: File[] = [];
+  for (const name of readdirSync(MIGRATIONS).sort()) {
+    const file = `${MIGRATIONS}/${name}/migration.sql`;
+    if (!existsSync(file)) continue;
+    out.push({ name, sql: readFileSync(file, "utf8") });
+  }
+  return out;
+}
+
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: Client | undefined;
+if (suUrl) {
+  try {
+    su = new Client({ connectionString: suUrl });
+    await su.connect();
+    await su.query("SELECT 1");
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const suDb = su as Client;
+
+describe("the concurrent-index guard", () => {
+  test("every table built on concurrently is asserted by a LATER migration", () => {
+    const { builds, unguarded } = sweep(migrationFiles());
+    // Anti-vacuum: a parser that stops matching reports an empty sweep as a clean one. These three
+    // are the tables the migrations build on concurrently today, and the count only grows.
+    expect([...builds.keys()].sort()).toEqual(
+      expect.arrayContaining([
+        "audit_logs",
+        "chatwoot_webhook_deliveries",
+        "conversations",
+      ]),
+    );
+    expect(builds.size).toBeGreaterThanOrEqual(3);
+    expect(unguarded).toEqual([]);
+  });
+
+  test("the sweep reads the forms this tree does not currently hold", () => {
+    const build = (t: string) =>
+      `CREATE INDEX CONCURRENTLY "some_idx"\n    ON "${t}"("a", "b")\n WHERE "a" IS NOT NULL;`;
+    const guard = (t: string) =>
+      `DO $$\nBEGIN\n  PERFORM 1 FROM pg_index i JOIN pg_class t ON t.oid = i.indrelid\n   WHERE t.relname = '${t}' AND NOT i.indisvalid;\nEND $$;`;
+
+    // The `ON` on its own line, which is how two of the three real files are written.
+    expect(sweep([{ name: "1_build", sql: build("t") }]).unguarded).toEqual([
+      "t (last built in 1_build, asserted by nothing)",
+    ]);
+    // A guard BEFORE its build guards nothing, and reads exactly like one that guards something.
+    expect(
+      sweep([
+        { name: "1_guard", sql: guard("t") },
+        { name: "2_build", sql: build("t") },
+      ]).unguarded,
+    ).toEqual(["t (last built in 2_build, asserted by 1_guard)"]);
+    // ...and after it, it counts.
+    expect(
+      sweep([
+        { name: "1_build", sql: build("t") },
+        { name: "2_guard", sql: guard("t") },
+      ]).unguarded,
+    ).toEqual([]);
+    // A SECOND build after the guard reopens the window: the guard already ran.
+    expect(
+      sweep([
+        { name: "1_build", sql: build("t") },
+        { name: "2_guard", sql: guard("t") },
+        { name: "3_build", sql: build("t") },
+      ]).unguarded,
+    ).toEqual(["t (last built in 3_build, asserted by 2_guard)"]);
+    // Prose is not a build. Every one of these files explains the rule above its statements, and the
+    // sweep used to be fed the comments along with them.
+    expect(
+      sweep([
+        {
+          name: "1_prose",
+          sql: '-- a CREATE INDEX CONCURRENTLY on "conversations" that dies leaves a corpse\nSELECT 1;',
+        },
+      ]).builds.size,
+    ).toBe(0);
+  });
+
+  test("the assertion lives in a file of its own, and asks about the table", () => {
+    const sql = readFileSync(ASSERT_FILE, "utf8");
+    const statements = statementsOf(sql);
+    // Its own file, so it can never share a transaction with a concurrent build.
+    expect(statements).not.toMatch(/CREATE\s+INDEX/i);
+    expect(statements).toContain("indisvalid");
+    expect(statements).toContain("'conversations'");
+    // The exception has to tell an operator what to do: the fix is a command, and the deploy is
+    // stopped at the moment they read it.
+    expect(statements).toContain("RAISE EXCEPTION");
+    expect(statements).toContain("DROP INDEX CONCURRENTLY");
+  });
+
+  describe.skipIf(!dbUp)("against the catalog", () => {
+    beforeAll(async () => {
+      // After a crashed run the forge below is still in the catalog, and it would fail the clean half
+      // of this file rather than the half that forged it.
+      await suDb.query(`DROP INDEX IF EXISTS "${PROBE}"`);
+    });
+
+    afterAll(async () => {
+      await suDb.query(`DROP INDEX IF EXISTS "${PROBE}"`);
+    });
+
+    test("a database built from these migrations holds the index, valid", async () => {
+      const r = await suDb.query<{ valid: boolean }>(
+        `SELECT i.indisvalid AS valid
+           FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE c.relname = $1`,
+        [INDEX],
+      );
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]?.valid).toBe(true);
+    });
+
+    test("the guard passes on a clean catalog and RAISES on an invalid index", async () => {
+      const guard = readFileSync(ASSERT_FILE, "utf8");
+
+      // The control first, and it is not a formality: a guard that raises unconditionally would stop
+      // every deploy, and the arm below could not tell the two apart.
+      await suDb.query(guard);
+
+      // FORGED, not interrupted. Killing a real `CREATE INDEX CONCURRENTLY` at the right moment is
+      // not reproducible, and `indisvalid = false` is the whole of what it leaves for anyone
+      // downstream to read — the planner consults that column and nothing else. The other
+      // reproducible route (a `CREATE UNIQUE INDEX CONCURRENTLY` that hits a duplicate) would need
+      // rows in `conversations`, so a tenant, an instance and RLS, to arrive at the same column.
+      await suDb.query(`CREATE INDEX "${PROBE}" ON "conversations" ("id")`);
+      await suDb.query(
+        `UPDATE pg_index SET indisvalid = false WHERE indexrelid = '"${PROBE}"'::regclass`,
+      );
+      const forged = await suDb.query<{ n: number }>(
+        `SELECT count(*)::int AS n
+           FROM pg_index i
+           JOIN pg_class c ON c.oid = i.indexrelid
+           JOIN pg_class t ON t.oid = i.indrelid
+          WHERE t.relname = 'conversations' AND NOT i.indisvalid`,
+      );
+      expect(forged.rows[0]?.n).toBe(1);
+
+      // The name is in the message, and it is the point: the operator's next command needs it.
+      await expect(suDb.query(guard)).rejects.toThrow(
+        new RegExp(`conversations carries invalid index\\(es\\): ${PROBE}`),
+      );
+
+      // ...and the command the message names is what unblocks the deploy, which is the other half of
+      // the message being useful.
+      await suDb.query(`DROP INDEX "${PROBE}"`);
+      await suDb.query(guard);
+    });
+  });
+});

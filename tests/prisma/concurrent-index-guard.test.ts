@@ -259,7 +259,10 @@ describe("the concurrent-index guard", () => {
     // shape `docs/deploy.md` describes: for a build another role started, the row is there but every
     // column comes back NULL, so a `WHERE relid = …` filter drops it and the check reports "nothing
     // running" for the exact case it exists to catch. The message must not carry that filter.
-    expect(statements).toMatch(/pg_read_all_stats/);
+    // Asserted by the CLAIM, not by the word: the message now also names `pg_read_all_stats` in the
+    // GRANT that gets an operator out of a stream of unattributable rows, so matching the word alone
+    // stopped covering this sentence at all (a mutant that deleted it survived).
+    expect(statements).toMatch(/a filter on relid drops exactly that row/);
     // The window has to stop at the statement's own `;`: the message now says "Run it with no
     // WHERE" one line below the query, and a proximity match reads that sentence as the filter it
     // is warning against. Same shape as the literal that poisoned the sweep two rounds ago.
@@ -297,7 +300,18 @@ describe("the concurrent-index guard", () => {
     // ...and the wait has to cover the row that names NOTHING, which is where partitioning the list
     // by name breaks: without `pg_read_all_stats` the view names no index at all, so "reindex
     // everything it does not name" is "reindex the live build you cannot see".
-    expect(statements).toMatch(/row of all NULLs names no index/);
+    expect(statements).toMatch(/row of all NULLs names nothing at all/);
+    // ...and the wait needs a ceiling, because step 1 is cluster-wide and that is what makes the
+    // nulled row appear at all: "re-run until empty" is unbounded on a cluster where some database
+    // always has a build running, and the operator is then stuck waiting instead of fixing. Only a
+    // row that could be THIS table's counts, and the way out of a stream of unattributable rows is
+    // the GRANT that turns them into names (measured: the same role, against the same live build,
+    // goes from `179174 | | |` to `conversations | zz_live2 | waiting for old snapshots`).
+    expect(statements).toMatch(/is not yours and you do not wait for it/);
+    expect(statements).toMatch(/GRANT pg_read_all_stats TO/);
+    // ...and step 3 derives from the catalog, not from the exception's list or step 1's rows, which
+    // is what makes the sequence hold when the operator cannot read the progress view at all.
+    expect(statements).toMatch(/no role setup can hide from the owner/);
     // The final step belongs to every path, and it names the failure it prevents.
     expect(statements).toContain("P3009");
     expect(steps[3]).toBeGreaterThan(

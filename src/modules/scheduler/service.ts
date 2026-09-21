@@ -8,7 +8,9 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
+  JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
   kindsInLane,
   type SchedulerLane,
@@ -541,6 +543,252 @@ export function jobNotRetiredSql(job: ClaimedJob): Prisma.Sql {
        ))`;
 }
 
+// WHO OWES THE ANNOUNCEMENT OF A DEATH, WRITTEN ON THE ROW BECAUSE THE ROW IS WHAT GETS ERASED
+// (issue #737).
+//
+// The generic dead-letter line re-reads the row before writing, and used to treat a MISSING row as
+// "the work completed" — true for a `JOB_DELETE_ON_DONE` kind only while the completion is the ONLY
+// thing that deletes it. For `INGEST_MESSAGE` it is not: the revoke below deletes `DEAD` rows too,
+// deliberately, because the row holds the encrypted message body and a `/reset` that left it would
+// confirm "memory cleared" over a stored copy of the conversation. A reset landing between the DEAD
+// write and that re-read therefore erased the evidence, and the loss went unannounced in BOTH
+// places at once — no job row, and no `dead_letter` line either.
+//
+// "No row" has two origins and cannot classify on its own, which is why the answer is not a smarter
+// read. The other origin is a genuine re-do: after the DEAD write the only road back to a deleted
+// row is re-arm → re-claim → `completeJob` (which CASes on `CLAIMED`), so a missing row can also
+// mean the message WAS ingested, by a later attempt. Announcing every missing row would page an
+// operator about losses that did not happen and turn a `/reset` into a burst of errors.
+//
+// So the two candidates claim the announcement instead, and the claim is a token written INTO the
+// row: whoever stamps it first owns the line, and the loser stays quiet. They serialize on the row
+// lock, so under READ COMMITTED the orderings are exhaustive — if this UPDATE commits first the
+// DELETE re-evaluates `jsonb_exists` against the stamped version and skips its own announcement; if
+// the DELETE commits first this UPDATE matches nothing and returns 0.
+//
+// `payload` rather than a column of its own, and not only to save a migration: the token is about a
+// single run of a single row, and `retireJobsByDedupeKeyOn` already writes `cancelledAt` there for
+// the same reason.
+//
+// It holds the CLAIM the death belonged to, and mere presence is not the question (review round 1).
+// A re-arm replaces the payload only when the caller supplies one, and three production callers do
+// not (`ensureTenantSweep`, `ensureFlowlogSweep`, `ensureTenantHeartbeat`). Testing for the key
+// alone, a row that had died once and been announced would carry the token forever: re-armed, run
+// successfully any number of times, then dead again, and that second death would be suppressed by
+// the first one's receipt. Naming the claim makes the token answer the only question worth asking,
+// which is whether THIS death was announced, and a stale token names a claim that no longer exists.
+export const DEAD_LETTER_ANNOUNCED = "deadLetterAnnouncedFor";
+
+// What the reaper's road to DEAD says about itself, in ONE place because it is said TWICE: by
+// `announceReaped` (../scheduler/worker.ts), which has the reaped job in hand, and by the revoke,
+// which has only the row. The row is what is left when the death's own caller is gone, and this road
+// writes no `last_error` — nothing reaches `failJob` when a claim crashes — so a DEAD row with an
+// empty one came from here, `failJob` being the only other road and one that always writes it.
+//
+// Writing the sentence ONTO the row was tried and dropped. It made the row self-describing, which is
+// worth something, but it is not what this issue is about, and it made the fallback below
+// untestable: with the row carrying the sentence the fallback never fires, and the two mutations
+// then mask each other (each alone is invisible because the other covers it). The fallback is the
+// one that has to stay, because a row that was already DEAD before any of this shipped carries a
+// null and is exactly the case the operator cannot afford to see announced blank.
+export const REAPED_DEATH_ERROR = "reaped: the claim never finished";
+
+// And the OTHER empty, which is not the same empty. `failJob` writes `sanitizeErrorMessage(error)`,
+// and a handler that throws an empty (or whitespace-only) message makes that the empty STRING — a
+// death by the `failJob` road that says nothing about itself. Folding it into the sentence above
+// with a `||` was wrong in the one way this line cannot afford: it tells the operator the claim
+// never finished, about a claim that finished and failed. NULL is the reaper, `''` is this.
+export const UNRECORDED_DEATH_ERROR =
+  "dead-lettered: the failure recorded no message";
+
+// The claim, for the announcer. `true` means this call owns the line and must write it; `false`
+// means the row moved on, was re-armed, or somebody else already owns it — and in every one of those
+// the right thing is silence.
+//
+// It REPLACES the re-read it descends from rather than adding to it, so the announcement costs the
+// same one round trip it always did. The three conditions are the ones that read were already
+// making: DEAD, and DEAD for THIS claim (a row re-armed, re-claimed and dead AGAIN belongs to a later
+// attempt, which announces its own death with its own error), plus the token.
+//
+// `updated_at` is deliberately left where it is. Stamping is bookkeeping about the announcement, not
+// a transition of the work, and moving the column would make a dead row look like it did something.
+export async function claimDeadLetterAnnouncement(
+  job: { id: bigint; tenantId: bigint; claimSeq: number },
+  base: PrismaClient = basePrisma,
+): Promise<boolean> {
+  const stamp = JSON.stringify({
+    [DEAD_LETTER_ANNOUNCED]: String(job.claimSeq),
+  });
+  const count = await runScopedOn(
+    base,
+    sysCtx(job.tenantId),
+    (db) => db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET payload = payload || ${stamp}::jsonb
+       WHERE id = ${job.id}
+         AND status = 'DEAD'
+         AND claim_seq = ${job.claimSeq}
+         AND payload->>${DEAD_LETTER_ANNOUNCED} IS DISTINCT FROM ${String(job.claimSeq)}`,
+  );
+  return count > 0;
+}
+
+// A death whose row was erased before anyone announced it, handed BACK rather than announced on the
+// spot (review round 1). The revoke runs on the caller's connection, inside the caller's
+// transaction, and for `/reset` that transaction is the safety net the command is built on: it
+// deletes the memory rows first and the checkpoint last so a failed checkpoint delete rolls the rows
+// back and leaves a clean retry. A line emitted from inside it survives a rollback that puts the
+// DEAD row back unmarked, and the next announcer writes the same death a second time.
+//
+// So the shape is the reaper's: the statement produces the deaths, and announcing them is a separate
+// call the caller makes once its own write is durable. `tests/modules/scheduler-erased-death-
+// announced.test.ts` is the fence that keeps a second caller from forgetting it, the way
+// `announceReaped` was forgotten by three lanes.
+export interface ErasedDeath {
+  tenantId: bigint;
+  kind: SchedulerJobKind;
+  jobId: bigint;
+  dedupeKey: string;
+  error: string;
+  // A TRANSAÇÃO que apagou a linha, para o anúncio poder perguntar ao Postgres se ela durou. É o
+  // `xid8` da transação do CHAMADOR, porque é nela que o `DELETE` corre.
+  xid: string;
+}
+
+export async function announceErasedDeaths(
+  deaths: ErasedDeath[],
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  // NEVER THROWS, and the boundary is here rather than at each call site (review round 5). This is
+  // the one place in the announcement that AWAITS a query, so a pool timeout on it would propagate
+  // into whatever the caller was doing — for `/reset`, aborting the cleanup steps and the
+  // acknowledgement AFTER the memory was already deleted, which is the one outcome the command's
+  // step-by-step error handling exists to prevent. A trail line that cannot be written is not a
+  // reason to fail the work it describes (docs/logs.md), and the same rule already governs
+  // `dispatchDeadLetter`.
+  try {
+    await announceErasedDeathsOrThrow(deaths, base);
+  } catch (err) {
+    logger.warn(
+      { err, deaths: deaths.length },
+      "scheduler: erased-death announcement failed",
+    );
+  }
+}
+
+async function announceErasedDeathsOrThrow(
+  deaths: ErasedDeath[],
+  base: PrismaClient,
+): Promise<void> {
+  if (deaths.length === 0) return;
+  // THE DELETION IS CONFIRMED BY THE DATABASE, NOT INFERRED FROM ANYTHING ELSE (review rounds 3
+  // and 5).
+  //
+  // Two inferences were tried and both are wrong. Asking the CALLER whether its step threw fails
+  // because a Postgres block already in the aborted state accepts `COMMIT` and replies `ROLLBACK`
+  // without an error, so any `try/catch` inside the caller's callback makes the promise resolve
+  // over a transaction that kept nothing (measured). Asking whether the ROW is back fails because
+  // absence proves that SOMEBODY deleted it, not that THIS revoke did: a reset that rolled back,
+  // with a second queued reset deleting the restored row and announcing it, leaves the first one
+  // looking at an absent row and announcing the same death again.
+  //
+  // `pg_xact_status` answers the actual question. The revoke's DELETE runs in the caller's
+  // transaction and hands back its `xid8`; here the commit log says `committed`, `aborted` or
+  // `in progress`, and only the first earns a line. Anything else stays quiet, which is the cheap
+  // side of the trade: a lost line leaves the death where the next reader finds it, a duplicated
+  // one cannot be retracted. `in progress` also means the caller announced before its own
+  // transaction ended, which is a misuse worth naming out loud.
+  //
+  // ONE QUERY PER TRANSACTION, not one for the batch, and the difference is a whole batch (measured
+  // by the scenario runner). `pg_xact_status` RAISES on an id in the future instead of answering
+  // null, so a single `unnest` over the batch loses every death in it to the one id that could not
+  // be read — and the outer catch that keeps this from breaking the caller is exactly what makes
+  // that silent. The ids are few (the deaths one `/reset` erased on one thread), so asking one at a
+  // time costs nothing and contains the damage to the row it belongs to. Anything unreadable stays
+  // quiet, on the same trade as everything else here.
+  const xids = [...new Set(deaths.map((d) => d.xid))];
+  const status = new Map<string, string | null>();
+  for (const xid of xids) {
+    try {
+      const rows = await asSuperAdminOn(base, (db) =>
+        db.$queryRaw<Array<{ st: string | null }>>(Prisma.sql`
+          SELECT pg_xact_status(${xid}::xid8) AS st`),
+      );
+      status.set(xid, rows[0]?.st ?? null);
+    } catch (err) {
+      logger.warn({ err, xid }, "scheduler: unreadable transaction id");
+      status.set(xid, null);
+    }
+  }
+  // AND THE ROW, which is a SECOND question and not the same one asked twice. The commit log says
+  // the transaction committed; it does not say this DELETE survived it, because a `ROLLBACK TO
+  // SAVEPOINT` undoes the statement inside a transaction that goes on to commit (constructed and
+  // measured: `committed` with the row back). Nothing in the app issues savepoints today, so this
+  // too would hold by ABSENCE — and the pair is not redundant, because each covers what the other
+  // cannot: the commit log catches the reset whose row a SECOND reset deleted and announced, where
+  // absence proves nothing; the row catches the statement undone inside a committed transaction,
+  // where the commit log proves nothing.
+  //
+  // O QUE O PAR AINDA NÃO FECHA, medido e registrado em vez de escondido: as duas perguntas passam
+  // individualmente e a combinação erra quando um TERCEIRO ator satisfaz a segunda. Revoke 1 tem o
+  // `DELETE` desfeito por savepoint numa transação que commita; revoke 2 apaga a linha restaurada de
+  // verdade e anuncia; revoke 1 então vê `committed` e a linha ausente, e escreve a segunda linha.
+  // Fecharia conferindo um efeito que só ESTE statement poderia ter produzido, e o statement apaga,
+  // ou seja, não deixa nenhum: o preço de fechá-lo é uma tabela ou coluna nova para registrar a
+  // própria exclusão, e contra um caminho que ninguém percorre ele não se paga agora.
+  //
+  // E a tranca que segura isso NÃO é o savepoint ser raro, que é a leitura fácil e a errada. É não
+  // existir um segundo chamador: enquanto o `/reset` for o único, o revoke 2 da sequência só pode
+  // ser outro `/reset` na mesma thread, e `withKeyedQueue` os serializa no mesmo processo. Num
+  // segundo chamador, ou em duas réplicas, essa serialização some ANTES de o savepoint entrar na
+  // conta. Por isso a condição está escrita aqui e a obrigação de anunciar tem cerca de fonte: as
+  // duas apontam para a mesma pessoa, a que for escrever o segundo chamador.
+  const vivos = new Set<bigint>();
+  const porTenant = new Map<bigint, bigint[]>();
+  for (const death of deaths) {
+    const ids = porTenant.get(death.tenantId);
+    if (ids) ids.push(death.jobId);
+    else porTenant.set(death.tenantId, [death.jobId]);
+  }
+  for (const [tenantId, ids] of porTenant) {
+    const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.schedulerJob.findMany({
+        where: { id: { in: ids } },
+        select: { id: true },
+      }),
+    );
+    for (const row of rows) vivos.add(row.id);
+  }
+  for (const death of deaths) {
+    const st = status.get(death.xid) ?? null;
+    if (st !== "committed" || vivos.has(death.jobId)) {
+      if (st === "in progress") {
+        logger.warn(
+          { jobId: String(death.jobId), kind: death.kind },
+          "scheduler: erased-death announcement asked before the caller's transaction ended",
+        );
+      }
+      continue;
+    }
+    emitDeadLetter({
+      tenantId: death.tenantId,
+      unit: "job",
+      level: JOB_DEATH_LEVEL[death.kind],
+      error: death.error,
+      detail: {
+        kind: death.kind,
+        jobId: String(death.jobId),
+        dedupeKey: death.dedupeKey,
+        // Not required by the line's contract, and kept because the operator would otherwise go
+        // looking for a job row that no longer exists: it says the death is real and the record of
+        // it was erased on purpose.
+        erasedBy: "revoke",
+      },
+      base,
+    });
+  }
+}
+
 // REVOKED, not merely cancelled: PENDING **and** CLAIMED rows under a dedupeKey prefix are retired.
 //
 // The last and strongest of the four, and the difference is deliberate. The two cancels reach PENDING
@@ -563,7 +811,7 @@ export async function revokeJobsByKeyPrefixOn(
   db: ScopedDb,
   kind: SchedulerJobKind,
   prefix: string,
-): Promise<number> {
+): Promise<{ count: number; erasedDeaths: ErasedDeath[] }> {
   {
     const where = {
       kind,
@@ -583,16 +831,82 @@ export async function revokeJobsByKeyPrefixOn(
     // would sit there forever holding the encrypted message body the reset was asked to erase, on a
     // table nothing sweeps. Reading the same map is what keeps the two answers from drifting.
     if (JOB_DELETE_ON_DONE[kind]) {
-      return (await db.schedulerJob.deleteMany({ where })).count;
+      // AND THE ROW IT ERASES MAY BE THE ONLY RECORD THAT A DEATH HAPPENED (issue #737). Deleting a
+      // DEAD row destroys the evidence the generic announcement re-reads, so this statement owes
+      // the line that announcement can no longer write — see DEAD_LETTER_ANNOUNCED above for why
+      // the two cannot both write it and cannot both stay quiet. The line is not WRITTEN here: the
+      // deaths go back to the caller, who announces once its own transaction is durable
+      // (`announceErasedDeaths`).
+      //
+      // ONE statement with RETURNING, never a read followed by a delete: the announcement decision
+      // has to be made by the statement that deletes, or a concurrent announcer slips between the
+      // two and the death is reported twice.
+      //
+      // The stamp is tested in RETURNING and NOT in the WHERE, which is the whole difference between
+      // announcing and erasing. Under READ COMMITTED a DELETE blocked on a concurrent UPDATE
+      // re-evaluates its WHERE against the updated row, so a stamp in there would make the row
+      // SURVIVE the revoke the moment the announcer won the race — trading the erasure the operator
+      // asked for against a log line. RETURNING hands back the post-UPDATE version either way, so
+      // the row always goes and only the announcement is conditional.
+      //
+      // Raw, so the prefix is escaped by hand: this function takes any prefix, and `_` and `%` are
+      // ordinary characters in a dedupe key.
+      const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
+      const erased = await db.$queryRaw<
+        Array<{
+          id: bigint;
+          tenant_id: bigint;
+          dedupe_key: string;
+          last_error: string | null;
+          xid: string;
+          unannounced_death: boolean;
+        }>
+      >(Prisma.sql`
+        DELETE FROM scheduler_jobs
+         WHERE kind = ${kind}::"SchedulerJobKind"
+           AND status IN ('PENDING', 'CLAIMED', 'DEAD')
+           AND dedupe_key LIKE ${like}
+        RETURNING id, tenant_id, dedupe_key, last_error,
+                  pg_current_xact_id()::text AS xid,
+                  (status = 'DEAD'
+                   AND payload->>${DEAD_LETTER_ANNOUNCED}
+                       IS DISTINCT FROM claim_seq::text)
+                  AS unannounced_death`);
+      return {
+        count: erased.length,
+        erasedDeaths: erased
+          // Only a DEATH, and only one nobody has claimed. A PENDING or CLAIMED row is work the
+          // operator asked to call off, and calling it a loss would turn one `/reset` into a burst
+          // of errors about messages that were never owed.
+          .filter((row) => row.unannounced_death)
+          .map((row) => ({
+            tenantId: row.tenant_id,
+            kind,
+            jobId: row.id,
+            dedupeKey: row.dedupe_key,
+            // What the ROW remembers, because whoever could explain this death is not here. The
+            // two empties are told apart on purpose: see UNRECORDED_DEATH_ERROR.
+            error:
+              row.last_error === null
+                ? REAPED_DEATH_ERROR
+                : row.last_error || UNRECORDED_DEATH_ERROR,
+            xid: row.xid,
+          })),
+      };
     }
     // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
     // would erase the dead-letter the operator may still need to see.
-    return (
-      await db.schedulerJob.updateMany({
-        where: { ...where, status: { in: ["PENDING", "CLAIMED"] } },
-        data: { status: "DONE" },
-      })
-    ).count;
+    // Nothing is erased, so nothing is owed: the announcement the DEAD row's own road will write is
+    // still ahead of it.
+    return {
+      count: (
+        await db.schedulerJob.updateMany({
+          where: { ...where, status: { in: ["PENDING", "CLAIMED"] } },
+          data: { status: "DONE" },
+        })
+      ).count,
+      erasedDeaths: [],
+    };
   }
 }
 

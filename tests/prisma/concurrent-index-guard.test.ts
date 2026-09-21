@@ -229,11 +229,25 @@ describe("the concurrent-index guard", () => {
     expect(statements).not.toContain("pg_stat_activity");
     // ...and the REINDEX's precondition, which is the clause this message shipped one round without:
     // the index has to be BUILDABLE.
-    expect(statements).toMatch(/UNIQUE index/);
-    // The operator also needs this file's own name, for the `resolve` that unblocks the deploy.
+    expect(statements).toMatch(/is UNIQUE/);
+    // ...including what the failed attempt leaves behind. A REINDEX that fails on a unique index
+    // adds a second dead index, so the clause has to say to DROP it rather than reindex it too:
+    // reindexing both ends with a valid duplicate of the same index that somebody removes by hand.
+    expect(statements).toContain("_ccnew");
+    // The operator also needs this file's own name, for the `resolve` that unblocks the deploy...
     expect(statements).toContain(
       "resolve --rolled-back 20260921120000_assert_conversation_indexes_valid",
     );
+    // ...and that step belongs to BOTH branches, which is a defect this message shipped one round
+    // with: it sat after "OTHERWISE", so it read as the corpse branch's, and an operator who took
+    // the in-flight branch and re-deployed hit `P3009` with nothing telling them a command was
+    // missing (measured: the build finishes, the re-deploy still exits 1). Hoisted out of the fork,
+    // and the message names the failure it prevents.
+    expect(statements).toMatch(/EITHER WAY/);
+    expect(statements).toContain("P3009");
+    const fork = statements.indexOf("OTHERWISE:");
+    expect(fork).toBeGreaterThan(-1);
+    expect(statements.indexOf("EITHER WAY")).toBeGreaterThan(fork);
   });
 
   describe.skipIf(!dbUp)("against the catalog", () => {

@@ -51,14 +51,24 @@
 -- validates it afterwards, so a `CREATE INDEX CONCURRENTLY` running RIGHT NOW is `indisvalid =
 -- false` for its whole duration, and this file stops the deploy on it. That is the conservative
 -- answer and it is the one to keep: guessing "somebody is probably building it" is how a real corpse
--- ships. `indisready` does not separate the two, which was measured rather than assumed: a build
--- killed during its first scan leaves `false/false`, the same pair a live build shows. The
--- discriminator is `pg_stat_progress_create_index`, which names the table, the index and the phase,
--- and the message sends the operator there because reindexing another session's live build is the
--- wrong move. NOT a query-text match on `pg_stat_activity`: this file shipped one round advising
+-- ships. `indisready` does not separate the two, which was measured rather than assumed, on four
+-- states: a live build blocked by a writer sits at `false/false` for the whole wait, a build killed
+-- during its first scan leaves `false/false`, and a live build waiting on a mere reader and a build
+-- killed in the second wait both show `false/true`. The discriminator is
+-- `pg_stat_progress_create_index`, which names the table, the index and the phase, and the message
+-- sends the operator there because reindexing another session's live build is the wrong move. NOT a
+-- query-text match on `pg_stat_activity`: this file shipped one round advising
 -- `query ILIKE 'create index%'`, and a live `CREATE UNIQUE INDEX CONCURRENTLY` does not match that
 -- prefix (measured: the progress view named the build while the ILIKE returned zero), so the
 -- operator would have been told nothing was running and sent to reindex it.
+--
+-- THE LAST STEP BELONGS TO BOTH BRANCHES, and putting it inside one of them was the third defect of
+-- this round. Whatever the operator does about the index, THIS migration's row is FAILED from the
+-- moment it raised, so the next `migrate deploy` stops with `P3009` until it is resolved. Measured
+-- on the in-flight branch followed to the letter: the build finishes, and the re-deploy still exits
+-- 1. So the `resolve --rolled-back` is hoisted out of the fork, and the message says which failure
+-- it prevents. A runbook that is right about the hard part and drops a step at the end leaves the
+-- operator exactly where the silence did.
 --
 -- AND WHY IT ONLY REPORTS. Repairing here would need the dead index's NAME, which is not known when
 -- this file is written, so it would take a `DO $$ … EXECUTE format('REINDEX INDEX CONCURRENTLY %I',
@@ -85,7 +95,12 @@ BEGIN
    WHERE t.relname = 'conversations' AND NOT i.indisvalid;
   IF dead IS NOT NULL THEN
     RAISE EXCEPTION
-      'conversations carries invalid index(es): %. Either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW: an in-flight CREATE INDEX CONCURRENTLY reads exactly the same way. Check first: SELECT index_relid::regclass, phase FROM pg_stat_progress_create_index WHERE relid = ''conversations''::regclass. If a row comes back, a build is in flight: let it finish and re-deploy, and do NOT reindex it. Otherwise run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all); if a REINDEX fails on a UNIQUE index, its data violates uniqueness and that has to be resolved first. Then prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid and re-deploy.',
+      'conversations carries invalid index(es): %.
+WHY: either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW. An in-flight build reads exactly the same way, and indisready does not separate the two.
+CHECK: SELECT index_relid::regclass, phase FROM pg_stat_progress_create_index WHERE relid = ''conversations''::regclass;
+IF A ROW COMES BACK: a build is in flight. Let it finish, and do NOT reindex it.
+OTHERWISE: run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all). A REINDEX that fails means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew the failed attempt left behind, then reindex the original.
+EITHER WAY, FINISH WITH: prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid, then re-deploy. This migration''s own row is FAILED now, so without that the next deploy stops with P3009 no matter which branch you took.',
       dead;
   END IF;
 END $$;

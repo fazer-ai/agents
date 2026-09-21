@@ -70,6 +70,26 @@
 -- the operator it was written for. Unfiltered, the nulled row is still an answer: something is
 -- building, and you cannot see what.
 --
+-- AND THE TWO STATES COEXIST, which is what made a FORK the wrong shape for this message. The list
+-- this file prints is not "either corpses or a live build": a table can carry an index abandoned
+-- last week AND have an unrelated build running right now, and the progress view names only the
+-- second. Measured on this tree, with a forged `zz_corpse` alongside a real
+-- `CREATE INDEX CONCURRENTLY "zz_live"` held in `waiting for old snapshots`: the assertion lists
+-- both, the progress view names `conversations | zz_live` alone, and when the build finishes
+-- `zz_live` is valid while `zz_corpse` is still `indisvalid = false`. An operator told "a build is
+-- in flight, let it finish" therefore waits, resolves, re-deploys, and this file raises on the index
+-- nobody touched. The verifier had already produced this exact state one round earlier and priced it
+-- as a cost (one extra deploy round); it is a defect, because three lines of text remove it.
+--
+-- AND PARTITIONING THE LIST BY NAME DOES NOT FIX IT EITHER, which was the first correction attempted
+-- here: "leave alone what the view names, reindex every other name" reads well and breaks on the
+-- nulled row, which names NOTHING. For an operator without `pg_read_all_stats` every index in the
+-- list is then "not named by the view", so the rule sends them to reindex a live build they have no
+-- privilege to see. So the message is a SEQUENCE: wait out whatever the view shows, including the
+-- row it shows as NULLs, and only then reindex whatever is STILL invalid. It costs a wait when the
+-- hidden build belonged to another database of the cluster, and it is the only ordering where
+-- neither the corpse nor the live build is handled wrong.
+--
 -- THE LAST STEP BELONGS TO BOTH BRANCHES, and putting it inside one of them was the third defect of
 -- this round. Whatever the operator does about the index, THIS migration's row is FAILED from the
 -- moment it raised, so the next `migrate deploy` stops with `P3009` until it is resolved. Measured
@@ -104,11 +124,14 @@ BEGIN
   IF dead IS NOT NULL THEN
     RAISE EXCEPTION
       'conversations carries invalid index(es): %.
-WHY: either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW. An in-flight build reads exactly the same way, and indisready does not separate the two.
-CHECK: SELECT pid, relid::regclass, index_relid::regclass, phase FROM pg_stat_progress_create_index;
-IF ANY ROW COMES BACK: a build is in flight. Let it finish, and do NOT reindex it. Without superuser or pg_read_all_stats, a build another role started still shows a row with every column NULL, and that answers the question too; do not filter on relid, because that is exactly the row such a filter drops.
-OTHERWISE: run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all). A REINDEX that fails means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew the failed attempt left behind, then reindex the original.
-EITHER WAY, FINISH WITH: prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid, then re-deploy. This migration''s own row is FAILED now, so without that the next deploy stops with P3009 no matter which branch you took.',
+WHY: Postgres creates a concurrent index invalid and validates it at the end, so this state means a build was interrupted and Postgres now refuses what it left, OR one is running RIGHT NOW. indisready does not separate the two, and they COEXIST: an abandoned index and an unrelated live build land in the same list above. So this is a sequence, not a choice between branches.
+STEP 1, SEE WHAT IS RUNNING: SELECT pid, relid::regclass, index_relid::regclass, phase FROM pg_stat_progress_create_index;
+Run it with no WHERE. Without superuser or pg_read_all_stats, a build another role started comes back as a row with every column NULL, and a filter on relid drops exactly that row. An index shown as a bare OID instead of a name belongs to another database of this cluster.
+STEP 2, WAIT OUT WHATEVER IT SHOWS: an index that query names is being built right now, so leave it alone. A row of all NULLs names no index, no table and no database, so treat it the same way. Re-run step 1 until it comes back empty. That costs a wait when the build turns out to be someone else in another database, and it is what stops you from reindexing a live build that is not yours.
+STEP 3, REINDEX WHAT SURVIVES THE WAIT. Do not skip this because step 2 found a build: waiting repairs nothing, and an abandoned index sitting beside a live one raises this same assertion on the next deploy. Re-run this file''s own query:
+  SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid JOIN pg_class t ON t.oid = i.indrelid WHERE t.relname = ''conversations'' AND NOT i.indisvalid;
+Every index it still returns is abandoned: run REINDEX INDEX CONCURRENTLY on each, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all). A REINDEX that fails means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew the failed attempt left behind, then reindex the original.
+STEP 4, ALWAYS: prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid, then re-deploy. This migration''s own row is FAILED from the moment it raised, so without step 4 the next deploy stops with P3009 no matter what you did about the index.',
       dead;
   END IF;
 END $$;

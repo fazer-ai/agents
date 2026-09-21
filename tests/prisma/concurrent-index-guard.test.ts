@@ -260,8 +260,11 @@ describe("the concurrent-index guard", () => {
     // column comes back NULL, so a `WHERE relid = …` filter drops it and the check reports "nothing
     // running" for the exact case it exists to catch. The message must not carry that filter.
     expect(statements).toMatch(/pg_read_all_stats/);
+    // The window has to stop at the statement's own `;`: the message now says "Run it with no
+    // WHERE" one line below the query, and a proximity match reads that sentence as the filter it
+    // is warning against. Same shape as the literal that poisoned the sweep two rounds ago.
     expect(statements).not.toMatch(
-      /pg_stat_progress_create_index[\s\S]{0,40}WHERE/i,
+      /pg_stat_progress_create_index[^;\n]*WHERE/i,
     );
     // ...and the REINDEX's precondition, which is the clause this message shipped one round without:
     // the index has to be BUILDABLE.
@@ -274,16 +277,32 @@ describe("the concurrent-index guard", () => {
     expect(statements).toContain(
       "resolve --rolled-back 20260921120000_assert_conversation_indexes_valid",
     );
-    // ...and that step belongs to BOTH branches, which is a defect this message shipped one round
-    // with: it sat after "OTHERWISE", so it read as the corpse branch's, and an operator who took
-    // the in-flight branch and re-deployed hit `P3009` with nothing telling them a command was
-    // missing (measured: the build finishes, the re-deploy still exits 1). Hoisted out of the fork,
-    // and the message names the failure it prevents.
-    expect(statements).toMatch(/EITHER WAY/);
+    // ...and the message is a SEQUENCE of four steps, not a fork. Two rounds shipped a fork here.
+    // The first put the final `resolve` inside one branch, so whoever took the other re-deployed
+    // into `P3009` with nothing saying a command was missing (measured: the build finishes, the
+    // re-deploy still exits 1). The second made the branches exclusive, and an index abandoned
+    // beside an unrelated live build took the waiting one: the operator waited, resolved,
+    // re-deployed, and this assertion raised on the index nobody repaired (measured: a forged
+    // invalid index plus a real `CREATE INDEX CONCURRENTLY` held in `waiting for old snapshots` ->
+    // the assertion lists both, the progress view names only the live one, and the corpse is still
+    // invalid once the build finishes).
+    const steps = ["STEP 1", "STEP 2", "STEP 3", "STEP 4"].map((s) =>
+      statements.indexOf(s),
+    );
+    expect(Math.min(...steps)).toBeGreaterThan(-1);
+    expect(steps).toEqual([...steps].sort((a, b) => a - b));
+    expect(statements).not.toContain("OTHERWISE");
+    // The reindex is not skippable because the wait happened, which is the whole of the second fix...
+    expect(statements).toMatch(/Do not skip this because step 2 found a build/);
+    // ...and the wait has to cover the row that names NOTHING, which is where partitioning the list
+    // by name breaks: without `pg_read_all_stats` the view names no index at all, so "reindex
+    // everything it does not name" is "reindex the live build you cannot see".
+    expect(statements).toMatch(/row of all NULLs names no index/);
+    // The final step belongs to every path, and it names the failure it prevents.
     expect(statements).toContain("P3009");
-    const fork = statements.indexOf("OTHERWISE:");
-    expect(fork).toBeGreaterThan(-1);
-    expect(statements.indexOf("EITHER WAY")).toBeGreaterThan(fork);
+    expect(steps[3]).toBeGreaterThan(
+      statements.indexOf("REINDEX INDEX CONCURRENTLY on each"),
+    );
   });
 
   describe.skipIf(!dbUp)("against the catalog", () => {

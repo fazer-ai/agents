@@ -1966,6 +1966,55 @@ async function runTurnBody(
       return "stale";
     }
 
+    // E QUEM É O DONO DA CONVERSA, quando este turno esperou e o portão lá de cima não rodou (issue
+    // #757). Aquele portão vive dentro da contabilidade do contact-inbox, e a conversa de thread
+    // por conversa não tem nada daquilo — nenhum claim, nenhum divisor, nenhuma barreira — então o
+    // ramo que o runtime suporta ficaria sem cerca nenhuma sobre uma janela de minutos, que é
+    // exatamente o que a espera pela extração abriu. Daqui para baixo o modelo roda e as
+    // ferramentas dele também; a re-checagem que já existe fica DEPOIS da geração e só segura o
+    // envio, não desfaz um ticket aberto nem uma chamada HTTP de saída.
+    //
+    // A LEITURA QUE FALHA DEIXA O TURNO SEGUIR, como no portão irmão e pela mesma razão: um `false`
+    // vindo de um banco que piscou vira conversa sem resposta, e o fail-closed foi o que derrubou a
+    // tentativa anterior (fazer-ai/agents#684). E a palavra é a mesma, `taken-over-unread`: aqui
+    // também nada foi escrito, então a mensagem do cliente continua DEVIDA e quem liquida rajada
+    // tem que deixá-la de pé.
+    if (
+      loaded.contactInboxId == null &&
+      params.waitedBeforeInvoke === true &&
+      params.recheckOwnershipAfterWait !== false
+    ) {
+      const posse = await (
+        params.deps?.ownershipRead ?? conversationOwnershipNow
+      )({
+        tenantId,
+        instanceId,
+        conversationId,
+        ourAgentBotId: loaded.agentBotId ?? agentBotId,
+        base,
+      }).catch((err: unknown) => {
+        logger.warn(
+          { err, conv: conversationId },
+          "turn: ownership after the wait could not be read; carrying on rather than standing the turn down",
+        );
+        return { ours: true as const };
+      });
+      if (!posse.ours) {
+        if (posse.closed !== null) {
+          emitFlowEvent(flow, {
+            stage: "handoff",
+            status: "ok",
+            detail: posse.closed,
+          });
+        }
+        logger.info(
+          "turn: a person took conversation %s over while this turn read the attachments, standing down before the invoke; the message is still owed",
+          String(conversationId),
+        );
+        return "taken-over-unread";
+      }
+    }
+
     // Invoke the thread (network: LLM + any tool calls). The checkpointer resumes prior history.
     //
     // Wrapped so a throw from INSIDE the graph still delivers what a handoff already promised: the

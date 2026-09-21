@@ -795,10 +795,18 @@ export async function coalesceAndRunTurn(
   // AND THE LIST IS BY EXCLUSION, which is why this line is not optional: a word the condition does
   // not name advances the watermark by default. Measured while adding it — the flush correctly
   // answered nothing and rescheduled, and the mark moved to the end of the burst anyway.
+  // E `taken-over-unread` FICA DE PÉ, pelo mesmo motivo que o `thread-busy` logo acima e com a mesma
+  // força (issue #757): o turno parou ANTES do invoke, então nada no mundo viu estas mensagens — não
+  // há divisor, não há claim, o canal não as tem. A palavra só alcança este caminho desde que o
+  // religar passou a dizer que esperou (`waitedBeforeInvoke`), e o caminho direto já a exclui pela
+  // razão que a #688 fixou. Marcada aqui, a rajada viraria a mensagem perdida: a marca avança, o
+  // receptor liquida a entrega como consumida e a ingestão a pula. A lista é por EXCLUSÃO, então
+  // esta linha não é opcional.
   if (
     outcome !== "superseded" &&
     outcome !== "stale" &&
     outcome !== "thread-busy" &&
+    outcome !== "taken-over-unread" &&
     outcome !== "agent-unavailable"
   ) {
     await advanceHandledWatermark({

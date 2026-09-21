@@ -826,6 +826,66 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       // ela segura o envio e não desfaz um ticket aberto nem uma chamada HTTP de saída.
       expect(modelo.humanTexts).toEqual([]);
       expect(sent).toEqual([]);
+      // E A MENSAGEM CONTINUA DEVIDA. Ninguém a leu: não há divisor, não há claim, o canal não a
+      // tem. Uma marca por cima dela é a mensagem perdida, porque o receptor liquida a entrega como
+      // consumida e a ingestão a pula.
+      const depois = await suDb.conversation.findUnique({
+        where: { id },
+        select: { lastHandledMessageId: true },
+      });
+      expect(depois?.lastHandledMessageId ?? null).toBeNull();
+    });
+  });
+
+  test("takeover durante a extração, em conversa sem contact-inbox", async () => {
+    await comCredencial(async () => {
+      // SEM `contactInboxId`: o thread é por conversa, e esse ramo não tem nada da contabilidade do
+      // outro — nem claim, nem divisor, nem barreira de ingestão — então o portão que mora lá dentro
+      // não roda. É um ramo que o runtime suporta, e a janela que a extração abre é a mesma.
+      const id = await seedConversation(952);
+      await clearFlowLog(suDb, { tenantId });
+      clearMediaAnnotations();
+      const sent: Array<[number, string]> = [];
+      const metaEscrita: Array<[number, string]> = [];
+      const modelo = new TurnCapturingModel(REPLY);
+      let assumida = false;
+      const base = visionFetch(["Comprovante de PIX de R$ 115,00."]);
+      const fetchFalso = (async (...args: unknown[]) => {
+        const r = await (base as (...a: unknown[]) => Promise<Response>)(
+          ...args,
+        );
+        assumida = true;
+        return r;
+      }) as unknown as typeof fetch;
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => modelo,
+          makeClient: stubComAnexos({
+            page: page([{ id: 902, content: "", anexos: [{ id: 92 }] }]),
+            sent,
+            metaEscrita,
+          }),
+          visionFetch: fetchFalso,
+          ownershipRead: async () =>
+            assumida
+              ? ({ ours: false, closed: null } as const)
+              : ({ ours: true } as const),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+
+      expect(res.outcome).not.toBe("posted");
+      expect(modelo.humanTexts).toEqual([]);
+      expect(sent).toEqual([]);
+      const depois = await suDb.conversation.findUnique({
+        where: { id },
+        select: { lastHandledMessageId: true },
+      });
+      expect(depois?.lastHandledMessageId ?? null).toBeNull();
     });
   });
 

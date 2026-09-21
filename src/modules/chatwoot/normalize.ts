@@ -962,11 +962,20 @@ export function firstLocationAttachment(
 // A string value on an attachment's `meta` bag, or null. The bag is shared with Chatwoot's own
 // keys and with whatever an operator's automation writes there, so a value of another shape is
 // somebody else's key that happens to collide, not ours.
-function metaString(meta: unknown, key: string): string | null {
+export function metaString(meta: unknown, key: string): string | null {
   if (typeof meta !== "object" || meta === null || Array.isArray(meta))
     return null;
   const v = (meta as Record<string, unknown>)[key];
   return typeof v === "string" && v.trim() ? v : null;
+}
+
+// O QUE CONTA COMO ANEXO VISUAL, numa pergunta só. "image" e "file" cobrem foto e documento (um
+// PDF, por exemplo); áudio e vídeo têm caminhos próprios. Exportada porque o outro leitor dos
+// anexos, o parser da lista REST (./messages.ts), precisa da MESMA resposta: dois predicados
+// divergiriam na primeira vez que um tipo novo entrasse, e o sintoma seria um anexo lido por um
+// caminho e ignorado pelo outro (issue #757).
+export function isVisualFileType(fileType: string | null): boolean {
+  return fileType === "image" || fileType === "file";
 }
 
 export function visualAttachments(e: NormalizedChatwootEvent): {
@@ -979,11 +988,7 @@ export function visualAttachments(e: NormalizedChatwootEvent): {
 }[] {
   const out: ReturnType<typeof visualAttachments> = [];
   for (const a of e.message?.attachments ?? []) {
-    if (
-      (a.fileType === "image" || a.fileType === "file") &&
-      a.id !== null &&
-      a.dataUrl
-    ) {
+    if (isVisualFileType(a.fileType ?? null) && a.id !== null && a.dataUrl) {
       out.push({
         id: a.id,
         dataUrl: a.dataUrl,

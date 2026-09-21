@@ -1,10 +1,13 @@
+import type { VisualAttachment } from "@/modules/vision/extract-message";
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
 import {
   activityTypeFrom,
   chatwootTimestamp,
   emailSubjectFrom,
   firstLocationAttachment,
+  isVisualFileType,
   messageTypeOf,
+  metaString,
 } from "./normalize";
 import {
   cleanTranscription,
@@ -46,6 +49,12 @@ export interface ChatwootMessageRow {
   attachmentsUnread?: number | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
+  // OS ANEXOS VISUAIS EM SI, com o id e a url que uma extração precisa (issue #757). Os dois campos
+  // acima dizem o que JÁ foi extraído; este diz o que existe PARA extrair, e é o que permite a um
+  // turno que releu a thread abrir um anexo cuja meta nunca foi escrita. A conversa que chegou
+  // antes de o agente observar a caixa nunca passou pelo caminho eager, e sem isto ela chega ao
+  // modelo como "o usuário enviou uma imagem" e nada mais.
+  visuals: VisualAttachment[];
   // NOTE: The first usable location attachment's content (coordinates/title), for the
   // <localização> marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
   location: RenderableLocation | null;
@@ -210,6 +219,34 @@ function locationFrom(attachments: unknown): RenderableLocation | null {
   );
 }
 
+// OS ANEXOS QUE UMA EXTRAÇÃO PODE ABRIR, na mesma forma que o caminho do webhook produz
+// (`visualAttachments`, ./normalize.ts). A diferença entre os dois é só a grafia dos campos: a
+// lista REST manda `data_url` e `meta`, a wire manda o já normalizado. A REGRA de o que é visual
+// não é repetida aqui — ela mora em `isVisualFileType`, e é por isso que ela é exportada.
+function visualsFrom(attachments: unknown): VisualAttachment[] {
+  if (!Array.isArray(attachments)) return [];
+  const out: VisualAttachment[] = [];
+  for (const a of attachments) {
+    if (!isRecord(a)) continue;
+    const id = num(a.id);
+    const dataUrl = typeof a.data_url === "string" ? a.data_url : null;
+    if (
+      id === null ||
+      !dataUrl ||
+      !isVisualFileType(typeof a.file_type === "string" ? a.file_type : null)
+    )
+      continue;
+    out.push({
+      id,
+      dataUrl,
+      name: fileNameOfUrl(dataUrl),
+      imageDescription: metaString(a.meta, "image_description"),
+      extractedText: metaString(a.meta, "extracted_text"),
+    });
+  }
+  return out;
+}
+
 function attachmentTypesFrom(attachments: unknown): string[] {
   if (!Array.isArray(attachments)) return [];
   const out: string[] = [];
@@ -265,6 +302,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       imageDescription: metaJoinedFrom(item.attachments, "image_description"),
       extractedText: metaJoinedFrom(item.attachments, "extracted_text"),
       attachmentName: fileNameFrom(item.attachments),
+      visuals: visualsFrom(item.attachments),
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,

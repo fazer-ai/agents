@@ -58,7 +58,6 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
   retireCoveredDeliveries,
@@ -129,10 +128,8 @@ import {
   resolveSttConfig,
   transcribeInboundAudio,
 } from "@/modules/stt/service";
-import {
-  extractInboundFile,
-  resolveVisionConfig,
-} from "@/modules/vision/service";
+import { extractMessageVisuals } from "@/modules/vision/extract-message";
+import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { ChatwootClient } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
@@ -1923,27 +1920,13 @@ export async function runEagerMedia(
 
   // Vision (image/document → description/extracted text). Skip if already extracted this delivery.
   //
-  // EVERY visual attachment, not the first (issue #691). The customer who attaches the receipt, the
-  // ID and a screenshot in one e-mail used to have one of the three read, and the reply asked for
-  // what was in the other two; on one production mailbox that was 50.6% of the conversations with
-  // an attachment. In PARALLEL, because the per-file budget is 20s for an image and 60s for a
-  // document: five of those in series is a turn nobody waits for, while five at once cost one.
-  // The cap is a budget on PROVIDER CALLS, not on how much of the message we are willing to read:
-  // an attachment that already carries its extraction costs nothing to reuse. Cutting before that
-  // distinction threw away results already in hand and then counted them as unread — and since the
-  // overlay WINS over the fetched page (round 4), a recovery on nine already-read files replaced a
-  // complete render with eight of them plus "1 not read", asking the customer to resend what the
-  // page was already showing (PR #692 review, round 6).
+  // O QUE ESTE BLOCO FAZ com os anexos está em `extractMessageVisuals` (../vision/extract-message),
+  // porque desde a issue #757 ele tem dois chamadores: este, na chegada da mensagem, e o turno que
+  // relê uma thread cujos anexos nunca passaram por aqui. O que ficou deste lado é a DECISÃO de
+  // rodar (esta entrega já foi extraída?) e o destino do resultado (os campos do evento).
   const todos = visualAttachments(n);
-  let novasExtracoes = 0;
-  const visuais = todos.filter((v) =>
-    v.imageDescription || v.extractedText
-      ? true
-      : novasExtracoes++ < VISION_MAX_ATTACHMENTS,
-  );
-  const sobraram = todos.length - visuais.length;
   if (
-    visuais.length > 0 &&
+    todos.length > 0 &&
     !n.message.imageDescription &&
     !n.message.extractedText &&
     // Also a mark that this event has been through the pass: without it, a message whose every
@@ -1960,123 +1943,37 @@ export async function runEagerMedia(
         { agentId: owner.agentId },
       );
       if (visionCfg) {
-        // Hoisted: the narrowing the guard above gives `n.message` does not survive into the map's
-        // closure, because a mutable property can change before a deferred callback reads it.
+        // Hoisted: the narrowing the guard above gives `n.message` does not survive into the call
+        // below, because a mutable property can change before a deferred callback reads it.
         const conversationId = n.conversationId;
         const messageId = n.message.id;
-        const extraidos = await Promise.all(
-          visuais.map((visual) =>
-            // Already extracted on a previous pass (delivery recovery re-runs this): reuse it.
-            // Cheaper, and it is what keeps the aggregate COMPLETE — a partial re-run used to
-            // publish an aggregate poorer than the metadata it then overrode.
-            visual.imageDescription || visual.extractedText
-              ? Promise.resolve({
-                  nome: visual.name,
-                  r: visual.imageDescription
-                    ? ({
-                        kind: "image",
-                        text: visual.imageDescription,
-                      } as const)
-                    : ({
-                        kind: "document",
-                        text: visual.extractedText ?? "",
-                      } as const),
-                })
-              : extractInboundFile({
-                  tenantId,
-                  instanceId,
-                  conversationId,
-                  messageId,
-                  attachmentId: visual.id,
-                  dataUrl: visual.dataUrl,
-                  cfg: visionCfg,
-                  base,
-                  flow: flow(),
-                  // The aggregate is stashed once after the loop; see the note there.
-                  stashAnnotation: false,
-                })
-                  // One unreadable file must not cost the others: the extraction is best-effort per
-                  // attachment, exactly as it was when there was only one of them.
-                  .catch((err) => {
-                    logger.warn(
-                      "vision failed for attachment %s (conv=%s): %s",
-                      visual.id,
-                      convLabel,
-                      errMsg(err),
-                    );
-                    return null;
-                  })
-                  .then((r) => ({ nome: visual.name, r })),
-          ),
-        );
-        const imagens: string[] = [];
-        const documentos: string[] = [];
-        let falharam = 0;
-        for (const { nome, r } of extraidos) {
-          // A file that could not be read is NOT a file that was not sent. With one attachment the
-          // renderer had a marker for it; with several, a readable neighbour used to bypass that
-          // marker and the unreadable one vanished (PR #692 review, round 3). Counted with the
-          // over-the-cap ones because the model's move is the same: name what is missing and ask
-          // for it again.
-          if (!r) {
-            falharam++;
-            continue;
-          }
-          (r.kind === "image" ? imagens : documentos).push(
-            rotulado(nome, r.text, extraidos.length),
-          );
+        const r = await extractMessageVisuals({
+          tenantId,
+          instanceId,
+          conversationId,
+          messageId,
+          visuals: todos,
+          cfg: visionCfg,
+          base,
+          flow: flow(),
+          convLabel,
+        });
+        if (r) {
+          // The overflow is NAMED, never silently dropped: a model told "3 more files were not
+          // read" asks the customer to resend those three, while a model told nothing answers as
+          // if the message had three files fewer, which is the failure issue #692 was about.
+          // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch.
+          if (r.attachmentsUnread > 0)
+            n.message.attachmentsUnread = r.attachmentsUnread;
+          if (r.imageDescription)
+            n.message.imageDescription = r.imageDescription;
+          if (r.extractedText) n.message.extractedText = r.extractedText;
         }
-        const naoLidos = sobraram + falharam;
-        // The overflow is NAMED, never silently dropped: a model told "3 more files were not read"
-        // asks the customer to resend those three, while a model told nothing answers as if the
-        // message had three files fewer, which is the failure this issue is about.
-        // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch: glued
-        // onto the extracted text it existed only on this event, which the flush discards.
-        if (naoLidos > 0) n.message.attachmentsUnread = naoLidos;
-        const descricao = imagens.length > 0 ? imagens.join("\n\n") : null;
-        const documento =
-          documentos.length > 0 ? documentos.join("\n\n") : null;
-        if (descricao) n.message.imageDescription = descricao;
-        if (documento) n.message.extractedText = documento;
-
-        // ONE aggregated annotation for the message, after the loop. Each `extractInboundFile`
-        // stashes its own under the SAME message key and the store merges field by field, so N
-        // parallel extractions left only whichever finished last — and on upstream Chatwoot, where
-        // the meta write-back route does not exist, that store is the debounce flush's ONLY reader.
-        // The joined value would have lived solely on this event (PR #692 review, round 1).
-        if (descricao || documento || naoLidos > 0)
-          stashMediaAnnotation(
-            { tenantId, instanceId, messageId },
-            {
-              ...(descricao ? { imageDescription: descricao } : {}),
-              ...(documento ? { extractedText: documento } : {}),
-              // ALWAYS, including zero. The store merges field by field, so omitting it on the
-              // pass that finally read everything left the earlier positive count standing — and
-              // the flush would render "N files unread" beside the complete extraction, asking the
-              // customer to resend what had just been read (PR #692 review, round 5).
-              attachmentsUnread: naoLidos,
-            },
-          );
       }
     } catch (err) {
       logger.warn("vision failed (conv=%s): %s", convLabel, errMsg(err));
     }
   }
-}
-
-// How many attachments one message may cost a vision pass IN NEW EXTRACTIONS. The measured mean on a production
-// mailbox is 1.98 per conversation, so this clears the real traffic with room; the tail is a
-// customer who attaches a whole album (70 in the same measurement), and there the cap is the point.
-// The overflow is reported to the model rather than dropped. What was ALREADY extracted does not
-// count against it: reusing it costs nothing, and leaving it out would publish an aggregate poorer
-// than the page it overrides.
-const VISION_MAX_ATTACHMENTS = 8;
-
-// The label that keeps two files apart. Single attachment keeps the bare text, byte for byte, so
-// the common case reads exactly as it did before this change.
-function rotulado(nome: string | null, texto: string, total: number): string {
-  if (total <= 1) return texto;
-  return `[${nome ?? "anexo"}] ${texto}`;
 }
 
 // Continuous ingestion: fold into the agent's per-contact-inbox memory thread the messages a

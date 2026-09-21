@@ -15,7 +15,7 @@ import {
 } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
-import { armIngest } from "@/graph/ingest-job";
+import { armIngest, ingestKeyPrefix } from "@/graph/ingest-job";
 import { loadAgentConfig } from "@/graph/prepare";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
@@ -3485,12 +3485,32 @@ async function maybeConsumeCommandOrGate(params: {
               // transaction is the reset's safety net — a failed checkpoint delete below rolls the
               // deletion back, and a line written from in here would survive a rollback that put
               // the DEAD row back unannounced, so the next announcer would write it a second time.
+              //
+              // UP TO THE COMMAND'S OWN MESSAGE (issue #736), and not past it. This step is early
+              // — before the Chatwoot client even exists — but it is not instant: the
+              // `withKeyedQueue` above waits behind whatever ingestion is in flight on this thread,
+              // and `armIngest` does not take that queue. A customer message landing in that stretch
+              // is AFTER the reset and is wanted; unqualified, this deleted it, and deleted it
+              // without trace.
+              //
+              // `commandMessageId` and not the conversation's `reset_at_message_id`: they agree here
+              // (the watermark step above writes GREATEST of the two, and this runs after it), and
+              // the command's own id is the one this call is entitled to act on. Undefined when the
+              // command named no message, which is the unqualified sweep this always was — see the
+              // parameter's own note for why that differs from the OBSERVE cancel below.
+              //
+              // AND COMO OS DOIS SE COMPÕEM, que é o que este rebase juntou e vale dito: a fronteira
+              // apaga MENOS linhas, então menos mortes voltam para anunciar. Uma linha DEAD ACIMA da
+              // fronteira sobrevive, e sobrevive DEVENDO o anúncio dela — que é o desfecho certo,
+              // porque a morte não foi apagada por ninguém e a oportunidade de relatá-la continua de
+              // pé. É exatamente o ramo que o par condicional do holdout desta issue mediu (s9).
               erasedDeaths.push(
                 ...(
                   await revokeJobsByKeyPrefixOn(
                     db,
                     "INGEST_MESSAGE",
-                    `ingest:${graphThreadId}:`,
+                    ingestKeyPrefix(graphThreadId),
+                    commandMessageId ?? undefined,
                   )
                 ).erasedDeaths,
               );

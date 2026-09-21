@@ -177,6 +177,21 @@ export async function synthesizeReply(
         normalized: cfg.normalize,
         format,
         providerFormat: provider.providerFormat(format),
+        // WHAT WAS SAID, and it is here because this is the only reader that works on either
+        // Chatwoot (issue #763). An audio reply leaves `content` EMPTY — it has to, because the
+        // WhatsApp connector refuses a caption on an audio (`no caption travels with audio`, and
+        // its own suite proves it for a plain audio and for a voice note), so filling `content`
+        // would not leak a caption, it would make the send fail and the customer get nothing. The
+        // spoken words do ride along to Chatwoot as the attachment's `transcribed_text`, which the
+        // fork stores and renders under the player, but UPSTREAM Chatwoot has no meta route and
+        // drops it (the same reason `stt` keeps an in-process overlay, issue #49). So without this
+        // line an audio reply is a turn whose words exist nowhere any later reader can reach, and
+        // every count of "the customer got no answer" reads it as silence.
+        text: params.text,
+        // ...and what the provider was actually handed, only when the speech rewrite changed it.
+        // Two copies of a reply is a cost worth paying exactly when they differ: `normalized: true`
+        // alone says a rewrite ran, not what it produced.
+        ...(speech !== params.text ? { spoken: speech } : {}),
       },
       // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
       // (advisory), not a red error, on the conversation/Logs.

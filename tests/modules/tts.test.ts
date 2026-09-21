@@ -6,7 +6,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
 import { buildNativeTools } from "@/graph/tools/native";
+import {
+  clearMediaAnnotations,
+  overlayMediaAnnotations,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { synthesizeReply } from "@/modules/tts/service";
@@ -404,6 +409,96 @@ describe.skipIf(!dbUp)("tts", () => {
     expect(captured).toBe("cinquenta reais");
   });
 
+  // WHAT WAS SAID HAS TO SURVIVE THE TURN (issue #763). An audio reply leaves the Chatwoot message
+  // `content` EMPTY, and it has to: the WhatsApp connector refuses a caption on an audio, so filling
+  // it fails the send rather than leaking a caption. The words do travel as the attachment's
+  // `transcribed_text`, but only the FORK stores that; upstream Chatwoot has no meta route and drops
+  // it. So the flow log is the one reader that answers on either, and a turn whose words are
+  // nowhere is counted as a customer who got no answer.
+  test("a synthesized reply records the spoken words on the tts stage", async () => {
+    const cfg: TtsConfig = {
+      ...TTS_DEFAULTS,
+      mode: "mirror",
+      provider: "openai",
+      model: "",
+      voice: "",
+      credentialRef: `vault:${ttsKeyId}`,
+      baseURL: null,
+      normalize: false,
+    };
+    const f: FlowContext = {
+      tenantId,
+      turnId: "tts-detail-text",
+      source: "inbox",
+      base: appDb,
+    };
+    const res = await synthesizeReply({
+      tenantId,
+      cfg,
+      text: "Confirmei sua consulta para quinta às 14h.",
+      base: appDb,
+      deps: { fetchImpl: audioFetch() },
+      flow: f,
+    });
+    expect(res).not.toBeNull();
+    let row: { detail: unknown } | null = null;
+    for (let i = 0; i < 100 && !row; i++) {
+      row = await flowLogRow(suDb, {
+        where: { tenantId, turnId: "tts-detail-text", stage: "tts" },
+        select: { detail: true },
+      });
+      if (!row) await new Promise((r) => setTimeout(r, 20));
+    }
+    const detail = row?.detail as Record<string, unknown> | null;
+    expect(detail?.text).toBe("Confirmei sua consulta para quinta às 14h.");
+    // ...and nothing claims a rewrite that did not happen: `spoken` is the provider's input, and
+    // writing it when it equals `text` would put two copies of every reply in the log for nothing.
+    expect(detail).not.toHaveProperty("spoken");
+  });
+
+  // `normalized: true` says a rewrite RAN, not what it produced, and the two are different answers
+  // when an assessment asks what the customer actually heard.
+  test("a rewritten reply records both the words and what the provider was handed", async () => {
+    const cfg: TtsConfig = {
+      ...TTS_DEFAULTS,
+      mode: "mirror",
+      provider: "openai",
+      model: "",
+      voice: "",
+      credentialRef: `vault:${ttsKeyId}`,
+      baseURL: null,
+      normalize: true,
+    };
+    const f: FlowContext = {
+      tenantId,
+      turnId: "tts-detail-spoken",
+      source: "inbox",
+      base: appDb,
+    };
+    await synthesizeReply({
+      tenantId,
+      cfg,
+      text: "Total: R$ 50",
+      base: appDb,
+      deps: {
+        fetchImpl: audioFetch(),
+        normalizeSpeech: async () => "cinquenta reais",
+      },
+      flow: f,
+    });
+    let row: { detail: unknown } | null = null;
+    for (let i = 0; i < 100 && !row; i++) {
+      row = await flowLogRow(suDb, {
+        where: { tenantId, turnId: "tts-detail-spoken", stage: "tts" },
+        select: { detail: true },
+      });
+      if (!row) await new Promise((r) => setTimeout(r, 20));
+    }
+    const detail = row?.detail as Record<string, unknown> | null;
+    expect(detail?.text).toBe("Total: R$ 50");
+    expect(detail?.spoken).toBe("cinquenta reais");
+  });
+
   // The rewrite is a BILLED call, and with it shipping on by default an agent set to mirror with no
   // TTS credential would pay for one on every audio-triggering turn and still fall back to text. Every
   // check that can abort the synthesis has to come first.
@@ -540,6 +635,67 @@ describe.skipIf(!dbUp)("tts", () => {
     expect(outcome).toBe("posted");
     expect(rec.audio).toEqual([[910, "reply.ogg"]]);
     expect(rec.text).toEqual([]);
+  });
+
+  // THE AUDIO REPLY CARRIES ITS OWN WORDS, in the two places a later reader can reach them, and in
+  // NEITHER of them is `content` (issue #763). Filling `content` is the obvious fix and it is the
+  // one that breaks delivery: the WhatsApp connector refuses a caption on an audio, so the send
+  // fails and the customer receives nothing. The fork stores `transcribed_text` on the attachment
+  // and renders it under the player; upstream Chatwoot drops it, which is why the same words also
+  // go into the in-process overlay the inbound STT pass uses, so a debounce flush or a recovery
+  // re-reading the page sees words instead of an empty outgoing row.
+  test("an audio reply records the spoken words without ever filling content", async () => {
+    clearMediaAnnotations();
+    await seedConversation(934);
+    const sends: Array<{
+      fileName: string;
+      opts?: { transcribedText?: string };
+    }> = [];
+    const texts: Array<[number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, content: string) => {
+        texts.push([c, content]);
+        return {};
+      },
+      sendAudioMessage: async (
+        _c: number,
+        _a: ArrayBuffer,
+        fileName: string,
+        _mime: string,
+        opts?: { transcribedText?: string },
+      ) => {
+        sends.push({ fileName, opts });
+        return { id: 7301 };
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: audioEvent(934),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        ttsFetch: audioFetch(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    // One message, and it is the audio: the words must never arrive as a second text balloon.
+    expect(sends).toHaveLength(1);
+    expect(texts).toEqual([]);
+    const spoken = sends[0]?.opts?.transcribedText ?? "";
+    expect(spoken.length).toBeGreaterThan(0);
+    // ...and the same words are readable from the overlay for the message that was just sent, which
+    // is what answers on an upstream Chatwoot that drops the attachment meta.
+    const row = {
+      id: 7301,
+      content: "",
+      transcribedText: null,
+    } as unknown as ChatwootMessageRow;
+    overlayMediaAnnotations(tenantId, instanceId, [row]);
+    expect(row.transcribedText).toBe(spoken);
   });
 
   test("mirror mode on an Instagram inbox → the audio reply is aac, not ogg", async () => {

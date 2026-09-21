@@ -1385,6 +1385,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
         makeClient: s.makeClient,
         checkpointer: saver,
+        // DEPOIS DO TETO DA ESPERA (issue #689). O nudge agora espera um invoke mais velho
+        // sair, então este estado — reivindicar o thread com outro invoke lendo — só existe
+        // passado o teto de `TURN_WAIT_MS`, que são cinco minutos. Um teto já vencido põe o teste
+        // exatamente lá, que é o caso que este arquivo mede.
+        turnWaitDeadline: () => Date.now(),
         persistUsage: async () => {},
       },
     });
@@ -1437,16 +1442,20 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       THREAD_STATE_NODE,
     );
     const s = stub();
-    // The takeover lands AFTER the pre-gate probe: the first live read is what lets the run proceed
-    // at all, and every one after it reports the person. The mirror row seeded above still says the
-    // bot owns it, which is the whole point — this mode does not trust it.
+    // The takeover lands after the run is already past every gate that would refuse it EARLY, so
+    // what the absence of the note below measures is the note's own probe. Two reads answer
+    // bot-owned, not one: the pre-gate probe, and the post-wait ownership gate that issue #689
+    // added on this same path (a proactive turn now waits an older invoke out, and everything past
+    // that wait runs the model's TOOLS, so the gate sits before them). The third read is the note's,
+    // and it is the one that reports the person. The mirror row seeded above still says the bot owns
+    // it, which is the whole point — this mode does not trust it.
     let liveReads = 0;
     const client = {
       ...(await s.makeClient()),
       getConversation: async (c: number) => ({
         id: c,
-        status: ++liveReads === 1 ? "pending" : "open",
-        meta: liveReads === 1 ? {} : { assignee: { id: 5 } },
+        status: ++liveReads <= 2 ? "pending" : "open",
+        meta: liveReads <= 2 ? {} : { assignee: { id: 5 } },
       }),
     } as unknown as ChatwootClient;
     await runAgentNudge({
@@ -1468,9 +1477,69 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(
       messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
     ).toBe(false);
-    // The control: the run really did get past the pre-gate, so the absence above is the note's own
-    // probe and not an early refusal.
-    expect(liveReads).toBeGreaterThan(1);
+    // The control: the run really did get past the pre-gate AND past the post-wait gate, so the
+    // absence above is the note's own probe and not an early refusal by either.
+    expect(liveReads).toBeGreaterThan(2);
+  });
+
+  // AND AN UNANSWERABLE PROBE LEAVES THE NOTE OWED, which is the fail-CLOSED end of the same reader
+  // (issue #689, review round 2). `probeLiveOwnership` answers `unavailable` when it could not
+  // verify — it swallows the failure itself, so nothing throws — and the two consumers of that
+  // answer want opposite things: the post-wait ownership gate carries on (stopping costs the whole
+  // occasion), and this note stands down (the note is simply owed again, and nothing was consumed to
+  // write it). A single boolean served one of them wrong in silence, which is what made the reader
+  // three-valued; this is the end that nothing measured.
+  test("a live-gated nudge leaves the note owed when the probe cannot answer", async () => {
+    const contactInboxId = 8871;
+    await seedConv(9671, null, new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const s = stub();
+    // Chatwoot answers the pre-gate and the post-wait gate, then goes away. The third read is the
+    // note's, and it is the one that cannot be answered.
+    let liveReads = 0;
+    const client = {
+      ...(await s.makeClient()),
+      getConversation: async (c: number) => {
+        if (++liveReads > 2) throw new Error("chatwoot fora do ar");
+        return { id: c, status: "pending", meta: {} };
+      },
+    } as unknown as ChatwootClient;
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9671`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: async () => client,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
+    // O controle, e ele é o que separa este teste do de cima: o run passou pelos dois portões que
+    // recusariam cedo, então a ausência acima é a sonda da nota e não uma recusa anterior.
+    expect(liveReads).toBeGreaterThan(2);
   });
 
   // A LOCAL CLAIM THE SOURCE HAS NOT CONFIRMED (issue #436, review round 4). This gate deliberately

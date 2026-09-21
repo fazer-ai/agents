@@ -11,6 +11,10 @@ import { agentStillSpeaks } from "@/modules/agents/speaks";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import {
+  describeClosedGate,
+  type GateCloseDetail,
+} from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
@@ -88,7 +92,11 @@ import {
   clearTurnOwning,
   markTurnOwning,
   type ThreadOwner,
+  TURN_WAIT_MS,
   type TurnHold,
+  turnWaitDeadline,
+  WAIT_AGAIN,
+  waitForTurnToClear,
 } from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import {
@@ -762,14 +770,39 @@ export async function runAgentNudge(
   // section, and an HTTP round trip there holds the per-thread queue for the length of somebody
   // else's network. The mirror is what the assignment webhook writes, so it is the same source
   // `canMessagePre` used — just read at the moment it is used instead of half a minute earlier.
-  const botOwnsItNow = async (): Promise<boolean> => {
-    // LIVE WHERE THE CALLER ASKED FOR LIVE (issue #457, review round 7). `requireLiveBotOwnership`
-    // exists because in that mode the mirror is not trusted: the assignment webhook can be delayed or
-    // lost, and the send path re-probes Chatwoot rather than reading the row. A note is durable and
-    // the post-invoke probe cannot unwrite it, so it gets the same certainty the send does — and only
-    // that mode pays the round trip inside the claim. An unanswerable probe leaves the note owed.
+  //
+  // A FORMA DETALHADA, porque dois leitores para a mesma pergunta é o defeito que a #271 achou. A
+  // nota de hand-back precisa só do sim/não; o portão pós-espera (issue #689) precisa também do
+  // DESFECHO, porque um operador que filtra o log por "a conversa saiu do bot" tem que receber todos
+  // os portões que fecham nessa pergunta, e este é mais um. `closed` vem da MESMA leitura que
+  // respondeu `ours`: um segundo `findUnique` lá embaixo responderia sobre outro instante.
+  //
+  // No modo live não há linha do espelho para classificar, e ali o dono do vocabulário já decidiu que
+  // não há desfecho a declarar: `closed` é null e nada é escrito, em vez de um literal inventado
+  // para preencher o buraco (que é o que a cerca de gate-close.test.ts proíbe).
+  //
+  // TRÊS RESPOSTAS E NÃO DUAS, e a terceira é o achado da rodada 2 de review. `probeLiveOwnership`
+  // responde `unavailable` quando não conseguiu VERIFICAR, e ele engole a falha por dentro — um
+  // `.catch` em volta desta função nunca vê nada. Dobrar `unavailable` em "não é nosso" faz uma
+  // indisponibilidade do Chatwoot virar posse perdida, e os dois consumidores querem o oposto um do
+  // outro nesse caso: a nota de hand-back fica DEVIDA (fail-closed, e não custa nada, porque nada
+  // foi consumido para escrevê-la), e o portão pós-espera SEGUE (fail-open, porque parar custa a
+  // ocasião inteira e a sonda pós-modelo ainda segura o envio). Uma resposta binária serviria
+  // errado a um dos dois, em silêncio.
+  const botOwnsItNowDetailed = async (): Promise<
+    | { ours: true }
+    | { ours: false; closed: GateCloseDetail | null }
+    // Não deu para verificar. Nem posse nem perda: cada consumidor decide para que lado erra.
+    | { ours: null }
+  > => {
     if (params.requireLiveBotOwnership) {
-      return (await probeLiveOwnership()) === "owned";
+      const live = await probeLiveOwnership();
+      if (live === "owned") return { ours: true };
+      // No modo live não há linha do espelho para classificar, e ali o dono do vocabulário já
+      // decidiu que não há desfecho a declarar: `closed` é null em vez de um literal inventado.
+      return live === "not-owned"
+        ? { ours: false, closed: null }
+        : { ours: null };
     }
     return await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
@@ -782,6 +815,10 @@ export async function runAgentNudge(
         },
         select: { assigneeType: true, status: true, assigneeId: true },
       });
+      // O ESTADO ESCRITO INLINE, e não por uma variável que junte os três campos: a varredura de
+      // tests/modules/chatwoot-receiver.test.ts anda a lista de argumentos deste `shouldBotHandle`
+      // atrás do `assigneeId` e não segue variável nenhuma, de propósito — é ela que impede um site
+      // de comparar posse sem o id que decide. A repetição logo abaixo é o preço dela.
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
@@ -789,8 +826,31 @@ export async function runAgentNudge(
           status: conv?.status ?? null,
         },
         { ourAgentBotId: cfg.agentBotId },
-      );
+      )
+        ? { ours: true as const }
+        : {
+            ours: false as const,
+            // Da MESMA leitura que respondeu acima: um segundo `findUnique` responderia sobre outro
+            // instante, que é a regra que o próprio `describeClosedGate` enuncia do lado dele.
+            closed: describeClosedGate({
+              assigneeType: conv?.assigneeType ?? null,
+              status: conv?.status ?? null,
+            }),
+          };
     });
+  };
+
+  const botOwnsItNow = async (): Promise<boolean> => {
+    // LIVE WHERE THE CALLER ASKED FOR LIVE (issue #457, review round 7). `requireLiveBotOwnership`
+    // exists because in that mode the mirror is not trusted: the assignment webhook can be delayed or
+    // lost, and the send path re-probes Chatwoot rather than reading the row. A note is durable and
+    // the post-invoke probe cannot unwrite it, so it gets the same certainty the send does — and only
+    // that mode pays the round trip inside the claim. An unanswerable probe leaves the note owed.
+    //
+    // Ambos os modos vêm da forma detalhada acima: este é o mesmo leitor, pedindo menos. E o
+    // `=== true` é o fail-closed desta ponta: uma sonda que não conseguiu verificar deixa a nota
+    // DEVIDA, que é o que este site já fazia e custa nada.
+    return (await botOwnsItNowDetailed()).ours === true;
   };
 
   const handoffState = {
@@ -1299,70 +1359,331 @@ export async function runAgentNudge(
   let handbackDeferred = false;
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   try {
-    // BARRIER (issue #194), for the same reason the reactive turn has one: a proactive turn reads
-    // this thread too, and a message still queued is a nudge written without it. Before the lock,
-    // which the drain also takes. A conversation-keyed thread simply matches no queued ingestion.
-    // Outcome discarded, as at the reactive turn and for the same reason: a nudge that finds
-    // ingestion still owed writes one message without one line of context, and the next reader gets
-    // it. See ./ingest-drain.ts for the reader that cannot make that trade.
-    await drainPendingIngest(tenantId, graphThreadId, base);
-    // Taken INSIDE the try, and released only if it was actually taken: a claim made on the way to
-    // a rejection that skips the `finally` never comes back, and every later compaction on this
-    // thread would then read it as busy and reschedule until the process restarts.
+    // WAITS OUT AN INVOKE ALREADY READING THIS THREAD (issue #689), by the same loop and the same
+    // ceiling the reactive turn uses (./runtime.ts, issue #658). An invoke is a read-modify-write of
+    // the whole channel, so of two that overlap the one that finishes SECOND saves what it loaded
+    // and undoes the first — and a proactive turn DELIVERS, so the message that disappears is one
+    // the customer already read.
     //
-    // Serialized by the process-local queue rather than by a transaction-scoped advisory lock. The
-    // work below spans the checkpointer, which is a SEPARATE Postgres pool, and holding a Prisma
-    // transaction open across it is what drained the main pool and made every other query in the
-    // process wait out `maxWait` (issue #225). The two reads and the one write are short
-    // transactions of their own now; the ordering between them is what the queue provides.
-    const claim = await withKeyedQueue(`ingest:${graphThreadId}`, async () => {
-      // The one ask that has to happen HERE and cannot be hoisted out: everything below writes the
-      // thread (the divider, the marker, and then the invoke), and /reset clears exactly those
-      // inside this same critical section. Outside it the answer decays — the authorization call
-      // and the drain above both take time, and a reset that lands in either window clears the
-      // memory and then has this run write it back, leaving the operator told the conversation was
-      // cleared and the agent still answering from it. Inside there is no such window in either
-      // direction: either this claims the thread first (and the clear refuses on isTurnInFlight) or
-      // the clear ran first (and this sees the tombstone). Asked BEFORE markTurnInFlight, so a
-      // retired run takes no claim it would then have to release.
-      //
-      // It no longer borrows an enclosing transaction's connection, because there is no longer one
-      // to borrow: what makes this exclusive is the queue, not a transaction-scoped lock.
-      if (!(await stillWanted(true))) return null;
-      // A thread keyed by CONVERSATION rather than by contact-inbox (resolveGraphThreadId, when the
-      // contact-inbox is unknown) carries a single attendance by construction: there is no earlier
-      // one for a divider to separate this from, and no sidecar row keyed by contact-inbox to
-      // advance. Claim the thread against a compaction rewrite all the same — the invoke below is
-      // still a read-modify-write of the whole channel.
-      if (contactInboxId === null) {
-        markTurnInFlight(graphThreadId);
-        claimedGraphThread = true;
-        // THE HAND-BACK NOTE on this thread too (issue #457). The block further down never runs for
-        // it — this branch returns first — and skipping it would leave the fix undone on a path the
-        // runtime supports: a successful handoff is written by the turn's OWN invoke whatever the
-        // thread is keyed by, so the evidence that makes a model stay quiet is here as well, and a
-        // proactive send can be the first turn after the person hands it back.
+    // NOT BEHIND A FLAG, unlike the reactive turn's `waitForThreadTurn`. That one is optional
+    // because a caller of it has somewhere to put the work down (the debounce flush reschedules the
+    // burst). All four callers of this function are background work with nobody on the other end of
+    // an HTTP response — the three scheduler ladders and the inbound receptor, which acks 200 before
+    // it runs this — so there is no caller here for a flag to serve, and a flag every caller sets is
+    // one the next route is born without.
+    //
+    // A conversation-keyed thread (`contactInboxId === null`) has no row to hold the claim in, so
+    // there is nothing to wait on: that branch below already documents its own write as best-effort
+    // for exactly this reason.
+    //
+    // ONE DEADLINE ACROSS EVERY ATTEMPT, armed before the first wait: a nudge that loses the
+    // acquiring race and goes back to waiting must not get a fresh budget each time.
+    const threadOwner: ThreadOwner | null =
+      contactInboxId === null
+        ? null
+        : { tenantId, instanceId, contactInboxId, graphThreadId };
+    const turnWaitUntil =
+      threadOwner === null
+        ? null
+        : (params.deps?.turnWaitDeadline ?? turnWaitDeadline)();
+    let esperaEstourou = false;
+    let claim: {
+      writeDivider: boolean;
+      advanceMarker: boolean;
+      closedConversationId: number | null;
+    } | null = null;
+    for (;;) {
+      // WAITED OUT HERE, OUTSIDE THE QUEUE, for the reason ./runtime.ts gives at the same seam: the
+      // queue below is keyed `ingest:<thread>`, and the turn being waited for takes that same key on
+      // its way out. Waiting inside the queue starves exactly what this is waiting for.
+      if (
+        threadOwner !== null &&
+        turnWaitUntil !== null &&
+        !(await waitForTurnToClear(threadOwner, base, turnWaitUntil)) &&
+        !esperaEstourou
+      ) {
+        // O TETO ESTOUROU, E ELE PRECISA DE UMA LINHA PRÓPRIA AQUI. `waitForTurnToClear` já deixa um
+        // warn de processo, e para o turno reativo aquele warn diz tudo: ele vai responder ao lado de
+        // quem está lá, e a resposta que se perde é a dele. Aqui não: o que segue é uma ENTREGA
+        // proativa que pode não ser lembrada pelo thread, que é literalmente o defeito desta issue
+        // acontecendo dentro do conserto dela. Um operador que depois pergunte "por que o agente
+        // não se lembra do lembrete que mandou?" tem que achar esta linha, e o log de processo não
+        // é onde ele procura.
         //
-        // Same two gates the keyed path uses, minus the one that has no answer here: `canMessagePre`
-        // false is this nudge running in human-handling mode on purpose, and there is no
-        // `markTurnOwning` on this branch, so whether an older invoke is reading is unknowable. That
-        // makes the write best-effort, and the derived model is what makes best-effort enough — a
-        // note erased by an older invoke is simply owed again to the next turn, because nothing was
-        // consumed to write it.
-        {
-          const fallbackGraph = buildThreadStateGraph(checkpointer);
+        // Uma vez por execução: o laço volta aqui a cada tentativa perdida, e passado o teto toda
+        // chamada responde false.
+        esperaEstourou = true;
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: {
+            threadWaitExpired: true,
+            waitedMs: TURN_WAIT_MS,
+            // Dito em tantas palavras, porque é isto que a linha existe para avisar.
+            note: "another invoke has held this thread past its lease; the proactive turn runs beside it, so what it delivers may not survive in the thread's memory",
+          },
+        });
+      }
+      // BARRIER (issue #194), for the same reason the reactive turn has one: a proactive turn reads
+      // this thread too, and a message still queued is a nudge written without it. Before the lock,
+      // which the drain also takes. A conversation-keyed thread simply matches no queued ingestion.
+      // Outcome discarded, as at the reactive turn and for the same reason: a nudge that finds
+      // ingestion still owed writes one message without one line of context, and the next reader gets
+      // it. See ./ingest-drain.ts for the reader that cannot make that trade.
+      //
+      // AFTER THE WAIT, not before it, which is #194's own lesson as ./runtime.ts states it: folding
+      // in what ingestion owes and then waiting minutes reads a thread that is stale by the time it
+      // is used.
+      await drainPendingIngest(tenantId, graphThreadId, base);
+      // Taken INSIDE the try, and released only if it was actually taken: a claim made on the way to
+      // a rejection that skips the `finally` never comes back, and every later compaction on this
+      // thread would then read it as busy and reschedule until the process restarts.
+      //
+      // Serialized by the process-local queue rather than by a transaction-scoped advisory lock. The
+      // work below spans the checkpointer, which is a SEPARATE Postgres pool, and holding a Prisma
+      // transaction open across it is what drained the main pool and made every other query in the
+      // process wait out `maxWait` (issue #225). The two reads and the one write are short
+      // transactions of their own now; the ordering between them is what the queue provides.
+      const attempt = await withKeyedQueue(
+        `ingest:${graphThreadId}`,
+        async () => {
+          // The one ask that has to happen HERE and cannot be hoisted out: everything below writes the
+          // thread (the divider, the marker, and then the invoke), and /reset clears exactly those
+          // inside this same critical section. Outside it the answer decays — the authorization call
+          // and the drain above both take time, and a reset that lands in either window clears the
+          // memory and then has this run write it back, leaving the operator told the conversation was
+          // cleared and the agent still answering from it. Inside there is no such window in either
+          // direction: either this claims the thread first (and the clear refuses on isTurnInFlight) or
+          // the clear ran first (and this sees the tombstone). Asked BEFORE markTurnInFlight, so a
+          // retired run takes no claim it would then have to release.
+          //
+          // It no longer borrows an enclosing transaction's connection, because there is no longer one
+          // to borrow: what makes this exclusive is the queue, not a transaction-scoped lock.
+          if (!(await stillWanted(true))) return null;
+          // A thread keyed by CONVERSATION rather than by contact-inbox (resolveGraphThreadId, when the
+          // contact-inbox is unknown) carries a single attendance by construction: there is no earlier
+          // one for a divider to separate this from, and no sidecar row keyed by contact-inbox to
+          // advance. Claim the thread against a compaction rewrite all the same — the invoke below is
+          // still a read-modify-write of the whole channel.
+          if (contactInboxId === null) {
+            markTurnInFlight(graphThreadId);
+            claimedGraphThread = true;
+            // THE HAND-BACK NOTE on this thread too (issue #457). The block further down never runs for
+            // it — this branch returns first — and skipping it would leave the fix undone on a path the
+            // runtime supports: a successful handoff is written by the turn's OWN invoke whatever the
+            // thread is keyed by, so the evidence that makes a model stay quiet is here as well, and a
+            // proactive send can be the first turn after the person hands it back.
+            //
+            // Same two gates the keyed path uses, minus the one that has no answer here: `canMessagePre`
+            // false is this nudge running in human-handling mode on purpose, and there is no
+            // `markTurnOwning` on this branch, so whether an older invoke is reading is unknowable. That
+            // makes the write best-effort, and the derived model is what makes best-effort enough — a
+            // note erased by an older invoke is simply owed again to the next turn, because nothing was
+            // consumed to write it.
+            {
+              const fallbackGraph = buildThreadStateGraph(checkpointer);
+              const channelNow = (
+                (
+                  await fallbackGraph.getState({
+                    configurable: { thread_id: graphThreadId },
+                  })
+                ).values as { messages?: BaseMessage[] } | undefined
+              )?.messages;
+              // Ownership asked LAST, immediately before the write, for the reason the keyed branch
+              // gives: the channel read above is its own round trip, and an answer from before it is
+              // stale by exactly that much.
+              if (
+                // Both answers, for the reason the keyed branch above states.
+                canMessagePre &&
+                owesHandbackNote(channelNow ?? []) &&
+                (await botOwnsItNow().catch((err) => {
+                  logger.warn(
+                    { err, conv: conversationId },
+                    "hand-back note: ownership read failed; leaving the note owed",
+                  );
+                  return false;
+                }))
+              ) {
+                await fallbackGraph.updateState(
+                  { configurable: { thread_id: graphThreadId } },
+                  { messages: [humanHandbackMessage(conversationId)] },
+                  THREAD_STATE_NODE,
+                );
+              }
+            }
+            return {
+              writeDivider: false,
+              advanceMarker: false,
+              closedConversationId: null,
+            };
+          }
+          const key = {
+            tenantId_chatwootInstanceId_contactInboxId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+            },
+          };
+          // Taken in the row too, so an append on another replica stands down instead of landing inside
+          // this invoke (../graph/thread-claim.ts).
+          const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+          graphHold = await markTurnOwning(owner, base);
+          graphOwner = owner;
+          // THE ACQUIRING STATEMENT IS WHERE THE WAIT IS DECIDED, not the read above it (issue #689,
+          // the same shape ./runtime.ts uses). Two runs that both waited the thread out both read
+          // "free" and both arrive here; of the two exactly one gets `heldBefore` false. The other
+          // gives its hold straight back — kept, it would stop the winner's release from reaching zero
+          // — leaves the queue, and waits again. Past the deadline it stops giving it back and proceeds
+          // beside whoever is there, which is what this nudge does on EVERY run today, so the ceiling
+          // costs nothing that was not already being paid: there is no third outcome to reach for,
+          // since the only way out of this function without sending is `standDown()`, and a reminder
+          // abandoned as "stale" is one the ladder never retries.
+          if (
+            turnWaitUntil !== null &&
+            graphHold.heldBefore &&
+            Date.now() < turnWaitUntil
+          ) {
+            const giveBack = graphHold;
+            graphHold = null;
+            graphOwner = null;
+            await clearTurnOwning(owner, base, giveBack);
+            return WAIT_AGAIN;
+          }
+          // ASKED AGAIN, for the reason ./runtime.ts gives at the same seam: `markTurnOwning` waits out
+          // an append's lease and the row lock /reset holds, so the ask above is stale by the time the
+          // claim lands, and a reset releasing that lock hands it straight to this waiter. Last moment
+          // before the divider and the marker below write the cleared thread back.
+          if (!(await stillWanted(true))) return null;
+          // QUEM É O DONO DA CONVERSA DO OUTRO LADO DA ESPERA (issue #688, aplicada aqui pela #689,
+          // achado da rodada 1 de review). A espera nova abre uma janela de até cinco minutos entre o
+          // `canMessagePre` lá de cima e o invoke daqui de baixo, e a re-checagem que já existia fica
+          // DEPOIS da geração: ela suprime o ENVIO e não desfaz uma etiqueta escrita, um card movido,
+          // um ticket aberto ou uma chamada HTTP de saída que as ferramentas do modelo fizeram. Tudo
+          // daqui para baixo escreve o thread e depois chama o modelo, então este é o último instante
+          // em que a pergunta ainda é sobre um turno que não escreveu nada.
+          //
+          // SÓ QUANDO ESTE NUDGE IA FALAR COMO BOT. `canMessagePre` falso é o nudge rodando em modo
+          // de atendimento humano DE PROPÓSITO — ele pede uma nota interna ao modelo, e "uma pessoa
+          // detém a conversa" é a condição em que ele foi preparado, não uma mudança.
+          //
+          // E SÓ NO CAMINHO QUE PODE ESPERAR, pela mesma medida que ./runtime.ts usa: a condição é
+          // `turnWaitUntil !== null` e não "esperou de fato", porque o `markTurnOwning` logo acima
+          // também bloqueia (no lease de um append, no lock do /reset) e essa espera não entra em
+          // contador nenhum.
+          //
+          // E A LEITURA QUE FALHA DEIXA O TURNO SEGUIR, ao contrário do `botOwnsItNow` da nota de
+          // hand-back. Lá o fail-closed é de graça (a nota fica devida e nada se perde); aqui parar
+          // custa a ocasião inteira, e um `false` vindo de um banco que piscou viraria desistência
+          // para todo nudge que esperou. Foi exatamente o fail-closed que derrubou a tentativa
+          // anterior do lado reativo (fazer-ai/agents#684, revertida), e a sonda pós-modelo ainda
+          // segura o envio.
+          if (turnWaitUntil !== null && canMessagePre) {
+            const posse = await botOwnsItNowDetailed().catch((err: unknown) => {
+              logger.warn(
+                { err, conv: conversationId },
+                "nudge: ownership after the wait could not be read; carrying on rather than standing the turn down",
+              );
+              return { ours: true as const };
+            });
+            // FECHA SÓ NO `false`, nunca no `null`: "não deu para verificar" não é "uma pessoa
+            // assumiu". Esta é a mesma decisão que o `.catch` acima toma para o throw, e a rodada 2
+            // de review achou que faltava para o caminho que não lança (o modo live).
+            if (posse.ours === false) {
+              // A MESMA LINHA QUE OS OUTROS PORTÕES ESCREVEM, pela regra que a #271 fixou: um
+              // operador filtrando o log por este desfecho tem que receber TODOS os portões que
+              // fecham nesta pergunta. E só quando o leitor tem o que dizer — no modo live não há
+              // linha do espelho para classificar, e inventar um literal ali é o que a cerca de
+              // gate-close.test.ts proíbe.
+              if (posse.closed !== null) {
+                emitFlowEvent(flow, {
+                  stage: "handoff",
+                  status: "ok",
+                  detail: posse.closed,
+                });
+              }
+              return null;
+            }
+          }
+          // READ AFTER THE CLAIM, for the reason ./runtime.ts states at the same seam: the claim can
+          // wait out an append that writes this very marker, so a row read before the wait is stale.
+          // Whether another invoke was already reading comes from the claim itself.
+          const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.agentThread.findUnique({
+              where: key,
+              select: { lastConversationId: true },
+            }),
+          );
+          const anotherInvokeIsReading = graphHold.heldBefore;
+          const previous = existing?.lastConversationId ?? null;
+          const alreadyStarted = needsAttendanceStartProbe(
+            previous,
+            conversationId,
+            anotherInvokeIsReading,
+          )
+            ? attendanceHasStarted(
+                (
+                  (await graph.getState(invokeConfig)).values as
+                    | { messages?: BaseMessage[] }
+                    | undefined
+                )?.messages ?? [],
+                conversationId,
+              )
+            : false;
+          const decided = claimAttendanceBoundary({
+            previousConversationId: previous,
+            conversationId,
+            anotherInvokeIsReading,
+            attendanceAlreadyStarted: alreadyStarted,
+          });
+          // The divider goes in BEFORE the marker moves, and inside the claim — the same order and the
+          // same lock the reactive turn uses (./runtime.ts). It used to ride in this nudge's own invoke
+          // instead, which advanced the marker on a divider that did not exist yet: a turn arriving
+          // during the generation read the conversation as already recorded, declined to write one of
+          // its own, and then this invoke appended ours AFTER that turn's messages — a divider in the
+          // middle of the attendance, which is worse than none. An invoke that never succeeded left the
+          // marker advanced and no divider at all.
+          //
+          // The invoke below does not erase it either: an invoke saves the channel it LOADED, and this
+          // one has not started yet, so it loads the divider along with everything else.
+          if (decided.writeDivider) {
+            await buildThreadStateGraph(checkpointer).updateState(
+              { configurable: { thread_id: graphThreadId } },
+              { messages: [conversationDividerMessage(conversationId)] },
+              THREAD_STATE_NODE,
+            );
+          }
+          // THE HAND-BACK NOTE, here as well as in the reactive turn (issue #457). A proactive send can
+          // be the FIRST model turn after a person hands the conversation back — a follow-up ladder, an
+          // appointment reminder, an inbound-domain nudge — and it invokes the same persisted thread. If
+          // only the reactive turn wrote it, this one would run against the old transfer context and
+          // could go quiet or hand off again, with the correction arriving on some later turn.
           const channelNow = (
             (
-              await fallbackGraph.getState({
+              await buildThreadStateGraph(checkpointer).getState({
                 configurable: { thread_id: graphThreadId },
               })
             ).values as { messages?: BaseMessage[] } | undefined
           )?.messages;
-          // Ownership asked LAST, immediately before the write, for the reason the keyed branch
-          // gives: the channel read above is its own round trip, and an answer from before it is
-          // stale by exactly that much.
+          // NOT WHILE A HUMAN STILL OWNS IT, and not beside an older invoke. `canMessagePre` false is
+          // this nudge running in human-handling mode on purpose — it asks the model for an internal
+          // note instead of a customer message — so announcing that the human attendance ended would
+          // contradict the directive it is about to send itself. And `anotherInvokeIsReading` is the
+          // divider's rule: an invoke that started earlier saves the channel it loaded and erases what
+          // was appended beside it.
+          // A read that cannot run leaves the note OWED, and the next turn asks again — this is the one
+          // thing in this section that costs nothing to defer, and a throw here would escape to the
+          // scheduler, which retries the whole job and re-posts everything it already sent. Asked after
+          // the channel read above and only when the note is actually owed: that read is a round trip of
+          // its own, and this is the last thing before the write.
           if (
-            // Both answers, for the reason the keyed branch above states.
+            // BOTH ANSWERS, and they guard opposite races. `canMessagePre` is what this run IS: false
+            // means the whole nudge was prepared in human-handling mode, and `renderNudge` is about to
+            // tell the model that a person is handling the conversation — a note beside that directive
+            // would put two contradictory statements in one model call. The fresh read is what the world
+            // IS: it catches the person taking the conversation over after the pre-gate. A hand-back that
+            // lands mid-preparation leaves the note owed, and the next turn — prepared in bot mode, with
+            // a directive that agrees with it — writes it.
             canMessagePre &&
             owesHandbackNote(channelNow ?? []) &&
             (await botOwnsItNow().catch((err) => {
@@ -1373,155 +1694,42 @@ export async function runAgentNudge(
               return false;
             }))
           ) {
-            await fallbackGraph.updateState(
-              { configurable: { thread_id: graphThreadId } },
-              { messages: [humanHandbackMessage(conversationId)] },
-              THREAD_STATE_NODE,
+            if (anotherInvokeIsReading) {
+              handbackDeferred = true;
+            } else {
+              await buildThreadStateGraph(checkpointer).updateState(
+                { configurable: { thread_id: graphThreadId } },
+                { messages: [humanHandbackMessage(conversationId)] },
+                THREAD_STATE_NODE,
+              );
+            }
+          }
+          // The sidecar row is what resolve-time compaction reads to know which attendance the thread
+          // is on. A nudge that opens a conversation used to leave it absent, and the job then exited
+          // at its generation fence with the attendance never summarized.
+          if (decided.advanceMarker) {
+            await runScopedOn(base, sysCtx(tenantId), (db) =>
+              db.agentThread.upsert({
+                where: key,
+                create: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  contactInboxId,
+                  threadId: graphThreadId,
+                  lastConversationId: conversationId,
+                },
+                update: { lastConversationId: conversationId },
+              }),
             );
           }
-        }
-        return {
-          writeDivider: false,
-          advanceMarker: false,
-          closedConversationId: null,
-        };
-      }
-      const key = {
-        tenantId_chatwootInstanceId_contactInboxId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          contactInboxId,
+          return decided;
         },
-      };
-      // Taken in the row too, so an append on another replica stands down instead of landing inside
-      // this invoke (../graph/thread-claim.ts).
-      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
-      graphHold = await markTurnOwning(owner, base);
-      graphOwner = owner;
-      // ASKED AGAIN, for the reason ./runtime.ts gives at the same seam: `markTurnOwning` waits out
-      // an append's lease and the row lock /reset holds, so the ask above is stale by the time the
-      // claim lands, and a reset releasing that lock hands it straight to this waiter. Last moment
-      // before the divider and the marker below write the cleared thread back.
-      if (!(await stillWanted(true))) return null;
-      // READ AFTER THE CLAIM, for the reason ./runtime.ts states at the same seam: the claim can
-      // wait out an append that writes this very marker, so a row read before the wait is stale.
-      // Whether another invoke was already reading comes from the claim itself.
-      const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.agentThread.findUnique({
-          where: key,
-          select: { lastConversationId: true },
-        }),
       );
-      const anotherInvokeIsReading = graphHold.heldBefore;
-      const previous = existing?.lastConversationId ?? null;
-      const alreadyStarted = needsAttendanceStartProbe(
-        previous,
-        conversationId,
-        anotherInvokeIsReading,
-      )
-        ? attendanceHasStarted(
-            (
-              (await graph.getState(invokeConfig)).values as
-                | { messages?: BaseMessage[] }
-                | undefined
-            )?.messages ?? [],
-            conversationId,
-          )
-        : false;
-      const decided = claimAttendanceBoundary({
-        previousConversationId: previous,
-        conversationId,
-        anotherInvokeIsReading,
-        attendanceAlreadyStarted: alreadyStarted,
-      });
-      // The divider goes in BEFORE the marker moves, and inside the claim — the same order and the
-      // same lock the reactive turn uses (./runtime.ts). It used to ride in this nudge's own invoke
-      // instead, which advanced the marker on a divider that did not exist yet: a turn arriving
-      // during the generation read the conversation as already recorded, declined to write one of
-      // its own, and then this invoke appended ours AFTER that turn's messages — a divider in the
-      // middle of the attendance, which is worse than none. An invoke that never succeeded left the
-      // marker advanced and no divider at all.
-      //
-      // The invoke below does not erase it either: an invoke saves the channel it LOADED, and this
-      // one has not started yet, so it loads the divider along with everything else.
-      if (decided.writeDivider) {
-        await buildThreadStateGraph(checkpointer).updateState(
-          { configurable: { thread_id: graphThreadId } },
-          { messages: [conversationDividerMessage(conversationId)] },
-          THREAD_STATE_NODE,
-        );
+      if (attempt !== WAIT_AGAIN) {
+        claim = attempt;
+        break;
       }
-      // THE HAND-BACK NOTE, here as well as in the reactive turn (issue #457). A proactive send can
-      // be the FIRST model turn after a person hands the conversation back — a follow-up ladder, an
-      // appointment reminder, an inbound-domain nudge — and it invokes the same persisted thread. If
-      // only the reactive turn wrote it, this one would run against the old transfer context and
-      // could go quiet or hand off again, with the correction arriving on some later turn.
-      const channelNow = (
-        (
-          await buildThreadStateGraph(checkpointer).getState({
-            configurable: { thread_id: graphThreadId },
-          })
-        ).values as { messages?: BaseMessage[] } | undefined
-      )?.messages;
-      // NOT WHILE A HUMAN STILL OWNS IT, and not beside an older invoke. `canMessagePre` false is
-      // this nudge running in human-handling mode on purpose — it asks the model for an internal
-      // note instead of a customer message — so announcing that the human attendance ended would
-      // contradict the directive it is about to send itself. And `anotherInvokeIsReading` is the
-      // divider's rule: an invoke that started earlier saves the channel it loaded and erases what
-      // was appended beside it.
-      // A read that cannot run leaves the note OWED, and the next turn asks again — this is the one
-      // thing in this section that costs nothing to defer, and a throw here would escape to the
-      // scheduler, which retries the whole job and re-posts everything it already sent. Asked after
-      // the channel read above and only when the note is actually owed: that read is a round trip of
-      // its own, and this is the last thing before the write.
-      if (
-        // BOTH ANSWERS, and they guard opposite races. `canMessagePre` is what this run IS: false
-        // means the whole nudge was prepared in human-handling mode, and `renderNudge` is about to
-        // tell the model that a person is handling the conversation — a note beside that directive
-        // would put two contradictory statements in one model call. The fresh read is what the world
-        // IS: it catches the person taking the conversation over after the pre-gate. A hand-back that
-        // lands mid-preparation leaves the note owed, and the next turn — prepared in bot mode, with
-        // a directive that agrees with it — writes it.
-        canMessagePre &&
-        owesHandbackNote(channelNow ?? []) &&
-        (await botOwnsItNow().catch((err) => {
-          logger.warn(
-            { err, conv: conversationId },
-            "hand-back note: ownership read failed; leaving the note owed",
-          );
-          return false;
-        }))
-      ) {
-        if (anotherInvokeIsReading) {
-          handbackDeferred = true;
-        } else {
-          await buildThreadStateGraph(checkpointer).updateState(
-            { configurable: { thread_id: graphThreadId } },
-            { messages: [humanHandbackMessage(conversationId)] },
-            THREAD_STATE_NODE,
-          );
-        }
-      }
-      // The sidecar row is what resolve-time compaction reads to know which attendance the thread
-      // is on. A nudge that opens a conversation used to leave it absent, and the job then exited
-      // at its generation fence with the attendance never summarized.
-      if (decided.advanceMarker) {
-        await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.agentThread.upsert({
-            where: key,
-            create: {
-              tenantId,
-              chatwootInstanceId: instanceId,
-              contactInboxId,
-              threadId: graphThreadId,
-              lastConversationId: conversationId,
-            },
-            update: { lastConversationId: conversationId },
-          }),
-        );
-      }
-      return decided;
-    });
+    }
     // `stillWanted` said no inside the critical section: the run was retired while this got here.
     // The latched reason, not the literal (round 13): the strict ask inside the claim reads the
     // switch and the mode too, and a reminder abandoned as "stale" is one the ladder never retries.

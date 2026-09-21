@@ -92,7 +92,14 @@ const WRITE_POLL_MS = 25;
 // predates this issue, where the second invoke joins and the boundary, the hand-back note and the
 // token rollback are all deferred to keep it survivable. A customer waiting is better served by the
 // second. The ceiling's job is therefore to stop waiting and to SAY so, not to fail the turn.
-const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
+// A turn that waited the thread out and still landed on an occupancy: it gave the hold back and has
+// to leave the `ingest:` queue before waiting again, which is a thing the section cannot say by
+// returning its own result or null. Lives HERE, next to `waitForTurnToClear` and `turnWaitDeadline`,
+// because the two callers that run this loop (the reactive turn and the proactive nudge) have to be
+// provably the same vocabulary: a second sentinel meaning the same thing is how the two loops drift.
+export const WAIT_AGAIN = Symbol("wait for the thread and try again");
+
+export const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
 const TURN_POLL_MS = 50;
 
 export interface TurnHold {
@@ -256,11 +263,19 @@ async function readWriteLease(
 // Take the thread for this turn, durably, and mark the Map with it so a same-process reader that
 // still asks the Map (the conversation key, ./inflight.ts) is never told less than the truth.
 //
-// IT ALWAYS JOINS, and the count is why: overlapping turns are legitimate (a nudge beside a reactive
-// turn, two deliveries racing with debounce off) and `clearTurnOwning` releases one holder at a time
-// to serve them. A caller that must NOT join — one that owes a customer a single reply — waits for
-// the thread with `waitForTurnToClear` before it gets here, and gives the hold back and waits again
-// if it still lands on an occupancy (issue #658).
+// IT ALWAYS JOINS, and the count is why: the exclusion is not in here, and `clearTurnOwning` releases
+// one holder at a time to serve the callers that legitimately overlap — an append beside a turn, a
+// compaction reservation. A caller that must NOT join — one that DELIVERS to a customer, so the
+// message the losing invoke erases is one somebody already read — waits for the thread with
+// `waitForTurnToClear` before it gets here, and gives the hold back and waits again if it still
+// lands on an occupancy (issues #658 and #689).
+//
+// WHICH IS BOTH TURNS, and the shorter rule it used to state ("one that owes a customer a single
+// reply") is why it took two issues: read that way, the proactive turn looked exempt, because nobody
+// is waiting on the other end of it. Nobody waiting is not the same as nothing delivered. #689
+// measured the proactive message reaching the customer and the channel ending without it, which is
+// the same loss as the reactive one — and worse in the other direction, since the nudge finishing
+// second erases the customer's own message along with the reply to it.
 export async function markTurnOwning(
   owner: ThreadOwner,
   base: PrismaClient,

@@ -101,6 +101,7 @@ import {
   type ThreadOwner,
   type TurnHold,
   turnWaitDeadline,
+  WAIT_AGAIN,
   waitForTurnToClear,
 } from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
@@ -256,6 +257,12 @@ export interface RuntimeDeps {
   // that leans on real time to cross the boundary passes for the wrong reason the moment the
   // machine is slow enough to cross it before the first read.
   now?: () => Date;
+  // O TETO DA ESPERA PELO THREAD (issue #689), lido pelo nudge e injetável porque os dois
+  // comportamentos que ele separa estão a CINCO MINUTOS de relógio um do outro: passado o teto o
+  // turno proativo segue ao lado de quem já lê, e um teste não tem como chegar lá esperando. O
+  // turno reativo não precisa dele — ali o `waitForThreadTurn` já desliga a espera inteira, e o que
+  // falta cobrir é justamente o caso em que ela está ligada. Em produção é `turnWaitDeadline`.
+  turnWaitDeadline?: () => number;
   // A LEITURA DE POSSE DO OUTRO LADO DA ESPERA (issue #688), injetável porque o caso que ela existe
   // para cobrir é uma FALHA dela, e uma falha de banco não se encena de fora. Em produção é
   // `conversationOwnershipNow`, o mesmo leitor que o webhook e o `recover-takeover` usam.
@@ -427,9 +434,9 @@ export interface RunLoadedTurnParams {
   // OPTIONAL BECAUSE ONLY ONE CALLER HAS SOMEWHERE TO DEFER TO. The debounce flush can put the burst
   // back on the scheduler and come back; a turn arriving from a webhook, a nudge and the operator's
   // re-engage button cannot, and for them a stand-down would be a silent no-op — which is also why
-  // the exclusion is not inside `markTurnOwning`: the claim COUNTS on purpose, two turns legitimately
-  // overlap on one thread (a nudge beside a reactive turn, two deliveries racing with debounce off),
-  // and `clearTurnOwning` releases one holder at a time for exactly that reason (issue #593).
+  // the exclusion is not inside `markTurnOwning`: the claim COUNTS on purpose, an append and a
+  // compaction reservation legitimately share a thread with a turn, and `clearTurnOwning` releases
+  // one holder at a time for exactly that reason (issue #593).
   standDownIfThreadHeld?: boolean;
   // THE OTHER HALF OF THE SAME QUESTION (issue #658), for the callers the option above cannot serve.
   // A turn that learns it is the second invoke WAITS the first one out and then reads a channel that
@@ -438,21 +445,22 @@ export interface RunLoadedTurnParams {
   // finishes second saves what it loaded and undoes the first (./inflight.ts pins the same undo
   // against compaction, issue #588 measured it between two turns).
   //
-  // Opt-in rather than the default, and deliberately not set for every caller: overlapping turns are
-  // legitimate where nobody is waiting on a single answer (a nudge beside a reactive turn), and the
-  // count exists to serve them. What this is for is the caller that owes a customer ONE reply and
-  // has nowhere to put the work down — today `runAgentTurn`, the direct webhook entry.
+  // Opt-in rather than the default, and the option exists for the caller that can defer instead: the
+  // debounce flush reschedules the burst rather than waiting minutes for it. What this is for is the
+  // caller that owes a customer ONE reply and has nowhere to put the work down — today
+  // `runAgentTurn`, the direct webhook entry.
+  //
+  // IT IS NOT WHAT EXEMPTS THE PROACTIVE TURN, and this comment used to say it was ("overlapping
+  // turns are legitimate where nobody is waiting on a single answer (a nudge beside a reactive
+  // turn)"). The nudge waits too now, by the same loop and the same ceiling, and without a flag —
+  // it has no caller that could defer (./nudge.ts says which four). Issue #689 is the measurement:
+  // nobody waiting on the other end does not mean nothing was delivered.
   waitForThreadTurn?: boolean;
   // SE O PORTÃO DE POSSE DO OUTRO LADO DA ESPERA ATUA (issue #688). Separado de `waitForThreadTurn`
   // porque a espera e o portão respondem perguntas diferentes: a espera é sobre o thread, o portão é
   // sobre o que a parada dele CUSTA. Ausente ou `true`, atua sempre que houve espera.
   recheckOwnershipAfterWait?: boolean;
 }
-
-// A turn that waited the thread out and still landed on an occupancy: it gave the hold back and has
-// to leave the `ingest:` queue before waiting again, which is a thing the section cannot say by
-// returning a conversation id or null.
-const WAIT_AGAIN = Symbol("wait for the thread and try again");
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
 // records the intent (see tools/native.ts TurnState): toggling mid-turn makes the webhook mirror

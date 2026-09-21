@@ -163,7 +163,13 @@ function makeStub(opts: { page: unknown; sent: Array<[number, string]> }) {
   return async () => client;
 }
 
-async function seedConversation(convId: number): Promise<bigint> {
+async function seedConversation(
+  convId: number,
+  // O portão de posse do outro lado da espera só existe no ramo que tem `contactInboxId`, que é o
+  // que traz a fila do thread junto. Os casos que medem EXTRAÇÃO não precisam dele; o que mede o
+  // portão, sim.
+  over: { contactInboxId?: number } = {},
+): Promise<bigint> {
   const c = await suDb.conversation.create({
     data: {
       tenantId,
@@ -173,6 +179,9 @@ async function seedConversation(convId: number): Promise<bigint> {
       inboxId: inboxDbId,
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
+      ...(over.contactInboxId !== undefined
+        ? { contactInboxId: over.contactInboxId }
+        : {}),
     },
   });
   return c.id;
@@ -666,7 +675,9 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       // um arquivo publica um agregado mais pobre por cima do completo.
       expect(chamadasDoProvedor.n).toBe(0);
       // O que a meta tem continua chegando ao modelo.
-      expect(modelo.humanTexts.join("\n")).toContain("Print do pedido 21607129");
+      expect(modelo.humanTexts.join("\n")).toContain(
+        "Print do pedido 21607129",
+      );
     });
   });
 
@@ -767,6 +778,54 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       // A primeira leitura chega ao modelo mesmo tendo saído da loja antes do fim do laço.
       expect(turno).toContain("Comprovante de PIX");
       expect(turno).toContain("Print do pedido 21607129");
+    });
+  });
+
+  test("takeover durante a extração: o grafo não chega a rodar", async () => {
+    await comCredencial(async () => {
+      const id = await seedConversation(951, { contactInboxId: 77 });
+      await clearFlowLog(suDb, { tenantId });
+      clearMediaAnnotations();
+      const sent: Array<[number, string]> = [];
+      const metaEscrita: Array<[number, string]> = [];
+      const modelo = new TurnCapturingModel(REPLY);
+      // A pessoa assume a conversa ENQUANTO o arquivo está sendo lido. A extração custa até 60s por
+      // anexo, então esta janela deixou de ser a rede de um `getMessages` e passou a ser minutos.
+      let assumida = false;
+      const base = visionFetch(["Comprovante de PIX de R$ 115,00."]);
+      const fetchFalso = (async (...args: unknown[]) => {
+        const r = await (base as (...a: unknown[]) => Promise<Response>)(
+          ...args,
+        );
+        assumida = true;
+        return r;
+      }) as unknown as typeof fetch;
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => modelo,
+          makeClient: stubComAnexos({
+            page: page([{ id: 901, content: "", anexos: [{ id: 91 }] }]),
+            sent,
+            metaEscrita,
+          }),
+          visionFetch: fetchFalso,
+          ownershipRead: async () =>
+            assumida
+              ? ({ ours: false, closed: null } as const)
+              : ({ ours: true } as const),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+
+      expect(res.outcome).not.toBe("posted");
+      // NEM O MODELO NEM AS FERRAMENTAS DELE. A re-checagem que ja existia fica depois da geração:
+      // ela segura o envio e não desfaz um ticket aberto nem uma chamada HTTP de saída.
+      expect(modelo.humanTexts).toEqual([]);
+      expect(sent).toEqual([]);
     });
   });
 

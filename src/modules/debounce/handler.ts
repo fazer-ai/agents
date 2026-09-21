@@ -233,6 +233,10 @@ interface AnswerableBurst {
   targetWatermark: number;
   lastMessageId: number;
   text: string;
+  // SE A SELEÇÃO ESPEROU POR EXTRAÇÃO (issue #757): o religar abre aqui os anexos que ninguém tinha
+  // aberto, e isso custa até 60 segundos por arquivo. Quem invoca o grafo precisa saber, porque uma
+  // janela dessas é tempo para a conversa mudar de dono.
+  waitedOnMedia: boolean;
 }
 
 export async function selectAnswerableBurst(
@@ -327,8 +331,9 @@ export async function selectAnswerableBurst(
   // ANTES DO RENDER, que é o ponto em que um anexo sem extração vira o marcador que pede reenvio.
   // Depois do teto de rajada, porque o que foi cortado dali não entra no turno e não deve custar
   // uma chamada paga.
+  let waitedOnMedia = false;
   if (ctx.fillMedia)
-    await fillMissingVisuals({
+    waitedOnMedia = await fillMissingVisuals({
       tenantId,
       instanceId,
       conversationId,
@@ -388,15 +393,14 @@ export async function selectAnswerableBurst(
     lastMessageId,
     inTurn: rendered.map((r) => r.message),
     text: rendered.map((r) => r.text).join("\n"),
+    waitedOnMedia,
   };
 }
 
 // OS ANEXOS DO BURST QUE NINGUÉM ABRIU AINDA, abertos agora (issue #757).
 //
-// O resultado não volta por retorno: ele é stashado pela extração (`extractMessageVisuals`, chaveado
-// por mensagem) e aplicado sobre as linhas pelo overlay, que é o MESMO caminho que a passagem eager
-// usa quando o write-back da meta não existe no Chatwoot upstream. Uma segunda forma de entregar o
-// texto seria um segundo leitor da mesma coisa, e é assim que as duas divergem.
+// Devolve SE alguma extração foi tentada, que é o mesmo que dizer se este turno esperou: quem invoca
+// o grafo depois precisa saber, porque a espera é tempo para a conversa mudar de dono.
 //
 // Best-effort inteiro: um anexo que não abre, uma vision desligada ou uma credencial que sumiu
 // deixam o turno acontecer com o que havia antes. O que esta função nunca faz é impedir a resposta.
@@ -416,13 +420,13 @@ async function fillMissingVisuals(args: {
   };
   base: PrismaClient;
   deps?: RuntimeDeps;
-}): Promise<void> {
+}): Promise<boolean> {
   // DAS SETTINGS QUE O TURNO JÁ CARREGOU, sem ir ao banco. `resolveVisionConfig` faz exatamente
   // isto depois de descobrir o agente pela inbox, e aqui o agente já está decidido: quem chegou até
   // esta linha é o turno dele. A outra metade daquela função, `agent.enabled`, também já está
   // respondida — um agente desligado não tem turno.
   const cfg = readVisionConfig(args.settings);
-  if (!cfg.enabled) return;
+  if (!cfg.enabled) return false;
   // O RELIGAR ABRE O QUE NINGUÉM NUNCA ABRIU. Não refaz, não complementa e não corrige passagem
   // anterior: mensagem que já carrega QUALQUER leitura — na meta do anexo, ou no agregado que o
   // overlay acabou de pousar vindo do stash — fica como está.
@@ -440,7 +444,7 @@ async function fillMissingVisuals(args: {
       !m.imageDescription &&
       !m.extractedText,
   );
-  if (alvos.length === 0) return;
+  if (alvos.length === 0) return false;
 
   // UMA MENSAGEM DE CADA VEZ, e os anexos DENTRO de cada uma em paralelo (é o que
   // `extractMessageVisuals` faz). O paralelo que importa é o de arquivos da mesma mensagem, que é
@@ -493,6 +497,7 @@ async function fillMissingVisuals(args: {
       );
     }
   }
+  return true;
 }
 
 // The instant of the newest message in the turn's input, or null when nothing in it carries one
@@ -554,6 +559,7 @@ export async function coalesceAndRunTurn(
     targetWatermark,
     lastMessageId,
     text,
+    waitedOnMedia,
   } = burst;
 
   // 2. Post gate, first half: re-fetch to detect mid-turn arrivals (supersede). Re-fetch failure is
@@ -676,6 +682,10 @@ export async function coalesceAndRunTurn(
   // settlement — closing a row mid-turn takes it out of the sweep's sight.
   let foldedIn = false;
   const outcome = await runLoadedTurn({
+    // O PORTÃO DE POSSE DO OUTRO LADO DA ESPERA (issue #757): quando a seleção parou para abrir
+    // anexos, a janela entre a checagem de dono do religar e a invocação deixa de ser a rede de um
+    // `getMessages` e passa a ser minutos.
+    waitedBeforeInvoke: waitedOnMedia,
     onFoldedIn: async () => {
       // ONLY THE MESSAGES WHOSE WORDS THIS BURST HAD (issue #576, PR review round 8), and only the
       // ones that REACHED the turn's input at all (round 10). A voice note still waiting on STT is

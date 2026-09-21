@@ -462,6 +462,13 @@ export interface RunLoadedTurnParams {
   // porque a espera e o portão respondem perguntas diferentes: a espera é sobre o thread, o portão é
   // sobre o que a parada dele CUSTA. Ausente ou `true`, atua sempre que houve espera.
   recheckOwnershipAfterWait?: boolean;
+  // ESTE TURNO JÁ ESPEROU ANTES DE CHEGAR AQUI, por algo que não é a fila do thread (issue #757): a
+  // extração dos anexos que ninguém tinha aberto, que o religar faz antes de renderizar e que custa
+  // até 60 segundos por arquivo. O portão abaixo existe pela JANELA, não pela fila — o que ele
+  // impede é o turno chamar o modelo e as ferramentas dele sobre uma conversa que mudou de dono
+  // enquanto a janela estava aberta, e a re-checagem pós-geração que já existe suprime o envio mas
+  // não desfaz um ticket aberto nem uma chamada HTTP de saída. Quem abre uma janela dessas, diz.
+  waitedBeforeInvoke?: boolean;
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -1643,7 +1650,7 @@ async function runTurnBody(
             // O leitor é o COMPARTILHADO (`conversationOwnershipNow`), o mesmo que o receptor e o
             // `recover-takeover` usam, em vez de um segundo privado que responda diferente.
             if (
-              turnWaitUntil !== null &&
+              (turnWaitUntil !== null || params.waitedBeforeInvoke === true) &&
               params.recheckOwnershipAfterWait !== false
             ) {
               const posse = await (

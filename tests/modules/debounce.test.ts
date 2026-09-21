@@ -29,6 +29,7 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
+  dispenseMessagesFromReply,
 } from "@/modules/debounce/watermark";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -1362,6 +1363,126 @@ describe.skipIf(!dbUp)("debounce", () => {
         where: { conversationId: id, messageId: 1 },
       }),
     ).not.toBeNull();
+  });
+
+  // A DISPENSA QUE NÃO ANDA COM A MARCA TEM QUE ABRIR A ERA QUE A TORNA VISÍVEL (issue #725, review
+  // rodada 8). `dispenseMessagesFromReply` é o único escritor de uma linha `DISPENSED` que
+  // deliberadamente NÃO move a marca, e numa conversa que nunca teve reivindicação o piso é nulo:
+  // `readSelectionState` devolve conjuntos vazios ali, a seleção decide só pelos escalares, e a
+  // linha fica invisível para quem monta a rajada — mas continua visível para o índice único do
+  // `claimReplyBurst`, que é tudo ou nada. A rajada `[1, 2]` seria recusada inteira, com a mensagem
+  // nova junto, e o `partial` reagenda para ler de novo exatamente o mesmo estado: um laço, e o
+  // cliente sem resposta até a varredura reparar a entrega antiga.
+  test("a dispensal with no floor does not swallow the message beside it", async () => {
+    const convId = 935;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // O portão recusou a resposta à mensagem 1 e deixou a marca para trás de propósito, porque a
+    // memória dela ainda é devida.
+    await dispenseMessagesFromReply({
+      tenantId,
+      conversationDbId: id,
+      messageIds: [1],
+      base: appDb,
+    });
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => fakeModel(),
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "tudo bem?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(out.outcome).toBe("done");
+    expect(sent.map(([, text]) => text)).toEqual([REPLY]);
+    // A palavra de cada uma é o que separa as duas decisões: 1 continua silenciada pelo portão, 2 é
+    // desta passada.
+    expect(
+      (
+        await suDb.messageReplyClaim.findFirstOrThrow({
+          where: { conversationId: id, messageId: 1 },
+        })
+      ).reason,
+    ).toBe("DISPENSED");
+    expect(
+      (
+        await suDb.messageReplyClaim.findFirstOrThrow({
+          where: { conversationId: id, messageId: 2 },
+        })
+      ).reason,
+    ).toBe("CLAIMED");
+  });
+
+  // E NADA ABAIXO DO PISO, que é a outra metade do mesmo invariante (issue #725, review rodada 8).
+  // Uma redentrega da era velha bate no mesmo portão fechado, e a decisão sobre ela já foi tomada
+  // pelos escalares: a linha só recriaria o conflito invisível de cima, e abrir a era para ela
+  // contradiz a frase que o `docs/debounce.md` sustenta — no piso e abaixo dele linha nenhuma foi
+  // escrita e nenhuma será.
+  test("a dispensal at or below the scalars writes nothing and starts no era", async () => {
+    const convId = 930;
+    await seedConversation(convId, { lastHandledMessageId: 5 });
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+
+    await dispenseMessagesFromReply({
+      tenantId,
+      conversationDbId: id,
+      messageIds: [3],
+      base: appDb,
+    });
+    expect(
+      await suDb.messageReplyClaim.count({ where: { conversationId: id } }),
+    ).toBe(0);
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { replyClaimFloorMessageId: true },
+        })
+      ).replyClaimFloorMessageId,
+    ).toBeNull();
+
+    // E num conjunto misto a era começa, mas só a mensagem que a era nova pode enxergar ganha linha.
+    // A do próprio piso fica de fora com as de baixo: ela é a última que a era velha decidiu.
+    await dispenseMessagesFromReply({
+      tenantId,
+      conversationDbId: id,
+      messageIds: [3, 5, 7],
+      base: appDb,
+    });
+    expect(
+      (
+        await suDb.messageReplyClaim.findMany({
+          where: { conversationId: id },
+          select: { messageId: true },
+        })
+      ).map((r) => r.messageId),
+    ).toEqual([7]);
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { replyClaimFloorMessageId: true },
+        })
+      ).replyClaimFloorMessageId,
+    ).toBe(5);
   });
 
   // THE REPLY A PERSON WROTE IS THE FENCE NO ROW RECORDS (issue #698). Above the per-message floor

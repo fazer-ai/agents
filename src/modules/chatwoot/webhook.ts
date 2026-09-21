@@ -99,6 +99,7 @@ import {
 } from "@/modules/debounce/service";
 import {
   advanceHandledWatermark,
+  dispenseMessagesFromReply,
   readAnsweredFloor,
 } from "@/modules/debounce/watermark";
 import { emitCommandDropped } from "@/modules/flowlog/command";
@@ -1655,6 +1656,28 @@ export interface ProcessChatwootParams {
   // and re-deriving would let a delivery that belonged to a watcher be replayed as the responder —
   // which answers. A live delivery leaves it undefined and the route is read as it always is.
   routeObserved?: boolean;
+  // WHAT THE STRANDED PASS OWED (issue #725), from the ledger's `owesMemoryOnly`. Only a recovery
+  // passes it, and it is the one thing a replay cannot re-derive: the pass that stranded ran on a
+  // conversation a person was holding, or on a message a gate had already silenced, and both facts
+  // are about a moment that is gone. Re-derived here, the answer is about the conversation NOW —
+  // which can be back with the bot, half an hour later, with nobody having asked anything new.
+  //
+  // What it disarms is the TURN and nothing else: the pass still owes its append, and the row's
+  // settlement, the watermark and the takeover keep reading `act` exactly as they always did. The
+  // same shape the observer's route uses (`observing`), for the same reason — a fact that silences
+  // the reply must not be smuggled into the word that means "the bot holds this conversation".
+  owesMemoryOnly?: boolean;
+  // AND HOW WIDE THAT PASS WOULD HAVE SETTLED (issue #725, review round 2), from the ledger's
+  // `settleScopedToThisDelivery`. The column above disarms the reply; this one is the other half of
+  // the same "a moment that is gone" problem, because the settlement's scope is derived from WHO
+  // held the conversation: scoped to this delivery beside another AgentBot, widened to the whole
+  // conversation behind a person or a gate. Re-derived on a replay, a stand-down that happened
+  // beside another bot settles the conversation once ownership has come back to us, and that bot's
+  // own row for this message is marked consumed with neither recovery having answered.
+  //
+  // Undefined or null is "this row cannot say", which derives it now — the reading every delivery
+  // had before the column.
+  settleScopedToThisDelivery?: boolean;
   // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), as the ledger row
   // holds it. Both callers pass the ROW's value — the live path from the insert it just made or the
   // duplicate it found, the recovery from the row it took back — because the question it answers is
@@ -5132,6 +5155,20 @@ export async function processChatwootDelivery(
       },
       { ourAgentBotId: params.agentBotId },
     );
+  // O ESCOPO DA LIQUIDAÇÃO DESTA PASSADA, decidido UMA vez (issue #725, review r2/r3). Ele é lido
+  // pela liquidação e gravado na linha, e as duas coisas têm que ser a mesma expressão: enquanto
+  // eram duas, o replay lia o valor gravado (certo) e por baixo regravava a derivação de agora
+  // (errado), então uma segunda falha de arme devolvia a linha para `DEAD` com o escopo já
+  // corrompido e a retentativa seguinte liquidava a conversa inteira — o defeito original, um nível
+  // acima.
+  //
+  // `params.settleScopedToThisDelivery` primeiro porque, quando ele existe, esta passada é o replay
+  // de uma linha que já respondeu esta pergunta no instante em que a resposta era verdade. Undefined
+  // é a entrega ao vivo, e aí quem responde é a conversa como ela está agora, que é o instante certo
+  // para ela.
+  const settleScopedHere =
+    params.settleScopedToThisDelivery ??
+    (heldByAnotherBot || observer !== null);
   const convLabel = n.conversationId === null ? "?" : String(n.conversationId);
 
   // ── A conversation this agent manages just transitioned TO resolved (by anyone: the agent's own
@@ -5682,7 +5719,21 @@ export async function processChatwootDelivery(
   // same reason. The fence stays `commandActive` (`command !== null && mode === "test"`): for any
   // other agent these are ordinary customer text and never reach here.
 
-  if ((act || commandActive) && isNewIncoming && !observing) {
+  if (
+    (act || commandActive) &&
+    isNewIncoming &&
+    !observing &&
+    // THE REPLAY OF A PASS THAT OWED MEMORY ONLY DOES NOT SPEAK (issue #725). Nothing about this
+    // conversation as it stands now can tell that the message was already attended to by a person,
+    // or silenced by a gate, half an hour ago; the row is the only witness, and the receiver reads
+    // it here rather than re-deciding from ownership that has moved since.
+    //
+    // It is NOT redundant with the replay's own `replayPosts`, although both read the same column:
+    // that one decides which page the recovery reads and whether the freshness fence is asked, and
+    // the POST is made here, by the re-execution. MEASURED on this round, by a mutant that removes
+    // this term alone: the reply goes out.
+    params.owesMemoryOnly !== true
+  ) {
     // Test-mode gate + /teste and /reset commands — may consume the delivery (skip all agent work).
     consumed = await maybeConsumeCommandOrGate({
       tenantId: params.tenantId,
@@ -6187,11 +6238,16 @@ export async function processChatwootDelivery(
   // test agent; a test agent's gate that consumed the message ran neither, so the ingestion below
   // would remember an audio as its attachment marker and never its transcription. Idempotent — a
   // text already stashed on the event is never re-transcribed — and asked only where no pass ran.
+  //
+  // E O REPLAY SÓ-MEMÓRIA ENTRA AQUI PELA MESMA PORTA (issue #725, review r7). Ele suprime o turno de
+  // propósito, e a passada de mídia de um agente em modo teste mora justamente lá dentro (a de cima
+  // roda só para quem ingere continuamente). Sem isto o replay enfileira a ingestão de um áudio sem
+  // a transcrição que a mensagem já carrega, e a memória guarda o marcador "áudio não audível" —
+  // com a entrega fechando como recuperada, que é a perda silenciosa com outra roupa.
   if (
-    handedToObserver &&
-    consumed &&
     rt !== null &&
-    !(rt.enabled && ingestsContinuously(rt.mode))
+    !(rt.enabled && ingestsContinuously(rt.mode)) &&
+    ((handedToObserver && consumed) || params.owesMemoryOnly === true)
   ) {
     await runEagerMedia(params.tenantId, params.instanceId, n, base, {
       conversationId: mirror.conversationRowId,
@@ -6297,7 +6353,21 @@ export async function processChatwootDelivery(
     // keeping the mark, and keeping it is what stops a responder bound later from answering the
     // whole observed backlog as one burst. Its settlement is scoped the same way another bot's
     // is: this row only, never the responder's.
-    if (!responderMayAnswer) {
+    // ...E A MARCA TAMBÉM NÃO É DESTA PASSADA QUANDO A LINHA DIZ QUE O ESCOPO ERA ESTREITO (issue
+    // #725, review r4). Preservar a LINHA da outra rota e ainda assim andar com a marca entrega meia
+    // garantia: a marca é da conversa, e este ramo a move escrevendo um `dispensed` que nomeia a
+    // mensagem, então o turno daquela rota é recusado pelo `claimReplyBurst` depois. A linha fica em
+    // `PROCESSING`, parecendo viva, e o cliente não é respondido por ninguém — que é a perda que o
+    // escopo estreito existe para impedir, chegando pela porta do lado.
+    //
+    // Perguntado de `params.settleScopedToThisDelivery` e NÃO de `settleScopedHere`, e a diferença é
+    // o que mantém este conserto do tamanho do defeito. `settleScopedHere` é estreito também quando
+    // há um observador, e ali quem decide a marca é `responderMayAnswer`, que é uma regra afinada em
+    // várias rodadas da #476 sobre outra pergunta (quem, entre as NOSSAS rotas, ainda pode
+    // responder). Só o valor vindo da linha é novo: ele diz que esta passada é o replay de uma parada
+    // que aconteceu ao lado de outro bot, e aí a marca é da rota dele pela mesma regra que o
+    // observador já segue — a marca fica com quem pode responder.
+    if (!responderMayAnswer && params.settleScopedToThisDelivery !== true) {
       try {
         await advanceHandledWatermark({
           tenantId: params.tenantId,
@@ -6329,7 +6399,13 @@ export async function processChatwootDelivery(
       // This whole path is the one no turn takes: the gate closed, a person or another bot holds the
       // conversation, or the observer owes the memory instead. Nothing invoked a graph.
       false,
-      heldByAnotherBot || observer !== null ? "this-delivery" : "conversation",
+      // PREFERRED FROM THE ROW WHEN THE ROW SAYS IT (issue #725, review round 2). Both terms below
+      // are read from the conversation as it stands NOW, which is the right answer for a live
+      // delivery and the wrong one for a replay: the stand-down this row is being replayed for may
+      // have happened beside another AgentBot, and by now the conversation can be back with us. The
+      // wider scope would then retire that bot's own row for this message without either recovery
+      // having answered — which is exactly the loss the scoping exists to avoid.
+      settleScopedHere ? "this-delivery" : "conversation",
     );
   };
   // ...E QUANDO A INGESTÃO É QUEM VAI GUARDAR A MENSAGEM, A LIQUIDAÇÃO ESPERA POR ELA (issue #719).
@@ -6345,23 +6421,26 @@ export async function processChatwootDelivery(
   // caminho COMUM: uma pessoa é dona da conversa, turno nenhum roda, e quem guarda a mensagem é a
   // ingestão.
   //
-  // SÃO DOIS SITES E ESTE CONSERTO COBRE UM, POR MEDIÇÃO E NÃO POR RECORTE DA ISSUE. A condição
-  // deste bloco é `!act || consumed`, e as duas metades chegam à MESMA ingestão contínua: a mensagem
-  // que o bot não responde porque uma pessoa tem a conversa (`!act`) e a que ele não responde porque
-  // um portão a silenciou (`act && consumed`: fora do horário, ou o contato que o gate de
-  // autorização recusou). O site irmão perde a mensagem exatamente igual — medido pelo gate de
-  // autorização recusando o contato: `err=null`, linha `PROCESSED`, marca no id da própria mensagem.
+  // SÃO DOIS SITES E HOJE O ADIAMENTO COBRE OS DOIS (issue #725). A condição deste bloco é
+  // `!act || consumed`, e as duas metades chegam à MESMA ingestão contínua: a mensagem que o bot não
+  // responde porque uma pessoa tem a conversa (`!act`) e a que ele não responde porque um portão a
+  // silenciou (`act && consumed`: fora do horário, ou o contato que o gate de autorização recusou).
+  // O site irmão perdia a mensagem exatamente igual — medido pelo gate de autorização recusando o
+  // contato: `err=null`, linha `PROCESSED`, marca no id da própria mensagem.
   //
-  // E mesmo assim ele NÃO entra aqui, porque a saída deste conserto é mandar a entrega para a
-  // varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES. Isso é desenho, não defeito
-  // (docs/chatwoot.md: "a recovery answers through the gates"), e a linha não carrega nada que diga
-  // "um portão já consumiu esta mensagem" — nada a distingue de uma que ninguém atendeu, o que a
-  // suíte da recuperação já mostra ao ver o replay responder uma entrega estrandada de conversa do
-  // bot. Aplicado ao site irmão, o desfecho é o cliente recebendo o aviso de fora do horário e, meia
-  // hora depois, quando o expediente abre, a resposta do bot para a mesma mensagem. Perder a
-  // mensagem da memória é ruim; responder duas vezes uma que o operador silenciou é pior, e o
-  // conserto do site irmão precisa de uma intenção "só memória" persistida na linha e honrada pelo
-  // replay — outro desenho, outra issue.
+  // A #719 deixou o site irmão de fora por um motivo que era verdadeiro na época: a saída é mandar a
+  // entrega para a varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES (docs/chatwoot.md: "a
+  // recovery answers through the gates"). Sem nada na linha dizendo "um portão já consumiu esta
+  // mensagem", o desfecho seria o cliente recebendo o aviso de fora do horário e, meia hora depois,
+  // a resposta do bot para a mesma mensagem. Perder a mensagem da memória é ruim; responder duas
+  // vezes uma que o operador silenciou é pior.
+  //
+  // `owes_memory_only` é exatamente essa intenção persistida, e é o que desarmou aquele motivo — por
+  // isso as duas metades entram aqui agora. As DUAS ESCRITAS, porém, deixaram de andar juntas: a
+  // liquidação da linha espera a ingestão, e a marca (com o `dispensed` que nomeia a mensagem) NÃO
+  // pode esperar na metade do portão, porque ali a conversa continua sendo do bot e o flush que roda
+  // quando o expediente abre coalesce a partir dela. Isso está logo abaixo, no `else if
+  // (settlesHere && consumed)`.
   //
   // O adiamento é ESTREITO no resto: `observerHolds` já estava fora daqui, com a liquidação dele lá
   // embaixo pelo mesmo motivo (round 20 da #209), e `routeRemembers` é o termo de `routeIngests` que
@@ -6374,10 +6453,119 @@ export async function processChatwootDelivery(
   // logo abaixo desta, com a regra de marca que só ela tem (um observador desligado não marca, issue
   // #476). Sem o termo, uma conversa em posse humana sob observador seria liquidada aqui antes de
   // aquele bloco decidir, e o erro diria a parada errada.
-  const settlesHere = isNewIncoming && (!act || consumed) && !observerHolds;
-  const settleAwaitsIngest = settlesHere && !consumed && routeRemembers;
+  // ...E O REPLAY QUE SÓ DEVE MEMÓRIA ENTRA POR `!act` (issue #725, rodada 1 de review). A pergunta
+  // deste termo é "nenhum turno atendeu esta mensagem nesta passada", e no replay isso é verdade por
+  // decisão gravada na linha em vez de por posse: o gate do turno lá em cima já o calou. Fora daqui,
+  // a marca não avança e a linha fecha assim mesmo — e aí, com o debounce ligado, a rajada seguinte
+  // coalesce esta mensagem e o turno a responde, que é o defeito desta issue voltando por outra
+  // porta. MEDIDO: `last_handled_message_id` ficava nulo com a linha em `PROCESSED`.
+  const settlesHere =
+    isNewIncoming &&
+    (!act || consumed || params.owesMemoryOnly === true) &&
+    !observerHolds;
+  // E ELA ESPERA A INGESTÃO NAS DUAS METADES (issue #725). O `!consumed` que estava aqui era o que
+  // deixava a metade do PORTÃO fora da varredura: fora de horário, ou com o contato recusado, a
+  // linha fechava como `PROCESSED` mesmo com o arme falhando, e `PROCESSED` é o estado que nada
+  // revisita — então a coluna `owes_memory_only` era gravada e nunca lida, e a mensagem do cliente
+  // sumia exatamente como o corpo da issue mede. A #719 já tinha a saída certa para a metade dela
+  // (adiar a liquidação e lançar quando o arme falha, deixando a linha em `PROCESSING`), e o que
+  // impedia de usá-la aqui era o risco do replay responder duas vezes — que é justamente o que a
+  // coluna desta PR remove. Com ele removido, a saída passa a valer nas duas.
+  // E ELA ESPERA PELO DEVER TAMBÉM, não só pela rota (review r5, site irmão). `routeRemembers`
+  // responde "esta rota vai ingerir", e desde o parágrafo acima o portão da ingestão também abre
+  // pelo dever gravado na linha — então numa rota que não lembra continuamente (modo teste) o replay
+  // passava a enfileirar o append e a liquidação NÃO esperava por ele: com o arme falhando também no
+  // replay, a linha fechava terminal com a marca por cima de uma mensagem que memória nenhuma tem,
+  // que é o trio que o corpo da issue mede, de volta por outra porta. Medido antes do conserto.
+  //
+  // Só o replay muda: na passada original `params.owesMemoryOnly` é `undefined`.
+  const settleAwaitsIngest =
+    settlesHere && (routeRemembers || params.owesMemoryOnly === true);
+  // WHAT THIS PASS OWES, RECORDED WHERE IT IS DECIDED AND BEFORE THE ARM THAT CAN FAIL (issue #725).
+  //
+  // `settlesHere` is already this file's own answer to "no turn ran on this delivery": a person
+  // holds the conversation (`!act`) or a gate silenced the message (`act && consumed`). Where it is
+  // true the only thing this delivery owes is an append — and where arming that append throws, the
+  // row is left for the sweep with nothing on it saying so. The replay then rebuilds ownership from
+  // the conversation as it stands half an hour later, finds the bot back on it, and posts a reply
+  // nobody is owed.
+  //
+  // HERE AND NOT BESIDE THE ARM, and the reason is the arm itself. A write below it only runs when
+  // the arm was reached and returned — and the arm is guarded (`routeIngests`: no runtime, switched
+  // off, a test agent with nobody watching) and can FAIL. The passes where this column is ever READ
+  // are exactly the ones where it failed, so a write down there would be null in every case that
+  // matters. (An earlier version of this comment blamed an early return for the gate's half; there
+  // is none — no `return` sits between this block and `ingestUnhandledMessage`, and an out-of-hours
+  // delivery does reach the arm, measured. The positional argument stands on the failure.)
+  //
+  // BOTH HALVES, and since #725 both are also left for the sweep: `settleAwaitsIngest` no longer
+  // asks `!consumed`. The column is what made that possible — it is the fact that stops a replay
+  // from answering over a gate the operator closed — and until it existed the gate's half had to
+  // settle in its own pass, which is the same as losing the message when the arm failed.
+  //
+  // Best-effort and not thrown, like the `routeRemembers` correction below: the delivery's own work
+  // is the ingestion, and taking that away to record an intention would trade a reply nobody asked
+  // for against a memory nobody has. A row that misses this write reads null, which is the reading
+  // every delivery had before the column.
+  if (settlesHere) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId },
+        // THE TWO FACTS AT THE ONE INSTANT BOTH ARE TRUE, and the scope from the very expression
+        // `markHandledAndSettle` settles with, not from a second reading of it.
+        data: {
+          owesMemoryOnly: true,
+          settleScopedToThisDelivery: settleScopedHere,
+        },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that this delivery owes memory only (conv=%s): %s; a replay of it may answer a message nobody is waiting on",
+        n.conversationId === null ? "?" : String(n.conversationId),
+        errMsg(err),
+      );
+    });
+  }
   if (settlesHere && !settleAwaitsIngest) {
     await markHandledAndSettle({ onWatermarkFailure: "settle" });
+  } else if (settlesHere && consumed) {
+    // A RECUSA DE RESPOSTA SAI AGORA, SÓ A LINHA ESPERA (issue #725, review r6). Na metade do PORTÃO
+    // a conversa continua sendo do BOT: quando o expediente abre, ou o gate passa a autorizar, um
+    // flush do debounce coalesce a partir da marca e responde tudo que está acima dela. A marca
+    // carrega o `dispensed` que nomeia esta mensagem, e é ele que a tira daquela rajada — adiá-lo
+    // junto com a liquidação punha a mensagem que o portão calou de volta na fila de resposta, que é
+    // a resposta dupla desta issue chegando pela porta do debounce.
+    //
+    // NÃO vale para a outra metade (`!act`), e a diferença é quem tem a conversa: atrás de uma
+    // PESSOA nenhum flush roda, e ali a marca esperar a ingestão é a escolha medida da #719 — uma
+    // marca acima de uma mensagem que memória nenhuma tem, numa linha que o sweep já não revisita,
+    // é a perda silenciosa. Aqui a linha CONTINUA não terminal, então a memória segue devida e
+    // visível: o que a marca afirma é só que resposta não se deve, e isso é verdade desde o instante
+    // em que o portão consumiu a mensagem.
+    // As duas leituras que a escrita exige, e ela é pulada sem nenhuma delas: sem a linha do espelho
+    // não há conversa para dispensar, e sem id não há mensagem — as mesmas guardas que
+    // `markHandledAndSettle` faz no topo dele.
+    const dispensaConv = mirror.conversationRowId;
+    const dispensaMsg = n.message?.id;
+    await (dispensaConv === null || dispensaMsg == null
+      ? Promise.resolve()
+      : dispenseMessagesFromReply({
+          tenantId: params.tenantId,
+          conversationDbId: dispensaConv,
+          messageIds: [dispensaMsg],
+          base,
+        })
+    ).catch((err) => {
+      // Best-effort e não lançado, como as outras escritas de intenção desta passada: o trabalho da
+      // entrega é a ingestão, e trocá-la por um registro de recusa deixaria a mensagem sem memória.
+      // Uma dispensa que falha devolve a exposição que a base já tinha — o flush do expediente
+      // respondendo a mensagem calada —, e a linha não terminal continua sendo o que cobra a memória.
+      logger.warn(
+        "chatwoot: could not record that a gate refused a reply to this message (conv=%s): %s; a later burst may answer it",
+        convLabel,
+        errMsg(err),
+      );
+    });
   }
 
   // ── A PERSON ANSWERED THE CUSTOMER: end the agent's attendance on this conversation ──
@@ -6520,8 +6708,27 @@ export async function processChatwootDelivery(
   // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
   // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
   // a punha no canal antes de a re-checagem pós-geração recusar o envio.
+  //
+  // E `params.owesMemoryOnly` É A QUARTA (issue #725, review r5), pelo motivo que as outras três já
+  // estabelecem e que só aparece no REPLAY. A parada por posse entra aqui porque um agente em `test`
+  // numa conversa ativada não ingere continuamente, e sem a força a mensagem do cliente não iria a
+  // lugar nenhum — mas no replay o turno é deliberadamente suprimido (é o conserto desta issue),
+  // então `stoodDownUnread` nunca vale ali e esta expressão caía para `routeRemembers`, falso nessa
+  // exata rota. A linha dizia que devia um append e o replay não tinha por onde pagar: nada era
+  // enfileirado, e a recuperação voltava a declarar a perda até gastar o orçamento de retentativa.
+  // A coluna NÃO é uma dica sobre a rota, é o DEVER daquela passada, então ela abre este portão
+  // pelo mesmo direito que a parada que a gravou.
   const routeIngests =
-    rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
+    rt !== null &&
+    (routeRemembers ||
+      handedToObserver ||
+      stoodDownUnread ||
+      // `rt.enabled` SOBREVIVE AO DEVER (review r7). `routeRemembers` carrega duas coisas — a chave
+      // do agente e o modo que ingere continuamente — e o dever gravado só dispensa a SEGUNDA. Se o
+      // operador desliga o agente entre a falha e a varredura, enfileirar assim mesmo é a entrega
+      // declarando sucesso contra a chave que ele acabou de virar: nem o arme nem o worker leem essa
+      // chave. Sem isto a linha fica recuperável até o agente voltar, que é o desfecho certo.
+      (rt.enabled && params.owesMemoryOnly === true));
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
   // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
   // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,
@@ -6557,7 +6764,21 @@ export async function processChatwootDelivery(
       n,
       // `stoodDownUnread` entra pela mesma porta que o observador (issue #688): `act` é o que diz à
       // ingestão "um turno cobriu isto", e aqui nenhum cobriu.
-      act: act && !observing && !handedToObserver && !stoodDownUnread,
+      //
+      // E O REPLAY QUE SÓ DEVE MEMÓRIA ENTRA PELA MESMA PORTA (issue #725, rodada 1 de review), que é
+      // a razão de esta subtração existir e não uma cortesia. O gate do turno lá em cima já o calou,
+      // mas `act` continua verdadeiro, e daqui em diante `act` quer dizer "um turno cobriu esta
+      // mensagem" — o que é falso. Sem isto `unhandledByOwnership` recusa a mensagem, a ingestão
+      // devolve "nothing", e o replay fecha a linha como recuperada sem ter enfileirado append
+      // nenhum: a mensagem sai da lista de perdas e não está em memória nenhuma. MEDIDO: zero jobs
+      // `INGEST_MESSAGE` na conversa, com o desfecho dizendo `recovered`. Trocar a resposta duplicada
+      // por uma perda silenciosa é o pior dos dois (issue #228).
+      act:
+        act &&
+        !observing &&
+        !handedToObserver &&
+        !stoodDownUnread &&
+        params.owesMemoryOnly !== true,
       consumed,
       agentId: rt.agentId,
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
@@ -6807,14 +7028,25 @@ export async function processChatwootDelivery(
   // varredura), o bot responde uma vez a mais numa conversa que já é dele de novo. A mesma exposição
   // existe desde a #711 na parada por posse logo abaixo, pelo mesmo motivo e com a mesma saída.
   //
-  // O que fecha isso é uma intenção "só memória" gravada na linha E honrada pelo replay — e não
-  // basta a coluna: o `replayPosts` do recover-delivery decide a leitura da página, não o POST, que
-  // quem faz é este receptor sendo reexecutado. Precisa de um parâmetro novo no contrato dele.
-  // Issue #725, que carrega os três sites (este, a parada da #711 e o `act && consumed`).
+  // FECHADO NA #725, e a forma é a que este parágrafo previa: uma intenção "só memória" gravada na
+  // linha (`owes_memory_only`) e honrada pelo replay. A coluna sozinha não bastava — o `replayPosts`
+  // do recover-delivery decide a leitura da página, não o POST, que quem faz é este receptor sendo
+  // reexecutado —, então ela chega aqui como `params.owesMemoryOnly` e desarma três coisas: o turno,
+  // o `act` que a ingestão lê como "um turno cobriu isto", e a metade de `settlesHere` que faz a
+  // marca andar. Os três foram medidos na rodada: sem o segundo a linha fecha sem append nenhum, e
+  // sem o terceiro a rajada seguinte coalesce a mensagem e o turno a responde.
   if (settleAwaitsIngest) {
     if (ingested === "failed") {
+      // A CAUSA VAI NA LINHA porque as duas metades chegam aqui, e o operador que lê a entrega
+      // falhada precisa saber qual delas é: uma pessoa na conversa, ou um portão que calou a
+      // mensagem (fora de horário, contato recusado). Sem isso a mensagem descreve um estado que em
+      // metade dos casos não é o que aconteceu.
       throw new Error(
-        `chatwoot: a person owns the conversation (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
+        `chatwoot: ${
+          consumed
+            ? "a gate silenced the customer's message"
+            : "a person owns the conversation"
+        } (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
       );
     }
     await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
@@ -6865,6 +7097,37 @@ export async function processChatwootDelivery(
   // este buraco veio.
   const standDownKept = ingested === "queued";
   if (stoodDownUnread && !standDownKept) {
+    // O QUE ESTA PASSADA DEVIA, GRAVADO ANTES DO THROW QUE A DEIXA PARA A VARREDURA (issue #725,
+    // bateria cega, cenário s2). Este é o TERCEIRO dos três sites que o corpo da issue enumera, e o
+    // bloco `settlesHere` lá acima não o alcança: uma pessoa que assume DURANTE o turno deixa `act`
+    // verdadeiro e `consumed` falso, então nenhuma das três metades daquela condição vale e a linha
+    // ia para a varredura com a coluna nula.
+    //
+    // O que isso custava, medido pelo verificador contra este head: o replay re-derivava a posse de
+    // agora, achava o bot de volta na conversa e rodava o TURNO INTEIRO (uma linha de `generate`
+    // nova). Ele não postou, e é aí que estava a ilusão de que o site estava coberto: quem o parou
+    // foi a #703, que viu a resposta do colega na página e devolveu `answered-elsewhere`. Medida a
+    // MESMA parada sem essa resposta — uma pessoa que assume e ainda não escreveu nada — o replay
+    // posta. O cliente era poupado por outro conserto, não por este.
+    //
+    // Best-effort e não `await` num throw: a linha vai para a varredura de qualquer forma, e uma
+    // falha aqui devolve a leitura que toda entrega tinha antes da coluna. A largura sai da mesma
+    // expressão que a liquidação usa, para os dois fatos serem do mesmo instante.
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId },
+        data: {
+          owesMemoryOnly: true,
+          settleScopedToThisDelivery: settleScopedHere,
+        },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that the stood-down delivery owes memory only (conv=%s): %s; a replay of it may answer a message a person already took over",
+        convLabel,
+        errMsg(err),
+      );
+    });
     throw new Error(
       `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and ${
         ingested === "failed"

@@ -71,6 +71,98 @@ export interface AdvanceHandledWatermarkParams {
   base?: PrismaClient;
 }
 
+// UMA RECUSA DE RESPOSTA SEM MOVER A MARCA (issue #725, review r6 mais o cenário cego s5).
+//
+// As duas escritas de `advanceHandledWatermark` respondem perguntas diferentes, e este arquivo já
+// diz qual é qual: `selectOpenMessages` recebe um `purpose` porque "posso RESPONDER isto?" e "devo
+// LEMBRAR isto?" têm respostas opostas, e uma dispensa fecha a primeira e não a segunda (uma recusa
+// de responder é uma decisão sobre a resposta). A metade do PORTÃO da #725 precisa exatamente disso e
+// só disso:
+//
+//   - a resposta é recusada no instante em que o portão consumiu a mensagem, e precisa ser recusada
+//     ali: a conversa continua sendo do BOT, então o flush que roda quando o expediente abre
+//     coalesce a partir da marca e responderia a mensagem que o operador silenciou;
+//   - a MARCA não pode cobrir essa mensagem, porque a memória dela ainda é devida — a linha fica não
+//     terminal para a varredura, e um flush posterior é o outro caminho que ainda pode pagá-la.
+//     Marca por cima de uma mensagem que memória nenhuma tem é a perda ficando invisível.
+//
+// Escrito como função própria em vez de uma bandeira no `advance`: aquela função devolve "a CAS
+// venceu", e um caminho que não tenta a CAS não tem o que responder.
+export async function dispenseMessagesFromReply(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  messageIds: readonly number[];
+  base?: PrismaClient;
+}): Promise<void> {
+  const wanted = [...new Set(params.messageIds)].sort((a, b) => a - b);
+  if (wanted.length === 0) return;
+  const base = params.base ?? basePrisma;
+  await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    // A LINHA-PAI PRIMEIRO, pelo mesmo motivo que o `advance` documenta acima: o insert no filho toma
+    // `KEY SHARE` na conversa, e `claimReplyBurst` segura `FOR UPDATE` nela. Aqui não existe CAS para
+    // tomar o lock de passagem, então tomá-lo é obrigatório e não uma economia.
+    // `FOR UPDATE` e não um modo mais fraco: é o mesmo que o `advance` toma três dezenas de linhas
+    // abaixo, e o argumento de ordem só se sustenta se os dois caminhos tomarem o pai do mesmo jeito.
+    //
+    // E É A MESMA LEITURA QUE O `claimReplyBurst` FAZ, porque esta escrita tem a mesma pergunta a
+    // responder antes de escrever: de que lado do piso esta mensagem cai.
+    const locked = await db.$queryRaw<
+      Array<{
+        claimed: number | null;
+        handled: number | null;
+        floor: number | null;
+      }>
+    >`SELECT "last_replied_message_id" AS "claimed",
+             "last_handled_message_id" AS "handled",
+             "reply_claim_floor_message_id" AS "floor"
+        FROM "conversations"
+       WHERE "id" = ${params.conversationDbId}
+         FOR UPDATE`;
+    const row = locked[0];
+    // Conversa apagada sob o portão: não há linha-pai para pendurar a dispensa, e explicar isso não
+    // é desta função — é a mesma saída que o `claimReplyBurst` toma.
+    if (row === undefined) return;
+
+    // A DISPENSA ABRE A ERA POR-MENSAGEM QUANDO ELA AINDA NÃO COMEÇOU (review r8), e escrever a
+    // linha sem abrir a era é a versão silenciosa do próprio defeito desta issue.
+    //
+    // Abaixo do piso os escalares decidem sozinhos, "porque lá embaixo linha nenhuma foi escrita e
+    // nenhuma será" — e este é o único escritor de uma linha `DISPENSED` que de propósito NÃO move a
+    // marca, então é o único que pode desmentir essa frase. Desmentida, a linha fica invisível para
+    // `readSelectionState`, que devolve conjuntos vazios com piso nulo, e continua visível para o
+    // índice único do `claimReplyBurst`, que é tudo ou nada: a rajada `[silenciada, nova]` é recusada
+    // INTEIRA como `partial`, o flush reagenda, e a releitura encontra exatamente o mesmo estado. O
+    // cliente fica sem resposta à mensagem NOVA, em laço, até a varredura reparar a entrega antiga.
+    //
+    // O piso é o mesmo `max` que o `claimReplyBurst` calcula, pela mesma razão que ele documenta: um
+    // dos dois escalares carrega pulos deliberados e o outro carrega reivindicações, e mensagem
+    // fechada por qualquer um dos dois está fechada. Assim a era começa na primeira decisão que
+    // escreve linha, seja ela uma reivindicação ou esta, e o invariante do `docs/debounce.md`
+    // continua valendo dos dois lados.
+    const floor = row.floor ?? Math.max(row.handled ?? 0, row.claimed ?? 0);
+    // NADA ABAIXO DO PISO, que é a outra metade do mesmo invariante. Uma redentrega de mensagem da
+    // era velha chega aqui com o portão fechado igual, e a decisão sobre ela já foi tomada pelos
+    // escalares — a linha só criaria de novo o conflito invisível, agora numa conversa que tem piso.
+    const ids = wanted.filter((m) => m > floor);
+    if (ids.length === 0) return;
+    if (row.floor === null) {
+      await db.conversation.update({
+        where: { id: params.conversationDbId },
+        data: { replyClaimFloorMessageId: floor },
+      });
+    }
+    // MESMO INSERT DO `advance`, e o `ON CONFLICT DO NOTHING` é o que faz o primeiro escritor vencer
+    // nas duas ordens: uma mensagem que algum turno já reivindicou continua reivindicada.
+    await db.$executeRaw`
+      INSERT INTO "message_reply_claims"
+             ("tenant_id", "conversation_id", "message_id", "reason")
+      SELECT ${params.tenantId}, ${params.conversationDbId}, m, 'DISPENSED'::"ReplyClaimReason"
+        FROM unnest(${ids}::int[]) AS m
+       ORDER BY m
+          ON CONFLICT ("conversation_id", "message_id") DO NOTHING`;
+  });
+}
+
 // Returns true when this call moved the watermark (the CAS won), false when a concurrent writer
 // already advanced it past `toMessageId`.
 export async function advanceHandledWatermark(

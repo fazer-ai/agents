@@ -275,6 +275,14 @@ export async function recoverStrandedDelivery(
         // written by the INSERT rather than by the claim — which is what makes it readable on the
         // rows this module has to reason about, the ones that stranded before a role was stated.
         bindingGeneration: true,
+        // WHAT THAT PASS OWED (issue #725). True where the receiver decided no turn would run on
+        // this delivery before arming the ingestion that then failed, which is the one fact the
+        // replay cannot re-derive: everything else it rebuilds describes the conversation NOW.
+        owesMemoryOnly: true,
+        // AND THE SCOPE THAT PASS WOULD HAVE SETTLED WITH (review round 2), which is derived from
+        // who held the conversation and therefore the other half of the same problem: rebuilt now,
+        // it answers about ownership as it stands and not about the stand-down being replayed.
+        settleScopedToThisDelivery: true,
       },
     }),
   );
@@ -357,6 +365,13 @@ interface LoadedRow {
   // older build wrote, on a payload that named no inbox, and where the read failed — all three mean
   // "this row cannot say", never generation zero.
   bindingGeneration: number | null;
+  // Whether the pass that stranded owed memory and nothing else (issue #725), as the receiver wrote
+  // it before arming. Null on a row an older build wrote and on one whose pass did run a turn: both
+  // read as "this row cannot say", and the replay falls back to the event and the role.
+  owesMemoryOnly: boolean | null;
+  // How wide that pass would have settled (issue #725, review round 2). Null reads as "this row
+  // cannot say" and leaves the scope to be derived from ownership now, as it always was.
+  settleScopedToThisDelivery: boolean | null;
 }
 
 // PUTTING THE ROW BACK, which is the compensating write both failure roads below take, and the one
@@ -443,10 +458,25 @@ async function runRecovery(params: {
   // read for — has the customer written since, does a newer delivery carry the reply — is a question
   // about a reply, so where none is coming it is neither asked nor paid for.
   //
+  // A THIRD WAY IT CANNOT, and it is the one the row had no way to state (issue #725): the pass that
+  // stranded owed memory and only memory, because a person held the conversation or a gate had
+  // already silenced the message. Unlike the two above it is not a property of the route or of the
+  // event, so it cannot be re-derived here — the conversation this replay reads is the one as it
+  // stands now, and by now it can be back with the bot. Read off the row, where the receiver wrote
+  // it before the arm that failed.
+  //
+  // It closes both directions of the same missing fact. Where the pass owes no reply, nothing is
+  // posted over an attendance a person already gave; and the freshness fence, which refuses a
+  // replay standing behind a newer customer message, is not asked at all — that fence reasons about
+  // a reply arriving late, and a memory-only pass has no reply to be late with, which is the same
+  // argument this file already makes for an observer's route.
+  //
   // Off the ledger's event rather than the rebuild, because the rebuild is two REST reads further
   // down and one of those reads is what this decides.
   const replayPosts =
-    row.routeObserved !== true && row.event === TURN_BEARING_EVENT;
+    row.routeObserved !== true &&
+    row.event === TURN_BEARING_EVENT &&
+    row.owesMemoryOnly !== true;
 
   const conv = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
@@ -1423,6 +1453,13 @@ async function runRecovery(params: {
       // resolves the route against the binding as it stands now, and this is what lets that
       // resolution say whether it describes the same world.
       receiptBindingGeneration: row.bindingGeneration,
+      // What that pass owed (issue #725). The row is the only witness that no turn was going to run
+      // on it, and without this the re-execution decides from ownership as it stands now.
+      owesMemoryOnly: row.owesMemoryOnly === true,
+      // And its settlement scope, passed as the row holds it rather than coerced: `undefined` is
+      // "the row does not say", which is a different instruction from `false`, and collapsing the
+      // two would hand the widest scope to every row an older build wrote.
+      settleScopedToThisDelivery: row.settleScopedToThisDelivery ?? undefined,
       claimFrom: "DEAD",
       onIngest: (o) => {
         ingestOutcome = o;

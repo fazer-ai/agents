@@ -506,7 +506,9 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     );
     markTurnInFlight(graphThreadId);
     const postado: string[] = [];
-    let desfecho: string | null = null;
+    // Num objeto e não num `let`: a atribuição mora numa closure, e o TS mantém o `null` estreitado
+    // no ponto da asserção (medido: `TS2769` dizendo que a string não cabe em `null`).
+    const visto = { desfecho: null as string | null };
     const run = processChatwootDelivery({
       tenantId,
       instanceId,
@@ -518,7 +520,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       // parada medida foi ESTA. Sem ele, um `SsrfError` a meio turno produz `PROCESSING` igual e o
       // teste passaria sobre a parada errada, que foi o que aconteceu na primeira escrita dele.
       onDirectTurn: (r) => {
-        desfecho =
+        visto.desfecho =
           r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
       },
       deps: {
@@ -562,7 +564,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     // depois da espera e parou antes do invoke. (O modelo é CONSTRUÍDO antes dessa releitura, na
     // preparação, então contar construções mediria o passo errado.)
     expect(postado).toEqual([]);
-    expect(desfecho).toBe("taken-over-unread");
+    expect(visto.desfecho).toBe("taken-over-unread");
     // A linha ficou para a varredura, que é o desfecho certo (a mensagem não está na memória de
     // ninguém, porque o arme falhou)...
     expect(row.status).toBe("PROCESSING");
@@ -762,35 +764,72 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(stub.sent).toEqual([[convId, "Estou aqui!"]]);
   });
 
-  // O OUTRO LADO DE `(act && consumed) || !act`, E O QUE ELE REVELOU. Aqui ninguém segura a
-  // conversa: o bot é o dono e quem calou a mensagem foi um PORTÃO, o horário de atendimento, que já
-  // respondeu ao cliente o aviso de ausência. A issue chama este de o pior dos três sítios, porque
-  // uma resposta depois contradiz uma decisão explícita do operador.
+  // O OUTRO LADO DE `(act && consumed) || !act`, E O PIOR DOS TRÊS SÍTIOS SEGUNDO A ISSUE. Aqui
+  // ninguém segura a conversa: o bot é o dono e quem calou a mensagem foi um PORTÃO, o horário de
+  // atendimento, que já respondeu ao cliente o aviso de ausência. Uma resposta depois contradiz uma
+  // decisão explícita do operador.
   //
-  // MEDIDO AQUI: ele não chega a acontecer hoje. A entrega deste ramo NÃO é adiada à varredura, ela
-  // liquida na própria passada (`settleAwaitsIngest` pede `!consumed`), então não vira encalhe, não
-  // vira `DEAD` e replay nenhum a alcança. É o que o comentário do receptor já dizia ao deixar o
-  // sítio irmão de fora do adiamento da #721, e é a metade da issue que não procede como defeito
-  // atual: é um risco de quem for adiar esse ramo depois.
-  //
-  // A MARCA É ESCRITA MESMO ASSIM, e é isso que este caso prende: ela descreve o que a PASSADA
-  // devia, não o que aconteceu com a linha. Restringi-la ao ramo da posse humana passaria em toda a
-  // suíte de hoje e deixaria o adiamento futuro deste ramo sem a única coisa que impede a resposta
-  // duplicada.
-  test("a passada que um portão silenciou também diz que só devia memória", async () => {
+  // ERA ESTE RAMO QUE A COLUNA NÃO ALCANÇAVA, e não porque ela não fosse gravada: a entrega
+  // liquidava na própria passada (`settleAwaitsIngest` pedia `!consumed`), e `PROCESSED` é o estado
+  // que nada revisita — a coluna era escrita e nunca lida, com a mensagem do cliente sumindo do mesmo
+  // jeito. Com o adiamento valendo nas duas metades, o arme que falha deixa a linha para a varredura,
+  // e é a varredura que faz a coluna valer alguma coisa.
+  test("o portão que silenciou deixa a linha para a varredura, devendo só memória", async () => {
     const convId = 9405;
     const texto = "vocês abrem sábado?";
 
-    const { status, owesMemoryOnly } = await strandOn(
+    const { rowId, messageId, status, owesMemoryOnly } = await strandOn(
       convId,
       texto,
       heldByBot(convId, INBOX_CLOSED),
     );
 
-    // A linha fecha na própria passada: este ramo não vai para a varredura.
-    expect(status).toBe("PROCESSED");
-    // E ainda assim diz o que devia.
+    // A linha NÃO é terminal: é o estado que a varredura revisita.
+    expect(status).toBe("PROCESSING");
+    // E ela diz o que aquela passada devia.
     expect(owesMemoryOnly).toBe(true);
+    // E A MARCA NÃO PASSOU POR CIMA DA MENSAGEM, que é a outra metade do trio que o corpo da issue
+    // mede: marca acima de uma mensagem que memória nenhuma tem é a perda ficando invisível.
+    const marca = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastHandledMessageId: true },
+    });
+    expect(marca.lastHandledMessageId ?? 0).toBeLessThan(messageId);
+
+    // E O REPLAY FECHA A PERDA SEM RESPONDER: é o desfecho inteiro que a issue pede, e o único
+    // caminho em que a coluna é lida.
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "DEAD" },
+    });
+    const stub = stubChatwoot(convId, messageId, texto);
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Abrimos das 9 às 13!"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+    expect(outcome).toBe("recovered");
+    // O cliente NÃO recebe a resposta que o operador silenciou...
+    expect(stub.sent).toEqual([]);
+    // ...e a mensagem dele alcança a memória, que é o que aquela passada devia.
+    const jobs = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { contains: `:ci:${CONTACT_INBOX_BASE + convId}:` },
+      },
+      select: { dedupeKey: true },
+    });
+    expect(jobs.map((j) => j.dedupeKey)).toEqual([
+      `ingest:${tenantId}:${instanceId}:ci:${CONTACT_INBOX_BASE + convId}:${messageId}`,
+    ]);
   });
 
   // O ESCOPO DA LIQUIDAÇÃO É UM FATO DAQUELE INSTANTE, E NÃO SE RE-DERIVA (rodada 2 de review).

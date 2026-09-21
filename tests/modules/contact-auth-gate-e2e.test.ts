@@ -223,7 +223,7 @@ async function deliverCustomerMessage(params: {
   // eles nunca escreveram porque não precisavam — o autorizado, por exemplo, passaria igual se o
   // processamento lançasse depois de mandar a resposta e antes de liquidar a entrega (review r2).
   expectFailure?: boolean;
-}): Promise<{ erro: string | null; status: string }> {
+}): Promise<{ erro: string | null; status: string; deliveryRowId: bigint }> {
   seq += 1;
   const n = normalizeChatwootEvent({
     event: "message_created",
@@ -289,7 +289,7 @@ async function deliverCustomerMessage(params: {
     where: { id: delivery.id },
     select: { status: true },
   });
-  return { erro, status: linha.status };
+  return { erro, status: linha.status, deliveryRowId: delivery.id };
 }
 
 async function flowRows(convId: number) {
@@ -646,23 +646,22 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     );
   });
 
-  // A LACUNA QUE A #719 MEDIU E NÃO FECHOU, TRAVADA AQUI PARA NÃO SUMIR DE VISTA.
+  // A LACUNA QUE A #719 MEDIU E NÃO FECHOU, FECHADA NA #725 — e este teste é o mesmo cenário com a
+  // asserção virada.
   //
   // A recusa também é uma mensagem de cliente que turno nenhum responde e que só a ingestão contínua
-  // guarda. O portão consome a entrega, a marca avança e a linha é liquidada, tudo ANTES de a
-  // ingestão rodar — então com o enfileiramento falhando a mensagem que o cliente mandou enquanto
-  // estava bloqueado não fica em lugar nenhum. É exatamente o defeito da #719, no site irmão do ramo
-  // que ela nomeia, e é o que este teste MEDE: `erro` nulo, linha terminal, marca por cima.
+  // guarda. O portão consome a entrega, e ATÉ AQUI a marca avançava e a linha era liquidada antes de
+  // a ingestão rodar — então com o enfileiramento falhando a mensagem que o cliente mandou enquanto
+  // estava bloqueado não ficava em lugar nenhum. O que impedia a saída da #719 (deixar a linha em
+  // `PROCESSING` para a varredura) era o replay: a varredura REPLICA A ENTREGA PELOS PORTÕES, e nada
+  // na linha dizia "um portão já consumiu esta mensagem", então quando o portão abrisse o replay
+  // responderia uma mensagem que o operador silenciou de propósito.
   //
-  // Ele trava a perda em vez de consertá-la, e o motivo está na saída que a #719 escolheu: a entrega
-  // fica em `PROCESSING` para a varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES. Nada na
-  // linha diz "um portão já consumiu esta mensagem", então quando o portão abre — o expediente
-  // começa, o contato manda o código — o replay roda o turno e responde uma mensagem que o operador
-  // tinha silenciado de propósito, depois de o cliente já ter recebido o aviso. Fechar este site
-  // exige uma intenção "só memória" gravada na linha e honrada pelo replay, que é outro desenho.
-  //
-  // Quando esse desenho chegar, este teste vira vermelho, e é para ser: a asserção é a perda.
-  test("KNOWN GAP: a refused customer's message is lost when its ingestion enqueue fails", async () => {
+  // A #725 gravou essa intenção na linha (`owes_memory_only`) e a fez ser honrada pelo replay, o que
+  // liberou a saída para esta metade também. O que este teste mede agora é o contrário do que ele
+  // media: a linha NÃO é terminal, a marca NÃO passou por cima da mensagem, e a entrega continua
+  // devendo o append que a varredura vai cobrar.
+  test("a refused customer's message is left for the sweep when its ingestion enqueue fails", async () => {
     const convId = 9399;
     await seedConversation(convId, inboxFullDbId);
     const cw = stubChatwoot();
@@ -682,7 +681,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
         },
       },
     }) as unknown as PrismaClient;
-    const { erro, status } = await deliverCustomerMessage({
+    const { erro, status, deliveryRowId } = await deliverCustomerMessage({
       convId,
       chatwootInboxId: INBOX_FULL,
       senderId: 899,
@@ -690,16 +689,28 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       fetchImpl: auth.fetchImpl,
       makeClient: cw.makeClient,
       base: semFila,
+      // A passada passa a LANÇAR, que é o que deixa a linha em `PROCESSING`; o helper só devolve o
+      // erro em vez de propagá-lo quando a chamadora diz que a falha é o esperado.
+      expectFailure: true,
     });
 
-    // Nada lançou, a linha é terminal e a marca cobre a mensagem: os três fatos da #719, aqui.
-    expect(erro).toBe(null);
-    expect(status).toBe("PROCESSED");
+    // O arme falhou, então a passada FALHA em vez de fechar em silêncio: é o que deixa a linha onde
+    // a varredura a encontra.
+    expect(erro).not.toBe(null);
+    expect(status).toBe("PROCESSING");
+    // E A MARCA NÃO PASSOU POR CIMA DELA. Marca acima de uma mensagem que memória nenhuma tem é a
+    // perda ficando invisível, que era o terceiro dos três fatos que este teste travava.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { lastHandledMessageId: true },
     });
-    expect(conv.lastHandledMessageId).toBe(7000 + seq);
+    expect(conv.lastHandledMessageId ?? 0).toBeLessThan(7000 + seq);
+    // E A LINHA DIZ O QUE ELA DEVE, que é o que impede o replay de responder por cima do portão.
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: deliveryRowId },
+      select: { owesMemoryOnly: true },
+    });
+    expect(row.owesMemoryOnly).toBe(true);
   });
 
   test("authorized: the turn runs and the model's reply reaches the customer", async () => {

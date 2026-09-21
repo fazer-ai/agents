@@ -6454,7 +6454,15 @@ export async function processChatwootDelivery(
     isNewIncoming &&
     (!act || consumed || params.owesMemoryOnly === true) &&
     !observerHolds;
-  const settleAwaitsIngest = settlesHere && !consumed && routeRemembers;
+  // E ELA ESPERA A INGESTÃO NAS DUAS METADES (issue #725). O `!consumed` que estava aqui era o que
+  // deixava a metade do PORTÃO fora da varredura: fora de horário, ou com o contato recusado, a
+  // linha fechava como `PROCESSED` mesmo com o arme falhando, e `PROCESSED` é o estado que nada
+  // revisita — então a coluna `owes_memory_only` era gravada e nunca lida, e a mensagem do cliente
+  // sumia exatamente como o corpo da issue mede. A #719 já tinha a saída certa para a metade dela
+  // (adiar a liquidação e lançar quando o arme falha, deixando a linha em `PROCESSING`), e o que
+  // impedia de usá-la aqui era o risco do replay responder duas vezes — que é justamente o que a
+  // coluna desta PR remove. Com ele removido, a saída passa a valer nas duas.
+  const settleAwaitsIngest = settlesHere && routeRemembers;
   // WHAT THIS PASS OWES, RECORDED WHERE IT IS DECIDED AND BEFORE THE ARM THAT CAN FAIL (issue #725).
   //
   // `settlesHere` is already this file's own answer to "no turn ran on this delivery": a person
@@ -6464,12 +6472,18 @@ export async function processChatwootDelivery(
   // the conversation as it stands half an hour later, finds the bot back on it, and posts a reply
   // nobody is owed.
   //
-  // HERE AND NOT BESIDE THE ARM, which is where this started: a message the gate CONSUMED returns
-  // before reaching the arm, so a write down there missed that half entirely (MEASURED: the row of
-  // an out-of-hours delivery came back with the column null). Only the human-owned half is left for
-  // the sweep TODAY, because `settleAwaitsIngest` asks `!consumed` — but the column describes what
-  // the PASS owed, not what became of the row, and writing both halves is what keeps the fact true
-  // if that branch is ever deferred too. Which is exactly the repair the sibling site needs.
+  // HERE AND NOT BESIDE THE ARM, and the reason is the arm itself. A write below it only runs when
+  // the arm was reached and returned — and the arm is guarded (`routeIngests`: no runtime, switched
+  // off, a test agent with nobody watching) and can FAIL. The passes where this column is ever READ
+  // are exactly the ones where it failed, so a write down there would be null in every case that
+  // matters. (An earlier version of this comment blamed an early return for the gate's half; there
+  // is none — no `return` sits between this block and `ingestUnhandledMessage`, and an out-of-hours
+  // delivery does reach the arm, measured. The positional argument stands on the failure.)
+  //
+  // BOTH HALVES, and since #725 both are also left for the sweep: `settleAwaitsIngest` no longer
+  // asks `!consumed`. The column is what made that possible — it is the fact that stops a replay
+  // from answering over a gate the operator closed — and until it existed the gate's half had to
+  // settle in its own pass, which is the same as losing the message when the arm failed.
   //
   // Best-effort and not thrown, like the `routeRemembers` correction below: the delivery's own work
   // is the ingestion, and taking that away to record an intention would trade a reply nobody asked
@@ -6948,8 +6962,16 @@ export async function processChatwootDelivery(
   // sem o terceiro a rajada seguinte coalesce a mensagem e o turno a responde.
   if (settleAwaitsIngest) {
     if (ingested === "failed") {
+      // A CAUSA VAI NA LINHA porque as duas metades chegam aqui, e o operador que lê a entrega
+      // falhada precisa saber qual delas é: uma pessoa na conversa, ou um portão que calou a
+      // mensagem (fora de horário, contato recusado). Sem isso a mensagem descreve um estado que em
+      // metade dos casos não é o que aconteceu.
       throw new Error(
-        `chatwoot: a person owns the conversation (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
+        `chatwoot: ${
+          consumed
+            ? "a gate silenced the customer's message"
+            : "a person owns the conversation"
+        } (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
       );
     }
     await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });

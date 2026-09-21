@@ -5048,7 +5048,7 @@
     "/v1/conversations/{id}/reengage": {
       "post": {
         "summary": "Reengage conversation",
-        "description": "Triggers a proactive follow-up turn on the conversation and reports the outcome.",
+        "description": "Triggers a proactive follow-up turn on the conversation and reports the outcome. Requires TENANT_ADMIN or above.",
         "tags": [
           "Conversations"
         ],
@@ -5103,6 +5103,28 @@
               "application/json": {
                 "schema": {
                   "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
                   "type": "object",
                   "required": [
                     "error"

@@ -120,12 +120,17 @@ describe("conversation actions report their outcome", () => {
     expect(SRC.slice(returnGate, returnCall)).toContain('!== "resolved"');
     expect(SRC.slice(returnGate, returnCall)).toContain("heldByOther");
 
-    // "Respond now" asks the agent to speak, so it asks the same question.
-    const reengageGate = SRC.indexOf("{offerReengage &&");
+    // "Respond now" asks the agent to speak, so it asks the same question. Read from the gate to
+    // the LABEL rather than over a fixed window: the gate gained a clause in issue #753 (the rank
+    // the route now asks for) and a character count broke on it.
+    const reengageGate = SRC.indexOf("{mayReengage &&");
     expect(reengageGate).toBeGreaterThan(-1);
-    expect(SRC.slice(reengageGate, reengageGate + 120)).toContain(
-      "!heldByOther",
+    const reengageLabel = SRC.indexOf(
+      't("conversation.respondNow"',
+      reengageGate,
     );
+    expect(reengageLabel).toBeGreaterThan(reengageGate);
+    expect(SRC.slice(reengageGate, reengageLabel)).toContain("!heldByOther");
 
     // None of the three settles for the browser-side approximation. `isHuman` still exists for the
     // header's assignee line, so its presence in the file is not the thing being forbidden — its
@@ -133,7 +138,7 @@ describe("conversation actions report their outcome", () => {
     for (const gate of [
       SRC.slice(handoffGate, handoff),
       SRC.slice(returnGate, returnCall),
-      SRC.slice(reengageGate, reengageGate + 120),
+      SRC.slice(reengageGate, reengageLabel),
     ]) {
       expect(gate).not.toContain("isHuman");
     }
@@ -225,8 +230,13 @@ describe("conversation actions report their outcome", () => {
     expect(reopenGate).toBeGreaterThan(-1);
     expect(SRC.slice(reopenGate, reopenCall)).toContain("responderAnswers");
 
-    const reengageGate = SRC.indexOf("{offerReengage &&");
-    expect(SRC.slice(reengageGate, reengageGate + 160)).toContain(
+    const reengageGate = SRC.indexOf("{mayReengage &&");
+    expect(reengageGate).toBeGreaterThan(-1);
+    const reengageLabel = SRC.indexOf(
+      't("conversation.respondNow"',
+      reengageGate,
+    );
+    expect(SRC.slice(reengageGate, reengageLabel)).toContain(
       "responderAnswers",
     );
 

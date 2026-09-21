@@ -42,6 +42,17 @@ function statementsOf(sql: string): string {
     .join("\n");
 }
 
+// AND A STRING LITERAL IS NOT A STATEMENT, which stopped being a nicety the moment these guards
+// started printing a runbook: this file's own `RAISE EXCEPTION` names `CREATE INDEX CONCURRENTLY`
+// (to say that an in-flight one reads like a corpse) and `REINDEX INDEX CONCURRENTLY … on each`.
+// Read as code, that is a concurrent build `ON` a table called `each`, so the sweep reported this
+// very guard as an unguarded build and the "file of its own" check called it a build file. Strip the
+// quoted spans before asking what the file EXECUTES. `''` is Postgres's escape for a quote inside a
+// literal, so a doubled quote continues the span rather than closing it.
+function codeOf(sql: string): string {
+  return statementsOf(sql).replace(/'(?:[^']|'')*'/g, "''");
+}
+
 // THE SWEEP, as a function over files rather than over the directory, so the cases that do not exist
 // in this tree can still be tested: a guard that runs BEFORE its build, and a build whose `ON` sits
 // on the next line. Both of those are how a sweep like this passes while the hole it exists to close
@@ -58,7 +69,7 @@ function sweep(files: File[]): {
   )) {
     // Anything may sit between the index name and its `ON`, INCLUDING A NEWLINE: two of the three
     // files in this tree are written that way, so a per-line pattern reads one build and misses two.
-    for (const m of statementsOf(sql).matchAll(
+    for (const m of codeOf(sql).matchAll(
       /CREATE\s+INDEX\s+CONCURRENTLY[\s\S]*?\bON\s+"?([a-z0-9_]+)"?/gi,
     )) {
       builds.set(m[1] as string, name); // sorted, so the last write is the last build
@@ -162,6 +173,18 @@ describe("the concurrent-index guard", () => {
         { name: "3_build", sql: build("t") },
       ]).unguarded,
     ).toEqual(["t (last built in 3_build, asserted by 2_guard)"]);
+    // A QUOTED RUNBOOK IS NOT A BUILD EITHER, and this is the case that actually bit: the guard's own
+    // `RAISE EXCEPTION` tells the operator that an in-flight `CREATE INDEX CONCURRENTLY` reads like a
+    // corpse, and to run `REINDEX INDEX CONCURRENTLY … on each` index. Read as code, that second
+    // clause is a concurrent build `ON` a table named `each`.
+    expect(
+      sweep([
+        {
+          name: "1_guard",
+          sql: `DO $$\nBEGIN\n  RAISE EXCEPTION 'an in-flight CREATE INDEX CONCURRENTLY on "conversations" reads the same; run REINDEX INDEX CONCURRENTLY on each dead index';\nEND $$;`,
+        },
+      ]).builds.size,
+    ).toBe(0);
     // Prose is not a build. Every one of these files explains the rule above its statements, and the
     // sweep used to be fed the comments along with them.
     expect(
@@ -177,8 +200,9 @@ describe("the concurrent-index guard", () => {
   test("the assertion lives in a file of its own, and asks about the table", () => {
     const sql = readFileSync(ASSERT_FILE, "utf8");
     const statements = statementsOf(sql);
-    // Its own file, so it can never share a transaction with a concurrent build.
-    expect(statements).not.toMatch(/CREATE\s+INDEX/i);
+    // Its own file, so it can never share a transaction with a concurrent build. Asked of the CODE,
+    // because the message inside it quotes `CREATE INDEX CONCURRENTLY` on purpose.
+    expect(codeOf(sql)).not.toMatch(/CREATE\s+INDEX/i);
     expect(statements).toContain("indisvalid");
     expect(statements).toContain("'conversations'");
     // The exception has to tell an operator what to do: the fix is a command, and the deploy is
@@ -190,6 +214,16 @@ describe("the concurrent-index guard", () => {
     // so in as many words, because "drop it" is what an operator reaches for by default.
     expect(statements).toContain("REINDEX INDEX CONCURRENTLY");
     expect(statements).toMatch(/NOT a DROP/);
+    // A BUILD IN FLIGHT READS EXACTLY LIKE A CORPSE: Postgres creates the index invalid and
+    // validates it afterwards, so a `CREATE INDEX CONCURRENTLY` running right now is
+    // `indisvalid = false` for its whole duration and this guard stops the deploy on it. Keeping
+    // that refusal is right; telling the operator to reindex somebody else's live build is not.
+    // `indisready` does not separate the two (measured: a build killed during its first scan leaves
+    // `false/false`, the pair a live build shows), so the message names the one thing that does.
+    expect(statements).toContain("pg_stat_activity");
+    // ...and the REINDEX's precondition, which is the clause this message shipped one round without:
+    // the index has to be BUILDABLE.
+    expect(statements).toMatch(/UNIQUE index/);
     // The operator also needs this file's own name, for the `resolve` that unblocks the deploy.
     expect(statements).toContain(
       "resolve --rolled-back 20260921120000_assert_conversation_indexes_valid",
@@ -254,6 +288,63 @@ describe("the concurrent-index guard", () => {
       // the message being useful.
       await suDb.query(`DROP INDEX "${PROBE}"`);
       await suDb.query(guard);
+    });
+
+    test("a REINDEX cannot save a unique index whose data violates it", async () => {
+      // WHY THE MESSAGE CARRIES THAT CLAUSE, and it is here because the first version of this round
+      // asserted the opposite: it chained "a duplicate-key build leaves `indisvalid = false`" to
+      // "REINDEX takes it back to true" as though they were one measurement, and the second half had
+      // been measured only after deleting the duplicate. On the index that failure leaves, the
+      // REINDEX fails the same way AND adds a second invalid index (`..._ccnew`), so an operator who
+      // followed the sentence would end with a worse catalog than they started with.
+      //
+      // On a scratch table of its own: the guard asks about `conversations`, so this proves the
+      // Postgres behaviour the clause is about without forging anything on the real table.
+      const T = "conversations_unique_reindex_probe";
+      try {
+        await suDb.query(`DROP TABLE IF EXISTS "${T}"`);
+        await suDb.query(`CREATE TABLE "${T}" (id int, v int)`);
+        await suDb.query(`INSERT INTO "${T}" VALUES (1, 7), (2, 7)`);
+        await expect(
+          suDb.query(
+            `CREATE UNIQUE INDEX CONCURRENTLY "${T}_v_idx" ON "${T}" (v)`,
+          ),
+          // `pg` puts Postgres's DETAIL ("Key (v)=(7) is duplicated") on `err.detail`, not on
+          // `err.message`, so matching the word psql prints matches nothing here.
+        ).rejects.toThrow(/could not create unique index/);
+        const dead = async () => {
+          const r = await suDb.query<{ n: string }>(
+            `SELECT c.relname AS n
+               FROM pg_class c
+               JOIN pg_index i ON i.indexrelid = c.oid
+               JOIN pg_class t ON t.oid = i.indrelid
+              WHERE t.relname = $1 AND NOT i.indisvalid
+              ORDER BY c.relname`,
+            [T],
+          );
+          return r.rows.map((x) => x.n);
+        };
+        expect(await dead()).toEqual([`${T}_v_idx`]);
+
+        // The command the message names, on the one index it cannot fix.
+        await expect(
+          suDb.query(`REINDEX INDEX CONCURRENTLY "${T}_v_idx"`),
+        ).rejects.toThrow(/could not create unique index/);
+        // ...and it left a SECOND corpse, which is the part worth a test rather than a sentence.
+        expect(await dead()).toEqual([`${T}_v_idx`, `${T}_v_idx_ccnew`]);
+
+        // The index of this issue is non-unique, where the precondition always holds, and the arm
+        // below measures that path on the real one.
+        const real = await suDb.query<{ uniq: boolean }>(
+          `SELECT i.indisunique AS uniq
+             FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = $1`,
+          [INDEX],
+        );
+        expect(real.rows[0]?.uniq).toBe(false);
+      } finally {
+        await suDb.query(`DROP TABLE IF EXISTS "${T}"`);
+      }
     });
 
     test("the recovery the message names gives the index back, not just a green deploy", async () => {

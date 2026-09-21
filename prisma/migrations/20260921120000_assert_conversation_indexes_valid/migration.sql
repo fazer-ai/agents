@@ -33,11 +33,28 @@
 -- ends with the table carrying NO index at all: behind the `--applied` door the build file is
 -- already recorded as applied, so `migrate deploy` never runs it again, and the plan goes back to
 -- the same scan with the deploy green and nothing left asking. `REINDEX INDEX CONCURRENTLY` instead
--- revalidates in place and keeps the definition, so the recovery ends where the build meant to
--- (measured in a scratch database: a genuinely failed concurrent build leaves `indisvalid = false`,
--- and REINDEX takes it back to true with the same `pg_get_indexdef`). The siblings cannot be
--- corrected in place: an applied migration is checksummed, and editing the file makes `migrate
--- deploy` refuse the database it already ran on.
+-- revalidates in place and keeps the definition, so the recovery ends where the build meant to.
+-- Measured on a genuinely interrupted build (a `CREATE INDEX CONCURRENTLY` over 250k rows whose
+-- backend was terminated mid-scan): the REINDEX takes it back to `indisvalid = true` with the same
+-- `pg_get_indexdef`. The siblings cannot be corrected in place: an applied migration is checksummed,
+-- and editing the file makes `migrate deploy` refuse the database it already ran on.
+--
+-- THE REINDEX HAS ONE PRECONDITION, and it is in the message because leaving it out was a false
+-- claim this file made for one round: the index has to be BUILDABLE. Every concurrent build in this
+-- tree is non-unique, where that is always true. A UNIQUE index whose data violates uniqueness is
+-- the exception, and the REINDEX there fails exactly the way the build did AND leaves a second
+-- invalid index behind (measured: `u_v_idx` plus `u_v_idx_ccnew`, both `indisvalid = false`, after
+-- `REINDEX INDEX CONCURRENTLY` on an index left by a duplicate-key failure). That case needs the
+-- duplicate data resolved first, or the index dropped on purpose.
+--
+-- AND A BUILD IN FLIGHT READS EXACTLY LIKE A CORPSE. Postgres creates the index invalid and
+-- validates it afterwards, so a `CREATE INDEX CONCURRENTLY` running RIGHT NOW is `indisvalid =
+-- false` for its whole duration, and this file stops the deploy on it. That is the conservative
+-- answer and it is the one to keep: guessing "somebody is probably building it" is how a real corpse
+-- ships. `indisready` does not separate the two, which was measured rather than assumed: a build
+-- killed during its first scan leaves `false/false`, the same pair a live build shows. The operator's
+-- discriminator is `pg_stat_activity`, and the message names it, because reindexing another
+-- session's live build is the wrong move.
 --
 -- AND WHY IT ONLY REPORTS. Repairing here would need the dead index's NAME, which is not known when
 -- this file is written, so it would take a `DO $$ … EXECUTE format('REINDEX INDEX CONCURRENTLY %I',
@@ -64,7 +81,7 @@ BEGIN
    WHERE t.relname = 'conversations' AND NOT i.indisvalid;
   IF dead IS NOT NULL THEN
     RAISE EXCEPTION
-      'conversations carries invalid index(es): %. A concurrent build was interrupted: the index is there and Postgres refuses to use it. Run REINDEX INDEX CONCURRENTLY on each one, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all), then prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid and re-deploy.',
+      'conversations carries invalid index(es): %. Either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW: an in-flight CREATE INDEX CONCURRENTLY reads exactly the same way. Check first: SELECT pid, query FROM pg_stat_activity WHERE state = ''active'' AND query ILIKE ''create index%%''. If a build is in flight, let it finish and re-deploy, and do NOT reindex it. Otherwise run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all); if a REINDEX fails on a UNIQUE index, its data violates uniqueness and that has to be resolved first. Then prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid and re-deploy.',
       dead;
   END IF;
 END $$;

@@ -6238,11 +6238,16 @@ export async function processChatwootDelivery(
   // test agent; a test agent's gate that consumed the message ran neither, so the ingestion below
   // would remember an audio as its attachment marker and never its transcription. Idempotent — a
   // text already stashed on the event is never re-transcribed — and asked only where no pass ran.
+  //
+  // E O REPLAY SÓ-MEMÓRIA ENTRA AQUI PELA MESMA PORTA (issue #725, review r7). Ele suprime o turno de
+  // propósito, e a passada de mídia de um agente em modo teste mora justamente lá dentro (a de cima
+  // roda só para quem ingere continuamente). Sem isto o replay enfileira a ingestão de um áudio sem
+  // a transcrição que a mensagem já carrega, e a memória guarda o marcador "áudio não audível" —
+  // com a entrega fechando como recuperada, que é a perda silenciosa com outra roupa.
   if (
-    handedToObserver &&
-    consumed &&
     rt !== null &&
-    !(rt.enabled && ingestsContinuously(rt.mode))
+    !(rt.enabled && ingestsContinuously(rt.mode)) &&
+    ((handedToObserver && consumed) || params.owesMemoryOnly === true)
   ) {
     await runEagerMedia(params.tenantId, params.instanceId, n, base, {
       conversationId: mirror.conversationRowId,
@@ -6718,7 +6723,12 @@ export async function processChatwootDelivery(
     (routeRemembers ||
       handedToObserver ||
       stoodDownUnread ||
-      params.owesMemoryOnly === true);
+      // `rt.enabled` SOBREVIVE AO DEVER (review r7). `routeRemembers` carrega duas coisas — a chave
+      // do agente e o modo que ingere continuamente — e o dever gravado só dispensa a SEGUNDA. Se o
+      // operador desliga o agente entre a falha e a varredura, enfileirar assim mesmo é a entrega
+      // declarando sucesso contra a chave que ele acabou de virar: nem o arme nem o worker leem essa
+      // chave. Sem isto a linha fica recuperável até o agente voltar, que é o desfecho certo.
+      (rt.enabled && params.owesMemoryOnly === true));
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
   // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
   // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,

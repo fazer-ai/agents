@@ -3,7 +3,7 @@ import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -848,6 +848,239 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(row.owesMemoryOnly).toBe(true);
     expect(row.status).not.toBe("PROCESSED");
     expect(marca.lastHandledMessageId ?? 0).toBeLessThan(messageId);
+  });
+
+  // OS DOIS ACHADOS DA RODADA 7, e os dois são consequência de o dever abrir o portão da ingestão.
+  // O primeiro: a preparação de mídia de um agente em modo teste mora DENTRO do bloco do turno, que
+  // o replay suprime de propósito — então o replay enfileirava a ingestão de um áudio sem a
+  // transcrição que a mensagem já carrega, e a memória guardava o marcador "áudio não audível", com
+  // a entrega fechando como recuperada.
+  test("no modo teste o replay prepara a mídia antes de enfileirar, senão a memória guarda o marcador", async () => {
+    const convId = 9413;
+    const transcricao = "queria remarcar para sexta de manhã";
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        contactInboxId: CONTACT_INBOX_BASE + convId,
+        inboxId: inboxTestDbId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        testActivatedAt: new Date(),
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      // O ÁUDIO JÁ CHEGA TRANSCRITO, e é isso que torna o teste barato e exato: nenhum provedor de
+      // STT é chamado (a passada de mídia é idempotente e nunca re-transcreve um texto já guardado),
+      // então o que ela faz aqui é só COPIAR a transcrição para o campo que o renderizador lê. Sem a
+      // passada, a mesma mensagem vira o marcador.
+      attachments: [
+        {
+          id: 900 + messageId,
+          file_type: "audio",
+          data_url: "https://chat.example.com/audio.ogg",
+          transcribed_text: transcricao,
+        },
+      ],
+      conversation: heldByBot(convId, INBOX_TEST),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `rom-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      CONTACT_INBOX_BASE + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: BOT_ID,
+      normalized: n,
+      base: semFila(),
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+      },
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    expect(
+      (
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: convId },
+          data: { assigneeType: "User", assigneeId: 5, status: "open" },
+        })
+      ).count,
+    ).toBe(1);
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: delivery.id },
+      data: { status: "DEAD" },
+    });
+    // O STUB PRECISA DEVOLVER O ÁUDIO, e não é detalhe: o replay RECONSTRÓI a mensagem lendo a página
+    // do Chatwoot, então uma página sem o anexo devolve uma mensagem vazia e a entrega é pulada antes
+    // de chegar ao ponto que este teste mede (foi o que aconteceu na primeira escrita dele).
+    const enviadas: string[] = [];
+    const clienteAudio = {
+      getConversation: async (conversationId: number) => ({
+        id: conversationId,
+        status: "pending",
+        inbox_id: INBOX_TEST,
+        last_activity_at: SENT_AT,
+        timestamp: SENT_AT,
+        meta: { assignee: null, sender: { id: 77, name: "Cliente" } },
+      }),
+      getMessages: async () => ({
+        payload: [
+          {
+            id: messageId,
+            content: "",
+            message_type: 0,
+            private: false,
+            inbox_id: INBOX_TEST,
+            created_at: SENT_AT,
+            sender: { id: 77, name: "Cliente", type: "contact" },
+            attachments: [
+              {
+                id: 900 + messageId,
+                file_type: "audio",
+                data_url: "https://chat.example.com/audio.ogg",
+                transcribed_text: transcricao,
+              },
+            ],
+          },
+        ],
+      }),
+      sendMessage: async (_id: number, text: string) => {
+        enviadas.push(text);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+      sendPrivateNote: async () => ({}),
+      listLabels: async () => [],
+      listCustomAttributeDefinitions: async () => [],
+      kanbanTaskForConversation: async () => null,
+    } as unknown as ChatwootClient;
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: delivery.id,
+      base: appDb,
+      deps: {
+        makeClient: async () => clienteAudio,
+        makeModel: () => new FakeListChatModel({ responses: ["Claro!"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+    expect(enviadas).toEqual([]);
+
+    // O QUE A MEMÓRIA VAI GUARDAR: o texto vai cifrado em `payload_secret`, e é ele que o append lê.
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { contains: `:ci:${CONTACT_INBOX_BASE + convId}:` },
+      },
+      select: { payloadSecret: true },
+    });
+    const texto = decryptJson<string>(job.payloadSecret ?? "");
+    expect(texto).toContain(transcricao);
+    expect(texto).not.toContain("áudio não audível");
+  });
+
+  // O SEGUNDO ACHADO DA RODADA 7: `routeRemembers` carrega DUAS coisas, a chave do agente e o modo
+  // que ingere continuamente, e o dever gravado só dispensa a segunda. Se o operador desliga o
+  // agente entre a falha e a varredura, enfileirar assim mesmo é a entrega declarando sucesso contra
+  // a chave que ele acabou de virar — nem o arme nem o worker a leem.
+  test("o dever não passa por cima do agente desligado: a linha fica recuperável", async () => {
+    const convId = 9414;
+    const texto = "ainda dá para hoje?";
+    const { rowId, messageId, status, owesMemoryOnly } = await strandOn(
+      convId,
+      texto,
+      heldByHuman(convId),
+    );
+    expect(status).toBe("PROCESSING");
+    expect(owesMemoryOnly).toBe(true);
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "DEAD" },
+    });
+    // O OPERADOR DESLIGA O AGENTE entre a falha e a varredura.
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: INBOX_ID },
+      select: { agentId: true },
+    });
+    await suDb.agent.update({
+      where: { id: inbox.agentId ?? 0n },
+      data: { enabled: false },
+    });
+    try {
+      const stub = stubChatwoot(convId, messageId, texto);
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: {
+          makeClient: stub.makeClient,
+          makeModel: () => new FakeListChatModel({ responses: ["Dá sim!"] }),
+          checkpointer: new MemorySaver(),
+          sleep: async () => {},
+        },
+      });
+      // Nada foi dito, nada foi enfileirado, e a linha NÃO fecha: ela volta a ser recuperável, e é
+      // isso que a deixa esperando o agente voltar em vez de sumir com a mensagem.
+      expect(stub.sent).toEqual([]);
+      const jobs = await suDb.schedulerJob.findMany({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: { contains: `:ci:${CONTACT_INBOX_BASE + convId}:` },
+        },
+        select: { dedupeKey: true },
+      });
+      expect(jobs).toEqual([]);
+      const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+        where: { id: rowId },
+        select: { status: true, owesMemoryOnly: true },
+      });
+      expect(row.status).not.toBe("PROCESSED");
+      expect(row.owesMemoryOnly).toBe(true);
+    } finally {
+      await suDb.agent.update({
+        where: { id: inbox.agentId ?? 0n },
+        data: { enabled: true },
+      });
+    }
   });
 
   test("a mensagem que uma pessoa já tratou não é respondida quando a conversa volta ao bot", async () => {

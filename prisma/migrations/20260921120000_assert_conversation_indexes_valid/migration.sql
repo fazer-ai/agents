@@ -52,9 +52,13 @@
 -- false` for its whole duration, and this file stops the deploy on it. That is the conservative
 -- answer and it is the one to keep: guessing "somebody is probably building it" is how a real corpse
 -- ships. `indisready` does not separate the two, which was measured rather than assumed: a build
--- killed during its first scan leaves `false/false`, the same pair a live build shows. The operator's
--- discriminator is `pg_stat_activity`, and the message names it, because reindexing another
--- session's live build is the wrong move.
+-- killed during its first scan leaves `false/false`, the same pair a live build shows. The
+-- discriminator is `pg_stat_progress_create_index`, which names the table, the index and the phase,
+-- and the message sends the operator there because reindexing another session's live build is the
+-- wrong move. NOT a query-text match on `pg_stat_activity`: this file shipped one round advising
+-- `query ILIKE 'create index%'`, and a live `CREATE UNIQUE INDEX CONCURRENTLY` does not match that
+-- prefix (measured: the progress view named the build while the ILIKE returned zero), so the
+-- operator would have been told nothing was running and sent to reindex it.
 --
 -- AND WHY IT ONLY REPORTS. Repairing here would need the dead index's NAME, which is not known when
 -- this file is written, so it would take a `DO $$ … EXECUTE format('REINDEX INDEX CONCURRENTLY %I',
@@ -81,7 +85,7 @@ BEGIN
    WHERE t.relname = 'conversations' AND NOT i.indisvalid;
   IF dead IS NOT NULL THEN
     RAISE EXCEPTION
-      'conversations carries invalid index(es): %. Either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW: an in-flight CREATE INDEX CONCURRENTLY reads exactly the same way. Check first: SELECT pid, query FROM pg_stat_activity WHERE state = ''active'' AND query ILIKE ''create index%%''. If a build is in flight, let it finish and re-deploy, and do NOT reindex it. Otherwise run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all); if a REINDEX fails on a UNIQUE index, its data violates uniqueness and that has to be resolved first. Then prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid and re-deploy.',
+      'conversations carries invalid index(es): %. Either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW: an in-flight CREATE INDEX CONCURRENTLY reads exactly the same way. Check first: SELECT index_relid::regclass, phase FROM pg_stat_progress_create_index WHERE relid = ''conversations''::regclass. If a row comes back, a build is in flight: let it finish and re-deploy, and do NOT reindex it. Otherwise run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all); if a REINDEX fails on a UNIQUE index, its data violates uniqueness and that has to be resolved first. Then prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid and re-deploy.',
       dead;
   END IF;
 END $$;

@@ -220,7 +220,13 @@ describe("the concurrent-index guard", () => {
     // that refusal is right; telling the operator to reindex somebody else's live build is not.
     // `indisready` does not separate the two (measured: a build killed during its first scan leaves
     // `false/false`, the pair a live build shows), so the message names the one thing that does.
-    expect(statements).toContain("pg_stat_activity");
+    // `pg_stat_progress_create_index`, not a query-text match: a live `CREATE UNIQUE INDEX
+    // CONCURRENTLY` does not match `query ILIKE 'create index%'` (measured: zero rows while the
+    // progress view named the build), so that advice reported "nothing running" for the exact case
+    // it existed to catch. The view also names the index, which is what lets the operator compare it
+    // with the ones this message just listed.
+    expect(statements).toContain("pg_stat_progress_create_index");
+    expect(statements).not.toContain("pg_stat_activity");
     // ...and the REINDEX's precondition, which is the clause this message shipped one round without:
     // the index has to be BUILDABLE.
     expect(statements).toMatch(/UNIQUE index/);

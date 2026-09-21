@@ -113,13 +113,20 @@
 -- says the wait is expected and says not to interrupt, and why it no longer claims that a REINDEX
 -- which fails can only mean a unique violation: being killed is now a known second way.
 --
--- AND A ..._ccnew IS NOT AN INDEX TO REBUILD, which is the defect the paragraph above created. Once
--- the message admits that an interrupted REINDEX leaves a `..._ccnew`, the catalog query lists BOTH
--- it and the original, and "reindex everything the query returns" then rebuilds the leftover into a
--- second valid index. Measured: after an interrupted REINDEX on `zz_r2`, reindexing both leaves
--- `zz_r2` and `zz_r2_ccnew` valid with identical `pg_get_indexdef`, a permanent duplicate paid for
--- by every write, and this file never reports it again because both are valid. So step 3 splits the
--- list in two: a `..._ccnew` is dropped, everything else is reindexed.
+-- AND A REINDEX LEFTOVER IS NOT AN INDEX TO REBUILD, which is the defect the paragraph above
+-- created. Once the message admits that an interrupted REINDEX leaves a `..._ccnew`, the catalog
+-- query lists BOTH it and the original, and "reindex everything the query returns" then rebuilds
+-- the leftover into a second valid index. Measured: after an interrupted REINDEX on `zz_r2`,
+-- reindexing both leaves `zz_r2` and `zz_r2_ccnew` valid with identical `pg_get_indexdef`, a
+-- permanent duplicate paid for by every write, and this file never reports it again because both
+-- are valid. The leftover has three shapes, and all three were produced rather than assumed: a
+-- second interruption with `..._ccnew` already taken adds `zz_r3_ccnew1`, and an interruption AFTER
+-- the swap (caught at `waiting for readers before marking dead`, by letting the early wait clear
+-- and holding a reader open) leaves `zz_r4` VALID with an invalid `zz_r4_ccold` beside it. That
+-- last one matters twice: the assertion fires while the real index is perfectly healthy, and the
+-- clause that says "the index it was replacing is in that same list" would have been false for it.
+-- So step 3 splits the list by NAME: anything ending in `..._ccnew`/`..._ccold`, numbered or not,
+-- is dropped; everything else is reindexed.
 --
 -- AND A FAILING REINDEX IS NOT ALWAYS A UNIQUE VIOLATION. No disk, a deadlock, a statement or lock
 -- timeout all fail it too, including on the non-unique indexes this tree actually builds, and the
@@ -167,10 +174,10 @@ STEP 2, WAIT OUT WHAT COULD BE THIS TABLE''S: an index that query names on conve
 STEP 3, REINDEX WHAT SURVIVES THE WAIT. Do not skip this because step 2 found a build: waiting repairs nothing, and an abandoned index sitting beside a live one raises this same assertion on the next deploy. Re-run this file''s own query, which is the one answer no role setup can hide from the owner (the list above is from before the wait, and step 1 can be nulls):
   SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid JOIN pg_class t ON t.oid = i.indrelid WHERE t.relname = ''conversations'' AND NOT i.indisvalid;
 Every index it still returns is abandoned, and they come in two kinds.
-  A name ending in ..._ccnew is NOT an index of its own: it is the half-built replacement an interrupted or failed REINDEX left behind, and the index it was replacing is in that same list. DROP it.
+  A name ending in ..._ccnew or ..._ccold, with or without a trailing number, is NOT an index of its own: it is a leftover from a REINDEX that was interrupted or failed. DROP it, and never rebuild it. Measured in all three shapes: interrupting a REINDEX before the swap leaves the original invalid plus an invalid ..._ccnew; a second interruption, with that name taken, adds ..._ccnew1; and interrupting AFTER the swap leaves the real index VALID and an invalid ..._ccold beside it, which is this assertion firing with nothing wrong with the index at all.
   Everything else gets REINDEX INDEX CONCURRENTLY, never a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all).
 Reindexing a ..._ccnew instead of dropping it ends with TWO valid indexes carrying the same definition, measured: a duplicate that costs storage and every write from then on, and that nothing in this file will ever report again, because both are valid.
-The REINDEX has a wait phase of its own and waits for ANY transaction whose snapshot is older than itself, including one that never touches this table, so it can sit for exactly as long as the build step 2 excused you from waiting for: measured on one index, 1s with nothing else running, 28s against a single open transaction on an unrelated table, and 111s beside a live concurrent build on another table, ending with that build. It is NOT stuck, and you must not interrupt it: an interrupted REINDEX leaves the original still invalid AND adds an invalid ..._ccnew beside it, which is one more of exactly what this migration is reporting.
+The REINDEX has a wait phase of its own and waits for ANY transaction whose snapshot is older than itself, including one that never touches this table, so it can sit for exactly as long as the build step 2 excused you from waiting for: measured on one index, 1s with nothing else running, 28s against a single open transaction on an unrelated table, and 111s beside a live concurrent build on another table, ending with that build. Looked up in pg_stat_activity it shows as Lock / virtualxid, which reads like a lock problem and is not one: the progress view names the same operation ..._ccnew | waiting for old snapshots. It is NOT stuck, and you must not interrupt it: an interrupted REINDEX leaves the original still invalid AND adds an invalid ..._ccnew beside it, which is one more of exactly what this migration is reporting.
 If a REINDEX fails on its own, READ THE ERROR. "could not create unique index" means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew that attempt left behind, then reindex the original. Any other error, such as no disk space, a deadlock, or a statement or lock timeout, is its own problem with its own fix and has nothing to do with duplicate data.
 STEP 4, ALWAYS: prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid, then re-deploy. This migration''s own row is FAILED from the moment it raised, so without step 4 the next deploy stops with P3009 no matter what you did about the index.',
       dead;

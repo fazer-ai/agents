@@ -253,7 +253,13 @@ describe("the concurrent-index guard", () => {
     // it existed to catch. The view also names the index, which is what lets the operator compare it
     // with the ones this message just listed.
     expect(statements).toContain("pg_stat_progress_create_index");
-    expect(statements).not.toContain("pg_stat_activity");
+    // The ban is on the IDIOM, not on the name: this message shipped one round advising
+    // `query ILIKE 'create index%'` on `pg_stat_activity`, which a live
+    // `CREATE UNIQUE INDEX CONCURRENTLY` does not match. Naming that view is fine and now useful,
+    // because the reindex's wait surfaces there as `Lock / virtualxid` and reads like a lock
+    // problem; what must never come back is discriminating live from abandoned by query text.
+    expect(statements).not.toMatch(/query\s+ILIKE/i);
+    expect(statements).not.toMatch(/pg_stat_activity[^.]*\bWHERE\b/i);
     // ...and the privilege clause, because the view answers DIFFERENTLY by role and the weaker answer
     // is an EMPTY one. Measured against a database owned by a non-superuser, which is the managed
     // shape `docs/deploy.md` describes: for a build another role started, the row is there but every
@@ -293,7 +299,7 @@ describe("the concurrent-index guard", () => {
     // duplicate paid for by every write that this file can never report again, because both are
     // valid.
     expect(statements).toMatch(
-      /A name ending in \.\.\._ccnew is NOT an index of its own/,
+      /A name ending in \.\.\._ccnew or \.\.\._ccold, with or without a trailing number/,
     );
     expect(statements).toMatch(
       /ends with TWO valid indexes carrying the same definition/,
@@ -309,6 +315,11 @@ describe("the concurrent-index guard", () => {
     // The numbers stay in the message: "it may take a while" is advice, "111s beside a live build
     // on another table" is what tells an operator staring at a prompt that this is the normal shape.
     expect(statements).toContain("111s");
+    // ...and the name the operator meets if they go looking, because the two views call the same
+    // wait different things and the pg_stat_activity one reads like a lock problem.
+    expect(statements).toMatch(
+      /shows as Lock \/ virtualxid, which reads like a lock problem/,
+    );
     expect(statements).toMatch(
       /It is NOT stuck, and you must not interrupt it/,
     );

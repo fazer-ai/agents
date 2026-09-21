@@ -734,6 +734,23 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       select: { status: true },
     });
     expect(daOutraRota.status).toBe("PROCESSING");
+
+    // E A LINHA VIVA TEM QUE PODER RESPONDER, que é uma asserção diferente de a linha existir
+    // (rodada 4 de review). A marca é da CONVERSA: andar com ela aqui escreve um dispensal que
+    // nomeia a mensagem, e o turno da outra rota é recusado pelo `claimReplyBurst` depois. A linha
+    // ficaria em `PROCESSING`, parecendo viva, e o cliente não seria respondido por ninguém — a
+    // mesma perda entrando pela porta do lado. As duas leituras abaixo são exatamente as duas
+    // entradas daquela recusa.
+    const marca = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true, lastHandledMessageId: true },
+    });
+    expect(marca.lastHandledMessageId).not.toBe(messageId);
+    const dispensas = await suDb.replyDispensal.findMany({
+      where: { tenantId, conversationId: marca.id, toMessageId: messageId },
+      select: { fromMessageId: true, toMessageId: true },
+    });
+    expect(dispensas).toEqual([]);
   });
 
   // O CONTROLE, e ele é o que impede o conserto de virar "estreite sempre". Atrás de uma PESSOA o
@@ -781,6 +798,15 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       select: { status: true },
     });
     expect(daOutraRota.status).toBe("PROCESSED");
+
+    // E O OUTRO LADO DA MESMA MOEDA: atrás de uma pessoa a marca CONTINUA andando, porque aí não há
+    // rota nenhuma esperando para responder e a marca é o que impede a rajada seguinte de coalescer
+    // a mensagem da era humana. Estreitar a marca junto com a liquidação teria quebrado isto.
+    const marca = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastHandledMessageId: true },
+    });
+    expect(marca.lastHandledMessageId).toBe(messageId);
   });
 
   // E O ESCOPO GRAVADO SOBREVIVE A UMA RECUPERAÇÃO QUE FALHOU (rodada 3 de review). O mesmo bloco

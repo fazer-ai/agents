@@ -6347,7 +6347,21 @@ export async function processChatwootDelivery(
     // keeping the mark, and keeping it is what stops a responder bound later from answering the
     // whole observed backlog as one burst. Its settlement is scoped the same way another bot's
     // is: this row only, never the responder's.
-    if (!responderMayAnswer) {
+    // ...E A MARCA TAMBÉM NÃO É DESTA PASSADA QUANDO A LINHA DIZ QUE O ESCOPO ERA ESTREITO (issue
+    // #725, review r4). Preservar a LINHA da outra rota e ainda assim andar com a marca entrega meia
+    // garantia: a marca é da conversa, e este ramo a move escrevendo um `dispensed` que nomeia a
+    // mensagem, então o turno daquela rota é recusado pelo `claimReplyBurst` depois. A linha fica em
+    // `PROCESSING`, parecendo viva, e o cliente não é respondido por ninguém — que é a perda que o
+    // escopo estreito existe para impedir, chegando pela porta do lado.
+    //
+    // Perguntado de `params.settleScopedToThisDelivery` e NÃO de `settleScopedHere`, e a diferença é
+    // o que mantém este conserto do tamanho do defeito. `settleScopedHere` é estreito também quando
+    // há um observador, e ali quem decide a marca é `responderMayAnswer`, que é uma regra afinada em
+    // várias rodadas da #476 sobre outra pergunta (quem, entre as NOSSAS rotas, ainda pode
+    // responder). Só o valor vindo da linha é novo: ele diz que esta passada é o replay de uma parada
+    // que aconteceu ao lado de outro bot, e aí a marca é da rota dele pela mesma regra que o
+    // observador já segue — a marca fica com quem pode responder.
+    if (!responderMayAnswer && params.settleScopedToThisDelivery !== true) {
       try {
         await advanceHandledWatermark({
           tenantId: params.tenantId,

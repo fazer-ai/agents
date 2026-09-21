@@ -4,6 +4,8 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { contactInboxThreadId } from "@/graph/checkpointer";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { recoverStrandedDelivery } from "@/modules/chatwoot/recover-delivery";
@@ -455,6 +457,123 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     // que escreve ninguém sabe se o arme vai falhar. Numa linha liquidada o fato não custa nada: a
     // varredura lê `PENDING` e `PROCESSING`, então replay nenhum a alcança.
     expect(row.owesMemoryOnly).toBe(true);
+  });
+
+  // O TERCEIRO SITE DA ISSUE, e o que o resto do arquivo não alcança. Nos casos acima a posse já
+  // era de uma pessoa QUANDO a mensagem chegou, então `act` é falso e a liquidação lá em cima grava
+  // a coluna. Aqui a conversa é do bot na chegada, o turno começa, e a pessoa assume ENQUANTO ele
+  // espera o thread: `act` fica verdadeiro e `consumed` falso, nenhuma das três metades daquela
+  // condição vale, e a linha ia para a varredura com a coluna NULA.
+  //
+  // O que isso custava foi medido pelo verificador, e é a parte que engana: com a coluna nula o
+  // replay re-derivava a posse de agora, achava o bot de volta na conversa e rodava o turno inteiro.
+  // Ele não postava, mas quem o parava era a #703 vendo a resposta do colega na página — e uma
+  // pessoa que assume e AINDA NÃO ESCREVEU não deixa resposta nenhuma para ser vista. É essa parada
+  // que o teste reproduz: takeover sem réplica do colega.
+  test("uma pessoa que assume durante o turno e não escreve nada também deixa a linha devendo só memória", async () => {
+    const convId = 9410;
+    const texto = "posso trocar o horário de amanhã?";
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: texto,
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: heldByBot(convId, INBOX_ID),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `rom-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    // O thread ocupado é o que faz o turno ESPERAR, e a espera é a janela inteira do takeover.
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      CONTACT_INBOX_BASE + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const postado: string[] = [];
+    let desfecho: string | null = null;
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: BOT_ID,
+      normalized: n,
+      base: semFila(),
+      // O DESFECHO É AFIRMADO, e não inferido do efeito: `taken-over-unread` é o que diz que a
+      // parada medida foi ESTA. Sem ele, um `SsrfError` a meio turno produz `PROCESSING` igual e o
+      // teste passaria sobre a parada errada, que foi o que aconteceu na primeira escrita dele.
+      onDirectTurn: (r) => {
+        desfecho =
+          r.kind === "outcome" ? r.outcome : `error:${String(r.error)}`;
+      },
+      deps: {
+        // O turno tem que chegar à parada por POSSE, e não morrer antes dela: o SafeFetch resolve o
+        // DNS antes do fetch, então o stub global de `fetch` deste arquivo não cobre um cliente de
+        // verdade e o turno falharia com `SsrfError` — outra parada, com outro desfecho.
+        makeClient: (async () =>
+          ({
+            sendMessage: async (_id: number, text: string) => {
+              postado.push(text);
+              return {};
+            },
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Claro, posso trocar."] }),
+      },
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    const assumiu = await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    // A PREMISSA, e ela é afirmada porque pode falhar em silêncio: se o espelho da conversa ainda
+    // não existisse, o `updateMany` não mexeria em linha nenhuma, o turno não veria takeover
+    // nenhum, e o teste passaria medindo outra parada.
+    expect(assumiu.count).toBe(1);
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: delivery.id },
+      select: {
+        status: true,
+        owesMemoryOnly: true,
+        settleScopedToThisDelivery: true,
+      },
+    });
+    // NADA FOI DITO POR CIMA DA PESSOA, e o desfecho nomeia a parada: o turno leu a posse de novo
+    // depois da espera e parou antes do invoke. (O modelo é CONSTRUÍDO antes dessa releitura, na
+    // preparação, então contar construções mediria o passo errado.)
+    expect(postado).toEqual([]);
+    expect(desfecho).toBe("taken-over-unread");
+    // A linha ficou para a varredura, que é o desfecho certo (a mensagem não está na memória de
+    // ninguém, porque o arme falhou)...
+    expect(row.status).toBe("PROCESSING");
+    // ...mas agora ela carrega O QUE AQUELA PASSADA DEVIA. Sem esta escrita a coluna é nula, e nula
+    // é o replay re-derivando a posse de agora.
+    expect(row.owesMemoryOnly).toBe(true);
+    // E A LARGURA É AMPLA: o silêncio aqui é sobre a mensagem, não sobre esta rota. Estreitá-lo
+    // deixaria a linha irmã da mesma mensagem, noutra rota, sem saber que ela também só deve
+    // memória — e o escopo estreito existe só para o caso do outro bot, que pode estar trabalhando
+    // nela agora.
+    expect(row.settleScopedToThisDelivery).toBe(false);
   });
 
   test("a mensagem que uma pessoa já tratou não é respondida quando a conversa volta ao bot", async () => {

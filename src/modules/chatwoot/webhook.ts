@@ -7000,6 +7000,37 @@ export async function processChatwootDelivery(
   // este buraco veio.
   const standDownKept = ingested === "queued";
   if (stoodDownUnread && !standDownKept) {
+    // O QUE ESTA PASSADA DEVIA, GRAVADO ANTES DO THROW QUE A DEIXA PARA A VARREDURA (issue #725,
+    // bateria cega, cenário s2). Este é o TERCEIRO dos três sites que o corpo da issue enumera, e o
+    // bloco `settlesHere` lá acima não o alcança: uma pessoa que assume DURANTE o turno deixa `act`
+    // verdadeiro e `consumed` falso, então nenhuma das três metades daquela condição vale e a linha
+    // ia para a varredura com a coluna nula.
+    //
+    // O que isso custava, medido pelo verificador contra este head: o replay re-derivava a posse de
+    // agora, achava o bot de volta na conversa e rodava o TURNO INTEIRO (uma linha de `generate`
+    // nova). Ele não postou, e é aí que estava a ilusão de que o site estava coberto: quem o parou
+    // foi a #703, que viu a resposta do colega na página e devolveu `answered-elsewhere`. Medida a
+    // MESMA parada sem essa resposta — uma pessoa que assume e ainda não escreveu nada — o replay
+    // posta. O cliente era poupado por outro conserto, não por este.
+    //
+    // Best-effort e não `await` num throw: a linha vai para a varredura de qualquer forma, e uma
+    // falha aqui devolve a leitura que toda entrega tinha antes da coluna. A largura sai da mesma
+    // expressão que a liquidação usa, para os dois fatos serem do mesmo instante.
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId },
+        data: {
+          owesMemoryOnly: true,
+          settleScopedToThisDelivery: settleScopedHere,
+        },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that the stood-down delivery owes memory only (conv=%s): %s; a replay of it may answer a message a person already took over",
+        convLabel,
+        errMsg(err),
+      );
+    });
     throw new Error(
       `chatwoot: a person took the conversation over while the turn waited (conv=${convLabel}) and ${
         ingested === "failed"

@@ -27,7 +27,10 @@ describe("the connection pool is named where an operator looks", () => {
     const note = deploy.slice(at, at + 1600);
     // Both pools, so the ceiling an operator divides is twice it.
     expect(note).toMatch(/twice/i);
-    expect(note).toContain("max_connections");
+    // The CEILING, tied to that total. Asking only whether the word appears is what a mutant walked
+    // through: the window holds a second, weaker mention ("raise `max_connections` … past ~40"), so
+    // deleting the sentence that says the total competes for it left the test green.
+    expect(note).toMatch(/total[\s\S]{0,80}max_connections/i);
     // The failure it prevents is a burst, which is what makes the number hard to reason about from
     // average load, and what made #668's two incidents look like an idle database.
     expect(note).toMatch(/burst/i);
@@ -48,7 +51,9 @@ describe("the connection pool is named where an operator looks", () => {
     // The comment sits ABOVE the assignment, which is this file's convention.
     const note = envExample.slice(Math.max(0, at - 1200), at);
     expect(note).toMatch(/burst/i);
-    expect(note).toContain("connection_limit");
+    // The CLAIM, not the word: a mutant that inverted the sentence into "`connection_limit` in the
+    // URL is the Prisma equivalent" kept the word and survived.
+    expect(note).toMatch(/connection_limit`?[\s\S]{0,60}does NOT size/i);
   });
 
   test("the maxWait comment points at the other half of its own equation", () => {

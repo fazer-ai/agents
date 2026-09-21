@@ -73,7 +73,7 @@ export function defangMarkerText(raw: string | null | undefined): string {
 //
 // A separate function rather than a flag on its sibling, because every marker there is written from
 // the CUSTOMER's side and reads wrong from this one: an attendant who sends a photo would be
-// rendered as "usuário enviou uma imagem; peça que envie a informação por texto", instructing the
+// rendered as "usuário enviou uma imagem; … peça que o cliente reenvie o arquivo", instructing the
 // agent to ask its own colleague to retype the file it just sent. What survives from the sibling is
 // the shape of the problem, not the wording.
 //
@@ -173,9 +173,26 @@ export function renderInboundMessage(
     ].filter(Boolean);
     body = withText(blocos.join("\n"));
   } else if (types.has("image")) {
-    // No extraction (vision off/failed) → ask for text/audio, as before.
+    // Sem extração (vision desligada, falhou, mime não suportado, ou acima do teto por mensagem).
+    //
+    // E O MARCADOR NÃO ESCOLHE O CANAL DE VOLTA (issue #758). Ele dizia "peça que envie a informação
+    // por texto ou áudio", frase escrita para o WhatsApp, e o modelo a lê como parte da mensagem que
+    // está respondendo, não como texto de referência: numa caixa de e-mail saiu "Envie as informações
+    // por texto ou áudio" para quem não tem como mandar áudio, por cima de um prompt que dizia, no
+    // segundo parágrafo, que ali não existe áudio. Instrução dentro de conteúdo recuperado vence
+    // contra-instrução no prompt, então o que resolve é a instrução não estar aqui.
+    //
+    // A redação neutra é a mesma escolha dos dois marcadores irmãos deste arquivo (o de áudio não
+    // audível e o `<anexos-nao-lidos>`), e por isso o canal não precisa descer até aqui: `render.ts`
+    // não conhece canal nenhum, e passar o tipo da inbox por três camadas seria superfície
+    // permanente em todo sync com o upstream para dizer o que uma frase já diz. Quem quiser mandar
+    // áudio manda sem ser convidado.
+    //
+    // O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador
+    // por `startsWith` para remontar o anexo na tela do operador, e uma reescrita da frase inteira
+    // quebraria aquele lado em silêncio. Cercado em `tests/modules/chatwoot-render.test.ts`.
     body = withText(
-      "<usuário enviou uma imagem; peça que envie a informação por texto ou áudio>",
+      "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>",
     );
   } else if (m.location) {
     // NOTE: A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the

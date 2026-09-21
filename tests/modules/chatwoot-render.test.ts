@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   cleanTranscription,
   renderAttendantMessage,
@@ -44,6 +46,47 @@ describe("renderInboundMessage", () => {
     expect(
       renderInboundMessage({ text: "", attachmentTypes: ["image"] }),
     ).toContain("enviou uma imagem");
+  });
+
+  // O MARCADOR NÃO ESCOLHE O CANAL DE VOLTA (issue #758). Ele é lido pelo modelo como parte da
+  // mensagem que está respondendo, não como texto de referência, então o que ele mandar pedir é o
+  // que o cliente recebe: numa caixa de e-mail, onde não existe áudio, saiu "Envie as informações
+  // por texto ou áudio" para uma cliente que não tem como mandar áudio. O prompt do agente dizia,
+  // no segundo parágrafo, que ali não há áudio, e perdeu para a instrução de dentro do conteúdo.
+  test("the unread-image marker does not offer a channel that may not exist", () => {
+    const out = renderInboundMessage({ text: "", attachmentTypes: ["image"] });
+    expect(out).not.toContain("áudio");
+    // E continua dizendo as duas coisas de que o modelo precisa: que veio uma imagem, e que o
+    // conteúdo dela não pôde ser lido — um marcador mudo faria o modelo responder como se a
+    // mensagem não tivesse anexo nenhum.
+    expect(out).toContain("imagem");
+    expect(out.toLowerCase()).toContain("não foi possível ler");
+  });
+
+  // A CERCA DO ACOPLAMENTO, e ela não é decorativa: `unwrapFileMarker`
+  // (src/modules/playground/sessions.ts) reconhece este marcador por `startsWith`, e é assim que o
+  // playground remonta o anexo na tela em vez de mostrar o texto cru ao operador. Reescrever a
+  // frase inteira quebraria aquele lado sem quebrar teste nenhum, em silêncio.
+  //
+  // Contra o FONTE do outro lado, e não contra um literal repetido aqui: `unwrapFileMarker` não é
+  // exportado, e uma cópia do prefixo neste arquivo provaria apenas que o render é consistente
+  // consigo mesmo. O que precisa continuar verdadeiro é que o texto que sai daqui é reconhecido
+  // LÁ, então é lá que a asserção vai buscar o prefixo.
+  test("the marker keeps the prefix the playground matches on", () => {
+    const sessions = readFileSync(
+      join(import.meta.dir, "../../src/modules/playground/sessions.ts"),
+      "utf8",
+    );
+    const prefixos = [
+      ...sessions.matchAll(/raw\.startsWith\("(<usuário [^"]+)"\)/g),
+    ].map((m) => m[1] as string);
+    // Se o outro lado deixar de casar por prefixo, esta cerca perde o objeto e tem que falhar alto,
+    // em vez de passar com uma lista vazia.
+    expect(prefixos.length).toBeGreaterThanOrEqual(2);
+    for (const tipo of ["image", "file"] as const) {
+      const out = renderInboundMessage({ text: "", attachmentTypes: [tipo] });
+      expect(prefixos.some((pref) => out.startsWith(pref))).toBe(true);
+    }
   });
 
   test("an extracted image renders the description in an <imagem> marker", () => {

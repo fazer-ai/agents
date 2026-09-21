@@ -240,7 +240,7 @@ describe("the concurrent-index guard", () => {
     // file is already recorded as applied, so `migrate deploy` never runs it again. The message says
     // so in as many words, because "drop it" is what an operator reaches for by default.
     expect(statements).toContain("REINDEX INDEX CONCURRENTLY");
-    expect(statements).toMatch(/NOT a DROP/);
+    expect(statements).toMatch(/never a DROP/);
     // A BUILD IN FLIGHT READS EXACTLY LIKE A CORPSE: Postgres creates the index invalid and
     // validates it afterwards, so a `CREATE INDEX CONCURRENTLY` running right now is
     // `indisvalid = false` for its whole duration and this guard stops the deploy on it. Keeping
@@ -274,7 +274,30 @@ describe("the concurrent-index guard", () => {
     expect(statements).toMatch(/is UNIQUE/);
     // ...scoped to a REINDEX that failed ON ITS OWN, because being interrupted is a second way for
     // one to fail and the unqualified claim reads as exhaustive.
-    expect(statements).toMatch(/fails on its own means the index is UNIQUE/);
+    // ...and it is conditioned on the error the REINDEX actually reported, because no disk, a
+    // deadlock and a statement or lock timeout fail one too, including on the non-unique indexes
+    // this tree builds. The unqualified claim sent the operator hunting duplicate data that is not
+    // there while the deploy stayed blocked.
+    expect(statements).toMatch(/If a REINDEX fails on its own, READ THE ERROR/);
+    expect(statements).toMatch(
+      /"could not create unique index" means the index is UNIQUE/,
+    );
+    // ...and the clause that says what to DO about the duplicates, which a mutant deleting it
+    // survived: naming the cause without the recovery leaves the operator with a diagnosis.
+    expect(statements).toMatch(
+      /resolve the duplicates, DROP the \.\.\._ccnew that attempt left behind, then reindex the original/,
+    );
+    // ...and a `..._ccnew` is excluded from the rebuild, which is the defect that admitting the
+    // interrupted state created: the catalog query lists the leftover AND the original, and
+    // reindexing both is measured to leave two valid indexes with identical pg_get_indexdef, a
+    // duplicate paid for by every write that this file can never report again, because both are
+    // valid.
+    expect(statements).toMatch(
+      /A name ending in \.\.\._ccnew is NOT an index of its own/,
+    );
+    expect(statements).toMatch(
+      /ends with TWO valid indexes carrying the same definition/,
+    );
     // ...and the wait the ceiling in step 2 excuses comes back INSIDE the reindex, which waits for
     // any older snapshot including one that never touches this table (measured: 1s idle, 28s
     // against one open transaction on an unrelated table, 111s beside a live build on another

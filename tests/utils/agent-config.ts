@@ -26,6 +26,14 @@ export function makeConfig(
       | "modelFallback"
       | "modelFallbackApiKey"
       | "modelFallbackCredentialBaseUrl"
+      // As entradas de que o prompt foi renderizado, para o teste da recomposição da idade poder
+      // montar uma config com template, vars e seções coerentes entre si (issue #749).
+      | "systemPrompt"
+      | "promptTemplate"
+      | "promptVars"
+      | "promptOpts"
+      | "promptSections"
+      | "auditedSections"
     >
   > = {},
 ): AgentConfig {
@@ -74,7 +82,10 @@ export function makeConfig(
     splitConfig: SPLIT_DEFAULTS,
     signatureConfig: SIGNATURE_DEFAULTS,
     promptVars: {},
-    promptOpts: {},
+    promptOpts: { now: new Date() },
+    promptTemplate: "Você é um assistente.",
+    promptSections: [],
+    auditedSections: [],
     serviceWindowConfig: SERVICE_WINDOW_DEFAULTS,
     contactAuthConfig: CONTACT_AUTH_DEFAULTS,
     handoffConfig: HANDOFF_DEFAULTS,

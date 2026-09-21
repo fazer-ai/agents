@@ -9,7 +9,11 @@ import {
 } from "@/graph/inflight";
 import { armIngest } from "@/graph/ingest-job";
 import { parseThreadId } from "@/graph/nudge";
-import { type AgentConfig, loadAgentConfig } from "@/graph/prepare";
+import {
+  type AgentConfig,
+  loadAgentConfig,
+  withMessageAge,
+} from "@/graph/prepare";
 import {
   type PostVerdict,
   type RunAgentTurnOutcome,
@@ -341,6 +345,19 @@ export async function selectAnswerableBurst(
   };
 }
 
+// The instant of the newest message in the turn's input, or null when nothing in it carries one
+// (a fixture-built row, a Chatwoot page whose `created_at` did not parse). Null means the age
+// variable renders EMPTY, which is the honest answer: the alternative, falling back to "now", is
+// exactly the wrong reading on the conversation this issue is about.
+function newestCreatedAt(rows: ChatwootMessageRow[]): Date | null {
+  let newest: Date | null = null;
+  for (const row of rows) {
+    const at = row.createdAt ?? null;
+    if (at && (newest === null || at > newest)) newest = at;
+  }
+  return newest;
+}
+
 export async function coalesceAndRunTurn(
   ctx: CoalesceTurnContext,
   base: PrismaClient,
@@ -519,7 +536,20 @@ export async function coalesceAndRunTurn(
     },
     stillWanted: ctx.stillWanted,
     standDownIfThreadHeld: ctx.standDownIfThreadHeld,
-    loaded,
+    // THE AGE OF WHAT THE MODEL IS ABOUT TO READ, resolved here and not at the config load, because
+    // this is the first point either caller knows it: the flush and the operator's re-engage both
+    // load the config and only THEN fetch the thread (issue #749). Taken from the newest member of
+    // `inTurn` rather than `pending`, for the same reason the claim is: a member that reached the
+    // burst without reaching the model — a voice note still waiting on its transcription — is not
+    // what the age describes.
+    //
+    // The re-render runs on every burst, including the prompts that carry no age placeholder, and
+    // that is affordable rather than free: measured at 67 µs per call over an 8 KB prompt with both
+    // the prompt and its audit rebuilt (2.000 calls, and the same 67 µs with the variable present,
+    // so the placeholder is not what costs). A turn that is about to call a model takes seconds, so
+    // skipping the pass by scanning the template for the two names would trade a measurable nothing
+    // for a branch that has to be kept in step with the variable list.
+    loaded: withMessageAge(loaded, newestCreatedAt(inTurn)),
     authContext: ctx.authContext,
     tenantId,
     instanceId,

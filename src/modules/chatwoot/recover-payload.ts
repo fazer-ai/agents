@@ -202,6 +202,13 @@ export function buildRecoveryPayload(params: {
     // Only lifted where the top level does not already say it, so a body that is already
     // webhook-shaped passes through untouched.
     attachments: liftAnalysisMeta(m.attachments),
+    // WHEN THE MESSAGE ARRIVED, at the top level and not only under the conversation (issue #749,
+    // review round 1). A recovery exists because the delivery was stranded, so the gap between the
+    // message and this replay is exactly the age the agent has to be told about — this is the LEAST
+    // likely body to be seconds old, and the one whose reader most needs the number. The
+    // conversation's `last_activity_at` below carries the same instant for the 24h window, and the
+    // age variables read the MESSAGE's own field, which nothing was filling.
+    ...(m.createdAt !== null ? { created_at: m.createdAt } : {}),
     // `inbox` carries the id for the shape that has no conversation scalar (issue #270). Both are
     // filled here because a real message body fills both.
     ...(params.inboxId !== null

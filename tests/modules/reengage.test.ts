@@ -95,6 +95,10 @@ function page(
     content: string;
     type?: number;
     private?: boolean;
+    // Segundos desde a época, como o Chatwoot manda. Só os testes de idade passam este campo; a
+    // ausência dele é o que todo o resto do arquivo exercita, e ela tem que continuar significando
+    // "esta página não diz quando a mensagem chegou".
+    createdAt?: number;
   }>,
 ) {
   return {
@@ -103,6 +107,7 @@ function page(
       content: m.content,
       message_type: m.type ?? 0,
       private: m.private ?? false,
+      ...(m.createdAt === undefined ? {} : { created_at: m.createdAt }),
     })),
   };
 }
@@ -1659,5 +1664,129 @@ describe.skipIf(!dbUp)("reengage", () => {
     } finally {
       clearTurnInFlight(graphThreadId);
     }
+  });
+  // Issue #749. O religamento é o caso que abriu a issue: o operador (ou a varredura) traz de volta
+  // uma conversa de dias atrás, e o que chega ao modelo é a mesma pilha de texto de sempre, sem uma
+  // palavra sobre QUANDO aquilo foi dito. O agente responde "acabei de ver sua mensagem" para quem
+  // escreveu há dez dias, e cobra um documento que o cliente já mandou em outro canal.
+  //
+  // O caminho é o que torna estes casos diferentes do teste de `loadAgentConfig`: aqui a config é
+  // carregada ANTES de a rajada ser buscada no Chatwoot, então o instante que a variável precisa não
+  // existia na hora de compor o prompt. Um teste que só exercite a interpolação passa com a
+  // recomposição arrancada do `coalesceAndRunTurn`, que é justamente a peça que liga as duas metades.
+  describe("a idade da mensagem chega ao modelo (issue #749)", () => {
+    const COM_IDADE = "Você é prestativa. Idade: {{idade_ultima_mensagem}}.";
+    let promptOriginal = "";
+    beforeAll(async () => {
+      // O EXPERIMENTO DE UM TESTE ANTERIOR AINDA VALE. O caso do enrolamento deixa um experimento
+      // ligado no tenant, e a variante dele SUBSTITUI o prompt do agente — inclusive nas conversas
+      // destes testes, que então mediriam o prompt de outra pessoa. Desligado aqui, onde o defeito
+      // seria uma reprovação sem relação com a idade da mensagem.
+      await suDb.experiment.updateMany({
+        where: { tenantId },
+        data: { enabled: false },
+      });
+      const antes = await suDb.agent.findUnique({
+        where: { id: agentId },
+        select: { systemPrompt: true },
+      });
+      promptOriginal = antes?.systemPrompt ?? "";
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { systemPrompt: COM_IDADE },
+      });
+    });
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { systemPrompt: promptOriginal },
+      });
+    });
+
+    test("o prompt diz há quantos dias o cliente escreveu", async () => {
+      const id = await seedConversation(9749);
+      const dezDias = Math.floor(Date.now() / 1000) - 10 * 24 * 3600;
+      const capture = new PromptCapturingModel(REPLY);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => capture,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "preciso da segunda via", createdAt: dezDias },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      const prompt = capture.systemPrompts.join("\n");
+      expect(prompt).toContain("Idade: há 10 dias");
+      // E o literal não sobrou: um `{{...}}` intacto no prompt é o que o operador vê quando a
+      // variável não foi reconhecida, e ele lê como texto, não como ausência.
+      expect(prompt).not.toContain("{{idade_ultima_mensagem}}");
+    });
+
+    // A IDADE É A DA MAIS NOVA da rajada, não a da primeira. O cliente que escreve três vezes seguidas
+    // depois de uma semana calado deixa uma cauda cujo membro mais antigo tem a idade do silêncio e o
+    // mais novo tem a idade real da pergunta; responder pela primeira é errar por dias no caso mais
+    // comum de todos, que é a rajada.
+    test("com vários na cauda, vale a mensagem mais recente", async () => {
+      const id = await seedConversation(9750);
+      const agora = Math.floor(Date.now() / 1000);
+      const capture = new PromptCapturingModel(REPLY);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => capture,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi?", createdAt: agora - 7 * 24 * 3600 },
+              { id: 2, content: "alguém aí?", createdAt: agora - 3 * 3600 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      const prompt = capture.systemPrompts.join("\n");
+      expect(prompt).toContain("Idade: há 3 horas");
+      expect(prompt).not.toContain("7 dias");
+    });
+
+    // A PÁGINA QUE NÃO DIZ QUANDO. Chatwoot antigo, mensagem sintética, campo que não fez o parse: o
+    // que não se sabe se resolve VAZIO. O contrário — cair para "agora" — é exatamente a leitura
+    // errada que a issue existe para tirar, e sai calada.
+    test("sem data na página, a variável some em vez de mentir", async () => {
+      const id = await seedConversation(9751);
+      const capture = new PromptCapturingModel(REPLY);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => capture,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "e aí?" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      const prompt = capture.systemPrompts.join("\n");
+      expect(prompt).toContain("Idade: .");
+      expect(prompt).not.toContain("agora mesmo");
+      expect(prompt).not.toContain("{{idade_ultima_mensagem}}");
+    });
   });
 });

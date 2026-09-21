@@ -430,6 +430,16 @@ export async function runAgentNudge(
       conversationId,
       agentId: inbox.agentId,
       threadId: params.threadId,
+      // THE MIRROR'S COLUMN HERE, and the message's instant on every reactive path (issue #749).
+      // The two are not the same question answered from two places: a proactive turn is running
+      // BECAUSE no message triggered it, so "how long ago did the customer write" is the silence
+      // itself, which is exactly what a follow-up is about. Null on a conversation whose mirror row
+      // never saw a message leaves the variable empty, as everywhere else.
+      //
+      // Left out, this path would render the operator's `{{idade_ultima_mensagem}}` as nothing and
+      // hand the model a truncated sentence — a prompt is one text for both paths, and a variable
+      // that answers on one of them is not a decision, it is a hole.
+      lastIncomingAt: conv.lastInboundAt,
     });
     // Classified by exclusion, and the exclusion is the point: `loadAgentConfig` refuses for three
     // reasons (the row is gone, the switch is off, the model credentialRef does not resolve) and

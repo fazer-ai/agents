@@ -75,7 +75,17 @@ function float(v: unknown): number | null {
 // partials render `created_at` as epoch seconds (`.to_i`), while `first_reply_created_at` is a
 // plain ActiveRecord attribute and serializes as an ISO-8601 string. Accept either, reject anything
 // that does not parse — a field we cannot read must read as absent, never as the epoch.
-function ts(v: unknown): Date | null {
+// Chatwoot's own timestamp spellings, and it reads BOTH because the same field is spelled two ways
+// by the same producer. Checked against the fork's source rather than inferred: a message's
+// `created_at` is a `Time` on the wire (`Message#webhook_data`), so it arrives as ISO 8601, and an
+// integer over REST (`app/views/api/v1/models/_message.json.jbuilder` renders `created_at.to_i`),
+// so it arrives as epoch SECONDS. A conversation's `last_activity_at` is epoch seconds on both.
+// Reading seconds as milliseconds would date every message in 1970 — an age of fifty-odd years on a
+// message that is minutes old, which is worse than answering nothing.
+//
+// Exported because the message parser reads the same field off the same producer, and a second copy
+// of this would be a second set of edge cases to keep in step.
+export function chatwootTimestamp(v: unknown): Date | null {
   // NOTE: every branch exits through here. `Number.isFinite` and `> 0` both pass for an epoch far
   // outside the range a Date can hold (1e20, or a digit string of the same size), and what comes
   // back is an Invalid Date, which Prisma refuses — failing the WHOLE delivery over an optional
@@ -212,6 +222,11 @@ export function normalizeChatwootEvent(
       content: str(payload.content),
       messageType: messageTypeOf(payload.message_type),
       private: payload.private === true,
+      // WHEN the customer wrote (issue #749), through the same reader the conversation timestamps
+      // use: the two spellings Chatwoot ships (epoch seconds from the jbuilder partials, ISO from a
+      // plain attribute) both parse, and anything that does not read as absent rather than as the
+      // epoch — a 1970 age would be a lie with more digits than a missing one.
+      createdAt: chatwootTimestamp(payload.created_at),
       sender: msgSender
         ? {
             type: str(msgSender.type),
@@ -307,9 +322,11 @@ export function normalizeChatwootEvent(
   normalized.conversationUpdatedAt = conv ? float(conv.updated_at) : null;
   // The service level of the human half of an attendance, as CHATWOOT computes it — see the field
   // notes in types.ts for why these two are read instead of derived from the events we receive.
-  normalized.conversationCreatedAt = conv ? ts(conv.created_at) : null;
+  normalized.conversationCreatedAt = conv
+    ? chatwootTimestamp(conv.created_at)
+    : null;
   normalized.firstReplyCreatedAt = conv
-    ? ts(conv.first_reply_created_at)
+    ? chatwootTimestamp(conv.first_reply_created_at)
     : null;
   return normalized;
 }

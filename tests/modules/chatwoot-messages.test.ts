@@ -19,6 +19,7 @@ describe("parseChatwootMessages", () => {
     expect(rows[0]).toEqual({
       id: 1,
       content: "a",
+      createdAt: null,
       emailSubject: null,
       messageType: "incoming",
       private: false,
@@ -38,6 +39,30 @@ describe("parseChatwootMessages", () => {
       senderId: null,
     });
     expect(rows[1]?.messageType).toBe("outgoing");
+  });
+
+  // ISSUE #749: quando a mensagem chegou. Chatwoot manda `created_at` em SEGUNDOS desde a época,
+  // o que um `new Date(v)` leria como 1970 — uma idade de 56 anos onde a mensagem tem minutos.
+  // A forma ISO é aceita porque outras rotas da mesma API mandam assim, e o que não dá para ler
+  // vira `null`, nunca um instante inventado: a variável de idade prefere sumir a mentir.
+  test("lê o instante da mensagem, em época ou ISO, e nunca inventa um", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        { id: 1, content: "a", created_at: 1_726_000_000 },
+        { id: 2, content: "b", created_at: "2026-09-17T12:00:00Z" },
+        { id: 3, content: "c", created_at: "1726000000" },
+        { id: 4, content: "d", created_at: "ontem" },
+        { id: 5, content: "e" },
+      ],
+    });
+    expect(rows[0]?.createdAt?.toISOString()).toBe(
+      new Date(1_726_000_000_000).toISOString(),
+    );
+    expect(rows[1]?.createdAt?.toISOString()).toBe("2026-09-17T12:00:00.000Z");
+    // A mesma época, mandada como texto: é assim que ela chega em parte das rotas.
+    expect(rows[2]?.createdAt?.getTime()).toBe(1_726_000_000_000);
+    expect(rows[3]?.createdAt).toBeNull();
+    expect(rows[4]?.createdAt).toBeNull();
   });
 
   // ISSUE #642: the one structural field an activity row has. Chatwoot sets it on the activities

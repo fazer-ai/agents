@@ -2771,6 +2771,10 @@ export async function runAgentTurn(
         conversationId,
         agentId: inbox.agentId,
         threadId,
+        // The instant of the message THIS turn answers (issue #749), straight off the payload that
+        // triggered it. In ordinary traffic it is seconds old and the age reads as such; it earns
+        // its keep on the message that sat unanswered for days.
+        lastIncomingAt: n.message?.createdAt ?? null,
       }),
     };
   });

@@ -12,7 +12,9 @@ import {
   findExactTimeVarUsages,
   interpolatePromptVars,
   PROMPT_CONTEXT_VARS,
+  PROMPT_MESSAGE_AGE_VARS_DISPLAY,
   PROMPT_PREVIEW_CONTACT,
+  PROMPT_PREVIEW_MESSAGE_AGE_MS,
   PROMPT_SCHEDULE_VARS_DISPLAY,
   PROMPT_TIME_VARS_DISPLAY,
   TIME_ROUND_MINUTES,
@@ -252,6 +254,7 @@ export function PromptPanel({
                 ...PROMPT_CONTEXT_VARS,
                 ...PROMPT_TIME_VARS_DISPLAY,
                 ...PROMPT_SCHEDULE_VARS_DISPLAY,
+                ...PROMPT_MESSAGE_AGE_VARS_DISPLAY,
               ].map((v) => (
                 <button
                   key={v}
@@ -319,7 +322,16 @@ export function PromptPanel({
                       PROMPT_PREVIEW_CONTACT.inboxName,
                     ),
                   }),
-                  { wrap: wrapPreviewVar, availability },
+                  {
+                    wrap: wrapPreviewVar,
+                    availability,
+                    // A sample instant, for the reason the sample contact exists: rendered against
+                    // nothing the age variable resolves EMPTY, and an operator reads an empty
+                    // preview as a variable that does not work.
+                    messageAt: new Date(
+                      Date.now() - PROMPT_PREVIEW_MESSAGE_AGE_MS,
+                    ),
+                  },
                 )}
               </Markdown>
             ) : (

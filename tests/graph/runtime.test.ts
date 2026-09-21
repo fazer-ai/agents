@@ -61,6 +61,7 @@ import {
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   HandoffTwiceModel,
+  PromptCapturingModel,
   ResolveAndHandoffModel,
   ResolveThenReplyModel,
   SendDocumentThenReplyModel,
@@ -7115,6 +7116,89 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[965, "TEMPLATE-RELEVANCE"]]);
+    });
+  });
+  // ISSUE #749. A metade REATIVA do mesmo eixo: aqui a entrega do webhook traz a mensagem, então o
+  // instante existe antes do prompt ser composto e vai direto ao `loadAgentConfig`. O caso que dói
+  // é a entrega que chega tarde — a fila do Chatwoot parada, o webhook reprocessado, a mensagem que
+  // ficou dias sem ninguém — e o agente responde como se tivesse acabado de acontecer.
+  describe("a idade da mensagem no caminho direto (issue #749)", () => {
+    const COM_IDADE = "Você é prestativa. Idade: {{idade_ultima_mensagem}}.";
+    let promptOriginal = "";
+    let alvo = 0n;
+    beforeAll(async () => {
+      const agent = await suDb.agent.findFirst({
+        where: { tenantId },
+        select: { id: true, systemPrompt: true },
+        orderBy: { id: "asc" },
+      });
+      alvo = agent?.id as bigint;
+      promptOriginal = agent?.systemPrompt ?? "";
+      await suDb.agent.update({
+        where: { id: alvo },
+        data: { systemPrompt: COM_IDADE },
+      });
+    });
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: alvo },
+        data: { systemPrompt: promptOriginal },
+      });
+    });
+
+    test("o prompt carrega a idade que o evento trouxe", async () => {
+      await seedConversation(9749, null);
+      const capture = new PromptCapturingModel(REPLY);
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({
+          conversationId: 9749,
+          message: {
+            id: 1,
+            content: "e a segunda via?",
+            messageType: "incoming",
+            private: false,
+            createdAt: new Date(Date.now() - 3 * 24 * 3600 * 1000),
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: () => capture,
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(capture.systemPrompts.join("\n")).toContain("Idade: há 3 dias");
+    });
+
+    // A ENTREGA QUE NÃO DIZ QUANDO: o evento sem `createdAt` resolve vazio em vez de "agora mesmo",
+    // pela mesma razão do caminho do religamento. Um `now` de consolo aqui seria pior do que a
+    // ausência, porque ele é exatamente a leitura errada que a issue existe para tirar.
+    test("sem instante no evento, a variável some", async () => {
+      await seedConversation(9750, null);
+      const capture = new PromptCapturingModel(REPLY);
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9750 }),
+        base: appDb,
+        deps: {
+          makeModel: () => capture,
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      const prompt = capture.systemPrompts.join("\n");
+      expect(prompt).toContain("Idade: .");
+      expect(prompt).not.toContain("agora mesmo");
+      expect(prompt).not.toContain("{{idade_ultima_mensagem}}");
     });
   });
 });

@@ -1,6 +1,7 @@
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
 import {
   activityTypeFrom,
+  chatwootTimestamp,
   emailSubjectFrom,
   firstLocationAttachment,
   messageTypeOf,
@@ -22,6 +23,12 @@ import {
 export interface ChatwootMessageRow {
   id: number;
   content: string;
+  // WHEN Chatwoot recorded it (issue #749). The fetched page is the only place the re-engage path can
+  // learn how old the message it is about to answer is: the mirror column `last_inbound_at` is null
+  // on a conversation whose row was created from an event that is not a message, which is every
+  // conversation this button exists for. OPTIONAL because a row built by hand (a fixture, a caller
+  // that synthesises one) has no instant to carry, and absent has to read the same as unreadable.
+  createdAt?: Date | null;
   messageType: "incoming" | "outgoing" | "activity" | "template" | "other";
   private: boolean;
   // Chatwoot file_type of each attachment ("audio" | "image" | "file" | ...).
@@ -230,6 +237,9 @@ export function chatwootMessageListLength(raw: unknown): number | null {
   return null;
 }
 
+// Chatwoot ships this field in two spellings, both its own: epoch SECONDS from the jbuilder
+// partials (`.to_i`) and an ISO-8601 string from a plain attribute. Anything that does not parse
+// reads as absent, never as the epoch — a 1970 age is a lie with more digits than a missing one.
 export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
   const list: unknown[] = Array.isArray(raw)
     ? raw
@@ -247,6 +257,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
     out.push({
       id,
       content: typeof item.content === "string" ? item.content : "",
+      createdAt: chatwootTimestamp(item.created_at),
       messageType: messageTypeOf(item.message_type),
       private: item.private === true,
       attachmentTypes: attachmentTypesFrom(item.attachments),

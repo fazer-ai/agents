@@ -28,6 +28,13 @@ const OTHER_BOT = 10;
 // Chatwoot's epoch SECONDS, which is what both sources give: the wire's
 // `conversation.last_activity_at` and the REST message's `created_at`.
 const SENT_AT = 1_787_780_064;
+// THE SAME INSTANT, SPELLED THE OTHER WAY. The two sources disagree on the MESSAGE's own timestamp,
+// and it was checked against the fork's source: `Message#webhook_data` puts the `Time` object under
+// `created_at`, which serializes as ISO 8601, while the REST message renders `created_at.to_i`
+// (`app/views/api/v1/models/_message.json.jbuilder`). So the rebuild carries the number it read
+// over REST and the wire carries the string — and both have to land on the same instant, which is
+// why `chatwootTimestamp` reads both (issue #749).
+const SENT_AT_ISO = new Date(SENT_AT * 1000).toISOString();
 
 // Captured. Two shapes here are the wire's and not the REST read's, and both were checked against
 // the fork's own source (`Message#webhook_data`, `Contact#webhook_data`):
@@ -52,6 +59,7 @@ const WEBHOOK = {
   message_type: "incoming",
   private: false,
   content_attributes: {},
+  created_at: SENT_AT_ISO,
   sender: { id: 1102, name: "cliente" },
   attachments: [],
   inbox: { id: INBOX, name: "twobot-inbox" },
@@ -165,6 +173,24 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
     // when the REST read gave none — the mirror then stamps `now`, as it always did.
     expect(
       normalizeChatwootEvent(rebuilt({ createdAt: null }))?.lastActivityAt,
+    ).toBeNull();
+  });
+
+  // ISSUE #749, rodada 1 da review. O carimbo do próprio corpo, que é de onde as variáveis de idade
+  // leem — a mensagem, não a conversa. A recuperação é o corpo MENOS provável de ter segundos de
+  // vida: ela só existe porque a entrega ficou encalhada, então o intervalo entre a mensagem e este
+  // replay é exatamente a idade que o agente precisa saber. Sem o campo aqui o turno recuperado
+  // rendia a variável vazia, com tudo o mais funcionando.
+  test("o instante da mensagem viaja, e é o que as variáveis de idade leem", () => {
+    const e = normalizeChatwootEvent(rebuilt());
+    expect(e?.message?.createdAt?.getTime()).toBe(SENT_AT * 1000);
+    // O mesmo instante que o webhook capturado carrega: o replay reproduz o fio, não aproxima.
+    expect(e?.message?.createdAt?.getTime()).toBe(
+      normalizeChatwootEvent(WEBHOOK)?.message?.createdAt?.getTime(),
+    );
+    // Sem leitura, nulo: a idade some em vez de dizer "agora mesmo" sobre uma mensagem encalhada.
+    expect(
+      normalizeChatwootEvent(rebuilt({ createdAt: null }))?.message?.createdAt,
     ).toBeNull();
   });
 

@@ -50,6 +50,7 @@ import {
   HandoffDeclaredSilenceModel,
   HandoffThenReplyModel,
   HandoffThenThrowModel,
+  PromptCapturingModel,
   ResolveThenReplyModel,
   SilentHandoffThenResolveModel,
 } from "../utils/scripted-models";
@@ -4972,5 +4973,55 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       if (!logged) await new Promise((r) => setTimeout(r, 100));
     }
     expect(logged).toBe(true);
+  });
+  // ISSUE #749, rodada 2 da review. O prompt é UM texto para os dois caminhos: escrito uma vez pelo
+  // operador, usado pelo turno que responde e pelo follow-up que cobra. Uma variável que responde
+  // num e some no outro não é uma decisão de escopo, é um buraco — o modelo recebe "A última
+  // mensagem chegou ." e o cliente lê o que ele fizer com isso.
+  //
+  // E aqui a pergunta tem resposta própria: o turno proativo roda JUSTAMENTE porque ninguém
+  // escreveu, então "há quanto tempo o cliente escreveu" é o silêncio que o follow-up existe para
+  // cobrar. A fonte é a coluna do espelho, porque não há mensagem disparando este turno.
+  describe("a idade da última mensagem no turno proativo (issue #749)", () => {
+    const COM_IDADE = "Você é prestativa. Idade: {{idade_ultima_mensagem}}.";
+    let promptOriginal = "";
+    let alvo = 0n;
+    beforeAll(async () => {
+      const agent = await suDb.agent.findFirstOrThrow({ where: { tenantId } });
+      alvo = agent.id;
+      promptOriginal = agent.systemPrompt;
+      await suDb.agent.update({
+        where: { id: alvo },
+        data: { systemPrompt: COM_IDADE },
+      });
+    });
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: alvo },
+        data: { systemPrompt: promptOriginal },
+      });
+    });
+
+    test("o prompt do follow-up diz há quanto tempo o cliente sumiu", async () => {
+      await seedConv(9749, null, new Date(Date.now() - 3 * 3600 * 1000));
+      const s = stub();
+      const capture = new PromptCapturingModel("Oi, tudo certo por aí?");
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9749`,
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => capture,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("messaged");
+      const prompt = capture.systemPrompts.join("\n");
+      expect(prompt).toContain("Idade: há 3 horas");
+      expect(prompt).not.toContain("{{idade_ultima_mensagem}}");
+    });
   });
 });

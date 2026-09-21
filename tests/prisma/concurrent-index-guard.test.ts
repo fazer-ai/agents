@@ -286,8 +286,12 @@ describe("the concurrent-index guard", () => {
     // The numbers stay in the message: "it may take a while" is advice, "111s beside a live build
     // on another table" is what tells an operator staring at a prompt that this is the normal shape.
     expect(statements).toContain("111s");
-    expect(statements).toMatch(/It is NOT stuck, and you must not interrupt it/);
-    expect(statements).toMatch(/leaves the original still invalid AND adds an invalid \.\.\._ccnew/);
+    expect(statements).toMatch(
+      /It is NOT stuck, and you must not interrupt it/,
+    );
+    expect(statements).toMatch(
+      /leaves the original still invalid AND adds an invalid \.\.\._ccnew/,
+    );
     // ...including what the failed attempt leaves behind. A REINDEX that fails on a unique index
     // adds a second dead index, so the clause has to say to DROP it rather than reindex it too:
     // reindexing both ends with a valid duplicate of the same index that somebody removes by hand.

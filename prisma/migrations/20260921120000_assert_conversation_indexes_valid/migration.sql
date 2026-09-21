@@ -28,8 +28,25 @@
 -- hand-run `CREATE INDEX CONCURRENTLY` that dies (ordinary on a hot table, precisely because of this
 -- failure mode) leaves the same corpse with no migration row at all, and is caught here too.
 --
--- In a file of its own because a DO block puts the migration in an implicit transaction, which the
--- `CREATE INDEX CONCURRENTLY` it is checking cannot share.
+-- WHY THE MESSAGE SAYS REINDEX AND NOT DROP, which is the one place this file deliberately departs
+-- from its two siblings. Their message says to DROP the dead index and re-deploy, and following it
+-- ends with the table carrying NO index at all: behind the `--applied` door the build file is
+-- already recorded as applied, so `migrate deploy` never runs it again, and the plan goes back to
+-- the same scan with the deploy green and nothing left asking. `REINDEX INDEX CONCURRENTLY` instead
+-- revalidates in place and keeps the definition, so the recovery ends where the build meant to
+-- (measured in a scratch database: a genuinely failed concurrent build leaves `indisvalid = false`,
+-- and REINDEX takes it back to true with the same `pg_get_indexdef`). The siblings cannot be
+-- corrected in place: an applied migration is checksummed, and editing the file makes `migrate
+-- deploy` refuse the database it already ran on.
+--
+-- AND WHY IT ONLY REPORTS. Repairing here would need the dead index's NAME, which is not known when
+-- this file is written, so it would take a `DO $$ … EXECUTE format('REINDEX INDEX CONCURRENTLY %I',
+-- …)` loop. Postgres refuses that outright: `REINDEX CONCURRENTLY cannot be executed from a
+-- function`. The guard can stop the deploy and name the index; it cannot fix it.
+--
+-- In a file of its own because with anything else beside it the `CREATE INDEX CONCURRENTLY` this is
+-- checking is refused with `25001`. `.claude/rules/prisma.md` has both halves of that measurement
+-- and asks that no comment here assert the explanation that would reconcile them.
 --
 -- It asks about the WHOLE table rather than about the one index the previous file adds: an invalid
 -- index anywhere on `conversations` is the same silent outage. It does NOT ask about the whole
@@ -47,7 +64,7 @@ BEGIN
    WHERE t.relname = 'conversations' AND NOT i.indisvalid;
   IF dead IS NOT NULL THEN
     RAISE EXCEPTION
-      'conversations carries invalid index(es): %. A concurrent build was interrupted; run DROP INDEX CONCURRENTLY on each and re-deploy.',
+      'conversations carries invalid index(es): %. A concurrent build was interrupted: the index is there and Postgres refuses to use it. Run REINDEX INDEX CONCURRENTLY on each one, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all), then prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid and re-deploy.',
       dead;
   END IF;
 END $$;

@@ -184,19 +184,30 @@ describe("the concurrent-index guard", () => {
     // The exception has to tell an operator what to do: the fix is a command, and the deploy is
     // stopped at the moment they read it.
     expect(statements).toContain("RAISE EXCEPTION");
-    expect(statements).toContain("DROP INDEX CONCURRENTLY");
+    // ...and the command has to be the one that ENDS WITH AN INDEX. A drop is what the two sibling
+    // guards say, and behind the `--applied` door it leaves the table with none at all: the build
+    // file is already recorded as applied, so `migrate deploy` never runs it again. The message says
+    // so in as many words, because "drop it" is what an operator reaches for by default.
+    expect(statements).toContain("REINDEX INDEX CONCURRENTLY");
+    expect(statements).toMatch(/NOT a DROP/);
+    // The operator also needs this file's own name, for the `resolve` that unblocks the deploy.
+    expect(statements).toContain(
+      "resolve --rolled-back 20260921120000_assert_conversation_indexes_valid",
+    );
   });
 
   describe.skipIf(!dbUp)("against the catalog", () => {
-    beforeAll(async () => {
-      // After a crashed run the forge below is still in the catalog, and it would fail the clean half
-      // of this file rather than the half that forged it.
+    // The forges below leave two kinds of debris if a run dies between two statements: the probe
+    // index, which is disposable, and the REAL index left invalid, which is not — the guard test
+    // after it would fail on debris instead of on the code. Reindexing it is the same command this
+    // file's message tells an operator to run, and it is idempotent on a valid index.
+    const limpar = async () => {
       await suDb.query(`DROP INDEX IF EXISTS "${PROBE}"`);
-    });
+      await suDb.query(`REINDEX INDEX CONCURRENTLY "${INDEX}"`);
+    };
 
-    afterAll(async () => {
-      await suDb.query(`DROP INDEX IF EXISTS "${PROBE}"`);
-    });
+    beforeAll(limpar);
+    afterAll(limpar);
 
     test("a database built from these migrations holds the index, valid", async () => {
       const r = await suDb.query<{ valid: boolean }>(
@@ -242,6 +253,54 @@ describe("the concurrent-index guard", () => {
       // ...and the command the message names is what unblocks the deploy, which is the other half of
       // the message being useful.
       await suDb.query(`DROP INDEX "${PROBE}"`);
+      await suDb.query(guard);
+    });
+
+    test("the recovery the message names gives the index back, not just a green deploy", async () => {
+      // THE HALF THE SIBLING GUARDS GET WRONG. Running the guard's SQL directly proves it raises; it
+      // does not prove the sentence it raises leads anywhere. Behind the `--applied` door the build
+      // file is recorded as applied and never runs again, so an operator who drops the dead index
+      // ends with `conversations` carrying NO index on this prefix: the deploy goes green, the plan
+      // goes back to the scan, and nothing asks a second time. Measured here on the REAL index.
+      const guard = readFileSync(ASSERT_FILE, "utf8");
+      const valido = async () => {
+        const r = await suDb.query<{ valid: boolean }>(
+          `SELECT i.indisvalid AS valid
+             FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = $1`,
+          [INDEX],
+        );
+        return r.rows.map((x) => x.valid);
+      };
+
+      // The state an interrupted build leaves: the index is there, and Postgres will not use it.
+      await suDb.query(
+        `UPDATE pg_index SET indisvalid = false WHERE indexrelid = '"${INDEX}"'::regclass`,
+      );
+      expect(await valido()).toEqual([false]);
+      // Substring, not a pattern: the message carries `index(es)`, whose parentheses are literal and
+      // one escape away from a regex that quietly matches nothing.
+      await expect(suDb.query(guard)).rejects.toThrow(INDEX);
+
+      // The command the message names, and the definition survives it: this is why it is a REINDEX
+      // and not a drop plus a hand-written CREATE that nobody has the text of at 3am.
+      const antes = await suDb.query<{ def: string }>(
+        `SELECT pg_get_indexdef(i.indexrelid) AS def
+           FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE c.relname = $1`,
+        [INDEX],
+      );
+      await suDb.query(`REINDEX INDEX CONCURRENTLY "${INDEX}"`);
+      expect(await valido()).toEqual([true]);
+      const depois = await suDb.query<{ def: string }>(
+        `SELECT pg_get_indexdef(i.indexrelid) AS def
+           FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE c.relname = $1`,
+        [INDEX],
+      );
+      expect(depois.rows[0]?.def).toBe(antes.rows[0]?.def as string);
+
+      // ...and only then does the guard let the deploy through.
       await suDb.query(guard);
     });
   });

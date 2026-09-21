@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
@@ -9,7 +16,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import { clearMediaAnnotations } from "@/modules/chatwoot/annotations";
+import {
+  clearMediaAnnotations,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -232,6 +242,15 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       },
     });
     inboxDbId = inbox.id;
+  });
+
+  // O STASH É POR (tenant, instance, messageId), E OS CASOS AQUI REPETEM O ID DA MENSAGEM: sem
+  // limpar entre eles, a anotação de um caso responde pelo seguinte, e o seguinte deixa de exercitar
+  // o caminho que ele diz exercitar. Foi assim que a mutação "vision desligada deixa de ser
+  // respeitada" sobreviveu à bateria: o agregado stashado pelo caso anterior fazia a mensagem passar
+  // por já lida, e nenhuma extração era tentada nem com a cerca removida.
+  beforeEach(() => {
+    clearMediaAnnotations();
   });
 
   afterAll(async () => {
@@ -650,6 +669,102 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       const turno = modelo.humanTexts.join("\n");
       expect(turno).toContain("Print do pedido 21607129");
       expect(turno).toContain("Comprovante de PIX");
+    });
+  });
+
+  // OS DOIS CASOS ABAIXO SÃO O CHATWOOT UPSTREAM, onde a rota de write-back da meta não existe: a
+  // extração da chegada não volta para o anexo, ela vive só no stash em memória. Foram achados pela
+  // rodada 1 do review da PR, e cada um mata uma regra diferente.
+
+  test("extração que só existe no stash: o reengage não paga o provedor de novo", async () => {
+    await comCredencial(async () => {
+      const id = await seedConversation(948);
+      await clearFlowLog(suDb, { tenantId });
+      clearMediaAnnotations();
+      const sent: Array<[number, string]> = [];
+      const metaEscrita: Array<[number, string]> = [];
+      const modelo = new TurnCapturingModel(REPLY);
+      const fetchFalso = visionFetch(["NÃO DEVERIA SER CHAMADO."]);
+      // A passagem da chegada leu este anexo e stashou o agregado; a meta do anexo ficou vazia
+      // porque o PATCH não existe no upstream.
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 601 },
+        {
+          imageDescription: "Print do pedido 21607129.",
+          attachmentsUnread: 0,
+        },
+      );
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => modelo,
+          makeClient: stubComAnexos({
+            page: page([{ id: 601, content: "", anexos: [{ id: 61 }] }]),
+            sent,
+            metaEscrita,
+          }),
+          visionFetch: fetchFalso,
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+
+      expect(res.outcome).toBe("posted");
+      // ZERO chamadas. Perguntando só à meta do anexo, esta mensagem pareceria intocada e o
+      // religar pagaria de novo por um texto que já está em mãos — e uma segunda passagem em que
+      // um arquivo falhe trocaria o agregado completo por um mais pobre.
+      expect(chamadasDoProvedor.n).toBe(0);
+      expect(modelo.humanTexts.join("\n")).toContain(
+        "Print do pedido 21607129",
+      );
+    });
+  });
+
+  test("depois de ler tudo, o aviso de não lidos da tentativa anterior some", async () => {
+    await comCredencial(async () => {
+      const id = await seedConversation(949);
+      await clearFlowLog(suDb, { tenantId });
+      clearMediaAnnotations();
+      const sent: Array<[number, string]> = [];
+      const metaEscrita: Array<[number, string]> = [];
+      const modelo = new TurnCapturingModel(REPLY);
+      const fetchFalso = visionFetch([
+        "Comprovante de PIX de R$ 115,00.",
+        "Print do pedido 21607129.",
+      ]);
+      // A passagem da chegada TENTOU e não leu nenhum dos dois: sem descrição nenhuma, e a
+      // contagem de não lidos em 2.
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 602 },
+        { attachmentsUnread: 2 },
+      );
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => modelo,
+          makeClient: stubComAnexos({
+            page: page([
+              { id: 602, content: "", anexos: [{ id: 71 }, { id: 72 }] },
+            ]),
+            sent,
+            metaEscrita,
+          }),
+          visionFetch: fetchFalso,
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+
+      expect(res.outcome).toBe("posted");
+      const turno = modelo.humanTexts.join("\n");
+      expect(turno).toContain("Comprovante de PIX");
+      expect(turno).toContain("Print do pedido 21607129");
+      // E NÃO diz mais que sobrou arquivo por ler: a contagem nova é zero, e zero é uma resposta.
+      expect(turno).not.toContain("anexos-nao-lidos");
     });
   });
 });

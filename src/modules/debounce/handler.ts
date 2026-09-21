@@ -400,6 +400,25 @@ export async function selectAnswerableBurst(
 //
 // Best-effort inteiro: um anexo que não abre, uma vision desligada ou uma credencial que sumiu
 // deixam o turno acontecer com o que havia antes. O que esta função nunca faz é impedir a resposta.
+// SE A LEITURA DESTA MENSAGEM VEIO DO STASH, E NÃO DA META DOS ANEXOS. `m.visuals` traz o que a
+// meta do anexo diz, e no Chatwoot upstream a rota de write-back não existe: ali uma extração
+// bem-sucedida da chegada volta SÓ pelo stash em memória, que o overlay pousa no agregado da
+// mensagem sem dizer de quais anexos ele saiu. Perguntando apenas aos anexos, essa mensagem parece
+// intocada e o religar pagaria o provedor de novo pelo texto que já está em mãos — e pior: numa
+// segunda passagem em que um dos arquivos falhe, o agregado completo é trocado por um mais pobre.
+//
+// Não basta, porém, pular toda mensagem que já tem agregado: quando ALGUM anexo carrega a extração
+// na própria meta, o agregado é dali, sabe-se exatamente o que falta, e `extractMessageVisuals`
+// reusa o lido e abre só o resto. É a diferença entre "já foi lida, não sei o quê" e "já foi lida,
+// e é isto".
+function leituraSoNoStash(m: ChatwootMessageRow): boolean {
+  const temAgregado = Boolean(m.imageDescription || m.extractedText);
+  const algumAnexoExtraido = m.visuals.some(
+    (v) => v.imageDescription || v.extractedText,
+  );
+  return temAgregado && !algumAnexoExtraido;
+}
+
 async function fillMissingVisuals(args: {
   tenantId: bigint;
   instanceId: bigint;
@@ -423,7 +442,9 @@ async function fillMissingVisuals(args: {
   // respondida — um agente desligado não tem turno.
   const cfg = readVisionConfig(args.settings);
   if (!cfg.enabled) return;
-  const alvos = args.pending.filter((m) => hasUnextractedVisual(m.visuals));
+  const alvos = args.pending.filter(
+    (m) => hasUnextractedVisual(m.visuals) && !leituraSoNoStash(m),
+  );
   if (alvos.length === 0) return;
 
   // UMA MENSAGEM DE CADA VEZ, e os anexos DENTRO de cada uma em paralelo (é o que

@@ -119,7 +119,11 @@ export function overlayMediaAnnotations(
     row.extractedText = hit.note.extractedText ?? row.extractedText ?? null;
     // Not `??=` on a field the fetched page never carries: the re-fetch cannot know what the eager
     // pass declined to open, so the stash is the only source and always wins here.
-    if (hit.note.attachmentsUnread)
+    // ZERO É RESPOSTA, não ausência de resposta. A passagem que finalmente leu tudo stasha `0`, e um
+    // teste de truthiness deixaria de pé a contagem POSITIVA que um overlay anterior já pousou
+    // nesta mesma linha: o turno renderizaria "N arquivos não lidos" ao lado da extração completa.
+    // Só `undefined` (o stash é de outra passagem, que não mexeu neste campo) preserva o que está lá.
+    if (hit.note.attachmentsUnread !== undefined)
       row.attachmentsUnread = hit.note.attachmentsUnread;
   }
 }

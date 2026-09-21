@@ -246,6 +246,10 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/memory-dead-letter.test.ts": 1,
   "tests/modules/observe-job.test.ts": 1,
   "tests/modules/playground-guardrails.test.ts": 1,
+  // #757: um leitor, e é ele que conta a TENTATIVA de extração no turno do religar — a linha de
+  // estágio `vision` é a única prova de que o anexo foi aberto, já que o texto da resposta não
+  // distingue "leu e resumiu" de "inventou".
+  "tests/modules/reengage-vision.test.ts": 1,
   "tests/modules/reengage.test.ts": 3,
   "tests/modules/model-fallback-turn.test.ts": 1,
   // #737: duas leituras, e as duas são tenant-wide de propósito. O sujeito de uma é QUANTAS linhas

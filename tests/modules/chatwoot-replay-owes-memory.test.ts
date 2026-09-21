@@ -52,6 +52,8 @@ const INBOX_ID = 91;
 // A inbox cuja agenda de atendimento está SEMPRE fechada: toda mensagem cai no portão de fora de
 // horário, que responde o aviso de ausência e CONSOME a mensagem (`act && consumed`).
 const INBOX_CLOSED = 92;
+const INBOX_TEST = 93;
+let inboxTestDbId: bigint;
 const BOT_ID = 11;
 const CONTACT_INBOX_BASE = 91_000;
 const SENT_AT = Math.floor(Date.now() / 1000) - 3600;
@@ -151,6 +153,30 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         agentId: forazinho.id,
       },
     });
+    // MODO TESTE: a rota que NÃO ingere continuamente (`ingestsContinuously("test")` é falso), e por
+    // isso a única em que o dever gravado na linha não tem como ser honrado se o portão da ingestão
+    // só olhar a rota. É o caso do achado da rodada 5.
+    const emTeste = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Em teste",
+        systemPrompt: "Você é prestativa.",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        settings: { debounce: { enabled: false } },
+        mode: "test",
+      },
+    });
+    const caixaTeste = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_TEST,
+        name: "Em teste",
+        agentId: emTeste.id,
+      },
+      select: { id: true },
+    });
+    inboxTestDbId = caixaTeste.id;
   });
 
   afterAll(async () => {
@@ -362,13 +388,17 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     content: string,
     // Uma mensagem MAIS NOVA do cliente na página não ancorada, que é o que a cerca de frescor lê.
     newer?: { id: number; content: string },
+    // A CAIXA QUE O REPLAY VAI LER. É por aqui que ele resolve a rota, então um stub que responde
+    // sempre a mesma caixa faz todo replay cair no agente dela — medido: um caso escrito para a rota
+    // em modo teste resolvia o agente de produção e passava sem medir nada.
+    inboxId = INBOX_ID,
   ) {
     const sent: Array<[number, string]> = [];
     const client = {
       getConversation: async (conversationId: number) => ({
         id: conversationId,
         status: "pending",
-        inbox_id: INBOX_ID,
+        inbox_id: inboxId,
         last_activity_at: SENT_AT,
         timestamp: SENT_AT,
         meta: { assignee: null, sender: { id: 77, name: "Cliente" } },
@@ -379,7 +409,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
           content: text,
           message_type: 0,
           private: false,
-          inbox_id: INBOX_ID,
+          inbox_id: inboxId,
           created_at: at,
           sender: { id: 77, name: "Cliente", type: "contact" },
           attachments: [],
@@ -576,6 +606,138 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     // memória — e o escopo estreito existe só para o caso do outro bot, que pode estar trabalhando
     // nela agora.
     expect(row.settleScopedToThisDelivery).toBe(false);
+  });
+
+  // O ACHADO DA RODADA 5, e ele é sobre a ÚNICA rota em que o dever gravado não tinha como ser
+  // honrado. A parada por posse FORÇA a ingestão (`routeIngests` lê `stoodDownUnread`), e ela existe
+  // exatamente para o modo teste: `ingestsContinuously("test")` é falso, então sem a força a
+  // mensagem do cliente não iria a lugar nenhum. Só que no REPLAY o turno é deliberadamente
+  // suprimido — é o conserto desta issue —, então `stoodDownUnread` nunca vale ali, e
+  // `routeIngests` cai para `routeRemembers`, que é falso nesta rota. Resultado: a linha dizia que
+  // devia memória e o replay não tinha por onde pagar.
+  //
+  // A coluna É o dever, então ela também abre o portão da ingestão. O teste mede as duas pontas na
+  // mesma rota: a passada grava o dever, e o replay paga.
+  test("no modo teste o dever gravado abre a ingestão do replay, que é a rota onde nada mais abre", async () => {
+    const convId = 9411;
+    const texto = "esse número é o certo?";
+    deliverySeq += 1;
+    messageSeq += 1;
+    const messageId = messageSeq;
+    // A ATIVAÇÃO do `/teste` é o que faz o agente em modo teste agir; ela mora na conversa, e os
+    // portões leem a do EPISÓDIO, então o espelho precisa existir carimbado ANTES do evento.
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        contactInboxId: CONTACT_INBOX_BASE + convId,
+        // A CAIXA, e não só o id do Chatwoot: o REPLAY resolve a rota pelo espelho, e sem este
+        // vínculo ele cai no agente do bot (produção) — medido, e com isso o caso deste teste
+        // simplesmente não acontece, porque `routeRemembers` volta a ser verdadeiro.
+        inboxId: inboxTestDbId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        testActivatedAt: new Date(),
+      },
+    });
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: texto,
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: heldByBot(convId, INBOX_TEST),
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `rom-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      CONTACT_INBOX_BASE + convId,
+    );
+    markTurnInFlight(graphThreadId);
+    const run = processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: BOT_ID,
+      normalized: n,
+      base: semFila(),
+      deps: {
+        makeClient: (async () =>
+          ({
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["É esse mesmo!"] }),
+      },
+    }).catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    const assumiu = await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { assigneeType: "User", assigneeId: 5, status: "open" },
+    });
+    expect(assumiu.count).toBe(1);
+    clearTurnInFlight(graphThreadId);
+    await run;
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: delivery.id },
+      select: { status: true, owesMemoryOnly: true, routeRemembers: true },
+    });
+    // A PREMISSA DA ROTA, afirmada porque é ela que torna o caso único: esta rota NÃO lembra
+    // continuamente. Num agente de produção o replay pagaria pelo `routeRemembers` e o teste passaria
+    // sem medir nada.
+    expect(row.routeRemembers).toBe(false);
+    expect(row.status).toBe("PROCESSING");
+    expect(row.owesMemoryOnly).toBe(true);
+
+    // O REPLAY PAGA O DEVER. Sem o dever no portão da ingestão, nada é enfileirado aqui e a mensagem
+    // do cliente fica sem memória nenhuma, com a linha já dizendo que devia.
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: delivery.id },
+      data: { status: "DEAD" },
+    });
+    const stub = stubChatwoot(convId, messageId, texto, undefined, INBOX_TEST);
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: delivery.id,
+      base: appDb,
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["É esse mesmo!"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+    expect(stub.sent).toEqual([]);
+    const jobs = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: { contains: `:ci:${CONTACT_INBOX_BASE + convId}:` },
+      },
+      select: { dedupeKey: true },
+    });
+    expect(jobs.map((j) => j.dedupeKey)).toEqual([
+      `ingest:${tenantId}:${instanceId}:ci:${CONTACT_INBOX_BASE + convId}:${messageId}`,
+    ]);
   });
 
   test("a mensagem que uma pessoa já tratou não é respondida quando a conversa volta ao bot", async () => {

@@ -6652,8 +6652,22 @@ export async function processChatwootDelivery(
   // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
   // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
   // a punha no canal antes de a re-checagem pós-geração recusar o envio.
+  //
+  // E `params.owesMemoryOnly` É A QUARTA (issue #725, review r5), pelo motivo que as outras três já
+  // estabelecem e que só aparece no REPLAY. A parada por posse entra aqui porque um agente em `test`
+  // numa conversa ativada não ingere continuamente, e sem a força a mensagem do cliente não iria a
+  // lugar nenhum — mas no replay o turno é deliberadamente suprimido (é o conserto desta issue),
+  // então `stoodDownUnread` nunca vale ali e esta expressão caía para `routeRemembers`, falso nessa
+  // exata rota. A linha dizia que devia um append e o replay não tinha por onde pagar: nada era
+  // enfileirado, e a recuperação voltava a declarar a perda até gastar o orçamento de retentativa.
+  // A coluna NÃO é uma dica sobre a rota, é o DEVER daquela passada, então ela abre este portão
+  // pelo mesmo direito que a parada que a gravou.
   const routeIngests =
-    rt !== null && (routeRemembers || handedToObserver || stoodDownUnread);
+    rt !== null &&
+    (routeRemembers ||
+      handedToObserver ||
+      stoodDownUnread ||
+      params.owesMemoryOnly === true);
   // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
   // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
   // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,

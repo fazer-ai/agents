@@ -811,17 +811,54 @@ export async function revokeJobsByKeyPrefixOn(
   db: ScopedDb,
   kind: SchedulerJobKind,
   prefix: string,
+  // UP TO THIS MESSAGE, when the caller has one (issue #736). `/reset` is not instantaneous: its
+  // memory step waits for `withKeyedQueue('ingest:<thread>')` behind whatever ingestion is in
+  // flight, and `armIngest` does NOT take that queue — it calls `enqueueJob` straight through. So a
+  // customer message landing in that stretch arrives AFTER the command, arms its own ingestion, and
+  // unqualified this deleted it. The loss is silent twice over: the row is deleted rather than
+  // retired, and INGEST_MESSAGE is JOB_DELETE_ON_DONE, so afterwards "deleted by the revoke",
+  // "ingested" and "never armed" are the same zero rows.
+  //
+  // OMITTED MEANS EVERYTHING, and that is not the same choice `cancelPendingJobsByPrefixUpToMessage`
+  // makes. A command that named no message writes no boundary, and the OBSERVE cancel SKIPS itself
+  // there because a verdict with nothing to order against is better left to the tick's own fence.
+  // This one must still run: its duty is to stop text from BEFORE the reset landing back in a
+  // cleared thread, and that duty does not depend on the command having an id. The two are one line
+  // apart and part company here, which is why it is said out loud.
+  //
+  // READ FROM THE KEY, not from `payload.messageId`, and evaluated INSIDE the delete. Two things
+  // forced that, and they pull in the same direction.
+  //
+  // The key, because `payload` is a convenience copy a row could be missing, and Prisma renders
+  // every JSON path comparison with a `JSONB_TYPEOF(...) = 'number'` guard — inside a `NOT` as much
+  // as outside it, measured — so no filter the query builder can express even sees such a row.
+  // Whichever way the payload form is written it gets one of the two sides wrong: as `lte` the
+  // undecidable row BELOW the boundary survives holding text the reset was asked to erase, and as
+  // "delete what is not provably above" the one ABOVE it is deleted, which is the customer message
+  // this fence exists to save. `ingestDedupeKey` builds `ingest:<thread>:<messageId>` from
+  // `ingestKeyPrefix`, so what follows the prefix IS the message id, in decimal.
+  //
+  // Inside the delete, because reading the ids first and deleting by id opens a window this
+  // statement does not have (PR review round 1): `runScopedOn` runs at READ COMMITTED and
+  // `armIngest` takes neither the ingestion queue nor the thread row, so a delayed pre-reset
+  // delivery arming between the read and the delete is absent from the id list and SURVIVES the
+  // reset. One statement sees rows committed up to its own start, which is the same window the
+  // unqualified sweep always had rather than a wider one.
+  //
+  // The unreadable suffix is DELETED, and that asymmetry is deliberate: "above" is what spares a
+  // row, so a key this cannot parse is not spared on evidence nobody has. The bound is therefore
+  // meaningful only for a kind whose key ends in the message id, which is the one caller it has.
+  atOrBelowMessageId?: number,
 ): Promise<{ count: number; erasedDeaths: ErasedDeath[] }> {
   {
+    // NO `status` HERE, and its absence is load-bearing: the two branches below disagree about
+    // which statuses they touch, and each one says so where it acts. The delete spells them in the
+    // raw statement (a DEAD row is erased with the others) and the retire overrides them
+    // (`PENDING`/`CLAIMED` only). A `status` in this shared shape would decide nothing in either —
+    // measured: a mutant removing DEAD from it survived the whole suite, because the delete had
+    // stopped reading it when #739 turned that half into one raw statement.
     const where = {
       kind,
-      // DEAD included, and only for a kind whose rows are deleted. A job that exhausted its retries
-      // before the reset is not going to run, but its row still holds the encrypted message body,
-      // and nothing sweeps this table — so a reset that left it would confirm "memory cleared" over
-      // a stored copy of the conversation.
-      status: {
-        in: ["PENDING" as const, "CLAIMED" as const, "DEAD" as const],
-      },
       dedupeKey: { startsWith: prefix },
     };
     // DELETED where the kind says a finished row leaves nothing behind. Marking it DONE is how the
@@ -864,8 +901,23 @@ export async function revokeJobsByKeyPrefixOn(
       >(Prisma.sql`
         DELETE FROM scheduler_jobs
          WHERE kind = ${kind}::"SchedulerJobKind"
+           -- DEAD included, and only here, where the row is DELETED. A job that exhausted its
+           -- retries before the reset is not going to run, but its row still holds the encrypted
+           -- message body, and nothing sweeps this table — so a reset that left it would confirm
+           -- "memory cleared" over a stored copy of the conversation. And spared on the other side
+           -- of the boundary for the same reason: a DEAD row for a message that arrived AFTER the
+           -- command holds a body the reset was never asked to erase, and deleting it also throws
+           -- away a dead-letter the operator may still need to read.
            AND status IN ('PENDING', 'CLAIMED', 'DEAD')
            AND dedupe_key LIKE ${like}
+           ${
+             atOrBelowMessageId === undefined
+               ? Prisma.empty
+               : Prisma.sql`AND NOT (
+                   substring(dedupe_key from char_length(${prefix}) + 1) ~ '^[0-9]{1,18}$'
+                   AND (substring(dedupe_key from char_length(${prefix}) + 1))::bigint > ${atOrBelowMessageId}
+                 )`
+}
         RETURNING id, tenant_id, dedupe_key, last_error,
                   pg_current_xact_id()::text AS xid,
                   (status = 'DEAD'

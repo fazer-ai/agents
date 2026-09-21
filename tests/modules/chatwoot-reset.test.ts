@@ -250,13 +250,17 @@ async function sendReset(
     inboxId?: number;
     // A stand-in Prisma client, for driving a failure into one specific query.
     base?: PrismaClient;
+    // Deliver the command with NO message id. `NormalizedChatwootMessage.id` is `number | null`, so
+    // `commandMessageId` can be null even on a command that was parsed out of a message's own
+    // content — and every step that orders rows against the command has to say what it does then.
+    semMessageId?: boolean;
   } = {},
 ): Promise<void> {
   deliverySeq += 1;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({
     event: "message_created",
-    id: 9000 + deliverySeq,
+    ...(live.semMessageId ? {} : { id: 9000 + deliverySeq }),
     content,
     message_type: "incoming",
     private: false,
@@ -574,7 +578,12 @@ describe.skipIf(!dbUp)(
             dedupeKey: `ingest:${threadId}:${messageId}`,
             runAt: new Date(),
             status,
-            payload: {},
+            // The payload NAMES THE MESSAGE, because that is the only shape this table ever holds:
+            // `armIngest` is the single writer of an INGEST_MESSAGE row and it always writes
+            // `messageId` (src/graph/ingest-job.ts). It matters here and not before because the
+            // revoke now orders rows against the command, and a `{}` payload would describe a row
+            // no code writes surviving a step that would delete the real one.
+            payload: { messageId },
           },
         });
       }
@@ -609,6 +618,144 @@ describe.skipIf(!dbUp)(
       expect(byKey.has(`ingest:${threadId}:901`)).toBe(false);
       expect(byKey.has(`ingest:${threadId}:903`)).toBe(false);
       expect(byKey.get(`ingest:${otherThread}:902`)).toBe("PENDING");
+    });
+
+    // ...UP TO THE EPISODE BOUNDARY, AND NOT PAST IT (issue #736). The revoke above runs at step 6
+    // of the command, before the Chatwoot client even exists — but the command is not instantaneous
+    // either: it waits for `withKeyedQueue('ingest:<thread>')` behind whatever ingestion is in
+    // flight, and `armIngest` does NOT take that queue (it calls `enqueueJob` straight through). So
+    // a customer message landing in that stretch arrives AFTER the reset, arms its own ingestion,
+    // and unqualified this deleted it. The loss is silent twice over: the row is deleted rather than
+    // retired, and INGEST_MESSAGE is JOB_DELETE_ON_DONE, so "deleted by the revoke", "ingested" and
+    // "never armed" are the same zero rows afterwards.
+    //
+    // The fence of the #718 round does not reach this: there the job's own `stillWanted` re-reads
+    // its row inside the critical section and stands down. Here the row is GONE, so there is nothing
+    // left to re-read.
+    test("an ingestion armed for a message ABOVE the command survives the revoke", async () => {
+      const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      // Far above any id `sendReset` can mint (it numbers commands from 9000), so the assertion does
+      // not depend on how many deliveries ran before it in this file.
+      for (const [messageId, status] of [
+        [99_000, "PENDING"],
+        [99_001, "CLAIMED"],
+        [99_003, "DEAD"],
+      ] as const) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: `ingest:${threadId}:${messageId}`,
+            runAt: new Date(),
+            status,
+            payload: { messageId },
+          },
+        });
+      }
+      // And one from before it, in the same call, so the test states the boundary rather than just
+      // "nothing was deleted".
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: `ingest:${threadId}:800`,
+          runAt: new Date(),
+          status: "PENDING",
+          payload: { messageId: 800 },
+        },
+      });
+
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const rows = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_MESSAGE" },
+        select: { dedupeKey: true, status: true },
+      });
+      const byKey = new Map(rows.map((r) => [r.dedupeKey, r.status]));
+      // DEAD included on this side too. The reason the revoke takes DEAD at all is privacy: the row
+      // still holds the encrypted body of a message the reset was asked to erase. A DEAD row for a
+      // message that arrived AFTER the command holds a body the reset was never asked to erase, and
+      // deleting it also throws away a dead-letter the operator may still need to see.
+      expect(byKey.get(`ingest:${threadId}:99000`)).toBe("PENDING");
+      expect(byKey.get(`ingest:${threadId}:99001`)).toBe("CLAIMED");
+      expect(byKey.get(`ingest:${threadId}:99003`)).toBe("DEAD");
+      expect(byKey.has(`ingest:${threadId}:800`)).toBe(false);
+    });
+
+    // ...AND A COMMAND THAT NAMED NO MESSAGE STILL TAKES EVERYTHING. With no id there is no
+    // boundary — the watermark step above skips its own write for the same reason — and the revoke
+    // has nothing to order rows against. It must NOT fall back to a boundary of its own: passing
+    // zero would spare every row and hand the operator a cleared thread that rebuilds itself, and
+    // passing the newest message would delete what arrived after. Unqualified is the honest answer,
+    // and it is the behaviour this step always had.
+    //
+    // Note this is the opposite choice from the OBSERVE cancel one screen below, which skips itself
+    // entirely when the command named no message. The two are a few lines apart and look alike, so
+    // the difference is asserted here rather than left to be re-aligned by shape: a verdict with
+    // nothing to order against can wait for the tick's own fence, but text from before the reset
+    // landing back in a cleared thread cannot.
+    test("a command that named no message still revokes the whole prefix", async () => {
+      const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      for (const [messageId, status] of [
+        [820, "PENDING"],
+        [99_100, "PENDING"],
+        [99_101, "DEAD"],
+      ] as const) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: `ingest:${threadId}:${messageId}`,
+            runAt: new Date(),
+            status,
+            payload: { messageId },
+          },
+        });
+      }
+
+      // The premise, read BEFORE the command: this conversation row is shared with the tests above,
+      // so it may already carry a boundary from one of them. What the null case has to show is that
+      // this command does not MOVE it, which is the same statement without assuming a clean row.
+      const antes = (
+        await suDb.conversation.findFirstOrThrow({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            contactInboxId: 301,
+          },
+          select: { resetAtMessageId: true },
+        })
+      ).resetAtMessageId;
+
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset("/reset", CONV_ID, { semMessageId: true });
+
+      // Every row, on both sides of any boundary that could have been invented: 820 is below
+      // whatever the row carries, 99100 and 99101 are above it. A fallback of zero would spare all
+      // three; reusing the previous command's mark would spare the two above.
+      expect(
+        await suDb.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: { startsWith: `ingest:${threadId}:` },
+          },
+        }),
+      ).toBe(0);
+      const depois = (
+        await suDb.conversation.findFirstOrThrow({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            contactInboxId: 301,
+          },
+          select: { resetAtMessageId: true },
+        })
+      ).resetAtMessageId;
+      expect(depois).toBe(antes);
     });
 
     // The checkpoint is the one piece of the memory that a compaction can RECREATE. Deleted outside

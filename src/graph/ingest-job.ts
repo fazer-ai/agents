@@ -55,7 +55,23 @@ export function ingestDedupeKey(
   graphThreadId: string,
   messageId: number,
 ): string {
-  return `ingest:${graphThreadId}:${messageId}`;
+  return `${ingestKeyPrefix(graphThreadId)}${messageId}`;
+}
+
+// EVERYTHING UP TO THE MESSAGE ID, and it exists so the two ends of that sentence cannot drift
+// (issue #736). Three places need the prefix rather than one key: the drain scans it, the `/reset`
+// revoke sweeps it, and that revoke now READS the id back off the key to decide which rows are
+// after the command. Written by hand in each of them, a change to the key's shape (a suffix, an
+// episode, a version marker) would leave the reader unable to parse any key on the thread — and the
+// reader's unreadable case deletes, so the whole thread's queued ingestion would be revoked in
+// silence, which is the exact loss #736 exists to close, coming back through a change nobody would
+// connect to this revoke. Built from one function, the same change breaks compilation or a test
+// instead.
+//
+// The trailing colon is load-bearing: without it thread `…:ci:10`'s prefix also matches
+// `…:ci:100`'s rows, and a reset on one thread would sweep another's.
+export function ingestKeyPrefix(graphThreadId: string): string {
+  return `ingest:${graphThreadId}:`;
 }
 
 export interface ArmIngestParams {

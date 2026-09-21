@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { ingestKeyPrefix } from "@/graph/ingest-job";
 import {
   claimPendingByKeyPrefix,
   countOwedByKeyPrefix,
@@ -61,7 +62,7 @@ export async function drainPendingIngest(
   graphThreadId: string,
   base: PrismaClient,
 ): Promise<IngestDrainOutcome> {
-  const prefix = `ingest:${graphThreadId}:`;
+  const prefix = ingestKeyPrefix(graphThreadId);
   try {
     // REAP OUR OWN KIND FIRST, for the reason ../modules/scheduler/service.ts already states about a
     // lane with its own worker: the worker flags are independent, so with the shared scheduler off

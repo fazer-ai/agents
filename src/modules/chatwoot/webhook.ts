@@ -99,6 +99,7 @@ import {
 } from "@/modules/debounce/service";
 import {
   advanceHandledWatermark,
+  dispenseMessagesFromReply,
   readAnsweredFloor,
 } from "@/modules/debounce/watermark";
 import { emitCommandDropped } from "@/modules/flowlog/command";
@@ -6314,14 +6315,6 @@ export async function processChatwootDelivery(
     // stays on PROCESSING, and the sweep's recovery runs the path again (the ingestion already
     // queued is idempotent by message id).
     onWatermarkFailure: "settle" | "leave-for-sweep";
-    // QUAL DAS DUAS METADES, porque elas param de andar juntas quando a liquidação espera a ingestão
-    // e a RECUSA DE RESPOSTA não pode esperar (issue #725, review r6). A marca carrega um `dispensed`
-    // que nomeia a mensagem, e é isso que tira a mensagem da rajada seguinte do debounce: adiar a
-    // marca junto com a linha, numa conversa que continua sendo do BOT (um portão de horário, não uma
-    // pessoa), deixa a mensagem calada pelo portão dentro do flush que roda quando o expediente abre
-    // — a resposta dupla que esta issue existe para impedir, voltando pela porta do debounce.
-    // Omitido = as duas, na ordem em que estão escritas.
-    only?: "watermark" | "settle";
   }): Promise<void> => {
     const messageId = n.message?.id;
     const conversationRowId = mirror.conversationRowId;
@@ -6369,11 +6362,7 @@ export async function processChatwootDelivery(
     // responder). Só o valor vindo da linha é novo: ele diz que esta passada é o replay de uma parada
     // que aconteceu ao lado de outro bot, e aí a marca é da rota dele pela mesma regra que o
     // observador já segue — a marca fica com quem pode responder.
-    if (
-      opts.only !== "settle" &&
-      !responderMayAnswer &&
-      params.settleScopedToThisDelivery !== true
-    ) {
+    if (!responderMayAnswer && params.settleScopedToThisDelivery !== true) {
       try {
         await advanceHandledWatermark({
           tenantId: params.tenantId,
@@ -6399,7 +6388,6 @@ export async function processChatwootDelivery(
         }
       }
     }
-    if (opts.only === "watermark") return;
     await settleDelivery(
       messageId,
       "consumed",
@@ -6549,9 +6537,29 @@ export async function processChatwootDelivery(
     // é a perda silenciosa. Aqui a linha CONTINUA não terminal, então a memória segue devida e
     // visível: o que a marca afirma é só que resposta não se deve, e isso é verdade desde o instante
     // em que o portão consumiu a mensagem.
-    await markHandledAndSettle({
-      onWatermarkFailure: "settle",
-      only: "watermark",
+    // As duas leituras que a escrita exige, e ela é pulada sem nenhuma delas: sem a linha do espelho
+    // não há conversa para dispensar, e sem id não há mensagem — as mesmas guardas que
+    // `markHandledAndSettle` faz no topo dele.
+    const dispensaConv = mirror.conversationRowId;
+    const dispensaMsg = n.message?.id;
+    await (dispensaConv === null || dispensaMsg == null
+      ? Promise.resolve()
+      : dispenseMessagesFromReply({
+          tenantId: params.tenantId,
+          conversationDbId: dispensaConv,
+          messageIds: [dispensaMsg],
+          base,
+        })
+    ).catch((err) => {
+      // Best-effort e não lançado, como as outras escritas de intenção desta passada: o trabalho da
+      // entrega é a ingestão, e trocá-la por um registro de recusa deixaria a mensagem sem memória.
+      // Uma dispensa que falha devolve a exposição que a base já tinha — o flush do expediente
+      // respondendo a mensagem calada —, e a linha não terminal continua sendo o que cobra a memória.
+      logger.warn(
+        "chatwoot: could not record that a gate refused a reply to this message (conv=%s): %s; a later burst may answer it",
+        convLabel,
+        errMsg(err),
+      );
     });
   }
 
@@ -7031,14 +7039,7 @@ export async function processChatwootDelivery(
         } (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
       );
     }
-    await markHandledAndSettle({
-      onWatermarkFailure: "leave-for-sweep",
-      // Na metade do portão a marca já andou lá em cima, junto com o `dispensed`: aqui falta só
-      // fechar a linha. Dito explicitamente em vez de confiar na monotonicidade da marca, porque o
-      // que se repetiria é a escrita do dispensal, e uma segunda escrita do mesmo fato é a forma de
-      // defeito que este arquivo já pagou duas vezes (duas derivações da mesma verdade).
-      only: consumed ? "settle" : undefined,
-    });
+    await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
   }
   // O MESMO DE NOVO, PARA A PARADA DA #688 (review r1). O guarda abaixo é do observador, e esta
   // parada caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED — que é o estado que

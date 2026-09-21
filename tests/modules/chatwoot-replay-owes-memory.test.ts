@@ -1060,19 +1060,20 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(status).toBe("PROCESSING");
     // E ela diz o que aquela passada devia.
     expect(owesMemoryOnly).toBe(true);
-    // E A RECUSA DE RESPOSTA SAI NA HORA, mesmo com a linha esperando (review r6). Aqui a conversa
+    // AS DUAS COISAS, E ELAS SÃO SEPARADAS (review r6 mais o cenário cego s5). Aqui a conversa
     // continua sendo do BOT: quando o expediente abrir, um flush do debounce coalesce a partir da
-    // marca, e é o `dispensed` que nomeia esta mensagem que a tira daquela rajada. Adiá-lo junto com
-    // a liquidação punha de volta na fila de resposta justamente a mensagem que o portão calou.
-    //
-    // A marca ANDAR aqui não perde a mensagem, e a diferença com a metade da posse humana é a linha:
-    // ela continua não terminal, então a memória segue devida e visível para a varredura. O que a
-    // marca afirma é só que resposta não se deve, e isso é verdade desde o instante do portão.
+    // marca, e o que tira esta mensagem da RESPOSTA daquela rajada é a dispensa que a nomeia — uma
+    // recusa de responder é uma decisão sobre a resposta, e `selectOpenMessages` a lê por `purpose`,
+    // então ela não fecha a mensagem para a MEMÓRIA. É isso que deixa a dispensa sair no instante do
+    // portão sem que a marca ande.
     const marca = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true, lastHandledMessageId: true },
     });
-    expect(marca.lastHandledMessageId).toBe(messageId);
+    // A MARCA NÃO COBRE A MENSAGEM, porque a memória dela ainda é devida: marca por cima de uma
+    // mensagem que memória nenhuma tem é a perda ficando invisível, e um flush posterior é o outro
+    // caminho que ainda pode pagá-la.
+    expect(marca.lastHandledMessageId ?? 0).toBeLessThan(messageId);
     // A dispensa POR ID mora em `message_reply_claims` com `reason = DISPENSED` (a tabela de ranges é
     // para o vão que um chamador não consegue enumerar), e é uma das três coisas que
     // `readSelectionState` lê para fechar uma mensagem.

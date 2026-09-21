@@ -71,6 +71,53 @@ export interface AdvanceHandledWatermarkParams {
   base?: PrismaClient;
 }
 
+// UMA RECUSA DE RESPOSTA SEM MOVER A MARCA (issue #725, review r6 mais o cenário cego s5).
+//
+// As duas escritas de `advanceHandledWatermark` respondem perguntas diferentes, e este arquivo já
+// diz qual é qual: `selectOpenMessages` recebe um `purpose` porque "posso RESPONDER isto?" e "devo
+// LEMBRAR isto?" têm respostas opostas, e uma dispensa fecha a primeira e não a segunda (uma recusa
+// de responder é uma decisão sobre a resposta). A metade do PORTÃO da #725 precisa exatamente disso e
+// só disso:
+//
+//   - a resposta é recusada no instante em que o portão consumiu a mensagem, e precisa ser recusada
+//     ali: a conversa continua sendo do BOT, então o flush que roda quando o expediente abre
+//     coalesce a partir da marca e responderia a mensagem que o operador silenciou;
+//   - a MARCA não pode cobrir essa mensagem, porque a memória dela ainda é devida — a linha fica não
+//     terminal para a varredura, e um flush posterior é o outro caminho que ainda pode pagá-la.
+//     Marca por cima de uma mensagem que memória nenhuma tem é a perda ficando invisível.
+//
+// Escrito como função própria em vez de uma bandeira no `advance`: aquela função devolve "a CAS
+// venceu", e um caminho que não tenta a CAS não tem o que responder.
+export async function dispenseMessagesFromReply(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  messageIds: readonly number[];
+  base?: PrismaClient;
+}): Promise<void> {
+  const ids = [...new Set(params.messageIds)].sort((a, b) => a - b);
+  if (ids.length === 0) return;
+  const base = params.base ?? basePrisma;
+  await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    // A LINHA-PAI PRIMEIRO, pelo mesmo motivo que o `advance` documenta acima: o insert no filho toma
+    // `KEY SHARE` na conversa, e `claimReplyBurst` segura `FOR UPDATE` nela. Aqui não existe CAS para
+    // tomar o lock de passagem, então tomá-lo é obrigatório e não uma economia.
+    // `FOR UPDATE` e não um modo mais fraco: é o mesmo que o `advance` toma três dezenas de linhas
+    // abaixo, e o argumento de ordem só se sustenta se os dois caminhos tomarem o pai do mesmo jeito.
+    await db.$queryRaw`SELECT 1 FROM "conversations"
+                        WHERE "id" = ${params.conversationDbId}
+                          FOR UPDATE`;
+    // MESMO INSERT DO `advance`, e o `ON CONFLICT DO NOTHING` é o que faz o primeiro escritor vencer
+    // nas duas ordens: uma mensagem que algum turno já reivindicou continua reivindicada.
+    await db.$executeRaw`
+      INSERT INTO "message_reply_claims"
+             ("tenant_id", "conversation_id", "message_id", "reason")
+      SELECT ${params.tenantId}, ${params.conversationDbId}, m, 'DISPENSED'::"ReplyClaimReason"
+        FROM unnest(${ids}::int[]) AS m
+       ORDER BY m
+          ON CONFLICT ("conversation_id", "message_id") DO NOTHING`;
+  });
+}
+
 // Returns true when this call moved the watermark (the CAS won), false when a concurrent writer
 // already advanced it past `toMessageId`.
 export async function advanceHandledWatermark(

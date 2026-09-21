@@ -698,15 +698,20 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // a varredura a encontra.
     expect(erro).not.toBe(null);
     expect(status).toBe("PROCESSING");
-    // E A RECUSA DE RESPOSTA SAI NA HORA, com a linha esperando (review r6): a conversa continua
-    // sendo do bot, então a marca com o `dispensed` desta mensagem é o que a tira da rajada do
-    // debounce quando o gate passar a autorizar. O que ficou devido é a MEMÓRIA, e a linha não
-    // terminal é quem a cobra.
+    // E A MARCA NÃO PASSOU POR CIMA DELA. Marca acima de uma mensagem que memória nenhuma tem é a
+    // perda ficando invisível, que era o terceiro dos três fatos que este teste travava. A recusa de
+    // RESPOSTA é escrita à parte, no instante do portão (uma dispensa por id), e é ela que impede o
+    // flush do expediente de responder a mensagem calada — as duas perguntas são separadas.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
-      select: { lastHandledMessageId: true },
+      select: { id: true, lastHandledMessageId: true },
     });
-    expect(conv.lastHandledMessageId).toBe(7000 + seq);
+    expect(conv.lastHandledMessageId ?? 0).toBeLessThan(7000 + seq);
+    const dispensas = await suDb.messageReplyClaim.findMany({
+      where: { conversationId: conv.id, messageId: 7000 + seq },
+      select: { reason: true },
+    });
+    expect(dispensas).toEqual([{ reason: "DISPENSED" }]);
     // E A LINHA DIZ O QUE ELA DEVE, que é o que impede o replay de responder por cima do portão.
     const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
       where: { id: deliveryRowId },

@@ -211,6 +211,51 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     };
   }
 
+  // A MESMA conversa nas mãos de OUTRO AgentBot, que é o único estado em que a liquidação da
+  // passada é estreitada: o silêncio é sobre NÓS, e a linha que esta mensagem também tem na rota do
+  // outro bot pertence a uma entrega que pode estar trabalhando agora. `meta.assignee` vem com id
+  // porque o jbuilder do Chatwoot sempre renderiza o agent_bot_slim junto do `assignee_type`, e sem
+  // ele o payload não normaliza.
+  function heldByAnotherBot(convId: number, inboxId = INBOX_ID) {
+    stamp += 1;
+    return {
+      id: convId,
+      inbox_id: inboxId,
+      status: "pending",
+      contact_inbox: { id: CONTACT_INBOX_BASE + convId },
+      meta: {
+        assignee_type: "AgentBot",
+        assignee: { id: BOT_ID + 88, name: "Bot do vizinho" },
+        sender: { id: 77, name: "Cliente" },
+      },
+      channel: "Channel::Api",
+      last_activity_at: Math.floor(Date.now() / 1000),
+      updated_at: stamp,
+    };
+  }
+
+  // A LINHA IRMÃ: a mesma mensagem, na mesma conversa, por outra rota, no estado que a liquidação
+  // ampla alcança (`PROCESSING` com `route_observed` explicitamente `false`, que é o que aquele
+  // `updateMany` exige). É ela que mede a diferença entre os dois escopos, porque o escopo estreito
+  // nomeia uma linha só e o amplo nomeia a mensagem.
+  async function irma(convId: number, messageId: number): Promise<bigint> {
+    deliverySeq += 1;
+    const row = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `irma-${process.pid}-${deliverySeq}`,
+        event: "message_created",
+        status: "PROCESSING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+        routeObserved: false,
+      },
+      select: { id: true },
+    });
+    return row.id;
+  }
+
   // O scheduler recusa exatamente o INGEST_MESSAGE, que é a falha que deixa a linha para o sweep.
   const semFila = () =>
     appDb.$extends({
@@ -238,6 +283,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     messageId: number;
     status: string;
     owesMemoryOnly: boolean | null;
+    settleScopedToThisDelivery: boolean | null;
     routeRemembers: boolean | null;
   }> {
     deliverySeq += 1;
@@ -286,6 +332,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         routeRemembers: true,
         turnCovered: true,
         owesMemoryOnly: true,
+        settleScopedToThisDelivery: true,
       },
     });
     return {
@@ -293,6 +340,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       messageId,
       status: row.status,
       owesMemoryOnly: row.owesMemoryOnly,
+      settleScopedToThisDelivery: row.settleScopedToThisDelivery,
       routeRemembers: row.routeRemembers,
     };
   }
@@ -624,5 +672,114 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(status).toBe("PROCESSED");
     // E ainda assim diz o que devia.
     expect(owesMemoryOnly).toBe(true);
+  });
+
+  // O ESCOPO DA LIQUIDAÇÃO É UM FATO DAQUELE INSTANTE, E NÃO SE RE-DERIVA (rodada 2 de review).
+  //
+  // A coluna que a issue acrescentou desarma a RESPOSTA, e sozinha ela não fecha a outra metade do
+  // mesmo problema: a largura da liquidação sai de QUEM segurava a conversa — estreita ao lado de
+  // outro AgentBot, ampla atrás de uma pessoa ou de um portão. Re-derivada meia hora depois, uma
+  // parada que aconteceu ao lado de outro bot liquida a conversa inteira assim que a posse volta
+  // para nós, e a linha que aquele bot tem para ESTA mensagem fecha como consumida sem que nenhuma
+  // das duas recuperações tenha respondido. É perda silenciosa, que é o que este subsistema existe
+  // para impedir.
+  test("a parada ao lado de outro bot não liquida a linha dele quando a posse volta", async () => {
+    const convId = 9407;
+    const texto = "ainda preciso do segundo boleto";
+
+    const {
+      rowId,
+      messageId,
+      status,
+      owesMemoryOnly,
+      settleScopedToThisDelivery,
+    } = await strandOn(convId, texto, heldByAnotherBot(convId));
+    // A premissa: a linha ficou para a varredura, devendo memória...
+    expect(status).toBe("PROCESSING");
+    expect(owesMemoryOnly).toBe(true);
+    // ...e gravando o escopo daquele instante, que é o que o replay não tem como recalcular.
+    expect(settleScopedToThisDelivery).toBe(true);
+
+    const irmaId = await irma(convId, messageId);
+
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "DEAD" },
+    });
+    // O passo que produz o defeito: a conversa volta para o bot, então re-derivar a posse responde
+    // "ninguém segura isto" e escolhe o escopo amplo.
+    await handBackToBot(convId);
+
+    const stub = stubChatwoot(convId, messageId, texto);
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: ["oi"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+    expect(outcome).toBe("recovered");
+    // Nada foi dito, que é o que a issue já garantia.
+    expect(stub.sent).toEqual([]);
+
+    // O QUE ESTE TESTE MEDE: a linha do outro bot continua na lista de trabalho. Com o escopo
+    // re-derivado ela fecharia em `PROCESSED`, e a única coisa entre aquela mensagem e o silêncio
+    // teria sido retirada por uma recuperação que não respondeu nada.
+    const daOutraRota = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: irmaId },
+      select: { status: true },
+    });
+    expect(daOutraRota.status).toBe("PROCESSING");
+  });
+
+  // O CONTROLE, e ele é o que impede o conserto de virar "estreite sempre". Atrás de uma PESSOA o
+  // escopo amplo está certo e é deliberado: ela responde a mensagem por qualquer rota que a tenha
+  // carregado, então toda linha daquela mensagem é moot — e essa largura é também o que resgata um
+  // encalhe que uma tentativa anterior deixou atrás. Estreitar aqui deixaria a linha irmã na lista
+  // de perdas de uma mensagem que uma pessoa atendeu.
+  test("atrás de uma pessoa o escopo continua amplo, e a linha irmã fecha com ela", async () => {
+    const convId = 9408;
+    const texto = "obrigado, era só isso";
+
+    const { rowId, messageId, settleScopedToThisDelivery } = await strandOn(
+      convId,
+      texto,
+      heldByHuman(convId),
+    );
+    // O outro valor da mesma coluna, gravado pela mesma expressão.
+    expect(settleScopedToThisDelivery).toBe(false);
+
+    const irmaId = await irma(convId, messageId);
+
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "DEAD" },
+    });
+    await handBackToBot(convId);
+
+    const stub = stubChatwoot(convId, messageId, texto);
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: ["oi"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+    expect(outcome).toBe("recovered");
+    expect(stub.sent).toEqual([]);
+
+    const daOutraRota = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: irmaId },
+      select: { status: true },
+    });
+    expect(daOutraRota.status).toBe("PROCESSED");
   });
 });

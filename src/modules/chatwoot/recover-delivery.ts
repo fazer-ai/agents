@@ -279,6 +279,10 @@ export async function recoverStrandedDelivery(
         // this delivery before arming the ingestion that then failed, which is the one fact the
         // replay cannot re-derive: everything else it rebuilds describes the conversation NOW.
         owesMemoryOnly: true,
+        // AND THE SCOPE THAT PASS WOULD HAVE SETTLED WITH (review round 2), which is derived from
+        // who held the conversation and therefore the other half of the same problem: rebuilt now,
+        // it answers about ownership as it stands and not about the stand-down being replayed.
+        settleScopedToThisDelivery: true,
       },
     }),
   );
@@ -365,6 +369,9 @@ interface LoadedRow {
   // it before arming. Null on a row an older build wrote and on one whose pass did run a turn: both
   // read as "this row cannot say", and the replay falls back to the event and the role.
   owesMemoryOnly: boolean | null;
+  // How wide that pass would have settled (issue #725, review round 2). Null reads as "this row
+  // cannot say" and leaves the scope to be derived from ownership now, as it always was.
+  settleScopedToThisDelivery: boolean | null;
 }
 
 // PUTTING THE ROW BACK, which is the compensating write both failure roads below take, and the one
@@ -1449,6 +1456,10 @@ async function runRecovery(params: {
       // What that pass owed (issue #725). The row is the only witness that no turn was going to run
       // on it, and without this the re-execution decides from ownership as it stands now.
       owesMemoryOnly: row.owesMemoryOnly === true,
+      // And its settlement scope, passed as the row holds it rather than coerced: `undefined` is
+      // "the row does not say", which is a different instruction from `false`, and collapsing the
+      // two would hand the widest scope to every row an older build wrote.
+      settleScopedToThisDelivery: row.settleScopedToThisDelivery ?? undefined,
       claimFrom: "DEAD",
       onIngest: (o) => {
         ingestOutcome = o;

@@ -483,6 +483,21 @@ model ChatwootWebhookDelivery {
   // way: "nothing here says this pass was memory-only", and the reader falls back to the event and
   // the role, which is what every delivery had before this column.
   owesMemoryOnly      Boolean?              @map("owes_memory_only")
+  // HOW WIDE THE SETTLEMENT OF THAT PASS WOULD HAVE BEEN (issue #725, review round 2). The column
+  // above is not enough on its own, and the gap is the same one it was added to close: the scope is
+  // DERIVED from who held the conversation at the moment of the stand-down — scoped to this delivery
+  // when another AgentBot held it (the silence is about us, and that bot's own row for this message
+  // may be working right now), widened to the conversation when a person held it or a gate consumed
+  // the message (nobody will answer it, on any route). A replay re-derives that from the
+  // conversation as it stands now, so a stand-down that happened beside another bot settles the
+  // whole conversation once ownership has come back to us, and the other bot's stranded row is
+  // marked consumed with neither recovery having answered.
+  //
+  // Written by the same block that writes the column above, from the same expression the settlement
+  // uses, so the two facts are recorded at the one instant both are true. Null reads as "this row
+  // cannot say" and falls back to deriving it now, which is what every delivery did before the
+  // column.
+  settleScopedToThisDelivery Boolean?          @map("settle_scoped_to_this_delivery")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

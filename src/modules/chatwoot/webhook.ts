@@ -1666,6 +1666,17 @@ export interface ProcessChatwootParams {
   // same shape the observer's route uses (`observing`), for the same reason — a fact that silences
   // the reply must not be smuggled into the word that means "the bot holds this conversation".
   owesMemoryOnly?: boolean;
+  // AND HOW WIDE THAT PASS WOULD HAVE SETTLED (issue #725, review round 2), from the ledger's
+  // `settleScopedToThisDelivery`. The column above disarms the reply; this one is the other half of
+  // the same "a moment that is gone" problem, because the settlement's scope is derived from WHO
+  // held the conversation: scoped to this delivery beside another AgentBot, widened to the whole
+  // conversation behind a person or a gate. Re-derived on a replay, a stand-down that happened
+  // beside another bot settles the conversation once ownership has come back to us, and that bot's
+  // own row for this message is marked consumed with neither recovery having answered.
+  //
+  // Undefined or null is "this row cannot say", which derives it now — the reading every delivery
+  // had before the column.
+  settleScopedToThisDelivery?: boolean;
   // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), as the ledger row
   // holds it. Both callers pass the ROW's value — the live path from the insert it just made or the
   // duplicate it found, the recovery from the row it took back — because the question it answers is
@@ -6354,7 +6365,16 @@ export async function processChatwootDelivery(
       // This whole path is the one no turn takes: the gate closed, a person or another bot holds the
       // conversation, or the observer owes the memory instead. Nothing invoked a graph.
       false,
-      heldByAnotherBot || observer !== null ? "this-delivery" : "conversation",
+      // PREFERRED FROM THE ROW WHEN THE ROW SAYS IT (issue #725, review round 2). Both terms below
+      // are read from the conversation as it stands NOW, which is the right answer for a live
+      // delivery and the wrong one for a replay: the stand-down this row is being replayed for may
+      // have happened beside another AgentBot, and by now the conversation can be back with us. The
+      // wider scope would then retire that bot's own row for this message without either recovery
+      // having answered — which is exactly the loss the scoping exists to avoid.
+      (params.settleScopedToThisDelivery ??
+        (heldByAnotherBot || observer !== null))
+        ? "this-delivery"
+        : "conversation",
     );
   };
   // ...E QUANDO A INGESTÃO É QUEM VAI GUARDAR A MENSAGEM, A LIQUIDAÇÃO ESPERA POR ELA (issue #719).
@@ -6434,7 +6454,12 @@ export async function processChatwootDelivery(
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: { id: params.deliveryRowId },
-        data: { owesMemoryOnly: true },
+        // THE TWO FACTS AT THE ONE INSTANT BOTH ARE TRUE, and the scope from the very expression
+        // `markHandledAndSettle` settles with, not from a second reading of it.
+        data: {
+          owesMemoryOnly: true,
+          settleScopedToThisDelivery: heldByAnotherBot || observer !== null,
+        },
       }),
     ).catch((err) => {
       logger.warn(

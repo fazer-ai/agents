@@ -302,7 +302,7 @@ describe("the concurrent-index guard", () => {
       /A name ending in \.\.\._ccnew or \.\.\._ccold, with or without a trailing number/,
     );
     expect(statements).toMatch(
-      /ends with TWO valid indexes carrying the same definition/,
+      /Reindexing either of those instead of dropping it ends with TWO valid indexes/,
     );
     // ...and the wait the ceiling in step 2 excuses comes back INSIDE the reindex, which waits for
     // any older snapshot including one that never touches this table (measured: 1s idle, 28s

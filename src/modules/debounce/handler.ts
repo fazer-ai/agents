@@ -82,6 +82,11 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import {
+  extractMessageVisuals,
+  hasUnextractedVisual,
+} from "@/modules/vision/extract-message";
+import { readVisionConfig } from "@/modules/vision/settings";
+import {
   clearDeferral,
   readBurstStart,
   readDeferringSince,
@@ -173,6 +178,19 @@ export interface CoalesceTurnContext {
   // Whether this caller is the operator's own re-engage, which is the only one entitled to answer
   // over a silence something chose deliberately (issue #452).
   initiatedBy: "automatic" | "operator";
+  // ABRIR OS ANEXOS QUE NINGUÉM ABRIU AINDA, antes de montar o texto do turno (issue #757).
+  //
+  // A extração de imagem e documento é um passo da CHEGADA da mensagem (`runEagerMedia`), e o que
+  // ela produz vive na meta do anexo. Uma conversa cujas mensagens chegaram antes de o agente
+  // observar a caixa nunca passou por lá, e um turno que a relê hoje entrega ao modelo o marcador
+  // "o usuário enviou uma imagem; peça que envie a informação por texto ou áudio" — pedindo de
+  // volta o que está dentro do anexo que ninguém leu.
+  //
+  // POR PEDIDO DO CHAMADOR, e não sempre, porque o flush do debounce roda DEPOIS da passagem eager:
+  // ali um anexo sem meta é um anexo cuja extração já falhou uma vez, e tentar de novo a cada flush
+  // paga a mesma falha por turno. Quem liga isto é o caminho que sabe que a passagem eager nunca
+  // aconteceu.
+  fillMissingMedia?: boolean;
   // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
   // everybody else's (PR #701, review round 1). Null when the caller has no bot to name, and then
   // every outgoing message on the page counts as somebody else's.
@@ -227,7 +245,19 @@ export async function selectAnswerableBurst(
     | "selectPending"
     | "settings"
     | "label"
-  >,
+  > & {
+    // Presente só quando o chamador quer os anexos sem extração abertos antes do render (ver
+    // `fillMissingMedia` em CoalesceTurnContext). Os ids são os da linha de log: sem eles a linha
+    // de estágio `vision` sai órfã, e a rota do operador para o rastro de um turno
+    // (/logs?conversationId=) não mostra o anexo que falhou.
+    fillMedia?: {
+      turnId: string;
+      convDbId: bigint;
+      agentId: bigint;
+      inboxDbId: bigint | null;
+      threadId: string;
+    };
+  },
   base: PrismaClient,
   deps?: RuntimeDeps,
 ): Promise<AnswerableBurst | null> {
@@ -294,6 +324,22 @@ export async function selectAnswerableBurst(
     dropped = pending.slice(0, pending.length - cfg.maxMessagesPerBurst);
     pending = pending.slice(pending.length - cfg.maxMessagesPerBurst);
   }
+  // ANTES DO RENDER, que é o ponto em que um anexo sem extração vira o marcador que pede reenvio.
+  // Depois do teto de rajada, porque o que foi cortado dali não entra no turno e não deve custar
+  // uma chamada paga.
+  if (ctx.fillMedia)
+    await fillMissingVisuals({
+      tenantId,
+      instanceId,
+      conversationId,
+      settings: ctx.settings,
+      messages,
+      pending,
+      fill: ctx.fillMedia,
+      base,
+      deps,
+    });
+
   const targetWatermark = pending[pending.length - 1]?.id as number;
   // The agent answers the burst's MOST RECENT message, so {{message_id}} must be that exact id.
   // Take the max id over the burst (order-independent, and across every message type incl. an
@@ -345,6 +391,84 @@ export async function selectAnswerableBurst(
   };
 }
 
+// OS ANEXOS DO BURST QUE NINGUÉM ABRIU AINDA, abertos agora (issue #757).
+//
+// O resultado não volta por retorno: ele é stashado pela extração (`extractMessageVisuals`, chaveado
+// por mensagem) e aplicado sobre as linhas pelo overlay, que é o MESMO caminho que a passagem eager
+// usa quando o write-back da meta não existe no Chatwoot upstream. Uma segunda forma de entregar o
+// texto seria um segundo leitor da mesma coisa, e é assim que as duas divergem.
+//
+// Best-effort inteiro: um anexo que não abre, uma vision desligada ou uma credencial que sumiu
+// deixam o turno acontecer com o que havia antes. O que esta função nunca faz é impedir a resposta.
+async function fillMissingVisuals(args: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  settings: unknown;
+  messages: ChatwootMessageRow[];
+  pending: ChatwootMessageRow[];
+  fill: {
+    turnId: string;
+    convDbId: bigint;
+    agentId: bigint;
+    inboxDbId: bigint | null;
+    threadId: string;
+  };
+  base: PrismaClient;
+  deps?: RuntimeDeps;
+}): Promise<void> {
+  // DAS SETTINGS QUE O TURNO JÁ CARREGOU, sem ir ao banco. `resolveVisionConfig` faz exatamente
+  // isto depois de descobrir o agente pela inbox, e aqui o agente já está decidido: quem chegou até
+  // esta linha é o turno dele. A outra metade daquela função, `agent.enabled`, também já está
+  // respondida — um agente desligado não tem turno.
+  const cfg = readVisionConfig(args.settings);
+  if (!cfg.enabled) return;
+  const alvos = args.pending.filter((m) => hasUnextractedVisual(m.visuals));
+  if (alvos.length === 0) return;
+
+  // UMA MENSAGEM DE CADA VEZ, e os anexos DENTRO de cada uma em paralelo (é o que
+  // `extractMessageVisuals` faz). O paralelo que importa é o de arquivos da mesma mensagem, que é
+  // onde o cliente anexa o comprovante, o documento e o print de uma vez; disparar as mensagens
+  // todas juntas multiplicaria o teto por mensagem sem nenhum ganho de latência que o cliente veja.
+  for (const m of alvos) {
+    try {
+      await extractMessageVisuals({
+        tenantId: args.tenantId,
+        instanceId: args.instanceId,
+        conversationId: args.conversationId,
+        messageId: m.id,
+        visuals: m.visuals,
+        cfg,
+        base: args.base,
+        flow: {
+          tenantId: args.tenantId,
+          turnId: args.fill.turnId,
+          source: "inbox",
+          conversationId: args.fill.convDbId,
+          agentId: args.fill.agentId,
+          inboxId: args.fill.inboxDbId,
+          threadId: args.fill.threadId,
+          base: args.base,
+        },
+        deps: {
+          makeClient: args.deps?.makeClient,
+          fetchImpl: args.deps?.visionFetch,
+        },
+        convLabel: String(args.conversationId),
+      });
+    } catch (err) {
+      logger.warn(
+        "vision fill failed (conv=%s msg=%s): %s",
+        String(args.conversationId),
+        String(m.id),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  // O que a extração stashou entra nas linhas aqui, sobre a página já lida.
+  overlayMediaAnnotations(args.tenantId, args.instanceId, args.messages);
+}
+
 // The instant of the newest message in the turn's input, or null when nothing in it carries one
 // (a fixture-built row, a Chatwoot page whose `created_at` did not parse). Null means the age
 // variable renders EMPTY, which is the honest answer: the alternative, falling back to "now", is
@@ -373,7 +497,28 @@ export async function coalesceAndRunTurn(
     loaded,
   } = ctx;
 
-  const burst = await selectAnswerableBurst(ctx, base, deps);
+  // O ID DO TURNO NASCE AQUI, antes da seleção, porque a extração que ela pode disparar já escreve
+  // linhas de log: um id criado depois deixaria o estágio `vision` fora do rastro do turno que o
+  // pediu, que é exatamente a rota do operador para descobrir por que um anexo não foi lido.
+  const turnId = crypto.randomUUID();
+  const burst = await selectAnswerableBurst(
+    {
+      ...ctx,
+      ...(ctx.fillMissingMedia
+        ? {
+            fillMedia: {
+              turnId,
+              convDbId,
+              agentId: loaded.agentId,
+              inboxDbId: loaded.inboxDbId,
+              threadId,
+            },
+          }
+        : {}),
+    },
+    base,
+    deps,
+  );
   if (!burst) return "empty";
   const {
     client,
@@ -476,7 +621,6 @@ export async function coalesceAndRunTurn(
 
   // 3. Run the turn with the coalesced text. A thrown error bubbles to the caller. Share one turnId
   //    so the coalescing line and the turn's stages group together in the logs.
-  const turnId = crypto.randomUUID();
   if (ctx.coalesceStage) {
     emitFlowEvent(
       {

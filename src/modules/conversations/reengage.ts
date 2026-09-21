@@ -590,6 +590,12 @@ export async function reengageConversation(
         // THE ONE OPERATOR-INITIATED PATH. A person looked at the conversation and asked for the
         // tail to be answered, which is the only thing allowed to overturn a deliberate silence.
         initiatedBy: "operator",
+        // OS ANEXOS QUE A PASSAGEM EAGER NUNCA VIU (issue #757). Este botão existe para atender uma
+        // conversa que ficou parada, e a parada mais comum é justamente a que chegou antes de o
+        // agente observar a caixa: nenhuma mensagem dela passou pelo webhook, então nenhum anexo
+        // dela tem extração, e sem isto o turno responde que a imagem não deu para ler — pedindo de
+        // volta o número de pedido que está dentro dela.
+        fillMissingMedia: true,
         managedBotId: resolved.loaded.agentBotId,
         whatsappProvider: resolved.loaded.whatsappProvider,
         label: "reengage",

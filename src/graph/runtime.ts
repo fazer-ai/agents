@@ -242,6 +242,8 @@ export interface RuntimeDeps {
   ttsFetch?: typeof fetch;
   // Injectable fetch for the contact-authorization check (tests); real fetch in production.
   contactAuthFetch?: typeof fetch;
+  // Injectable fetch for the vision provider (tests); real fetch in production.
+  visionFetch?: typeof fetch;
   // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
   imageDeps?: ImageFetchDeps;
   // Injectable for tests: where a document tool writes and reads its rendered PDF.

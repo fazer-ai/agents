@@ -34,6 +34,7 @@ describe("parseChatwootMessages", () => {
       isReaction: false,
       activityType: null,
       senderType: null,
+      visuals: [],
       externalSenderName: null,
       imported: false,
       senderId: null,

@@ -698,13 +698,15 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // a varredura a encontra.
     expect(erro).not.toBe(null);
     expect(status).toBe("PROCESSING");
-    // E A MARCA NÃO PASSOU POR CIMA DELA. Marca acima de uma mensagem que memória nenhuma tem é a
-    // perda ficando invisível, que era o terceiro dos três fatos que este teste travava.
+    // E A RECUSA DE RESPOSTA SAI NA HORA, com a linha esperando (review r6): a conversa continua
+    // sendo do bot, então a marca com o `dispensed` desta mensagem é o que a tira da rajada do
+    // debounce quando o gate passar a autorizar. O que ficou devido é a MEMÓRIA, e a linha não
+    // terminal é quem a cobra.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { lastHandledMessageId: true },
     });
-    expect(conv.lastHandledMessageId ?? 0).toBeLessThan(7000 + seq);
+    expect(conv.lastHandledMessageId).toBe(7000 + seq);
     // E A LINHA DIZ O QUE ELA DEVE, que é o que impede o replay de responder por cima do portão.
     const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
       where: { id: deliveryRowId },

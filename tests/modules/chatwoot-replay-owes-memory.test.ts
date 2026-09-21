@@ -1060,13 +1060,27 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(status).toBe("PROCESSING");
     // E ela diz o que aquela passada devia.
     expect(owesMemoryOnly).toBe(true);
-    // E A MARCA NÃO PASSOU POR CIMA DA MENSAGEM, que é a outra metade do trio que o corpo da issue
-    // mede: marca acima de uma mensagem que memória nenhuma tem é a perda ficando invisível.
+    // E A RECUSA DE RESPOSTA SAI NA HORA, mesmo com a linha esperando (review r6). Aqui a conversa
+    // continua sendo do BOT: quando o expediente abrir, um flush do debounce coalesce a partir da
+    // marca, e é o `dispensed` que nomeia esta mensagem que a tira daquela rajada. Adiá-lo junto com
+    // a liquidação punha de volta na fila de resposta justamente a mensagem que o portão calou.
+    //
+    // A marca ANDAR aqui não perde a mensagem, e a diferença com a metade da posse humana é a linha:
+    // ela continua não terminal, então a memória segue devida e visível para a varredura. O que a
+    // marca afirma é só que resposta não se deve, e isso é verdade desde o instante do portão.
     const marca = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
-      select: { lastHandledMessageId: true },
+      select: { id: true, lastHandledMessageId: true },
     });
-    expect(marca.lastHandledMessageId ?? 0).toBeLessThan(messageId);
+    expect(marca.lastHandledMessageId).toBe(messageId);
+    // A dispensa POR ID mora em `message_reply_claims` com `reason = DISPENSED` (a tabela de ranges é
+    // para o vão que um chamador não consegue enumerar), e é uma das três coisas que
+    // `readSelectionState` lê para fechar uma mensagem.
+    const dispensas = await suDb.messageReplyClaim.findMany({
+      where: { conversationId: marca.id, messageId },
+      select: { messageId: true, reason: true },
+    });
+    expect(dispensas).toEqual([{ messageId, reason: "DISPENSED" }]);
 
     // E O REPLAY FECHA A PERDA SEM RESPONDER: é o desfecho inteiro que a issue pede, e o único
     // caminho em que a coluna é lida.

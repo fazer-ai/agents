@@ -6314,6 +6314,14 @@ export async function processChatwootDelivery(
     // stays on PROCESSING, and the sweep's recovery runs the path again (the ingestion already
     // queued is idempotent by message id).
     onWatermarkFailure: "settle" | "leave-for-sweep";
+    // QUAL DAS DUAS METADES, porque elas param de andar juntas quando a liquidação espera a ingestão
+    // e a RECUSA DE RESPOSTA não pode esperar (issue #725, review r6). A marca carrega um `dispensed`
+    // que nomeia a mensagem, e é isso que tira a mensagem da rajada seguinte do debounce: adiar a
+    // marca junto com a linha, numa conversa que continua sendo do BOT (um portão de horário, não uma
+    // pessoa), deixa a mensagem calada pelo portão dentro do flush que roda quando o expediente abre
+    // — a resposta dupla que esta issue existe para impedir, voltando pela porta do debounce.
+    // Omitido = as duas, na ordem em que estão escritas.
+    only?: "watermark" | "settle";
   }): Promise<void> => {
     const messageId = n.message?.id;
     const conversationRowId = mirror.conversationRowId;
@@ -6361,7 +6369,11 @@ export async function processChatwootDelivery(
     // responder). Só o valor vindo da linha é novo: ele diz que esta passada é o replay de uma parada
     // que aconteceu ao lado de outro bot, e aí a marca é da rota dele pela mesma regra que o
     // observador já segue — a marca fica com quem pode responder.
-    if (!responderMayAnswer && params.settleScopedToThisDelivery !== true) {
+    if (
+      opts.only !== "settle" &&
+      !responderMayAnswer &&
+      params.settleScopedToThisDelivery !== true
+    ) {
       try {
         await advanceHandledWatermark({
           tenantId: params.tenantId,
@@ -6387,6 +6399,7 @@ export async function processChatwootDelivery(
         }
       }
     }
+    if (opts.only === "watermark") return;
     await settleDelivery(
       messageId,
       "consumed",
@@ -6415,23 +6428,26 @@ export async function processChatwootDelivery(
   // caminho COMUM: uma pessoa é dona da conversa, turno nenhum roda, e quem guarda a mensagem é a
   // ingestão.
   //
-  // SÃO DOIS SITES E ESTE CONSERTO COBRE UM, POR MEDIÇÃO E NÃO POR RECORTE DA ISSUE. A condição
-  // deste bloco é `!act || consumed`, e as duas metades chegam à MESMA ingestão contínua: a mensagem
-  // que o bot não responde porque uma pessoa tem a conversa (`!act`) e a que ele não responde porque
-  // um portão a silenciou (`act && consumed`: fora do horário, ou o contato que o gate de
-  // autorização recusou). O site irmão perde a mensagem exatamente igual — medido pelo gate de
-  // autorização recusando o contato: `err=null`, linha `PROCESSED`, marca no id da própria mensagem.
+  // SÃO DOIS SITES E HOJE O ADIAMENTO COBRE OS DOIS (issue #725). A condição deste bloco é
+  // `!act || consumed`, e as duas metades chegam à MESMA ingestão contínua: a mensagem que o bot não
+  // responde porque uma pessoa tem a conversa (`!act`) e a que ele não responde porque um portão a
+  // silenciou (`act && consumed`: fora do horário, ou o contato que o gate de autorização recusou).
+  // O site irmão perdia a mensagem exatamente igual — medido pelo gate de autorização recusando o
+  // contato: `err=null`, linha `PROCESSED`, marca no id da própria mensagem.
   //
-  // E mesmo assim ele NÃO entra aqui, porque a saída deste conserto é mandar a entrega para a
-  // varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES. Isso é desenho, não defeito
-  // (docs/chatwoot.md: "a recovery answers through the gates"), e a linha não carrega nada que diga
-  // "um portão já consumiu esta mensagem" — nada a distingue de uma que ninguém atendeu, o que a
-  // suíte da recuperação já mostra ao ver o replay responder uma entrega estrandada de conversa do
-  // bot. Aplicado ao site irmão, o desfecho é o cliente recebendo o aviso de fora do horário e, meia
-  // hora depois, quando o expediente abre, a resposta do bot para a mesma mensagem. Perder a
-  // mensagem da memória é ruim; responder duas vezes uma que o operador silenciou é pior, e o
-  // conserto do site irmão precisa de uma intenção "só memória" persistida na linha e honrada pelo
-  // replay — outro desenho, outra issue.
+  // A #719 deixou o site irmão de fora por um motivo que era verdadeiro na época: a saída é mandar a
+  // entrega para a varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES (docs/chatwoot.md: "a
+  // recovery answers through the gates"). Sem nada na linha dizendo "um portão já consumiu esta
+  // mensagem", o desfecho seria o cliente recebendo o aviso de fora do horário e, meia hora depois,
+  // a resposta do bot para a mesma mensagem. Perder a mensagem da memória é ruim; responder duas
+  // vezes uma que o operador silenciou é pior.
+  //
+  // `owes_memory_only` é exatamente essa intenção persistida, e é o que desarmou aquele motivo — por
+  // isso as duas metades entram aqui agora. As DUAS ESCRITAS, porém, deixaram de andar juntas: a
+  // liquidação da linha espera a ingestão, e a marca (com o `dispensed` que nomeia a mensagem) NÃO
+  // pode esperar na metade do portão, porque ali a conversa continua sendo do bot e o flush que roda
+  // quando o expediente abre coalesce a partir dela. Isso está logo abaixo, no `else if
+  // (settlesHere && consumed)`.
   //
   // O adiamento é ESTREITO no resto: `observerHolds` já estava fora daqui, com a liquidação dele lá
   // embaixo pelo mesmo motivo (round 20 da #209), e `routeRemembers` é o termo de `routeIngests` que
@@ -6519,6 +6535,24 @@ export async function processChatwootDelivery(
   }
   if (settlesHere && !settleAwaitsIngest) {
     await markHandledAndSettle({ onWatermarkFailure: "settle" });
+  } else if (settlesHere && consumed) {
+    // A RECUSA DE RESPOSTA SAI AGORA, SÓ A LINHA ESPERA (issue #725, review r6). Na metade do PORTÃO
+    // a conversa continua sendo do BOT: quando o expediente abre, ou o gate passa a autorizar, um
+    // flush do debounce coalesce a partir da marca e responde tudo que está acima dela. A marca
+    // carrega o `dispensed` que nomeia esta mensagem, e é ele que a tira daquela rajada — adiá-lo
+    // junto com a liquidação punha a mensagem que o portão calou de volta na fila de resposta, que é
+    // a resposta dupla desta issue chegando pela porta do debounce.
+    //
+    // NÃO vale para a outra metade (`!act`), e a diferença é quem tem a conversa: atrás de uma
+    // PESSOA nenhum flush roda, e ali a marca esperar a ingestão é a escolha medida da #719 — uma
+    // marca acima de uma mensagem que memória nenhuma tem, numa linha que o sweep já não revisita,
+    // é a perda silenciosa. Aqui a linha CONTINUA não terminal, então a memória segue devida e
+    // visível: o que a marca afirma é só que resposta não se deve, e isso é verdade desde o instante
+    // em que o portão consumiu a mensagem.
+    await markHandledAndSettle({
+      onWatermarkFailure: "settle",
+      only: "watermark",
+    });
   }
 
   // ── A PERSON ANSWERED THE CUSTOMER: end the agent's attendance on this conversation ──
@@ -6997,7 +7031,14 @@ export async function processChatwootDelivery(
         } (conv=${convLabel}) and the ingestion of the customer's message could not be armed; leaving the delivery for the sweep`,
       );
     }
-    await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
+    await markHandledAndSettle({
+      onWatermarkFailure: "leave-for-sweep",
+      // Na metade do portão a marca já andou lá em cima, junto com o `dispensed`: aqui falta só
+      // fechar a linha. Dito explicitamente em vez de confiar na monotonicidade da marca, porque o
+      // que se repetiria é a escrita do dispensal, e uma segunda escrita do mesmo fato é a forma de
+      // defeito que este arquivo já pagou duas vezes (duas derivações da mesma verdade).
+      only: consumed ? "settle" : undefined,
+    });
   }
   // O MESMO DE NOVO, PARA A PARADA DA #688 (review r1). O guarda abaixo é do observador, e esta
   // parada caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED — que é o estado que

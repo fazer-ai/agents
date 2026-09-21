@@ -272,6 +272,22 @@ describe("the concurrent-index guard", () => {
     // ...and the REINDEX's precondition, which is the clause this message shipped one round without:
     // the index has to be BUILDABLE.
     expect(statements).toMatch(/is UNIQUE/);
+    // ...scoped to a REINDEX that failed ON ITS OWN, because being interrupted is a second way for
+    // one to fail and the unqualified claim reads as exhaustive.
+    expect(statements).toMatch(/fails on its own means the index is UNIQUE/);
+    // ...and the wait the ceiling in step 2 excuses comes back INSIDE the reindex, which waits for
+    // any older snapshot including one that never touches this table (measured: 1s idle, 28s
+    // against one open transaction on an unrelated table, 111s beside a live build on another
+    // table). An operator who reads that as hung and interrupts it turns one dead index into two:
+    // the original stays invalid and an invalid `..._ccnew` appears beside it (measured).
+    expect(statements).toMatch(
+      /wait phase of its own and waits for ANY transaction whose snapshot is older/,
+    );
+    // The numbers stay in the message: "it may take a while" is advice, "111s beside a live build
+    // on another table" is what tells an operator staring at a prompt that this is the normal shape.
+    expect(statements).toContain("111s");
+    expect(statements).toMatch(/It is NOT stuck, and you must not interrupt it/);
+    expect(statements).toMatch(/leaves the original still invalid AND adds an invalid \.\.\._ccnew/);
     // ...including what the failed attempt leaves behind. A REINDEX that fails on a unique index
     // adds a second dead index, so the clause has to say to DROP it rather than reindex it too:
     // reindexing both ends with a valid duplicate of the same index that somebody removes by hand.

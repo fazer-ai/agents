@@ -100,6 +100,19 @@
 -- build, goes from `179174 | | |` to `179174 | conversations | zz_live2 | waiting for old snapshots`
 -- after `GRANT pg_read_all_stats TO <role>`, in a new session. So the message names that GRANT.
 --
+-- AND THE WAIT MOVES INTO THE REINDEX, which is where the ceiling above stops being the whole
+-- story. `REINDEX INDEX CONCURRENTLY` has a wait phase of its own and waits for any transaction
+-- whose snapshot is older than itself, including one that never touches this table, so excusing the
+-- operator from waiting at step 2 does not make the wait go away: it relocates it to a command that
+-- looks hung with nothing in the runbook explaining why. Measured on one index in one database: 1s
+-- with nothing else running, 28s against a single open transaction on an unrelated table (exactly
+-- the life of that transaction's `pg_sleep(30)`), and 111s beside a live concurrent build on
+-- another table, ending with that build. And the operator who reads that as stuck and interrupts it
+-- makes the catalog worse, measured the same way: the original stays `indisvalid = false` and a
+-- `..._ccnew` appears beside it, also invalid, so one dead index becomes two. That is why step 3
+-- says the wait is expected and says not to interrupt, and why it no longer claims that a REINDEX
+-- which fails can only mean a unique violation: being killed is now a known second way.
+--
 -- THE LAST STEP BELONGS TO BOTH BRANCHES, and putting it inside one of them was the third defect of
 -- this round. Whatever the operator does about the index, THIS migration's row is FAILED from the
 -- moment it raised, so the next `migrate deploy` stops with `P3009` until it is resolved. Measured
@@ -140,7 +153,7 @@ Run it with no WHERE. Without superuser or pg_read_all_stats, a build another ro
 STEP 2, WAIT OUT WHAT COULD BE THIS TABLE''S: an index that query names on conversations is being built right now, so leave it alone. A row naming another table, or one whose relid and index_relid render as bare OIDs instead of names (a build in another database of this cluster), is not yours and you do not wait for it. A row of all NULLs names nothing at all, so you cannot rule it out and you do wait. Re-run step 1 until nothing that could be this table''s is left. If nulled rows keep arriving, which on a busy cluster they will because step 1 is cluster-wide, have an admin run GRANT pg_read_all_stats TO <your role> and run step 1 again in a NEW session: the same role then reads the same build as conversations | ..._idx | waiting for old snapshots instead of NULLs, and the rule above applies again.
 STEP 3, REINDEX WHAT SURVIVES THE WAIT. Do not skip this because step 2 found a build: waiting repairs nothing, and an abandoned index sitting beside a live one raises this same assertion on the next deploy. Re-run this file''s own query, which is the one answer no role setup can hide from the owner (the list above is from before the wait, and step 1 can be nulls):
   SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid JOIN pg_class t ON t.oid = i.indrelid WHERE t.relname = ''conversations'' AND NOT i.indisvalid;
-Every index it still returns is abandoned: run REINDEX INDEX CONCURRENTLY on each, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all). A REINDEX that fails means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew the failed attempt left behind, then reindex the original.
+Every index it still returns is abandoned: run REINDEX INDEX CONCURRENTLY on each, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all). The REINDEX has a wait phase of its own and waits for ANY transaction whose snapshot is older than itself, including one that never touches this table, so it can sit for exactly as long as the build step 2 excused you from waiting for: measured on one index, 1s with nothing else running, 28s against a single open transaction on an unrelated table, and 111s beside a live concurrent build on another table, ending with that build. It is NOT stuck, and you must not interrupt it: an interrupted REINDEX leaves the original still invalid AND adds an invalid ..._ccnew beside it, which is one more of exactly what this migration is reporting. A REINDEX that fails on its own means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew the failed attempt left behind, then reindex the original.
 STEP 4, ALWAYS: prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid, then re-deploy. This migration''s own row is FAILED from the moment it raised, so without step 4 the next deploy stops with P3009 no matter what you did about the index.',
       dead;
   END IF;

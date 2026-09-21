@@ -21,6 +21,7 @@ import {
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
@@ -33,7 +34,7 @@ import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 // conversa cujas mensagens chegaram ANTES de o agente observar a caixa nunca passou por esse
 // caminho, e o reengage é justamente o botão que existe para atendê-la depois: ele relê a thread,
 // acha o anexo sem meta, e `renderInboundMessage` entrega ao modelo o marcador
-// "<usuário enviou uma imagem; peça que envie a informação por texto ou áudio>".
+// o marcador de imagem sem extração que `renderInboundMessage` produz.
 //
 // O efeito, medido numa caixa de e-mail de produção: uma em cada cinco conversas elegíveis de um
 // backfill tem anexo na última mensagem do cliente, e a resposta que sai diz que a imagem não deu
@@ -309,7 +310,7 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
 
     expect(res.outcome).toBe("posted");
     // UMA TENTATIVA POR ANEXO. Hoje são zero: o reengage nunca chama a vision, e o anexo chega ao
-    // modelo como "<usuário enviou uma imagem; peça que envie a informação por texto ou áudio>".
+    // modelo como o marcador de imagem sem extração, em vez do conteúdo dela.
     const linhas = await visionLines(id);
     expect(linhas.length).toBe(1);
   });
@@ -503,9 +504,15 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       expect(res.outcome).toBe("posted");
       const turno = modelo.humanTexts.join("\n");
       expect(turno).toContain("Print do pedido 21607129");
-      // O MARCADOR SOME. Ele é a frase que manda o agente pedir a informação "por texto ou áudio",
-      // num canal que pode não ter áudio nenhum — e pedir de volta o que está dentro do anexo.
-      expect(turno).not.toContain("peça que envie a informação");
+      // O MARCADOR SOME. Ele é a frase que manda o agente pedir de volta o que está dentro do anexo
+      // que ninguém leu. LIDO DO RENDER, não transcrito aqui: um literal copiado vira asserção
+      // sempre-verdadeira no dia em que a frase muda, e foi o que quase aconteceu na #758 — o texto
+      // trocou, este teste continuou verde, e o que ele media tinha deixado de existir.
+      const marcadorSemExtracao = renderInboundMessage({
+        text: "",
+        attachmentTypes: ["image"],
+      });
+      expect(turno).not.toContain(marcadorSemExtracao);
       // E o resultado fica gravado no anexo, para o próximo turno não pagar de novo.
       expect(metaEscrita).toEqual([
         [11, "Print do pedido 21607129, no valor de R$ 115,00."],

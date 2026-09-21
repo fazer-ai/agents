@@ -182,9 +182,8 @@ export interface CoalesceTurnContext {
   //
   // A extração de imagem e documento é um passo da CHEGADA da mensagem (`runEagerMedia`), e o que
   // ela produz vive na meta do anexo. Uma conversa cujas mensagens chegaram antes de o agente
-  // observar a caixa nunca passou por lá, e um turno que a relê hoje entrega ao modelo o marcador
-  // "o usuário enviou uma imagem; peça que envie a informação por texto ou áudio" — pedindo de
-  // volta o que está dentro do anexo que ninguém leu.
+  // observar a caixa nunca passou por lá, e um turno que a relê hoje entrega ao modelo o marcador de
+  // imagem sem extração — pedindo de volta o que está dentro do anexo que ninguém leu.
   //
   // POR PEDIDO DO CHAMADOR, e não sempre, porque o flush do debounce roda DEPOIS da passagem eager:
   // ali um anexo sem meta é um anexo cuja extração já falhou uma vez, e tentar de novo a cada flush

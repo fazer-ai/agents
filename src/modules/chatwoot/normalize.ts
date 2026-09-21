@@ -75,9 +75,16 @@ function float(v: unknown): number | null {
 // partials render `created_at` as epoch seconds (`.to_i`), while `first_reply_created_at` is a
 // plain ActiveRecord attribute and serializes as an ISO-8601 string. Accept either, reject anything
 // that does not parse — a field we cannot read must read as absent, never as the epoch.
-// Chatwoot's own timestamp spellings: epoch SECONDS (what the webhook sends) or an ISO string (what
-// parts of the REST API send). Exported because the message parser reads the same field off the same
-// producer, and a second copy of this would be a second set of edge cases to keep in step.
+// Chatwoot's own timestamp spellings, and it reads BOTH because the same field is spelled two ways
+// by the same producer. Checked against the fork's source rather than inferred: a message's
+// `created_at` is a `Time` on the wire (`Message#webhook_data`), so it arrives as ISO 8601, and an
+// integer over REST (`app/views/api/v1/models/_message.json.jbuilder` renders `created_at.to_i`),
+// so it arrives as epoch SECONDS. A conversation's `last_activity_at` is epoch seconds on both.
+// Reading seconds as milliseconds would date every message in 1970 — an age of fifty-odd years on a
+// message that is minutes old, which is worse than answering nothing.
+//
+// Exported because the message parser reads the same field off the same producer, and a second copy
+// of this would be a second set of edge cases to keep in step.
 export function chatwootTimestamp(v: unknown): Date | null {
   // NOTE: every branch exits through here. `Number.isFinite` and `> 0` both pass for an epoch far
   // outside the range a Date can hold (1e20, or a digit string of the same size), and what comes

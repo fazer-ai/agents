@@ -5617,6 +5617,46 @@ export async function processChatwootDelivery(
   // First-class on-reply reset: a new customer message makes any pending inactivity follow-up moot.
   // Cancel it regardless of the bot gate (a reply while a human handles it should still stop the
   // bot's queued follow-up). Best-effort — a failure here must never strand the delivery.
+  //
+  // RETIRED, NOT CANCELLED, and the difference is the whole of issue #760: a cancel reaches PENDING
+  // rows only, so a follow-up the worker had already claimed ran to completion and the reminder went
+  // out AFTER the customer had written. Everything the job does between the claim and the send is
+  // window — the entry gates, the thread claim, the model call, moderation, the Chatwoot round trips
+  // — and #741 widened it by up to 305 s, at the worst possible moment: that wait fires precisely
+  // when a reactive turn holds the thread, which is to say precisely when a customer message just
+  // arrived and is being answered.
+  //
+  // The tombstone is what the claimed run can see: `stillWanted` in ../followups/handlers.ts is
+  // `!jobRetired(job)`, asked before the invoke and again strictly before the send, and the claim
+  // token is bumped with it so a handler that reads past both still writes nothing. This is the same
+  // retirement /reset already does on this same key and for this same reason — the two halves of one
+  // rule finally agreeing.
+  //
+  // A re-arm clears it: `enqueueJob`'s upsert replaces the payload wholesale, so the sweep arming
+  // the next episode's silence starts from a clean row rather than from a permanent gravestone that
+  // would silence every future follow-up on this conversation.
+  //
+  // UNCONDITIONAL, AND FOUR REVIEW ROUNDS WENT INTO THAT WORD. A recovery re-runs this line for a
+  // message up to `MAX_RECOVERY_AGE_MS` (6h) old, and by then the ladder it retires can be the one
+  // that same message STARTED — step 0 fired, step 1 claimed, nobody spoke since — which the sweep
+  // will not re-arm, because its selection asks `GREATEST(last_inbound_at, last_replied_at) >
+  // last_follow_up_at`. So a fence was written for it, and every ordering available to this line was
+  // tried as its axis: the message's own timestamp (Chatwoot's clock against the database's), the
+  // delivery's `received_at` (our clock, but a live reply crossing a reminder in flight reads as
+  // old), and the `DEAD` retake that would bound it (a delivery can die BEFORE handling the message,
+  // so a retake is not evidence the reply was ever answered). Each version left a hole of the same
+  // shape: a customer who just wrote, getting the next reminder, and the final step RESOLVING the
+  // conversation on them.
+  //
+  // What the fence was protecting turns out to be nearly free to lose. A recovery that answers the
+  // message advances `last_replied_at`, which opens a NEW episode by the same predicate, so the
+  // sweep arms a fresh ladder at the next silence and the old one is redundant. The dead ladder only
+  // costs something when the recovered pass does NOT answer — and a conversation holding an
+  // unanswered customer message is not one a "still there?" reminder should be walking down; it
+  // belongs to the stranded-delivery sweep, which is the alarm written for exactly that.
+  //
+  // So the asymmetry decides, as it does in `feedback_prioridade_zero_limbo`: retire, and lose a
+  // ladder that would mostly have been replaced anyway, rather than speak over somebody who wrote.
   if (isNewIncoming && n.conversationId !== null) {
     const threadId = chatwootThreadId(
       params.tenantId,
@@ -5624,7 +5664,7 @@ export async function processChatwootDelivery(
       n.conversationId,
     );
     try {
-      await cancelPendingJob(
+      await retireJobsByDedupeKey(
         params.tenantId,
         "FOLLOWUP",
         `followup:${threadId}`,

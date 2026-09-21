@@ -5154,6 +5154,20 @@ export async function processChatwootDelivery(
       },
       { ourAgentBotId: params.agentBotId },
     );
+  // O ESCOPO DA LIQUIDAÇÃO DESTA PASSADA, decidido UMA vez (issue #725, review r2/r3). Ele é lido
+  // pela liquidação e gravado na linha, e as duas coisas têm que ser a mesma expressão: enquanto
+  // eram duas, o replay lia o valor gravado (certo) e por baixo regravava a derivação de agora
+  // (errado), então uma segunda falha de arme devolvia a linha para `DEAD` com o escopo já
+  // corrompido e a retentativa seguinte liquidava a conversa inteira — o defeito original, um nível
+  // acima.
+  //
+  // `params.settleScopedToThisDelivery` primeiro porque, quando ele existe, esta passada é o replay
+  // de uma linha que já respondeu esta pergunta no instante em que a resposta era verdade. Undefined
+  // é a entrega ao vivo, e aí quem responde é a conversa como ela está agora, que é o instante certo
+  // para ela.
+  const settleScopedHere =
+    params.settleScopedToThisDelivery ??
+    (heldByAnotherBot || observer !== null);
   const convLabel = n.conversationId === null ? "?" : String(n.conversationId);
 
   // ── A conversation this agent manages just transitioned TO resolved (by anyone: the agent's own
@@ -6371,10 +6385,7 @@ export async function processChatwootDelivery(
       // have happened beside another AgentBot, and by now the conversation can be back with us. The
       // wider scope would then retire that bot's own row for this message without either recovery
       // having answered — which is exactly the loss the scoping exists to avoid.
-      (params.settleScopedToThisDelivery ??
-        (heldByAnotherBot || observer !== null))
-        ? "this-delivery"
-        : "conversation",
+      settleScopedHere ? "this-delivery" : "conversation",
     );
   };
   // ...E QUANDO A INGESTÃO É QUEM VAI GUARDAR A MENSAGEM, A LIQUIDAÇÃO ESPERA POR ELA (issue #719).
@@ -6458,7 +6469,7 @@ export async function processChatwootDelivery(
         // `markHandledAndSettle` settles with, not from a second reading of it.
         data: {
           owesMemoryOnly: true,
-          settleScopedToThisDelivery: heldByAnotherBot || observer !== null,
+          settleScopedToThisDelivery: settleScopedHere,
         },
       }),
     ).catch((err) => {

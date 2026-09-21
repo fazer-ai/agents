@@ -782,4 +782,80 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     });
     expect(daOutraRota.status).toBe("PROCESSED");
   });
+
+  // E O ESCOPO GRAVADO SOBREVIVE A UMA RECUPERAÇÃO QUE FALHOU (rodada 3 de review). O mesmo bloco
+  // que grava a coluna roda no replay, e enquanto a leitura e a escrita eram duas expressões o
+  // replay lia o valor certo e regravava a derivação de agora por baixo: com a posse de volta, `true`
+  // virava `false`. Bastava a ingestão falhar de novo — que é o estado normal de uma linha que já
+  // encalhou uma vez — para a linha voltar para `DEAD` com o escopo corrompido, e aí a retentativa
+  // SEGUINTE liquidava a conversa inteira. O defeito original um nível acima, e mais difícil de ver,
+  // porque a primeira tentativa se comporta certo.
+  test("o escopo gravado atravessa uma recuperação que falhou, e a retentativa não alarga", async () => {
+    const convId = 9409;
+    const texto = "e o terceiro boleto?";
+
+    const { rowId, messageId, settleScopedToThisDelivery } = await strandOn(
+      convId,
+      texto,
+      heldByAnotherBot(convId),
+    );
+    expect(settleScopedToThisDelivery).toBe(true);
+
+    const irmaId = await irma(convId, messageId);
+
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "DEAD" },
+    });
+    await handBackToBot(convId);
+
+    // PRIMEIRA retentativa, com a ingestão falhando de novo: é o que devolve a linha para a
+    // varredura e a única janela em que a coluna pode ser sobrescrita.
+    const stub1 = stubChatwoot(convId, messageId, texto);
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: semFila(),
+      deps: {
+        makeClient: stub1.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: ["oi"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    }).catch(() => {});
+
+    // A ASSERÇÃO QUE PEGA O DEFEITO NA FONTE: a linha continua dizendo o que aquele instante disse.
+    const depois = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { settleScopedToThisDelivery: true },
+    });
+    expect(depois.settleScopedToThisDelivery).toBe(true);
+
+    // E A CONSEQUÊNCIA, medida de ponta a ponta: a linha volta para `DEAD` e a retentativa seguinte
+    // roda com o escopo intacto, então a linha do outro bot continua na lista de trabalho.
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "DEAD" },
+    });
+    const stub2 = stubChatwoot(convId, messageId, texto);
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        makeClient: stub2.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: ["oi"] }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+    expect(outcome).toBe("recovered");
+    expect(stub2.sent).toEqual([]);
+
+    const daOutraRota2 = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: irmaId },
+      select: { status: true },
+    });
+    expect(daOutraRota2.status).toBe("PROCESSING");
+  });
 });

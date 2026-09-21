@@ -62,6 +62,14 @@
 -- prefix (measured: the progress view named the build while the ILIKE returned zero), so the
 -- operator would have been told nothing was running and sent to reindex it.
 --
+-- AND THE VIEW ANSWERS DIFFERENTLY BY ROLE, which is why the message carries no `WHERE`. Measured on
+-- a database owned by a non-superuser, the shape `docs/deploy.md` describes for managed Postgres:
+-- against a build another role started, the owner gets the ROW but every column NULL, while a
+-- superuser gets `conversations | …_idx | waiting for old snapshots`. So `WHERE relid =
+-- 'conversations'::regclass` drops precisely that row, and the check reports "nothing running" for
+-- the operator it was written for. Unfiltered, the nulled row is still an answer: something is
+-- building, and you cannot see what.
+--
 -- THE LAST STEP BELONGS TO BOTH BRANCHES, and putting it inside one of them was the third defect of
 -- this round. Whatever the operator does about the index, THIS migration's row is FAILED from the
 -- moment it raised, so the next `migrate deploy` stops with `P3009` until it is resolved. Measured
@@ -97,8 +105,8 @@ BEGIN
     RAISE EXCEPTION
       'conversations carries invalid index(es): %.
 WHY: either a concurrent build was interrupted and Postgres now refuses to use what it left, or one is running RIGHT NOW. An in-flight build reads exactly the same way, and indisready does not separate the two.
-CHECK: SELECT index_relid::regclass, phase FROM pg_stat_progress_create_index WHERE relid = ''conversations''::regclass;
-IF A ROW COMES BACK: a build is in flight. Let it finish, and do NOT reindex it.
+CHECK: SELECT pid, relid::regclass, index_relid::regclass, phase FROM pg_stat_progress_create_index;
+IF ANY ROW COMES BACK: a build is in flight. Let it finish, and do NOT reindex it. Without superuser or pg_read_all_stats, a build another role started still shows a row with every column NULL, and that answers the question too; do not filter on relid, because that is exactly the row such a filter drops.
 OTHERWISE: run REINDEX INDEX CONCURRENTLY on each dead index, NOT a DROP (the migration that built it is already recorded as applied and will not run again, so a drop leaves the table with no index at all). A REINDEX that fails means the index is UNIQUE and its data violates uniqueness: resolve the duplicates, DROP the ..._ccnew the failed attempt left behind, then reindex the original.
 EITHER WAY, FINISH WITH: prisma migrate resolve --rolled-back 20260921120000_assert_conversation_indexes_valid, then re-deploy. This migration''s own row is FAILED now, so without that the next deploy stops with P3009 no matter which branch you took.',
       dead;

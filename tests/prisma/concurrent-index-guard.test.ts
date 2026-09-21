@@ -69,16 +69,22 @@ function sweep(files: File[]): {
   )) {
     // Anything may sit between the index name and its `ON`, INCLUDING A NEWLINE: two of the three
     // files in this tree are written that way, so a per-line pattern reads one build and misses two.
+    // And `UNIQUE` sits between CREATE and INDEX, so a pattern without it cannot see the one kind of
+    // concurrent build this round spent itself discussing: a unique one, whose interrupted corpse is
+    // also the only kind a REINDEX cannot revive.
     for (const m of codeOf(sql).matchAll(
-      /CREATE\s+INDEX\s+CONCURRENTLY[\s\S]*?\bON\s+"?([a-z0-9_]+)"?/gi,
+      /CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY[\s\S]*?\bON\s+"?([a-z0-9_]+)"?/gi,
     )) {
       builds.set(m[1] as string, name); // sorted, so the last write is the last build
     }
-    // NOT over `statementsOf`: the check lives inside a `DO $$ … $$` body, and a sweep that strips
-    // those bodies (as the statement counter in tenant-index-redundancy.test.ts does) would strip
-    // the table name with it.
-    if (/\bindisvalid\b/.test(sql)) {
-      for (const m of sql.matchAll(/t\.relname\s*=\s*'([a-z0-9_]+)'/g)) {
+    // OVER `statementsOf`, which is the middle of the three views and the only right one here. NOT
+    // `codeOf`: the table name lives inside a string literal (`t.relname = 'conversations'`), which
+    // that view strips, and not the DO-body-stripping sweep in tenant-index-redundancy.test.ts
+    // either, for the same reason. But not raw SQL, which was the bug: a later file holding nothing
+    // but the check IN A COMMENT satisfied the fence while executing no catalog query at all.
+    const declared = statementsOf(sql);
+    if (/\bindisvalid\b/.test(declared)) {
+      for (const m of declared.matchAll(/t\.relname\s*=\s*'([a-z0-9_]+)'/g)) {
         const table = m[1] as string;
         asserts.set(table, [...(asserts.get(table) ?? []), name]);
       }
@@ -173,6 +179,27 @@ describe("the concurrent-index guard", () => {
         { name: "3_build", sql: build("t") },
       ]).unguarded,
     ).toEqual(["t (last built in 3_build, asserted by 2_guard)"]);
+    // A UNIQUE CONCURRENT BUILD IS A CONCURRENT BUILD. `UNIQUE` sits between CREATE and INDEX, so a
+    // pattern without it reports a clean sweep over a table whose guard nobody wrote.
+    expect(
+      sweep([
+        {
+          name: "1_build",
+          sql: 'CREATE UNIQUE INDEX CONCURRENTLY "u_idx"\n    ON "t"("v");',
+        },
+      ]).unguarded,
+    ).toEqual(["t (last built in 1_build, asserted by nothing)"]);
+    // A COMMENTED-OUT ASSERTION IS NOT AN ASSERTION. Read off raw SQL, a later file holding nothing
+    // but the check in a comment satisfies the fence while executing no catalog query at all.
+    expect(
+      sweep([
+        { name: "1_build", sql: build("t") },
+        {
+          name: "2_guard",
+          sql: "-- WHERE t.relname = 't' AND NOT i.indisvalid;\nSELECT 1;",
+        },
+      ]).unguarded,
+    ).toEqual(["t (last built in 1_build, asserted by nothing)"]);
     // A QUOTED RUNBOOK IS NOT A BUILD EITHER, and this is the case that actually bit: the guard's own
     // `RAISE EXCEPTION` tells the operator that an in-flight `CREATE INDEX CONCURRENTLY` reads like a
     // corpse, and to run `REINDEX INDEX CONCURRENTLY … on each` index. Read as code, that second
@@ -227,6 +254,15 @@ describe("the concurrent-index guard", () => {
     // with the ones this message just listed.
     expect(statements).toContain("pg_stat_progress_create_index");
     expect(statements).not.toContain("pg_stat_activity");
+    // ...and the privilege clause, because the view answers DIFFERENTLY by role and the weaker answer
+    // is an EMPTY one. Measured against a database owned by a non-superuser, which is the managed
+    // shape `docs/deploy.md` describes: for a build another role started, the row is there but every
+    // column comes back NULL, so a `WHERE relid = …` filter drops it and the check reports "nothing
+    // running" for the exact case it exists to catch. The message must not carry that filter.
+    expect(statements).toMatch(/pg_read_all_stats/);
+    expect(statements).not.toMatch(
+      /pg_stat_progress_create_index[\s\S]{0,40}WHERE/i,
+    );
     // ...and the REINDEX's precondition, which is the clause this message shipped one round without:
     // the index has to be BUILDABLE.
     expect(statements).toMatch(/is UNIQUE/);

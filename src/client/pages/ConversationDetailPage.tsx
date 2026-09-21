@@ -54,9 +54,11 @@ import {
   useToast,
 } from "@/client/components";
 import { MonitoringBadge } from "@/client/components/MonitoringBadge";
+import { useAuth } from "@/client/contexts/AuthContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { isAdminRole } from "@/client/lib/roles";
 import { type TurnFacts, toolLabel } from "@/client/lib/tool-label";
 import { cn, formatRelativeTime } from "@/client/lib/utils";
 
@@ -1103,6 +1105,13 @@ export function ConversationDetailPage() {
   // After returning a conversation to the AI we reveal a "Respond now" action (it can answer the
   // pending tail immediately instead of waiting for the next inbound message). Reset once used.
   const [offerReengage, setOfferReengage] = useState(false);
+  // QUEM PODE FAZER O AGENTE FALAR COM O CLIENTE (issue #753). Esta tela é a única do console que não
+  // é admin-gated, de propósito: o atendente opera a conversa aqui (transferir, devolver à IA, mudar
+  // status). Re-engajar não é operar, é disparar um turno proativo para o cliente, e a rota passou a
+  // pedir `TENANT_ADMIN`. Oferecer o botão a quem a rota vai recusar é um 403 por aperto de botão,
+  // que lê como defeito do produto e convida a apertar de novo.
+  const { user } = useAuth();
+  const mayReengage = isAdminRole(user?.role);
   const [activity, setActivity] = useState<ActivityState>(null);
   // Safety net to self-clear a live indicator whose "finished" event was lost (socket gap).
   const stuckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1874,7 +1883,8 @@ export function ConversationDetailPage() {
                         {t("conversation.returnToAi", "Return to AI")}
                       </Button>
                     )}
-                  {offerReengage &&
+                  {mayReengage &&
+                    offerReengage &&
                     conv.status === "pending" &&
                     !heldByOther &&
                     responderAnswers && (
@@ -1980,8 +1990,11 @@ export function ConversationDetailPage() {
                 </div>
                 {/* Gated like the other two (issue #495 review, round 1): this button calls the
                     same endpoint, which answers `no-agent` on an inbox nothing answers, and a
-                    conversation keeps its `lastError` long after its responder was unbound. */}
-                {responderAnswers && (
+                    conversation keeps its `lastError` long after its responder was unbound.
+                    E PELO RANK também (issue #753), que é a mesma razão em outra dimensão: este
+                    botão chama a mesma rota, que agora pede `TENANT_ADMIN`, e um `lastError` antigo
+                    faz este card aparecer para um atendente muito depois de o turno ter falhado. */}
+                {mayReengage && responderAnswers && (
                   <Button
                     variant="secondary"
                     size="sm"

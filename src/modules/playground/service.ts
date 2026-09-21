@@ -252,7 +252,18 @@ async function loadPlaygroundConfig(params: {
   const loaded = await runScopedOn(base, ctx, (db) =>
     loadAgentConfig(
       db,
-      { tenantId, instanceId: 0n, conversationId: 0, agentId, threadId },
+      {
+        tenantId,
+        instanceId: 0n,
+        conversationId: 0,
+        agentId,
+        threadId,
+        // The operator just typed it, so the age is "now" (issue #749). Stated rather than left
+        // out: omitted, the variable renders EMPTY here, and the playground is exactly where an
+        // operator goes to find out whether a placeholder they wrote works at all. The literal
+        // rather than a `Date` so the time simulation moves it too — see `prepare.ts`.
+        lastIncomingAt: "now" as const,
+      },
       { ignoreDisabled: true, overrides: params.overrides },
     ),
   );

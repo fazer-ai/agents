@@ -249,7 +249,58 @@ export interface PromptRenderOpts {
   // has no notion of a schedule (the WhatsApp template path), and the schedule placeholders are then
   // left as the operator's own literal rather than answered with a guess.
   availability?: { schedule: Schedule | null };
+  // WHEN THE CUSTOMER'S MESSAGE ARRIVED, for the age variables (issue #749). The instant of the
+  // message that TRIGGERED this turn, and never a column of the mirror: `last_inbound_at` is null on
+  // exactly the conversation that motivated the issue — one the mirror created from an event that is
+  // not a message, which is what every re-engaged conversation is. Omitted (or null) by the callers
+  // that have no triggering message at all (memory compaction, the observer, the playground), and
+  // the variable then resolves EMPTY rather than to an invented age.
+  messageAt?: Date | null;
 }
+
+// How long ago the customer wrote, as a phrase rather than an instant, so the model does not have to
+// do date arithmetic — the same reason `flooredLocalParts` hands back parts. Grows through minutes,
+// hours and days and NEVER clamps: a message from 400 days ago says 400 days, because a silent
+// ceiling would read as a recent message, which is the defect this whole variable exists to remove.
+export function renderMessageAge(
+  messageAt: Date | null | undefined,
+  now: Date,
+  lang: "pt-BR" | "en",
+): string {
+  if (!messageAt) return "";
+  const ms = now.getTime() - messageAt.getTime();
+  if (!Number.isFinite(ms)) return "";
+  // A message dated in the FUTURE is a clock the two sides disagree about, not a negative age, and
+  // it falls out of the first step below: any negative second count is under a minute, so it reads
+  // as "just now" — the truthful half of what is known. Clamping to zero here would be a second way
+  // of saying the same thing, which is a line no test can ever fail.
+  const sec = Math.floor(ms / 1000);
+  const plural = (n: number, one: string, many: string) =>
+    n === 1 ? one : many;
+  if (sec < 60) return lang === "pt-BR" ? "agora mesmo" : "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60)
+    return lang === "pt-BR"
+      ? `há ${min} ${plural(min, "minuto", "minutos")}`
+      : `${min} ${plural(min, "minute", "minutes")} ago`;
+  const hours = Math.floor(min / 60);
+  if (hours < 48)
+    return lang === "pt-BR"
+      ? `há ${hours} ${plural(hours, "hora", "horas")}`
+      : `${hours} ${plural(hours, "hour", "hours")} ago`;
+  const days = Math.floor(hours / 24);
+  return lang === "pt-BR"
+    ? `há ${days} ${plural(days, "dia", "dias")}`
+    : `${days} ${plural(days, "day", "days")} ago`;
+}
+
+// The age variables, by the language of the placeholder the operator wrote. Unlike every other
+// variable here the VALUE is a sentence, so the two spellings are not aliases of one string: an
+// operator writing an English prompt gets "3 days ago", one writing in pt-BR gets "há 3 dias".
+const MESSAGE_AGE_VARS: Record<string, "pt-BR" | "en"> = {
+  idade_ultima_mensagem: "pt-BR",
+  message_age: "en",
+};
 
 // Replaces ONLY allowlisted {{placeholders}}; an unknown one is left untouched (the tenant sees its
 // own literal, never a leak/empty). Static values are pre-sanitized by buildPromptVars; time
@@ -284,6 +335,16 @@ export function interpolatePromptVars(
           : partsInTimezone(now, tz);
         return wrap(
           formatParts(when, fmt?.trim() || timeVar.defaultFormat),
+          key,
+        );
+      }
+      const ageLang = MESSAGE_AGE_VARS[key];
+      if (ageLang) {
+        // Resolved even when there is no instant: the variable EXISTS, so it renders empty like any
+        // other context variable without a value, instead of leaving the operator's prompt carrying
+        // a literal `{{...}}` the model reads as text.
+        return wrap(
+          renderMessageAge(opts.messageAt, opts.now ?? new Date(), ageLang),
           key,
         );
       }
@@ -327,6 +388,16 @@ export const PROMPT_SCHEDULE_VARS_DISPLAY = [
   "horario_atendimento",
 ];
 
+// The age variable for the editor's "insert variable" helper. One name, like the time vars: the EN
+// spelling still interpolates, and offering both would read as two variables rather than one concept
+// with two spellings.
+export const PROMPT_MESSAGE_AGE_VARS_DISPLAY = ["idade_ultima_mensagem"];
+
+// The instant the editor's preview pretends the customer wrote at, so `{{idade_ultima_mensagem}}`
+// renders a phrase instead of the empty string an operator would read as "this does not work".
+// Two hours: long enough to show the shape, short enough that nobody reads it as a real case.
+export const PROMPT_PREVIEW_MESSAGE_AGE_MS = 2 * 60 * 60 * 1000;
+
 export const PROMPT_CONTEXT_VARS = [
   "nome_empresa",
   "nome_agente",
@@ -363,6 +434,7 @@ export const PROMPT_PREVIEW_COMPANY = "Minha Empresa";
 export const PROMPT_ALL_VARS = new Set<string>([
   ...PROMPT_TIME_VARS,
   ...Object.keys(SCHEDULE_VARS),
+  ...Object.keys(MESSAGE_AGE_VARS),
   ...Object.keys(buildPromptVars({})),
 ]);
 

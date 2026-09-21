@@ -252,7 +252,19 @@ export interface AgentConfig {
   // to resolve, and a caller handed only the map renders them literally. The signature is the second
   // consumer of this pair (issue #599); the system prompt is the first, and it reads them from the
   // same place, so the two cannot disagree about what a placeholder means.
-  promptOpts: PromptRenderOpts;
+  // `now` is REQUIRED here while the render option is optional: every caller that produces an
+  // AgentConfig pins one instant for both renderings, and the re-render below needs the same one.
+  promptOpts: PromptRenderOpts & { now: Date };
+  // THE INPUTS THE PROMPT WAS RENDERED FROM, carried so a caller that learns the age of the message
+  // only AFTER the config is loaded can re-render it in ONE pass instead of interpolating over the
+  // finished string (issue #749). The debounce flush and the manual re-engage are both in that
+  // position: they load the config and only then fetch the burst from Chatwoot. A second pass over
+  // the rendered prompt would also resolve placeholders that came from DATA — a mirrored attribute
+  // value spelling `{{nome_contato}}` — which is exactly what appending the sections to the FINISHED
+  // prompt exists to prevent. Re-rendering from the template cannot do that.
+  promptTemplate: string;
+  promptSections: string[];
+  auditedSections: AuditedSection[];
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
@@ -313,6 +325,11 @@ export interface LoadAgentArgs {
   conversationId: number;
   agentId: bigint;
   threadId: string;
+  // WHEN THE CUSTOMER'S MESSAGE ARRIVED (issue #749), from the instant the caller already holds: the
+  // webhook payload's own timestamp, the newest message of a debounced burst, or the row the
+  // re-engage read back from Chatwoot. Absent on the paths with no triggering message (memory
+  // compaction, the observer, the playground), and the age variables then render empty.
+  lastIncomingAt?: Date | "now" | null;
 }
 
 // Live, NON-persisted config override (playground "edit live" popup): the operator tests unsaved
@@ -693,12 +710,18 @@ export async function loadAgentConfig(
   // back to its own `new Date()` per call, and the audited prompt is built further down, after the
   // appointment read: an exact-time variable would otherwise cross a minute (or a date) boundary
   // and the logged prompt would report an hour the model never saw.
+  const promptNow =
+    (ov?.promptNow ? zonedWallClockToInstant(ov.promptNow, timezone) : null) ??
+    new Date();
   const promptOpts = {
     timezone,
-    now:
-      (ov?.promptNow
-        ? zonedWallClockToInstant(ov.promptNow, timezone)
-        : null) ?? new Date(),
+    // The instant the age is measured FROM (issue #749). `"now"` is the caller saying the message is
+    // the one being written at this instant — the playground — and it resolves to the SAME instant
+    // every other time variable uses, simulation included. Handing `new Date()` instead would read
+    // "há 5 horas" for a message the operator just typed, the moment they simulate an earlier hour.
+    messageAt:
+      args.lastIncomingAt === "now" ? promptNow : (args.lastIncomingAt ?? null),
+    now: promptNow,
     // Passed on every real path, so a schedule variable is answered rather than left literal. The
     // playground's time simulation reaches it through `now` above: an operator testing "what does
     // it say at 22:00" sees the agent report itself closed, exactly as the gate would.
@@ -803,6 +826,9 @@ export async function loadAgentConfig(
       : systemPrompt,
     promptVars,
     promptOpts,
+    promptTemplate,
+    promptSections,
+    auditedSections,
     systemPromptAudit: buildPromptAudit({
       template: promptTemplate,
       vars: promptVars,
@@ -870,6 +896,42 @@ export async function loadAgentConfig(
     memoryCompactionCredentialBaseUrl,
     logToolValues: obs.logToolValues,
     fullDetail: obs.fullDetail,
+  };
+}
+
+// A IDADE DA MENSAGEM, quando ela só é conhecida DEPOIS do load (issue #749). O fluxo do debounce e o
+// religamento manual carregam a config e só então buscam a rajada no Chatwoot, então o instante que a
+// cerca precisa não existe ainda na hora de compor. Isto recompõe o prompt a partir das MESMAS
+// entradas, com uma a mais: uma passada só, sobre o template do operador, nunca sobre o texto já
+// renderizado — é o que preserva a garantia de que um valor vindo de dado não forja placeholder.
+//
+// Sem instante, ou com um que não muda nada, devolve a config intocada: quem não sabe a idade não
+// paga nem uma interpolação, e nada no objeto muda de identidade à toa.
+export function withMessageAge(
+  cfg: AgentConfig,
+  at: Date | null | undefined,
+): AgentConfig {
+  if (!at) return cfg;
+  const current = cfg.promptOpts.messageAt;
+  if (current && current.getTime() === at.getTime()) return cfg;
+  const opts = { ...cfg.promptOpts, messageAt: at };
+  const rendered = interpolatePromptVars(
+    cfg.promptTemplate,
+    cfg.promptVars,
+    opts,
+  );
+  return {
+    ...cfg,
+    promptOpts: opts,
+    systemPrompt: cfg.promptSections.length
+      ? `${rendered}\n\n${cfg.promptSections.join("\n\n")}`
+      : rendered,
+    systemPromptAudit: buildPromptAudit({
+      template: cfg.promptTemplate,
+      vars: cfg.promptVars,
+      opts,
+      sections: cfg.auditedSections,
+    }),
   };
 }
 

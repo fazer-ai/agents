@@ -63,6 +63,12 @@ export interface NormalizedChatwootMessage {
   content: string | null;
   messageType: string | null;
   private: boolean;
+  // WHEN CHATWOOT RECORDED THIS MESSAGE (issue #749). The only instant on the whole payload that
+  // answers "when did the customer write", which is what the age variables in the prompt need: the
+  // conversation's own `created_at` answers when the conversation opened, and the mirror column
+  // `last_inbound_at` is null on a conversation the mirror created from a non-message event.
+  // `null` ⇒ the payload did not carry a readable one, and the age then renders empty.
+  createdAt?: Date | null;
   attachments?: NormalizedChatwootAttachment[];
   // The id of the message this one quotes/replies-to (content_attributes.in_reply_to), so the agent
   // gets the referenced context. Resolved against the conversation history when available.

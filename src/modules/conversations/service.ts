@@ -1102,24 +1102,6 @@ export async function getConversationDetail(
       conv.lastInboundAt,
       conv.lastRepliedAt,
     );
-    // UMA consulta de compromisso vivo por chamada, respondida sob demanda. Dois leitores abaixo
-    // fazem a mesma pergunta — a supressão do job de passo tardio (que precisa dela ANTES de decidir
-    // o passo, na ordem do handler) e o `pausedByAppointment` (que a fazia depois) —, e uma segunda
-    // ida ao banco para a mesma verdade é como as três cópias do predicado nasceram. Nenhum dos dois
-    // a dispara sem ter algo a suprimir, então a conversa comum continua sem consulta nenhuma.
-    let liveAppointmentMemo: boolean | null = null;
-    const liveAppointment = async (): Promise<boolean> => {
-      if (liveAppointmentMemo === null) {
-        liveAppointmentMemo = await runScopedOn(
-          base,
-          ctx,
-          async (db) =>
-            (await loadAppointmentContext(db, tenantId, conv.threadId)).length >
-            0,
-        );
-      }
-      return liveAppointmentMemo;
-    };
     // The episode, through the same function the other two readers use. It moves UP here, instead of
     // living only in the branch below, because of issue #750: before it a fresh episode was born from
     // the customer speaking, and the inbound webhook cancels the pending job in the same movement. Our
@@ -1143,33 +1125,18 @@ export async function getConversationDetail(
     // webhook, a worker that never claimed it), and the reader here is the one with nothing after it
     // to correct the promise. Narrower than the handler is the one thing this predicate must not be.
     //
-    // ...E NA ORDEM DO HANDLER, que é o que separa um job CONDENADO de um job ADIADO. Lá o portão do
-    // compromisso vem ANTES do portão do episódio, e ele devolve `reschedule`, não `done`: com uma
-    // pausa de compromisso viva sobre o passo DO JOB, o worker não descarta nada, ele reagenda a
-    // cada hora enquanto o compromisso durar. Suprimir aqui prometeria o passo 1 de um episódio que
-    // não pode começar, porque a chave de dedupe é uma por conversa e o job pendente a segura: nada
-    // novo entra na fila antes de ele morrer. Então a supressão pergunta primeiro se o compromisso
-    // adiaria este job, e só depois se o episódio o condena. Era um buraco já aberto pelo espelho da
-    // #750 no eixo da nossa resposta, sem teste porque nenhuma fixture combinava os dois estados.
-    const jobStepPausedByAppointment =
-      job != null &&
-      jobStepIndex > 0 &&
-      newEpisode &&
-      // E O PASSO TEM QUE EXISTIR, porque o portão do compromisso também não é o primeiro: acima
-      // dele o handler resolve o passo e devolve `done` para um job fora da faixa, sem nunca chegar
-      // ao compromisso. Um passo que não existe não pode ser adiado por nada, e ler a pausa como
-      // aplicável ali (o `step?.ignoreAppointmentPause !== true` de um `undefined` é verdadeiro)
-      // faria este teste passar pelo motivo errado.
-      cfg.steps[jobStepIndex] !== undefined &&
-      cfg.enabled &&
-      !managedByRedirect &&
-      appointmentPauseApplies(cfg, cfg.steps[jobStepIndex]) &&
-      (await liveAppointment());
+    // E O COMPROMISSO NÃO SEGURA ESTE JOB, que foi a primeira coisa que eu escrevi aqui e está
+    // errada (review r1). A tentação é dizer que com um compromisso vivo o worker ADIA em vez de
+    // descartar, então o job sobreviveria e a contagem dele valeria; o que desmente é o `upsertJobRow`
+    // da varredura: ele casa por (tenant, kind, dedupeKey) e o UPDATE reescreve payload e `run_at` de
+    // uma linha PENDING, com o comentário dele nomeando este caso. A varredura não pula conversa com
+    // job pendente, então o passo tardio é sobrescrito pelo passo 0 do episódio novo — e quando a
+    // varredura NÃO seleciona, quem a impede é a mesma pergunta que o `pausedByAppointment` abaixo
+    // faz, pelo passo 0 (o `unfencedAgentIds` da varredura é `!appointmentPauseApplies(cfg,
+    // cfg.steps[0])`). Nas duas pontas o job condenado não conta, e a pausa aparece pelo passo que
+    // vai rodar de verdade, que é o que este leitor já calcula depois.
     const supersededLaterStepJob =
-      job != null &&
-      jobStepIndex > 0 &&
-      newEpisode &&
-      !jobStepPausedByAppointment;
+      job != null && jobStepIndex > 0 && newEpisode;
     // The inactivity floor, the same one the handler and the SQL use: our reply counts as movement.
     const movedAt = lastActivityAt(conv.lastEventAt, conv.lastRepliedAt);
     const fencedStep0Job =
@@ -1286,7 +1253,13 @@ export async function getConversationDetail(
       cfg.enabled &&
       appointmentPauseApplies(cfg, upcomingStep) &&
       !managedByRedirect &&
-      (await liveAppointment());
+      (await runScopedOn(
+        base,
+        ctx,
+        async (db) =>
+          (await loadAppointmentContext(db, tenantId, conv.threadId)).length >
+          0,
+      ));
     if (pausedByAppointment) {
       nextStep = null;
       nextRunAt = null;

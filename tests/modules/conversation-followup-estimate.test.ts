@@ -76,6 +76,9 @@ let cadenceFloorDueAt = "";
 let convNoBotRowArmed = 0n;
 let convSameEpisodeLaterStep = 0n;
 let convStep0JobFarOut = 0n;
+let convDoomedJobUnfencedStep0 = 0n;
+let convDoomedJobFencedStep0 = 0n;
+let convEpisodeBeforeArming = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -552,11 +555,19 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       stepOptOutInbox.id,
       { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
     );
+    // MESMO episódio (o cliente não falou desde o último follow-up), que é onde a pausa decide de
+    // verdade: o job de passo tardio vai rodar, e o que o adia é o compromisso. Com episódio NOVO
+    // este mesmo estado responde outra coisa, medida na #752 — a varredura sobrescreve o job condenado
+    // com o passo 0 —, então o eixo do #103 (a pausa se lê pelo PASSO, não pelo agente) precisa do
+    // episódio parado para continuar sendo sobre o que era.
     convStepOptOutArmedStep1 = await seedAppointmentConv(
       331,
       stepOptOutInbox.id,
       { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
-      { lastFollowUpAt: FOLLOW_UP_AT },
+      {
+        lastInboundAt: new Date(FOLLOW_UP_AT.getTime() - 3_600_000),
+        lastFollowUpAt: FOLLOW_UP_AT,
+      },
     );
     await suDb.schedulerJob.create({
       data: {
@@ -973,6 +984,92 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:353` },
       },
     });
+    // Issue #752: episódio NOVO, job de passo tardio pendente e compromisso vivo, numa persona cujo
+    // passo 0 é isento da pausa. A varredura não pula conversa com job pendente e o `upsertJobRow`
+    // reescreve a linha PENDING, então o que vai acontecer é o passo 0 sobrescrever o passo tardio e
+    // disparar através do compromisso. A tela conta o passo 1.
+    convDoomedJobUnfencedStep0 = await seedAppointmentConv(
+      354,
+      stepOptOutInbox.id,
+      { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      { lastFollowUpAt: FOLLOW_UP_AT },
+    );
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:354`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:354`, stepIndex: 1 },
+      },
+    });
+    // Issue #752, o complemento: o mesmo estado numa persona cujo passo 0 NÃO é isento. Aí a
+    // varredura é cercada pelo compromisso (o `unfencedAgentIds` dela é
+    // `!appointmentPauseApplies(cfg, cfg.steps[0])`), o job condenado é descartado pelo handler e nada
+    // entra no lugar: a tela diz a pausa, e é a pausa do passo que ia rodar.
+    convDoomedJobFencedStep0 = await seedAppointmentConv(
+      355,
+      armedInbox.id,
+      { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      { lastFollowUpAt: FOLLOW_UP_AT },
+    );
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:355`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:355`, stepIndex: 1 },
+      },
+    });
+    // Issue #752: a cerca de ativação do ESTIMADOR, que é o braço em que a supressão do job condenado
+    // deságua. A persona foi armada depois do último movimento desta conversa, então a varredura nunca
+    // vai enfileirar nada aqui e a tela não pode prometer. Sem esta fixture, tirar a cerca não reprovava
+    // nada (mutante 8 da bateria), e com a #752 o braço passou a responder por mais conversas.
+    const lateArmedAgent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "FU Armada depois",
+        systemPrompt: "x",
+        followUpArmedAt: new Date("2026-07-01T00:00:00Z"),
+        mode: "production",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [{ delayValue: 2, delayUnit: "minutes", instructions: "" }],
+          },
+        },
+      },
+    });
+    const lateArmedInbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootInboxId: 98,
+        name: "Sup armada depois",
+        agentId: lateArmedAgent.id,
+      },
+    });
+    convEpisodeBeforeArming = await suDb.conversation
+      .create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId: 356,
+          inboxId: lateArmedInbox.id,
+          status: "pending",
+          assigneeType: null,
+          threadId: `${tenant}:${inst}:356`,
+          lastRepliedMessageId: 1,
+          lastEventAt: LAST_EVENT_AT,
+          lastInboundAt: REPLY_AT,
+          lastFollowUpAt: null,
+        },
+      })
+      .then((c) => c.id);
     convForeignBotEstimate = await seedEstimateConv(326, {
       assigneeType: "AgentBot",
       assigneeId: FOREIGN_BOT_ID,
@@ -1314,16 +1411,29 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.pausedByAppointment).toBe(false);
   });
 
-  // Issue #752, o lado que a ordem do handler decide: com uma pausa de compromisso viva sobre o passo
-  // DO JOB, o worker não descarta o job condenado, ele o REAGENDA (o portão do compromisso vem antes
-  // do portão do episódio), e a chave de dedupe é uma por conversa — então o passo 0 do episódio novo
-  // não pode nem entrar na fila enquanto o job pendente estiver lá. O console tem que dizer a pausa,
-  // e não prometer um passo 1 que não começa. Era um buraco já aberto pelo espelho da #750, que
-  // nenhuma fixture combinava.
-  test("job de passo tardio condenado MAS adiado por compromisso vivo → a pausa, não o passo 1", async () => {
+  // Issue #752 (review r1): o compromisso NÃO segura o job condenado, e foi isso que eu escrevi
+  // errado primeiro. A varredura não pula conversa com job pendente, e o `upsertJobRow` reescreve
+  // payload e `run_at` de uma linha PENDING — o comentário dele nomeia este caso —, então com o passo
+  // 0 isento da pausa o passo tardio é sobrescrito e dispara através do compromisso. A tela conta o
+  // passo 1, e não a pausa.
+  test("job condenado com compromisso vivo, passo 0 isento → a varredura sobrescreve, conta o passo 1", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
-      convStepOptOutArmedStep1,
+      convDoomedJobUnfencedStep0,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+    expect(d.followUp?.nextRunAt).not.toBe(ARMED_STEP1_RUN_AT.toISOString());
+  });
+
+  // E o complemento, que é o que impede a leitura de virar "episódio novo sempre conta": com o passo
+  // 0 sujeito à pausa, a varredura é cercada pelo mesmo compromisso, o job condenado é descartado e
+  // nada entra no lugar. A tela diz a pausa — pela pergunta feita ao passo que ia rodar.
+  test("job condenado com compromisso vivo, passo 0 sujeito à pausa → a pausa, e nada agendado", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convDoomedJobFencedStep0,
       appDb,
     );
     expect(d.followUp?.pausedByAppointment).toBe(true);
@@ -1491,6 +1601,19 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     // o run_at do job condenado (dois dias depois). O valor verbatim é o que separa "suprimiu" de
     // "suprimiu e recontou": um console que só apagasse a contagem diria `null` aqui.
     expect(d.followUp?.nextRunAt).toBe("2026-06-18T23:20:45.000Z");
+  });
+
+  // Issue #752: e o estimador continua obedecendo a cerca de ativação. O episódio desta conversa
+  // começou antes de a persona ser armada, então a varredura não o enfileira nunca; prometer um
+  // passo aqui seria uma contagem para algo que não vai acontecer.
+  test("episódio anterior à ativação do follow-up → o estimador não promete passo nenhum", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convEpisodeBeforeArming,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
   });
 
   // Issue #752: a contagem legítima do passo 2, que é o que a supressão NÃO pode alcançar. Mesmo

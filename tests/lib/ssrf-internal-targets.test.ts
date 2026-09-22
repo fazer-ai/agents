@@ -47,6 +47,8 @@ describe("SSRF_INTERNAL_TARGETS parsing", () => {
     "http://sidecar:80",
     "user@sidecar:80",
     "sidecar:80/path",
+    // WHATWG URL reads `\` as `/`, so this used to parse to host `sidecar` (review round 1).
+    "sidecar\\renderer:8080",
   ])("%p fails naming the variable", (raw) => {
     expect(() => parseInternalTargets(raw, "SSRF_INTERNAL_TARGETS")).toThrow(
       /SSRF_INTERNAL_TARGETS/,

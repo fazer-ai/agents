@@ -601,6 +601,7 @@ const TOOL_FIELDS = [
   "description",
   "method",
   "urlTemplate",
+  "allowedHosts",
   "headers",
   "inputSchema",
   "query",
@@ -2114,6 +2115,26 @@ export function ToolEditModal({
                 </div>
               </FormField>
             </div>
+
+            {/* The allowlist the runtime has always enforced and the console never let anyone write
+                (review round 1 of #615). It is also the per-tool half of reaching an internal
+                service: SSRF_INTERNAL_TARGETS opens a host only for a tool that names it here. */}
+            <FormField
+              label={t("tools.allowedHosts", "Allowed hosts")}
+              description={t(
+                "tools.allowedHostsHint",
+                "Comma-separated, e.g. api.example.com. Empty allows any public host. A tool reaches an internal service declared by the instance only when that host is listed here.",
+              )}
+              error={refusal.at("allowedHosts", current.allowedHosts)}
+            >
+              <Input
+                value={form.allowedHosts}
+                onChange={(e) =>
+                  setForm({ ...form, allowedHosts: e.target.value })
+                }
+                placeholder="api.example.com"
+              />
+            </FormField>
 
             <FormField
               error={refusal.at("credentialRef", current.credentialRef)}

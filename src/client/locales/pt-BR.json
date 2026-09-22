@@ -2592,6 +2592,8 @@
     "aiFields": "Campos da IA",
     "aiFieldsHint": "Descreva cada dado da IA e insira {{name}} onde ele vai; constantes e {{context}} vão direto no campo.",
     "aiFilledType": "Preenchido pela IA: {{type}}",
+    "allowedHosts": "Hosts permitidos",
+    "allowedHostsHint": "Separados por vírgula, ex.: api.exemplo.com. Vazio permite qualquer host público. A ferramenta só alcança um serviço interno declarado pela instância quando o host dele está listado aqui.",
     "appointment": "Esta ferramenta marca ou cancela um agendamento",
     "appointmentAskConfirm": "No último lembrete, perguntar se ele vai comparecer",
     "appointmentBook": "Ela marca um",

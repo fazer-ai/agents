@@ -95,7 +95,10 @@ export interface InternalTarget {
   port: number;
 }
 
-const INTERNAL_TARGET_RE = /^(\[[0-9a-fA-F:.]+\]|[^:/\s[\]@?#]+):(\d{1,5})$/;
+// The host part refuses every character `new URL` would read as the end of the host, the backslash
+// included: WHATWG URL treats `\` as `/` in an http URL, so `sidecar\renderer:8080` would parse to host
+// `sidecar` and silently open a target nobody wrote (review round 1 of #615).
+const INTERNAL_TARGET_RE = /^(\[[0-9a-fA-F:.]+\]|[^:/\\\s[\]@?#]+):(\d{1,5})$/;
 
 export const parseInternalTargets = (
   list: string | undefined,

@@ -3135,6 +3135,71 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toBe(false);
   });
 
+  // REVIEW ROUND 1 OF THIS PR, and the case it caught is the one a name almost hid. A transfer that
+  // SUCCEEDED and declared silence (`customerMessage: ""`, issue #662) leaves `handoffAnsweredTheTurn`
+  // false, because that predicate asks whether the transfer supplies this turn's customer-facing
+  // TEXT. Read through it, this turn looks like nobody chose the silence — and it would page an
+  // operator about a conversation that is correctly sitting in a person's queue. The question here is
+  // only whether somebody is looking.
+  test("a transfer that declared silence explains it, with no skip_reply", async () => {
+    await seedConversation(9776, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, content: string) => {
+        calls.push(["sendMessage", c, content]);
+        return {};
+      },
+      sendPrivateNote: async (c: number, content: string) => {
+        calls.push(["sendPrivateNote", c, content]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9776 }),
+      base: appDb,
+      deps: {
+        // The transfer declares silence and the model writes nothing after it: no closing line, no
+        // `skip_reply`, and an empty completion — every surface of the defect except the defect.
+        makeModel: () =>
+          new HandoffDeclaredSilenceModel("") as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    // The transfer happened: the note is filed and the conversation is open in a person's queue.
+    expect(calls).toEqual([
+      ["sendPrivateNote", 9776, "notificação formal"],
+      ["toggleStatus", 9776, "open"],
+    ]);
+
+    // And nobody is paged, because nothing here is unexplained.
+    await new Promise((r) => setTimeout(r, 300));
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        level: "warn",
+        threadId: `${tenantId}:${instanceId}:9776`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.silenceUnexplained ===
+          true,
+      ),
+    ).toBe(false);
+  });
+
   // THE SECOND EXIT, and the one the original report did not have. With no deferred resolve there is
   // nothing to discard, so the conversation simply stays `pending` with no owner, which in the report
   // is where the label the same turn wrote goes on saying the customer is being dealt with. Nothing

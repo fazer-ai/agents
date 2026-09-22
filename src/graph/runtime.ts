@@ -2499,7 +2499,13 @@ async function runTurnBody(
       const silenceChosen = silenceWasChosen(result.messages as BaseMessage[]);
       const unexplained = silenceIsUnexplained({
         delivered: sent,
-        handedOff,
+        // `completed`, NOT the `handedOff` the branch above uses, and the two answer different
+        // questions. That one asks whether the transfer supplies this turn's customer-facing TEXT,
+        // so it requires a non-empty closing line; a transfer that succeeded and declared silence
+        // (`customerMessage: ""`, issue #662) answers false there and still left a person owning the
+        // conversation. Asked here, the question is only whether somebody is looking — and they are,
+        // which is what explains the silence. Found by review round 1.
+        handedOff: handoffState?.completed === true,
         silenceChosen,
       });
       if (unexplained) {

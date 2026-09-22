@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import {
   findExactTimeVarUsages,
   interpolatePromptVars,
+  isKnownPromptVar,
+  PROMPT_MESSAGE_DATE_VARS_DISPLAY,
   TIME_ROUND_MINUTES,
   timeVarKind,
 } from "./prompt";
@@ -162,5 +164,23 @@ describe("interpolatePromptVars message date", () => {
     expect(at(new Date("2026-09-12T14:46:00-03:00"), "{{message_date}}")).toBe(
       "12/09/2026 14:46",
     );
+  });
+});
+
+// The editor underlines anything `isKnownPromptVar` does not recognise, so a variable the same
+// editor offers in its insert helper and then paints as invalid is worse than one that does not
+// exist: the operator reads the warning and removes a placeholder that works. Both spellings, for
+// the same reason the renderer answers both.
+describe("message-date variables are known to the editor", () => {
+  it("recognises both spellings", () => {
+    expect(isKnownPromptVar("data_ultima_mensagem")).toBe(true);
+    expect(isKnownPromptVar("message_date")).toBe(true);
+  });
+  // The insert helper and the known set are two lists, and this is the assertion that keeps them
+  // from drifting: every name the editor offers has to survive the editor's own check.
+  it("knows every name the insert helper offers", () => {
+    for (const v of PROMPT_MESSAGE_DATE_VARS_DISPLAY) {
+      expect(isKnownPromptVar(v)).toBe(true);
+    }
   });
 });

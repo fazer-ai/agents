@@ -469,6 +469,7 @@ export const PROMPT_ALL_VARS = new Set<string>([
   ...PROMPT_TIME_VARS,
   ...Object.keys(SCHEDULE_VARS),
   ...Object.keys(MESSAGE_AGE_VARS),
+  ...Object.keys(MESSAGE_DATE_VARS),
   ...Object.keys(buildPromptVars({})),
 ]);
 

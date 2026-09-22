@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import {
   Badge,
   Button,
@@ -19,6 +19,7 @@ import {
   FilterPills,
   OutOfHoursBadge,
   PageContainer,
+  Select,
   Skeleton,
 } from "@/client/components";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
@@ -28,6 +29,9 @@ import { api } from "@/client/lib/api";
 type ConversationsData = Awaited<
   ReturnType<typeof api.api.v1.conversations.get>
 >["data"];
+type AgentOption = NonNullable<
+  Awaited<ReturnType<typeof api.api.v1.conversations.agents.get>>["data"]
+>["agents"][number];
 type Conversation = NonNullable<ConversationsData>["conversations"][number];
 
 type BadgeVariant = "primary" | "secondary" | "success" | "warning" | "info";
@@ -172,6 +176,26 @@ export function ConversationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [status, setStatus] = useState("");
+  // The agent filter lives in the URL (issue #607), so a view narrowed to one persona can be linked
+  // and survives a reload. Empty means every agent.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const agentId = searchParams.get("agentId") ?? "";
+  const setAgentId = useCallback(
+    (next: string) =>
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next) params.set("agentId", next);
+          else params.delete("agentId");
+          return params;
+        },
+        { replace: true },
+      ),
+    [setSearchParams],
+  );
+  // Read from the conversations' own agent list, not `/v1/agents`, which is admin-only: a user who
+  // can read this screen must be able to see and clear the filter. Null while loading or unreadable.
+  const [agents, setAgents] = useState<AgentOption[] | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   // Keyset pagination: the cursor for the next (older) page, null when fully loaded.
@@ -194,6 +218,7 @@ export function ConversationsPage() {
       query: {
         ...(status ? { status } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
+        ...(agentId ? { agentId } : {}),
       },
     });
     if (err || !data) {
@@ -203,7 +228,7 @@ export function ConversationsPage() {
     setError(false);
     setConversations(data.conversations);
     setNextCursor(data.nextCursor);
-  }, [status, debouncedSearch]);
+  }, [status, debouncedSearch, agentId]);
 
   // Append the next page (older conversations), de-duping by id since a live re-sort may have
   // pulled a row into an earlier page meanwhile.
@@ -215,6 +240,7 @@ export function ConversationsPage() {
         query: {
           ...(status ? { status } : {}),
           ...(debouncedSearch ? { q: debouncedSearch } : {}),
+          ...(agentId ? { agentId } : {}),
           cursor: nextCursor,
         },
       });
@@ -227,7 +253,17 @@ export function ConversationsPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nextCursor, status, debouncedSearch]);
+  }, [nextCursor, status, debouncedSearch, agentId]);
+
+  useEffect(() => {
+    let active = true;
+    void api.api.v1.conversations.agents.get().then(({ data }) => {
+      if (active) setAgents(data?.agents ?? null);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -346,6 +382,29 @@ export function ConversationsPage() {
           className="w-full rounded-lg border border-border bg-bg-tertiary py-2 pr-4 pl-9 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none"
         />
       </div>
+
+      {agents && (agents.length > 1 || agentId) && (
+        <Select
+          wrapperClassName="sm:max-w-xs"
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          aria-label={t("conversations.filterAgent", "Filter by agent")}
+        >
+          <option value="">{t("conversations.allAgents", "All agents")}</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+          {/* A linked or stale id this tenant has no agent for: shown, so the list being empty
+              reads as the filter's answer rather than as a broken page. */}
+          {agentId && !agents.some((a) => a.id === agentId) && (
+            <option value={agentId}>
+              {t("conversations.unknownAgent", "Unknown agent")}
+            </option>
+          )}
+        </Select>
+      )}
 
       <FilterPills
         value={status}

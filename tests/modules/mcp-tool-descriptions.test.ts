@@ -600,6 +600,11 @@ describe("MCP tool descriptions", () => {
   // for), and that a DISABLED channel is TESTED rather than refused — the one answer a client would
   // assume the other way round, and the reason the tool exists, since testing before enabling is the
   // normal order.
+  //
+  // SCHEMA RAISED to 57,209 by `agent_id` on the conversations list (#607), 101 characters: the base
+  // measured 57,092, this tree 57,193, same 16 of headroom. The description is the half a caller
+  // cannot read off the type, that an observed inbox does not count; its first draft was 40
+  // characters longer. Descriptions are unchanged.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -609,7 +614,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_462);
-    expect(schema).toBeLessThanOrEqual(57_108);
+    expect(schema).toBeLessThanOrEqual(57_209);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

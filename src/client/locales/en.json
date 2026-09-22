@@ -652,6 +652,7 @@
     }
   },
   "conversations": {
+    "allAgents": "All agents",
     "allStatuses": "All statuses",
     "assignee": {
       "ai": "AI",
@@ -660,6 +661,7 @@
     "empty": "No conversations yet.",
     "error": "Could not load conversations.",
     "errorBadge": "Error",
+    "filterAgent": "Filter by agent",
     "filterStatus": "Filter by status",
     "loading": "Loading conversations…",
     "loadMore": "Load more",
@@ -675,6 +677,7 @@
     },
     "subtitle": "Live conversations with their assignment status (AI or a human).",
     "title": "Conversations",
+    "unknownAgent": "Unknown agent",
     "unknownContact": "Unknown contact",
     "working": "Working…"
   },

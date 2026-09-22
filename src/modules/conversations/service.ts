@@ -81,6 +81,10 @@ export interface ListConversationsFilter {
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
+  // Only conversations whose inbox is BOUND to this agent (issue #607). An inbox it merely observes
+  // does not count: an observer answers nothing there, and the list already tells the two apart.
+  // An id of another tenant, or of no agent, is an empty page under the caller's own scope.
+  agentId?: bigint;
 }
 
 export interface ConversationListItem {
@@ -138,9 +142,11 @@ function normalizeStatus(status: string | undefined): string | undefined {
 function buildConversationsWhere(
   status: string | undefined,
   q: string | undefined,
+  agentId: bigint | undefined,
 ): Prisma.ConversationWhereInput {
   const where: Prisma.ConversationWhereInput = {};
   if (status) where.status = status;
+  if (agentId !== undefined) where.inbox = { agentId };
   const term = q?.trim();
   if (term) {
     const or: Prisma.ConversationWhereInput[] = [
@@ -155,6 +161,24 @@ function buildConversationsWhere(
   return where;
 }
 
+// The agents the Conversations screen can be narrowed to (issue #607): id and name, nothing of their
+// configuration. Its own read because `/v1/agents` is TENANT_ADMIN, and an AGENT-role user who can
+// read the conversations must also be able to see, and clear, a filter a shared link put on them.
+// Every agent of the tenant, by name, since the roster is small and a filter offering only the
+// first page would leave the rest unpickable.
+export async function listConversationAgentOptions(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+): Promise<{ id: string; name: string }[]> {
+  const rows = await runScopedOn(base, ctx, (db) =>
+    db.agent.findMany({
+      select: { id: true, name: true },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+    }),
+  );
+  return rows.map((r) => ({ id: String(r.id), name: r.name }));
+}
+
 export async function listConversations(
   ctx: TenantContext,
   filter: ListConversationsFilter,
@@ -163,7 +187,7 @@ export async function listConversations(
   const take = clampLimit(filter.limit);
   const status = normalizeStatus(filter.status);
   const cursorId = filter.cursor ?? null;
-  const where = buildConversationsWhere(status, filter.q);
+  const where = buildConversationsWhere(status, filter.q, filter.agentId);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.conversation.findMany({
       where,

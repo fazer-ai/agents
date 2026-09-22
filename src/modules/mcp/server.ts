@@ -426,12 +426,36 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .int()
             .optional()
             .describe("Max conversations to return (1-100, default 50)."),
+          agent_id: z
+            .string()
+            .optional()
+            .describe(
+              "Only inboxes bound to this agent, not ones it observes.",
+            ),
         },
       },
-      async (args: { status?: string; limit?: number }, eff) => {
+      async (
+        args: { status?: string; limit?: number; agent_id?: string },
+        eff,
+      ) => {
+        // Same parser as every other id: a padded or empty agent_id must not resolve to another row.
+        let agentId: bigint | undefined;
+        if (args.agent_id !== undefined) {
+          const parsed = parseMcpId(args.agent_id, "agent_id");
+          if (typeof parsed !== "bigint") {
+            return {
+              content: [
+                { type: "text" as const, text: JSON.stringify(parsed) },
+              ],
+              isError: true,
+            };
+          }
+          agentId = parsed;
+        }
         const list = await listConversations(principalCtx(eff), {
           status: args.status,
           limit: args.limit,
+          agentId,
         });
         return {
           content: [{ type: "text" as const, text: JSON.stringify(list) }],

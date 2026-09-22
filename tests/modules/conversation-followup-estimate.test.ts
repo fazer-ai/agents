@@ -1007,8 +1007,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     });
     // Issue #752, o complemento: o mesmo estado numa persona cujo passo 0 NÃO é isento. Aí a
     // varredura é cercada pelo compromisso (o `unfencedAgentIds` dela é
-    // `!appointmentPauseApplies(cfg, cfg.steps[0])`), o job condenado é descartado pelo handler e nada
-    // entra no lugar: a tela diz a pausa, e é a pausa do passo que ia rodar.
+    // `!appointmentPauseApplies(cfg, cfg.steps[0])`), e o handler ADIA o job de hora em hora enquanto
+    // o compromisso viver — só descarta depois, quando o portão do episódio finalmente é alcançado.
+    // Medido ao vivo: nenhuma passada da varredura tocou a linha. Nos dois casos nada entra no lugar,
+    // e a tela diz a pausa, que é a pausa do passo que ia rodar.
     convDoomedJobFencedStep0 = await seedAppointmentConv(
       355,
       armedInbox.id,

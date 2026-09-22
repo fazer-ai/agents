@@ -1421,7 +1421,21 @@ export async function buildToolset(
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,
       onNoEffect: ctx.onNoEffect,
-      onLabelsWritten: ctx.onLabelsWritten,
+      // A caller with its own record of the turn (the observation tick) keeps it. Every other turn
+      // gets the write as its own `tool` line, so `outsideAllowed` under `accept` is counted on a
+      // responder and a follow-up turn too, as the setting promises (review round 2 of #638). Counts
+      // and operator titles only: see graph/tools/label-writes.ts.
+      onLabelsWritten:
+        ctx.onLabelsWritten ??
+        (flow
+          ? (write) =>
+              emitFlowEvent(flow, {
+                stage: "tool",
+                level: "info",
+                status: "ok",
+                detail: { ...write, tool: "set_labels", phase: "labels" },
+              })
+          : undefined),
       kanban,
       sendImage: cfg.sendImageConfig,
       fetchImpl: ctx.imageDeps?.fetchImpl,

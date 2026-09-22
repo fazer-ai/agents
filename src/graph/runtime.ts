@@ -4,7 +4,11 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { mayCloseConversation, postedOutcomeFor } from "@/graph/close-intent";
+import {
+  mayCloseConversation,
+  postedOutcomeFor,
+  silenceIsUnexplained,
+} from "@/graph/close-intent";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { agentStillSpeaks } from "@/modules/agents/speaks";
@@ -96,7 +100,7 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import { stillInSameEpisode } from "./reset-episode";
-import { customerFacingReply } from "./silence";
+import { customerFacingReply, silenceWasChosen } from "./silence";
 import { AgentStatusReporter } from "./status";
 import {
   clearTurnOwning,
@@ -2484,6 +2488,38 @@ async function runTurnBody(
         }
         return "empty";
       }
+      // NOTHING REACHED THE CUSTOMER AND NOBODY CHOSE THAT (issue #773). The model called a tool and
+      // the completion came back empty, which from here looks exactly like the silence `skip_reply`
+      // exists to declare — and reading them as the same thing is what lets the deferred resolve
+      // close a conversation nobody answered, under a label the same turn wrote saying the opposite.
+      //
+      // Read from the tool's MARK and bounded at this turn (`silenceWasChosen`), because the thread
+      // is checkpointed per contact-inbox: an earlier "ok" answered with `skip_reply` is in this
+      // history, and a decision taken then must not authorise a close now.
+      const silenceChosen = silenceWasChosen(result.messages as BaseMessage[]);
+      const unexplained = silenceIsUnexplained({
+        delivered: sent,
+        handedOff,
+        silenceChosen,
+      });
+      if (unexplained) {
+        // BOTH EXITS, and the warn is what they have in common. With a deferred resolve the
+        // conversation would close as handled; without one it stays `pending` with no owner and no
+        // trace at all, which is the exit an operator cannot even find — and the line says WHICH of
+        // the two this was, because the operator's next move differs.
+        //
+        // The intent is not cleared here, only left unused: the gate below is what discards it, and
+        // a second `resolveRequested = false` beside it is a line no test can distinguish from its
+        // absence — `applyDeferredResolve` already returns on a false flag and nothing else in the
+        // turn reads it. A guard nothing can kill is dead code wearing a comment.
+        const resolveDiscarded = turnState.resolveRequested;
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { silenceUnexplained: true, resolveDiscarded },
+        });
+      }
       // Skipped, not returned on: closing a conversation the operator has just cleared is a write
       // of its own, and by here something may already have reached the customer — the outcome still
       // has to describe that.
@@ -2493,6 +2529,7 @@ async function runTurnBody(
       // it is not. The rule itself lives in ./close-intent.ts, asked the same way at all three
       // sites — it was answered differently at each until a review round found them one by one.
       if (
+        !unexplained &&
         mayCloseConversation({
           replyPartial: false,
           attachmentFailed: failed,

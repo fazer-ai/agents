@@ -204,7 +204,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // #726: dois leitores novos, o carimbo provisorio da linha de `skip_reply` e a ausencia do fato do
   // turno num turno que nao decidiu silencio.
-  "tests/graph/runtime.test.ts": 16,
+  "tests/graph/runtime.test.ts": 20,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's
   // delivery is read — that one drives the callback by hand, so it cannot go through the helper.

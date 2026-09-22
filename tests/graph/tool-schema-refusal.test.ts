@@ -355,9 +355,13 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     expect(det(line as Row).phase).toBe("schema_refusal");
     expect(refusalOf(line as Row).params).toEqual(["customerMessage"]);
     expect(refusalOf(line as Row).issues).toEqual(["customerMessage: missing"]);
-    // Additional, never a replacement: the line that already existed is untouched.
+    // Additional, never a replacement: the line that already existed is untouched. The second
+    // `generate` line is issue #773's: the call was refused, so nothing reached the customer and
+    // nothing in the turn chose that silence. Both are `status: ok` — neither is an error of the
+    // generation step — and they differ in level, which is what decides who hears about it.
     const gen = t.rows.filter((r) => r.stage === "generate");
-    expect(gen.map((r) => r.status)).toEqual(["ok"]);
+    expect(gen.map((r) => r.status)).toEqual(["ok", "ok"]);
+    expect(gen.map((r) => r.level)).toEqual(["info", "warn"]);
     // And the refusal still reaches the model, unchanged: the wrapper observes, it does not answer.
     expect(t.answers.length).toBe(1);
     expect(t.answers[0]).toContain("did not match expected schema");
@@ -372,8 +376,11 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // THE CONTROL AGAINST A FALSE POSITIVE: no attempt, no line. Counting `stage='tool'` rows of one
     // turn is what answers "did the model try to use a tool here", with no error text opened.
     expect(tools(b.rows).length).toBe(0);
+    // Two `generate` lines and no `tool` line: the model tried nothing AND answered nothing, which
+    // since issue #773 is a turn the operator is told about rather than one that disappears.
     expect(b.rows.map((r) => `${r.stage}/${r.status}/${r.level}`)).toEqual([
       "generate/ok/info",
+      "generate/ok/warn",
     ]);
     expect(Object.keys(det(b.rows[0] as Row))).toEqual(["systemPrompt"]);
   });
@@ -566,7 +573,15 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       select: { stage: true, level: true },
     });
     expect(tools(h.rows).map((r) => r.level)).toEqual(["warn"]);
-    expect(afterH).toEqual([{ stage: "tool", level: "warn" }]);
+    // TWO deliveries, and the second one is the point of issue #773 rather than a leak of this one:
+    // the transfer this turn owed the customer FAILED, so nobody was answered and nobody chose that.
+    // The burst above still pays nothing — turn `g` handed off on its fourth attempt, so it reached
+    // a person and produced no such line. What is quiet is a refusal the model recovers from; what
+    // pages is a turn that ended with the customer holding nothing.
+    expect(afterH).toEqual([
+      { stage: "tool", level: "warn" },
+      { stage: "generate", level: "warn" },
+    ]);
     await suDb.alertDelivery.deleteMany({ where: { tenantId } });
     await suDb.alertChannel.delete({ where: { id: channel.id } });
   });

@@ -61,6 +61,7 @@ import {
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   HandoffTwiceModel,
+  LabelsThenEmptyModel,
   PromptCapturingModel,
   ResolveAndHandoffModel,
   ResolveThenReplyModel,
@@ -74,6 +75,7 @@ import {
   SkipOnlyModel,
   SkipThenHandoffModel,
   SkipThenImageModel,
+  SkipThenResolveModel,
 } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -3038,7 +3040,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([]);
   });
 
-  test("resolve with an empty final reply still resolves after the turn", async () => {
+  // ISSUE #773, AND IT REPLACES AN ASSERTION THIS FILE USED TO MAKE. The test here was
+  // "resolve with an empty final reply still resolves after the turn", and what it was built to prove
+  // is the ORDER — the close comes after the reply, never instead of it. The shape it happened to use
+  // was a completion that merely came back EMPTY, so it also asserted that an unexplained silence may
+  // close, which is the defect. The order is proved by the tests above with a real reply; what the
+  // empty shape decides is a different question, and the pair below answers it.
+  //
+  // Measured on 115 replayed conversations: 6 turns produced nothing, 3 correctly and 3 like this.
+  test("an empty completion NOBODY chose does not close the conversation", async () => {
     await seedConversation(912, null);
     const calls: Array<[string, number, string]> = [];
     const outcome = await runAgentTurn({
@@ -3054,8 +3064,126 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
+    // The turn still produced nothing — that part is true and unchanged. What must NOT happen is the
+    // conversation closing as handled: nothing reached the customer and nothing in the turn chose
+    // that, so the deferred intent is discarded like a takeover or a blocked output discards it.
     expect(outcome).toBe("empty");
-    expect(calls).toEqual([["toggleStatus", 912, "resolved"]]);
+    expect(calls).toEqual([]);
+
+    // ...and the operator is told, because a turn that ends with nothing and no explanation is
+    // exactly the one nobody can find afterwards. Fire-and-forget, so poll briefly.
+    let warned: Record<string, unknown> | null = null;
+    for (let i = 0; i < 30 && !warned; i++) {
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "generate",
+          level: "warn",
+          threadId: `${tenantId}:${instanceId}:912`,
+        },
+        select: { detail: true },
+      });
+      warned =
+        rows
+          .map((r) => r.detail as Record<string, unknown> | null)
+          .find((d) => d?.silenceUnexplained === true) ?? null;
+      if (!warned) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(warned).not.toBeNull();
+    // The line says WHICH exit this was: a resolve intent existed and was thrown away.
+    expect(warned?.resolveDiscarded).toBe(true);
+  });
+
+  // The control, and the half that must keep working: the model DECLARED the silence with the tool
+  // built for it. Three of the six empty turns in the report are this, and they are correct — the
+  // customer wrote "Amoooo." and there is nothing to answer.
+  test("a silence the model CHOSE still closes the conversation", async () => {
+    await seedConversation(9773, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9773 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new SkipThenResolveModel() as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([["toggleStatus", 9773, "resolved"]]);
+
+    // And no warning: there is nothing unexplained about this turn.
+    await new Promise((r) => setTimeout(r, 300));
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        level: "warn",
+        threadId: `${tenantId}:${instanceId}:9773`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.silenceUnexplained ===
+          true,
+      ),
+    ).toBe(false);
+  });
+
+  // THE SECOND EXIT, and the one the original report did not have. With no deferred resolve there is
+  // nothing to discard, so the conversation simply stays `pending` with no owner, which in the report
+  // is where the label the same turn wrote goes on saying the customer is being dealt with. Nothing
+  // at all marked this turn before the line below: it ended indistinguishable from a turn that never
+  // ran. What the model called first is incidental — any tool followed by an empty completion is this
+  // shape — and `set_labels` is here because it is the one the measurement caught.
+  test("an empty completion with no resolve intent is still reported", async () => {
+    await seedConversation(9774, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9774 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new LabelsThenEmptyModel([
+            "aguardando-dados",
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    // Nothing was closed and nothing was sent — that was already true, and is not the defect.
+    expect(calls).toEqual([]);
+
+    let warned: Record<string, unknown> | null = null;
+    for (let i = 0; i < 30 && !warned; i++) {
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "generate",
+          level: "warn",
+          threadId: `${tenantId}:${instanceId}:9774`,
+        },
+        select: { detail: true },
+      });
+      warned =
+        rows
+          .map((r) => r.detail as Record<string, unknown> | null)
+          .find((d) => d?.silenceUnexplained === true) ?? null;
+      if (!warned) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(warned).not.toBeNull();
+    // No intent existed, so nothing was thrown away — and the line says so rather than leaving the
+    // operator to guess which of the two exits they are looking at.
+    expect(warned?.resolveDiscarded).toBe(false);
   });
 
   // The audio-delivery apply point: TTS on (mirror) + the customer sent audio. The stub carries a
@@ -4057,6 +4185,55 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).rejects.toThrow(/anexo: nada foi entregue/);
     expect(calls).toEqual([["sendFileAttachment", 933, "imagem.png"]]);
     expect((await mirroredStatus(933)) === "resolved").toBe(false);
+  });
+
+  // THE CONTROL FOR ISSUE #773'S RULE, and the mutation battery is what asked for it: a turn with no
+  // text is not automatically a turn nobody answered. The picture WENT OUT, so the customer heard
+  // something, and the close is legitimate even though the model never called `skip_reply` — the
+  // decision it did not take is about SILENCE, and this turn was not silent.
+  test("an image-only turn still closes: something reached the customer", async () => {
+    await allowImageHost();
+    await seedConversation(9775, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9775 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageAndResolveModel(IMG_URL) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    // "posted", not "empty": an image that reached the customer IS an answer.
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([
+      ["sendFileAttachment", 9775, "imagem.png"],
+      ["toggleStatus", 9775, "resolved"],
+    ]);
+
+    // And nothing is reported: there is nothing unexplained about a turn that delivered.
+    await new Promise((r) => setTimeout(r, 300));
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        level: "warn",
+        threadId: `${tenantId}:${instanceId}:9775`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.silenceUnexplained ===
+          true,
+      ),
+    ).toBe(false);
   });
 
   // The finding this defers for: a turn a human took over mid-flight must not have already put an

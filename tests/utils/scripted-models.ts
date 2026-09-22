@@ -400,6 +400,71 @@ export class SkipThenImageModel {
   }
 }
 
+// DECLARES the silence and then asks to close, which is the legitimate shape of an empty turn: the
+// model judged there was nothing to answer and said so with the tool built for it. The control for
+// `ResolveThenReplyModel("")`, whose completion merely comes back empty — the two are identical from
+// the delivery side and must not be treated alike (issue #773).
+export class SkipThenResolveModel {
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+          });
+        }
+        if (n === 2) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              { name: "resolve_conversation", args: {}, id: "call_resolve" },
+            ],
+          });
+        }
+        return new AIMessage("");
+      },
+    };
+  }
+}
+
+// Writes a label and then produces nothing — the turn the report measured on 3 of 115 replayed
+// conversations, and the exit with NO deferred resolve: the conversation is left `pending` with no
+// owner while the label the same turn wrote says the customer is being dealt with.
+export class LabelsThenEmptyModel {
+  constructor(private labels: string[]) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "set_labels",
+                args: { labels: self.labels },
+                id: "call_labels",
+              },
+            ],
+          });
+        }
+        return new AIMessage("");
+      },
+    };
+  }
+}
+
 // The control for the model above: decides silence alone and does nothing else. Nothing reaches the
 // customer, and the marker's plain sentence is the only true thing the screen has about this turn.
 export class SkipOnlyModel {

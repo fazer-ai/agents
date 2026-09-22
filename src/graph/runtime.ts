@@ -67,6 +67,7 @@ import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { signatureFor } from "@/modules/signature/service";
 import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
+import type { TtsCheckConfig } from "@/modules/tts/check";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import {
@@ -247,6 +248,10 @@ export interface RuntimeDeps {
   mcp?: McpLoadDeps;
   // Injectable fetch for the TTS provider (tests); real fetch in production.
   ttsFetch?: typeof fetch;
+  // The corrupted-audio check (tests): its settings in place of `config.ttsCheck`, and its own fetch
+  // so the detector is faked apart from the TTS provider (issue #779).
+  ttsCheck?: TtsCheckConfig;
+  ttsCheckFetch?: typeof fetch;
   // Injectable fetch for the contact-authorization check (tests); real fetch in production.
   contactAuthFetch?: typeof fetch;
   // Injectable fetch for the vision provider (tests); real fetch in production.
@@ -1270,8 +1275,16 @@ async function runTurnBody(
           text,
           channelType: loaded.channelType,
           base,
-          deps: { fetchImpl: params.deps?.ttsFetch, normalizeSpeech },
+          deps: {
+            fetchImpl: params.deps?.ttsFetch,
+            normalizeSpeech,
+            checkFetchImpl: params.deps?.ttsCheckFetch,
+          },
           flow,
+          check: params.deps?.ttsCheck,
+          // A regeneration after the audio check is one more billed synthesis and one more wait:
+          // not worth paying for a reply this turn will no longer send (issue #779).
+          shouldStop: writeCalledOff,
         });
         // Synthesis is a network call of its own, and the speech normalizer above it is a MODEL
         // call, so an answer taken before them is an answer about a different moment.

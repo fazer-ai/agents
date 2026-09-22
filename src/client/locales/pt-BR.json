@@ -2016,6 +2016,7 @@
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",
       "tts": "Síntese de áudio",
+      "tts_check": "Verificação do áudio",
       "vision": "Leitura de imagem",
       "webhook": "Webhook de saída"
     },

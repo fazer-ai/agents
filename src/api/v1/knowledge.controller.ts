@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { parseQueryCount, parseQueryText } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
@@ -278,9 +279,12 @@ export const knowledgeController = new Elysia({
   )
   .get(
     "/bases/:id/documents",
-    async ({ tenantContext, params }) => {
+    async ({ tenantContext, params, query }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const docs = await listDocuments(ctx, requireDbId(params.id));
+      const page = await listDocuments(ctx, requireDbId(params.id), undefined, {
+        limit: parseQueryCount(query.limit, "limit"),
+        cursor: parseQueryText(query.cursor, "cursor"),
+      });
       const block = await readEmbeddingBlock(ctx);
       return {
         instance: instanceIdentity,
@@ -289,21 +293,40 @@ export const knowledgeController = new Elysia({
         // telling the operator to fill a credential they have since filled (issue #80).
         //
         embeddingBlock: readerSafeBlock(block),
-        documents: docs.map((d) => ({
+        documents: page.documents.map((d) => ({
           ...d,
           id: String(d.id),
           knowledgeBaseId: params.id,
         })),
+        // Null on the last page, and always without `limit` (the whole base in one answer).
+        nextCursor: page.nextCursor,
       };
     },
     {
       requireAuth: true,
-      detail: doc("List documents", "List the documents in a knowledge base."),
+      detail: doc(
+        "List documents",
+        "List the documents in a knowledge base, newest first. Without limit the whole base comes back; with it, use nextCursor to page.",
+      ),
       response: errors(400, 401, 403, 404),
       params: t.Object({
         id: t.String({
           description: "Knowledge base id (BigInt as a string).",
         }),
+      }),
+      query: t.Object({
+        limit: t.Optional(
+          t.String({
+            description:
+              "Optional page size (1 to 200), parsed as an integer. Omit for the whole base.",
+          }),
+        ),
+        cursor: t.Optional(
+          t.String({
+            description:
+              "Keyset cursor: the nextCursor of the previous page, passed back as it came.",
+          }),
+        ),
       }),
     },
   )

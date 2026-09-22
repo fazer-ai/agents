@@ -29868,7 +29868,7 @@
           "Resources"
         ],
         "summary": "List documents",
-        "description": "List the documents in a knowledge base.",
+        "description": "List the documents in a knowledge base, newest first. Without limit the whole base comes back; with it, use nextCursor to page.",
         "parameters": [
           {
             "name": "id",
@@ -29876,6 +29876,24 @@
             "required": true,
             "schema": {
               "description": "Knowledge base id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Optional page size (1 to 200), parsed as an integer. Omit for the whole base.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Keyset cursor: the nextCursor of the previous page, passed back as it came.",
               "type": "string"
             }
           },

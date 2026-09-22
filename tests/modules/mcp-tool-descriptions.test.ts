@@ -605,6 +605,13 @@ describe("MCP tool descriptions", () => {
   // measured 57,092, this tree 57,193, same 16 of headroom. The description is the half a caller
   // cannot read off the type, that an observed inbox does not count; its first draft was 40
   // characters longer. Descriptions are unchanged.
+  //
+  // BOTH RAISED by the knowledge document tools (#708): `knowledge_document_get` and
+  // `knowledge_document_update`, the MCP twins of `GET`/`PATCH /v1/knowledge/documents/:id`, plus
+  // `limit` and `cursor` on `knowledge_documents_list`, which the REST route used to accept and
+  // ignore. Base 30,447 and 57,193, this tree 30,729 and 57,777, so 30,744 and 57,793 with the same
+  // 15 and 16. The update's description was cut by 24 to say only what a caller cannot read off the
+  // schema: that the id survives, and that only a text change re-embeds.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -613,8 +620,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_462);
-    expect(schema).toBeLessThanOrEqual(57_209);
+    expect(desc).toBeLessThanOrEqual(30_744);
+    expect(schema).toBeLessThanOrEqual(57_793);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

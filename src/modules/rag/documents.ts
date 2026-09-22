@@ -2,11 +2,13 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { broadcastDocumentEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { parseDbId } from "@/lib/db-id";
 import {
   EMBEDDING_BLOCK_KEY,
   type EmbeddingBlockReason,
 } from "@/lib/embedding-block";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
@@ -381,11 +383,47 @@ interface DocumentListRow {
   contentChars: number;
 }
 
+// A page of the list (issue #708). `limit` was accepted by the REST route and ignored, so a client
+// paginating by it believed it had paged and was handed the whole base. Keyset on the list's own
+// order (newest first, id breaking ties). Without `limit` the whole base comes back as it always did.
+//
+// THE CURSOR CARRIES ITS OWN POSITION, `<createdAt ms>_<id>`, rather than naming a row to look up.
+// The client this was measured against is a sync, and a sync edits the base while it reads it: a
+// cursor that named the last row of a page stopped working the moment that row was deleted, which
+// ends the read halfway with nothing to resume from. The column is TIMESTAMP(3), so the milliseconds
+// are the whole value and the comparison is exact.
+export interface DocumentPage {
+  limit?: number;
+  cursor?: string;
+}
+
+const MAX_DOCUMENT_PAGE = 200;
+const DOCUMENT_CURSOR = /^(\d{1,15})_(\d{1,19})$/;
+
+function documentCursor(row: { createdAt: Date; id: bigint }): string {
+  return `${row.createdAt.getTime()}_${row.id}`;
+}
+
+// A cursor that is not one is REFUSED, never read as "from the top": restarting would hand a paging
+// client the first page again as if it were the next one.
+function parseDocumentCursor(raw: string): { createdAt: Date; id: bigint } {
+  const m = DOCUMENT_CURSOR.exec(raw);
+  const id = m ? parseDbId(m[2]) : null;
+  if (!m || id === null) badQueryParam("cursor");
+  return { createdAt: new Date(Number(m[1])), id };
+}
+
 export async function listDocuments(
   ctx: TenantContext,
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
-): Promise<DocumentListRow[]> {
+  page: DocumentPage = {},
+): Promise<{ documents: DocumentListRow[]; nextCursor: string | null }> {
+  assertUsableCount(page.limit, "limit");
+  const take =
+    page.limit === undefined ? null : Math.min(page.limit, MAX_DOCUMENT_PAGE);
+  const after =
+    page.cursor === undefined ? null : parseDocumentCursor(page.cursor);
   return runScopedOn(base, ctx, async (db) => {
     const kb = await db.knowledgeBase.findUnique({
       where: { id: knowledgeBaseId },
@@ -409,8 +447,15 @@ export async function listDocuments(
              length(content)  AS "contentChars"
       FROM knowledge_documents
       WHERE knowledge_base_id = ${knowledgeBaseId}
-      ORDER BY created_at DESC`;
-    return rows;
+        ${after ? Prisma.sql`AND (created_at, id) < (${after.createdAt}, ${after.id})` : Prisma.empty}
+      ORDER BY created_at DESC, id DESC
+      ${take === null ? Prisma.empty : Prisma.sql`LIMIT ${take + 1}`}`;
+    if (take === null || rows.length <= take) {
+      return { documents: rows, nextCursor: null };
+    }
+    const documents = rows.slice(0, take);
+    const last = documents[documents.length - 1];
+    return { documents, nextCursor: last ? documentCursor(last) : null };
   });
 }
 

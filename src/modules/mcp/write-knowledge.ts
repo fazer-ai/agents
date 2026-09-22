@@ -11,6 +11,7 @@ import {
   getDocument,
   reindexKnowledgeBase,
   retryDocument,
+  updateDocument,
 } from "@/modules/rag/documents";
 import {
   approveApprovalItem,
@@ -312,6 +313,76 @@ export async function knowledgeDocumentDelete(
     }
     await deleteDocument(ctx, id, base);
     return ok({ dryRun: false, applied: true, target });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Edit a document in place (issue #708), the twin of `PATCH /v1/knowledge/documents/:id`. Without it
+// an MCP client concluded that editing meant delete and recreate, which loses the id (and with it any
+// sync that reconciles by id) and leaves the document out of search while it re-embeds. A changed
+// text re-ingests; a title alone does not.
+export async function knowledgeDocumentUpdate(
+  principal: VerifiedToken,
+  args: {
+    document_id: string;
+    title?: string;
+    text?: string;
+    dry_run?: boolean;
+  },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.document_id, "document_id");
+  if (typeof id !== "bigint") return id;
+  if (args.title === undefined && args.text === undefined) {
+    return err("nothing to update: pass title and/or text");
+  }
+  // The REST twin's `minLength: 1` on both fields, asked here because the service does not: an empty
+  // text would replace the content and the next ingest would drop every chunk (review round 3).
+  if (args.title === "" || args.text === "") {
+    return err("title and text, when given, must not be empty");
+  }
+  const bad = unstorable([
+    ["title", args.title],
+    ["text", args.text],
+  ]);
+  if (bad) return bad;
+  try {
+    const current = await getDocument(ctx, id, base);
+    const target = `knowledge_document:${id}`;
+    if (args.dry_run !== false) {
+      return ok({
+        dryRun: true,
+        action: "update",
+        target,
+        current: {
+          title: current.title,
+          contentChars: current.content.length,
+        },
+        after: {
+          title: args.title ?? current.title,
+          contentChars: (args.text ?? current.content).length,
+        },
+        // The same question the service asks, on the text it already has: an unchanged body is not
+        // re-embedded, so the preview does not promise a re-index the apply will not do.
+        reindexes: args.text !== undefined && args.text !== current.content,
+      });
+    }
+    const doc = await updateDocument(
+      ctx,
+      id,
+      { title: args.title, text: args.text },
+      base,
+    );
+    return ok({
+      dryRun: false,
+      applied: true,
+      target,
+      status: doc.status,
+    });
   } catch (e) {
     return failOf(e);
   }

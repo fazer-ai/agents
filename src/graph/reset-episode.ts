@@ -33,14 +33,36 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // AT OR BELOW, not below: the command's own message carries the boundary, and a turn answering that
 // same id would be a turn on the command itself.
 //
-// AND THE BOUNDARY IS NOT PROOF THAT THE MEMORY WAS CLEARED, which every reader of it assumes and
-// none of them checks (issue #728, review r7). The command writes this column in its own statement
-// and clears the memory in a LATER step, and that step refuses by design when a turn is already
-// invoking — `step()` catches it, the acknowledgement names what did not clear, and the column stays
-// where it was put. A message at or below it is then refused by all four fences (this one, the
-// debounce watermark, the observe tick and the ingestion append) on the strength of a clearing that
-// did not happen. Closing it belongs to the COLUMN rather than to any one reader: a fifth semantics
-// for the same field would be worse than the defect. Measured and written up as its own issue.
+// AND THE BOUNDARY IS NOT PROOF THAT THE MEMORY WAS CLEARED — true, and it is not supposed to be.
+// This paragraph used to say the opposite, that all four readers of the column were wrong for the
+// same reason, and issue #743 was opened on the strength of it. Measured, only ONE of them was, and
+// the correction is this: the column answers "the operator withdrew this", not "the memory is gone",
+// and the two questions have different readers.
+//
+// `/reset` does two things. It clears the memory, and it WITHDRAWS the work the conversation had in
+// flight. The clearing can refuse — a turn already invoking holds the thread, `step()` catches it and
+// the acknowledgement names what did not clear — but the withdrawal happened the moment the operator
+// typed the command, and nothing can refuse it afterwards.
+//
+// So:
+//   - the three WITHDRAWAL fences read this column, because what they ask is whether the operator
+//     took this work back: the direct turn (`stillInSameEpisode` below), the debounce selection
+//     (`readSelectionState`) and the observe tick's `atMessageId`. Issue #449 is the measurement that
+//     settles it — there the memory step DID refuse, and the stale turn's `set_custom_attribute`
+//     wrote the attribute back onto the conversation the operator had just been told about, with
+//     nothing anywhere saying it came back. `tests/modules/chatwoot-reset-stale-turn.test.ts` is that
+//     suite, and pointing this fence at the clearing column makes it fail;
+//   - the one RESTORE fence reads `memory_cleared_at_message_id`, because what it asks is whether
+//     there is a cleared memory to restore text INTO: the ingestion append (`threadResetBoundary`,
+//     issue #728). There the column has to be the one the clearing itself writes, and it is.
+//
+// The observer's LABEL boundary (`observe/job.ts`, beside `resetClearedLabels`) is a fifth reader and
+// also belongs here, for a third reason: the label cleanup is its own step and succeeds even when the
+// memory step refuses, so a verdict filtered by the clearing column would write back the very labels
+// the operator watched the command strip.
+//
+// `tests/graph/reset-fences.test.ts` pins each of these, so the next reader of this file does not
+// have to re-derive it from the column name.
 export function resetLandedAfter(
   triggerMessageId: number | null,
   resetAtMessageId: number | null,

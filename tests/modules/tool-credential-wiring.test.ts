@@ -1171,6 +1171,15 @@ describe("the scanner answers what the runtime does", () => {
         { allowedHosts: ["sidecar"], internalTargets },
       ),
     ).not.toBeNull();
+    // And a declared target on a scheme the guard refuses is still unrunnable.
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "ftp://sidecar:8080/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["sidecar"], internalTargets },
+      ),
+    ).toBeNull();
     expect(
       unusedCredentialWarning(
         { kind: "generic", paramName: null, baseUrl: null },

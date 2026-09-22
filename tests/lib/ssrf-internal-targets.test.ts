@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import config, { parseInternalTargets } from "@/config";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
@@ -66,6 +68,18 @@ describe("SSRF_INTERNAL_TARGETS parsing", () => {
     expect(bad.exitCode).not.toBe(0);
     expect(bad.stderr.toString()).toContain('Invalid entry "renderer"');
     expect(run("sidecar:8080").exitCode).toBe(0);
+  });
+
+  // The shipped compose files forward a closed list of variables, so one missing there is a setting
+  // the operator writes in `.env` and the container never sees (review round 2).
+  test.each([
+    "docker-compose.prod.yml",
+    "docker-compose.portainer.yml",
+    "docker-compose.coolify.yml",
+  ])("%s forwards it to the app", (file) => {
+    const src = readFileSync(join(import.meta.dir, "../..", file), "utf8");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the compose interpolation, literally.
+    expect(src).toContain("- SSRF_INTERNAL_TARGETS=${SSRF_INTERNAL_TARGETS:-}");
   });
 
   test("the guard is on in the suite, so nothing below leans on the instance-wide flag", () => {

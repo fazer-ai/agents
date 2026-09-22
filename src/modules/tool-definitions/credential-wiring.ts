@@ -493,6 +493,14 @@ function buildsARequest(
       ? matchInternalTarget(probe, internalTargets)
       : null;
   if (internal === "port") return false;
+  // The entry opens a service, not a scheme: the guard refuses anything but http(s) even for a
+  // declared target, so neither may this (review round 2 of #615).
+  if (
+    internal === "match" &&
+    probe?.protocol !== "http:" &&
+    probe?.protocol !== "https:"
+  )
+    return false;
   if (!privateAllowed && internal !== "match") {
     if (probe?.protocol !== "https:") return false;
     const host = probe.hostname.replace(/^\[|\]$/g, "");

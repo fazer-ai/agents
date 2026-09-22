@@ -58,6 +58,8 @@ interface ClaimedAlert {
   level: string;
   summary: string;
   count: number;
+  turnId: string | null;
+  conversationId: bigint | null;
   attempts: number;
   type: string;
   url: string;
@@ -154,6 +156,8 @@ async function claimDue(
         a.level,
         a.summary,
         a.count,
+        a.turn_id         AS "turnId",
+        a.conversation_id AS "conversationId",
         a.attempts,
         picked.type,
         picked.url,

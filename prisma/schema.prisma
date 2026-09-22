@@ -2155,6 +2155,12 @@ model AlertDelivery {
   // configured. Marking the second would put a warning on every unsigned-by-design channel,
   // which is the most expensive noise available -- an operator who learns to skip the mark.
   unsignedReason String?               @map("unsigned_reason")
+  // The FIRST event of the window, like `summary` (issue #665): written on INSERT and never by the
+  // coalescing bump, so on a burst they name one member of it and the body links to the filtered
+  // list instead. `turnId` is always set by a real event; `conversationId` only when the mirror
+  // knew the conversation. No FK: an alert outlives the conversation it was about.
+  turnId         String?               @map("turn_id")
+  conversationId BigInt?               @map("conversation_id")
   createdAt      DateTime              @default(now()) @map("created_at")
   updatedAt      DateTime              @updatedAt @map("updated_at")
 

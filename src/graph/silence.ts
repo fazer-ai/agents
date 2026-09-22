@@ -266,6 +266,39 @@ export function skipReplyRan(m: {
   return m.additional_kwargs?.[SKIP_REPLY_MARK] === true;
 }
 
+// DID THIS TURN CHOOSE ITS OWN SILENCE — the question the runtime asks before it lets an empty
+// completion stand for an answer. A model that called `skip_reply` decided to say nothing; a model
+// whose completion simply came back empty decided nothing at all, and the two are indistinguishable
+// downstream because both arrive as a turn with no text (issue #773).
+//
+// BOUNDED AT THE LAST HUMAN MESSAGE, and that bound is the whole correctness of this function. The
+// graph state is checkpointed per contact-inbox, so the history handed to the runtime carries every
+// earlier turn of the same conversation — including the `skip_reply` of the customer's last "ok".
+// Read unbounded, a decision taken yesterday would authorise closing a conversation today, which is
+// the shape this exists to refuse. `turnBatches` in ./graph.ts cuts at the same place for the same
+// reason; the two do not share code because that one also needs the batch structure and this one
+// needs nothing but the bound.
+//
+// The MARK decides, never the name — same polarity as `skipReplyRan` above, and the reason is not
+// theoretical here: an operator precondition on `skip_reply` returns an ordinary result under that
+// very name saying the call did NOT run, and reading by name would let a refused decision buy the
+// close of a conversation nobody answered.
+export function silenceWasChosen(
+  messages: readonly {
+    getType: () => string;
+    name?: string;
+    additional_kwargs?: Record<string, unknown>;
+  }[],
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.getType() === "human") return false;
+    if (skipReplyRan(m)) return true;
+  }
+  return false;
+}
+
 // OUR PROTOCOL TOOL IS NEVER THE ONLY TOOL A FOLLOW-UP BINDS, asked of the toolset that was actually
 // built. A list holding nothing but `skip_reply` means every other source yielded nothing, so this
 // agent is tool-less in practice — and a tool-less deployment is a real configuration (a plain chat

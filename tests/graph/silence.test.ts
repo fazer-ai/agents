@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { contentToText } from "@/graph/message-text";
 import {
   customerFacingReply,
@@ -13,6 +13,7 @@ import {
   SKIP_REPLY_ACK,
   SKIP_REPLY_MARK,
   SKIP_REPLY_TOOL,
+  silenceWasChosen,
   skipReplyRan,
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
@@ -741,5 +742,83 @@ describe("withFollowupSilenceChannel", () => {
         true,
       ]);
     }
+  });
+});
+
+describe("silenceWasChosen — the decision belongs to THIS turn", () => {
+  const marked = (name = SKIP_REPLY_TOOL): ToolMessage =>
+    new ToolMessage({
+      content: `${SKIP_REPLY_ACK}.`,
+      tool_call_id: "c1",
+      name,
+      additional_kwargs: { [SKIP_REPLY_MARK]: true },
+    });
+  const plain = (name: string): ToolMessage =>
+    new ToolMessage({ content: "ok", tool_call_id: "c2", name });
+
+  test("the tool ran since the customer wrote: the silence was chosen", () => {
+    expect(
+      silenceWasChosen([
+        new HumanMessage("obrigado!"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "c1", name: SKIP_REPLY_TOOL, args: {} }],
+        }),
+        marked(),
+      ]),
+    ).toBe(true);
+  });
+
+  test("a completion that merely came back empty chose nothing", () => {
+    expect(
+      silenceWasChosen([
+        new HumanMessage("mandei os dados, CPF e número do pedido"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "c2", name: "set_labels", args: {} }],
+        }),
+        plain("set_labels"),
+        new AIMessage(""),
+      ]),
+    ).toBe(false);
+  });
+
+  // THE BOUND, and the reason this function exists instead of a bare `some(skipReplyRan)`. The graph
+  // state is checkpointed per contact-inbox, so the history handed to the runtime holds every earlier
+  // turn — here, the customer's "ok" answered with the tool. Read unbounded, that decision would
+  // authorise closing the conversation on today's turn, which nobody chose.
+  test("a decision from an EARLIER turn does not carry into this one", () => {
+    expect(
+      silenceWasChosen([
+        new HumanMessage("ok"),
+        marked(),
+        new HumanMessage("estou esperando o e-mail de vocês desde ontem"),
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "c2", name: "set_labels", args: {} }],
+        }),
+        plain("set_labels"),
+      ]),
+    ).toBe(false);
+  });
+
+  // Same polarity as `skipReplyRan`: an operator precondition on `skip_reply` returns an ordinary
+  // result under that very name saying the call did NOT run. Read by name it would buy the close of
+  // a conversation nobody answered.
+  test("a refusal wearing the tool's name is not a decision", () => {
+    const refusal = new ToolMessage({
+      content: unmetPreconditionMessage(SKIP_REPLY_TOOL, {
+        kind: "attribute",
+        scope: "conversation",
+        key: "cpf",
+      }),
+      tool_call_id: "c1",
+      name: SKIP_REPLY_TOOL,
+    });
+    expect(silenceWasChosen([new HumanMessage("oi"), refusal])).toBe(false);
+  });
+
+  test("no history at all is not a decision", () => {
+    expect(silenceWasChosen([])).toBe(false);
   });
 });

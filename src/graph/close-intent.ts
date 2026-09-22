@@ -45,3 +45,36 @@ export type PostedOutcome = "posted" | "posted-partial";
 export function postedOutcomeFor(o: DeliveryOutcome): PostedOutcome {
   return mayCloseConversation(o) ? "posted" : "posted-partial";
 }
+
+// THE THIRD WAY A TURN CAN END WITH NOTHING, and the one the two bits above cannot see: not a
+// delivery that failed, but a completion that came back empty while nobody chose that (issue #773).
+//
+// The model called a tool — `set_labels`, typically — and then produced no final text. Downstream
+// this is indistinguishable from the legitimate silence `skip_reply` exists to declare, so the
+// deferred resolve closes the conversation as handled and the operator sees a case the agent dealt
+// with. Measured on 115 replayed conversations: 6 turns produced nothing, 3 of them correctly
+// (through `skip_reply`) and 3 by this accident, one of them on a customer who had written in to
+// say no e-mail had arrived.
+//
+// WHY IT IS ONE QUESTION AND NOT A CONDITION AT THE CALL SITE: the same bit decides two different
+// things — whether the deferred resolve may act, and whether the turn owes the operator a warning —
+// and the second one applies even when there is no resolve intent at all, which is the exit where
+// the conversation stays `pending` with no owner and a label that says the opposite of what
+// happened. Asking it twice at one site is how the three sites above drifted apart (issue #429).
+//
+// NOT A THIRD BIT ON `DeliveryOutcome`: the other two sites carry a reply, so the customer heard
+// something by construction and the answer there is always `false`. A field they must fill in to say
+// "not applicable" is a field that will be filled in wrong.
+export interface SilentTurn {
+  // Something reached the customer this turn — an attachment, on the branch that has no text.
+  delivered: boolean;
+  // A handoff completed, so a person owns the conversation and the silence is explained.
+  handedOff: boolean;
+  // The model called `skip_reply` this turn: the silence is a decision, not an accident. Read from
+  // the tool's own mark (`silenceWasChosen`), never from the tool's name.
+  silenceChosen: boolean;
+}
+
+export function silenceIsUnexplained(t: SilentTurn): boolean {
+  return !t.delivered && !t.handedOff && !t.silenceChosen;
+}

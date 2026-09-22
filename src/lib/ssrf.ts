@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import config from "@/config";
+import config, { type InternalTarget } from "@/config";
 import { AppError } from "@/lib/errors";
 
 // Anti-SSRF guard for every configurable outbound URL (webhooks, custom HTTP tools, MCP
@@ -200,10 +200,37 @@ export interface SafeUrlOptions {
   // SSRF_ALLOW_PRIVATE_TARGETS=true is set explicitly). Protocol and URL-parseability checks
   // always run regardless — file:, ftp:, etc. are never allowed.
   allowPrivate?: boolean;
+  // NOTE: the internal targets THIS call may reach with the guard on (issue #615), normally
+  // `config.ssrf.internalTargets`. Absent everywhere except the HTTP tool, and there only for a tool
+  // whose own allowedHosts names the host: a call site that does not pass it keeps the full guard,
+  // which is the property the instance-wide flag lacks. See `matchInternalTarget`.
+  internalTargets?: readonly InternalTarget[];
   // NOTE: the resolver, injectable. Same seam as `deps.assertSafe` elsewhere in the tree, and it
   // exists for one thing the real resolver cannot be made to do on demand: fail TRANSIENTLY. Which
   // failures become a 400 and which propagate is a decision with no other way to exercise it.
   lookup?: typeof lookup;
+}
+
+function effectivePort(url: URL): number {
+  return Number(url.port || (url.protocol === "https:" ? 443 : 80));
+}
+
+// Whether a URL is one of the declared internal targets. The match is on the host AS WRITTEN in the
+// URL, never on what it resolves to: two names for the same private address are two different
+// declarations, and an entry for `sidecar` must not open `10.0.0.5` or another name that happens to
+// resolve there. The port is the effective one (80/443 when the URL omits it). A host that is
+// declared with a different port is its own answer, `port`, so the refusal can say which port was
+// declared instead of reading as the generic blocked-range refusal.
+export function matchInternalTarget(
+  url: URL,
+  targets: readonly InternalTarget[] | undefined,
+): "match" | "port" | null {
+  if (!targets || targets.length === 0) return null;
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const port = effectivePort(url);
+  const sameHost = targets.filter((t) => t.host === host);
+  if (sameHost.length === 0) return null;
+  return sameHost.some((t) => t.port === port) ? "match" : "port";
 }
 
 export async function assertSafeOutboundUrl(
@@ -219,6 +246,30 @@ export async function assertSafeOutboundUrl(
 
   const privateAllowed = opts.allowPrivate ?? config.ssrf.allowPrivateTargets;
   const httpAllowed = opts.allowHttp || privateAllowed;
+
+  // A declared internal target skips the range check and may be plaintext http, for that host and
+  // port only. The protocol is still http(s): the entry opens a service, not a scheme. Asked only
+  // with the guard on, because with it off every private target already passes and a port refusal
+  // there would close something the instance chose to open.
+  const internal = privateAllowed
+    ? null
+    : matchInternalTarget(url, opts.internalTargets);
+  if (internal === "match") {
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new SsrfError(`protocol ${url.protocol} not allowed`);
+    }
+    return url;
+  }
+  if (internal === "port") {
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    const declared = (opts.internalTargets ?? [])
+      .filter((t) => t.host === host)
+      .map((t) => t.port)
+      .join(", ");
+    throw new SsrfError(
+      `${host} is a declared internal target only on port ${declared}, not ${effectivePort(url)}`,
+    );
+  }
 
   if (url.protocol !== "https:" && !(httpAllowed && url.protocol === "http:")) {
     throw new SsrfError(`protocol ${url.protocol} not allowed`);

@@ -1,6 +1,6 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
-import config from "@/config";
+import config, { type InternalTarget } from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import {
@@ -95,6 +95,11 @@ export interface HttpToolDeps {
   // the credential is missing.
   resolveCredential: (ref: string) => Promise<string | null>;
   allowHttp?: boolean;
+  // The instance's declared internal targets (issue #615), default `config.ssrf.internalTargets`.
+  // Offered to the SSRF guard only for a host this tool's own allowedHosts names: the instance says
+  // which internal services exist, the tool says it means to use one, and without both the call
+  // gets the full guard. Injectable so a test does not have to reload config.
+  internalTargets?: readonly InternalTarget[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   // THE WHOLE-TURN DEADLINE, when the caller has one (the observer's tick). Aborting an invoke stops
@@ -861,6 +866,12 @@ export function buildHttpTool(
       // 4. SSRF guard on the FINAL URL, immediately before the fetch.
       await assertSafeOutboundUrl(url.toString(), {
         allowHttp: deps.allowHttp,
+        ...(def.allowedHosts.includes(url.hostname)
+          ? {
+              internalTargets:
+                deps.internalTargets ?? config.ssrf.internalTargets,
+            }
+          : {}),
       });
 
       // 5. Fetch — no redirects, and one bound over the WHOLE exchange. Not a bound on the

@@ -2530,6 +2530,8 @@
     "aiFields": "AI fields",
     "aiFieldsHint": "Describe each AI input and insert {{name}} where it goes; put constants and {{context}} directly in the field.",
     "aiFilledType": "Filled by AI: {{type}}",
+    "allowedHosts": "Allowed hosts",
+    "allowedHostsHint": "Comma-separated, e.g. api.example.com. Empty allows any public host. A tool reaches an internal service declared by the instance only when that host is listed here.",
     "appointment": "This tool books or cancels an appointment",
     "appointmentAskConfirm": "On the last reminder, ask if they will attend",
     "appointmentBook": "It books one",

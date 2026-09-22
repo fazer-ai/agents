@@ -1147,6 +1147,76 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).not.toBeNull();
 
+    // NOTE: and a declared internal target (issue #615) lifts both refusals too, for that host and
+    // port and only when the tool's allowedHosts names it, as the guard does. The wrong port is a
+    // refusal of its own, so it claims nothing, and it is shown on an https name the older checks
+    // would pass: on http or a blocked literal they would refuse it anyway.
+    const internalTargets = [
+      { host: "127.0.0.1", port: 8080 },
+      { host: "sidecar", port: 8080 },
+    ];
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "https://sidecar:9090/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["sidecar"], internalTargets },
+      ),
+    ).toBeNull();
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "https://sidecar:8080/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["sidecar"], internalTargets },
+      ),
+    ).not.toBeNull();
+    // And a declared target on a scheme the guard refuses is still unrunnable.
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "ftp://sidecar:8080/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["sidecar"], internalTargets },
+      ),
+    ).toBeNull();
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "http://127.0.0.1:8080/x",
+          headers: {},
+          inputSchema: {},
+        },
+        { allowedHosts: ["127.0.0.1"], internalTargets },
+      ),
+    ).not.toBeNull();
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "http://127.0.0.1:9090/x",
+          headers: {},
+          inputSchema: {},
+        },
+        { allowedHosts: ["127.0.0.1"], internalTargets },
+      ),
+    ).toBeNull();
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "http://127.0.0.1:8080/x",
+          headers: {},
+          inputSchema: {},
+        },
+        { internalTargets },
+      ),
+    ).toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(

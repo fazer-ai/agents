@@ -39,6 +39,7 @@ const {
   MCP_JWT_SECRET,
   MCP_DCR_ENABLED,
   SSRF_ALLOW_PRIVATE_TARGETS,
+  SSRF_INTERNAL_TARGETS,
   RATE_LIMIT_USER_PER_MIN,
   RATE_LIMIT_MCP_PER_MIN,
   RATE_LIMIT_CREDENTIAL_MAX,
@@ -80,6 +81,49 @@ const parseDomainList = (
   }
 
   return values;
+};
+
+// SSRF_INTERNAL_TARGETS names the internal services one HTTP tool may reach without turning the SSRF
+// guard off for the whole instance (issue #615). Each entry is `host:port`, and the port is required:
+// a hostname on a shared Docker network can be claimed by another container, and pinning the port is
+// what keeps one entry from covering every service that answers to that name. A malformed entry
+// fails the boot by name instead of being skipped, because skipping it leaves the operator with a
+// list that reads as configured and a tool that is refused for a reason nobody can see. The host goes
+// through `new URL` so it is compared in the same normal form the guard reads off the request URL.
+export interface InternalTarget {
+  host: string;
+  port: number;
+}
+
+// The host part refuses every character `new URL` would read as the end of the host, the backslash
+// included: WHATWG URL treats `\` as `/` in an http URL, so `sidecar\renderer:8080` would parse to host
+// `sidecar` and silently open a target nobody wrote (review round 1 of #615).
+const INTERNAL_TARGET_RE = /^(\[[0-9a-fA-F:.]+\]|[^:/\\\s[\]@?#]+):(\d{1,5})$/;
+
+export const parseInternalTargets = (
+  list: string | undefined,
+  envName: string,
+): InternalTarget[] => {
+  const out: InternalTarget[] = [];
+  for (const entry of (list ?? "").split(",").map((e) => e.trim())) {
+    if (entry === "") continue;
+    const m = entry.match(INTERNAL_TARGET_RE);
+    const raw = m?.[2];
+    const port = Number(raw);
+    let host: string | null = null;
+    try {
+      host = m?.[1] ? new URL(`http://${m[1]}`).hostname : null;
+    } catch {
+      host = null;
+    }
+    if (!m || !host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(
+        `Invalid entry "${entry}" in ${envName}: each entry must be host:port, with the port stated (e.g. sidecar:8080).`,
+      );
+    }
+    out.push({ host: host.replace(/^\[|\]$/g, ""), port });
+  }
+  return out;
 };
 
 // TRUST_PROXY decides whether the forwarded chain is believed when keying the rate limiters.
@@ -501,6 +545,12 @@ const config = {
         : SSRF_ALLOW_PRIVATE_TARGETS === "false"
           ? false
           : (NODE_ENV || "development") === "development",
+    // The internal services an HTTP tool may reach with the guard ON (issue #615). Read only by the
+    // HTTP tool, and there only when the tool's own allowedHosts names the host. See src/lib/ssrf.ts.
+    internalTargets: parseInternalTargets(
+      SSRF_INTERNAL_TARGETS,
+      "SSRF_INTERNAL_TARGETS",
+    ),
   },
   // NOTE: Whether to believe the X-Forwarded-For chain when keying the rate limiters. OFF unless
   // declared: the compose files that guarantee the app is only reachable through a proxy set it, and

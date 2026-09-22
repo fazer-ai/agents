@@ -98,6 +98,9 @@ services:
       - FLEET_ROLE_RETAIN_MEMBER=${FLEET_ROLE_RETAIN_MEMBER:-}
       - TRUST_PROXY=true
       - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
+      # NOTE: internal services an HTTP tool may reach with the SSRF guard on (host:port, comma-separated;
+      # see .env.example). Empty declares none.
+      - SSRF_INTERNAL_TARGETS=${SSRF_INTERNAL_TARGETS:-}
       # NOTE: rate-limit ceilings, per client address. The first two are runaway guards, generous on
       # purpose. The credential pair is the tight one: it covers login, signup, the one-time /setup
       # token and accept-invite, and its window is minutes rather than one minute because a

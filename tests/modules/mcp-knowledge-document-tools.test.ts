@@ -240,6 +240,24 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
     }
   });
 
+  // Review round 3: the REST twin refuses an empty field, and an empty text would wipe the content.
+  test("an empty title or text is refused, on preview and on apply", async () => {
+    for (const empty of [{ title: "" }, { text: "" }]) {
+      for (const dry_run of [undefined, false]) {
+        const r = await knowledgeDocumentUpdate(
+          principal(tenantId),
+          { document_id: String(doc), ...empty, dry_run },
+          deps(),
+        );
+        expect(r.ok).toBe(false);
+      }
+    }
+    const row = await suDb.knowledgeDocument.findUniqueOrThrow({
+      where: { id: doc },
+    });
+    expect(row.content.length).toBeGreaterThan(0);
+  });
+
   // Review round 1: the apply refuses a NUL or a lone surrogate, so the preview must too, or it
   // approves an edit that cannot happen.
   test("a text the column cannot hold is refused by the preview, not only by the apply", async () => {

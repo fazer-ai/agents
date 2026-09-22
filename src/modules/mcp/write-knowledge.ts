@@ -340,6 +340,11 @@ export async function knowledgeDocumentUpdate(
   if (args.title === undefined && args.text === undefined) {
     return err("nothing to update: pass title and/or text");
   }
+  // The REST twin's `minLength: 1` on both fields, asked here because the service does not: an empty
+  // text would replace the content and the next ingest would drop every chunk (review round 3).
+  if (args.title === "" || args.text === "") {
+    return err("title and text, when given, must not be empty");
+  }
   const bad = unstorable([
     ["title", args.title],
     ["text", args.text],

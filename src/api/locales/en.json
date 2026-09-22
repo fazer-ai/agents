@@ -218,6 +218,7 @@
     "toolGrantUnknownTool": "Unknown {{source}} tool: {{tool}}.",
     "toolNameReserved": "That name belongs to a built-in tool; choose another.",
     "toolNameTaken": "That tool name is already in use.",
+    "tooManyAllowedLabels": "`Labels it may add` takes at most {{max}} labels.",
     "tooManyProtectedLabels": "`Labels off limits` takes at most {{max}} labels.",
     "unauthorized": "Unauthorized",
     "unknownDeliveryStatus": "Unknown delivery status: {{status}}",

@@ -200,6 +200,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,
+  "tests/graph/label-allowed-wiring.test.ts": 1,
   "tests/graph/nudge.test.ts": 3,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // #726: dois leitores novos, o carimbo provisorio da linha de `skip_reply` e a ausencia do fato do

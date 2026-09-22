@@ -388,6 +388,10 @@ function renderPinned(targetInstanceId: number | null): {
         labelInstructions=""
         protectedLabels=""
         setProtectedLabels={noop}
+        allowedLabels=""
+        setAllowedLabels={noop}
+        outsideAllowedLabels="refuse"
+        setOutsideAllowedLabels={noop}
         setLabelInstructions={noop}
         updateKanbanTaskInstructions=""
         setUpdateKanbanTaskInstructions={noop}

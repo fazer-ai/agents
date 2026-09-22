@@ -12,7 +12,10 @@ import {
 // refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
 // be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
 // copied here would be a second copy that drifts.
-import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
+import {
+  ALLOWED_LABELS_MAX,
+  PROTECTED_LABELS_MAX,
+} from "@/modules/agents/tool-guidance";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import {
   FULL_DETAIL_MAX_HOURS,
@@ -724,6 +727,18 @@ const setLabels = z
       .array(z.string())
       .describe(
         `labels set_labels may neither add nor remove — for the ones another system owns (a switch that keeps an agent off a conversation, a testing marker). The agent SEES them and is told so. Blank, duplicate and non-string entries are dropped by the reader, and the list is capped at ${PROTECTED_LABELS_MAX}. An empty array clears the guard.`,
+      )
+      .optional(),
+    allowed: z
+      .array(z.string())
+      .describe(
+        `the only titles set_labels may ADD; empty = any, and a new one is created. Removal is not limited. At most ${ALLOWED_LABELS_MAX}`,
+      )
+      .optional(),
+    outsideAllowed: z
+      .enum(["refuse", "accept"])
+      .describe(
+        "a title outside `allowed`: refuse (default: not written) or accept (written, counted in the log)",
       )
       .optional(),
   })

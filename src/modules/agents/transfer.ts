@@ -48,7 +48,10 @@ import {
   clampOversizedTextInPlace,
   TOOL_INSTRUCTIONS_MAX,
 } from "@/modules/agents/text-caps";
-import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
+import {
+  ALLOWED_LABELS_MAX,
+  PROTECTED_LABELS_MAX,
+} from "@/modules/agents/tool-guidance";
 import { auditMutation } from "@/modules/audit/service";
 import {
   MAX_SCHEDULE_EXCEPTIONS,
@@ -1321,6 +1324,13 @@ export async function importAgent(
       warnings.push({
         code: "protectedLabelsClipped",
         params: { count: dropped, max: PROTECTED_LABELS_MAX },
+      });
+    }
+    const droppedAllowed = clampAllowedLabelsInPlace(settings);
+    if (droppedAllowed > 0) {
+      warnings.push({
+        code: "allowedLabelsClipped",
+        params: { count: droppedAllowed, max: ALLOWED_LABELS_MAX },
       });
     }
 
@@ -2678,11 +2688,25 @@ async function createMissingComponents(
 // it dropped. Counted the way the reader counts (blanks, non-strings and duplicates never became
 // guards), so the number in the warning is the number of guards the operator loses.
 function clampProtectedLabelsInPlace(settings: unknown): number {
+  return clampLabelListInPlace(settings, "protected", PROTECTED_LABELS_MAX);
+}
+
+// The allowed list (issue #638), clamped for the same reasons: the console reloads it, and the
+// reader honours only the first ones.
+function clampAllowedLabelsInPlace(settings: unknown): number {
+  return clampLabelListInPlace(settings, "allowed", ALLOWED_LABELS_MAX);
+}
+
+function clampLabelListInPlace(
+  settings: unknown,
+  key: "protected" | "allowed",
+  max: number,
+): number {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return 0;
   const block = (settings as Record<string, unknown>).setLabels;
   if (!block || typeof block !== "object" || Array.isArray(block)) return 0;
-  const raw = (block as Record<string, unknown>).protected;
+  const raw = (block as Record<string, unknown>)[key];
   if (!Array.isArray(raw)) return 0;
   const kept: string[] = [];
   const seen = new Set<string>();
@@ -2693,12 +2717,9 @@ function clampProtectedLabelsInPlace(settings: unknown): number {
     seen.add(label);
     kept.push(label);
   }
-  if (kept.length <= PROTECTED_LABELS_MAX) return 0;
-  (block as Record<string, unknown>).protected = kept.slice(
-    0,
-    PROTECTED_LABELS_MAX,
-  );
-  return kept.length - PROTECTED_LABELS_MAX;
+  if (kept.length <= max) return 0;
+  (block as Record<string, unknown>)[key] = kept.slice(0, max);
+  return kept.length - max;
 }
 
 // THE CONFIGURED TAXONOMY, RENDERED AS THE SENTENCE IT BECAME. A bundle is a file, so one exported

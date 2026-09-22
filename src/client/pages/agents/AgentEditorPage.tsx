@@ -89,7 +89,10 @@ import {
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
-import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
+import {
+  ALLOWED_LABELS_MAX,
+  PROTECTED_LABELS_MAX,
+} from "@/modules/agents/tool-guidance";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
@@ -416,6 +419,19 @@ function readBehaviorState(a: Agent) {
     )
       .filter((l): l is string => typeof l === "string")
       .join(", "),
+    // The labels set_labels may ADD (issue #638), edited the same way as the guard above.
+    allowedLabels: (Array.isArray(
+      (s.setLabels as Record<string, unknown> | undefined)?.allowed,
+    )
+      ? ((s.setLabels as Record<string, unknown>).allowed as unknown[])
+      : []
+    )
+      .filter((l): l is string => typeof l === "string")
+      .join(", "),
+    outsideAllowedLabels: ((s.setLabels as Record<string, unknown> | undefined)
+      ?.outsideAllowed === "accept"
+      ? "accept"
+      : "refuse") as "refuse" | "accept",
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -941,6 +957,10 @@ function AgentEditor() {
     useState("");
   const [labelInstructions, setLabelInstructions] = useState("");
   const [protectedLabels, setProtectedLabels] = useState("");
+  const [allowedLabels, setAllowedLabels] = useState("");
+  const [outsideAllowedLabels, setOutsideAllowedLabels] = useState<
+    "refuse" | "accept"
+  >("refuse");
   // Operator usage guidance for update_kanban_task (Tools-tab config). Persisted in
   // agent.settings.toolGuidance.update_kanban_task; synced only by syncToolConfig.
   // Per-tool preconditions (Tools tab, same lifecycle as the guidance above). Held as a LIST while
@@ -1407,6 +1427,8 @@ function AgentEditor() {
     setCustomAttributeInstructions(b.customAttributeInstructions);
     setLabelInstructions(b.labelInstructions);
     setProtectedLabels(b.protectedLabels);
+    setAllowedLabels(b.allowedLabels);
+    setOutsideAllowedLabels(b.outsideAllowedLabels);
     setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
     setToolPreconditions(b.toolPreconditions);
   }, []);
@@ -1860,6 +1882,8 @@ function AgentEditor() {
       customAttributeInstructions,
       labelInstructions,
       protectedLabels,
+      allowedLabels,
+      outsideAllowedLabels,
       updateKanbanTaskInstructions,
       toolPreconditions,
     }),
@@ -2269,6 +2293,23 @@ function AgentEditor() {
     );
   }
 
+  // The allowed list (issue #638), refused before the save by the same rule as the guard above.
+  function allowedLabelsError(next: string[], stored: unknown): string | null {
+    if (new Set(next).size <= ALLOWED_LABELS_MAX) return null;
+    const before = (stored as Record<string, Record<string, unknown>> | null)
+      ?.setLabels?.allowed;
+    if (
+      Array.isArray(before) &&
+      JSON.stringify(before) === JSON.stringify(next)
+    )
+      return null;
+    return t(
+      "editor.allowedLabelsTooMany",
+      "Labels it may add takes at most {{max}} labels.",
+      { max: ALLOWED_LABELS_MAX },
+    );
+  }
+
   // Localized text for a structured import warning. Static keys (one per code) keep it extract-safe;
   // params interpolate the names/counts. New codes added in transfer.ts must get a case here.
   function importWarningMessage(w: ImportWarning): string {
@@ -2304,6 +2345,12 @@ function AgentEditor() {
         return t(
           "editor.importWarning.protectedLabelsClipped",
           "The bundle carried more than {{max}} labels out of reach, so {{count}} of them were dropped on import.",
+          { ...p, count: importWarningCount(p) },
+        );
+      case "allowedLabelsClipped":
+        return t(
+          "editor.importWarning.allowedLabelsClipped",
+          "The bundle carried more than {{max}} labels the agent may add, so {{count}} of them were dropped on import.",
           { ...p, count: importWarningCount(p) },
         );
       case "credentialNotFound":
@@ -3026,6 +3073,10 @@ function AgentEditor() {
         .split(",")
         .map((l) => l.trim())
         .filter(Boolean);
+      const allowedList = allowedLabels
+        .split(",")
+        .map((l) => l.trim())
+        .filter(Boolean);
       const existingSetLabels = (syncedSettings.setLabels ?? {}) as Record<
         string,
         unknown
@@ -3036,7 +3087,12 @@ function AgentEditor() {
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
         toolPreconditions: toolPreconditionsJson,
-        setLabels: { ...existingSetLabels, protected: protectedList },
+        setLabels: {
+          ...existingSetLabels,
+          protected: protectedList,
+          allowed: allowedList,
+          outsideAllowed: outsideAllowedLabels,
+        },
       };
       // Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
@@ -3055,7 +3111,8 @@ function AgentEditor() {
         : syncedSettings;
       const toolsText =
         settingsTextError(toolsSettings, storedSettings) ??
-        protectedLabelsError(protectedList, storedSettings);
+        protectedLabelsError(protectedList, storedSettings) ??
+        allowedLabelsError(allowedList, storedSettings);
       if (toolsText) {
         showToast(toolsText, "error");
         return;
@@ -3105,7 +3162,12 @@ function AgentEditor() {
         // the pre-save map, and the next Behavior save spreads it back over the rules that were just
         // stored — with the Tools tab still showing them as saved.
         toolPreconditions: toolPreconditionsJson,
-        setLabels: { ...existingSetLabels, protected: protectedList },
+        setLabels: {
+          ...existingSetLabels,
+          protected: protectedList,
+          allowed: allowedList,
+          outsideAllowed: outsideAllowedLabels,
+        },
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
@@ -3801,6 +3863,10 @@ function AgentEditor() {
                 setLabelInstructions={setLabelInstructions}
                 protectedLabels={protectedLabels}
                 setProtectedLabels={setProtectedLabels}
+                allowedLabels={allowedLabels}
+                setAllowedLabels={setAllowedLabels}
+                outsideAllowedLabels={outsideAllowedLabels}
+                setOutsideAllowedLabels={setOutsideAllowedLabels}
                 updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                 toolPreconditions={toolPreconditions}
                 setToolPreconditions={setToolPreconditions}

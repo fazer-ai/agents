@@ -332,6 +332,11 @@ export interface ToolCtx {
   // meaning "and never sees" in #695: see applyLabelDelta for why the refusal is reported by name.
   // Comes from `settings.setLabels.protected`; empty or absent ⇒ the tool reaches everything.
   protectedLabels?: string[];
+  // THE LABELS `set_labels` MAY ADD (issue #638), from `settings.setLabels.allowed`; empty or absent
+  // ⇒ any title, and one Chatwoot does not have is created there. `outsideAllowedLabels` says what a
+  // title outside the list meets: `refuse` (default) or `accept`. See applyLabelDelta.
+  allowedLabels?: string[];
+  outsideAllowedLabels?: "refuse" | "accept";
   // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
   // graph already asks it at the tool boundary; waiting for that queue is a wait AFTER the ask, and
   // `/reset` clears the episode's labels in this very queue, so a write admitted at the boundary can
@@ -937,11 +942,21 @@ function existingLabelsXml(labels: string[]): string {
 // "never sees": under a delta, being shown a label no longer puts it at risk, so protecting and
 // hiding come apart. That is the whole point of the change, and hiding is what made a fenced agent
 // invent a label it could not see on 2026-09-11.
+//
+// THE OPERATOR'S LIST, when there is one (issue #638), fences ADDITIONS only. Under `refuse` a title
+// outside it is not written and is named back (`refusedOutside`), and it holds the call's removals
+// exactly as a guarded addition does, for the same reason: a swap whose new value cannot land must
+// not leave the scope without the old one. Under `accept` it is written as before, and
+// `acceptedOutside` names what went in outside the list so the trail can COUNT it (never title it:
+// those are the model's strings). Removal is not limited: taking off a label the taxonomy never had
+// is exactly what an operator cleaning up after the model wants. Both keys are present only when a
+// list is, so a caller without one reads the same object it always did.
 export function applyLabelDelta(
   add: readonly string[],
   remove: readonly string[],
   current: string[],
   guarded?: string[],
+  allowed?: { labels: readonly string[]; mode: "refuse" | "accept" },
 ): {
   next: string[];
   added: string[];
@@ -949,6 +964,8 @@ export function applyLabelDelta(
   refusedAdd: string[];
   refusedRemove: string[];
   heldRemove: string[];
+  refusedOutside?: string[];
+  acceptedOutside?: string[];
 } {
   const clean = (xs: readonly string[]): string[] => [
     ...new Set(xs.map((l) => l.trim()).filter(Boolean)),
@@ -984,23 +1001,45 @@ export function applyLabelDelta(
   // single correct one before this rule existed. Still conditioned on the guard's REFUSAL and not
   // on the write's outcome: an agent with no guard refuses nothing and holds nothing, whatever its
   // additions end up moving.
-  const hold = refusedAdd.some((l) => !current.includes(l));
+  const allowedSet =
+    allowed && allowed.labels.length > 0
+      ? new Set(clean(allowed.labels))
+      : null;
+  const refusedOutside =
+    allowedSet && allowed?.mode !== "accept"
+      ? wantAdd.filter((l) => !guard.has(l) && !allowedSet.has(l))
+      : [];
+  const hold = [...refusedAdd, ...refusedOutside].some(
+    (l) => !current.includes(l),
+  );
   const free = wantRemove.filter((l) => !guard.has(l));
   // Named back only when the label is actually standing: reporting a hold on one that was not
   // there would claim an effect the call never had, which is the same lie in the other direction.
   const heldRemove = hold ? free.filter((l) => current.includes(l)) : [];
   const drop = new Set(hold ? [] : free);
   const kept = current.filter((l) => !drop.has(l));
-  const next = [...new Set([...kept, ...wantAdd.filter((l) => !guard.has(l))])];
+  const next = [
+    ...new Set([
+      ...kept,
+      ...wantAdd.filter((l) => !guard.has(l) && !refusedOutside.includes(l)),
+    ]),
+  ];
+  // What this write DID, read off `next` rather than off the request: naming a label already
+  // present, or removing one that is not there, asks for something and moves nothing.
+  const added = next.filter((l) => !current.includes(l));
   return {
     next,
-    // What this write DID, read off `next` rather than off the request: naming a label already
-    // present, or removing one that is not there, asks for something and moves nothing.
-    added: next.filter((l) => !current.includes(l)),
+    added,
     removed: current.filter((l) => !next.includes(l)),
     refusedAdd,
     refusedRemove,
     heldRemove,
+    ...(allowedSet
+      ? {
+          refusedOutside,
+          acceptedOutside: added.filter((l) => !allowedSet.has(l)),
+        }
+      : {}),
   };
 }
 
@@ -1031,6 +1070,7 @@ function labelWriteReport(
   refusedAdd: string[] = [],
   refusedRemove: string[] = [],
   heldRemove: string[] = [],
+  refusedOutside: string[] = [],
 ): string {
   // The report is the THIRD statement about the same list, so it is capped like the other two, and
   // it says how many it left out rather than presenting a partial set as the whole truth.
@@ -1050,14 +1090,19 @@ function labelWriteReport(
   const tail = refused.length
     ? ` Some labels are managed by another system and ${refused.join("; ")}.`
     : "";
+  // Its own sentence, because the reason is different and so is what the model should do next: a
+  // guarded label belongs to someone else, a title outside the list does not exist for this agent.
+  const outside = refusedOutside.length
+    ? ` Not in this agent's list of labels, so not added: ${quoted(refusedOutside)}.`
+    : "";
   const held = heldRemove.length
     ? ` ${quoted(heldRemove)} stays: a removal is not applied when the same call tried to add a label that is out of reach.`
     : "";
   if (parts.length === 0)
-    return refused.length
-      ? `No label on the ${where} changed.${tail}${held} Now set: ${now}.`
+    return refused.length || refusedOutside.length
+      ? `No label on the ${where} changed.${tail}${outside}${held} Now set: ${now}.`
       : `Labels on the ${where} were already as requested. Now set: ${now}.`;
-  return `Labels on the ${where}: ${parts.join("; ")}.${tail}${held} Now set: ${now}.`;
+  return `Labels on the ${where}: ${parts.join("; ")}.${tail}${outside}${held} Now set: ${now}.`;
 }
 
 // THE MODEL-VISIBLE SET, kept current for the rest of the turn. A turn has as many label writes as
@@ -1152,6 +1197,23 @@ function setLabelsTool(ctx: ToolCtx) {
           ", ",
         )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}. Naming one of them in \`add\` when it is not already there also holds the call's \`remove\`, so a swap you cannot complete does not leave the scope empty.`
     : "";
+  // THE OPERATOR'S LIST (issue #638), named up front for the same reason the guard is: a refusal
+  // should not be how the model learns the taxonomy. Under `refuse` it REPLACES the "a label that
+  // is not listed is created" sentence below, which would otherwise contradict it.
+  const allowedList = [...new Set(ctx.allowedLabels ?? [])].filter(Boolean);
+  const allowedMode = ctx.outsideAllowedLabels ?? "refuse";
+  const allowed = allowedList.length
+    ? { labels: allowedList, mode: allowedMode }
+    : undefined;
+  // WHOLE, not cut at SHOWN_LABELS_MAX like the other lists: a title the model is never shown is
+  // one it cannot pick, and the list is already bounded where it is stored (at most
+  // ALLOWED_LABELS_MAX, review round 1 of #638).
+  const allowedNamed = allowedList.map((l) => `'${l}'`).join(", ");
+  const allowedSentence = !allowed
+    ? ""
+    : allowedMode === "accept"
+      ? ` The labels this agent is meant to use are: ${allowedNamed}. Add only these; a label outside the list is still written, but avoid it.`
+      : ` The only labels you may add are: ${allowedNamed}. A label outside this list is refused and not written; removing any label is still allowed.`;
   const baseDescription = [
     `Add or remove labels (tags) on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use scope to choose (default 'conversation').`,
     "Name ONLY what changes: a label you do not name is left exactly as it is. There is no need to repeat the labels that should stay, and repeating them is not harmless — it is a request to have them, which puts back one somebody has just taken off.",
@@ -1159,6 +1221,7 @@ function setLabelsTool(ctx: ToolCtx) {
     currentXml &&
       "What is set right now is in `<current_labels>` below; a scope not listed there could not be read.",
     labelsXml &&
+      !(allowed && allowedMode === "refuse") &&
       "Prefer an EXISTING label from `<existing_labels>` below; a label that is not listed is created.",
   ]
     .filter(Boolean)
@@ -1216,8 +1279,16 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the labels (the card could not be read just now). Try again.";
         }
-        const { next, added, removed, refusedAdd, refusedRemove, heldRemove } =
-          applyLabelDelta(add, remove, cardLabels, guarded);
+        const {
+          next,
+          added,
+          removed,
+          refusedAdd,
+          refusedRemove,
+          heldRemove,
+          refusedOutside,
+          acceptedOutside,
+        } = applyLabelDelta(add, remove, cardLabels, guarded, allowed);
         if (added.length === 0 && removed.length === 0) {
           // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
           // The dispatch was counted as an effect on the way in, and a call that changed no label
@@ -1232,6 +1303,7 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedAdd,
             refusedRemove,
             heldRemove,
+            refusedOutside,
           );
         }
         // ASKED AGAIN, after the GET and before the write, for the reason the two sibling scopes
@@ -1243,7 +1315,12 @@ function setLabelsTool(ctx: ToolCtx) {
           return "Could not set the card labels (the run was called off while this write waited).";
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
-        ctx.onLabelsWritten?.(describeLabelWrite("task", added, removed, next));
+        ctx.onLabelsWritten?.(
+          describeLabelWrite("task", added, removed, next, {
+            allowed: allowedList,
+            acceptedOutside,
+          }),
+        );
         // Kept in step anyway: the snapshot still feeds the description block and anything else in
         // the turn that reads the card, and leaving it behind the write would show the model a set
         // its own call has already moved.
@@ -1257,6 +1334,7 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedAdd,
           refusedRemove,
           heldRemove,
+          refusedOutside,
         );
       }
       if (scope === "contact") {
@@ -1279,8 +1357,16 @@ function setLabelsTool(ctx: ToolCtx) {
         const current = await ctx.client.getContactLabels(
           contact.chatwootContactId,
         );
-        const { next, added, removed, refusedAdd, refusedRemove, heldRemove } =
-          applyLabelDelta(add, remove, current, guarded);
+        const {
+          next,
+          added,
+          removed,
+          refusedAdd,
+          refusedRemove,
+          heldRemove,
+          refusedOutside,
+          acceptedOutside,
+        } = applyLabelDelta(add, remove, current, guarded, allowed);
         if (added.length === 0 && removed.length === 0) {
           ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "contact", next);
@@ -1292,6 +1378,7 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedAdd,
             refusedRemove,
             heldRemove,
+            refusedOutside,
           );
         }
         // ASKED AGAIN, after the GET and before the write — the fourth handler in this file that
@@ -1303,7 +1390,10 @@ function setLabelsTool(ctx: ToolCtx) {
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
         ctx.onLabelsWritten?.(
-          describeLabelWrite("contact", added, removed, next),
+          describeLabelWrite("contact", added, removed, next, {
+            allowed: allowedList,
+            acceptedOutside,
+          }),
         );
         recordShown(ctx, "contact", next);
         return labelWriteReport(
@@ -1314,6 +1404,7 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedAdd,
           refusedRemove,
           heldRemove,
+          refusedOutside,
         );
       }
       // Inside the conversation's label queue, with the observer's verdict and the nudge's own
@@ -1335,7 +1426,9 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedAdd,
             refusedRemove,
             heldRemove,
-          } = applyLabelDelta(add, remove, current, guarded);
+            refusedOutside,
+            acceptedOutside,
+          } = applyLabelDelta(add, remove, current, guarded, allowed);
           if (added.length === 0 && removed.length === 0) {
             // Nothing moved: see the sibling scopes above.
             ctx.onNoEffect?.("set_labels");
@@ -1348,6 +1441,7 @@ function setLabelsTool(ctx: ToolCtx) {
               refusedAdd,
               refusedRemove,
               heldRemove,
+              refusedOutside,
             );
           }
           // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
@@ -1362,7 +1456,10 @@ function setLabelsTool(ctx: ToolCtx) {
           }
           await ctx.client.setConversationLabels(ctx.conversationId, next);
           ctx.onLabelsWritten?.(
-            describeLabelWrite("conversation", added, removed, next),
+            describeLabelWrite("conversation", added, removed, next, {
+              allowed: allowedList,
+              acceptedOutside,
+            }),
           );
           recordShown(ctx, "conversation", next);
           return labelWriteReport(
@@ -1373,6 +1470,7 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedAdd,
             refusedRemove,
             heldRemove,
+            refusedOutside,
           );
         },
       );
@@ -1380,7 +1478,7 @@ function setLabelsTool(ctx: ToolCtx) {
     {
       name: "set_labels",
       description: withOperatorNote(
-        baseDescription + guardedSentence,
+        baseDescription + allowedSentence + guardedSentence,
         ctx,
         "set_labels",
         [currentXml, labelsXml].filter(Boolean).join("\n"),

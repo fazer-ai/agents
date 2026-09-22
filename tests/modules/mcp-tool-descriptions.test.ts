@@ -242,7 +242,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // way `takeover` above cost more than one boolean — and none of it is discretionary: a client that
 // cannot see `values` cannot write a group, and a group is the whole feature. Re-measured on the
 // tree that ships: 24,261. Headroom stays tighter than a block.
-const SETTINGS_SCHEMA_CEILING = 24_400;
+//
+// RAISED for issue #638 by `setLabels.allowed` and `setLabels.outsideAllowed`, the list of labels
+// set_labels may add and what a title outside it meets: 348 characters on a base of 24,400. Trimmed
+// first, from 499: each field says only what the type cannot (that removal is not limited, that the
+// default refuses, that accept is counted). Re-measured on the tree that ships: 24,748.
+const SETTINGS_SCHEMA_CEILING = 24_760;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -616,6 +621,10 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED to 57,817 by the `tts_check` flow stage (#779), which is an enum value wherever a
   // tool filters or subscribes by stage: this tree measures 57,801 against the base's 57,777, same
   // 16 of headroom. No tool and no description changed.
+  //
+  // SCHEMA RAISED to 58,171 by `setLabels.allowed`/`outsideAllowed` (#638), which reach tools/list
+  // through `agent_settings_set`: 354 characters on the 57,801 the base measures, same 16 of
+  // headroom. See SETTINGS_SCHEMA_CEILING above for the trim. Descriptions are unchanged.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -625,7 +634,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_744);
-    expect(schema).toBeLessThanOrEqual(57_817);
+    expect(schema).toBeLessThanOrEqual(58_171);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

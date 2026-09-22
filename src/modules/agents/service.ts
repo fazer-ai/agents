@@ -28,7 +28,10 @@ import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
-import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
+import {
+  ALLOWED_LABELS_MAX,
+  PROTECTED_LABELS_MAX,
+} from "@/modules/agents/tool-guidance";
 import {
   invalidToolPreconditions,
   parseToolPrecondition,
@@ -566,36 +569,65 @@ export class TooManyProtectedLabelsError extends AppError {
   }
 }
 
-function rawProtectedList(settings: unknown): unknown[] | null {
+// The allowed list (issue #638) is read back by the same editor, so it is refused past the ceiling
+// for the same reason: sixty titles shown as the taxonomy while ten of them are refused is a list
+// that lies about the tool.
+export class TooManyAllowedLabelsError extends AppError {
+  constructor(max: number) {
+    super(
+      `settings.setLabels.allowed takes at most ${max} labels`,
+      400,
+      "errors.tooManyAllowedLabels",
+      { max },
+      "setLabels.allowed",
+    );
+  }
+}
+
+function rawLabelList(
+  settings: unknown,
+  key: "protected" | "allowed",
+): unknown[] | null {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return null;
   const block = (settings as Record<string, unknown>).setLabels;
   if (!block || typeof block !== "object" || Array.isArray(block)) return null;
-  const raw = (block as Record<string, unknown>).protected;
+  const raw = (block as Record<string, unknown>)[key];
   return Array.isArray(raw) ? raw : null;
 }
 
-export function assertSettingsProtectedLabels(
+// Whether a write CHANGES the list to one past `max`, counted the way the READER counts, or the
+// refusal and the truncation would disagree about the same list: blanks, non-strings and duplicates
+// never became entries in the first place. Counted HERE rather than by calling the reader, because
+// the reader stops AT the ceiling — asking it how many there are can never answer more than the
+// ceiling, which is the whole question.
+function labelListOverflows(
   settings: unknown,
   stored: unknown,
-): void {
-  const next = rawProtectedList(settings);
-  if (next === null) return;
-  // Counted the way the READER counts, or the refusal and the truncation would disagree about the
-  // same list: blanks, non-strings and duplicates never became guards in the first place. Counted
-  // HERE rather than by calling the reader, because the reader stops AT the ceiling — asking it how
-  // many there are can never answer more than the ceiling, which is the whole question.
+  key: "protected" | "allowed",
+  max: number,
+): boolean {
+  const next = rawLabelList(settings, key);
+  if (next === null) return false;
   const kept = new Set<string>();
   for (const entry of next) {
     if (typeof entry !== "string") continue;
     const label = entry.trim();
     if (label) kept.add(label);
   }
-  if (kept.size <= PROTECTED_LABELS_MAX) return;
-  const before = rawProtectedList(stored);
-  if (before !== null && JSON.stringify(before) === JSON.stringify(next))
-    return;
-  throw new TooManyProtectedLabelsError(PROTECTED_LABELS_MAX);
+  if (kept.size <= max) return false;
+  const before = rawLabelList(stored, key);
+  return !(before !== null && JSON.stringify(before) === JSON.stringify(next));
+}
+
+export function assertSettingsProtectedLabels(
+  settings: unknown,
+  stored: unknown,
+): void {
+  if (labelListOverflows(settings, stored, "protected", PROTECTED_LABELS_MAX))
+    throw new TooManyProtectedLabelsError(PROTECTED_LABELS_MAX);
+  if (labelListOverflows(settings, stored, "allowed", ALLOWED_LABELS_MAX))
+    throw new TooManyAllowedLabelsError(ALLOWED_LABELS_MAX);
 }
 
 // THE RETIRED NOTE FLAG, TAKEN OUT OF THE BAG ABOUT TO BE STORED, whatever it says.

@@ -894,6 +894,10 @@
     "pro": "Pro"
   },
   "editor": {
+    "allowedLabels": "Etiquetas que pode acrescentar",
+    "allowedLabelsHint": "Opcional, separadas por vírgula. As únicas etiquetas que este agente pode acrescentar; remover qualquer etiqueta continua permitido. Vazio: qualquer etiqueta, e uma que a conta não tem é criada.",
+    "allowedLabelsPlaceholder": "ex.: cancelamento, compra-de-ingresso, outros",
+    "allowedLabelsTooMany": "Etiquetas que pode acrescentar aceita no máximo {{max}} etiquetas.",
     "always": "Sempre ativo",
     "attributeContext": "Dados no contexto",
     "attributeContextContact": "Contato",
@@ -1255,6 +1259,10 @@
     "identitySection": "Identidade",
     "identitySectionHint": "Nome, prompt do sistema e se o agente está ativo.",
     "importWarning": {
+      "allowedLabelsClipped_zero": "O pacote trazia mais de {{max}} etiquetas que o agente pode acrescentar, então {{count}} delas foram descartadas na importação.",
+      "allowedLabelsClipped_one": "O pacote trazia mais de {{max}} etiquetas que o agente pode acrescentar, então {{count}} delas foi descartada na importação.",
+      "allowedLabelsClipped_many": "O pacote trazia mais de {{max}} etiquetas que o agente pode acrescentar, então {{count}} delas foram descartadas na importação.",
+      "allowedLabelsClipped_other": "O pacote trazia mais de {{max}} etiquetas que o agente pode acrescentar, então {{count}} delas foram descartadas na importação.",
       "codeGrantAmbiguous": "{{n}} ferramentas de código daqui respondem pelo nome \"{{name}}\", então a concessão foi ignorada em vez de ligada a uma delas. Renomeie-as para nomes distintos e conceda à mão.",
       "codeGrantNotFound": "A ferramenta de código \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
       "codeToolAmbiguous": "{{n}} ferramentas de código daqui já respondem pelo nome \"{{name}}\", então a ferramenta do pacote não foi importada. Renomeie-as para nomes distintos e importe de novo.",
@@ -1405,6 +1413,9 @@
     "observationWindow": "Mensagens lidas",
     "observationWindowHint": "As mensagens mais recentes que o modelo lê a cada passada. {{min}} a {{max}}.",
     "openPlayground": "Testar no playground",
+    "outsideAllowedLabels": "Uma etiqueta fora da lista",
+    "outsideAllowedLabelsAccept": "É gravada, e contada nos logs",
+    "outsideAllowedLabelsRefuse": "É recusada e não é gravada",
     "overwriteAnyway": "Salvar assim mesmo",
     "proactiveSection": "Mensagens proativas",
     "proactiveSectionHint": "Aborde o cliente primeiro quando a conversa fica em silêncio. No WhatsApp, uma mensagem enviada fora da janela de 24h exige um template aprovado (HSM).",

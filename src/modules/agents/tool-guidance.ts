@@ -35,6 +35,8 @@ export function readToolGuidance(
 // could not match anyway — a non-string, a blank, a duplicate — because a guard entry that never
 // equals a real label is a guard that silently protects nothing.
 export const PROTECTED_LABELS_MAX = 50;
+// The allowed list (issue #638) is bounded by the same number, read by the same function.
+export const ALLOWED_LABELS_MAX = PROTECTED_LABELS_MAX;
 
 // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE (issue #568 review; issue #695 dropped the third
 // property, "and never sees").
@@ -54,12 +56,45 @@ export const PROTECTED_LABELS_MAX = 50;
 // configures this tool, and because two agents on one account can disagree about which labels are
 // theirs. Empty or absent ⇒ the tool reaches everything, which is the behaviour before this list.
 export function readProtectedLabels(settings: unknown): string[] {
+  return readLabelList(settings, "protected");
+}
+
+// THE LABELS `set_labels` MAY ADD, when the operator declared them (issue #638). The other half of
+// the same block: `protected` is what the tool may not touch, this is what it may use. Without it
+// the model's array is the taxonomy, a title Chatwoot does not have is CREATED there, and nothing
+// can name a label in a log because nothing tells an operator's title from an invented one. Same
+// ceiling and the same reader as `protected`, so the two lists are bounded and cleaned alike.
+// Empty or absent ⇒ no list, which is the behaviour before it existed: an install that classifies
+// without one must not stop classifying on upgrade.
+export function readAllowedLabels(settings: unknown): string[] {
+  return readLabelList(settings, "allowed");
+}
+
+// What a title outside `allowed` meets. `refuse` (the default) does not write it and names it back
+// to the model; `accept` writes it as before and only counts it on the trail. Anything else reads
+// as the default, the strict side, because an unknown value is a typo and the list exists to fence.
+export type OutsideAllowedLabels = "refuse" | "accept";
+export function readOutsideAllowedLabels(
+  settings: unknown,
+): OutsideAllowedLabels {
+  const block = setLabelsBlock(settings);
+  return block?.outsideAllowed === "accept" ? "accept" : "refuse";
+}
+
+function setLabelsBlock(settings: unknown): Record<string, unknown> | null {
   const block =
     settings && typeof settings === "object"
       ? (settings as Record<string, unknown>).setLabels
       : undefined;
-  if (!block || typeof block !== "object" || Array.isArray(block)) return [];
-  const raw = (block as Record<string, unknown>).protected;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+  return block as Record<string, unknown>;
+}
+
+function readLabelList(
+  settings: unknown,
+  key: "protected" | "allowed",
+): string[] {
+  const raw = setLabelsBlock(settings)?.[key];
   if (!Array.isArray(raw)) return [];
   const out: string[] = [];
   for (const entry of raw) {

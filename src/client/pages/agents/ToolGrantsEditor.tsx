@@ -21,6 +21,7 @@ import {
   Dropdown,
   FormField,
   Input,
+  Select,
   SelectableCard,
   SwitchField,
   Textarea,
@@ -139,6 +140,12 @@ interface Props {
   // agent.settings.setLabels.protected; see readProtectedLabels for why the guard exists.
   protectedLabels: string;
   setProtectedLabels: (v: string) => void;
+  // The labels set_labels may ADD, comma-separated, and what a title outside them meets (issue #638).
+  // Persisted in agent.settings.setLabels.allowed / .outsideAllowed; see readAllowedLabels.
+  allowedLabels: string;
+  setAllowedLabels: (v: string) => void;
+  outsideAllowedLabels: "refuse" | "accept";
+  setOutsideAllowedLabels: (v: "refuse" | "accept") => void;
   // Operator-authored guidance for update_kanban_task (when/how to edit the card's fields), appended to
   // its model-facing description. Persisted in agent.settings.toolGuidance.update_kanban_task.
   updateKanbanTaskInstructions: string;
@@ -492,6 +499,10 @@ export function ToolGrantsEditor({
   setLabelInstructions,
   protectedLabels,
   setProtectedLabels,
+  allowedLabels,
+  setAllowedLabels,
+  outsideAllowedLabels,
+  setOutsideAllowedLabels,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   mcpTools,
@@ -591,7 +602,9 @@ export function ToolGrantsEditor({
     (kanbanEnabled && kanbanInstructions.trim() !== "") ||
     (attrEnabled && customAttributeInstructions.trim() !== "") ||
     (labelEnabled &&
-      (labelInstructions.trim() !== "" || protectedLabels.trim() !== "")) ||
+      (labelInstructions.trim() !== "" ||
+        protectedLabels.trim() !== "" ||
+        allowedLabels.trim() !== "")) ||
     (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "");
 
   // Agents/teams + the accounts the agent serves, for the "pinned" handoff target picker. Scoped to
@@ -1794,7 +1807,9 @@ export function ToolGrantsEditor({
             title={nativeToolMeta(LABEL_TOOL, t).label}
             description={nativeToolMeta(LABEL_TOOL, t).description}
             configured={
-              labelInstructions.trim() !== "" || protectedLabels.trim() !== ""
+              labelInstructions.trim() !== "" ||
+              protectedLabels.trim() !== "" ||
+              allowedLabels.trim() !== ""
             }
           >
             <FormField
@@ -1819,7 +1834,6 @@ export function ToolGrantsEditor({
             </FormField>
             <FormField
               label={t("editor.protectedLabels", "Labels off limits")}
-              group
               description={t(
                 "editor.protectedLabelsHint",
                 "Optional, comma-separated. Labels this agent may neither add nor remove: the ones another system owns. It still sees them and is told it cannot move them.",
@@ -1836,6 +1850,54 @@ export function ToolGrantsEditor({
                 )}
               />
             </FormField>
+            <FormField
+              label={t("editor.allowedLabels", "Labels it may add")}
+              description={t(
+                "editor.allowedLabelsHint",
+                "Optional, comma-separated. The only labels this agent may add; removing any label is still allowed. Empty: any label, and one the account does not have is created.",
+              )}
+            >
+              <Input
+                value={allowedLabels}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setAllowedLabels(e.target.value)
+                }
+                placeholder={t(
+                  "editor.allowedLabelsPlaceholder",
+                  "e.g. cancelamento, compra-de-ingresso, outros",
+                )}
+              />
+            </FormField>
+            {allowedLabels.trim() !== "" && (
+              <FormField
+                label={t(
+                  "editor.outsideAllowedLabels",
+                  "A label outside the list",
+                )}
+              >
+                <Select
+                  value={outsideAllowedLabels}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                    setOutsideAllowedLabels(
+                      e.target.value === "accept" ? "accept" : "refuse",
+                    )
+                  }
+                >
+                  <option value="refuse">
+                    {t(
+                      "editor.outsideAllowedLabelsRefuse",
+                      "Is refused and not written",
+                    )}
+                  </option>
+                  <option value="accept">
+                    {t(
+                      "editor.outsideAllowedLabelsAccept",
+                      "Is written, and counted in the logs",
+                    )}
+                  </option>
+                </Select>
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         <p className="text-text-muted text-xs">

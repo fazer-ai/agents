@@ -93,6 +93,8 @@ export function makeConfig(
     kanbanConfig: KANBAN_DEFAULTS,
     toolGuidance: {},
     protectedLabels: [],
+    allowedLabels: [],
+    outsideAllowedLabels: "refuse",
     toolPreconditions: {},
     httpToolContext: {},
     contactName: null,

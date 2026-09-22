@@ -10,7 +10,10 @@ import {
   assertSettingsRetiredLabelKeys,
 } from "@/modules/agents/service";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
-import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
+import {
+  ALLOWED_LABELS_MAX,
+  PROTECTED_LABELS_MAX,
+} from "@/modules/agents/tool-guidance";
 import {
   type AgentExport,
   configBusinessHoursId,
@@ -2093,6 +2096,39 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const w = warnings.find((x) => x.code === "protectedLabelsClipped");
     expect(w?.params).toEqual({ count: 7, max: PROTECTED_LABELS_MAX });
     // The agent it produced saves again, which is the point of clamping instead of storing whole.
+    expect(() =>
+      assertSettingsProtectedLabels(row.settings, undefined),
+    ).not.toThrow();
+    await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
+  });
+
+  // The allowed list (issue #638) is clamped by the same rule, and says so under its own code.
+  test("a bundle with more allowed labels than the ceiling imports clamped, and says so", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    bundle.agent.name = "Restaurada com taxonomia demais";
+    (bundle.agent.settings as Record<string, unknown>).setLabels = {
+      allowed: Array.from({ length: 60 }, (_, i) => `t${i}`),
+      outsideAllowed: "accept",
+    };
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const block = (row.settings as Record<string, Record<string, unknown>>)
+      .setLabels;
+    const allowed = (block?.allowed ?? []) as string[];
+    expect(allowed.length).toBe(ALLOWED_LABELS_MAX);
+    expect(allowed[0]).toBe("t0");
+    expect(block?.outsideAllowed).toBe("accept");
+    const w = warnings.find((x) => x.code === "allowedLabelsClipped");
+    expect(w?.params).toEqual({ count: 10, max: ALLOWED_LABELS_MAX });
+    expect(warnings.some((x) => x.code === "protectedLabelsClipped")).toBe(
+      false,
+    );
     expect(() =>
       assertSettingsProtectedLabels(row.settings, undefined),
     ).not.toThrow();

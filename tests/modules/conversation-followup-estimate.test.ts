@@ -74,6 +74,8 @@ let convRepliedAtFloorsTheCadence = 0n;
 let convGoneStepAndOurReply = 0n;
 let cadenceFloorDueAt = "";
 let convNoBotRowArmed = 0n;
+let convSameEpisodeLaterStep = 0n;
+let convStep0JobFarOut = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -106,6 +108,9 @@ const FOREIGN_BOT_ID = 4002;
 
 // A step-1 job armed two days out — the window in which the ground can shift under it.
 const ARMED_STEP1_RUN_AT = new Date("2026-06-20T23:18:45Z");
+// O passo 0 reagendado para longe pelo próprio worker: mais tarde que o piso da cadência
+// (LAST_EVENT_AT + 2 min), que é o que separa "a tela mostra o job" de "a tela recalculou".
+const STEP0_FAR_RUN_AT = new Date("2026-06-25T10:00:00Z");
 
 describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
   beforeAll(async () => {
@@ -903,6 +908,71 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       assigneeType: "AgentBot",
       assigneeId: FOREIGN_BOT_ID,
     });
+    // Issue #752, o lado que NÃO muda: um passo tardio pendente no MESMO episódio. O cliente não
+    // falou desde o último follow-up (`lastInboundAt` anterior a ele), então o handler vai rodar esse
+    // passo, e a contagem dele é legítima — com o `run_at` do próprio job, que já é a hora que vai
+    // disparar. Sem esta fixture, uma supressão que esquecesse de perguntar pelo episódio suprimiria
+    // TODO job de passo tardio e nada reprovaria.
+    convSameEpisodeLaterStep = await suDb.conversation
+      .create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId: 352,
+          inboxId: armedInbox.id,
+          status: "pending",
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT_ID,
+          threadId: `${tenant}:${inst}:352`,
+          lastRepliedMessageId: 1,
+          lastEventAt: LAST_EVENT_AT,
+          lastInboundAt: new Date(FOLLOW_UP_AT.getTime() - 3_600_000),
+          lastFollowUpAt: FOLLOW_UP_AT,
+        },
+      })
+      .then((c) => c.id);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:352`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:352`, stepIndex: 1 },
+      },
+    });
+    // Issue #752, o outro lado que não muda: o job de passo 0 já armado, com `run_at` mais tarde que
+    // o piso da cadência. Quem responde por ele é o braço do job armado, e a hora que a tela mostra é
+    // a DELE; uma supressão que alcançasse o passo 0 devolveria o mesmo número por outro caminho (o
+    // estimador) e com outra hora, que é a diferença que esta fixture torna visível.
+    convStep0JobFarOut = await suDb.conversation
+      .create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId: 353,
+          inboxId: armedInbox.id,
+          status: "pending",
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT_ID,
+          threadId: `${tenant}:${inst}:353`,
+          lastRepliedMessageId: 1,
+          lastEventAt: LAST_EVENT_AT,
+          lastInboundAt: REPLY_AT,
+          lastFollowUpAt: null,
+        },
+      })
+      .then((c) => c.id);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:353`,
+        status: "PENDING",
+        runAt: STEP0_FAR_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:353` },
+      },
+    });
     convForeignBotEstimate = await seedEstimateConv(326, {
       assigneeType: "AgentBot",
       assigneeId: FOREIGN_BOT_ID,
@@ -1421,6 +1491,32 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     // o run_at do job condenado (dois dias depois). O valor verbatim é o que separa "suprimiu" de
     // "suprimiu e recontou": um console que só apagasse a contagem diria `null` aqui.
     expect(d.followUp?.nextRunAt).toBe("2026-06-18T23:20:45.000Z");
+  });
+
+  // Issue #752: a contagem legítima do passo 2, que é o que a supressão NÃO pode alcançar. Mesmo
+  // episódio (o cliente não falou desde o último follow-up), job de passo tardio pendente: o handler
+  // vai rodá-lo, e a hora é a do próprio job.
+  test("passo tardio pendente no MESMO episódio → conta o passo 2, com o run_at do job", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convSameEpisodeLaterStep,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(2);
+    expect(d.followUp?.nextRunAt).toBe(ARMED_STEP1_RUN_AT.toISOString());
+    expect(d.followUp?.abandoned).toBe(false);
+  });
+
+  // Issue #752: e o passo 0 armado continua sendo respondido pelo braço do job, com a hora DELE. O
+  // número por si só não separa os dois caminhos (os dois dizem 1); a hora separa.
+  test("job de passo 0 armado para mais tarde → a hora é a do job, não a do estimador", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convStep0JobFarOut,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).toBe(STEP0_FAR_RUN_AT.toISOString());
   });
 
   // E a simetria explícita, que é a afirmação da issue: os dois autores de episódio novo produzem a

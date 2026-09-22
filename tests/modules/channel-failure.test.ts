@@ -48,6 +48,7 @@ const REPLY = "Seu pedido sai amanhã às 10h";
 
 let tenantId: bigint;
 let instanceId: bigint;
+let agentId: bigint;
 
 function updated(
   messageId: number,
@@ -230,6 +231,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       },
       select: { id: true },
     });
+    agentId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -287,12 +289,69 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     ).not.toContain("Media upload error");
   });
 
-  test("the job sends the text once, under the bot's token, to the conversation", async () => {
-    const [row] = await jobsFor(9001);
-    if (!row) throw new Error("the job above was not armed");
-    const sent: { conv: number; text: string; private: boolean }[] = [];
+  // The fake Chatwoot the job talks to: what the conversation looks like NOW, what its latest page
+  // holds, and every send it receives.
+  function fakeChatwoot(opts: {
+    status?: string;
+    assignee?: { type: string; id: number } | null;
+    recentSendIds?: string[];
+  }) {
+    const sent: {
+      conv: number;
+      text: string;
+      private: boolean;
+      sendId: string | null;
+    }[] = [];
     let token = "";
-    const job: ClaimedJob = {
+    const makeClient = (async (cfg: { botToken: string }) => {
+      token = cfg.botToken;
+      return {
+        getConversation: async () => ({
+          id: CONV_ID,
+          status: opts.status ?? "pending",
+          meta: {
+            assignee: opts.assignee
+              ? { id: opts.assignee.id, type: opts.assignee.type }
+              : null,
+            assignee_type: opts.assignee?.type ?? null,
+          },
+          assignee_type: opts.assignee?.type ?? null,
+          assignee_id: opts.assignee?.id ?? null,
+        }),
+        getMessages: async () => ({
+          payload: (opts.recentSendIds ?? []).map((id, i) => ({
+            id: 70_000 + i,
+            content: REPLY,
+            message_type: 1,
+            private: false,
+            created_at: Math.floor(Date.now() / 1000),
+            sender: { type: "agent_bot", id: BOT_ID },
+            content_attributes: { fazer_ai_send_id: id },
+          })),
+        }),
+        sendMessage: async (
+          conv: number,
+          text: string,
+          o?: { private?: boolean; sendId?: string },
+        ) => {
+          // The customer has to READ it: a private note would be the team talking to itself.
+          sent.push({
+            conv,
+            text,
+            private: o?.private === true,
+            sendId: o?.sendId ?? null,
+          });
+          return {};
+        },
+      } as unknown as ChatwootClient;
+    }) as never;
+    return { sent, makeClient, token: () => token };
+  }
+
+  async function claimed(messageId: number): Promise<ClaimedJob> {
+    const [row] = await jobsFor(messageId);
+    if (!row) throw new Error("the job was not armed");
+    return {
       id: row.id,
       tenantId,
       kind: "MEDIA_TEXT_FALLBACK",
@@ -301,25 +360,57 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       attempts: 0,
       claimSeq: row.claimSeq,
     };
-    const out = await mediaFallbackHandler(job, appDb, (async (cfg: {
-      botToken: string;
-    }) => {
-      token = cfg.botToken;
-      return {
-        sendMessage: async (
-          conv: number,
-          text: string,
-          opts?: { private?: boolean },
-        ) => {
-          // The customer has to READ it: a private note would be the team talking to itself.
-          sent.push({ conv, text, private: opts?.private === true });
-          return {};
-        },
-      } as unknown as ChatwootClient;
-    }) as never);
+  }
+
+  test("the job sends the text once, under the bot's token, to the conversation", async () => {
+    const cw = fakeChatwoot({});
+    const out = await mediaFallbackHandler(
+      await claimed(9001),
+      appDb,
+      cw.makeClient,
+    );
     expect(out).toEqual({ outcome: "done" });
-    expect(sent).toEqual([{ conv: CONV_ID, text: REPLY, private: false }]);
-    expect(token).toBe("BOT-TOKEN");
+    expect(cw.sent).toEqual([
+      {
+        conv: CONV_ID,
+        text: REPLY,
+        private: false,
+        sendId: "media-fallback:9001",
+      },
+    ]);
+    expect(cw.token()).toBe("BOT-TOKEN");
+  });
+
+  test("a job that runs again after its send landed does not send twice", async () => {
+    const cw = fakeChatwoot({ recentSendIds: ["media-fallback:9001"] });
+    const out = await mediaFallbackHandler(
+      await claimed(9001),
+      appDb,
+      cw.makeClient,
+    );
+    expect(out).toEqual({ outcome: "done" });
+    expect(cw.sent).toEqual([]);
+  });
+
+  test("a conversation a person took in the meantime gets nothing from the bot", async () => {
+    for (const state of [
+      { status: "open" },
+      { status: "pending", assignee: { type: "User", id: 3 } },
+    ]) {
+      const cw = fakeChatwoot(state);
+      const out = await mediaFallbackHandler(
+        await claimed(9001),
+        appDb,
+        cw.makeClient,
+      );
+      expect(out).toEqual({ outcome: "done" });
+      expect(cw.sent).toEqual([]);
+    }
+  });
+
+  test("the line is the agent's, so the Logs page filtered by agent shows it", async () => {
+    const [line] = await linesFor(9001);
+    expect(line?.agentId).toBe(agentId);
   });
 
   test("a redelivery, before or after the text went out, arms nothing new", async () => {

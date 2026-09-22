@@ -2,11 +2,18 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  runScoped,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
+import { parseChatwootMessages } from "./messages";
+import { parseLiveConversation, shouldBotHandle } from "./normalize";
 import type { NormalizedChatwootEvent } from "./types";
 
 // A REPLY THE CHANNEL REFUSED AFTER CHATWOOT ACCEPTED IT (issue #587).
@@ -89,6 +96,23 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+async function agentBehindBot(
+  tenantId: bigint,
+  instanceId: bigint,
+  chatwootAgentBotId: number,
+  base?: PrismaClient,
+): Promise<bigint | null> {
+  const find = (db: ScopedDb) =>
+    db.chatwootAgentBot.findFirst({
+      where: { chatwootInstanceId: instanceId, chatwootAgentBotId },
+      select: { agentId: true },
+    });
+  const bot = base
+    ? await runScopedOn(base, sysCtx(tenantId), find)
+    : await runScoped(sysCtx(tenantId), find);
+  return bot?.agentId ?? null;
+}
+
 export function mediaFallbackDedupeKey(messageId: number): string {
   return `msg:${messageId}`;
 }
@@ -105,6 +129,20 @@ export async function handleChannelFailure(params: {
   base?: PrismaClient;
 }): Promise<void> {
   const { failure: f } = params;
+  // The line belongs to the AGENT behind the bot that sent the message, so the Logs page filtered by
+  // agent shows it: the flow log stores the agent it is handed and infers nothing.
+  const flow: FlowContext =
+    params.flow.agentId != null
+      ? params.flow
+      : {
+          ...params.flow,
+          agentId: await agentBehindBot(
+            params.tenantId,
+            params.instanceId,
+            params.agentBotId,
+            params.base,
+          ),
+        };
   let action: "text_fallback" | "no_text" | "none" = "none";
   if (f.kind === "media") {
     if (f.text === null) {
@@ -133,7 +171,7 @@ export async function handleChannelFailure(params: {
       });
     }
   }
-  emitFlowEvent(params.flow, {
+  emitFlowEvent(flow, {
     stage: "channel_error",
     level: "warn",
     status: "error",
@@ -159,7 +197,13 @@ export async function mediaFallbackHandler(
   const conversationId =
     typeof p.conversationId === "number" ? p.conversationId : null;
   const agentBotId = typeof p.agentBotId === "number" ? p.agentBotId : null;
-  if (instanceId === null || conversationId === null || agentBotId === null)
+  const messageId = typeof p.messageId === "number" ? p.messageId : null;
+  if (
+    instanceId === null ||
+    conversationId === null ||
+    agentBotId === null ||
+    messageId === null
+  )
     return { outcome: "done" };
   // THROWS on a missing or unreadable body, like the ingestion job: a real failure retries and then
   // dead-letters visibly, instead of sending nothing and calling it done.
@@ -190,7 +234,33 @@ export async function mediaFallbackHandler(
     botToken: decryptJson<string>(bot.accessToken),
     ...(makeClient ? { makeClient } : {}),
   });
-  await client.sendMessage(conversationId, text);
+  // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
+  // send and this one, and a person may have taken the conversation in between: posting as the bot
+  // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
+  // retries instead of guessing either way.
+  const live = parseLiveConversation(
+    await client.getConversation(conversationId),
+  );
+  if (!live)
+    throw new Error("media fallback: the conversation could not be read");
+  if (!shouldBotHandle(live)) {
+    logger.info(
+      "media fallback: conversation %s is no longer the bot's, the text is not sent",
+      String(conversationId),
+    );
+    return { outcome: "done" };
+  }
+  // THE SEND CARRIES A NAME, and a retry looks for it before sending again. The row is armed once,
+  // but the HANDLER can run twice: a POST that landed and whose response was lost, or a crash between
+  // the send and `completeJob`, both come back here. The name is derived from the failed message, so
+  // every run of this job looks for the same one. The read is of the latest page, which is where a
+  // send from seconds ago sits; a read that fails THROWS, for the same reason as above.
+  const sendId = `media-fallback:${messageId}`;
+  const recent = parseChatwootMessages(
+    await client.getMessages(conversationId),
+  );
+  if (recent.some((m) => m.sendId === sendId)) return { outcome: "done" };
+  await client.sendMessage(conversationId, text, { sendId });
   return { outcome: "done" };
 }
 

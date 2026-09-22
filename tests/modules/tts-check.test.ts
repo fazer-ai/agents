@@ -426,7 +426,7 @@ describe.skipIf(!dbUp)("tts audio check", () => {
         {
           mode: "shadow",
           attempt: 1,
-          outcome: "sent_corrupted",
+          outcome: "flagged",
           corrupted: true,
           score: 0.97,
           verdict: "balbucio",
@@ -560,9 +560,10 @@ describe.skipIf(!dbUp)("tts audio check", () => {
     ]);
   });
 
-  test("enforce, turn called off after a corrupted verdict: no regeneration and no audio", async () => {
+  test("enforce, turn called off after a corrupted verdict: no regeneration, no audio, and the line says so", async () => {
     const p = countingProvider();
     const d = scriptedDetector([CORRUPTED]);
+    const f = flowOf();
     const out = await synthesizeReply({
       tenantId,
       cfg: cfgOf(),
@@ -571,10 +572,16 @@ describe.skipIf(!dbUp)("tts audio check", () => {
       deps: { fetchImpl: p.fetchImpl, checkFetchImpl: d.fetchImpl },
       check: CHECK,
       shouldStop: async () => true,
+      flow: f,
     });
     expect(out).toBeNull();
     expect(p.rec.calls).toBe(1);
     expect(d.rec.calls).toBe(1);
+    // Not `regenerated`: no second synthesis ran.
+    const lines = await checkLines(f);
+    expect(
+      lines.map((l) => (l.detail as Record<string, unknown>).outcome),
+    ).toEqual(["called_off"]);
   });
 
   test("enforce, a regeneration whose synthesis fails throws, which the caller turns into text", async () => {

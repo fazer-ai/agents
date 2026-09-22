@@ -258,7 +258,7 @@ export async function synthesizeReply(
             check,
             c,
             1,
-            c.verdict.corrupted ? "sent_corrupted" : "passed",
+            c.verdict.corrupted ? "flagged" : "passed",
           );
         }
       }),
@@ -284,15 +284,28 @@ export async function synthesizeReply(
       );
       return null;
     }
+    // NOTE: asked BEFORE the line is written, because the line names what happened: a turn called
+    // off here regenerates nothing, and `regenerated` would record a synthesis that never ran. null,
+    // not the audio in hand: it is known to be corrupted, and a caller must never be handed one as
+    // if it were the reply.
+    if (params.shouldStop && (await params.shouldStop())) {
+      reportCheck(params.flow, check, c, attempt, "called_off");
+      return null;
+    }
     reportCheck(params.flow, check, c, attempt, "regenerated");
-    // null, not the audio in hand: it is known to be corrupted, and a caller must never be handed
-    // one as if it were the reply.
-    if (params.shouldStop && (await params.shouldStop())) return null;
     out = await synth(attempt + 1);
   }
 }
 
-type CheckOutcome = "passed" | "regenerated" | "rejected" | "sent_corrupted";
+// What THIS function did with the verdict, never what happened to the reply afterwards: the send is
+// the caller's, and a turn can still be called off or a send fail after this returns. So shadow says
+// `flagged` (corrupted, and not held back), not "sent".
+type CheckOutcome =
+  | "passed"
+  | "regenerated"
+  | "rejected"
+  | "called_off"
+  | "flagged";
 
 interface CheckAnswer {
   verdict: TtsCheckVerdict;

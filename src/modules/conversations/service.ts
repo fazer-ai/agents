@@ -1114,19 +1114,29 @@ export async function getConversationDetail(
       conv.lastRepliedAt,
     );
     //
-    // DELIBERATELY NARROW: only the episode opened by OUR reply. When the customer is the one who
-    // opens it, the console also counts down a step the handler would drop, but that state predates
-    // this issue and does not survive in production — the inbound webhook cancels the pending job in
-    // the same movement that advances `lastInboundAt`. Widening here would change a case this issue
-    // does not treat and that two tests on another axis already fix; that is issue #752.
-    const restartedByOurReply =
-      newEpisode &&
-      conv.lastRepliedAt != null &&
-      conv.lastFollowUpAt != null &&
-      conv.lastRepliedAt > conv.lastFollowUpAt &&
-      !(conv.lastInboundAt != null && conv.lastInboundAt > conv.lastFollowUpAt);
+    // WHOEVER OPENED IT (issue #752). The handler asks nothing about who spoke — for `stepIndex > 0`
+    // it is `else if (newEpisode) return done`, flat — so a pending later step is doomed in both
+    // shapes of a fresh episode, and a console that suppressed only one of them counted down, in the
+    // other, a step that will be discarded the moment the worker claims it. #750 mirrored the check
+    // for the episode OUR reply opens and deliberately left the customer's out, on the argument that
+    // the inbound webhook cancels the pending job in the same movement that advances
+    // `lastInboundAt`. That argument is about how LONG the state lasts in production, not about
+    // whether the console is right while it lasts: the cancel can be lost or delayed (a failed
+    // webhook, a worker that never claimed it), and the reader here is the one with nothing after it
+    // to correct the promise. Narrower than the handler is the one thing this predicate must not be.
+    //
+    // E O COMPROMISSO NÃO SEGURA ESTE JOB, que foi a primeira coisa que eu escrevi aqui e está
+    // errada (review r1). A tentação é dizer que com um compromisso vivo o worker ADIA em vez de
+    // descartar, então o job sobreviveria e a contagem dele valeria; o que desmente é o `upsertJobRow`
+    // da varredura: ele casa por (tenant, kind, dedupeKey) e o UPDATE reescreve payload e `run_at` de
+    // uma linha PENDING, com o comentário dele nomeando este caso. A varredura não pula conversa com
+    // job pendente, então o passo tardio é sobrescrito pelo passo 0 do episódio novo — e quando a
+    // varredura NÃO seleciona, quem a impede é a mesma pergunta que o `pausedByAppointment` abaixo
+    // faz, pelo passo 0 (o `unfencedAgentIds` da varredura é `!appointmentPauseApplies(cfg,
+    // cfg.steps[0])`). Nas duas pontas o job condenado não conta, e a pausa aparece pelo passo que
+    // vai rodar de verdade, que é o que este leitor já calcula depois.
     const supersededLaterStepJob =
-      job != null && jobStepIndex > 0 && restartedByOurReply;
+      job != null && jobStepIndex > 0 && newEpisode;
     // The inactivity floor, the same one the handler and the SQL use: our reply counts as movement.
     const movedAt = lastActivityAt(conv.lastEventAt, conv.lastRepliedAt);
     const fencedStep0Job =
@@ -1311,7 +1321,21 @@ export async function getConversationDetail(
       managedByRedirect,
       redirectNext,
       pausedByAppointment,
-      abandoned: job !== null && !followUpLive,
+      // POR "NADA VEM", E NÃO PELO MOTIVO DE NADA VIR. A forma antiga era
+      // `job !== null && !followUpLive`, e ela nomeia um caminho só: o job que o handler descarta
+      // porque um humano assumiu, o agente foi desligado, o follow-up saiu. Existem outros dois, e
+      // nos dois o job fica pendente sem que nada esteja agendado — o episódio novo que condena o
+      // passo tardio sem que a cerca de ativação deixe o passo 0 entrar no lugar, e o próprio
+      // `fencedStep0Job`, que é anterior a tudo isto. Com `abandoned` falso ali, o `nextStep` nulo e
+      // nenhuma pausa, a tela escreve "sequência de follow-up concluída" numa conversa com job
+      // PENDENTE que vai ser descartado: o exato oposto do que este campo existe para impedir, e o
+      // motivo de ele ser sobre o job EXISTIR e não sobre a liveness.
+      //
+      // Então a pergunta passa a ser a que a tela faz: há passo na fila e não há nada agendado. A
+      // pausa fica de fora porque ela é o outro estado, tem campo próprio e volta sozinha quando o
+      // compromisso passar. O caminho antigo continua coberto: sem liveness nenhum braço agenda
+      // nada, então `nextStep` é nulo ali por construção.
+      abandoned: job !== null && nextStep === null && !pausedByAppointment,
     };
   }
 

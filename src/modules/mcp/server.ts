@@ -53,6 +53,7 @@ import {
   integrationList,
   issuedDocumentList,
   knowledgeApprovalsList,
+  knowledgeDocumentGet,
   knowledgeDocumentsList,
   knowledgeList,
   knowledgeSearch,
@@ -165,6 +166,7 @@ import {
   knowledgeDocumentCreate,
   knowledgeDocumentDelete,
   knowledgeDocumentRetry,
+  knowledgeDocumentUpdate,
   knowledgeEdit,
   knowledgeReindex,
   knowledgeReject,
@@ -875,11 +877,37 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_documents_list",
       {
         description:
-          "List the documents in one knowledge base (id, title, sourceType, status, chunkCount, contentChars, error).",
-        inputSchema: { knowledge_base_id: z.string() },
+          "List the documents in one knowledge base, newest first (id, title, sourceType, status, chunkCount, contentChars, error). No text: knowledge_document_get has it.",
+        inputSchema: {
+          knowledge_base_id: z.string(),
+          limit: z
+            .number()
+            .int()
+            .optional()
+            .describe("Page size (1-200); omit for the whole base."),
+          cursor: z
+            .string()
+            .optional()
+            .describe("nextCursor of the previous page."),
+        },
       },
-      async (args: { knowledge_base_id: string }, eff) =>
-        writeContent(await knowledgeDocumentsList(eff, args)),
+      async (
+        args: { knowledge_base_id: string; limit?: number; cursor?: string },
+        eff,
+      ) => writeContent(await knowledgeDocumentsList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_document_get",
+      {
+        description:
+          "Get one knowledge-base document with its full text (content), status and chunkCount.",
+        inputSchema: { document_id: z.string() },
+      },
+      async (args: { document_id: string }, eff) =>
+        writeContent(await knowledgeDocumentGet(eff, args)),
     );
 
     registerTenantTool(
@@ -2580,6 +2608,31 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { document_id: string; dry_run?: boolean }, eff) =>
         writeContent(await knowledgeDocumentDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_document_update",
+      {
+        description:
+          "Edit a document's title and/or text in place, keeping its id; changed text is re-embedded. Previews and changes NOTHING unless dry_run is false.",
+        inputSchema: {
+          document_id: z.string(),
+          title: z.string().optional(),
+          text: z.string().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          document_id: string;
+          title?: string;
+          text?: string;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await knowledgeDocumentUpdate(eff, args)),
     );
 
     registerTenantTool(

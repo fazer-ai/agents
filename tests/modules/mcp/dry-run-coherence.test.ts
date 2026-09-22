@@ -365,6 +365,12 @@ const TABLE: Record<string, Row> = {
     pastOwnership:
       'measured, and it DIVERGED: the document\'s STATUS, which the preview was already reading and reporting without judging. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
+  knowledge_document_update: {
+    args: { document_id: NOPE, title: "t" },
+    why: "document does not exist",
+    pastOwnership:
+      "the preview reads the row the apply edits, and asks the same question the service does about a re-index: whether the text moved.",
+  },
   knowledge_edit: {
     args: { approval_id: "abc", title: "t" },
     why: "approval_id is not a number",

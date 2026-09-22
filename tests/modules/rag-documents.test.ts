@@ -152,7 +152,7 @@ describe.skipIf(!dbUp)("rag documents", () => {
       base: appDb,
     });
 
-    const docs = await listDocuments(ctxOf(t1), kb1, appDb);
+    const { documents: docs } = await listDocuments(ctxOf(t1), kb1, appDb);
     const found = docs.find((d) => d.id === doc.id);
     expect(found).toBeDefined();
     expect(found?.title).toBe("List Test");

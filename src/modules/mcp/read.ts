@@ -63,7 +63,7 @@ import {
   listIntegrationInstances,
 } from "@/modules/integrations/service";
 import { listMcpConnections } from "@/modules/mcp-connections/service";
-import { listDocuments } from "@/modules/rag/documents";
+import { getDocument, listDocuments } from "@/modules/rag/documents";
 import {
   listKnowledgeBases,
   listPendingApprovals,
@@ -563,7 +563,7 @@ export async function knowledgeSearch(
 
 export async function knowledgeDocumentsList(
   principal: VerifiedToken,
-  args: { knowledge_base_id: string },
+  args: { knowledge_base_id: string; limit?: number; cursor?: string },
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
@@ -572,8 +572,41 @@ export async function knowledgeDocumentsList(
   const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
   try {
-    const docs = await listDocuments(ctx, kbId, base);
-    return ok({ documents: docs.map((d) => ({ ...d, id: sid(d.id) })) });
+    const page = await listDocuments(ctx, kbId, base, {
+      limit: args.limit,
+      cursor: args.cursor,
+    });
+    return ok({
+      documents: page.documents.map((d) => ({ ...d, id: sid(d.id) })),
+      nextCursor: page.nextCursor,
+    });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// One document WITH its text (issue #708). The list carries metadata and `contentChars` only, and
+// `knowledge_search` returns chunks cut by relevance, so without this the whole text of a document
+// was reachable from nowhere an MCP client could go.
+export async function knowledgeDocumentGet(
+  principal: VerifiedToken,
+  args: { document_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.document_id, "document_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    const doc = await getDocument(ctx, id, base);
+    return ok({
+      document: {
+        ...doc,
+        id: sid(doc.id),
+        knowledgeBaseId: sid(doc.knowledgeBaseId),
+      },
+    });
   } catch (e) {
     return failOf(e);
   }

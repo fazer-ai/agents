@@ -87,15 +87,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Budget: it spends no model — one Chatwoot read and one enqueue — so a lane of its own would
   // reserve capacity nothing is contending for.
   //
-  // AND WHAT THE DEFERRAL ACTUALLY BUYS IS THIRTY-NINE SECONDS, measured (issue #728, verifier round
-  // 6): `MAX_ATTEMPTS` is 5 and `backoffMs` is base 2s, so the five tries of an `unreachable` run
-  // inside a minute and the row then goes DEAD. The delivery row is PROCESSED by the sweep that
-  // armed this, so nothing revisits it — a Chatwoot down for longer than a restart consumes the
-  // whole recovery, and the verdict that exists to outlast an outage outlasts less than one. The
-  // loss is still REPORTED, by the receiver's own `error` line on the conversation, which is why
-  // this is a named limit rather than a hole; the remedy, when it is wanted, is a backoff in minutes
-  // for the recovery family (this kind and `TAKEOVER_RECOVERY`, which carries the same numbers),
-  // not more attempts at the same spacing.
+  // How long it keeps trying against a Chatwoot that is down is not a lane question: see
+  // `JOB_RETRY_BASE_MS` below (issue #744).
   HUMAN_REPLY_RECOVERY: "shared",
   // A cap of its own, drained by the shared tick (issue #621). Cadence is not the reason: a label that
   // lands one shared tick after the burst it describes is not a delay anyone feels. The cap is. On
@@ -378,6 +371,49 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // is already reading and can label by hand, and the next burst on it arms the same row again. No
   // customer message was lost and nothing they wait on stopped.
   OBSERVE: "warn",
+};
+
+// HOW FAR APART ONE KIND'S RETRIES ARE, as the base of `backoffMs` in ./service.ts (issue #744).
+// `MAX_ATTEMPTS` is 5, so a failing job gets four backoffs before it is DEAD, each between half and
+// all of `base * 2^attempt`. The jitter is a fixed function of the attempt, so the ladder is too: at
+// the 2s base the four add up to 37 seconds, which is the 39 measured once the tick is counted. That
+// is enough for a blip, which is what every kind below that keeps it is retrying against.
+//
+// The recovery family is the exception, and for the reason it exists at all. Each of the three is
+// armed ONCE, by the sweep pass that found the stranded delivery, and nothing arms it again: the
+// sweep reads PENDING and PROCESSING, and the row it armed from is DEAD or PROCESSED by then
+// (./chatwoot/delivery-sweep.ts). So the job's own ladder is the only thing that outlasts a Chatwoot
+// that went away, and the commonest way to go away is a restart, which takes longer than 39 seconds.
+// Measured on issue #728: the five tries of a `HUMAN_REPLY_RECOVERY` ran from 22:44:11 to 22:44:50,
+// the account came back right after, and the reply never reached the memory.
+//
+// At a one-minute base the same four add up to 18 minutes. Not more attempts at the same
+// spacing, which would spend a longer outage just as fast; and no longer than that, because the
+// work is already late — the sweep only declares a delivery stranded after ten minutes without
+// movement — and `MAX_RECOVERY_AGE_MS` discards a delivery recovery at six hours regardless. What a
+// longer ladder costs is a later dead-letter line, and all three announce at `warn` (above) because
+// the operator already has the loss on record.
+//
+// Exhaustive over SchedulerJobKind like its neighbours, so a new kind does not compile until someone
+// has asked whether its retries are against a blip or against an outage.
+export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
+  FOLLOWUP: 2_000,
+  FOLLOWUP_SWEEP: 2_000,
+  WEBHOOK_RETRY: 2_000,
+  RAG_INGEST: 2_000,
+  DEBOUNCE: 2_000,
+  HEARTBEAT: 2_000,
+  FLOWLOG_SWEEP: 2_000,
+  APPOINTMENT_REMINDER: 2_000,
+  REDIRECT_FOLLOWUP: 2_000,
+  MEMORY_COMPACT: 2_000,
+  INGEST_MESSAGE: 2_000,
+  DELIVERY_SWEEP: 2_000,
+  SPEND_CEILING_POLL: 2_000,
+  DELIVERY_RECOVERY: 60_000,
+  TAKEOVER_RECOVERY: 60_000,
+  HUMAN_REPLY_RECOVERY: 60_000,
+  OBSERVE: 2_000,
 };
 
 export function kindsInLane(

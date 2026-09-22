@@ -16,6 +16,7 @@ import {
   reapStaleJobs,
   rescheduleJob,
   retireJobsByDedupeKey,
+  type SchedulerJobKind,
   upsertJobRows,
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
@@ -621,6 +622,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
         id,
         await seqOf(id),
         before.attempts,
+        "FLOWLOG_SWEEP",
         "blip",
         appDb,
       );
@@ -668,6 +670,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
         id,
         await seqOf(id),
         before.attempts,
+        "FLOWLOG_SWEEP",
         "broken",
         appDb,
       );
@@ -722,6 +725,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
         id,
         await seqOf(id),
         before.attempts,
+        "MEMORY_COMPACT",
         "blip",
         appDb,
       );
@@ -860,15 +864,92 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
     await claimDueJobs(10, appDb, new Date(), tenantId);
-    await failJob(tenantId, id, await seqOf(id), 0, "boom", appDb);
+    await failJob(
+      tenantId,
+      id,
+      await seqOf(id),
+      0,
+      "WEBHOOK_RETRY",
+      "boom",
+      appDb,
+    );
     expect((await statusOf(id)).status).toBe("PENDING"); // retry
     // simulate near the cap
     await suDb.schedulerJob.update({
       where: { id },
       data: { attempts: 4, status: "CLAIMED" },
     });
-    await failJob(tenantId, id, await seqOf(id), 4, "boom again", appDb);
+    await failJob(
+      tenantId,
+      id,
+      await seqOf(id),
+      4,
+      "WEBHOOK_RETRY",
+      "boom again",
+      appDb,
+    );
     expect((await statusOf(id)).status).toBe("DEAD");
+  });
+
+  // Issue #744: a job that fails on every try — a Chatwoot that is down — measured by how long after
+  // its first run it goes DEAD, with each retry claimed exactly when it falls due. The recoveries are
+  // armed once and nothing re-arms them, so this span is the whole outage they can outlast.
+  async function deathAfterMs(kind: SchedulerJobKind, key: string) {
+    const start = new Date(Date.now() - 1_000);
+    const id = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind,
+      dedupeKey: key,
+      runAt: start,
+      base: appDb,
+    });
+    let now = start;
+    for (let run = 0; run < 10; run++) {
+      // Both halves of the shared lane: the recoveries are traffic-proportional, WEBHOOK_RETRY is not.
+      const claimed = [
+        ...(await claimDueJobs(10, appDb, now, tenantId)),
+        ...(await claimDueTrafficJobs(10, appDb, now, tenantId)),
+      ].find((j) => j.id === id);
+      if (!claimed) throw new Error(`not due at run ${run}`);
+      const { deadLettered } = await failJob(
+        tenantId,
+        id,
+        claimed.claimSeq,
+        claimed.attempts,
+        kind,
+        "chatwoot unreachable",
+        appDb,
+        now,
+      );
+      if (deadLettered) return now.getTime() - start.getTime();
+      now = (
+        await suDb.schedulerJob.findUniqueOrThrow({
+          where: { id },
+          select: { runAt: true },
+        })
+      ).runAt;
+    }
+    throw new Error("never went DEAD");
+  }
+
+  test("a recovery outlasts a Chatwoot restart before it goes DEAD (#744)", async () => {
+    for (const kind of [
+      "DELIVERY_RECOVERY",
+      "TAKEOVER_RECOVERY",
+      "HUMAN_REPLY_RECOVERY",
+    ] as const) {
+      expect(await deathAfterMs(kind, `dk-744-${kind}`)).toBeGreaterThan(
+        15 * 60_000,
+      );
+    }
+  });
+
+  // The control: every other kind keeps the ladder it had, which is retrying against a blip.
+  test("a kind outside the recovery family still gives up within a minute (#744)", async () => {
+    const span = await deathAfterMs("WEBHOOK_RETRY", "dk-744-webhook");
+    expect(span).toBeGreaterThan(30_000);
+    expect(span).toBeLessThan(60_000);
   });
 
   // The tombstone calls off a RUN, so it reaches the two statuses that have one. A DEAD row does not:
@@ -1145,5 +1226,33 @@ describe.skipIf(!dbUp)("scheduler", () => {
     await runClaimed(claimed as NonNullable<typeof claimed>, appDb);
     expect(seen).toBe(true);
     expect((await statusOf(id)).status).toBe("DONE");
+  });
+
+  // Issue #744 through the worker, which is what hands `failJob` the kind: the tests above call it
+  // directly and would stay green with the worker naming any kind at all.
+  test("a recovery failed by its handler backs off in minutes, not seconds (#744)", async () => {
+    registerJobHandler("HUMAN_REPLY_RECOVERY", async () => ({
+      outcome: "fail",
+      error: "recovery: the Chatwoot account could not be read",
+    }));
+    const id = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "HUMAN_REPLY_RECOVERY",
+      dedupeKey: "dk-744-worker",
+      runAt: past(),
+      base: appDb,
+    });
+    const claimed = (
+      await claimDueTrafficJobs(10, appDb, new Date(), tenantId)
+    ).find((j) => j.id === id);
+    const before = Date.now();
+    await runClaimed(claimed as NonNullable<typeof claimed>, appDb);
+    const row = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id },
+      select: { status: true, runAt: true },
+    });
+    expect(row.status).toBe("PENDING");
+    expect(row.runAt.getTime() - before).toBeGreaterThan(60_000);
   });
 });

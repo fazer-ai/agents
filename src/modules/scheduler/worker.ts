@@ -212,6 +212,7 @@ async function fail(
     job.id,
     job.claimSeq,
     job.attempts,
+    job.kind,
     error,
     base,
   );

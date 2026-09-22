@@ -12,6 +12,7 @@ import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
+  JOB_RETRY_BASE_MS,
   kindsInLane,
   type SchedulerLane,
 } from "@/modules/scheduler/lanes";
@@ -1366,6 +1367,7 @@ export async function failJob(
   id: bigint,
   claimSeq: number,
   attempts: number,
+  kind: SchedulerJobKind,
   error: string,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
@@ -1384,7 +1386,9 @@ export async function failJob(
         : {
             status: "PENDING",
             attempts: next,
-            runAt: new Date(now.getTime() + backoffMs(next)),
+            runAt: new Date(
+              now.getTime() + backoffMs(next, JOB_RETRY_BASE_MS[kind]),
+            ),
             lastError: sanitizeErrorMessage(error),
           },
     }),
@@ -1459,10 +1463,10 @@ export async function reapStaleJobs(
   });
 }
 
-// Full-jitter backoff with an exponent clamp (base 2s).
-function backoffMs(attempt: number): number {
+// Full-jitter backoff with an exponent clamp. The base is the kind's (lanes.ts, issue #744).
+export function backoffMs(attempt: number, baseMs: number): number {
   const exp = Math.min(attempt, 8);
-  const ceiling = 2_000 * 2 ** exp;
+  const ceiling = baseMs * 2 ** exp;
   // deterministic-ish jitter without Math.random (varies by attempt); good enough for spacing.
   return Math.floor(
     ceiling / 2 + ((ceiling / 2) * ((attempt * 2654435761) % 1000)) / 1000,

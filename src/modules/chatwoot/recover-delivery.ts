@@ -1761,8 +1761,8 @@ async function deliveryRecoveryHandler(
   // they are waiting on different things.
   //
   // BUSY reschedules, which CLEARS the failure budget. A turn is deliberately unbounded — the sweep
-  // waits thirty minutes before calling one abandoned — while the scheduler's five backoffs are
-  // spent in about a minute. Mapped to `fail`, a conversation's SECOND stranded message would burn
+  // waits thirty minutes before calling one abandoned — while the scheduler's backoffs for this
+  // kind are spent in eighteen (`JOB_RETRY_BASE_MS`, issue #744). Mapped to `fail`, a conversation's SECOND stranded message would burn
   // its whole ladder while the first message's turn was still legitimately running, and lose its
   // recovery for good. Unbounded rescheduling is bounded anyway, by the one thing that does not
   // depend on the conversation: `MAX_RECOVERY_AGE_MS` turns the row `unrecoverable`, and the job

@@ -1205,8 +1205,10 @@ function setLabelsTool(ctx: ToolCtx) {
   const allowed = allowedList.length
     ? { labels: allowedList, mode: allowedMode }
     : undefined;
-  const allowedShown = allowedList.slice(0, SHOWN_LABELS_MAX);
-  const allowedNamed = `${allowedShown.map((l) => `'${l}'`).join(", ")}${allowedList.length > allowedShown.length ? `, +${allowedList.length - allowedShown.length} more` : ""}`;
+  // WHOLE, not cut at SHOWN_LABELS_MAX like the other lists: a title the model is never shown is
+  // one it cannot pick, and the list is already bounded where it is stored (at most
+  // ALLOWED_LABELS_MAX, review round 1 of #638).
+  const allowedNamed = allowedList.map((l) => `'${l}'`).join(", ");
   const allowedSentence = !allowed
     ? ""
     : allowedMode === "accept"

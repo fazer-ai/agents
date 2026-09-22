@@ -1834,7 +1834,6 @@ export function ToolGrantsEditor({
             </FormField>
             <FormField
               label={t("editor.protectedLabels", "Labels off limits")}
-              group
               description={t(
                 "editor.protectedLabelsHint",
                 "Optional, comma-separated. Labels this agent may neither add nor remove: the ones another system owns. It still sees them and is told it cannot move them.",
@@ -1853,7 +1852,6 @@ export function ToolGrantsEditor({
             </FormField>
             <FormField
               label={t("editor.allowedLabels", "Labels it may add")}
-              group
               description={t(
                 "editor.allowedLabelsHint",
                 "Optional, comma-separated. The only labels this agent may add; removing any label is still allowed. Empty: any label, and one the account does not have is created.",

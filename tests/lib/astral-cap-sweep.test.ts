@@ -431,9 +431,8 @@ const BARE_SLICES: Record<
   // Six since #695: the fifth is the ceiling on what the model is SHOWN of a scope's labels,
   // applied to the write report, and the sixth is the same ceiling over the GUARDED list, which the
   // delta contract names in the tool description instead of hiding. Both cut arrays of label
-  // titles, so neither cut can land inside one. The seventh is the same ceiling over the operator's
-  // list of labels the tool may add (issue #638), named in the description the same way.
-  "src/graph/tools/native.ts": [7, "array"],
+  // titles, so neither cut can land inside one.
+  "src/graph/tools/native.ts": [6, "array"],
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],

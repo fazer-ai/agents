@@ -233,6 +233,13 @@ describe("set_labels with a list", () => {
     expect(none).not.toContain("'financeiro'");
   });
 
+  test("the whole list is named, past the ceiling the other lists are cut at", () => {
+    const many = Array.from({ length: 50 }, (_, i) => `categoria-${i}`);
+    const d = setLabels([], { allowedLabels: many }).tool.description;
+    expect(d).toContain("'categoria-49'");
+    expect(d).not.toContain("+10 more");
+  });
+
   test("under refuse the description stops saying an unlisted label is created", () => {
     const vocab = { labels: ["vip", "suporte"] } as never;
     const refuse = setLabels([], { allowedLabels: ["vip"], vocab }).tool

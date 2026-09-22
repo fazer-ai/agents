@@ -5,6 +5,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { redactEndpoint } from "@/modules/audit/projection";
+import { consoleUrl } from "@/modules/mcp/console-links";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 
@@ -91,6 +92,12 @@ export interface AlertSendTarget {
   level: string;
   summary: string;
   count: number;
+  // Where the first event of the window happened (issue #665). The tenant is what the links carry
+  // so the console opens on it; the two ids are null on a probe and on a row written before the
+  // columns existed, and then the body carries no link.
+  tenantId: bigint | null;
+  turnId: string | null;
+  conversationId: bigint | null;
 }
 
 export interface AlertSendDeps {
@@ -126,24 +133,72 @@ export interface AlertSendResult {
   durationMs: number | null;
 }
 
+type AlertBodyInput = Pick<
+  AlertSendTarget,
+  | "type"
+  | "stage"
+  | "level"
+  | "summary"
+  | "count"
+  | "tenantId"
+  | "turnId"
+  | "conversationId"
+>;
+
+// WHERE THE OPERATOR GOES FROM THE ALERT (issue #665), and the count decides it. The ids name the
+// FIRST event of the window, so on a burst they name one member of it, and a burst's members can be
+// unrelated conversations: a link to the first one would point at one of several and hide the rest.
+// So a burst links to the stage+level list, and a single event links to its own turn, plus its
+// conversation when the mirror knew one (a stranded delivery is filed unattached when it did not).
+//
+// No `source` on either: the page defaults to real traffic, and only real traffic alerts
+// (`emitFlowEvent` dispatches `source === "inbox"` alone). `consoleUrl` names the tenant, because
+// the console resolves it from the browser and an operator of several tenants would otherwise land
+// on whichever one they last had open.
+export function alertLinks(a: AlertBodyInput): string[] {
+  const opts = { tenantId: a.tenantId };
+  if (a.count > 1) {
+    const q = new URLSearchParams();
+    if (a.stage) q.set("stage", a.stage);
+    q.set("level", a.level);
+    return [consoleUrl(`/logs?${q}`, opts)];
+  }
+  if (!a.turnId) return [];
+  const q = new URLSearchParams({ turnId: a.turnId });
+  const links = [consoleUrl(`/logs?${q}`, opts)];
+  if (a.conversationId != null) {
+    links.push(consoleUrl(`/conversations/${a.conversationId}`, opts));
+  }
+  return links;
+}
+
+const DISCORD_MAX = 1900;
+
 // Discord-native markdown (its webhook expects `{ content }`); the generic webhook gets a versioned
 // JSON envelope. Both carry the coalesced burst count, never message text/PII.
-export function buildAlertBody(a: {
-  type: string;
-  stage: string | null;
-  level: string;
-  summary: string;
-  count: number;
-}): { rawBody: string; contentType: string } {
+export function buildAlertBody(a: AlertBodyInput): {
+  rawBody: string;
+  contentType: string;
+} {
   const times = a.count > 1 ? ` (×${a.count})` : "";
   if (a.type === "discord") {
     const icon = a.level === "error" ? "🔴" : "🟠";
-    const content = `${icon} **fazer.ai agents** \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}`;
+    const head = `${icon} **fazer.ai agents** \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}`;
+    // In angle brackets so Discord does not unfurl the console's login page under every alert.
+    // Appended AFTER the clip, which takes its room out of the summary: the link is the part an
+    // operator acts on, and a long summary must not cut it in half.
+    const links = alertLinks(a)
+      .map((u) => `<${u}>`)
+      .join(" · ");
+    const content = links
+      ? `${clipText(head, DISCORD_MAX - links.length - 1)}\n${links}`
+      : clipText(head, DISCORD_MAX);
     return {
-      rawBody: JSON.stringify({ content: clipText(content, 1900) }),
+      rawBody: JSON.stringify({ content }),
       contentType: "application/json",
     };
   }
+  // Ids rather than rendered URLs, since this consumer is code; null when there is no event.
   return {
     rawBody: JSON.stringify({
       version: 1,
@@ -152,6 +207,9 @@ export function buildAlertBody(a: {
       level: a.level,
       count: a.count,
       summary: a.summary,
+      turnId: a.turnId,
+      conversationId:
+        a.conversationId == null ? null : String(a.conversationId),
     }),
     contentType: "application/json",
   };

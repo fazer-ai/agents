@@ -86,6 +86,10 @@ export async function sendAlertChannelTest(
       level: TEST_LEVEL,
       summary: TEST_SUMMARY,
       count: 1,
+      // A probe is no event: nothing to link to, so the body carries no link and no ids.
+      tenantId: ctx.tenantId,
+      turnId: null,
+      conversationId: null,
     },
     deps,
   );

@@ -145,6 +145,10 @@ export async function dispatchAlertsForEvent(
             stage: ev.stage,
             level: ev.level,
             summary,
+            // Where the event happened, so the alert can link to it (issue #665). Only here: the
+            // bump above leaves them naming the first event, like `summary`.
+            turnId: ctx.turnId,
+            conversationId: ctx.conversationId ?? null,
           },
         });
       }

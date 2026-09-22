@@ -6,7 +6,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
 import { buildNativeTools } from "@/graph/tools/native";
+import {
+  clearMediaAnnotations,
+  overlayMediaAnnotations,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { synthesizeReply } from "@/modules/tts/service";
@@ -540,6 +545,67 @@ describe.skipIf(!dbUp)("tts", () => {
     expect(outcome).toBe("posted");
     expect(rec.audio).toEqual([[910, "reply.ogg"]]);
     expect(rec.text).toEqual([]);
+  });
+
+  // THE AUDIO REPLY CARRIES ITS OWN WORDS, in the two places a later reader can reach them, and in
+  // NEITHER of them is `content` (issue #763). Filling `content` is the obvious fix and it is the
+  // one that breaks delivery: the WhatsApp connector refuses a caption on an audio, so the send
+  // fails and the customer receives nothing. The fork stores `transcribed_text` on the attachment
+  // and renders it under the player; upstream Chatwoot drops it, which is why the same words also
+  // go into the in-process overlay the inbound STT pass uses, so a debounce flush or a recovery
+  // re-reading the page sees words instead of an empty outgoing row.
+  test("an audio reply records the spoken words without ever filling content", async () => {
+    clearMediaAnnotations();
+    await seedConversation(934);
+    const sends: Array<{
+      fileName: string;
+      opts?: { transcribedText?: string };
+    }> = [];
+    const texts: Array<[number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, content: string) => {
+        texts.push([c, content]);
+        return {};
+      },
+      sendAudioMessage: async (
+        _c: number,
+        _a: ArrayBuffer,
+        fileName: string,
+        _mime: string,
+        opts?: { transcribedText?: string },
+      ) => {
+        sends.push({ fileName, opts });
+        return { id: 7301 };
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: audioEvent(934),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        ttsFetch: audioFetch(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    // One message, and it is the audio: the words must never arrive as a second text balloon.
+    expect(sends).toHaveLength(1);
+    expect(texts).toEqual([]);
+    const spoken = sends[0]?.opts?.transcribedText ?? "";
+    expect(spoken.length).toBeGreaterThan(0);
+    // ...and the same words are readable from the overlay for the message that was just sent, which
+    // is what answers on an upstream Chatwoot that drops the attachment meta.
+    const row = {
+      id: 7301,
+      content: "",
+      transcribedText: null,
+    } as unknown as ChatwootMessageRow;
+    overlayMediaAnnotations(tenantId, instanceId, [row]);
+    expect(row.transcribedText).toBe(spoken);
   });
 
   test("mirror mode on an Instagram inbox → the audio reply is aac, not ogg", async () => {

@@ -59,6 +59,10 @@ const NAME = "Zebrafina Quixotesca"; // → {{nome_contato}}, interpolated into 
 const PHONE = "+5511987650001"; // → {{telefone_contato}}
 const ATTR = "processo-xilofonte-7788"; // → the attribute context block appended to the prompt
 const ASKED = "meu processo e o xilofonte-7788"; // → the customer's own message this turn
+// → the agent's OWN reply, which is customer content too: it repeats the name, the number and the
+// case back at them. No marker covered it until issue #763 tried to log it on the `tts` line and
+// this harness stayed green, so the promise was asserted against every channel but the loudest.
+const REPLIED = "sapiencia-do-agente-4412";
 
 const BOT = 31;
 const INBOX = 17;
@@ -67,6 +71,8 @@ const INBOX = 17;
 const INBOX_CA = 18;
 const GUARD_MODEL = "guard-model";
 let caInboxDbId = 0n;
+let agentDbId = 0n;
+let ttsKeyId = 0n;
 
 const incoming = (
   convId: number,
@@ -90,6 +96,9 @@ function stub(sent: Array<[number, string]> = []) {
       return {};
     },
     sendPrivateNote: async () => ({}),
+    // The audio reply needs a door of its own: without it the voice path throws and falls back to
+    // text, and the `tts` line this file now reads would never be written.
+    sendAudioMessage: async () => ({ id: 96061 }),
   } as unknown as ChatwootClient;
   return async () => client;
 }
@@ -229,6 +238,12 @@ describe.skipIf(!dbUp)(
           },
         },
       });
+      agentDbId = agent.id;
+      const ttsKey = await suDb.vaultEntry.create({
+        data: { tenantId, name: "tts-key", secret: encryptJson("sk-tts") },
+        select: { id: true },
+      });
+      ttsKeyId = ttsKey.id;
       await suDb.chatwootAgentBot.create({
         data: {
           tenantId,
@@ -629,6 +644,81 @@ describe.skipIf(!dbUp)(
         [NAME, PHONE, ATTR, ASKED].some((m) => d.summary.includes(m)),
       );
       expect(leaked).toEqual([]);
+    });
+
+    // AND THE AUDIO PATH, which this harness never walked. Every scenario above ends in a TEXT
+    // reply, so the `tts` line was never written and the promise was never read on it — which is how
+    // issue #763 came within one review of shipping the whole reply into `detail`, with this file
+    // green. The reply is the widest channel of all: it says the customer's name and number back.
+    test("an AUDIO reply writes a tts line that carries no message text either", async () => {
+      await seedConv(9606);
+      await suDb.contact.update({
+        where: { id: contactId },
+        data: { voiceReply: true },
+      });
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          settings: {
+            ...(before.settings as Record<string, unknown>),
+            // `preference` with the contact's flag on, so the reply is audio without this scenario
+            // also having to fake an inbound voice note and its transcription.
+            tts: {
+              mode: "preference",
+              provider: "openai",
+              credentialRef: `vault:${ttsKeyId}`,
+              normalize: false,
+            },
+          },
+        },
+      });
+      try {
+        const model = new UsageReportingModel([
+          `Confirmado, ${NAME}: ${REPLIED}.`,
+        ]);
+        const outcome = await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: BOT,
+          event: incoming(9606),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({
+                    content: JSON.stringify({
+                      violated: false,
+                      categories: [],
+                      rationale: "",
+                      suggestedReply: null,
+                    }),
+                  }))
+                : (model as unknown as BaseChatModel),
+            makeClient: stub(),
+            checkpointer: new MemorySaver(),
+            ttsFetch: (async () =>
+              new Response(new ArrayBuffer(16), {
+                status: 200,
+                headers: { "content-type": "audio/ogg" },
+              })) as unknown as typeof fetch,
+          },
+        });
+        expect(outcome).toBe("posted");
+        const rows = await turnRows(9606, ["tts"]);
+        // The line has to EXIST, or this scenario proves nothing: an audio reply that never
+        // synthesized would pass any check about what its line does not say.
+        expect(rows.some((r) => r.stage === "tts")).toBe(true);
+        expectNoMarkers(rows, [NAME, PHONE, ATTR, ASKED, REPLIED]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { settings: before.settings as object },
+        });
+      }
     });
   },
 );

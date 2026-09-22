@@ -290,6 +290,58 @@ describe("renderAttendantMessage", () => {
     ).toBe("segue o orçamento\n<atendente enviou um arquivo do tipo 'file'>");
   });
 
+  // AN AUDIO REPLY SPEAKS, AND THE THREAD HAS TO SAY WHAT (issue #763). An outgoing voice note
+  // carries an EMPTY `content` — it must, since the WhatsApp connector refuses a caption on an
+  // audio — so the marker alone was the whole record, and the observer tick that renders every
+  // outgoing message through here classified five voice replies as a conversation the agent had
+  // never answered, then wrote a label from that reading.
+  test("an audio reply speaks its words, and still names the attachment", () => {
+    expect(
+      renderAttendantMessage({
+        text: "",
+        attachmentTypes: ["audio"],
+        transcribedText: "Confirmei sua consulta para quinta às 14h.",
+      }),
+    ).toBe(
+      "Confirmei sua consulta para quinta às 14h.\n<atendente enviou um arquivo do tipo 'audio'>",
+    );
+  });
+
+  // The transcription is a fallback for an empty content, never a replacement for what was written:
+  // a human attendant who typed a caption AND attached audio said both.
+  test("a typed caption wins over a transcription", () => {
+    expect(
+      renderAttendantMessage({
+        text: "segue o áudio",
+        attachmentTypes: ["audio"],
+        transcribedText: "Confirmei sua consulta.",
+      }),
+    ).toBe("segue o áudio\n<atendente enviou um arquivo do tipo 'audio'>");
+  });
+
+  // Whisper's hallucinated subtitle credit is not words anybody said, and the same cleanup the
+  // customer's side applies has to apply here or the agent reads "Amara.org" as its own reply.
+  test("a hallucinated transcription is dropped, leaving the marker alone", () => {
+    expect(
+      renderAttendantMessage({
+        text: "",
+        attachmentTypes: ["audio"],
+        transcribedText: "Subtitles by the Amara.org community",
+      }),
+    ).toBe("<atendente enviou um arquivo do tipo 'audio'>");
+  });
+
+  // A transcription on a NON-audio attachment is not a caption: the field belongs to the voice note.
+  test("a transcription on a file attachment is ignored", () => {
+    expect(
+      renderAttendantMessage({
+        text: "",
+        attachmentTypes: ["file"],
+        transcribedText: "não é legenda",
+      }),
+    ).toBe("<atendente enviou um arquivo do tipo 'file'>");
+  });
+
   // Nothing said and nothing attached: the caller skips it, as it does for the customer.
   test("an empty message renders nothing", () => {
     expect(renderAttendantMessage({ text: "   ", attachmentTypes: [] })).toBe(

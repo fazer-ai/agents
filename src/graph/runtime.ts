@@ -8,7 +8,10 @@ import { mayCloseConversation, postedOutcomeFor } from "@/graph/close-intent";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { agentStillSpeaks } from "@/modules/agents/speaks";
-import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
+import {
+  overlayMediaAnnotations,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   describeClosedGate,
@@ -1271,13 +1274,31 @@ async function runTurnBody(
         if (await writeCalledOff()) return "stale";
         if (tts) {
           if (!(await claimBeforeSend())) return "superseded";
-          await client.sendAudioMessage(
+          const sent = await client.sendAudioMessage(
             conversationId,
             tts.audio,
             tts.fileName,
             tts.mime,
             { transcribedText: text },
           );
+          // AND KEEP THE WORDS WHERE OUR OWN READERS LOOK, which on upstream Chatwoot is the only
+          // place they survive (issue #763). `transcribedText` above rides in
+          // `attachments_metadata`, which the fork stores on the attachment and shows under the
+          // player; upstream has no such route and drops it silently, and `content` cannot hold it
+          // either (the WhatsApp connector refuses a caption on an audio, so filling it would fail
+          // the send instead of leaking a caption). The overlay is the same one the inbound STT
+          // pass writes for exactly this reason, so a debounce flush or a recovery re-reading the
+          // page sees the reply it just sent as words rather than as an empty outgoing row.
+          const sentId =
+            sent && typeof sent === "object" && "id" in sent
+              ? Number((sent as { id?: unknown }).id)
+              : Number.NaN;
+          if (Number.isSafeInteger(sentId)) {
+            stashMediaAnnotation(
+              { tenantId, instanceId, messageId: sentId },
+              { transcribedText: text },
+            );
+          }
           logger.info(
             "chatwoot agent replied (audio): conv=%s thread=%s len=%d",
             String(conversationId),

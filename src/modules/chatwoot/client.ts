@@ -508,7 +508,15 @@ export class ChatwootClient {
   ): Promise<unknown> {
     this.assertToken(this.config.botToken, "POST audio message");
     const form = new FormData();
-    form.append("attachments[]", new Blob([audio], { type: mime }), fileName);
+    // UM `File`, E NÃO UM `Blob` COM O NOME NO TERCEIRO ARGUMENTO (issue #763). Os dois produzem o
+    // mesmo objeto para quem inspeciona (`form.get()` devolve um File nomeado nos dois casos), e no
+    // fio eles divergem: a serialização só encontra o nome onde ele é propriedade do valor, então
+    // com o Blob ele depende de qual implementação de FormData está carregada — a nativa do Bun o
+    // preserva, a do happy-dom (que o preload dos testes instala) escreve `filename="blob"`. E o
+    // nome é o que o fork usa para casar os dois metadados deste envio (`uploaded_filename` no
+    // `message_builder`): sem ele caem juntos o `transcribed_text` e o `is_recorded_audio`, e o
+    // áudio chega ao WhatsApp como arquivo anexado em vez de gravação.
+    form.append("attachments[]", new File([audio], fileName, { type: mime }));
     form.append("message_type", "outgoing");
     form.append("is_recorded_audio", JSON.stringify([fileName]));
     if (opts.transcribedText) {
@@ -551,7 +559,9 @@ export class ChatwootClient {
   ): Promise<unknown> {
     this.assertToken(this.config.botToken, "POST file attachment");
     const form = new FormData();
-    form.append("attachments[]", new Blob([bytes], { type: mime }), fileName);
+    // `File` pelo mesmo motivo do irmão acima, e aqui o nome é o que a pessoa lê na tela: um anexo
+    // que chega chamado `blob` é um orçamento sem nome de arquivo na conversa.
+    form.append("attachments[]", new File([bytes], fileName, { type: mime }));
     form.append("message_type", "outgoing");
     if (opts.caption) form.append("content", opts.caption);
     const res = await this.fetchImpl(

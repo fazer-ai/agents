@@ -979,6 +979,9 @@ export function transcriptFromRows(
         : renderAttendantMessage({
             text: m.content,
             attachmentTypes: m.attachmentTypes,
+            // Filled by `overlayMediaAnnotations` above for a reply this process just spoke, and by
+            // the attachment's own meta on the fork.
+            transcribedText: m.transcribedText,
           });
     const clean = stripFences(text).trim();
     if (!clean) continue;

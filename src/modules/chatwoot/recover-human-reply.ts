@@ -660,13 +660,19 @@ export async function recoverStrandedHumanReply(
   }
 
   // The ATTENDANT's renderer, which is the one the receiver picks for this role: the eager media pass
-  // never runs on an outgoing message, so there is no transcription or description to fold in, and
-  // the customer-facing markers would tell the agent to ask its own colleague to retype a file.
+  // never runs on an outgoing message, so there is no DESCRIPTION to fold in, and the
+  // customer-facing markers would tell the agent to ask its own colleague to retype a file. A voice
+  // note is the exception and gets its words folded in (issue #763): an audio reply of ours carries
+  // its own transcription, and the marker alone reads as an attendant who sent a file in silence.
   const text = renderAttendantMessage({
     text: normalized.message?.content ?? "",
     attachmentTypes: (normalized.message?.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),
+    transcribedText:
+      normalized.message?.transcribedText ??
+      (normalized.message?.attachments ?? []).find((a) => a.transcribedText)
+        ?.transcribedText,
   });
   // An empty reply is nothing to remember, and the receiver's ingestion answers the same way.
   if (!text.trim()) return "not-owed";

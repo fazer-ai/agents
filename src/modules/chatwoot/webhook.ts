@@ -2165,8 +2165,10 @@ async function ingestUnhandledMessage(args: {
       : null;
   if (role === null) return "nothing";
   // One renderer per direction (../chatwoot/render.ts). The customer's folds in transcription,
-  // vision and quoted context; the attendant's only has to name an attachment, because the eager
-  // media pass never runs on an outgoing message — and every marker on the customer's side is
+  // vision and quoted context; the attendant's names the attachment and, for a voice
+  // note, the words it spoke (issue #763): the eager media pass never runs on an outgoing message,
+  // but an audio REPLY of ours carries its own transcription, and without it the marker alone said
+  // the attendant had sent a file and nothing about what they said — and every marker on the customer's side is
   // written from the customer's point of view, so reusing it would tell the agent to ask its own
   // colleague to retype the file they just sent.
   const text =
@@ -2176,6 +2178,10 @@ async function ingestUnhandledMessage(args: {
           attachmentTypes: (n.message.attachments ?? [])
             .map((a) => a.fileType)
             .filter((t): t is string => t !== null),
+          transcribedText:
+            n.message.transcribedText ??
+            (n.message.attachments ?? []).find((a) => a.transcribedText)
+              ?.transcribedText,
         })
       : // ASKED OF `incomingRenderable`, not spelled here (issue #598). This was a second copy of
         // the shape, and the email subject is what proved the copies drift: the renderer, the burst

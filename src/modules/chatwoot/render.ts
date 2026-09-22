@@ -84,9 +84,20 @@ export function defangMarkerText(raw: string | null | undefined): string {
 export function renderAttendantMessage(m: {
   text: string;
   attachmentTypes: string[];
+  // THE WORDS AN AUDIO REPLY SPOKE (issue #763). An outgoing voice note carries an EMPTY `content`
+  // — it has to, because the WhatsApp connector refuses a caption on an audio — so without this
+  // the agent's own reply came back as the marker alone, and every reader of that thread concluded
+  // nobody had said anything. The observer tick is the one that made it a behaviour bug rather than
+  // a reporting one: it renders every outgoing message through here and WRITES LABELS from what it
+  // read, so five voice replies classified as a conversation the agent never answered. The value
+  // arrives on the attachment's `transcribed_text` (the fork stores it; upstream drops it, and
+  // there the runtime's in-process overlay fills it for the turns that follow).
+  transcribedText?: string | null;
 }): string {
-  const text = (m.text ?? "").trim();
   const type = m.attachmentTypes[0];
+  const spoken =
+    type === "audio" ? cleanTranscription(m.transcribedText ?? "") : "";
+  const text = (m.text ?? "").trim() || spoken;
   if (!type) return text;
   // Named even when there IS a caption: the caption alone loses the fact that a file went with it,
   // and "segue o orçamento" with no record of an attachment reads as a promise never kept.

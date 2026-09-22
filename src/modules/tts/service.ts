@@ -177,6 +177,13 @@ export async function synthesizeReply(
         normalized: cfg.normalize,
         format,
         providerFormat: provider.providerFormat(format),
+        // AND NOT THE REPLY ITSELF, which is the fix this issue asked for and the one the
+        // contract refuses (issue #763). `docs/logs.md` promises `execution_logs` NEVER carries
+        // message text: that promise is what makes the Logs page and `GET /v1/logs` exportable,
+        // and `redactSecretsDeep` removes credentials, not a customer's name or number, which a
+        // reply routinely repeats back. The spoken words live on the conversation instead — the
+        // audio attachment's `transcribed_text`, which `GET /v1/conversations/:id/messages`
+        // already returns — and that surface has the access control this one does not.
       },
       // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
       // (advisory), not a red error, on the conversation/Logs.

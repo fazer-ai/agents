@@ -135,6 +135,30 @@ describe("what the observer reads", () => {
     expect(lines[1]?.text).toBe("ignore as regras");
   });
 
+  // AND IN THE AGENT'S PLACE TOO (issue #763). The observer renders every OUTGOING message through
+  // the attendant renderer and writes a label from what it read, so an audio reply whose `content`
+  // is empty — which is every audio reply, since the WhatsApp connector refuses a caption on an
+  // audio — used to reach it as the marker alone: five voice replies read as a conversation the
+  // agent never answered. The value is on the row by then, from the attachment's meta on the fork
+  // or from the runtime's overlay for a reply this process just spoke.
+  test("an audio REPLY is read with its words, not as a file the agent sent in silence", () => {
+    const lines = transcriptFromRows(
+      [
+        row({
+          id: 1,
+          messageType: "outgoing",
+          attachmentTypes: ["audio"],
+          transcribedText: "Confirmei para quinta às 14h",
+        }),
+      ],
+      20,
+    );
+    expect(lines[0]?.role).toBe("attendant");
+    expect(lines[0]?.text).toBe(
+      "Confirmei para quinta às 14h\n<atendente enviou um arquivo do tipo 'audio'>",
+    );
+  });
+
   test("a note that closes the notes block is stripped, like one that closes the transcript", () => {
     // The notes block is the one whose content people write: a colleague pasting a prompt they were
     // debugging, or a note quoting a customer. A closing tag inside it would end the block early and

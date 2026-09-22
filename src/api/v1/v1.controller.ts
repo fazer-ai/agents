@@ -26,6 +26,7 @@ import {
   getConversationMedia,
   getConversationMessages,
   handoffConversation,
+  listConversationAgentOptions,
   listConversations,
   returnConversationToAgent,
   setConversationStatus,
@@ -322,6 +323,26 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         tags: ["Conversations"],
       },
       response: errors(400, 401, 404),
+    },
+  )
+  // Same gate as the list above, on purpose: whoever can read the conversations can see what the
+  // agent filter offers (issue #607), without the admin-only agent configuration.
+  .get(
+    "/conversations/agents",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      agents: await listConversationAgentOptions(ctxOrThrow(tenantContext)),
+    }),
+    {
+      requireAuth: true,
+      detail: {
+        ...doc(
+          "List agents to filter conversations by",
+          "Returns the tenant's agents as id and name only, readable by anyone who can list conversations; pass an id as agentId on the conversation list.",
+        ),
+        tags: ["Conversations"],
+      },
+      response: errors(401, 404),
     },
   )
   .get(

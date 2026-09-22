@@ -161,6 +161,24 @@ function buildConversationsWhere(
   return where;
 }
 
+// The agents the Conversations screen can be narrowed to (issue #607): id and name, nothing of their
+// configuration. Its own read because `/v1/agents` is TENANT_ADMIN, and an AGENT-role user who can
+// read the conversations must also be able to see, and clear, a filter a shared link put on them.
+// Every agent of the tenant, by name, since the roster is small and a filter offering only the
+// first page would leave the rest unpickable.
+export async function listConversationAgentOptions(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+): Promise<{ id: string; name: string }[]> {
+  const rows = await runScopedOn(base, ctx, (db) =>
+    db.agent.findMany({
+      select: { id: true, name: true },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+    }),
+  );
+  return rows.map((r) => ({ id: String(r.id), name: r.name }));
+}
+
 export async function listConversations(
   ctx: TenantContext,
   filter: ListConversationsFilter,

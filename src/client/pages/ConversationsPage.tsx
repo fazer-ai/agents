@@ -23,13 +23,15 @@ import {
   Skeleton,
 } from "@/client/components";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
-import { type AgentLite, loadAllAgents } from "@/client/lib/agentRoster";
 import { api } from "@/client/lib/api";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
 type ConversationsData = Awaited<
   ReturnType<typeof api.api.v1.conversations.get>
 >["data"];
+type AgentOption = NonNullable<
+  Awaited<ReturnType<typeof api.api.v1.conversations.agents.get>>["data"]
+>["agents"][number];
 type Conversation = NonNullable<ConversationsData>["conversations"][number];
 
 type BadgeVariant = "primary" | "secondary" | "success" | "warning" | "info";
@@ -191,9 +193,9 @@ export function ConversationsPage() {
       ),
     [setSearchParams],
   );
-  // The whole roster, not the first page: an agent past it would have no way to be picked. Null
-  // while loading; an unreadable roster hides the control rather than offering half of it.
-  const [agents, setAgents] = useState<AgentLite[] | null>(null);
+  // Read from the conversations' own agent list, not `/v1/agents`, which is admin-only: a user who
+  // can read this screen must be able to see and clear the filter. Null while loading or unreadable.
+  const [agents, setAgents] = useState<AgentOption[] | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   // Keyset pagination: the cursor for the next (older) page, null when fully loaded.
@@ -255,8 +257,8 @@ export function ConversationsPage() {
 
   useEffect(() => {
     let active = true;
-    void loadAllAgents().then((list) => {
-      if (active) setAgents(list);
+    void api.api.v1.conversations.agents.get().then(({ data }) => {
+      if (active) setAgents(data?.agents ?? null);
     });
     return () => {
       active = false;

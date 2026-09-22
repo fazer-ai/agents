@@ -1222,21 +1222,43 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).toBeNull();
   });
 
-  // Review round 2, and it is a regression THIS PR introduced. Before the per-step read, the pause
-  // did not consult a step at all and the console's "paused" was accurate here, because the handler
-  // used to meet the appointment BEFORE it noticed the step was gone and rescheduled. Moving the
-  // gate below the step resolution made the handler end the sequence instead, so the same word on
-  // the screen became false. The console has to model the handler's terminal case, not just its
-  // pause.
-  test("(#103) a job past the end of a shrunk sequence reports no next step, and no pause", async () => {
+  // Review round 2 da #103, e ele mediu o JOB: o handler resolve o passo antes de qualquer outra
+  // coisa e devolve `done` para um stepIndex fora da faixa, então a contagem daquele job é mentira e
+  // a palavra "pausado" sobre ele também. As duas afirmações continuam valendo e nenhuma delas é
+  // sobre a CONVERSA, que é o que esta tela responde: a fixture semeia o cliente falando depois do
+  // último follow-up, e para um episódio novo a #750 já decidiu que a contagem do episódio novo não
+  // se esconde atrás de um job do episódio velho — o job morre na primeira reivindicação, libera a
+  // chave de dedupe e a varredura arma o passo 0. A #752 estendeu essa decisão ao outro autor de
+  // episódio, que é o desta fixture, então o número aqui passou de `null` para o passo 1. O que
+  // NÃO mudou é a pausa: o passo 0 desta persona declara `ignoreAppointmentPause`, então ele fura o
+  // compromisso vivo de propósito e `pausedByAppointment` segue falso, agora porque o passo que vai
+  // rodar optou por furar, e não porque não havia passo nenhum.
+  test("(#103) a job past the end of a shrunk sequence counts the new episode's step 1, and no pause", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
       convStepOptOutStepGone,
       appDb,
     );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).not.toBeNull();
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+  });
+
+  // Issue #752, o lado que a ordem do handler decide: com uma pausa de compromisso viva sobre o passo
+  // DO JOB, o worker não descarta o job condenado, ele o REAGENDA (o portão do compromisso vem antes
+  // do portão do episódio), e a chave de dedupe é uma por conversa — então o passo 0 do episódio novo
+  // não pode nem entrar na fila enquanto o job pendente estiver lá. O console tem que dizer a pausa,
+  // e não prometer um passo 1 que não começa. Era um buraco já aberto pelo espelho da #750, que
+  // nenhuma fixture combinava.
+  test("job de passo tardio condenado MAS adiado por compromisso vivo → a pausa, não o passo 1", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convStepOptOutArmedStep1,
+      appDb,
+    );
+    expect(d.followUp?.pausedByAppointment).toBe(true);
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
-    expect(d.followUp?.pausedByAppointment).toBe(false);
   });
 
   // Issue #72: the pending-job branch reported whatever the row said, while the handler re-checks all
@@ -1373,11 +1395,50 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
   // The other direction, and the reason the gate is the bot IDENTITY rather than "an AgentBot holds
   // it": the conversation assigned to the inbox's OWN bot is the normal state of every bot-owned
   // conversation, and suppressing the countdown there would silence the indicator for everyone.
+  //
+  // O NÚMERO mudou com a #752 e o eixo deste teste não: `seedArmedConv` semeia o cliente falando
+  // depois do último follow-up, que é episódio novo, e o job de passo tardio que ele semeia está
+  // condenado (`else if (newEpisode) return done` no handler). O que este teste guarda é que a
+  // contagem continua EXISTINDO para o nosso próprio bot; qual passo ela conta é a #752.
   test("our own bot holds it, job armed → the countdown stands", async () => {
     const d = await getConversationDetail(ctx(tenant), convOurBotArmed, appDb);
-    expect(d.followUp?.nextStep).toBe(2);
-    expect(d.followUp?.nextRunAt).toBe(ARMED_STEP1_RUN_AT.toISOString());
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).not.toBe(ARMED_STEP1_RUN_AT.toISOString());
     expect(d.followUp?.abandoned).toBe(false);
+  });
+
+  // Issue #752: o mesmo estado da #750 com o outro autor. O handler não pergunta QUEM falou — para
+  // `stepIndex > 0` ele é um `else if (newEpisode) return done` reto —, então o job de passo tardio
+  // morre nas duas formas de episódio novo, e o console tem que dar a mesma resposta nas duas. Sem
+  // isto, uma conversa cujo cliente respondeu ganhava a contagem de um passo que o worker descarta
+  // no instante em que reivindica: o cancelamento do webhook de entrada normalmente apaga o job no
+  // mesmo movimento, mas "normalmente" é sobre quanto tempo o estado dura, não sobre o console estar
+  // certo enquanto ele dura, e aqui não existe nada depois para corrigir a promessa.
+  test("o cliente reabriu o episódio com job de passo tardio armado → conta o passo 1, não o 2", async () => {
+    const d = await getConversationDetail(ctx(tenant), convOurBotArmed, appDb);
+    expect(d.followUp?.nextStep).toBe(1);
+    // O passo 1 da sequência NOVA, contado do último movimento da conversa (23:18:45 + 2 min), e não
+    // o run_at do job condenado (dois dias depois). O valor verbatim é o que separa "suprimiu" de
+    // "suprimiu e recontou": um console que só apagasse a contagem diria `null` aqui.
+    expect(d.followUp?.nextRunAt).toBe("2026-06-18T23:20:45.000Z");
+  });
+
+  // E a simetria explícita, que é a afirmação da issue: os dois autores de episódio novo produzem a
+  // MESMA leitura. Uma correção que cobrisse só um dos lados passaria nos dois testes acima e
+  // falharia aqui.
+  test("episódio novo pela nossa resposta e pelo cliente → o console lê igual", async () => {
+    const nosso = await getConversationDetail(
+      ctx(tenant),
+      convOurReplyRestartedEpisode,
+      appDb,
+    );
+    const dele = await getConversationDetail(
+      ctx(tenant),
+      convOurBotArmed,
+      appDb,
+    );
+    expect(dele.followUp?.nextStep).toBe(nosso.followUp?.nextStep);
+    expect(dele.followUp?.nextStep).not.toBe(2);
   });
 
   test("our own bot holds it, no job armed → the estimate stands", async () => {

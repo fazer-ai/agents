@@ -79,6 +79,7 @@ let convStep0JobFarOut = 0n;
 let convDoomedJobUnfencedStep0 = 0n;
 let convDoomedJobFencedStep0 = 0n;
 let convEpisodeBeforeArming = 0n;
+let convRearmedWithDoomedJob = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -1036,12 +1037,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         followUpArmedAt: new Date("2026-07-01T00:00:00Z"),
         mode: "production",
         modelConfig: { provider: "openai", model: "gpt-4o-mini" },
-        settings: {
-          followUp: {
-            enabled: true,
-            steps: [{ delayValue: 2, delayUnit: "minutes", instructions: "" }],
-          },
-        },
+        settings: twoStepSettings,
       },
     });
     const lateArmedInbox = await suDb.inbox.create({
@@ -1070,6 +1066,38 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         },
       })
       .then((c) => c.id);
+    // Issue #752, achado do verificador: o operador RE-ARMOU o follow-up depois de o cliente ter
+    // respondido, e sobrou um job de passo tardio. O episódio é novo, então a supressão apaga a
+    // contagem dele; a cerca de ativação barra o passo 0 do episódio novo, então nada entra no lugar.
+    // Fica um job PENDING que o handler vai descartar e nada agendado — e é exatamente o estado em que
+    // a tela escrevia "sequência de follow-up concluída", porque `abandoned` só olhava a liveness.
+    convRearmedWithDoomedJob = await suDb.conversation
+      .create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId: 357,
+          inboxId: lateArmedInbox.id,
+          status: "pending",
+          assigneeType: null,
+          threadId: `${tenant}:${inst}:357`,
+          lastRepliedMessageId: 1,
+          lastEventAt: LAST_EVENT_AT,
+          lastInboundAt: REPLY_AT,
+          lastFollowUpAt: FOLLOW_UP_AT,
+        },
+      })
+      .then((c) => c.id);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:357`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:357`, stepIndex: 1 },
+      },
+    });
     convForeignBotEstimate = await seedEstimateConv(326, {
       assigneeType: "AgentBot",
       assigneeId: FOREIGN_BOT_ID,
@@ -1387,6 +1415,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.pausedByAppointment).toBe(true);
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
+    // ...e PAUSADA não é ABANDONADA: as duas não têm nada agendado e só uma volta sozinha. O campo
+    // separa as duas de propósito, e a tela usa o par para escolher entre a frase da pausa e o
+    // silêncio do marcador de concluída.
+    expect(d.followUp?.abandoned).toBe(false);
   });
 
   // Review round 2 da #103, e ele mediu o JOB: o handler resolve o passo antes de qualquer outra
@@ -1614,6 +1646,22 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
+  });
+
+  // Issue #752 (verificador): job PENDENTE e nada agendado não é sequência concluída. O marcador da
+  // tela exige `abandoned !== true`, e `abandoned` olhava só a liveness — com o follow-up vivo e o
+  // episódio barrado pela cerca de ativação, a conversa aparecia como concluída com um passo na fila
+  // que vai ser descartado. O campo passou a perguntar o que a tela pergunta: há job e não há nada
+  // agendado.
+  test("re-armado, job de passo tardio pendente e nada agendado → abandonada, não concluída", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convRearmedWithDoomedJob,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+    expect(d.followUp?.abandoned).toBe(true);
   });
 
   // Issue #752: a contagem legítima do passo 2, que é o que a supressão NÃO pode alcançar. Mesmo

@@ -1321,7 +1321,21 @@ export async function getConversationDetail(
       managedByRedirect,
       redirectNext,
       pausedByAppointment,
-      abandoned: job !== null && !followUpLive,
+      // POR "NADA VEM", E NÃO PELO MOTIVO DE NADA VIR. A forma antiga era
+      // `job !== null && !followUpLive`, e ela nomeia um caminho só: o job que o handler descarta
+      // porque um humano assumiu, o agente foi desligado, o follow-up saiu. Existem outros dois, e
+      // nos dois o job fica pendente sem que nada esteja agendado — o episódio novo que condena o
+      // passo tardio sem que a cerca de ativação deixe o passo 0 entrar no lugar, e o próprio
+      // `fencedStep0Job`, que é anterior a tudo isto. Com `abandoned` falso ali, o `nextStep` nulo e
+      // nenhuma pausa, a tela escreve "sequência de follow-up concluída" numa conversa com job
+      // PENDENTE que vai ser descartado: o exato oposto do que este campo existe para impedir, e o
+      // motivo de ele ser sobre o job EXISTIR e não sobre a liveness.
+      //
+      // Então a pergunta passa a ser a que a tela faz: há passo na fila e não há nada agendado. A
+      // pausa fica de fora porque ela é o outro estado, tem campo próprio e volta sozinha quando o
+      // compromisso passar. O caminho antigo continua coberto: sem liveness nenhum braço agenda
+      // nada, então `nextStep` é nulo ali por construção.
+      abandoned: job !== null && nextStep === null && !pausedByAppointment,
     };
   }
 

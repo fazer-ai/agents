@@ -97,6 +97,9 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // the peak. It still runs under the shared lane's provider concurrency, the same pool a customer's turn
   // queues on, so a busy inbox's observers cannot starve the replies on it.
   OBSERVE: "observe",
+  // Shared (issue #587): one Chatwoot send per rejected attachment, rare, and the customer already
+  // waited out the channel's own failure report, so a tick's wait adds nothing felt.
+  MEDIA_TEXT_FALLBACK: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -151,6 +154,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   HUMAN_REPLY_RECOVERY: false,
   // One model call per tick, on the agent's own model.
   OBSERVE: true,
+  // One Chatwoot send, no model.
+  MEDIA_TEXT_FALLBACK: false,
 };
 
 // How many OBSERVE rows one shared tick claims (issue #621): enough to keep the provider bound busy
@@ -218,6 +223,10 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // The key names ONE CONVERSATION (`observe:<thread>`), like DEBOUNCE's, and the row is re-armed by
   // every burst on it; a DONE row is the record of the last verdict.
   OBSERVE: false,
+  // KEPT on DONE although its key names one message: the row IS the memory that the text already
+  // went out, and a redelivered failure webhook arms it `once`. Deleted, the next redelivery would
+  // find no row and send the text again. Bounded by the channel's failure rate on media (~0.1%).
+  MEDIA_TEXT_FALLBACK: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -284,6 +293,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // burst, but no claim that holds a fixed-rate kind ever holds it, so there is nothing for it to
   // starve. The traffic share is what it left, not what protects the reminders from it.
   OBSERVE: false,
+  // One per REJECTED attachment, which is a small fraction of traffic, not traffic itself.
+  MEDIA_TEXT_FALLBACK: false,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -371,6 +382,9 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // is already reading and can label by hand, and the next burst on it arms the same row again. No
   // customer message was lost and nothing they wait on stopped.
   OBSERVE: "warn",
+  // `error`: the customer's reply was lost at the channel and the text that would replace it was
+  // lost here too, with no way back for the operator but reading the conversation.
+  MEDIA_TEXT_FALLBACK: "error",
 };
 
 // HOW FAR APART ONE KIND'S RETRIES ARE, as the base of `backoffMs` in ./service.ts (issue #744).
@@ -414,6 +428,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   TAKEOVER_RECOVERY: 60_000,
   HUMAN_REPLY_RECOVERY: 60_000,
   OBSERVE: 2_000,
+  MEDIA_TEXT_FALLBACK: 2_000,
 };
 
 export function kindsInLane(

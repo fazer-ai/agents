@@ -132,6 +132,7 @@ import {
 import { extractMessageVisuals } from "@/modules/vision/extract-message";
 import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
+import { channelFailureOf, handleChannelFailure } from "./channel-failure";
 import type { ChatwootClient } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
 import { resetAckSendId } from "./constants";
@@ -4934,6 +4935,38 @@ export async function processChatwootDelivery(
         : {}),
     },
   );
+
+  // A REPLY THE CHANNEL REFUSED (issue #587), reported on a `message_updated` for the route's own
+  // outgoing message. Below the mirror so the line hangs off the conversation row; nothing else in
+  // this function reads such an event (it is outgoing and not a person's reply), so it runs no turn,
+  // arms no debounce and calls no model. Best-effort: a failure here is logged and the delivery goes
+  // on, because it is a report about a message already gone, not a message to answer.
+  const channelFailure = channelFailureOf(n, params.agentBotId);
+  if (channelFailure && params.agentBotId !== null) {
+    try {
+      await handleChannelFailure({
+        failure: channelFailure,
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        agentBotId: params.agentBotId,
+        flow: {
+          tenantId: params.tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: mirror.conversationRowId,
+          base,
+        },
+        base,
+      });
+    } catch (e) {
+      logger.warn(
+        "chatwoot: could not act on a channel failure (conv=%s msg=%s): %s",
+        String(channelFailure.conversationId),
+        String(channelFailure.messageId),
+        errMsg(e),
+      );
+    }
+  }
 
   // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
   // logs and in the conversation alike — which is what left issue #270 undiagnosable from the

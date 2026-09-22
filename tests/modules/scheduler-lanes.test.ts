@@ -104,6 +104,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // A cap of its own, drained by the shared tick (issue #621): on the traffic share it waited behind
   // every ingestion row armed before it, five rows a tick for the whole install.
   OBSERVE: "observe",
+  MEDIA_TEXT_FALLBACK: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -138,6 +139,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   HUMAN_REPLY_RECOVERY: false,
   SPEND_CEILING_POLL: false,
   OBSERVE: true,
+  MEDIA_TEXT_FALLBACK: false,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -173,6 +175,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // One row per observed CONVERSATION, which is the same shape as DEBOUNCE's, and now the same answer:
   // with a lane of its own (issue #621) no claim that holds a fixed-rate kind ever holds it.
   OBSERVE: false,
+  MEDIA_TEXT_FALLBACK: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -198,6 +201,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   HUMAN_REPLY_RECOVERY: true,
   SPEND_CEILING_POLL: false,
   OBSERVE: false,
+  MEDIA_TEXT_FALLBACK: false,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -229,6 +233,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   HUMAN_REPLY_RECOVERY: "warn",
   SPEND_CEILING_POLL: "error",
   OBSERVE: "warn",
+  MEDIA_TEXT_FALLBACK: "error",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

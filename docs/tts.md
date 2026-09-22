@@ -25,6 +25,8 @@ shouldReplyWithAudio(mode, userSentAudio, contactVoiceReply)
                              attachments_metadata[file][transcribed_text] = the reply text)
 ```
 
+**When the channel refuses the voice note after Chatwoot accepted it** (issue #587), the failure arrives minutes later as a `message_updated` carrying `content_attributes.external_error` (`"131053: Media upload error"` on WhatsApp Cloud). For a media-class code (131052, 131053) the same reply is sent as TEXT, once: its words are the `transcribed_text` the voice note carries, so nothing is regenerated and no model runs. It goes through a `MEDIA_TEXT_FALLBACK` job keyed by the failed message and armed `once`, whose row is kept on DONE, so a redelivered webhook or a second bot route never sends it twice. A delivery-class code (131026, 131047: the recipient cannot be reached at all) and any unknown code send nothing, because a text would hit the same wall; each leaves a `channel_error` line naming the code (`docs/logs.md`). Only the route's own bot's messages are acted on. `src/modules/chatwoot/channel-failure.ts`.
+
 `userSentAudio` is computed by the caller: the direct path from `firstAudioAttachment(event)`, the flush from `pending.some(audio)`. A TTS failure never drops the reply — it posts text instead.
 
 ## Generic provider abstraction (`src/modules/tts/providers.ts`)

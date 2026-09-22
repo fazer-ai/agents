@@ -72,6 +72,7 @@ enum SchedulerJobKind {
   HUMAN_REPLY_RECOVERY
   SPEND_CEILING_POLL
   OBSERVE
+  MEDIA_TEXT_FALLBACK
 }
 
 enum SchedulerJobStatus {

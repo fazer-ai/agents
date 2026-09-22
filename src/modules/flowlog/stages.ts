@@ -35,6 +35,10 @@ export const FLOW_STAGES = [
   // subscribe to broken audio without subscribing to every synthesis.
   "tts_check",
   "split", // humanized balloon delivery
+  // The CHANNEL refused a reply after Chatwoot accepted it (issue #587): the failure arrives later, on
+  // a `message_updated` carrying `external_error`. One line per report, naming the code and what was
+  // done about it (resent as text, or nothing), never the channel's sentence or the reply.
+  "channel_error",
   "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)
   // A watching agent's verdict on a conversation it does not answer: what it is about, written as

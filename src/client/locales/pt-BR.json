@@ -2009,6 +2009,7 @@
       "playground": "Playground"
     },
     "stage": {
+      "channel_error": "Falha no canal",
       "command": "Comando de controle",
       "contact_auth": "Autorização do contato",
       "dead_letter": "Trabalho abandonado",

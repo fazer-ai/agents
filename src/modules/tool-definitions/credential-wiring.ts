@@ -32,8 +32,8 @@
 // executing the real tool rather than by a list written here.
 
 import { isIP } from "node:net";
-import config from "@/config";
-import { isBlockedIp } from "@/lib/ssrf";
+import config, { type InternalTarget } from "@/config";
+import { isBlockedIp, matchInternalTarget } from "@/lib/ssrf";
 import {
   INJECTING_MECHANISM_KIND_IDS,
   isNonInjectableSecret,
@@ -473,6 +473,9 @@ function buildsARequest(
   // testable: where private targets are allowed the guard lifts BOTH of its decidable refusals, and
   // the suite runs with them on.
   privateAllowed: boolean,
+  // The instance's internal targets (issue #615), which the guard lifts both refusals for when the
+  // tool's own allowedHosts names the host. Same rule as `buildHttpTool`, read from the same config.
+  internalTargets: readonly InternalTarget[],
 ): boolean {
   if (typeof urlTemplate !== "string") return false;
   // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
@@ -485,7 +488,12 @@ function buildsARequest(
   // are lifted wholesale when the deployment allows private targets, and THAT is readable — it is
   // the same `config.ssrf.allowPrivateTargets` the guard itself reads.
   const probe = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
-  if (!privateAllowed) {
+  const internal =
+    !privateAllowed && probe && allowedHosts?.includes(probe.hostname)
+      ? matchInternalTarget(probe, internalTargets)
+      : null;
+  if (internal === "port") return false;
+  if (!privateAllowed && internal !== "match") {
     if (probe?.protocol !== "https:") return false;
     const host = probe.hostname.replace(/^\[|\]$/g, "");
     if (isIP(host) && isBlockedIp(host)) return false;
@@ -753,6 +761,7 @@ export function unusedCredentialWarning(
     ackMessage?: string | null;
     allowedHosts?: string[] | null;
     privateAllowed?: boolean;
+    internalTargets?: readonly InternalTarget[];
   } = {},
 ): string | null {
   if (isNonInjectableSecret(facts.kind)) return null;
@@ -768,6 +777,7 @@ export function unusedCredentialWarning(
       opts.allowedHosts,
       isRelativeTemplate(normalized.urlTemplate),
       opts.privateAllowed ?? config.ssrf.allowPrivateTargets,
+      opts.internalTargets ?? config.ssrf.internalTargets,
     )
   ) {
     return null;

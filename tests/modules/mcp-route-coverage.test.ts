@@ -52,7 +52,9 @@ async function registeredTools(): Promise<Set<string>> {
       userId: 1n,
       tenantId: null,
       role: "SUPER_ADMIN",
-      scopes: ["mcp:read", "mcp:write"],
+      // `mcp:admin` too: the fleet tools (deployment, tenants) are published only under it, and
+      // without it they read as absent (review round 2 of #780).
+      scopes: ["mcp:read", "mcp:write", "mcp:admin"],
       clientId: "c",
       jti: "j",
     },

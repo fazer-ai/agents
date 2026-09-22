@@ -29,7 +29,7 @@ const EMBEDDING_BLOCK =
 const EXPORT =
   "a file download of data a tool already reads (audit_list, tool_get)";
 const FLEET =
-  "SUPER_ADMIN deployment, account or tenant lifecycle, several with step-up confirmation";
+  "SUPER_ADMIN lifecycle kept to the console: irreversible or credential-minting, several with step-up confirmation";
 const INBOUND =
   "an inbound delivery from an external system, authenticated by its route token";
 const MCP_ACCESS =
@@ -96,13 +96,15 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /v1/business-hours/:id": { tool: "business_hours_update" },
   "DELETE /v1/business-hours/:id": { tool: "business_hours_delete" },
   "GET /v1/chatwoot/deployment": { tool: "instance_list" },
-  "POST /v1/chatwoot/deployment": { none: FLEET },
-  "PATCH /v1/chatwoot/deployment": { none: FLEET },
+  "POST /v1/chatwoot/deployment": { tool: "deployment_connect" },
+  "PATCH /v1/chatwoot/deployment": { tool: "deployment_rotate_token" },
   "DELETE /v1/chatwoot/deployment": { none: FLEET },
-  "GET /v1/chatwoot/deployment/accounts": { none: FLEET },
-  "PUT /v1/chatwoot/deployment/accounts": { none: FLEET },
-  "DELETE /v1/chatwoot/instances/:id": { none: FLEET },
-  "POST /v1/chatwoot/instances/:id/reconnect": { none: FLEET },
+  "GET /v1/chatwoot/deployment/accounts": { tool: "deployment_list_accounts" },
+  "PUT /v1/chatwoot/deployment/accounts": { tool: "deployment_set_accounts" },
+  "DELETE /v1/chatwoot/instances/:id": { tool: "instance_disconnect" },
+  "POST /v1/chatwoot/instances/:id/reconnect": {
+    gap: "reconnect a soft-disconnected account, the inverse of instance_disconnect",
+  },
   "POST /v1/chatwoot/instances/:id/remove": { none: FLEET },
   "POST /v1/chatwoot/instances/:id/sync-inboxes": {
     tool: "instance_sync_inboxes",
@@ -251,11 +253,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PATCH /v1/tools/:id": { tool: "tool_update" },
   "DELETE /v1/tools/:id": { tool: "tool_delete" },
   "GET /v1/meta": { none: META },
-  "GET /v1/tenants": { none: FLEET },
-  "GET /v1/tenants/:id": { none: FLEET },
+  "GET /v1/tenants": { tool: "tenant_list" },
+  "GET /v1/tenants/:id": { tool: "tenant_get" },
   "PATCH /v1/tenants/:id": { tool: "tenant_update" },
   "DELETE /v1/tenants/:id": { none: FLEET },
-  "POST /v1/tenants": { none: FLEET },
+  "POST /v1/tenants": { tool: "tenant_create" },
   "GET /v1/conversations": { tool: "list_conversations" },
   "GET /v1/conversations/agents": { none: CONV_AGENTS },
   "GET /v1/conversations/:id": { tool: "conversation_get" },

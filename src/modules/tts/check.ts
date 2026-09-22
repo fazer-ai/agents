@@ -18,12 +18,23 @@ export interface TtsCheckVerdict {
   corrupted: boolean;
   // 0..1, or null when the detector did not send one we can trust.
   score: number | null;
-  // The failure mode the detector named (`balbucio`, `zumbido`, ...), or null. Slug-shaped only:
-  // it is written to the execution log, which never carries free text (docs/logs.md).
+  // The failure mode the detector named, or null when it is not one of TTS_CHECK_VERDICTS: it is
+  // written to the execution log, which never carries free text (docs/logs.md).
   verdict: string | null;
 }
 
-const VERDICT_SLUG = /^[a-z0-9_]{1,40}$/i;
+// The failure modes a detector may NAME, as a closed vocabulary rather than a shape. A slug pattern
+// admits "5511999998888" or "maria_silva", and this value is written to the execution log, which
+// never carries customer data (docs/logs.md); anything outside the list is dropped to null.
+export const TTS_CHECK_VERDICTS = [
+  "ok",
+  "balbucio",
+  "zumbido",
+  "buraco_mudo",
+  "suspeita_alta",
+  "palavra_dificil",
+  "nao_confirmado",
+] as const;
 
 export class TtsCheckError extends Error {
   constructor(
@@ -64,15 +75,26 @@ export async function checkSynthesizedAudio(params: {
   const headers: Record<string, string> = {};
   if (cfg.token) headers.authorization = `Bearer ${cfg.token}`;
 
-  let res: Response;
+  // NOTE: the deadline covers the body as well as the headers, and so does the classification: a
+  // detector that answers its headers in time and then stalls is a timeout, and a connection that
+  // drops mid-body is a network failure. Only a body that ARRIVED and is not JSON is `malformed`.
+  let raw: string;
   try {
-    res = await (params.fetchImpl ?? fetch)(`${cfg.url}/v1/check`, {
+    const res = await (params.fetchImpl ?? fetch)(`${cfg.url}/v1/check`, {
       method: "POST",
       body: form,
       headers,
       signal: AbortSignal.timeout(cfg.timeoutMs),
     });
+    if (!res.ok) {
+      throw new TtsCheckError(
+        `audio check failed with ${res.status}`,
+        "http_status",
+      );
+    }
+    raw = await res.text();
   } catch (e) {
+    if (e instanceof TtsCheckError) throw e;
     const name = e instanceof Error ? e.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
       throw new TtsCheckError(
@@ -85,15 +107,9 @@ export async function checkSynthesizedAudio(params: {
       "network",
     );
   }
-  if (!res.ok) {
-    throw new TtsCheckError(
-      `audio check failed with ${res.status}`,
-      "http_status",
-    );
-  }
   let body: unknown;
   try {
-    body = await res.json();
+    body = JSON.parse(raw);
   } catch {
     throw new TtsCheckError("audio check answered non-JSON", "malformed");
   }
@@ -122,7 +138,8 @@ export function parseVerdict(body: unknown): TtsCheckVerdict {
       ? b.score
       : null;
   const verdict =
-    typeof b.verdict === "string" && VERDICT_SLUG.test(b.verdict)
+    typeof b.verdict === "string" &&
+    (TTS_CHECK_VERDICTS as readonly string[]).includes(b.verdict)
       ? b.verdict
       : null;
   return { corrupted: b.corrupted, score, verdict };

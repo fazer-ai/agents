@@ -105,10 +105,17 @@ describe("the detector's answer", () => {
       expect(() => parseVerdict(body)).toThrow(TtsCheckError);
     }
   });
-  test("a score out of range and a verdict that is not a slug degrade to null", () => {
+  test("a score out of range and a verdict outside the vocabulary degrade to null", () => {
     expect(
       parseVerdict({ corrupted: true, score: 1.5, verdict: "tem texto aqui" }),
     ).toEqual({ corrupted: true, score: null, verdict: null });
+    // Slug-shaped customer data: a pattern would admit both, the vocabulary admits neither.
+    for (const verdict of ["5511999998888", "maria_silva"]) {
+      expect(parseVerdict({ corrupted: true, verdict }).verdict).toBeNull();
+    }
+    expect(parseVerdict({ corrupted: true, verdict: "zumbido" }).verdict).toBe(
+      "zumbido",
+    );
     expect(parseVerdict({ corrupted: false, score: 0 })).toEqual({
       corrupted: false,
       score: 0,
@@ -161,6 +168,35 @@ describe("the detector's answer", () => {
             );
           })) as unknown as typeof fetch,
         "timeout",
+      ],
+      // Headers in time, then the body stalls until the deadline: a timeout, not `malformed`.
+      [
+        (async (_u: string, init: RequestInit) =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                init.signal?.addEventListener("abort", () =>
+                  controller.error(init.signal?.reason),
+                );
+              },
+            }),
+            { status: 200 },
+          )) as unknown as typeof fetch,
+        "timeout",
+      ],
+      // Headers in time, then the connection drops mid-body: a network failure.
+      [
+        (async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"corr'));
+                controller.error(new TypeError("socket closed"));
+              },
+            }),
+            { status: 200 },
+          )) as unknown as typeof fetch,
+        "network",
       ],
     ];
     for (const [fetchImpl, code] of cases) {

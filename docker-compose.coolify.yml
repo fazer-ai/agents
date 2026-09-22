@@ -61,6 +61,7 @@ services:
       - TTS_CHECK_URL=${TTS_CHECK_URL:-}
       - TTS_CHECK_MODE=${TTS_CHECK_MODE:-}
       - TTS_CHECK_TOKEN=${TTS_CHECK_TOKEN:-}
+      - TTS_CHECK_TIMEOUT_MS=${TTS_CHECK_TIMEOUT_MS:-}
       # Persist uploaded branding (logo/favicon) + issued document PDFs on the `storage` volume.
       # The defaults (./data/*) live on the ephemeral container FS and vanish on every redeploy.
       - BRANDING_STORAGE_DIR=/app/storage/branding

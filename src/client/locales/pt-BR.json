@@ -668,6 +668,7 @@
     }
   },
   "conversations": {
+    "allAgents": "Todos os agentes",
     "allStatuses": "Todos",
     "assignee": {
       "ai": "IA",
@@ -676,6 +677,7 @@
     "empty": "Nenhuma conversa ainda.",
     "error": "Não foi possível carregar as conversas.",
     "errorBadge": "Erro",
+    "filterAgent": "Filtrar por agente",
     "filterStatus": "Filtrar por status",
     "loading": "Carregando conversas…",
     "loadMore": "Carregar mais",
@@ -691,6 +693,7 @@
     },
     "subtitle": "Conversas em andamento com o status de atribuição (IA ou um humano).",
     "title": "Conversas",
+    "unknownAgent": "Agente desconhecido",
     "unknownContact": "Contato desconhecido",
     "working": "Trabalhando…"
   },

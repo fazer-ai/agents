@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import {
   Badge,
   Button,
@@ -19,9 +19,11 @@ import {
   FilterPills,
   OutOfHoursBadge,
   PageContainer,
+  Select,
   Skeleton,
 } from "@/client/components";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
+import { type AgentLite, loadAllAgents } from "@/client/lib/agentRoster";
 import { api } from "@/client/lib/api";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
@@ -172,6 +174,26 @@ export function ConversationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [status, setStatus] = useState("");
+  // The agent filter lives in the URL (issue #607), so a view narrowed to one persona can be linked
+  // and survives a reload. Empty means every agent.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const agentId = searchParams.get("agentId") ?? "";
+  const setAgentId = useCallback(
+    (next: string) =>
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next) params.set("agentId", next);
+          else params.delete("agentId");
+          return params;
+        },
+        { replace: true },
+      ),
+    [setSearchParams],
+  );
+  // The whole roster, not the first page: an agent past it would have no way to be picked. Null
+  // while loading; an unreadable roster hides the control rather than offering half of it.
+  const [agents, setAgents] = useState<AgentLite[] | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   // Keyset pagination: the cursor for the next (older) page, null when fully loaded.
@@ -194,6 +216,7 @@ export function ConversationsPage() {
       query: {
         ...(status ? { status } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
+        ...(agentId ? { agentId } : {}),
       },
     });
     if (err || !data) {
@@ -203,7 +226,7 @@ export function ConversationsPage() {
     setError(false);
     setConversations(data.conversations);
     setNextCursor(data.nextCursor);
-  }, [status, debouncedSearch]);
+  }, [status, debouncedSearch, agentId]);
 
   // Append the next page (older conversations), de-duping by id since a live re-sort may have
   // pulled a row into an earlier page meanwhile.
@@ -215,6 +238,7 @@ export function ConversationsPage() {
         query: {
           ...(status ? { status } : {}),
           ...(debouncedSearch ? { q: debouncedSearch } : {}),
+          ...(agentId ? { agentId } : {}),
           cursor: nextCursor,
         },
       });
@@ -227,7 +251,17 @@ export function ConversationsPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nextCursor, status, debouncedSearch]);
+  }, [nextCursor, status, debouncedSearch, agentId]);
+
+  useEffect(() => {
+    let active = true;
+    void loadAllAgents().then((list) => {
+      if (active) setAgents(list);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -346,6 +380,29 @@ export function ConversationsPage() {
           className="w-full rounded-lg border border-border bg-bg-tertiary py-2 pr-4 pl-9 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none"
         />
       </div>
+
+      {agents && (agents.length > 1 || agentId) && (
+        <Select
+          wrapperClassName="sm:max-w-xs"
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          aria-label={t("conversations.filterAgent", "Filter by agent")}
+        >
+          <option value="">{t("conversations.allAgents", "All agents")}</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+          {/* A linked or stale id this tenant has no agent for: shown, so the list being empty
+              reads as the filter's answer rather than as a broken page. */}
+          {agentId && !agents.some((a) => a.id === agentId) && (
+            <option value={agentId}>
+              {t("conversations.unknownAgent", "Unknown agent")}
+            </option>
+          )}
+        </Select>
+      )}
 
       <FilterPills
         value={status}

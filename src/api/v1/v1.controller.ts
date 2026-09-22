@@ -272,6 +272,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         limit: parseQueryCount(query.limit, "limit"),
         cursor: parseQueryId(query.cursor, "cursor"),
         q: parseQueryText(query.q, "q"),
+        agentId: parseQueryId(query.agentId, "agentId"),
       });
       return {
         instance: instanceIdentity,
@@ -303,6 +304,12 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
           t.String({
             description:
               "Optional free-text search matched against the contact name or the Chatwoot conversation id.",
+          }),
+        ),
+        agentId: t.Optional(
+          t.String({
+            description:
+              "Optional agent id: only conversations whose inbox is bound to that agent (inboxes it only observes are excluded).",
           }),
         ),
       }),

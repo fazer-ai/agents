@@ -145,6 +145,7 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/audit?until=garbage", "until"],
   ["/v1/conversations?limit=abc", "limit"],
   ["/v1/conversations?limit=3.5", "limit"],
+  ["/v1/conversations?agentId=abc", "agentId"],
   ["/v1/conversations/1/messages?before=abc", "before"],
   // `page=-5` is a well-formed integer, so it is refused one layer down by the service that owns
   // the range (see query-param.test.ts) — and `getUsers` is stubbed here, which would make an

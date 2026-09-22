@@ -4311,6 +4311,15 @@
             }
           },
           {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Optional agent id: only conversations whose inbox is bound to that agent (inboxes it only observes are excluded).",
+              "type": "string"
+            }
+          },
+          {
             "name": "x-tenant-id",
             "in": "header",
             "required": true,

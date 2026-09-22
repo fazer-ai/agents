@@ -81,6 +81,10 @@ export interface ListConversationsFilter {
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
+  // Only conversations whose inbox is BOUND to this agent (issue #607). An inbox it merely observes
+  // does not count: an observer answers nothing there, and the list already tells the two apart.
+  // An id of another tenant, or of no agent, is an empty page under the caller's own scope.
+  agentId?: bigint;
 }
 
 export interface ConversationListItem {
@@ -138,9 +142,11 @@ function normalizeStatus(status: string | undefined): string | undefined {
 function buildConversationsWhere(
   status: string | undefined,
   q: string | undefined,
+  agentId: bigint | undefined,
 ): Prisma.ConversationWhereInput {
   const where: Prisma.ConversationWhereInput = {};
   if (status) where.status = status;
+  if (agentId !== undefined) where.inbox = { agentId };
   const term = q?.trim();
   if (term) {
     const or: Prisma.ConversationWhereInput[] = [
@@ -163,7 +169,7 @@ export async function listConversations(
   const take = clampLimit(filter.limit);
   const status = normalizeStatus(filter.status);
   const cursorId = filter.cursor ?? null;
-  const where = buildConversationsWhere(status, filter.q);
+  const where = buildConversationsWhere(status, filter.q, filter.agentId);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.conversation.findMany({
       where,

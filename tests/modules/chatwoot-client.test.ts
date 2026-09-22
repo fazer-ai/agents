@@ -559,6 +559,64 @@ describe("ChatwootClient", () => {
     expect(calls).toHaveLength(0);
   });
 
+  // O NOME DO ARQUIVO TEM QUE SOBREVIVER À SERIALIZAÇÃO, e não só existir no objeto (issue #763). O
+  // fork casa o metadado do anexo POR NOME — `uploaded_filename(attachment)` no `message_builder` —,
+  // então uma parte que chega chamada `blob` perde as DUAS coisas que este envio carrega: o
+  // `transcribed_text`, que é o texto falado desta issue, e o `is_recorded_audio`, que é o que faz o
+  // WhatsApp tocar o áudio como gravação em vez de pendurar um arquivo. Medido nas duas pontas: com
+  // `new Blob(...)` mais o terceiro argumento do `append`, sob o preload deste repo (o
+  // `tests/dom-setup.ts` instala os globais do happy-dom, cujo FormData não é o nativo), o corpo sai
+  // `filename="blob"` e o Chatwoot grava `{}` no meta; com um `File` de verdade o nome viaja nos
+  // dois ambientes. E a asserção é sobre o corpo SERIALIZADO porque o objeto FormData mente: o
+  // `form.get()` devolve um File com o nome certo mesmo no caso que se perde no fio.
+  test("o nome do arquivo viaja no corpo serializado, no áudio e no anexo comum", async () => {
+    const bodies: BodyInit[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      if (init?.body) bodies.push(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendAudioMessage(
+      42,
+      new ArrayBuffer(4),
+      "reply.ogg",
+      "audio/ogg",
+      {
+        transcribedText: "Confirmei para quinta às 14h",
+      },
+    );
+    await client.sendFileAttachment(
+      42,
+      new ArrayBuffer(4),
+      "orcamento.pdf",
+      "application/pdf",
+    );
+    const wire = await Promise.all(
+      bodies.map((b) =>
+        new Request("https://chat.example.com/x", {
+          method: "POST",
+          body: b,
+        }).text(),
+      ),
+    );
+    expect(wire).toHaveLength(2);
+    expect(wire[0]).toContain('filename="reply.ogg"');
+    expect(wire[0]).not.toContain('filename="blob"');
+    // E a chave do metadado casa o nome que viajou, que é a outra metade do acordo com o fork.
+    expect(wire[0]).toContain(
+      "attachments_metadata[reply.ogg][transcribed_text]",
+    );
+    expect(wire[1]).toContain('filename="orcamento.pdf"');
+    expect(wire[1]).not.toContain('filename="blob"');
+  });
+
   test("an admin-token call on that same client still works", async () => {
     const { fetchImpl, calls } = stub(200, { payload: [] });
     const client = await createChatwootClient(

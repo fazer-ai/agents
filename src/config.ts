@@ -53,6 +53,10 @@ const {
   AGENT_PROMPT_MAX_CHARS,
   HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
+  TTS_CHECK_URL,
+  TTS_CHECK_MODE,
+  TTS_CHECK_TOKEN,
+  TTS_CHECK_TIMEOUT_MS,
 } = process.env;
 
 // NOTE: Domain entries are trimmed, lowercased, and have a leading "@" stripped
@@ -172,6 +176,34 @@ const parseHops = (raw: string | undefined, envName: string): number => {
   }
   return value;
 };
+
+// The three things an audio check can do with a synthesized reply (issue #779). Declared, never
+// inferred from anything but the URL: with no detector there is nothing to call, and with one the
+// default is `shadow`, the mode that records and never changes a send. `enforce` is the one that
+// holds a reply back, and holding a reply back is not a thing a deployment should drift into.
+export const TTS_CHECK_MODES = ["off", "shadow", "enforce"] as const;
+export type TtsCheckMode = (typeof TTS_CHECK_MODES)[number];
+
+export const parseTtsCheckMode = (
+  rawMode: string | undefined,
+  url: string,
+): TtsCheckMode => {
+  const mode = (rawMode ?? "").trim().toLowerCase();
+  if (mode === "") return url ? "shadow" : "off";
+  if (!(TTS_CHECK_MODES as readonly string[]).includes(mode)) {
+    throw new Error(
+      `TTS_CHECK_MODE must be one of ${TTS_CHECK_MODES.join(", ")} (got "${rawMode}"). It decides whether a synthesized audio reply is checked before it goes out.`,
+    );
+  }
+  if (mode !== "off" && !url) {
+    throw new Error(
+      `TTS_CHECK_MODE=${mode} needs TTS_CHECK_URL: there is no detector to call, and a check that silently never runs is the failure this setting exists to prevent.`,
+    );
+  }
+  return mode as TtsCheckMode;
+};
+
+const ttsCheckUrl = (TTS_CHECK_URL ?? "").trim().replace(/\/+$/, "");
 
 const googleClientId = (GOOGLE_CLIENT_ID ?? "").trim();
 
@@ -444,6 +476,21 @@ const config = {
   // single-tenant/self-hosted box you control. Network transports (http/sse) are always allowed
   // and pass the SSRF guard.
   mcpStdioEnabled: MCP_STDIO_ENABLED === "true",
+  // NOTE: Corrupted-audio check for synthesized replies (issue #779, docs/tts.md "Checking the
+  // audio"). A deployment-level detector, not a per-agent setting: it is infrastructure the operator
+  // runs (an HTTP service next to this one), the same way the database is. Empty URL = off.
+  ttsCheck: {
+    url: ttsCheckUrl,
+    mode: parseTtsCheckMode(TTS_CHECK_MODE, ttsCheckUrl),
+    token: (TTS_CHECK_TOKEN ?? "").trim(),
+    timeoutMs: parseIntSetting(
+      TTS_CHECK_TIMEOUT_MS,
+      "TTS_CHECK_TIMEOUT_MS",
+      20_000,
+      "It bounds one call to the audio detector: in enforce mode the reply waits on it, so too high leaves the customer waiting and too low gives up on a detector that would have answered.",
+      MAX_DURATION_MS,
+    ),
+  },
   // NOTE: Anti-SSRF guard for outbound HTTP/MCP targets. Blocking private ranges is critical in
   // production (multi-tenant hosting); in development operators often need to reach local services.
   // Auto-enabled in development when the env var is absent so devs can iterate without extra config.

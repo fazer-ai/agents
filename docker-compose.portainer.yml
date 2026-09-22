@@ -116,6 +116,13 @@ services:
       # to THIS instance's MCP. Also the app default — pinned here so the stack works on an older
       # image too, since without it both clients abort before any login screen (docs/mcp.md).
       - MCP_DCR_ENABLED=${MCP_DCR_ENABLED:-true}
+      # NOTE: corrupted-audio check for audio replies (docs/tts.md "Checking the audio"). Empty URL = off;
+      # a URL alone = shadow (records a verdict, never changes a send). enforce regenerates up to twice
+      # and then replies with text.
+      - TTS_CHECK_URL=${TTS_CHECK_URL:-}
+      - TTS_CHECK_MODE=${TTS_CHECK_MODE:-}
+      - TTS_CHECK_TOKEN=${TTS_CHECK_TOKEN:-}
+      - TTS_CHECK_TIMEOUT_MS=${TTS_CHECK_TIMEOUT_MS:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - JWT_SECRET=${JWT_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}

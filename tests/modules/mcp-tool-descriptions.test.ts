@@ -612,6 +612,10 @@ describe("MCP tool descriptions", () => {
   // ignore. Base 30,447 and 57,193, this tree 30,729 and 57,777, so 30,744 and 57,793 with the same
   // 15 and 16. The update's description was cut by 24 to say only what a caller cannot read off the
   // schema: that the id survives, and that only a text change re-embeds.
+  //
+  // SCHEMA RAISED to 57,817 by the `tts_check` flow stage (#779), which is an enum value wherever a
+  // tool filters or subscribes by stage: this tree measures 57,801 against the base's 57,777, same
+  // 16 of headroom. No tool and no description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -621,7 +625,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_744);
-    expect(schema).toBeLessThanOrEqual(57_793);
+    expect(schema).toBeLessThanOrEqual(57_817);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

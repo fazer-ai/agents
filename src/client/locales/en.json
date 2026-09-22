@@ -1960,6 +1960,7 @@
       "stt": "Transcription",
       "tool": "Tool call",
       "tts": "Audio synthesis",
+      "tts_check": "Audio check",
       "vision": "Image reading",
       "webhook": "Outbound webhook"
     },

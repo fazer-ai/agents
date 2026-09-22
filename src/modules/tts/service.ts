@@ -1,12 +1,20 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { trackFlowWrite } from "@/modules/flowlog/scheduled";
 import {
   emitFlowEvent,
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import {
+  checkSynthesizedAudio,
+  type TtsCheckConfig,
+  TtsCheckError,
+  type TtsCheckVerdict,
+} from "@/modules/tts/check";
 import {
   getTtsProvider,
   pickTtsFormat,
@@ -59,10 +67,23 @@ export interface SynthesizeReplyParams {
     // Opt-in LLM text-for-speech normalizer (built by the runtime from the agent's model). Best-effort:
     // a throw/timeout here falls back to the un-normalized speech text. Only invoked when cfg.normalize.
     normalizeSpeech?: (text: string) => Promise<string>;
+    // The detector's transport, apart from the provider's: a test fakes the two independently.
+    checkFetchImpl?: typeof fetch;
   };
   // Optional execution-flow context: when present, the provider synth is logged as a `tts` stage.
   flow?: FlowContext;
+  // The corrupted-audio check (issue #779). Defaults to the deployment's `config.ttsCheck`.
+  check?: TtsCheckConfig;
+  // Asked before paying for a regeneration: true = the turn this audio belongs to was called off,
+  // so a new synthesis would be billed for a reply nobody will send.
+  shouldStop?: () => Promise<boolean>;
 }
+
+// How many times an audio the detector called corrupted is synthesized again before the reply goes
+// out as text instead. Two, because the defect is a property of one synthesis and not of the text
+// (the provider gets no seed, so the same words come back as different audio), and a text that fails
+// three times in a row is telling us something no fourth attempt will fix.
+export const MAX_TTS_REGENERATIONS = 2;
 
 // Returns the synthesized audio, or null when TTS is not runnable (no key / misconfigured / empty
 // text). Throws only on a hard provider error so the caller can fall back to a text reply.
@@ -164,42 +185,211 @@ export async function synthesizeReply(
     }
   }
 
-  return withFlowStage(
-    params.flow,
-    "tts",
-    {
-      provider: cfg.provider,
-      model: cfg.model || provider.defaultModel,
-      // NOTE: `format` is our internal container name; `providerFormat` is the value that actually goes on
-      // the wire (ElevenLabs `output_format`, OpenAI `response_format`). Both, because a failing line
-      // showing only "ogg_opus" reads like the wire value and has been reported as one.
-      detail: {
-        normalized: cfg.normalize,
-        format,
-        providerFormat: provider.providerFormat(format),
-        // AND NOT THE REPLY ITSELF, which is the fix this issue asked for and the one the
-        // contract refuses (issue #763). `docs/logs.md` promises `execution_logs` NEVER carries
-        // message text: that promise is what makes the Logs page and `GET /v1/logs` exportable,
-        // and `redactSecretsDeep` removes credentials, not a customer's name or number, which a
-        // reply routinely repeats back. The spoken words live on the conversation instead — the
-        // audio attachment's `transcribed_text`, which `GET /v1/conversations/:id/messages`
-        // already returns — and that surface has the access control this one does not.
-      },
-      // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
-      // (advisory), not a red error, on the conversation/Logs.
-      errorLevel: "warn",
-    },
-    () =>
-      provider.synthesize({
-        text: speech,
-        voice,
+  const synth = (attempt: number): Promise<TtsResult> =>
+    withFlowStage(
+      params.flow,
+      "tts",
+      {
+        provider: cfg.provider,
         model: cfg.model || provider.defaultModel,
-        language: "",
-        apiKey: entry.secret,
-        baseURL: effectiveBaseURL,
-        fetchImpl: params.deps?.fetchImpl ?? fetch,
-        format,
-        voiceSettings: voiceSettingsOf(cfg),
+        // NOTE: `format` is our internal container name; `providerFormat` is the value that actually goes on
+        // the wire (ElevenLabs `output_format`, OpenAI `response_format`). Both, because a failing line
+        // showing only "ogg_opus" reads like the wire value and has been reported as one.
+        detail: {
+          normalized: cfg.normalize,
+          format,
+          providerFormat: provider.providerFormat(format),
+          // Which synthesis of this reply the line is: 1, or a regeneration after the detector
+          // called the previous one corrupted (issue #779).
+          attempt,
+          // AND NOT THE REPLY ITSELF, which is the fix this issue asked for and the one the
+          // contract refuses (issue #763). `docs/logs.md` promises `execution_logs` NEVER carries
+          // message text: that promise is what makes the Logs page and `GET /v1/logs` exportable,
+          // and `redactSecretsDeep` removes credentials, not a customer's name or number, which a
+          // reply routinely repeats back. The spoken words live on the conversation instead — the
+          // audio attachment's `transcribed_text`, which `GET /v1/conversations/:id/messages`
+          // already returns — and that surface has the access control this one does not.
+        },
+        // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
+        // (advisory), not a red error, on the conversation/Logs.
+        errorLevel: "warn",
+      },
+      () =>
+        provider.synthesize({
+          text: speech,
+          voice,
+          model: cfg.model || provider.defaultModel,
+          language: "",
+          apiKey: entry.secret,
+          baseURL: effectiveBaseURL,
+          fetchImpl: params.deps?.fetchImpl ?? fetch,
+          format,
+          voiceSettings: voiceSettingsOf(cfg),
+        }),
+    );
+
+  // Synthesized ONCE per attempt from the same `speech`: a regeneration repeats the synthesis and
+  // never the rewrite above, which is a billed model call whose output did not change.
+  let out = await synth(1);
+  const check = params.check ?? config.ttsCheck;
+  if (check.mode === "off" || !check.url) return out;
+
+  const ask = (audio: TtsResult, attempt: number) =>
+    runAudioCheck({
+      check,
+      audio,
+      text: params.text,
+      speech,
+      attempt,
+      flow: params.flow,
+      fetchImpl: params.deps?.checkFetchImpl,
+    });
+
+  if (check.mode === "shadow") {
+    // NOT awaited, and that is the whole mode: the send does not wait on the detector, and what it
+    // answers changes nothing but a log line. Tracked with the flow writes so a test (or shutdown)
+    // settling them also settles this. `runAudioCheck` never throws.
+    const first = out;
+    trackFlowWrite(
+      ask(first, 1).then((c) => {
+        if (c) {
+          reportCheck(
+            params.flow,
+            check,
+            c,
+            1,
+            c.verdict.corrupted ? "flagged" : "passed",
+          );
+        }
       }),
-  );
+    );
+    return out;
+  }
+
+  for (let attempt = 1; ; attempt++) {
+    const c = await ask(out, attempt);
+    // No usable answer (down, slow, unreadable): the audio goes out as it is. A detector outage must
+    // never cost the customer the reply, and the line already written says why it went unchecked.
+    if (!c) return out;
+    if (!c.verdict.corrupted) {
+      reportCheck(params.flow, check, c, attempt, "passed");
+      return out;
+    }
+    if (attempt > MAX_TTS_REGENERATIONS) {
+      // null is the "no audio" answer every caller already turns into a text reply.
+      reportCheck(params.flow, check, c, attempt, "rejected");
+      logger.warn(
+        "tts: the audio check rejected %d syntheses in a row, replying with text",
+        attempt,
+      );
+      return null;
+    }
+    // NOTE: asked BEFORE the line is written, because the line names what happened: a turn called
+    // off here regenerates nothing, and `regenerated` would record a synthesis that never ran. null,
+    // not the audio in hand: it is known to be corrupted, and a caller must never be handed one as
+    // if it were the reply.
+    if (params.shouldStop && (await params.shouldStop())) {
+      reportCheck(params.flow, check, c, attempt, "called_off");
+      return null;
+    }
+    reportCheck(params.flow, check, c, attempt, "regenerated");
+    out = await synth(attempt + 1);
+  }
+}
+
+// What THIS function did with the verdict, never what happened to the reply afterwards: the send is
+// the caller's, and a turn can still be called off or a send fail after this returns. So shadow says
+// `flagged` (corrupted, and not held back), not "sent".
+type CheckOutcome =
+  | "passed"
+  | "regenerated"
+  | "rejected"
+  | "called_off"
+  | "flagged";
+
+interface CheckAnswer {
+  verdict: TtsCheckVerdict;
+  durationMs: number;
+}
+
+// One call to the detector. Never throws: a failure is written as its own line (warn, with the
+// closed code) and comes back as null, which every mode reads as "send what you have".
+async function runAudioCheck(params: {
+  check: TtsCheckConfig;
+  audio: TtsResult;
+  text: string;
+  speech: string;
+  attempt: number;
+  flow?: FlowContext;
+  fetchImpl?: typeof fetch;
+}): Promise<CheckAnswer | null> {
+  const start = Date.now();
+  try {
+    const verdict = await checkSynthesizedAudio({
+      cfg: params.check,
+      audio: params.audio.audio,
+      mime: params.audio.mime,
+      fileName: params.audio.fileName,
+      text: params.text,
+      speech: params.speech,
+      fetchImpl: params.fetchImpl,
+    });
+    return { verdict, durationMs: Date.now() - start };
+  } catch (e) {
+    const code = e instanceof TtsCheckError ? e.code : "network";
+    logger.warn(
+      "tts: audio check unavailable (%s), sending the audio unchecked: %s",
+      code,
+      e instanceof Error ? e.message : String(e),
+    );
+    if (params.flow) {
+      emitFlowEvent(params.flow, {
+        stage: "tts_check",
+        level: "warn",
+        status: "error",
+        durationMs: Date.now() - start,
+        detail: {
+          mode: params.check.mode,
+          attempt: params.attempt,
+          outcome: "unavailable",
+          reason: code,
+        },
+        // NOTE: our own closed wording, never the thrown message: a network failure carries the
+        // runtime's text, and the column promises no words we did not choose (docs/logs.md). The
+        // full message is in the process log above.
+        errorMessage: `audio check unavailable (${code})`,
+      });
+    }
+    return null;
+  }
+}
+
+// The verdict line. Ids, numbers and enums only, like every `detail`: the detector's `verdict` is
+// admitted only slug-shaped (check.ts), and nothing it sends besides the three fields is read at all,
+// so no words from the audio or the reply can reach the execution log through it.
+function reportCheck(
+  flow: FlowContext | undefined,
+  check: TtsCheckConfig,
+  c: CheckAnswer,
+  attempt: number,
+  outcome: CheckOutcome,
+): void {
+  if (!flow) return;
+  emitFlowEvent(flow, {
+    stage: "tts_check",
+    // warn whenever the audio was corrupted, whatever was done about it: that is the line an alert
+    // channel subscribes to, and a regeneration that saved the reply still means the provider
+    // produced a broken audio.
+    level: c.verdict.corrupted ? "warn" : "info",
+    status: "ok",
+    durationMs: c.durationMs,
+    detail: {
+      mode: check.mode,
+      attempt,
+      outcome,
+      corrupted: c.verdict.corrupted,
+      score: c.verdict.score,
+      verdict: c.verdict.verdict,
+    },
+  });
 }

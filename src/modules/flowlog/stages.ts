@@ -30,6 +30,10 @@ export const FLOW_STAGES = [
   "tool", // a tool call the agent made during the turn (name + status + duration)
   "normalize", // the reply rewritten for speech before synthesis (its own model call)
   "tts", // audio-reply synthesis
+  // The detector's verdict on a synthesized audio (issue #779): passed, regenerated, rejected (the
+  // reply went as text), or sent corrupted in shadow mode. Its own stage so an alert channel can
+  // subscribe to broken audio without subscribing to every synthesis.
+  "tts_check",
   "split", // humanized balloon delivery
   "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)

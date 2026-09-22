@@ -18,6 +18,9 @@ shouldReplyWithAudio(mode, userSentAudio, contactVoiceReply)
      provider.synthesize (key from vault) → Ogg/Opus bytes (WhatsApp voice-note format)
         │  (null/throw → fall back to a text reply; audio is best-effort)
         ▼
+   audio check (TTS_CHECK_MODE): off │ shadow (not awaited, a log line) │
+     enforce (corrupted → synthesize again, ≤2 times, then null → text)
+        ▼
    client.sendAudioMessage  (multipart voice note, bot token, is_recorded_audio,
                              attachments_metadata[file][transcribed_text] = the reply text)
 ```
@@ -107,8 +110,24 @@ What is left is the conversation itself, in two forms:
 
 On an upstream Chatwoot a later audit therefore has nowhere to read the words, and that is a limit rather than an oversight: putting them anywhere durable on our side is a conversation-content store with its own retention and access decision, not a line in a log.
 
+## Checking the audio (`TTS_CHECK_*`, issue #779)
+
+A synthesis sometimes comes back broken while the text that went in was fine: a stretch of voice that forms no word, a continuous hum with no speech, or digital silence in the middle of the sentence. Measured over thousands of audio replies per deployment, roughly 1 in 100. Nothing on the send path notices, so the customer receives it.
+
+The check is a **separate HTTP service the operator runs**, and `src/modules/tts/check.ts` is all the agents side knows about it: `POST {TTS_CHECK_URL}/v1/check`, multipart with `audio` (the synthesized file, named `reply.ogg`/`.wav`/`.aac` so the detector can pick the decoder), `text` (the reply as the agent wrote it) and `speech` (what went to the synthesizer, after the speech rewrite), plus `Authorization: Bearer {TTS_CHECK_TOKEN}` when a token is set. It answers `{ corrupted: boolean, score?: 0..1, verdict?: one of TTS_CHECK_VERDICTS }`. The detector owns every threshold (it calibrates against the deployment's own traffic), so no number here can drift. It is a service and not code in this process because the same check has to run for deployments that generate audio outside the agents (n8n), and because the ASR it needs is heavy: measured on 4 CPU cores, 5 to 7s and 2.2 GB of RAM per audio with the model the detector was calibrated on. An answer without a boolean `corrupted` is **unreadable, not clean**.
+
+Three modes (`TTS_CHECK_MODE`), deployment-wide:
+
+- **`off`** (no URL): the detector is never called.
+- **`shadow`** (a URL and no mode): the check runs on the synthesized audio **without being awaited**, so the send never waits on it and nothing about the reply changes. The verdict becomes a `tts_check` line. This is how a deployment measures its real rate and the detector's latency before deciding anything.
+- **`enforce`**: the reply waits for the verdict. A corrupted audio is synthesized again, up to `MAX_TTS_REGENERATIONS` (2) times, and if the third one is still corrupted `synthesizeReply` returns null, which every caller already turns into a **text reply**. A regeneration repeats **only the synthesis**, never the speech rewrite, which is a billed model call whose output did not change; it works because the provider gets no seed, so the same words come back as different audio. Before each regeneration the runtime's `writeCalledOff` is asked, so a turn that was called off does not pay for one more synthesis, and a known-corrupted audio is never handed back.
+
+**A detector that fails never costs the reply**, in any mode: down, slower than `TTS_CHECK_TIMEOUT_MS` (default 20s, and the deadline covers the body too), a non-2xx or an unreadable body sends the audio unchecked and writes a `tts_check` line at `warn` with `outcome: "unavailable"` and a closed `reason` (`network`, `timeout`, `http_status`, `malformed`).
+
+**The `tts_check` line** is its own stage so an alert channel can subscribe to broken audio without subscribing to every synthesis: `{mode, attempt, outcome, corrupted, score, verdict}`, where `outcome` is `passed`, `regenerated`, `rejected` (the reply goes out as text), `called_off` (the turn was called off before a regeneration, so none ran) or `flagged` (shadow: corrupted, and not held back). It names what the check did, never whether the reply was then sent: the send is the caller's, and a turn can still be called off or a send fail afterwards. It is at `warn` whenever the audio was corrupted, whatever was done about it. `verdict` is admitted only from a closed vocabulary (`TTS_CHECK_VERDICTS`: `ok`, `balbucio`, `zumbido`, `buraco_mudo`, `suspeita_alta`, `palavra_dificil`, `nao_confirmado`; anything else becomes null, since a slug pattern would still admit a phone number), and nothing else the detector sends is read, so no words from the reply or from the audio reach the execution log through it (the PII contract in `logs.md`). Each `tts` line also carries `detail.attempt`, so the syntheses of one reply can be told apart. The check runs wherever `synthesizeReply` runs, the playground included.
+
 ## Configuration
 
-Per-agent, in `agent.settings.tts` (`readTtsConfig`): `mode` (`never`|`mirror`|`preference`, default `never`), `provider` (default `openai`), `model` (`""` → provider default), `voice` (`""` → provider default; required for ElevenLabs), `credentialRef` (a `vault:<id>` ref), `normalize` (`boolean`, default `false`; LLM text-for-speech normalization that reads numbers/dates/abbreviations naturally in any language, see above). Surfaced in the agent editor's **Behavior** tab and writable over REST + MCP (`agent_settings_get`/`agent_settings_set`, the `tts` block; the MCP transport translates the `vault:<id>` ref to/from the entry **name** at its boundary, never the secret). No env vars — the key is a per-tenant vault secret.
+Per-agent, in `agent.settings.tts` (`readTtsConfig`): `mode` (`never`|`mirror`|`preference`, default `never`), `provider` (default `openai`), `model` (`""` → provider default), `voice` (`""` → provider default; required for ElevenLabs), `credentialRef` (a `vault:<id>` ref), `normalize` (`boolean`, default `false`; LLM text-for-speech normalization that reads numbers/dates/abbreviations naturally in any language, see above). Surfaced in the agent editor's **Behavior** tab and writable over REST + MCP (`agent_settings_get`/`agent_settings_set`, the `tts` block; the MCP transport translates the `vault:<id>` ref to/from the entry **name** at its boundary, never the secret). No env vars for the synthesis itself — the key is a per-tenant vault secret. The one deployment-wide setting is the audio check above (`TTS_CHECK_URL`, `TTS_CHECK_MODE`, `TTS_CHECK_TOKEN`, `TTS_CHECK_TIMEOUT_MS`), because the detector is infrastructure the operator runs, like the database.
 
 Read before touching `src/modules/tts/*`, `client.sendAudioMessage`, the `set_voice_preference` tool, or the reply-modality branch in `runLoadedTurn`.

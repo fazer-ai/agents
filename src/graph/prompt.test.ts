@@ -115,3 +115,52 @@ describe("interpolatePromptVars message age", () => {
     expect(age(undefined as unknown as null, "{{message_age}}")).toBe("");
   });
 });
+
+// The DATE the customer wrote, which is a different question from how long ago. An agent told only
+// "há 9 dias" still has to subtract to know which day "hoje" meant in the message, and measured on
+// the Guichê Web e-mail agent it does not: asked to do that subtraction it answered with TODAY's
+// date as the event's. The cases below fence the three things that made the phrase insufficient —
+// the day is the customer's, the zone is the one the clock variables use, and no instant is empty.
+describe("interpolatePromptVars message date", () => {
+  const now = new Date("2026-09-21T12:00:00-03:00");
+  const tz = "America/Sao_Paulo";
+  const at = (messageAt: Date | null, tpl = "{{data_ultima_mensagem}}") =>
+    interpolatePromptVars(tpl, {}, { now, messageAt, timezone: tz });
+
+  // THE POINT OF THE VARIABLE: nine days old, and what comes back is the day the customer wrote,
+  // never the day the prompt is being rendered. A renderer that answered `now` would pass every
+  // other case here and reintroduce the exact defect.
+  it("answers the day the customer wrote, not today", () => {
+    expect(at(new Date("2026-09-12T14:46:00-03:00"))).toBe("12/09/2026 14:46");
+    expect(at(new Date("2026-09-12T14:46:00-03:00"))).not.toContain("21/09");
+  });
+
+  // Same zone as {{hora_atual}} and friends: a prompt that dates the message in UTC next to a local
+  // clock is reporting two zones, and the model reconciles that by inventing.
+  it("renders in the prompt's timezone, not UTC", () => {
+    // 01:30Z on the 13th is still the 12th, 22:30, in São Paulo.
+    expect(at(new Date("2026-09-13T01:30:00Z"))).toBe("12/09/2026 22:30");
+  });
+
+  it("accepts a format like the clock variables", () => {
+    expect(
+      at(
+        new Date("2026-09-12T14:46:00-03:00"),
+        "{{data_ultima_mensagem:DD/MM}}",
+      ),
+    ).toBe("12/09");
+  });
+
+  // Empty, not "now" and not a literal `{{...}}`, for the callers with no triggering message
+  // (compaction, the observer, the playground) — the same rule the age variable follows.
+  it("renders empty when the instant is unknown", () => {
+    expect(at(null)).toBe("");
+    expect(at(undefined as unknown as null, "{{message_date}}")).toBe("");
+  });
+
+  it("answers the English spelling too", () => {
+    expect(at(new Date("2026-09-12T14:46:00-03:00"), "{{message_date}}")).toBe(
+      "12/09/2026 14:46",
+    );
+  });
+});

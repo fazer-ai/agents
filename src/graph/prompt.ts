@@ -302,6 +302,21 @@ const MESSAGE_AGE_VARS: Record<string, "pt-BR" | "en"> = {
   message_age: "en",
 };
 
+// WHEN the customer wrote, as a date rather than an elapsed phrase. The age above answers "how long
+// ago" and that is not the same question: an agent told only "9 days ago" still has to subtract to
+// know what day the customer meant, and it does not — measured on the Guichê Web e-mail agent in
+// 21/09/2026, a prompt that asked for exactly that subtraction turned the customer's "the event is
+// today" into "the event is on 21/09/2026", which is TODAY's date asserted as the event's, in the
+// reply AND in the note the human agent then acts on. Forbidding the model to write any date it did
+// not read instead halved the legitimate dates (the deadlines the prompt requires it to quote), so
+// neither wording works: what is missing is the instant itself, which the renderer has had all
+// along and was spending only on the phrase. Same emptiness rule as the age: a caller with no
+// triggering message resolves it to "" rather than to an invented day.
+const MESSAGE_DATE_VARS: Record<string, { defaultFormat: string }> = {
+  data_ultima_mensagem: { defaultFormat: "DD/MM/YYYY HH:mm" },
+  message_date: { defaultFormat: "DD/MM/YYYY HH:mm" },
+};
+
 // Replaces ONLY allowlisted {{placeholders}}; an unknown one is left untouched (the tenant sees its
 // own literal, never a leak/empty). Static values are pre-sanitized by buildPromptVars; time
 // variables are computed from `opts.now` (default: real now) in `opts.timezone`.
@@ -345,6 +360,21 @@ export function interpolatePromptVars(
         // a literal `{{...}}` the model reads as text.
         return wrap(
           renderMessageAge(opts.messageAt, opts.now ?? new Date(), ageLang),
+          key,
+        );
+      }
+      const dateVar = MESSAGE_DATE_VARS[key];
+      if (dateVar) {
+        // Rendered in the SAME `tz` as the clock variables above, on purpose: a prompt that says the
+        // message arrived at 21:40 and that it is now 19:35 is reporting two zones, not a delay, and
+        // the model reconciles that by inventing. Empty without an instant, like the age.
+        return wrap(
+          opts.messageAt
+            ? formatParts(
+                partsInTimezone(opts.messageAt, tz),
+                fmt?.trim() || dateVar.defaultFormat,
+              )
+            : "",
           key,
         );
       }
@@ -392,6 +422,10 @@ export const PROMPT_SCHEDULE_VARS_DISPLAY = [
 // spelling still interpolates, and offering both would read as two variables rather than one concept
 // with two spellings.
 export const PROMPT_MESSAGE_AGE_VARS_DISPLAY = ["idade_ultima_mensagem"];
+
+// The message-date variable for the editor's "insert variable" helper, same one-name-per-concept
+// rule as the others: the EN spelling still interpolates.
+export const PROMPT_MESSAGE_DATE_VARS_DISPLAY = ["data_ultima_mensagem"];
 
 // The instant the editor's preview pretends the customer wrote at, so `{{idade_ultima_mensagem}}`
 // renders a phrase instead of the empty string an operator would read as "this does not work".

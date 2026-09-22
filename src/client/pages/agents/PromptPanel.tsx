@@ -13,6 +13,7 @@ import {
   interpolatePromptVars,
   PROMPT_CONTEXT_VARS,
   PROMPT_MESSAGE_AGE_VARS_DISPLAY,
+  PROMPT_MESSAGE_DATE_VARS_DISPLAY,
   PROMPT_PREVIEW_CONTACT,
   PROMPT_PREVIEW_MESSAGE_AGE_MS,
   PROMPT_SCHEDULE_VARS_DISPLAY,
@@ -255,6 +256,7 @@ export function PromptPanel({
                 ...PROMPT_TIME_VARS_DISPLAY,
                 ...PROMPT_SCHEDULE_VARS_DISPLAY,
                 ...PROMPT_MESSAGE_AGE_VARS_DISPLAY,
+                ...PROMPT_MESSAGE_DATE_VARS_DISPLAY,
               ].map((v) => (
                 <button
                   key={v}

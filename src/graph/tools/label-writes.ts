@@ -16,9 +16,13 @@
 // string this fence exists to keep out (review round 2).
 //
 // So the entry counts. `added`/`removed` are how many moved and `after` is how many the scope
-// carries, which answers how often an observation replaces a classification; WHICH labels those were
-// is a question for an operator-declared taxonomy, which does not exist yet (follow-up issue), and
-// until then for the conversation itself.
+// carries, which answers how often an observation replaces a classification.
+//
+// WITH AN OPERATOR-DECLARED LIST (`settings.setLabels.allowed`, issue #638) it also NAMES what moved,
+// and only what the list holds: `addedTitles`/`removedTitles` are the moved labels that are in the
+// list, and a title the operator wrote is operator configuration, not message text. A title outside
+// the list is still the model's string and is never written here; under `accept` it is COUNTED
+// (`outsideAllowed`). Without a list the entry is the same four counts it always was.
 
 export type LabelScope = "conversation" | "contact" | "task";
 
@@ -28,6 +32,11 @@ export interface LabelWrite {
   removed: number;
   // How many labels the scope carries after the write, of everything this tool can see.
   after: number;
+  // Present only when the agent declares a list (issue #638): the moved labels that are IN it.
+  addedTitles?: string[];
+  removedTitles?: string[];
+  // How many labels went in from outside the list under `accept`. Absent when none did.
+  outsideAllowed?: number;
 }
 
 export type LabelWriteReporter = (write: LabelWrite) => void;
@@ -37,11 +46,24 @@ export function describeLabelWrite(
   added: readonly string[],
   removed: readonly string[],
   after: readonly string[],
+  list?: {
+    allowed?: readonly string[];
+    acceptedOutside?: readonly string[];
+  },
 ): LabelWrite {
+  const allowed = new Set(list?.allowed ?? []);
+  const outside = list?.acceptedOutside?.length ?? 0;
   return {
     scope,
     added: added.length,
     removed: removed.length,
     after: after.length,
+    ...(allowed.size > 0
+      ? {
+          addedTitles: added.filter((l) => allowed.has(l)),
+          removedTitles: removed.filter((l) => allowed.has(l)),
+        }
+      : {}),
+    ...(outside > 0 ? { outsideAllowed: outside } : {}),
   };
 }

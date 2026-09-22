@@ -1,6 +1,8 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import {
+  readAllowedLabels,
+  readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
 } from "@/modules/agents/tool-guidance";
@@ -88,7 +90,11 @@ export interface BehaviorSettings {
   // thing from outside.
   kanban: ReturnType<typeof readKanbanConfig>;
   toolGuidance: ReturnType<typeof readToolGuidance>;
-  setLabels: { protected: ReturnType<typeof readProtectedLabels> };
+  setLabels: {
+    protected: ReturnType<typeof readProtectedLabels>;
+    allowed: ReturnType<typeof readAllowedLabels>;
+    outsideAllowed: ReturnType<typeof readOutsideAllowedLabels>;
+  };
   toolPreconditions: ReturnType<typeof readToolPreconditions>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
 }
@@ -160,7 +166,11 @@ export function readBehaviorSettings(
     modelFallback: readModelFallbackConfig(settings),
     kanban: readKanbanConfig(settings),
     toolGuidance: readToolGuidance(settings),
-    setLabels: { protected: readProtectedLabels(settings) },
+    setLabels: {
+      protected: readProtectedLabels(settings),
+      allowed: readAllowedLabels(settings),
+      outsideAllowed: readOutsideAllowedLabels(settings),
+    },
     toolPreconditions: readToolPreconditions(settings),
     monitoring: readMonitoringConfig(settings),
   };

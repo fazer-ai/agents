@@ -20,6 +20,8 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
 import {
+  readAllowedLabels,
+  readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
 } from "@/modules/agents/tool-guidance";
@@ -283,6 +285,10 @@ export interface AgentConfig {
   // sees" — a protected label is shown and refused by name). See readProtectedLabels for why an
   // operator control label is not the classifier's to touch.
   protectedLabels: string[];
+  // The labels set_labels may ADD and what a title outside them meets (issue #638). Empty ⇒ any
+  // title, the behaviour before the list existed. See readAllowedLabels.
+  allowedLabels: string[];
+  outsideAllowedLabels: "refuse" | "accept";
   // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
   toolPreconditions: Record<string, ToolPrecondition>;
@@ -866,6 +872,8 @@ export async function loadAgentConfig(
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
     protectedLabels: readProtectedLabels(effSettings),
+    allowedLabels: readAllowedLabels(effSettings),
+    outsideAllowedLabels: readOutsideAllowedLabels(effSettings),
     toolPreconditions: readToolPreconditions(effSettings),
     httpToolContext: {
       ...(conv?.contact?.chatwootContactId != null
@@ -1056,6 +1064,8 @@ export interface ToolBuildDeps {
         task?: string[];
       };
       protectedLabels?: string[];
+      allowedLabels?: string[];
+      outsideAllowedLabels?: "refuse" | "accept";
       expiresOn?: AbortSignal;
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
@@ -1405,6 +1415,8 @@ export async function buildToolset(
       vocab,
       shownLabels,
       protectedLabels: cfg.protectedLabels,
+      allowedLabels: cfg.allowedLabels,
+      outsideAllowedLabels: cfg.outsideAllowedLabels,
       // The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,

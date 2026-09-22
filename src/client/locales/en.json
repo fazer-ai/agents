@@ -871,6 +871,10 @@
     "pro": "Pro"
   },
   "editor": {
+    "allowedLabels": "Labels it may add",
+    "allowedLabelsHint": "Optional, comma-separated. The only labels this agent may add; removing any label is still allowed. Empty: any label, and one the account does not have is created.",
+    "allowedLabelsPlaceholder": "e.g. cancelamento, compra-de-ingresso, outros",
+    "allowedLabelsTooMany": "Labels it may add takes at most {{max}} labels.",
     "always": "Always on",
     "attributeContext": "Data in context",
     "attributeContextContact": "Contact",
@@ -1230,6 +1234,8 @@
     "identitySection": "Identity",
     "identitySectionHint": "Name, system prompt and whether the agent is active.",
     "importWarning": {
+      "allowedLabelsClipped_one": "The bundle carried more than {{max}} labels the agent may add, so {{count}} of them was dropped on import.",
+      "allowedLabelsClipped_other": "The bundle carried more than {{max}} labels the agent may add, so {{count}} of them were dropped on import.",
       "codeGrantAmbiguous": "{{n}} code tools here answer to the name \"{{name}}\", so the grant was skipped rather than bound to one of them. Rename them apart and grant it by hand.",
       "codeGrantNotFound": "Code tool \"{{name}}\" was not found, so its grant was skipped.",
       "codeToolAmbiguous": "{{n}} code tools here already answer to the name \"{{name}}\", so the bundled tool was not imported. Rename them apart and import again.",
@@ -1366,6 +1372,9 @@
     "observationWindow": "Messages read",
     "observationWindowHint": "The newest messages the model reads on each pass. {{min}}-{{max}}.",
     "openPlayground": "Test in playground",
+    "outsideAllowedLabels": "A label outside the list",
+    "outsideAllowedLabelsAccept": "Is written, and counted in the logs",
+    "outsideAllowedLabelsRefuse": "Is refused and not written",
     "overwriteAnyway": "Save anyway",
     "proactiveSection": "Proactive messages",
     "proactiveSectionHint": "Reach out first when a conversation goes silent. On WhatsApp, a message sent outside the 24h window needs an approved template (HSM).",

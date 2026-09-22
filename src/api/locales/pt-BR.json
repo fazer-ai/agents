@@ -218,6 +218,7 @@
     "toolGrantUnknownTool": "Ferramenta {{source}} desconhecida: {{tool}}.",
     "toolNameReserved": "Esse nome é de uma ferramenta nativa; escolha outro.",
     "toolNameTaken": "Este nome de ferramenta já está em uso.",
+    "tooManyAllowedLabels": "`Etiquetas que pode acrescentar` aceita no máximo {{max}} etiquetas.",
     "tooManyProtectedLabels": "`Etiquetas fora do alcance` aceita no máximo {{max}} etiquetas.",
     "unauthorized": "Não autorizado",
     "unknownDeliveryStatus": "Status de entrega desconhecido: {{status}}",

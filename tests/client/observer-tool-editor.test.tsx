@@ -116,6 +116,10 @@ function renderEditor(observing: boolean) {
               labelInstructions=""
               protectedLabels=""
               setProtectedLabels={noop}
+              allowedLabels=""
+              setAllowedLabels={noop}
+              outsideAllowedLabels="refuse"
+              setOutsideAllowedLabels={noop}
               setLabelInstructions={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}
@@ -253,6 +257,10 @@ function renderToolsTab(
               setLabelInstructions={noop}
               protectedLabels=""
               setProtectedLabels={noop}
+              allowedLabels=""
+              setAllowedLabels={noop}
+              outsideAllowedLabels="refuse"
+              setOutsideAllowedLabels={noop}
               updateKanbanTaskInstructions=""
               setUpdateKanbanTaskInstructions={noop}
               toolPreconditions={rows as never}

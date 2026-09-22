@@ -156,6 +156,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
       id,
       stale.claimSeq,
       before.attempts,
+      "WEBHOOK_RETRY",
       "boom",
       appDb,
     );
@@ -176,6 +177,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
       id,
       current.claimSeq,
       before.attempts,
+      "WEBHOOK_RETRY",
       "boom",
       appDb,
     );

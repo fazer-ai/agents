@@ -272,6 +272,7 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
       id,
       claimed?.claimSeq ?? 0,
       claimed?.attempts ?? 0,
+      "WEBHOOK_RETRY",
       `provider said ${NUL} nothing`,
       appDb,
     );
@@ -308,6 +309,7 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
       id,
       claimed?.claimSeq ?? 0,
       4,
+      "WEBHOOK_RETRY",
       `provider said ${NUL} nothing`,
       appDb,
     );

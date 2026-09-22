@@ -340,6 +340,11 @@ export async function knowledgeDocumentUpdate(
   if (args.title === undefined && args.text === undefined) {
     return err("nothing to update: pass title and/or text");
   }
+  const bad = unstorable([
+    ["title", args.title],
+    ["text", args.text],
+  ]);
+  if (bad) return bad;
   try {
     const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;

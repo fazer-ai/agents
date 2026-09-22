@@ -240,6 +240,19 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
     }
   });
 
+  // Review round 1: the apply refuses a NUL or a lone surrogate, so the preview must too, or it
+  // approves an edit that cannot happen.
+  test("a text the column cannot hold is refused by the preview, not only by the apply", async () => {
+    for (const bad of [{ text: "a\u0000b" }, { title: "x\uD800" }]) {
+      const r = await knowledgeDocumentUpdate(
+        principal(tenantId),
+        { document_id: String(doc), ...bad },
+        deps(),
+      );
+      expect(r.ok).toBe(false);
+    }
+  });
+
   // The service re-embeds only a text that moved, so the preview must not promise more.
   test("a preview with the current text does not promise a re-index", async () => {
     const row = await suDb.knowledgeDocument.findUniqueOrThrow({

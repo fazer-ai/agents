@@ -295,6 +295,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     status?: string;
     assignee?: { type: string; id: number } | null;
     recentSendIds?: string[];
+    filler?: number;
   }) {
     const sent: {
       conv: number;
@@ -318,17 +319,36 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
           assignee_type: opts.assignee?.type ?? null,
           assignee_id: opts.assignee?.id ?? null,
         }),
-        getMessages: async () => ({
-          payload: (opts.recentSendIds ?? []).map((id, i) => ({
-            id: 70_000 + i,
-            content: REPLY,
-            message_type: 1,
-            private: false,
-            created_at: Math.floor(Date.now() / 1000),
-            sender: { type: "agent_bot", id: BOT_ID },
-            content_attributes: { fazer_ai_send_id: id },
-          })),
-        }),
+        // Pages the way Chatwoot does: the latest ~20, or the ~20 older than `before`. The thread is
+        // the failed voice note, `filler` newer messages, and the named sends.
+        getMessages: async (_c: number, o?: { before?: number }) => {
+          const thread = [
+            { id: 9001, sendId: null as string | null },
+            ...Array.from({ length: opts.filler ?? 0 }, (_, i) => ({
+              id: 10_000 + i,
+              sendId: null as string | null,
+            })),
+            ...(opts.recentSendIds ?? []).map((sendId, i) => ({
+              id: 9_500 + i,
+              sendId,
+            })),
+          ]
+            .sort((a, b) => a.id - b.id)
+            .filter((m) => o?.before === undefined || m.id < o.before);
+          return {
+            payload: thread.slice(-20).map((m) => ({
+              id: m.id,
+              content: REPLY,
+              message_type: 1,
+              private: false,
+              created_at: Math.floor(Date.now() / 1000),
+              sender: { type: "agent_bot", id: BOT_ID },
+              content_attributes: m.sendId
+                ? { fazer_ai_send_id: m.sendId }
+                : {},
+            })),
+          };
+        },
         sendMessage: async (
           conv: number,
           text: string,
@@ -392,10 +412,60 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(cw.sent).toEqual([]);
   });
 
-  test("a conversation a person took in the meantime gets nothing from the bot", async () => {
+  test("a rerun finds its earlier send even when newer messages pushed it off the latest page", async () => {
+    const found = fakeChatwoot({
+      recentSendIds: ["media-fallback:9001"],
+      filler: 45,
+    });
+    await mediaFallbackHandler(await claimed(9001), appDb, found.makeClient);
+    expect(found.sent).toEqual([]);
+    // ...and the same busy conversation with no earlier send does get the text: reaching the failed
+    // message is what proves there is none.
+    const absent = fakeChatwoot({ filler: 45 });
+    await mediaFallbackHandler(await claimed(9001), appDb, absent.makeClient);
+    expect(absent.sent).toHaveLength(1);
+    // Too busy to reach the failed message at all: nothing, rather than a possible duplicate.
+    const lost = fakeChatwoot({ filler: 200 });
+    await mediaFallbackHandler(await claimed(9001), appDb, lost.makeClient);
+    expect(lost.sent).toEqual([]);
+  });
+
+  test("an agent switched off or an account disconnected while the job waited sends nothing", async () => {
+    const agentRow = await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: false },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentRow.id },
+        data: { enabled: true },
+      });
+    }
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: new Date() },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.chatwootInstance.update({
+        where: { id: instanceId },
+        data: { disconnectedAt: null },
+      });
+    }
+  });
+
+  test("a conversation a person or another bot took in the meantime gets nothing from this bot", async () => {
     for (const state of [
       { status: "open" },
       { status: "pending", assignee: { type: "User", id: 3 } },
+      { status: "pending", assignee: { type: "AgentBot", id: 99 } },
     ]) {
       const cw = fakeChatwoot(state);
       const out = await mediaFallbackHandler(

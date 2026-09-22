@@ -113,6 +113,10 @@ async function agentBehindBot(
   return bot?.agentId ?? null;
 }
 
+// How far back a rerun looks for its own earlier send. A page is ~20 messages, so this is a
+// conversation that moved on by about a hundred messages since the voice note failed.
+const FALLBACK_READBACK_MAX_PAGES = 5;
+
 export function mediaFallbackDedupeKey(messageId: number): string {
   return `msg:${messageId}`;
 }
@@ -212,18 +216,26 @@ export async function mediaFallbackHandler(
   const text = decryptJson<string>(job.payloadSecret);
   // The bot the failed message came from, by the id the conversation knows it by, so the text goes
   // out under the same identity the audio did.
+  // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
+  // switches the agent off or disconnects the account, and the bot's stored token outlives both. The
+  // bot is found by the id the conversation knows it by, so the text goes out under the same identity
+  // the audio did.
   const bot = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
     db.chatwootAgentBot.findFirst({
       where: {
         chatwootInstanceId: instanceId,
         chatwootAgentBotId: agentBotId,
       },
-      select: { accessToken: true },
+      select: {
+        accessToken: true,
+        agent: { select: { enabled: true } },
+        instance: { select: { disconnectedAt: true } },
+      },
     }),
   );
-  if (!bot) {
+  if (!bot?.agent.enabled || bot.instance.disconnectedAt !== null) {
     logger.warn(
-      "media fallback: the bot %s is gone from instance %s, the text is not sent",
+      "media fallback: bot %s on instance %s is gone, off or disconnected, the text is not sent",
       String(agentBotId),
       String(instanceId),
     );
@@ -243,7 +255,8 @@ export async function mediaFallbackHandler(
   );
   if (!live)
     throw new Error("media fallback: the conversation could not be read");
-  if (!shouldBotHandle(live)) {
+  // With THIS bot's id: a conversation handed to another bot is not ours either.
+  if (!shouldBotHandle(live, { ourAgentBotId: agentBotId })) {
     logger.info(
       "media fallback: conversation %s is no longer the bot's, the text is not sent",
       String(conversationId),
@@ -252,14 +265,33 @@ export async function mediaFallbackHandler(
   }
   // THE SEND CARRIES A NAME, and a retry looks for it before sending again. The row is armed once,
   // but the HANDLER can run twice: a POST that landed and whose response was lost, or a crash between
-  // the send and `completeJob`, both come back here. The name is derived from the failed message, so
-  // every run of this job looks for the same one. The read is of the latest page, which is where a
-  // send from seconds ago sits; a read that fails THROWS, for the same reason as above.
+  // the send and `completeJob`, both come back here, and the second one only after the stale-claim
+  // interval, when newer messages may have pushed the first send off the latest page. So the read
+  // pages back to the FAILED message, which the text can only have followed. A read that fails
+  // THROWS, for the same reason as above; a conversation too busy to reach that boundary within the
+  // page ceiling sends nothing, because a text that late is worth less than a duplicate costs.
   const sendId = `media-fallback:${messageId}`;
-  const recent = parseChatwootMessages(
-    await client.getMessages(conversationId),
-  );
-  if (recent.some((m) => m.sendId === sendId)) return { outcome: "done" };
+  let before: number | undefined;
+  for (let page = 0; ; page++) {
+    if (page === FALLBACK_READBACK_MAX_PAGES) {
+      logger.warn(
+        "media fallback: could not reach message %s in conversation %s, the text is not sent",
+        String(messageId),
+        String(conversationId),
+      );
+      return { outcome: "done" };
+    }
+    const rows = parseChatwootMessages(
+      await client.getMessages(
+        conversationId,
+        before === undefined ? undefined : { before },
+      ),
+    );
+    if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
+    const oldest = rows[0]?.id;
+    if (oldest === undefined || oldest <= messageId) break;
+    before = oldest;
+  }
   await client.sendMessage(conversationId, text, { sendId });
   return { outcome: "done" };
 }

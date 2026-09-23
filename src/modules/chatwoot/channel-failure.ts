@@ -236,10 +236,16 @@ export async function mediaFallbackHandler(
     messageId === null
   )
     return { outcome: "done" };
-  // THROWS on a missing or unreadable body, like the ingestion job: a real failure retries and then
-  // dead-letters visibly, instead of sending nothing and calling it done.
-  if (job.payloadSecret == null)
-    throw new Error("media fallback: the job carries no text");
+  // An UNREADABLE body throws (decrypt below), like the ingestion job: a real failure retries and
+  // then dead-letters visibly. No body is a `/reset` having forgotten it (a DONE row is never claimed again), so there is
+  // nothing to send and nothing to retry.
+  if (job.payloadSecret == null) {
+    logger.info(
+      "media fallback: job %s carries no text (forgotten by a reset), nothing is sent",
+      String(job.id),
+    );
+    return { outcome: "done" };
+  }
   const text = decryptJson<string>(job.payloadSecret);
   // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
   // switches the agent off, flips it to monitoring, disconnects the account or `/reset`s the
@@ -405,10 +411,16 @@ export async function mediaFallbackHandler(
       },
       { skipExperiment: true },
     );
-    return cfg ?? "the agent is off, monitoring or unloadable";
+    if (!cfg) return "the agent is off, monitoring or unloadable";
+    return { cfg, chatwootInboxId: inbox.chatwootInboxId };
   });
   if (typeof gate === "string") return stop(gate);
-  const cfg = gate;
+  const { cfg } = gate;
+  // The inbox the binding above was read for is the MIRROR's, and a transfer to another inbox can
+  // reach Chatwoot before its webhook reaches the mirror. The live read is the newer word: an inbox
+  // that differs is a binding nobody here has read, so nothing goes out under the old persona.
+  if (live.inboxId !== null && live.inboxId !== gate.chatwootInboxId)
+    return stop("the conversation moved to another inbox");
 
   // SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
   // replacement is not (docs/signature.md).
@@ -424,8 +436,9 @@ export async function mediaFallbackHandler(
 // belongs to the episode the command closed, and the job's own reset fence would stop it anyway), and
 // every one of them, DEAD included, loses the body while keeping its row: the key is the dedupe a
 // redelivered failure lands on, the body is a customer's words that the reset promised to forget.
-// A CLAIMED one is left to its own fence, which reads the reset before it sends and whose completion
-// clears the body.
+// A CLAIMED one loses its body too: its handler already holds the text and reads the reset before it
+// sends, and a claim that later dies must not keep the words the reset promised to forget. A run that
+// comes back to a row with no body finds nothing to send and finishes.
 export async function forgetMediaFallbacks(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -436,7 +449,6 @@ export async function forgetMediaFallbacks(params: {
     db.schedulerJob.updateMany({
       where: {
         kind: "MEDIA_TEXT_FALLBACK",
-        status: { not: "CLAIMED" },
         AND: [
           {
             payload: {

@@ -308,6 +308,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     emptyPage?: boolean;
     onRead?: () => Promise<void>;
     onLive?: () => Promise<void>;
+    liveInbox?: number;
   }) {
     const sent: {
       conv: number;
@@ -323,6 +324,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
           await opts.onLive?.();
           return {
             id: CONV_ID,
+            inbox_id: opts.liveInbox ?? INBOX_ID,
             status: opts.status ?? "pending",
             meta: {
               assignee: opts.assignee
@@ -453,6 +455,21 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     await expect(
       mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient),
     ).rejects.toThrow();
+    expect(cw.sent).toEqual([]);
+  });
+
+  test("a conversation Chatwoot already moved to another inbox gets nothing under the old persona", async () => {
+    const cw = fakeChatwoot({ liveInbox: INBOX_ID + 1 });
+    await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+    expect(cw.sent).toEqual([]);
+  });
+
+  test("a job whose body a reset forgot finishes without sending", async () => {
+    const job = { ...(await claimed(9001)), payloadSecret: null };
+    const cw = fakeChatwoot({});
+    expect(await mediaFallbackHandler(job, appDb, cw.makeClient)).toEqual({
+      outcome: "done",
+    });
     expect(cw.sent).toEqual([]);
   });
 
@@ -704,6 +721,13 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       where: { id: dead.id },
       data: { status: "DEAD" },
     });
+    await deliver(updated(9032));
+    const [running] = await jobsFor(9032);
+    if (!running) throw new Error("the job was not armed");
+    await suDb.schedulerJob.update({
+      where: { id: running.id },
+      data: { status: "CLAIMED" },
+    });
     await suDb.agent.update({ where: { id: agentId }, data: { mode: "test" } });
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: CONV_ID },
@@ -739,6 +763,10 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(pending?.payloadSecret).toBeNull();
     expect(after?.status).toBe("DEAD");
     expect(after?.payloadSecret).toBeNull();
+    // A claimed one keeps its claim and loses its body: whatever becomes of the claim, the words go.
+    const claimedRow = (await jobsFor(9032))[0];
+    expect(claimedRow?.status).toBe("CLAIMED");
+    expect(claimedRow?.payloadSecret).toBeNull();
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: CONV_ID },
       data: { resetAtMessageId: null, testActivatedAt: null },

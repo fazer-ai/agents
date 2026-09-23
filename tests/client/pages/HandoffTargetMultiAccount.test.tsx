@@ -14,6 +14,7 @@ import { ToastProvider } from "@/client/components/Toast";
 import { AuthProvider } from "@/client/contexts/AuthContext";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
+import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
 import { observationToForm } from "@/client/pages/agents/observationFormState";
 import { ToolGrantsEditor } from "@/client/pages/agents/ToolGrantsEditor";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
@@ -100,6 +101,7 @@ function renderContactAuth(
   // stream of writes instead of one — and a run that loops is not a run that proved anything.
   function Harness() {
     const [contactAuth, setContactAuth] = useState({
+      ...EMPTY_CONTACT_AUTH_RULE_FORM,
       enabled: true,
       url: "https://gate.example.com/authorize",
       credentialRef: "",

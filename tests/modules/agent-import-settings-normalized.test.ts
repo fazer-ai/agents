@@ -438,6 +438,31 @@ describe.skipIf(!dbUp)("an imported settings bag create would refuse", () => {
     expect(modelOnly.stored?.modelFallback).toEqual({});
   });
 
+  // Issue #646: the contact gate's local rule, which create refuses and the reader drops. Carried in
+  // silently it reads as a list in the bundle and as no rule at runtime. A valid one is kept.
+  test("a contact-gate rule that cannot parse is dropped and named, a valid one is kept", async () => {
+    const bad = await importWith({
+      contactAuth: {
+        enabled: true,
+        rule: { kind: "allowlist", phones: ["123"] },
+      },
+    });
+    expect(bad.dropped).toEqual(["contactAuth.rule"]);
+    expect(
+      (bad.stored?.contactAuth as Record<string, unknown>)?.rule,
+    ).toBeUndefined();
+    const good = await importWith({
+      contactAuth: {
+        enabled: true,
+        rule: { kind: "allowlist", phones: ["+5511988887777"] },
+      },
+    });
+    expect(good.dropped).toEqual([]);
+    expect((good.stored?.contactAuth as Record<string, unknown>)?.rule).toEqual(
+      { kind: "allowlist", phones: ["+5511988887777"] },
+    );
+  });
+
   // Whole, never one field of it: taking out only the `equals` of the wrong type would turn "the
   // attribute must be X", which the runtime ignores, into "the attribute must exist".
   test("a tool guard that cannot parse is dropped whole, and a valid one under a renamed native is kept", async () => {

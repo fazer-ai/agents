@@ -71,6 +71,8 @@ import {
   authorizeContact,
   type ContactAuthOutcome,
   contactAuthFlowEvent,
+  RULE_NOT_LISTED,
+  RULE_UNMET,
 } from "@/modules/contact-auth/service";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
@@ -2417,6 +2419,16 @@ export function contactAuthNoteText(
       // problem that does not exist on the second one.
       failed: " O aviso de recusa NÃO chegou ao contato.",
     }[copy];
+    // A local rule refused (issue #646): no endpoint was asked, so "external check" would send the
+    // operator to a service that never saw this contact. The note names the rule instead, and says
+    // which of its two questions failed, in words, rather than our code.
+    const ruleLine =
+      verdict.reason === RULE_NOT_LISTED
+        ? "🔒 Contato não autorizado pela regra do agente: o telefone e o identificador do contato não estão na lista."
+        : verdict.reason === RULE_UNMET
+          ? "🔒 Contato não autorizado pela regra do agente: o atributo exigido não está como a regra pede."
+          : null;
+    if (ruleLine) return `${ruleLine}${copyLine}${handoffLine}`;
     return `🔒 Contato não autorizado pela verificação externa.${reason}${copyLine}${handoffLine}`;
   }
   const cause =
@@ -4295,6 +4307,7 @@ async function maybeConsumeCommandOrGate(params: {
         tenantId,
         agentId,
         contactDbId: ctx.conv.contactId,
+        conversationDbId: ctx.conv.id,
         conversationId,
         inboxId: ctx.inboxChatwootId,
         channelType: ctx.channelType,

@@ -987,6 +987,7 @@ export async function runAgentNudge(
       tenantId,
       agentId: cfg.agentId,
       contactDbId: cfg.contactDbId,
+      conversationDbId: cfg.conversationDbId,
       conversationId,
       inboxId: loaded.chatwootInboxId,
       channelType: loaded.channelType,

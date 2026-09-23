@@ -366,6 +366,45 @@ function markable(v: unknown): Record<string, unknown> {
 // module. `auditMutation` bounds sizes and repairs what the column refuses; it does not know that an
 // endpoint can carry its own credential, and the create/clone/import/delete rows project a `name`
 // that an operator is free to make one.
+// The contact gate's allowlist is a list of PEOPLE (issue #646): phones and identifiers. The trail
+// is append-only, so a number projected here would outlive its removal from the list, which is the
+// opposite of what removing it meant. The rule is recorded by its shape (the kind, how many of each)
+// and, when the entries moved without the counts moving, by a marker saying they did.
+function redactContactAuthRule(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): void {
+  const ruleOf = (block: unknown): Record<string, unknown> | null => {
+    const r =
+      block && typeof block === "object"
+        ? (block as Record<string, unknown>).rule
+        : null;
+    return r && typeof r === "object" && !Array.isArray(r)
+      ? (r as Record<string, unknown>)
+      : null;
+  };
+  const rb = ruleOf(before.contactAuth);
+  const ra = ruleOf(after.contactAuth);
+  const entries = (r: Record<string, unknown> | null, k: string) =>
+    Array.isArray(r?.[k]) ? (r?.[k] as unknown[]) : null;
+  const moved =
+    JSON.stringify([entries(rb, "phones"), entries(rb, "identifiers")]) !==
+    JSON.stringify([entries(ra, "phones"), entries(ra, "identifiers")]);
+  for (const [block, r] of [
+    [before.contactAuth, rb],
+    [after.contactAuth, ra],
+  ] as const) {
+    if (r?.kind !== "allowlist") continue;
+    const shape: Record<string, unknown> = {
+      kind: "allowlist",
+      phones: entries(r, "phones")?.length ?? 0,
+      identifiers: entries(r, "identifiers")?.length ?? 0,
+    };
+    if (moved) shape.entriesChanged = true;
+    (block as Record<string, unknown>).rule = shape;
+  }
+}
+
 export function auditSafe(v: unknown): unknown {
   return dropUnvouchableUrls(v);
 }
@@ -404,6 +443,7 @@ export function agentUpdateAudit(
       );
       beforeProj.settings = diff.before;
       afterProj.settings = diff.after;
+      redactContactAuthRule(diff.before, diff.after);
     } else if (canonMoved) {
       beforeProj[field] = canonB;
       afterProj[field] = canonA;

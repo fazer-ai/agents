@@ -1,5 +1,9 @@
 import { clipText } from "@/lib/text";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
+import {
+  parseToolPrecondition,
+  type ToolPrecondition,
+} from "@/modules/agents/tool-preconditions";
 
 // Per-agent contact authorization gate, read from the free-form `agent.settings.contactAuth` bag
 // (same pattern as availability / limits). Some agents may only serve contacts that a system outside
@@ -19,8 +23,113 @@ import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 // afterwards without the endpoint having to remember them.
 export type ContactAuthMode = "perMessage" | "once";
 
+// A verdict the runtime reaches from data it already holds, instead of asking an endpoint (issue
+// #646). For the rules whose answer is in our own tables (a pilot list of numbers, a mirrored
+// attribute), an operator-hosted service is pure cost: TLS, a vault credential, a timeout budget on
+// the webhook path, and an availability dependency, because a fail-closed gate whose endpoint is down
+// stops answering customers.
+//
+// TYPED, for the reason tool-preconditions.ts gives: the gate decides whether the turn happens at
+// all, and it is fail-closed, so every way a rule could fail to answer would be a refused customer.
+// A closed set of conditions always terminates and always answers. The attribute condition IS the
+// precondition's, parsed by the same function, so an operator who learned one surface learned both.
+export type ContactAuthRule =
+  // The contact's mirrored phone (compared by digits, so `+55 (11) 9...` and `5511 9...` are one
+  // number) or its operator identifier is on the list.
+  | { kind: "allowlist"; phones: string[]; identifiers: string[] }
+  | ToolPrecondition;
+
+// A list the operator types into a text box, and every entry is compared on every message: bounded
+// so a paste of a whole CRM cannot turn a settings bag into a table. Past a few hundred numbers the
+// list lives in a system, and that system is what `url` is for.
+export const CONTACT_AUTH_ALLOWLIST_MAX = 500;
+export const CONTACT_AUTH_ALLOWLIST_ENTRY_MAX = 200;
+// A phone of fewer digits than this is not a phone the mirror holds (E.164 numbers with country code
+// are 8-15 digits), and a short entry is the one that would match by accident if the comparison were
+// ever loosened. Refused at the write, dropped by the reader.
+export const CONTACT_AUTH_PHONE_MIN_DIGITS = 8;
+export const CONTACT_AUTH_PHONE_MAX_DIGITS = 15;
+// The editor's text boxes, one entry per line: room for a full list of entries at their widest
+// (a formatted phone runs to about 25 characters), and not a byte more.
+export const CONTACT_AUTH_PHONES_TEXT_MAX = CONTACT_AUTH_ALLOWLIST_MAX * 26;
+export const CONTACT_AUTH_IDENTIFIERS_TEXT_MAX =
+  CONTACT_AUTH_ALLOWLIST_MAX * (CONTACT_AUTH_ALLOWLIST_ENTRY_MAX + 1);
+
+export function phoneDigits(v: string): string {
+  return v.replace(/\D+/g, "");
+}
+
+function normalizedPhone(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const digits = phoneDigits(v);
+  return digits.length >= CONTACT_AUTH_PHONE_MIN_DIGITS &&
+    digits.length <= CONTACT_AUTH_PHONE_MAX_DIGITS
+    ? digits
+    : null;
+}
+
+// A line break inside an identifier is refused: the editor holds the list one entry per line, so an
+// identifier carrying one would come back from the editor as two, each authorizing somebody else.
+function normalizedIdentifier(v: unknown): string | null {
+  const s = str(v);
+  return s && s.length <= CONTACT_AUTH_ALLOWLIST_ENTRY_MAX && !/[\r\n]/.test(s)
+    ? s
+    : null;
+}
+
+function entries(
+  v: unknown,
+  normalize: (x: unknown) => string | null,
+): string[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) return null;
+  const out = new Set<string>();
+  for (const x of v) {
+    const n = normalize(x);
+    if (n === null) return null;
+    out.add(n);
+  }
+  return [...out];
+}
+
+// Strict, both at the write (invalidContactAuthRule) and here: a rule that "sort of" parses is worse
+// than none, because the operator would read the gate as a list while the runtime reads it as open.
+// A malformed rule reads as ABSENT, and an enabled gate with neither a rule nor a url is the
+// fail-closed `not_configured` it always was, never an open door.
+export function parseContactAuthRule(raw: unknown): ContactAuthRule | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.kind === "allowlist") {
+    const phones = entries(r.phones, normalizedPhone);
+    const identifiers = entries(r.identifiers, normalizedIdentifier);
+    if (!phones || !identifiers) return null;
+    // An empty list is a gate that refuses everybody. That is expressible (turn the agent off, or
+    // leave the rule out and let `not_configured` refuse), and as a rule it is almost always a save
+    // made before the list was typed, so it is refused rather than honoured.
+    if (phones.length + identifiers.length === 0) return null;
+    if (phones.length + identifiers.length > CONTACT_AUTH_ALLOWLIST_MAX) {
+      return null;
+    }
+    return { kind: "allowlist", phones, identifiers };
+  }
+  return parseToolPrecondition(raw);
+}
+
+// The write boundary's question: is there a rule that the reader would drop? Absent and null are not
+// refusals (null clears the rule).
+export function invalidContactAuthRule(raw: unknown): boolean {
+  return (
+    raw !== undefined && raw !== null && parseContactAuthRule(raw) === null
+  );
+}
+
 export interface ContactAuthConfig {
   enabled: boolean;
+  // The local rule, when the verdict comes from data we already hold (issue #646). EITHER this or
+  // `url`: with a rule set the endpoint is never called, so a rule and a url together mean the rule.
+  // A rule is always evaluated per message and never stores a grant: a stored verdict exists to
+  // spare somebody's endpoint, and a rule reads our own rows.
+  rule: ContactAuthRule | null;
   // The authorization endpoint: a fixed origin, no placeholders (the identity travels in the body).
   // https in production; http only where the SSRF guard allows private targets, the same rule HTTP
   // tools follow. null = not configured, which an enabled gate treats as an error (fail-closed).
@@ -66,6 +175,7 @@ export interface ContactAuthConfig {
 
 export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   enabled: false,
+  rule: null,
   url: null,
   credentialRef: null,
   timeoutMs: 5000,
@@ -136,6 +246,7 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
     // Strict boolean, like the availability switch: a malformed write can only ever leave the gate
     // off, never start refusing customers nobody asked it to.
     enabled: b.enabled === true,
+    rule: parseContactAuthRule(b.rule),
     url: readContactAuthUrl(b.url),
     credentialRef: str(b.credentialRef),
     timeoutMs: clampInt(

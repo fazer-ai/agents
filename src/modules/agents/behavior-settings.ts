@@ -242,6 +242,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // Nothing that used to work changes shape; only the runaway stops.
 const MERGE_MAX_DEPTH = 8;
 
+// Fields inside a block that the merge replaces whole instead of descending into.
+const ATOMIC_FIELDS: Record<string, readonly string[]> = {
+  contactAuth: ["rule"],
+};
+
 function mergeBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
@@ -348,6 +353,20 @@ export function mergeBehaviorSettings(
     next[key] = TOOL_KEYED_BLOCKS.has(key)
       ? mergeToolKeyedBlock(before, sub)
       : mergeBlock(before, sub);
+    // A value that is ONE decision is replaced, never merged into (issue #646 review). The contact
+    // gate's rule is tagged by `kind`: merged, a new key kept the old rule's `equals`, and a list
+    // switched to an attribute kept its phones beside it, so the rule a caller wrote was not the rule
+    // stored.
+    const atomic = ATOMIC_FIELDS[key];
+    if (atomic) {
+      for (const field of atomic) {
+        if (Object.hasOwn(sub, field)) {
+          (next[key] as Record<string, unknown>)[field] = (
+            sub as Record<string, unknown>
+          )[field];
+        }
+      }
+    }
   }
 
   // Re-read through the typed readers to clamp/validate, then write the normalized blocks back.

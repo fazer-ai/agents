@@ -107,6 +107,7 @@
     "invalidColorMode": "Modo de cor inválido",
     "invalidColorToken": "Cor inválida",
     "invalidCompanyField": "Este campo do perfil da empresa não é válido: {{reason}}",
+    "invalidContactAuthRule": "A regra de autorização do contato é inválida: uma lista precisa de 1 a 500 itens, telefones com 8 a 15 dígitos (com o código do país) e identificadores de até 200 caracteres; uma regra por atributo precisa de um escopo e de uma chave.",
     "invalidCredentialKind": "Esta configuração exige uma credencial do tipo {{kind}}.",
     "invalidCredentialRef": "A referência da credencial não é válida.",
     "invalidCredentials": "Email ou senha inválidos",

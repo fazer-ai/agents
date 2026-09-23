@@ -1,4 +1,5 @@
 import type { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
+import { EMPTY_CONTACT_AUTH_RULE_FORM } from "@/client/pages/agents/contactAuthRuleForm";
 import { observationToForm } from "@/client/pages/agents/observationFormState";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
 
@@ -69,6 +70,7 @@ export function behaviorTabProps(
     sttCredBaseUrl: null,
     contactAuth: {
       enabled: false,
+      ...EMPTY_CONTACT_AUTH_RULE_FORM,
       url: "",
       credentialRef: "",
       timeoutMs: "5000",

@@ -120,11 +120,9 @@ async function sweepHandler(
   //
   // NOTE: `cfg.enabled` first, and it is not redundant. An agent whose follow-up is OFF can still
   // carry a step-0 exemption from when it was on, and `appointmentPauseApplies` would answer about
-  // it — correctly, since it decides the pause and nothing else. Exempting it would lift the fence
-  // for an agent that sends nothing: the sweep's SQL never tests `followUp.enabled` (it tests
-  // `follow_up_armed_at`, which is stamped on the OFF→ON transition and never cleared going back),
-  // so those conversations would be enqueued every minute for the handler to discard on its first
-  // look, each one holding a slot of the LIMIT 500 away from an agent that would actually send.
+  // it — correctly, since it decides the pause and nothing else. The sweep now selects only agents
+  // whose follow-up is on (below), so an exemption from an OFF agent would reach no row; the filter
+  // stays so this list says what it means on its own.
   const unfencedAgentIds = configs
     .filter(
       ({ cfg }) => cfg.enabled && !appointmentPauseApplies(cfg, cfg.steps[0]),
@@ -136,6 +134,16 @@ async function sweepHandler(
   const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
     unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
   )}]::bigint[]`;
+  // THE AGENTS WHOSE FOLLOW-UP IS ON, and only those are swept (issue #796). The SQL tests
+  // `follow_up_armed_at`, which is stamped on the OFF→ON transition and never cleared going back, so
+  // an agent switched off kept every one of its conversations in the selection: armed each minute,
+  // claimed, and dropped by the handler's first look, forever, each holding a slot of the LIMIT 500.
+  // Read from the same `cfg.enabled` that computes the cutoff above, so the two cannot disagree.
+  // Never empty here: the early return above left when no agent has follow-up on.
+  const followUpAgentIds = configs
+    .filter(({ cfg }) => cfg.enabled)
+    .map(({ id }) => id);
+  const followUpIdsSql = Prisma.sql`ARRAY[${Prisma.join(followUpAgentIds)}]::bigint[]`;
 
   // NOTE: column-to-column comparison (lastInboundAt > lastFollowUpAt) requires raw SQL;
   // Prisma's query builder cannot express it. The filter mirrors the handler's watermark gate
@@ -151,17 +159,32 @@ async function sweepHandler(
       FROM conversations c
       JOIN inboxes i ON i.id = c.inbox_id
       JOIN agents a ON a.id = i.agent_id
+      -- The bot this agent answers as on this Chatwoot, for the ownership clause below. LEFT: an
+      -- agent whose bot row is missing keeps the old reading rather than losing its conversations.
+      LEFT JOIN chatwoot_agent_bots b
+        ON b.agent_id = a.id
+       AND b.chatwoot_instance_id = c.chatwoot_instance_id
       WHERE c.tenant_id = ${tenantId}
         AND c.status = 'pending'
         -- NOTE: Bot-owned = anything but a human, mirroring shouldBotHandle: NULL (unassigned — Chatwoot
         -- < 4.16.2, Dialogflow-style hooks) AND 'AgentBot' (the NORMAL state since Chatwoot 4.16.2
         -- auto-assigns the connected bot at conversation creation). IS DISTINCT FROM because
-        -- NULL <> 'User' evaluates to NULL. A foreign bot's AgentBot is deliberately NOT filtered
-        -- here: the nudge's own ownership gate (assignee bot id vs ours) re-checks before invoking
-        -- the model, so a rare false positive costs one no-op job cycle.
+        -- NULL <> 'User' evaluates to NULL.
         AND c.assignee_type IS DISTINCT FROM 'User'
+        -- AND NOT ANOTHER BOT'S, the rest of shouldBotHandle (heldByAnotherParty): an AgentBot
+        -- assignee whose id is known and is not ours (issue #796). This used to be left to the
+        -- nudge's live gate on the reasoning that a false positive costs one no-op job cycle; it
+        -- costs one every minute, forever, because the gate's stale outcome stamps nothing and the row is
+        -- still selected on the next pass.
+        AND NOT (
+          c.assignee_type = 'AgentBot'
+          AND c.assignee_id IS NOT NULL
+          AND b.chatwoot_agent_bot_id IS NOT NULL
+          AND c.assignee_id <> b.chatwoot_agent_bot_id
+        )
         AND c.inbox_id IS NOT NULL
         AND a.enabled = true
+        AND a.id = ANY(${followUpIdsSql})
         -- The same arms isFollowUpLive has (followups/eligibility.ts): a monitoring agent chases
         -- nobody, and excluding it HERE is what keeps its silent conversations from filling the
         -- batch the handler would only drop — LIMIT below is over eligible rows or it is nothing.
@@ -281,6 +304,10 @@ async function sweepHandler(
       // completes, which is what clears the count for the next episode.
       rearm: "same-work",
       payload: { threadId: t.thread_id },
+      // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
+      // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
+      // run every minute, and the retry count the backoff was keeping was replaced with it.
+      leaveLaterRuns: true,
       base,
     });
   }

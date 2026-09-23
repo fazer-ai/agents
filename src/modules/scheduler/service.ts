@@ -304,8 +304,15 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
 //
 // Two statements, since Prisma has no conditional upsert: the UPDATE re-checks its WHERE under the
 // row lock, so a claim that commits first makes it match nothing, and the INSERT then skips.
+//
+// NOR OVER A RUN ALREADY SCHEDULED FOR LATER, when the caller asks (issue #796). A PENDING row whose
+// `run_at` is still ahead was put there by its handler on purpose — a retry backoff, business hours,
+// the cadence of a step that is not due yet — and the re-arm would pull it back to now and replace its
+// payload, which drops the retry count the backoff was keeping. For a clock that re-pushes the same
+// episode every minute that turned each of those deferrals into a run every minute. A row that is
+// already due, finished, or absent is armed as before.
 export async function enqueueJobUnlessClaimed(
-  params: EnqueueParams,
+  params: EnqueueParams & { leaveLaterRuns?: boolean },
 ): Promise<boolean> {
   const base = params.base ?? basePrisma;
   const { create, update } = jobRowWrites(params);
@@ -316,6 +323,11 @@ export async function enqueueJobUnlessClaimed(
         kind: params.kind,
         dedupeKey: params.dedupeKey,
         status: { not: "CLAIMED" },
+        ...(params.leaveLaterRuns
+          ? {
+              NOT: { status: "PENDING", runAt: { gt: new Date() } },
+            }
+          : {}),
       },
       data: update,
     });

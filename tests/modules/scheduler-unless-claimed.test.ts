@@ -163,6 +163,51 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     expect(r.payload).toEqual({ v: "running", stepIndex: 0 });
   });
 
+  // `leaveLaterRuns` (issue #796): uma linha PENDING com `run_at` no futuro foi adiada pelo handler de
+  // propósito, e o arme da varredura não a puxa de volta nem troca o payload dela. Uma já vencida,
+  // uma terminada e uma ausente se armam como antes.
+  test("leaveLaterRuns keeps a PENDING row scheduled for later, and arms every other state", async () => {
+    const { id } = await row();
+    const later = new Date(Date.now() + 10 * 60_000);
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: {
+        status: "PENDING",
+        runAt: later,
+        payload: { v: "handler", nudgeRetries: 2 },
+      },
+    });
+    expect(
+      await enqueueJobUnlessClaimed({
+        ...arm(new Date()),
+        leaveLaterRuns: true,
+      }),
+    ).toBe(false);
+    const kept = await row();
+    expect(kept.runAt.getTime()).toBe(later.getTime());
+    expect(kept.payload).toEqual({ v: "handler", nudgeRetries: 2 });
+
+    for (const [status, runAt] of [
+      ["PENDING", new Date(Date.now() - 1_000)],
+      ["DONE", later],
+      ["DEAD", later],
+    ] as const) {
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: { status, runAt, payload: { v: "handler" } },
+      });
+      expect(
+        await enqueueJobUnlessClaimed({
+          ...arm(new Date()),
+          leaveLaterRuns: true,
+        }),
+      ).toBe(true);
+      const r = await row();
+      expect(r.status).toBe("PENDING");
+      expect(r.payload).toEqual({ v: "sweep" });
+    }
+  });
+
   // O outro lado do raio: quem arma pelo `enqueueJob` continua suplantando a execução em voo. A
   // rajada que continua uma janela de debounce depende disso para a mensagem nova não se perder.
   test("enqueueJob still re-arms a CLAIMED row, which is what every other caller relies on", async () => {

@@ -77,8 +77,12 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // preference. The optional "ft:" reads through a fine-tune to its base model ("ft:<base>:<org>:<name>:<id>"),
 // which is what actually decides the parameter rules — and since DEFAULT_MODEL_CONFIG ships a
 // temperature, a fine-tune of a reasoning model was the DEFAULT config, not an exotic one.
+// The gpt-6 family reasons too (issue #804, measured on gpt-6-luna on 2026-09-23: "'temperature'
+// does not support 0.7 with this model. Only the default (1) value is supported."). It is matched
+// with a boundary, so "gpt-60" and "gpt-6x" keep the operator's temperature, and with the same
+// "-chat" carve-out.
 const REASONING_MODEL_RE =
-  /^(?:ft:)?(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5(?!-chat))/i;
+  /^(?:ft:)?(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5(?!-chat)|gpt-6(?:[.-]|$)(?!chat))/i;
 
 function openaiTemperature(
   model: string,

@@ -12,6 +12,11 @@
 // | /v1/chat/completions | low..max         | 400 EVERYWHERE, including gpt-5.4-mini and gpt-5.5   |
 // | /v1/responses        | absent, none..max| 200 everywhere                                       |
 //
+// Measured again on 2026-09-23 on `gpt-6-luna` (issue #804): the same table. An absent effort with
+// tools is a 400 on completions (its server-side default is not "none" either), "none" is a 200, and
+// the Responses endpoint takes every effort except "minimal". So the gpt-6 family joins the pattern
+// below.
+//
 // The rejection reads "Function tools with reasoning_effort are not supported for <model> in
 // /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to
 // 'none'." So the ceiling is the ENDPOINT's, not the family's: on completions the only effort that
@@ -48,12 +53,13 @@ export const REASONING_EFFORTS = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-// NOTE: matches a bare id ("gpt-5.6-luna"), a routed one ("openai/gpt-5.6-luna", OpenRouter) and a
-// fine-tuned one ("ft:gpt-5.6-luna:acme::x1"), which inherits the base model's server-side default
-// and so inherits the rejection too. "gpt-5.60", "gpt-5.6x" and "not-gpt-5.6-luna" deliberately do
-// not match.
+// NOTE: matches a bare id ("gpt-5.6-luna", "gpt-6-luna"), a routed one ("openai/gpt-6-luna",
+// OpenRouter) and a fine-tuned one ("ft:gpt-6-luna:acme::x1"), which inherits the base model's
+// server-side default and so inherits the rejection too. A point release of gpt-6 ("gpt-6.1-luna")
+// is the same family. "gpt-5.60", "gpt-5.6x", "gpt-60", "gpt-6x" and "not-gpt-6-luna" deliberately
+// do not match.
 const DEFAULT_EFFORT_REJECTS_TOOLS_RE =
-  /^(?:ft:)?(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
+  /^(?:ft:)?(?:[\w.-]+\/)?gpt-(?:5\.6(?:-|$)|6(?:[.-]|$))/i;
 
 export interface OpenAITransportPlan {
   // The Responses endpoint instead of Chat Completions. Carries reasoning together with function

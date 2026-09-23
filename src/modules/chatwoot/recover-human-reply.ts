@@ -756,9 +756,12 @@ export async function recoverStrandedHumanReply(
       responder.botId,
       conversationId,
       { id: messageId, column: "humanReply" },
-      // No emission clock survives on the row, so the receipt dates it, as on a live delivery whose
-      // payload names none.
-      null,
+      // WHEN CHATWOOT EMITTED IT, which is when it chose the recipients (review r1). The message read
+      // back above carries its own `created_at`, and that is the clock the live path reads from the
+      // payload; the receipt is the fallback only where the page names none. Dated by the receipt, a
+      // reply emitted before the responder was bound and delivered to the observer after it read as
+      // covered, and was filed under a responder that never received it.
+      messageCreatedAt(message),
       base,
     ));
   const owner =
@@ -821,6 +824,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function readMessagePage(raw: unknown): unknown[] | null {
   if (Array.isArray(raw)) return raw;
   if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload;
+  return null;
+}
+
+// Chatwoot's REST page dates a message in epoch seconds; an ISO string is read as well, and anything
+// else is no clock at all, which leaves the caller on the receipt.
+function messageCreatedAt(message: Record<string, unknown>): Date | null {
+  const v = message.created_at;
+  if (typeof v === "number" && Number.isFinite(v)) return new Date(v * 1000);
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? null : new Date(t);
+  }
   return null;
 }
 

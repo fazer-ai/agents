@@ -641,7 +641,7 @@ describe("MCP tool descriptions", () => {
   // base's fields. Base 30,729 and 58,187, this tree 30,773 and 58,273, so 30,788 and 58,289 with the
   // same 15 and 16. What the switch does is on the REST field and the console, not repeated here.
   // SCHEMA RAISED again by `contactAuth.rule` (#646), the same 665 characters as the
-  // agent_settings_set ceiling above, on top of the #747 raise.
+  // agent_settings_set ceiling above, on top of the #747 raise: this tree measures 58,950.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -651,7 +651,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_788);
-    expect(schema).toBeLessThanOrEqual(1);
+    expect(schema).toBeLessThanOrEqual(58_966);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

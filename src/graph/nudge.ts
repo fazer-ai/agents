@@ -846,21 +846,12 @@ export async function runAgentNudge(
   //
   // Before the spend ceiling, since it spends nothing: a tenant over its ceiling still owes the person
   // the report, and the delivery is marked processed either way, so a note skipped here is lost.
-  if (
-    params.nudge.framing === "operator_event" &&
-    !params.requireLiveBotOwnership &&
-    !shouldBotHandle(
-      {
-        assigneeType: loaded.assigneeType,
-        status: loaded.status,
-        assigneeId: loaded.assigneeId,
-      },
-      {
-        ourAgentBotId: cfg.agentBotId,
-        alsoResolved: params.deliverToResolved,
-      },
-    )
-  ) {
+  //
+  // One writer for every place a person turns out to hold the conversation: here, a takeover during
+  // the contact-authorization call, and one during the model call (review round 2). Each of those
+  // used to end `silent` or as the model's own note, and the report went with it.
+  const operatorEvent = params.nudge.framing === "operator_event";
+  const noteOperatorEvent = async (): Promise<RunAgentNudgeOutcome> => {
     const text = params.nudge.text
       ? sanitizeFreeBlock(params.nudge.text, GENERIC_TEXT_MAX_CHARS)
       : "";
@@ -876,6 +867,23 @@ export async function runAgentNudge(
     );
     markFollowUp("noted");
     return "noted";
+  };
+  if (
+    operatorEvent &&
+    !params.requireLiveBotOwnership &&
+    !shouldBotHandle(
+      {
+        assigneeType: loaded.assigneeType,
+        status: loaded.status,
+        assigneeId: loaded.assigneeId,
+      },
+      {
+        ourAgentBotId: cfg.agentBotId,
+        alsoResolved: params.deliverToResolved,
+      },
+    )
+  ) {
+    return noteOperatorEvent();
   }
 
   // THE TENANT'S OWN CEILING, asked here for the reason the line above states: before any model
@@ -1069,7 +1077,7 @@ export async function runAgentNudge(
             }),
           };
     });
-  const toolFence = withOwnershipFence(() => stillWanted(), {
+  const ownershipFence = withOwnershipFence(() => stillWanted(), {
     // A follow-up that may only NOTE started on a conversation that is not the bot's, and keeps
     // doing what it did: what the fence detects is the owner changing during the run.
     //
@@ -1085,7 +1093,8 @@ export async function runAgentNudge(
     ownerChangedByThisTurn: () => ownerChangedByTurn(handoffState),
     ownsNow: mirrorOwnsIt,
     conversationId,
-  }).ask;
+  });
+  const toolFence = ownershipFence.ask;
 
   // Asked once before the send and once after moderation, which is why it is a closure and not two
   // reads: the answer has to be produced the same way both times, or the second one would be a
@@ -1263,11 +1272,19 @@ export async function runAgentNudge(
     // A TAKEOVER is what this is looking for, which is why it sits under `canMessagePre`: a
     // conversation that was already the human's before the call has not changed hands, and its
     // private-note path is not something to fence.
-    if ((await botStillOwnsIt().catch(() => "unavailable")) !== "ours") {
+    const ownsAfterAuth = await botStillOwnsIt().catch(
+      () => "unavailable" as const,
+    );
+    if (ownsAfterAuth !== "ours") {
       logger.info(
         "agentNudge: a human took the conversation during the authorization call (conv=%s)",
         String(conversationId),
       );
+      // A confirmed takeover still owes the person an operator's event; an unanswered probe does not
+      // say who holds it, so it stays silent like every other event.
+      if (operatorEvent && ownsAfterAuth === "not-ours") {
+        return noteOperatorEvent();
+      }
       return "silent";
     }
     // The facts the endpoint volunteered about this contact, for this turn's prompt. A proactive
@@ -2195,7 +2212,14 @@ export async function runAgentNudge(
   // this turn would advance the ladder and leave its own refusal in shared history (issue #449,
   // review round 5). Before `drafted`, which is the first line that treats the empty turn as a
   // result.
-  if (turnWasCalledOff(result.messages)) return refuse(standDown());
+  if (turnWasCalledOff(result.messages)) {
+    // Called off by a PERSON taking the conversation (the fence remembers which read refused), not
+    // by a retirement: an operator's event then goes to that person, as at the other takeover ends.
+    if (operatorEvent && ownershipFence.lost() !== null) {
+      return refuse(await noteOperatorEvent());
+    }
+    return refuse(standDown());
+  }
 
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
@@ -2251,6 +2275,11 @@ export async function runAgentNudge(
     // private note instead, which is the shape it has always had.
     if (owned === "not-ours" && params.requireLiveBotOwnership)
       return refuse("stale");
+    // A person took an operator's event over while the model wrote it: the model's words come back
+    // out of the thread (the customer never got them), and the event reaches the person as it came.
+    if (owned === "not-ours" && operatorEvent) {
+      return refuse(await noteOperatorEvent());
+    }
     canMessagePost = owned === "ours";
   }
 

@@ -938,6 +938,77 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // ISSUE #717, on the follow-up: a person taking the conversation over while the follow-up's model
   // runs. Every ask the job makes is about the job; this one is about the owner, and the flip lands
   // inside the model call, which is the window.
+  // Issue #818, review round 2. The event started on the bot's conversation and a person took it
+  // over while the model wrote the relay: the model's words never reached the customer, and the
+  // report reaches the person as it came instead of vanishing with them. With and without a tool
+  // call in the model's answer, since the tool fence and the post-model probe are two different ends.
+  for (const withTool of [false, true]) {
+    test(`an operator event taken over during the model call becomes the person's note (tool call: ${withTool})`, async () => {
+      const convId = withTool ? 9819 : 9818;
+      await seedConv(convId, null, new Date(), convId + 1000);
+      const s = stub();
+      let rounds = 0;
+      class TakeoverDuringRelay extends BaseChatModel {
+        constructor() {
+          super({});
+        }
+        _llmType() {
+          return "fake-takeover-during-relay";
+        }
+        async _generate(): Promise<ChatResult> {
+          rounds += 1;
+          if (rounds === 1) {
+            await suDb.conversation.updateMany({
+              where: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: convId,
+              },
+              data: { status: "open", assigneeType: "User", assigneeId: 5 },
+            });
+          }
+          const message =
+            withTool && rounds === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "set_labels",
+                      args: { add: ["relatorio"], scope: "conversation" },
+                      id: `call_818_${convId}`,
+                    },
+                  ],
+                })
+              : new AIMessage("Entraram 120 de 400.");
+          return { generations: [{ text: "", message }] };
+        }
+      }
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: {
+          source: "GENERIC",
+          kind: "agent_nudge",
+          framing: "operator_event",
+          text: "Entraram 120 de 400.",
+        },
+        deliverToResolved: true,
+        base: appDb,
+        deps: {
+          makeModel: () => new TakeoverDuringRelay(),
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("noted");
+      expect(s.messages).toEqual([]);
+      expect(s.notes.map(([, t]) => t)).toEqual([
+        `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
+      ]);
+    });
+  }
+
   test("a person taking over during the model call stops the follow-up's tools", async () => {
     const contactInboxId = 8892;
     await seedConv(9717, null, new Date(), contactInboxId);

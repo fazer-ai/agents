@@ -11,7 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { runAgentNudge } from "@/graph/nudge";
+import { OPERATOR_EVENT_NOTE_PREFIX, runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -512,6 +512,49 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(auth.calls).toHaveLength(1);
     expect(modelBuilds).toBe(0);
     expect(s.messages).toEqual([]);
+  });
+
+  // Issue #818, review round 2: the same takeover under an OPERATOR'S event leaves the report with
+  // the person, as it came, instead of ending silent with the report gone.
+  test("a human taking over during the authorization call gets an operator event as a note", async () => {
+    await seedConv(9431);
+    const s = stub();
+    let modelBuilds = 0;
+    const takeOverThenAllow = (async () => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 9431 },
+        data: { assigneeType: "User", assigneeId: 51, status: "open" },
+      });
+      return new Response('{"authorized":true}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9431`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        framing: "operator_event",
+        text: "Entraram 120 de 400.",
+      },
+      deliverToResolved: true,
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          modelBuilds += 1;
+          return new FakeListChatModel({ responses: ["não devia sair"] });
+        },
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        contactAuthFetch: takeOverThenAllow,
+      },
+    });
+    expect(outcome).toBe("noted");
+    expect(modelBuilds).toBe(0);
+    expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual([
+      `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
+    ]);
   });
 
   // A proactive turn benefits from the endpoint's facts the same way a reactive one does, and the

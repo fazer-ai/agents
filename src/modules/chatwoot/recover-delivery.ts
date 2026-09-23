@@ -600,14 +600,12 @@ async function runRecovery(params: {
     // which spends the recovery's budget over a page nothing was going to read.
     // ...and what the catch-up read found is part of the answer (PR #821, review round 3): a newer
     // reaction the default page leaves out is still the customer writing again, and a replay that
-    // missed it would answer the older one after the fact. Only a read that ran dry, though (round
-    // 4): a full one stops short of the newest page, and merged it would put the stranded id inside
-    // what was "seen" while a newer message sat unread in the gap. Left out, the newest page's own
-    // coverage check answers, and the message is more than a page behind.
+    // missed it would answer the older one after the fact. A read that came back FULL is refused
+    // below before it is trusted as coverage.
     recent = replayPosts
       ? mergeById(
           parseChatwootMessages(await client.getMessages(conversationId)),
-          caughtUp.length < CATCH_UP_PAGE ? caughtUp : [],
+          caughtUp,
         )
       : [];
   } catch (e) {
@@ -684,6 +682,19 @@ async function runRecovery(params: {
   // What it owes is the words reaching memory, and an ingest job carries its own message and nothing
   // else — so a customer who wrote again does not cover this one, exactly as above.
   if (replayPosts) {
+    // A FULL CATCH-UP READ (PR #821, review rounds 4 and 5): a hundred messages at or past this one,
+    // so the read stops short of the newest page and cannot say what sits in the gap. Merged as
+    // coverage it would hide a newer message there; discarded, it would hide the newer reactions it
+    // did carry. Either way the message is a hundred behind, which is further than the page rule
+    // below answers, so it is not answered.
+    if (caughtUp.length >= CATCH_UP_PAGE) {
+      logger.info(
+        "chatwoot recovery: %s has a full catch-up read behind it on conversation %d; not answered",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unrecoverable";
+    }
     const oldestSeen = recent.reduce<number | null>(
       (a, m) => (a === null || m.id < a ? m.id : a),
       null,

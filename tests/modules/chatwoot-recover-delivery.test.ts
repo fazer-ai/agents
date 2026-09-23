@@ -756,6 +756,46 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
+  // PR #821, review round 5: the other half. A full read of newer REACTIONS the default page leaves
+  // out, over a newest page that reaches below the stranded one: the page alone would look covered
+  // and fresh, and the reactions the read carried are what says the customer went on.
+  test("a full catch-up read of newer reactions refuses the replay", async () => {
+    const convId = 8750;
+    const messageId = 9850;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const older = pageWith([{ id: messageId - 5, content: "obrigada!" }]);
+    const caught = pageWith(
+      Array.from({ length: 100 }, (_, i) => ({
+        id: messageId + i,
+        content: "❤️",
+      })),
+    );
+    const stub = stubChatwoot({
+      page: older,
+      recent: older,
+      caughtUp: {
+        payload: caught.payload.map((m) => ({
+          ...m,
+          content_attributes: { is_reaction: true },
+        })),
+      },
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(outcome).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+  });
+
   // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW (issue #429).
   //
   // The row's whole purpose is "is this customer still owed a reply?", and after the first balloon

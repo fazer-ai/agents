@@ -68,6 +68,7 @@ import {
   nudgeMessage,
   turnWasCalledOff,
 } from "./markers";
+import { type OwnershipVerdict, withOwnershipFence } from "./ownership-fence";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -108,8 +109,10 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import {
   buildNativeTools,
+  type HandoffTurnState,
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
+  ownerChangedByTurn,
 } from "./tools/native";
 
 // agentNudge consumption: an inbound domain event (correlated to a conversation thread) is
@@ -860,11 +863,62 @@ export async function runAgentNudge(
     return (await botOwnsItNowDetailed()).ours === true;
   };
 
-  const handoffState = {
-    customerMessage: null as string | null,
+  const handoffState: HandoffTurnState = {
+    customerMessage: null,
     completed: false,
     declinedToSpeak: false,
   };
+
+  // THE TOOL BOUNDARY ASKS WHO OWNS IT, TOO (issue #717): a person taking the conversation over while
+  // the follow-up's model runs stops the calls that would write over them. The MIRROR, in both modes:
+  // the live probe is an HTTP round trip, and this is asked once per tool-calling hop; the live gate
+  // above already reconciled the mirror before the model ran. ./ownership-fence.ts says the rest.
+  const mirrorOwnsIt = async (): Promise<OwnershipVerdict> =>
+    await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        select: { assigneeType: true, status: true, assigneeId: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: cfg.agentBotId },
+      )
+        ? { ours: true as const }
+        : {
+            ours: false as const,
+            closed: describeClosedGate({
+              assigneeType: conv?.assigneeType ?? null,
+              status: conv?.status ?? null,
+            }),
+          };
+    });
+  const toolFence = withOwnershipFence(() => stillWanted(), {
+    // A follow-up that may only NOTE started on a conversation that is not the bot's, and keeps
+    // doing what it did: what the fence detects is the owner changing during the run.
+    //
+    // From the MIRROR, the source every later ask reads (review round 4). Outside the live mode that
+    // is what `canMessagePre` already is, read with the rest of the row. In the live mode it is the
+    // live probe's word, and a reconcile that refused to apply the snapshot (its own activity and
+    // version ordering) leaves a mirror that never read bot-owned, so the first hop would take a
+    // disagreement between two sources for a takeover: that mode reads the mirror again, here.
+    // Unreadable is not ours.
+    ownedAtStart: params.requireLiveBotOwnership
+      ? (await mirrorOwnsIt().catch(() => ({ ours: false }))).ours
+      : canMessagePre,
+    ownerChangedByThisTurn: () => ownerChangedByTurn(handoffState),
+    ownsNow: mirrorOwnsIt,
+    conversationId,
+  }).ask;
 
   // Asked once before the send and once after moderation, which is why it is a closure and not two
   // reads: the answer has to be produced the same way both times, or the second one would be a
@@ -1072,7 +1126,7 @@ export async function runAgentNudge(
         conversationId,
         threadId: params.threadId,
         // The slow-tool ack's own ask, after its send (issue #209 review, round 10).
-        stillWanted: () => stillWanted(),
+        stillWanted: toolFence,
         // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
         // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
         // one that had already happened — but only as a FALLBACK: this snapshot is taken before
@@ -1101,8 +1155,8 @@ export async function runAgentNudge(
     //
     // Always present (issue #209 review, round 5): the local helper also reads the switch and the
     // mode, which can change under a nudge nothing scheduled, so the ask is no longer one that
-    // always answers yes for such a caller.
-    stillWanted: () => stillWanted(),
+    // always answers yes for such a caller. And the owner, per hop (issue #717).
+    stillWanted: toolFence,
     // Same warn line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one, and this path can page an alert channel.
     onModelRetry: ({ attempt, provider, model }) =>

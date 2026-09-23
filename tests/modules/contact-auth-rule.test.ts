@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { agentUpdateAudit } from "@/modules/agents/audit-projection";
 import { assertSettingsContactAuthRule } from "@/modules/agents/service";
 import { contactAuthNoteText } from "@/modules/chatwoot/webhook";
 import {
@@ -58,6 +59,13 @@ describe("parsing a rule", () => {
       parseContactAuthRule({
         kind: "allowlist",
         identifiers: ["x".repeat(201)],
+      }),
+    ).toBeNull();
+    // A line break would split it into two entries the next time the editor saves the list.
+    expect(
+      parseContactAuthRule({
+        kind: "allowlist",
+        identifiers: ["tenant-a\ncustomer-b"],
       }),
     ).toBeNull();
     // A valid entry beside the bad one does not rescue the list.
@@ -131,6 +139,48 @@ describe("parsing a rule", () => {
       }).rule,
     ).toBeNull();
     expect(readContactAuthConfig({}).rule).toBeNull();
+  });
+});
+
+describe("the audit trail", () => {
+  // Append-only, so a number projected here would outlive its removal from the list.
+  test("records the rule's shape and that its entries moved, never the entries", () => {
+    const row = (phones: string[]) => ({
+      settings: {
+        contactAuth: {
+          enabled: true,
+          rule: { kind: "allowlist", phones, identifiers: ["cli-42"] },
+        },
+      },
+    });
+    const audit = agentUpdateAudit(
+      row(["+5511988887777"]),
+      row(["+5511977776666"]),
+    );
+    const text = JSON.stringify(audit);
+    expect(text).not.toContain("988887777");
+    expect(text).not.toContain("977776666");
+    expect(text).not.toContain("cli-42");
+    const after = (audit?.after as Record<string, Record<string, unknown>>)
+      .contactAuth;
+    expect(after?.rule).toEqual({
+      kind: "allowlist",
+      phones: 1,
+      identifiers: 1,
+      entriesChanged: true,
+    });
+  });
+
+  test("an attribute rule is recorded as it is", () => {
+    const row = (key: string) => ({
+      settings: {
+        contactAuth: {
+          rule: { kind: "attribute", scope: "contact", key },
+        },
+      },
+    });
+    const audit = agentUpdateAudit(row("plano"), row("status"));
+    expect(JSON.stringify(audit)).toContain('"key":"status"');
   });
 });
 

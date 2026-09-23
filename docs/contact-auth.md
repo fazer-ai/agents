@@ -119,6 +119,10 @@ same notices, the same `denyMessage`, the same handoff, the same flow line.
   with `errors.invalidContactAuthRule`, one bad entry refusing the whole list. The reader drops one
   stored some other way, and an enabled gate with neither a rule nor a `url` is the fail-closed
   `not_configured` it always was.
+- **The audit trail keeps the shape, not the list.** An allowlist is a list of people, and the
+  trail is append-only, so an `agent.settings_set` row records the kind, how many phones and
+  identifiers, and `entriesChanged` when they moved. An identifier with a line break is refused,
+  since the editor holds the list one entry per line.
 - **The refusal says which rule.** The flow line carries `reason: rule_not_listed` or
   `rule_unmet`, our codes, never the phone or the identifier. The operator note names the agent's
   rule instead of the external check.

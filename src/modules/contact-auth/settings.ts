@@ -68,9 +68,13 @@ function normalizedPhone(v: unknown): string | null {
     : null;
 }
 
+// A line break inside an identifier is refused: the editor holds the list one entry per line, so an
+// identifier carrying one would come back from the editor as two, each authorizing somebody else.
 function normalizedIdentifier(v: unknown): string | null {
   const s = str(v);
-  return s && s.length <= CONTACT_AUTH_ALLOWLIST_ENTRY_MAX ? s : null;
+  return s && s.length <= CONTACT_AUTH_ALLOWLIST_ENTRY_MAX && !/[\r\n]/.test(s)
+    ? s
+    : null;
 }
 
 function entries(

@@ -2529,7 +2529,7 @@ async function runTurnBody(
         // nothing stamps the row for it.
         const kind = skipHandoverKind(
           silenceWasChosen(msgs) ? chosenSilence(msgs) : null,
-          row.spoken || turnState.spokeOutsideTheReply,
+          row.spoken || turnState.spokeOutsideTheReply === true,
         );
         if (!kind) return;
         await applySkipHandover({

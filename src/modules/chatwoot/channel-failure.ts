@@ -129,45 +129,9 @@ const FALLBACK_READBACK_MAX_PAGES = 5;
 // Per Chatwoot INSTANCE as well as per message: message ids are the server's own, and a tenant that
 // replaces its Chatwoot deployment keeps its scheduler rows, so a new server reusing an old id would
 // land on the old row and `once` would keep it.
-// Under WhatsApp's 4,096-character text limit with room to spare.
-const FALLBACK_PART_MAX = 4_000;
-
-// Packs paragraphs into parts of at most `max` characters, counted in code points so an emoji is
-// never cut in half, and cuts a paragraph longer than that on its own. Pure.
-export function channelParts(text: string, max: number): string[] {
-  const parts: string[] = [];
-  let current = "";
-  const push = () => {
-    if (current.trim()) parts.push(current.trim());
-    current = "";
-  };
-  for (const paragraph of text.split(/\n{2,}/)) {
-    const points = Array.from(paragraph);
-    if (points.length > max) {
-      push();
-      let piece = "";
-      let n = 0;
-      for (const cp of points) {
-        piece += cp;
-        n++;
-        if (n === max) {
-          parts.push(piece);
-          piece = "";
-          n = 0;
-        }
-      }
-      if (piece.trim()) parts.push(piece);
-      continue;
-    }
-    const joined = current ? `${current}\n\n${paragraph}` : paragraph;
-    if (Array.from(joined).length > max) {
-      push();
-      current = paragraph;
-    } else current = joined;
-  }
-  push();
-  return parts.length > 0 ? parts : [text];
-}
+// WhatsApp's own ceiling on a text message. A reply longer than this is refused by the channel AFTER
+// Chatwoot accepted the post, which is this issue's own failure again, so it is not sent at all.
+const CHANNEL_TEXT_MAX = 4_096;
 
 export function mediaFallbackDedupeKey(
   instanceId: bigint,
@@ -332,10 +296,7 @@ export async function mediaFallbackHandler(
   // pages back to the FAILED message, which the text can only have followed. A read that fails
   // THROWS, for the same reason as above; a conversation too busy to reach that boundary within the
   // page ceiling sends nothing, because a text that late is worth less than a duplicate costs.
-  const sendPrefix = `media-fallback:${messageId}`;
-  // Every part already out, by its name: a long reply goes as several messages (below), and a rerun
-  // sends only the parts this read did not find.
-  const alreadySent = new Set<string>();
+  const sendId = `media-fallback:${messageId}`;
   let before: number | undefined;
   for (let page = 0; ; page++) {
     if (page === FALLBACK_READBACK_MAX_PAGES) {
@@ -361,8 +322,7 @@ export async function mediaFallbackHandler(
     // a read that did not see the conversation, not an empty one.
     if (page === 0 && rows.length === 0)
       throw new Error("media fallback: the conversation read back empty");
-    for (const m of rows)
-      if (m.sendId?.startsWith(sendPrefix)) alreadySent.add(m.sendId);
+    if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
     const oldest = rows[0]?.id;
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
@@ -512,15 +472,13 @@ export async function mediaFallbackHandler(
   const [signed = text] = sig
     ? attachSignature([text], sig, cfg.signatureConfig)
     : [text];
-  // IN PARTS the channel takes: WhatsApp refuses a text over 4,096 characters, and it refuses it
-  // AFTER Chatwoot accepted the post, which is this issue's own failure again. One part keeps the
-  // plain name, so a single reply is named as it always was.
-  const parts = channelParts(signed, FALLBACK_PART_MAX);
-  for (const [i, part] of parts.entries()) {
-    const sendId = parts.length === 1 ? sendPrefix : `${sendPrefix}:${i + 1}`;
-    if (alreadySent.has(sendId)) continue;
-    await client.sendMessage(conversationId, part, { sendId });
-  }
+  // ONE message, like every single-message send here (the follow-up, the handoff's farewell): the
+  // signature rule is applied to it as to any of those. A reply over the channel's ceiling is not
+  // sent: the channel would refuse it after Chatwoot took it, and a voice note that long (minutes of
+  // audio) is not a shape this path is for.
+  if (Array.from(signed).length > CHANNEL_TEXT_MAX)
+    return stop("the reply is longer than the channel takes in one message");
+  await client.sendMessage(conversationId, signed, { sendId });
   return { outcome: "done" };
 }
 

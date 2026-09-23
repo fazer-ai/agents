@@ -62,16 +62,13 @@ const OUR_BOT = 5;
 const INBOX_ON = 7961;
 const INBOX_OFF = 7962;
 const INBOX_SLOW = 7963;
-const INBOX_NO_BOT = 7964;
 // Uma conversa por caso: a chave do follow-up nomeia a conversa.
 const CONV_ON = 79_601;
 const CONV_OFF = 79_602;
 const CONV_OTHER_BOT = 79_603;
-const CONV_OUR_BOT = 79_604;
 const CONV_LATER = 79_605;
 const CONV_DUE = 79_606;
 const CONV_SLOW = 79_607;
-const CONV_NO_BOT = 79_608;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -86,13 +83,13 @@ function keyOf(convId: number): string {
   return `followup:${threadOf(convId)}`;
 }
 
-function stubClient() {
+function stubClient(meta: Record<string, unknown> = {}) {
   const sent: string[] = [];
   const client = {
     getConversation: async (c: number) => ({
       id: c,
       status: "pending",
-      meta: {},
+      meta,
     }),
     sendMessage: async (_c: number, t: string) => {
       sent.push(t);
@@ -104,6 +101,17 @@ function stubClient() {
     toggleStatus: async () => ({}),
   } as unknown as ChatwootClient;
   return { sent, makeClient: async () => client };
+}
+
+function registerStubbed(s: ReturnType<typeof stubClient>) {
+  registerJobHandler("FOLLOWUP", (job, base) =>
+    followUpHandler(job, base, {
+      makeModel: () => new FakeListChatModel({ responses: ["Oi?"] }),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    }),
+  );
 }
 
 async function runSweep(): Promise<void> {
@@ -154,7 +162,7 @@ async function seedAgent(
   name: string,
   followUp: { enabled: boolean; delayMinutes: number },
   inbox: number,
-  botId: number | null,
+  botId: number,
 ): Promise<void> {
   const llmKey = await suDb.vaultEntry.create({
     data: { tenantId, name: `llm-${name}`, secret: encryptJson("sk-test") },
@@ -185,19 +193,18 @@ async function seedAgent(
       },
     },
   });
-  if (botId !== null)
-    await suDb.chatwootAgentBot.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        agentId: agent.id,
-        chatwootAgentBotId: botId,
-        accessToken: encryptJson("BOT"),
-        webhookSecret: encryptJson("S"),
-        webhookRouteTokenHash: `fu796-${name}-${process.pid}`,
-        name,
-      },
-    });
+  await suDb.chatwootAgentBot.create({
+    data: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      agentId: agent.id,
+      chatwootAgentBotId: botId,
+      accessToken: encryptJson("BOT"),
+      webhookSecret: encryptJson("S"),
+      webhookRouteTokenHash: `fu796-${name}-${process.pid}`,
+      name,
+    },
+  });
   const row = await suDb.inbox.create({
     data: {
       tenantId,
@@ -242,38 +249,6 @@ describe.skipIf(!dbUp)(
         INBOX_SLOW,
         7,
       );
-      // The same agent also answers on a SECOND Chatwoot account, as bot 99 there. The ownership
-      // clause compares the assignee with the bot of the conversation's OWN account, so bot 99 on
-      // the first account is still somebody else.
-      const other = await seedChatwootInstance(suDb, {
-        tenantId,
-        accountId: 6,
-        baseUrl: "https://chat.example.com",
-        adminToken: encryptJson("ADMIN"),
-      });
-      const on = await suDb.agent.findFirstOrThrow({
-        where: { tenantId, name: "on" },
-        select: { id: true },
-      });
-      await suDb.chatwootAgentBot.create({
-        data: {
-          tenantId,
-          chatwootInstanceId: other.id,
-          agentId: on.id,
-          chatwootAgentBotId: 99,
-          accessToken: encryptJson("BOT"),
-          webhookSecret: encryptJson("S"),
-          webhookRouteTokenHash: `fu796-on-other-${process.pid}`,
-          name: "on",
-        },
-      });
-      // An agent whose bot row is missing: its conversations keep the old reading.
-      await seedAgent(
-        "no-bot",
-        { enabled: true, delayMinutes: 1 },
-        INBOX_NO_BOT,
-        null,
-      );
       registerFollowUpHandlers();
     });
 
@@ -309,17 +284,30 @@ describe.skipIf(!dbUp)(
       expect(await rowOf(CONV_OFF)).toBeNull();
     });
 
-    test("a conversation another bot holds is not swept; ours and an unassigned one are", async () => {
+    // Another bot's conversation stays in the selection, because the mirror's assignee may be the
+    // stale half and only the live gate repairs it (review round 1). What ends the loop is the
+    // handler parking the row when the gate declines, and the next pass leaving it parked.
+    test("a conversation another bot holds is asked once, then parked for an hour", async () => {
       await seedIdle(CONV_OTHER_BOT, INBOX_ON, { type: "AgentBot", id: 99 });
-      await seedIdle(CONV_OUR_BOT, INBOX_ON, { type: "AgentBot", id: OUR_BOT });
-      await seedIdle(CONV_NO_BOT, INBOX_NO_BOT, { type: "AgentBot", id: 99 });
       await runSweep();
-      expect(await rowOf(CONV_OTHER_BOT)).toBeNull();
-      // Without a known bot there is nothing to compare the assignee with, so nothing is dropped.
-      expect((await rowOf(CONV_NO_BOT))?.status).toBe("PENDING");
-      expect((await rowOf(CONV_OUR_BOT))?.status).toBe("PENDING");
-      // The unassigned one of the first case, still eligible.
-      expect((await rowOf(CONV_ON))?.status).toBe("PENDING");
+      const claimed = (
+        await claimDueJobs(50, appDb, new Date(), tenantId)
+      ).filter((j) => j.dedupeKey === keyOf(CONV_OTHER_BOT));
+      expect(claimed).toHaveLength(1);
+      const s = stubClient({ assignee_type: "AgentBot", assignee: { id: 99 } });
+      registerStubbed(s);
+      const [job] = claimed;
+      if (!job) return;
+      await runClaimed(job, appDb);
+      const parked = await rowOf(CONV_OTHER_BOT);
+      expect(parked?.status).toBe("PENDING");
+      const until = parked?.runAt.getTime() ?? 0;
+      expect(until).toBeGreaterThan(Date.now() + 55 * 60_000);
+      await runSweep();
+      const after = await rowOf(CONV_OTHER_BOT);
+      expect(after?.runAt.getTime()).toBe(until);
+      expect(after?.claimSeq).toBe(parked?.claimSeq);
+      expect(s.sent).toEqual([]);
     });
 
     // The retry the handler scheduled keeps its time and its count, so NUDGE_RETRY_LIMIT can be
@@ -370,14 +358,7 @@ describe.skipIf(!dbUp)(
       ).filter((j) => j.dedupeKey === keyOf(CONV_SLOW));
       expect(claimed).toHaveLength(1);
       const s = stubClient();
-      registerJobHandler("FOLLOWUP", (job, base) =>
-        followUpHandler(job, base, {
-          makeModel: () => new FakeListChatModel({ responses: ["Oi?"] }),
-          makeClient: s.makeClient,
-          checkpointer: new MemorySaver(),
-          persistUsage: async () => {},
-        }),
-      );
+      registerStubbed(s);
       const [job] = claimed;
       if (!job) return;
       await runClaimed(job, appDb);

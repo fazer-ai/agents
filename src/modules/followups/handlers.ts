@@ -55,6 +55,11 @@ const IN_FLIGHT_BACKOFF_MS = 30_000;
 // cancelled. Coarse (1h) because the sweep already filters these out — this only catches a FOLLOWUP
 // that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
+// How long a follow-up the live gate declined waits before it is offered again (issue #796). The
+// decline stamps nothing, so the sweep would select the conversation on its next pass; parked for
+// this long instead, the pass leaves the row alone. An hour rather than never, because the mirror the
+// sweep read may be the stale half and the live gate is the only thing that repairs it.
+const LIVE_DECLINE_BACKOFF_MS = 3_600_000;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -159,11 +164,6 @@ async function sweepHandler(
       FROM conversations c
       JOIN inboxes i ON i.id = c.inbox_id
       JOIN agents a ON a.id = i.agent_id
-      -- The bot this agent answers as on this Chatwoot, for the ownership clause below. LEFT: an
-      -- agent whose bot row is missing keeps the old reading rather than losing its conversations.
-      LEFT JOIN chatwoot_agent_bots b
-        ON b.agent_id = a.id
-       AND b.chatwoot_instance_id = c.chatwoot_instance_id
       WHERE c.tenant_id = ${tenantId}
         AND c.status = 'pending'
         -- NOTE: Bot-owned = anything but a human, mirroring shouldBotHandle: NULL (unassigned — Chatwoot
@@ -171,17 +171,11 @@ async function sweepHandler(
         -- auto-assigns the connected bot at conversation creation). IS DISTINCT FROM because
         -- NULL <> 'User' evaluates to NULL.
         AND c.assignee_type IS DISTINCT FROM 'User'
-        -- AND NOT ANOTHER BOT'S, the rest of shouldBotHandle (heldByAnotherParty): an AgentBot
-        -- assignee whose id is known and is not ours (issue #796). This used to be left to the
-        -- nudge's live gate on the reasoning that a false positive costs one no-op job cycle; it
-        -- costs one every minute, forever, because the gate's stale outcome stamps nothing and the row is
-        -- still selected on the next pass.
-        AND NOT (
-          c.assignee_type = 'AgentBot'
-          AND c.assignee_id IS NOT NULL
-          AND b.chatwoot_agent_bot_id IS NOT NULL
-          AND c.assignee_id <> b.chatwoot_agent_bot_id
-        )
+        -- A foreign bot's AgentBot is deliberately NOT filtered here: the mirror's assignee can be
+        -- stale (a lost assignment webhook), and the nudge's live gate is what reads Chatwoot and
+        -- repairs it. What keeps that from costing a job cycle every minute is the handler's own
+        -- backoff on a live decline (LIVE_DECLINE_BACKOFF_MS) together with the re-arm below leaving
+        -- a deferred row alone (issue #796).
         AND c.inbox_id IS NOT NULL
         AND a.enabled = true
         AND a.id = ANY(${followUpIdsSql})
@@ -636,9 +630,30 @@ export async function followUpHandler(
     deps,
   });
 
-  // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over) —
-  // the episode is moot. No watermark, no next step; the reconciled mirror keeps the sweep away.
-  if (nudgeOutcome === "stale") return { outcome: "done" };
+  // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over /
+  // another bot holds it), or the run was retired. No watermark, no next step. A retired run ends here.
+  // The reconciled mirror keeps the sweep away from a resolved or human-held conversation, so those
+  // end here. Not from one another bot holds, which is pending and bot-assigned in both readings: a
+  // bare `done` put it back in the selection every minute, forever (issue #796). That one is parked
+  // for LIVE_DECLINE_BACKOFF_MS, which the sweep's re-arm leaves alone, and asked again then: a
+  // conversation the other bot handed back is followed up, one that moved on ends at the first look.
+  if (nudgeOutcome === "stale") {
+    if (await jobRetired(job, base)) return { outcome: "done" };
+    // Asked of the mirror AFTER the gate reconciled it, the same two columns the sweep selects on:
+    // only a conversation the next pass would select again is parked.
+    const after = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: { id: ctx.conv.id },
+        select: { status: true, assigneeType: true },
+      }),
+    );
+    if (after?.status !== "pending" || after.assigneeType === "User")
+      return { outcome: "done" };
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + LIVE_DECLINE_BACKOFF_MS),
+    };
+  }
   // NOTE: Nothing was posted, for a reason that may not hold next time (the shared predicate names the
   // three). Retry the SAME step later instead of stamping a follow-up that never happened, but
   // bounded (NUDGE_RETRY_LIMIT): on exhaustion, abandon the episode with a stamp so the sweep stays

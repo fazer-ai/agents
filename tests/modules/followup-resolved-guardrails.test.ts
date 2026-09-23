@@ -836,9 +836,13 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     });
     const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
     expect(gets).toBeGreaterThan(0);
-    // O live diz resolved → o follow-up morre (o fluxo reativo atende a reabertura), mas o
-    // espelho mais novo NÃO é sobrescrito pelo snapshot velho.
-    expect(result).toEqual({ outcome: "done" });
+    // O live diz resolved → nada sai (o fluxo reativo atende a reabertura), mas o espelho mais novo
+    // NÃO é sobrescrito pelo snapshot velho. E como o espelho segue `pending`, a varredura
+    // selecionaria a conversa de novo no minuto seguinte: a linha fica estacionada por uma hora em
+    // vez de terminar (issue #796). A resposta do cliente que reabriu cancela a linha pendente.
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    const runAt = (result as { runAt?: Date }).runAt?.getTime() ?? 0;
+    expect(runAt).toBeGreaterThan(Date.now() + 55 * 60_000);
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect((await mirroredConv(CONV)).status).toBe("pending");

@@ -648,7 +648,7 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED again by `contactAuth.rule` (#646), the same 665 characters as the
   // agent_settings_set ceiling above, on top of the #747 raise: this tree measures 58,950.
   // SCHEMA RAISED again by the guardrail `handoff` action (#704), which reaches tools/list through
-  // `agent_settings_set`: 466 characters on top of the #747 raise, same 16 of headroom. See
+  // `agent_settings_set`: this tree measures 58,723, 450 over the #747 raise, same 16 of headroom. See
   // SETTINGS_SCHEMA_CEILING above. Descriptions are unchanged.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();

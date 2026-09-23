@@ -2508,6 +2508,7 @@ async function runTurnBody(
           kind,
           detail: chosenSilence(msgs)?.detail ?? null,
           flow,
+          stillWanted: async () => !(await writeCalledOff()),
         });
       };
       const queued = turnState.pendingAttachments.length;

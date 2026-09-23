@@ -16,10 +16,13 @@ import {
   type SkipReplyReason,
 } from "@/graph/silence";
 import {
+  applySkipHandover,
+  resolvedThisTurn,
   SKIP_NOTE_DETAIL_MAX,
   skipHandoverKind,
   skipHandoverNote,
 } from "@/graph/skip-handover";
+import { RESOLVE_DONE } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
@@ -124,6 +127,53 @@ describe("the reason on skip_reply", () => {
         }),
       ]),
     ).toBe(false);
+  });
+
+  test("a close this turn made is read off the tool's own result, bounded at the turn", () => {
+    const done = new ToolMessage({
+      content: RESOLVE_DONE,
+      tool_call_id: "r1",
+      name: "resolve_conversation",
+    });
+    expect(resolvedThisTurn([new HumanMessage("oi"), done])).toBe(true);
+    expect(
+      resolvedThisTurn([done, new HumanMessage("oi"), new AIMessage("")]),
+    ).toBe(false);
+    expect(
+      resolvedThisTurn([
+        new HumanMessage("oi"),
+        new ToolMessage({
+          content: "Did not resolve: this turn transferred the conversation.",
+          tool_call_id: "r1",
+          name: "resolve_conversation",
+        }),
+      ]),
+    ).toBe(false);
+  });
+
+  test("a run withdrawn during the status change writes no note", async () => {
+    const calls: string[] = [];
+    let wanted = true;
+    const client = {
+      toggleStatus: async () => {
+        calls.push("toggle");
+        wanted = false;
+        return {};
+      },
+      sendPrivateNote: async () => {
+        calls.push("note");
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await applySkipHandover({
+      client,
+      conversationId: 1,
+      kind: "needs_human",
+      detail: null,
+      flow: { tenantId: 1n, turnId: "t", source: "inbox" } as never,
+      stillWanted: async () => wanted,
+    });
+    expect(calls).toEqual(["toggle"]);
   });
 
   test("what hands the conversation to a person, and what does not", () => {

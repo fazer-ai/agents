@@ -86,7 +86,11 @@ import {
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
 } from "./silence";
-import { applySkipHandover, skipHandoverKind } from "./skip-handover";
+import {
+  applySkipHandover,
+  resolvedThisTurn,
+  skipHandoverKind,
+} from "./skip-handover";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
 
@@ -2064,7 +2068,9 @@ export async function runAgentNudge(
     // still owns it and no transfer already moved it. The floor for a conversation nobody answered
     // is not asked here: a follow-up only runs on one our side has spoken in.
     const chosen =
-      canMessagePost && !handoffState.completed
+      canMessagePost &&
+      !handoffState.completed &&
+      !resolvedThisTurn(result.messages as BaseMessage[])
         ? chosenSilence(result.messages as BaseMessage[])
         : null;
     const handover = chosen ? skipHandoverKind(chosen, true) : null;
@@ -2075,6 +2081,7 @@ export async function runAgentNudge(
         kind: handover,
         detail: chosen?.detail ?? null,
         flow,
+        stillWanted,
       });
       // The ladder's own resolve would close the conversation the reason asked a person to see, and
       // that holds whether or not the status change landed: a failed hand-over leaves it pending,

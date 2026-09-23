@@ -3,6 +3,7 @@ import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import type { SkipReplyReason } from "./silence";
+import { RESOLVE_DONE } from "./tools/catalog";
 
 // A SILENCE THAT A PERSON HAS TO SEE (issue #659).
 //
@@ -25,6 +26,32 @@ import type { SkipReplyReason } from "./silence";
 // `acknowledged` on a conversation we already answered is the ordinary end of a good conversation, and
 // it changes nothing: no status, no note. That path is the highest-frequency one in the product, and a
 // note on it would teach the operator to ignore the two that matter.
+// WHETHER THIS TURN ALREADY CLOSED THE CONVERSATION, on the path where the close happens inside the
+// tool (every proactive turn: no `turnState`, so `resolve_conversation` toggles on the spot). Read off
+// the tool's own result under its name, which the assembly reserves for the native, and bounded at
+// the last human message like every other reader of this turn. A conversation the same turn closed
+// on purpose is not one to reopen for the queue.
+export function resolvedThisTurn(
+  messages: readonly {
+    getType: () => string;
+    name?: string;
+    content?: unknown;
+  }[],
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.getType() === "human") return false;
+    if (
+      m.getType() === "tool" &&
+      m.name === "resolve_conversation" &&
+      m.content === RESOLVE_DONE
+    )
+      return true;
+  }
+  return false;
+}
+
 export type SkipHandoverKind = "not_for_us" | "needs_human" | "unanswered";
 
 export function skipHandoverKind(
@@ -83,8 +110,15 @@ export async function applySkipHandover(params: {
   kind: SkipHandoverKind;
   detail: string | null;
   flow: FlowContext;
+  // The caller's withdrawal fence, asked immediately before EACH write: a `/reset` or a superseding
+  // run can land during the status change, and the note must not follow it into a conversation the
+  // operator was just told was cleared. Only an explicit `false` stops it.
+  stillWanted?: () => Promise<boolean>;
 }): Promise<boolean> {
   const { client, conversationId, kind, flow } = params;
+  const withdrawn = async () =>
+    params.stillWanted ? !(await params.stillWanted()) : false;
+  if (await withdrawn()) return false;
   try {
     await client.toggleStatus(conversationId, "open");
   } catch (err) {
@@ -100,7 +134,16 @@ export async function applySkipHandover(params: {
     });
     return false;
   }
-  let noted = true;
+  let noted = false;
+  if (await withdrawn()) {
+    emitFlowEvent(flow, {
+      stage: "handoff",
+      status: "ok",
+      detail: { outcome: "opened_after_skip", reason: kind, noted },
+    });
+    return true;
+  }
+  noted = true;
   try {
     await client.sendPrivateNote(
       conversationId,

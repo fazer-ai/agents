@@ -75,7 +75,11 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
 // (fail-closed: a tool not in the allowlist is never exposed to the model).
 
-import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./catalog";
+import {
+  HANDOFF_DONE_PREFIX,
+  HANDOFF_TOOL_NAME,
+  RESOLVE_DONE,
+} from "./catalog";
 import type { NoEffectReporter } from "./effect-free";
 import { describeLabelWrite, type LabelWriteReporter } from "./label-writes";
 
@@ -1578,7 +1582,7 @@ function resolveConversationTool(ctx: ToolCtx) {
           base: ctx.base,
         });
       }
-      return "Conversation resolved.";
+      return RESOLVE_DONE;
     },
     {
       name: "resolve_conversation",

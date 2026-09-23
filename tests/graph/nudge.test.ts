@@ -1073,6 +1073,70 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.statuses).toEqual([[9663, "open"]]);
   });
 
+  test("a follow-up that closed the conversation itself does not reopen it for the queue", async () => {
+    await seedConv(9664, null);
+    const s = stub();
+    const makeClient = async () => {
+      const base = (await s.makeClient()) as unknown as Record<string, unknown>;
+      return {
+        ...base,
+        getConversation: async () => ({
+          id: 9664,
+          status: "pending",
+          meta: { assignee_type: null, assignee: null },
+          last_activity_at: 1_700_500_000,
+        }),
+      } as never;
+    };
+    class ResolveThenSkip {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "r1" },
+                ],
+              });
+            if (n === 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "skip_reply",
+                    args: { reason: "needs_human" },
+                    id: "s1",
+                  },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9664`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new ResolveThenSkip() as never,
+        makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.statuses).toEqual([[9664, "resolved"]]);
+    expect(s.notes).toEqual([]);
+  });
+
   test("a follow-up silent with acknowledged stays the ordinary quiet follow-up", async () => {
     await seedConv(9662, null);
     const s = stub();

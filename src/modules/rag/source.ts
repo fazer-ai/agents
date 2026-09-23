@@ -4,7 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
@@ -121,10 +121,13 @@ export async function parseSourceInput(
   try {
     await assertSafe(baseUrl);
   } catch (err) {
-    throw invalid(
-      `baseUrl is not allowed: ${err instanceof Error ? err.message : String(err)}`,
-      "baseUrl",
-    );
+    // Only a REFUSAL is the caller's input being wrong. A resolver that failed to answer
+    // (`EAI_AGAIN`) is the infrastructure's, and reporting it as an invalid field would tell the
+    // operator to change a URL that is fine.
+    if (err instanceof SsrfError) {
+      throw invalid(`baseUrl is not allowed: ${err.message}`, "baseUrl");
+    }
+    throw err;
   }
   if (typeof input.slug !== "string" || !SLUG.test(input.slug)) {
     throw invalid("slug is required and must be a portal slug", "slug");
@@ -485,6 +488,8 @@ export interface SyncResult {
   updated: number;
   deleted: number;
   unchanged: number;
+  // Unchanged documents whose lost ingest this run re-armed.
+  requeued: number;
   // A listing with zero articles deletes nothing that round (see runSync).
   emptyListing: boolean;
 }
@@ -495,6 +500,8 @@ interface SyncedRow {
   title: string;
   sourceUrl: string | null;
   contentMd5: string;
+  // Indexing was asked for and nothing will do it: see the unchanged branch of `reconcile`.
+  ingestStranded: boolean;
 }
 
 const md5 = (text: string) =>
@@ -551,10 +558,15 @@ export async function syncKnowledgeSource(
     ctx,
     (db) =>
       db.$queryRaw<SyncedRow[]>`
-      SELECT id, external_id AS "externalId", title, source_url AS "sourceUrl",
-             md5(content) AS "contentMd5"
-        FROM knowledge_documents
-       WHERE knowledge_base_id = ${knowledgeBaseId} AND external_id IS NOT NULL`,
+      SELECT d.id, d.external_id AS "externalId", d.title, d.source_url AS "sourceUrl",
+             md5(d.content) AS "contentMd5",
+             (d.status = 'PENDING' AND NOT EXISTS (
+               SELECT 1 FROM scheduler_jobs j
+                WHERE j.kind = 'RAG_INGEST' AND j.dedupe_key = 'doc:' || d.id
+                  AND j.status IN ('PENDING', 'CLAIMED', 'FAILED')
+             )) AS "ingestStranded"
+        FROM knowledge_documents d
+       WHERE d.knowledge_base_id = ${knowledgeBaseId} AND d.external_id IS NOT NULL`,
   );
   const have = new Map(existing.map((r) => [r.externalId, r]));
   const result: SyncResult = {
@@ -562,6 +574,7 @@ export async function syncKnowledgeSource(
     updated: 0,
     deleted: 0,
     unchanged: 0,
+    requeued: 0,
     emptyListing: articles.length === 0,
   };
 
@@ -593,7 +606,7 @@ export async function syncKnowledgeSource(
     result.emptyListing ? "warning" : "ok",
     result.emptyListing
       ? "the portal listed no published articles; nothing was deleted this round"
-      : `created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}`,
+      : `created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}${result.requeued ? ` (${result.requeued} re-queued for indexing)` : ""}`,
   );
   return result;
 }
@@ -635,6 +648,23 @@ async function reconcile(
     const textMoved = row.contentMd5 !== md5(a.content);
     const urlMoved = row.sourceUrl !== a.url;
     if (!titleMoved && !textMoved && !urlMoved) {
+      // A write commits the document and enqueues its ingest AFTER the commit (the document paths
+      // all do), so an enqueue that failed leaves it PENDING with no job. An operator's retry refuses
+      // a PENDING document, and this branch would otherwise see the article unchanged forever: the
+      // sync is the one caller that comes back, so it re-arms what was lost.
+      if (row.ingestStranded) {
+        await enqueueJob({
+          tenantId: ctx.tenantId as bigint,
+          kind: "RAG_INGEST",
+          dedupeKey: `doc:${row.id}`,
+          runAt: new Date(),
+          // NOTE: the same text the lost enqueue was for, so the same unit of work.
+          rearm: "same-work",
+          payload: { documentId: String(row.id) },
+          base,
+        });
+        result.requeued++;
+      }
       result.unchanged++;
       continue;
     }

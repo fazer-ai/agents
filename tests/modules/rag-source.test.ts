@@ -759,6 +759,37 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     });
   });
 
+  test("a document whose ingest enqueue was lost is re-armed by the next run", async () => {
+    await configure();
+    await sync(portal({ articles: () => BASIC }));
+    const [d101, d102] = (await synced()) as { id: bigint }[];
+    // What a failed enqueue after the commit leaves: the document PENDING and no job for it.
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "RAG_INGEST", dedupeKey: `doc:${d101?.id}` },
+    });
+    await suDb.knowledgeDocument.update({
+      where: { id: d102?.id as bigint },
+      data: { status: "READY" },
+    });
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "RAG_INGEST", dedupeKey: `doc:${d102?.id}` },
+    });
+    const r = await sync(portal({ articles: () => BASIC }));
+    expect(r).toMatchObject({ unchanged: 3, requeued: 1 });
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "RAG_INGEST", status: "PENDING" },
+      select: { dedupeKey: true },
+    });
+    const keys = jobs.map((j) => j.dedupeKey);
+    expect(keys).toContain(`doc:${d101?.id}`);
+    // An indexed document is left alone.
+    expect(keys).not.toContain(`doc:${d102?.id}`);
+    // And one whose job is still there is not re-armed twice.
+    expect(await sync(portal({ articles: () => BASIC }))).toMatchObject({
+      requeued: 0,
+    });
+  });
+
   test("two syncs at once create each document once", async () => {
     await configure();
     const f = portal({ articles: () => BASIC });
@@ -1016,6 +1047,19 @@ describe("knowledge source input (issue #794)", () => {
       statusCode: 400,
       field,
     });
+  });
+
+  test("a resolver that fails to answer is not reported as an invalid baseUrl", async () => {
+    const dns = Object.assign(
+      new Error("getaddrinfo EAI_AGAIN ajuda.x.com.br"),
+      {
+        code: "EAI_AGAIN",
+      },
+    );
+    const err = await parseSourceInput(good, async () => {
+      throw dns;
+    }).catch((e: unknown) => e);
+    expect(err).toBe(dns);
   });
 
   test.each([

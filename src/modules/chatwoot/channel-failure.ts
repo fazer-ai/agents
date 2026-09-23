@@ -311,6 +311,26 @@ export async function mediaFallbackHandler(
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
   }
+  // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
+  // send and this one, and a person may have taken the conversation in between: posting as the bot
+  // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
+  // retries instead of guessing either way.
+  const live = parseLiveConversation(
+    await client.getConversation(conversationId),
+  );
+  if (!live)
+    throw new Error("media fallback: the conversation could not be read");
+  // With THIS bot's id: a conversation handed to another bot is not ours either.
+  if (!shouldBotHandle(live, { ourAgentBotId: agentBotId })) {
+    logger.info(
+      "media fallback: conversation %s is no longer the bot's, the text is not sent",
+      String(conversationId),
+    );
+    return { outcome: "done" };
+  }
+  // LAST, and after every network read: the database answers for a `/reset` or a rebinding that
+  // landed while Chatwoot was being asked, and nothing but the send follows it.
+  //
   // The same reads a follow-up makes before it speaks (../../graph/nudge.ts), in the same order: the
   // conversation, the agent its inbox is bound to NOW, the test-mode activation, and the config.
   const gate = await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
@@ -392,23 +412,6 @@ export async function mediaFallbackHandler(
   const [signed = text] = sig
     ? attachSignature([text], sig, cfg.signatureConfig)
     : [text];
-  // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
-  // send and this one, and a person may have taken the conversation in between: posting as the bot
-  // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
-  // retries instead of guessing either way.
-  const live = parseLiveConversation(
-    await client.getConversation(conversationId),
-  );
-  if (!live)
-    throw new Error("media fallback: the conversation could not be read");
-  // With THIS bot's id: a conversation handed to another bot is not ours either.
-  if (!shouldBotHandle(live, { ourAgentBotId: agentBotId })) {
-    logger.info(
-      "media fallback: conversation %s is no longer the bot's, the text is not sent",
-      String(conversationId),
-    );
-    return { outcome: "done" };
-  }
   await client.sendMessage(conversationId, signed, { sendId });
   return { outcome: "done" };
 }

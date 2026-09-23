@@ -306,6 +306,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     filler?: number;
     unreadable?: boolean;
     onRead?: () => Promise<void>;
+    onLive?: () => Promise<void>;
   }) {
     const sent: {
       conv: number;
@@ -317,18 +318,21 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     const makeClient = (async (cfg: { botToken: string }) => {
       token = cfg.botToken;
       return {
-        getConversation: async () => ({
-          id: CONV_ID,
-          status: opts.status ?? "pending",
-          meta: {
-            assignee: opts.assignee
-              ? { id: opts.assignee.id, type: opts.assignee.type }
-              : null,
+        getConversation: async () => {
+          await opts.onLive?.();
+          return {
+            id: CONV_ID,
+            status: opts.status ?? "pending",
+            meta: {
+              assignee: opts.assignee
+                ? { id: opts.assignee.id, type: opts.assignee.type }
+                : null,
+              assignee_type: opts.assignee?.type ?? null,
+            },
             assignee_type: opts.assignee?.type ?? null,
-          },
-          assignee_type: opts.assignee?.type ?? null,
-          assignee_id: opts.assignee?.id ?? null,
-        }),
+            assignee_id: opts.assignee?.id ?? null,
+          };
+        },
         // Pages the way Chatwoot does: the latest ~20, or the ~20 older than `before`. The thread is
         // the failed voice note, `filler` newer messages, and the named sends.
         getMessages: async (_c: number, o?: { before?: number }) => {
@@ -506,6 +510,26 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
   test("a reset that lands while the job reads the conversation still stops the send", async () => {
     const cw = fakeChatwoot({
       onRead: async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { resetAtMessageId: 9001 },
+        });
+      },
+    });
+    try {
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { resetAtMessageId: null },
+      });
+    }
+  });
+
+  test("a reset that lands while the job reads who owns the conversation still stops the send", async () => {
+    const cw = fakeChatwoot({
+      onLive: async () => {
         await suDb.conversation.updateMany({
           where: { tenantId, chatwootConversationId: CONV_ID },
           data: { resetAtMessageId: 9001 },

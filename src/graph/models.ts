@@ -29,12 +29,12 @@ export interface ResolvedModelConfig extends ModelConfig {
   apiKey: string;
   // WHAT ONE CALL ON THIS MODEL MAY SPEND, and absent for every caller that has nothing behind it.
   //
-  // Absent means UNCHANGED: LangChain's AsyncCaller keeps its six retries with exponential backoff
-  // and no request ceiling at all, which is what every install ships with today. That default is
-  // only wrong when there IS something behind the provider — measured through this factory against a
-  // local endpoint (issue #143), a single 503 becomes seven requests over 77s, a 502 99s, and a
-  // provider that accepts the connection and never answers holds the turn forever. See
-  // ./model-fallback for the bounds and the reasoning.
+  // Absent means LangChain's AsyncCaller keeps its six retries with exponential backoff and no
+  // per-attempt ceiling. That default is wrong when there IS something behind the provider: measured
+  // through this factory against a local endpoint (issue #143), a single 503 becomes seven requests
+  // over 77s, a 502 99s. See ./model-fallback for the bounds. A caller with nothing behind the
+  // provider bounds the whole CALL instead (callWithDeadline in ./model-limit, issue #809), because
+  // a per-attempt ceiling is retried like any other failure and the Google adapter drops it.
   maxRetries?: number;
   timeoutMs?: number;
 }

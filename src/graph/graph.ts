@@ -19,6 +19,7 @@ import logger from "@/api/lib/logger";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
 import {
+  callWithDeadline,
   type ModelLabels,
   type ModelRetryInfo,
   runModelCall,
@@ -115,6 +116,10 @@ export interface BuildAgentGraphParams {
   // prose that goes nowhere and is paid for by the token. Absent means the ordinary turn, which does
   // answer somebody.
   noReplyChannel?: boolean;
+  // The deadline on each call to the PRIMARY, retries included (issue #809). Set exactly when nothing
+  // else bounds that call, which is when no fallback was built (see buildModelAndGraph); absent means
+  // the call runs as it did.
+  primaryDeadlineMs?: number;
 }
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -558,6 +563,7 @@ export function buildAgentGraph({
   onHistoryTrim,
   stillWanted,
   noReplyChannel,
+  primaryDeadlineMs,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -826,8 +832,17 @@ export function buildAgentGraph({
       }
     }
 
+    const primaryLlm = hardLimit ? capped : llm;
+    // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of joining
+    // it (measured). Safe today because no caller hands `graph.invoke` a signal of its own; one that
+    // starts to would need the two combined here.
     const response = await runModelCall(
-      () => (hardLimit ? capped : llm).invoke(messages),
+      () =>
+        primaryDeadlineMs === undefined
+          ? primaryLlm.invoke(messages)
+          : callWithDeadline(primaryDeadlineMs, (signal) =>
+              primaryLlm.invoke(messages, { signal }),
+            ),
       {
         primary,
         onRetry: onModelRetry,

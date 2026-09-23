@@ -2525,9 +2525,11 @@ async function runTurnBody(
           ourBot,
         );
         if (!row.ours) return;
+        // A slow tool's acknowledgement already on the customer's phone is our side speaking, and
+        // nothing stamps the row for it.
         const kind = skipHandoverKind(
           silenceWasChosen(msgs) ? chosenSilence(msgs) : null,
-          row.spoken,
+          row.spoken || turnState.spokeOutsideTheReply,
         );
         if (!kind) return;
         await applySkipHandover({

@@ -64,6 +64,7 @@ import {
   guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { signatureFor } from "@/modules/signature/service";
@@ -1287,6 +1288,23 @@ async function runTurnBody(
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });
+  // The transfer a `handoff` verdict asks for (issue #704), made by the caller at the point its own
+  // gates allow. Marked on the handoff state like a transfer the tool made, because everything
+  // downstream keys on that: a transferred conversation is not resolved, not handed over a second
+  // time for a silence, and not answered by the bot again.
+  const handOverForGuardrail = async (
+    direction: "input" | "output",
+  ): Promise<void> => {
+    turnState.resolveRequested = false;
+    handoffState.completed = await applyGuardrailHandoff({
+      client,
+      conversationId,
+      instanceId,
+      handoff: loaded.handoffConfig,
+      direction,
+      flow,
+    });
+  };
 
   // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the
   // modality calls for it, otherwise split into typing-paced balloons. Returns how many balloons
@@ -2047,6 +2065,19 @@ async function runTurnBody(
     if (await writeCalledOff()) return standDown();
     if (guardrailTripped(inGuard)) {
       const inReply = screenedText(inGuard, text);
+      // A hand-over moves the conversation, so it waits for the same two gates a post does: a
+      // superseded or stale turn must not give away a conversation a newer turn is about to answer.
+      // The transfer comes first and the sentence after it, the order `handoff_to_human` keeps.
+      if (inGuard.kind === "handed-off") {
+        const blocked = await postBlocked();
+        if (blocked) return blocked;
+        if (!(await claimBeforeSend())) return "superseded";
+        await handOverForGuardrail("input");
+        if (inReply === null) return "blocked";
+        await client.sendMessage(conversationId, inReply);
+        deliveredBalloons = 1;
+        return "posted";
+      }
       if (inReply !== null) {
         // NOTE: The guardrail reply is a post like any other, so it passes the same two gates:
         // without them, two concurrent deliveries that both trip the guardrail each post their
@@ -2512,8 +2543,16 @@ async function runTurnBody(
     if (outGuard && guardrailTripped(outGuard)) {
       turnState.pendingAttachments.length = 0;
       const replacement = screenedText(outGuard, screened);
-      if (replacement === null) return refuse("blocked");
-      reply = replacement;
+      // The refused reply goes nowhere and the case goes to the team. An empty hand-over message is
+      // the operator's "say nothing", so the reply is blanked and the empty branch below runs with
+      // the transfer already marked, which is what keeps it from resolving or handing over twice.
+      if (outGuard.kind === "handed-off") {
+        await handOverForGuardrail("output");
+        reply = replacement ?? "";
+      } else {
+        if (replacement === null) return refuse("blocked");
+        reply = replacement;
+      }
     }
 
     // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply

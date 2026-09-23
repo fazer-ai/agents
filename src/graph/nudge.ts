@@ -37,6 +37,7 @@ import {
   guardrailRan,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
 import { armCompaction } from "@/modules/memory/compact";
 import {
   buildTemplatePayload,
@@ -2176,6 +2177,20 @@ export async function runAgentNudge(
     // one: suppression posts no message but still fires the post-actions, so a check placed after it
     // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
     if (!(await stillWanted())) return refuse(standDown());
+    // A follow-up the judge refused with `handoff` (issue #704) goes to the team: the refused text
+    // is not sent, and the ladder's resolve falls with the transfer like it does for the tool's.
+    // Only while the bot still owns the conversation, which is the same answer every send here
+    // waits for: a person already on it needs no transfer.
+    if (decision.kind === "handed-off" && canMessagePost) {
+      handoffState.completed = await applyGuardrailHandoff({
+        client,
+        conversationId,
+        instanceId,
+        handoff: cfg.handoffConfig,
+        direction: "output",
+        flow,
+      });
+    }
     if (screened === null) {
       await applyPostActions({ canMessage: canMessagePost });
       return "silent";

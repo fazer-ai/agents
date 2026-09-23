@@ -10,6 +10,7 @@ import {
   type UsagePersist,
   usageAttribution,
 } from "@/graph/usage";
+import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
@@ -42,7 +43,12 @@ export type GuardrailDecision =
   // Tripped: send this instead of the subject. The operator note was written.
   | { kind: "replaced"; reply: string }
   // Tripped with the `silent` action: send nothing. The operator note was written.
-  | { kind: "suppressed" };
+  | { kind: "suppressed" }
+  // Tripped with the `handoff` action (issue #704): the subject is not sent, the conversation goes
+  // to the team, and the customer reads `reply` instead, or nothing when it is null. The operator
+  // note was written. The TRANSFER is the caller's to make (`applyGuardrailHandoff`), at the point
+  // where its own gates say the turn may still act: this gate runs before them.
+  | { kind: "handed-off"; reply: string | null };
 
 // The text to send in place of `subject`, or null to send nothing.
 export function screenedText(
@@ -50,13 +56,16 @@ export function screenedText(
   subject: string,
 ): string | null {
   if (d.kind === "suppressed") return null;
+  if (d.kind === "handed-off") return d.reply;
   return d.kind === "replaced" ? d.reply : subject;
 }
 
 // The policy acted on this text: it replaced it or removed it. The caller's OWN artefacts of the
 // same turn (a queued image and its caption) fall with it.
 export function guardrailTripped(d: GuardrailDecision): boolean {
-  return d.kind === "replaced" || d.kind === "suppressed";
+  return (
+    d.kind === "replaced" || d.kind === "suppressed" || d.kind === "handed-off"
+  );
 }
 
 // Something an operator reads was written: the private note a trip leaves, or the warn an
@@ -91,6 +100,9 @@ export interface GuardrailReport {
   // Model-written, and only on a trip.
   categories?: string[];
   rationale?: string;
+  // The text that was refused, on a hand-over only: the person taking the case over has to read what
+  // the customer was not sent, and nobody else will ever show it to them.
+  refused?: string;
 }
 
 // Where a screening gets announced to a human. The gate decides WHEN (one place, below); this
@@ -107,14 +119,32 @@ export function chatwootNoteSink(
   conversationId: number,
 ): GuardrailAnnounce {
   return async (r) => {
-    if (r.outcome !== "replaced" && r.outcome !== "suppressed") return;
+    if (
+      r.outcome !== "replaced" &&
+      r.outcome !== "suppressed" &&
+      r.outcome !== "handed-off"
+    )
+      return;
+    const head = `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
-      .sendPrivateNote(
-        conversationId,
-        `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`,
-      )
+      .sendPrivateNote(conversationId, handedOffNote(head, r))
       .catch(() => {});
   };
+}
+
+// What a hand-over note adds to the line every trip writes: that the case is now the reader's, and,
+// on the output side, the reply that was not sent, bounded so a long draft cannot make the note
+// unpostable. The input side has nothing to quote that the conversation does not already show: the
+// refused text there is the customer's own message.
+export const REFUSED_REPLY_NOTE_MAX = 3000;
+export function handedOffNote(head: string, r: GuardrailReport): string {
+  if (r.outcome !== "handed-off") return head;
+  const lines = [head, "O caso foi encaminhado para a equipe."];
+  if (r.direction === "output" && r.refused)
+    lines.push(
+      `Resposta reprovada (não enviada ao cliente):\n${clipText(r.refused, REFUSED_REPLY_NOTE_MAX)}`,
+    );
+  return lines.join("\n\n");
 }
 
 export interface GuardrailGateParams {
@@ -332,12 +362,23 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     });
     const r: GuardrailReport = {
       direction,
-      outcome: dir.action === "silent" ? "suppressed" : "replaced",
+      outcome:
+        dir.action === "silent"
+          ? "suppressed"
+          : dir.action === "handoff"
+            ? "handed-off"
+            : "replaced",
       action: effectiveAction,
       categories: verdict.categories,
       rationale: verdict.rationale,
+      ...(dir.action === "handoff" ? { refused: subject } : {}),
     };
     if (dir.action === "silent") return { d: { kind: "suppressed" }, r };
+    if (dir.action === "handoff")
+      return {
+        d: { kind: "handed-off", reply: dir.handoffMessage || null },
+        r,
+      };
     return {
       d: { kind: "replaced", reply: replacement ?? dir.templateMessage },
       r,

@@ -7542,6 +7542,224 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[965, "TEMPLATE-RELEVANCE"]]);
     });
+    // ISSUE #704: the `handoff` action. The refused text does not go out, the conversation goes to
+    // the team through the agent's own handoff target, and the customer reads the hand-over line
+    // (or nothing, when the operator left it empty). The note is what the person taking over reads.
+    describe("the 'handoff' action", () => {
+      const TEAM = 55;
+      const handoffStub =
+        (log: {
+          sent: Array<[number, string]>;
+          notes: Array<[number, string]>;
+          toggles: Array<[number, string]>;
+          assigns: string[];
+        }) =>
+        async () =>
+          ({
+            sendMessage: async (c: number, content: string) => {
+              log.sent.push([c, content]);
+              return {};
+            },
+            sendPrivateNote: async (c: number, content: string) => {
+              log.notes.push([c, content]);
+              return {};
+            },
+            toggleStatus: async (c: number, status: string) => {
+              log.toggles.push([c, status]);
+              return {};
+            },
+            assignTeam: async (c: number, id: number) => {
+              log.assigns.push(`team:${c}:${id}`);
+              return {};
+            },
+            assignToAgent: async (c: number, id: number) => {
+              log.assigns.push(`agent:${c}:${id}`);
+              return {};
+            },
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient;
+      const newLog = () => ({
+        sent: [] as Array<[number, string]>,
+        notes: [] as Array<[number, string]>,
+        toggles: [] as Array<[number, string]>,
+        assigns: [] as string[],
+      });
+      const configure = (
+        dir: "input" | "output",
+        extra: { [k: string]: JsonValue },
+        handoff: { [k: string]: JsonValue } = { mode: "route" },
+      ) =>
+        suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff,
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                input: { enabled: false },
+                output: { enabled: false },
+                [dir]: {
+                  enabled: true,
+                  checks: {
+                    toxicity: true,
+                    unsafeContent: false,
+                    competitorMentions: false,
+                    promptAdherence: false,
+                  },
+                  templateMessage: "TEMPLATE-RECUSA",
+                  ...extra,
+                },
+              },
+            },
+          },
+        });
+      const TRIP = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "fora da política",
+      });
+
+      test("a refused reply goes to the pinned team, and the customer reads the hand-over line", async () => {
+        await configure(
+          "output",
+          { action: "handoff", handoffMessage: "ENCAMINHADO" },
+          { mode: "pinned", targetTeamId: TEAM },
+        );
+        await seedConv(7041);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7041, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7041, "ENCAMINHADO"]]);
+        expect(log.toggles).toEqual([[7041, "open"]]);
+        expect(log.assigns).toEqual([`team:7041:${TEAM}`]);
+        // One note, and it is the reader's handover: what tripped, that the case is theirs, and the
+        // reply the customer was NOT sent.
+        expect(log.notes).toHaveLength(1);
+        const note = log.notes[0]?.[1] ?? "";
+        expect(note).toContain("handoff");
+        expect(note).toContain("O caso foi encaminhado para a equipe.");
+        expect(note).toContain(REPLY);
+      });
+
+      test("an empty hand-over line hands over without writing to the customer", async () => {
+        await configure("output", { action: "handoff", handoffMessage: "" });
+        await seedConv(7042);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7042, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).not.toBe("posted");
+        expect(log.sent).toEqual([]);
+        expect(log.toggles).toEqual([[7042, "open"]]);
+        // `route` mode: Chatwoot's own routing, nothing assigned from here.
+        expect(log.assigns).toEqual([]);
+        // The skip hand-over (#659) must not add a second note on top of this one.
+        expect(log.notes).toHaveLength(1);
+      });
+
+      test("a refused customer message is handed over before the agent runs", async () => {
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7043);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7043, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7043, "ENCAMINHADO-IN"]]);
+        // Only the hand-over line: the agent's own reply never came to be.
+        expect(log.toggles).toEqual([[7043, "open"]]);
+        // The input side quotes nothing: the refused text is the customer's own message.
+        expect(log.notes[0]?.[1]).toContain(
+          "O caso foi encaminhado para a equipe.",
+        );
+        expect(log.notes[0]?.[1]).not.toContain("Resposta reprovada");
+      });
+
+      test("the template action still refuses and leaves the conversation where it was", async () => {
+        await configure("output", { action: "template" });
+        await seedConv(7044);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7044, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7044, "TEMPLATE-RECUSA"]]);
+        expect(log.toggles).toEqual([]);
+        expect(log.assigns).toEqual([]);
+      });
+
+      test("a clean verdict changes nothing", async () => {
+        await configure("output", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+        });
+        await seedConv(7045);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7045, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(
+              JSON.stringify({ violated: false, categories: [] }),
+            ),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7045, REPLY]]);
+        expect(log.toggles).toEqual([]);
+        expect(log.notes).toEqual([]);
+      });
+    });
   });
   // ISSUE #749. A metade REATIVA do mesmo eixo: aqui a entrega do webhook traz a mensagem, então o
   // instante existe antes do prompt ser composto e vai direto ao `loadAgentConfig`. O caso que dói

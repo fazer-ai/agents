@@ -1221,6 +1221,7 @@
     "guardrails": {
       "action": "Ao violar",
       "actionGenerated": "Responder com mensagem gerada pelo guardrails",
+      "actionHandoff": "Encaminhar a conversa para a equipe",
       "actionHint": "O que fazer quando uma checagem dispara.",
       "actionSilent": "Não enviar nada (deixar o cliente sem resposta)",
       "actionTemplate": "Responder com mensagem template",
@@ -1240,6 +1241,8 @@
       "generationPrompt": "Orientação de geração",
       "generationPromptHint": "Orienta como o agente de guardrails escreve a resposta substituta (tom, o que oferecer ou evitar). Opcional.",
       "generationPromptPlaceholder": "ex.: Recuse com educação, mantenha um tom acolhedor e ofereça encaminhar para um atendente humano.",
+      "handoffMessage": "Mensagem ao cliente",
+      "handoffMessageHint": "Enviada quando o caso vai para a equipe. Deixe em branco para encaminhar sem escrever ao cliente.",
       "input": "Entrada (mensagem do cliente)",
       "inputDesc": "Analisa a mensagem do cliente antes de o agente processá-la.",
       "model": "Modelo do guardrails",
@@ -2331,6 +2334,7 @@
     "guardrails": "Rodar guardrails",
     "guardrailsHelp": "Esta opção aplica no Playground as mesmas verificações usadas nas conversas reais.\n\nVocê testa o resultado que o cliente teria ao falar com o agente.\n\nIsso aumenta o custo: uma análise extra da mensagem e outra da resposta. A relevância acrescenta mais uma quando roda com outra verificação da resposta.",
     "guardrailsUnavailable": "Os guardrails estão desligados ou sem credencial. Configure na aba Guardrails para analisar os turnos do playground.",
+    "handedOffNote": "Nada seria enviado ao cliente: o guardrail encaminharia o caso para a equipe.",
     "hint": "Testa suas edições ao vivo (não salvas).",
     "historyEmpty": "Nenhuma sessão salva ainda.",
     "image": {
@@ -2383,6 +2387,7 @@
     },
     "trace": {
       "guardrailClean": "aprovado",
+      "guardrailHandedOff": "bloqueado, o caso iria para a equipe",
       "guardrailInput": "Guardrail na mensagem",
       "guardrailOutput": "Guardrail na resposta",
       "guardrailReplaced": "substituída pela resposta configurada",

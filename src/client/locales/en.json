@@ -1196,6 +1196,7 @@
     "guardrails": {
       "action": "On violation",
       "actionGenerated": "Reply with a guardrails-generated message",
+      "actionHandoff": "Hand the conversation to the team",
       "actionHint": "What to do when a check trips.",
       "actionSilent": "Send nothing (leave the customer without a reply)",
       "actionTemplate": "Reply with a template message",
@@ -1215,6 +1216,8 @@
       "generationPrompt": "Generation guidance",
       "generationPromptHint": "Steers how the guardrails agent writes the replacement reply (tone, what to offer or avoid). Optional.",
       "generationPromptPlaceholder": "e.g. Politely decline, keep a warm tone, and offer to connect them with a human agent.",
+      "handoffMessage": "Message to the customer",
+      "handoffMessageHint": "Sent when the case goes to the team. Leave it empty to hand over without writing to the customer.",
       "input": "Input (customer message)",
       "inputDesc": "Screen the customer's message before the agent processes it.",
       "model": "Guardrails model",
@@ -2271,6 +2274,7 @@
     "guardrails": "Run guardrails",
     "guardrailsHelp": "This option applies the same checks in the Playground as in real conversations.\n\nYou test the result a customer would get when talking to the agent.\n\nThis increases cost: one extra analysis for the message and another for the reply. Relevance adds one more when it runs with another reply check.",
     "guardrailsUnavailable": "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
+    "handedOffNote": "Nothing would be sent to the customer: the guardrail would hand the case to the team.",
     "hint": "Uses the saved config.",
     "historyEmpty": "No saved sessions yet.",
     "image": {
@@ -2323,6 +2327,7 @@
     },
     "trace": {
       "guardrailClean": "approved",
+      "guardrailHandedOff": "blocked, the case would go to the team",
       "guardrailInput": "Guardrail on the message",
       "guardrailOutput": "Guardrail on the reply",
       "guardrailReplaced": "replaced by the configured reply",

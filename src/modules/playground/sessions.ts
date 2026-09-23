@@ -297,7 +297,12 @@ function verdictsAround(note: LoadedTurnNote, own: TraceEntry[]): TraceEntry[] {
 // off the verdicts rather than off the text, or a turn the agent ended in silence would be
 // reported as moderated.
 function suppressedByGuardrail(note: LoadedTurnNote): boolean {
-  return note.guardrails.some((g) => g.outcome === "suppressed");
+  return note.guardrails.some(
+    (g) =>
+      g.outcome === "suppressed" ||
+      // A hand-over that says nothing to the customer empties the reply the same way.
+      (g.outcome === "handed-off" && !note.reply),
+  );
 }
 
 // The turn the operator should read, in place of the one the thread produced.

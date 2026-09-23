@@ -1335,6 +1335,11 @@ export function guardrailTraceLabel(
         "playground.trace.guardrailSuppressed",
         "blocked, nothing would be sent",
       );
+    case "handed-off":
+      return t(
+        "playground.trace.guardrailHandedOff",
+        "blocked, the case would go to the team",
+      );
     case "replaced":
       // `generated` reaches here only when the judge actually handed text back: the gate reports
       // `template` when the action was `generated` and no reply came with it, so this reads the
@@ -1373,7 +1378,9 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
   }
   if (entry.type === "guardrail") {
     const tripped =
-      entry.outcome === "replaced" || entry.outcome === "suppressed";
+      entry.outcome === "replaced" ||
+      entry.outcome === "suppressed" ||
+      entry.outcome === "handed-off";
     return (
       <div className="flex flex-col gap-0.5">
         <span

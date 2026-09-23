@@ -35,6 +35,7 @@ export const NO_TOOL_MEANING = ["vision.extractionPrompt"];
 export const PERSON_FACING = [
   "availability.awayMessage",
   "contactAuth.denyMessage",
+  "guardrails.*.handoffMessage",
   "guardrails.*.templateMessage",
   "signature.text",
 ];

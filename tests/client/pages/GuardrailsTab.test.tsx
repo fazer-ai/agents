@@ -56,6 +56,8 @@ const NO_REFUSALS: GuardrailsRefusals = {
   inputTemplateMessage: null,
   outputTemplateMessage: null,
   outputGenerationPrompt: null,
+  inputHandoffMessage: null,
+  outputHandoffMessage: null,
 };
 
 describe("GuardrailsTab template message", () => {
@@ -87,6 +89,19 @@ describe("GuardrailsTab template message", () => {
   test("is gone on silent, which sends nothing at all", () => {
     renderWith("silent");
     expect(templateFields()).toBe(0);
+  });
+
+  // Issue #704: a hand-over says a person will continue, which is not what a refusal says, so it
+  // has its own box and the template's is gone. Capped like every customer-facing line here.
+  test("is replaced by the hand-over line on handoff", () => {
+    renderWith("handoff");
+    expect(templateFields()).toBe(0);
+    const handoff = [
+      ...screen.queryAllByLabelText(/^Message to the customer/),
+      ...screen.queryAllByLabelText(/^Mensagem ao cliente/),
+    ].map((f) => f.getAttribute("maxlength"));
+    expect(handoff.length).toBe(2);
+    expect(handoff.every((v) => v === String(TEMPLATE_MESSAGE_MAX))).toBe(true);
   });
 
   // The custom policy is clamped at CUSTOM_POLICY_MAX on read, and until now the field said nothing:

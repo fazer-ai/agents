@@ -11,14 +11,15 @@ import {
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
 // analyzes the customer message (input) and/or the agent reply (output) against a set of standard
 // checks; on a violation the configured PER-DIRECTION action fires (template reply / a guardrails-
-// generated safe reply / stay silent). This reader is the single source of defaults + clamping, so a
+// generated safe reply / stay silent / hand the conversation to the team). This reader is the single source of defaults + clamping, so a
 // malformed value never breaks the webhook. Surfaced in the agent editor. Off by default.
 
-export type GuardrailAction = "template" | "generated" | "silent";
+export type GuardrailAction = "template" | "generated" | "silent" | "handoff";
 export const GUARDRAIL_ACTIONS: readonly GuardrailAction[] = [
   "template",
   "generated",
   "silent",
+  "handoff",
 ];
 
 export interface GuardrailChecks {
@@ -49,6 +50,10 @@ export interface GuardrailDirectionConfig {
   // Steering prompt for action === "generated": guides HOW the guardrails agent writes the
   // replacement reply (tone, what to offer, what to avoid). Empty → generic safe reply.
   generationPrompt: string;
+  // What the CUSTOMER reads when action === "handoff" (issue #704): the case went to the team. Not
+  // `templateMessage`, which is a refusal, and a refusal is the wrong sentence for "a person will
+  // continue". EMPTY is a real value and means: say nothing, only hand over.
+  handoffMessage: string;
 }
 
 export interface GuardrailsConfig {
@@ -69,6 +74,8 @@ export interface GuardrailsConfig {
 }
 
 const DEFAULT_TEMPLATE = "Desculpe, não consigo ajudar com isso.";
+const DEFAULT_HANDOFF_MESSAGE =
+  "Encaminhei seu atendimento para a nossa equipe. Uma pessoa vai continuar com você por aqui.";
 
 export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
   enabled: false,
@@ -90,6 +97,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     action: "template",
     templateMessage: DEFAULT_TEMPLATE,
     generationPrompt: "",
+    handoffMessage: DEFAULT_HANDOFF_MESSAGE,
   },
   output: {
     enabled: true,
@@ -103,6 +111,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     action: "template",
     templateMessage: DEFAULT_TEMPLATE,
     generationPrompt: "",
+    handoffMessage: DEFAULT_HANDOFF_MESSAGE,
   },
 };
 
@@ -152,6 +161,13 @@ function readDirection(
       str(b.generationPrompt) ?? d.generationPrompt,
       GENERATION_PROMPT_MAX,
     ),
+    // A stored string is kept even when blank, unlike the template above: "" is the operator saying
+    // "hand over without writing to the customer". Only an absent or non-string value takes the
+    // default.
+    handoffMessage:
+      typeof b.handoffMessage === "string"
+        ? clipText(b.handoffMessage.trim(), TEMPLATE_MESSAGE_MAX)
+        : d.handoffMessage,
   };
 }
 

@@ -69,6 +69,8 @@ const CONV_OTHER_BOT = 79_603;
 const CONV_LATER = 79_605;
 const CONV_DUE = 79_606;
 const CONV_SLOW = 79_607;
+const CONV_DEAD_NOW = 79_609;
+const CONV_DEAD_BEFORE = 79_610;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -346,6 +348,36 @@ describe.skipIf(!dbUp)(
       const due = await rowOf(CONV_DUE);
       expect(due?.payload).toEqual({ threadId: threadOf(CONV_DUE) });
       expect(due?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+    });
+
+    // Found by the verifier: a model that keeps failing sends the row DEAD, which stamps nothing, and
+    // each pass re-armed it for one more model call a minute. A death in this episode keeps the
+    // conversation out; one from an earlier episode does not.
+    test("a follow-up that died in this episode is not re-armed; one that died before it is", async () => {
+      await seedIdle(CONV_DEAD_NOW, INBOX_ON);
+      await seedIdle(CONV_DEAD_BEFORE, INBOX_ON);
+      for (const conv of [CONV_DEAD_NOW, CONV_DEAD_BEFORE]) {
+        await enqueueJob({
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: keyOf(conv),
+          runAt: new Date(Date.now() - 60_000),
+          payload: { threadId: threadOf(conv) },
+          rearm: "same-work",
+          base: appDb,
+        });
+      }
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET status = 'DEAD', attempts = 5, updated_at = now()
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_NOW)}`;
+      // Died a day ago, before the silence that started three minutes ago.
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs
+           SET status = 'DEAD', attempts = 5, updated_at = now() - interval '1 day'
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_BEFORE)}`;
+      await runSweep();
+      expect((await rowOf(CONV_DEAD_NOW))?.status).toBe("DEAD");
+      expect((await rowOf(CONV_DEAD_BEFORE))?.status).toBe("PENDING");
     });
 
     // The cadence of a step longer than the cutoff: the handler reschedules to when the step is due,

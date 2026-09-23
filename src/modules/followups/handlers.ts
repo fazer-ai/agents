@@ -208,6 +208,21 @@ async function sweepHandler(
           c.last_follow_up_at IS NULL
           OR GREATEST(c.last_inbound_at, c.last_replied_at) > c.last_follow_up_at
         )
+        -- A FOLLOW-UP THAT DIED IN THIS EPISODE is not offered again (issue #796, found by the
+        -- verifier). A row goes DEAD when its handler threw MAX_ATTEMPTS times (a model that keeps
+        -- failing), and the death stamps nothing on the conversation, so the next pass re-armed it
+        -- and the handler ran, and called the model, once a minute without end. Dated by the row's
+        -- updated_at against when the current silence began: a death in an EARLIER episode does not
+        -- keep a new one out, and either side speaking again opens that new episode.
+        AND NOT EXISTS (
+          SELECT 1
+            FROM scheduler_jobs j
+           WHERE j.tenant_id = c.tenant_id
+             AND j.kind = 'FOLLOWUP'
+             AND j.dedupe_key = 'followup:' || c.thread_id
+             AND j.status = 'DEAD'
+             AND j.updated_at >= GREATEST(c.last_inbound_at, c.last_replied_at)
+        )
         -- Activation fence: only conversations that became LIVE after follow-up was armed for this
         -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition and re-stamped
         -- on promotion to production). Without it, flipping an agent to production with follow-up

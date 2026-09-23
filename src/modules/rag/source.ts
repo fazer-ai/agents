@@ -77,15 +77,14 @@ export interface SourceState {
 const DEFAULT_INTERVAL_MINUTES = 10;
 const MIN_INTERVAL_MINUTES = 5;
 const MAX_INTERVAL_MINUTES = 24 * 60;
-// The public API caps a page at 100; asking for the cap keeps a 90-article portal to one request.
-const PAGE_SIZE = 100;
-// A portal with more articles than this is not a help center the agent should be reading whole,
-// and a listing that never ends (a portal that ignores `page`) must not loop forever.
-const MAX_PAGES = 50;
+
+// A portal with more articles than this is not a help center the agent should be reading whole, and
+// the listing arrives in one body, so its size is bounded too.
+const MAX_ARTICLES = 5_000;
+const MAX_LISTING_BYTES = 32 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15_000;
-// The whole listing, not each page: a run is awaited by the scheduler tick every shared-lane job
-// waits on (reminders, follow-ups, every tenant's), so a slow portal of many pages must not be able
-// to hold it for pages × the per-page timeout.
+// The whole run's wait on the portal, the name resolution included: a run is awaited by the scheduler
+// tick every shared-lane job waits on (reminders, follow-ups, every tenant's).
 const LISTING_DEADLINE_MS = 60_000;
 // And the writes, for the same tick: a first sync of a portal with thousands of articles is thousands
 // of transactions. A run writes at most this many documents and says there is more; the handler then
@@ -416,9 +415,15 @@ interface RawArticle {
   link?: unknown;
 }
 
-// Every published article of the portal, or a throw. ALL pages or nothing: a reconcile over a
-// partial listing would read "not listed" as "taken off the portal" and delete what was on the page
-// that failed.
+// Every published article of the portal, in ONE request, or a throw.
+//
+// Without `per_page` the public listing is not paginated at all: `limit_results` only pages when the
+// parameter is present, and the answer is every published article of the locale. That is the only
+// complete answer it has. Paging it is not: the listing orders by `position` alone, which each
+// category numbers on its own, so ties across categories straddle page boundaries and an offset page
+// repeats one article and skips another with nothing changing on the portal. A missing article reads
+// as deleted, so the listing is taken whole, checked against the count the portal declares, and a
+// mismatch is an error that deletes nothing.
 export async function fetchPortalArticles(
   config: PortalConfig,
   fetchImpl: typeof fetch = fetch,
@@ -427,80 +432,84 @@ export async function fetchPortalArticles(
   deadlineMs: number = LISTING_DEADLINE_MS,
 ): Promise<PortalArticle[]> {
   const deadline = Date.now() + deadlineMs;
+  const url = `${config.baseUrl}/hc/${encodeURIComponent(config.slug)}/${encodeURIComponent(config.locale)}/articles.json`;
+  const expired = () =>
+    new Error(`portal listing did not finish within ${deadlineMs / 1000}s`);
+  // The check resolves the name, and a resolver that hangs is inside the deadline like the fetch is:
+  // the listing is fetched only after the check PASSES, and the wait for it ends with the deadline.
+  await beforeDeadline(assertSafe(url), deadline, expired);
+  const left = deadline - Date.now();
+  if (left <= 0) throw expired();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
+  let body: { payload?: unknown; meta?: { articles_count?: unknown } };
+  // The timer covers the body too: a portal that sends its headers and then stalls would otherwise
+  // hold the run, and with it the scheduler tick every other shared-lane job waits on.
+  try {
+    // `manual`: a redirect is not followed, because the SSRF check above vouched for this host and
+    // nothing else.
+    const res = await fetchImpl(url, {
+      signal: ctrl.signal,
+      redirect: "manual",
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new Error(`portal listing answered HTTP ${res.status}`);
+    }
+    body = JSON.parse(await readCapped(res, MAX_LISTING_BYTES)) as typeof body;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!Array.isArray(body.payload)) {
+    throw new Error("portal listing has no payload array");
+  }
+  if (body.payload.length > MAX_ARTICLES) {
+    throw new Error(
+      `portal listing has ${body.payload.length} articles, above the ${MAX_ARTICLES} a source mirrors`,
+    );
+  }
   const articles = new Map<number, PortalArticle>();
   // Every id the portal listed, kept or not (a draft, an untitled one): what its count counts.
   const listed = new Set<unknown>();
-  let expected: number | null = null;
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const url = `${config.baseUrl}/hc/${encodeURIComponent(config.slug)}/${encodeURIComponent(config.locale)}/articles.json?per_page=${PAGE_SIZE}&page=${page}`;
-    // Asked before EVERY page, not once: the name is the tenant's, and one that resolves publicly for
-    // page 1 can resolve privately for page 2 (the embedding client asks per request for the same
-    // reason).
-    const expired = () =>
-      new Error(
-        `portal listing did not finish within ${deadlineMs / 1000}s (page ${page})`,
-      );
-    // The check resolves the name, and a resolver that hangs is inside the deadline like the fetch
-    // is: the page is fetched only after the check PASSES, and the wait for it ends with the deadline.
-    await beforeDeadline(assertSafe(url), deadline, expired);
-    const left = deadline - Date.now();
-    if (left <= 0) throw expired();
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
-    let body: { payload?: unknown; meta?: { articles_count?: unknown } };
-    // The timer covers the body too: a portal that sends its headers and then stalls would otherwise
-    // hold the run, and with it the scheduler tick every other shared-lane job waits on.
-    try {
-      // `manual`: a redirect is not followed, because the SSRF check above vouched for this host
-      // and nothing else.
-      const res = await fetchImpl(url, {
-        signal: ctrl.signal,
-        redirect: "manual",
-        headers: { accept: "application/json" },
-      });
-      if (!res.ok) {
-        throw new Error(
-          `portal listing page ${page} answered HTTP ${res.status}`,
-        );
-      }
-      body = (await res.json()) as typeof body;
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!Array.isArray(body.payload)) {
-      throw new Error(`portal listing page ${page} has no payload array`);
-    }
-    const count = body.meta?.articles_count;
-    if (expected === null && typeof count === "number") expected = count;
-    let added = 0;
-    for (const raw of body.payload as RawArticle[]) {
-      if (listed.has(raw.id)) continue;
-      listed.add(raw.id);
-      added++;
-      const a = toArticle(raw, config);
-      if (a) articles.set(a.id, a);
-    }
-    // Done when nothing new arrived (an empty page, or a portal that ignores `page` and returns
-    // everything every time) or the count the portal declared is reached. A short page ends the
-    // listing only when there is no count: a portal whose cap is below the size asked for serves
-    // short pages all the way through.
-    const done =
-      added === 0 ||
-      (expected !== null
-        ? listed.size >= expected
-        : body.payload.length < PAGE_SIZE);
-    if (done) {
-      // A listing that ran dry before the count it declared is a partial one (an empty or repeated
-      // page mid-way), and a partial listing reads the missing articles as deleted.
-      if (expected !== null && listed.size < expected) {
-        throw new Error(
-          `portal listing ended at ${listed.size} of the ${expected} articles it declared`,
-        );
-      }
-      return [...articles.values()];
-    }
+  for (const raw of body.payload as RawArticle[]) {
+    if (listed.has(raw.id)) continue;
+    listed.add(raw.id);
+    const a = toArticle(raw, config);
+    if (a) articles.set(a.id, a);
   }
-  throw new Error(`portal listing did not end within ${MAX_PAGES} pages`);
+  const expected = body.meta?.articles_count;
+  if (typeof expected === "number" && listed.size < expected) {
+    // A listing short of the count it declares (a Chatwoot that pages by default, a proxy that cut
+    // the body) is a partial one, and a partial listing reads the missing articles as deleted.
+    throw new Error(
+      `portal listing has ${listed.size} of the ${expected} articles it declares`,
+    );
+  }
+  return [...articles.values()];
+}
+
+// The body, refused past `max` bytes instead of buffered whole: the size of the answer is the
+// portal's to choose, and the process holding it is shared.
+async function readCapped(res: Response, max: number): Promise<string> {
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > max) {
+    throw new Error(`portal listing is ${declared} bytes, above ${max}`);
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      throw new Error(`portal listing is above ${max} bytes`);
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 async function beforeDeadline<T>(

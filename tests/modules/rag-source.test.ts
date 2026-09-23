@@ -72,17 +72,16 @@ interface Art {
   status?: string;
 }
 
-// The public listing, as `Public::Api::V1::Portals::ArticlesController#index` serves it.
+// The public listing, as `Public::Api::V1::Portals::ArticlesController#index` serves it: without
+// `per_page` it is every published article of the locale in one answer, with the count.
 function portal(opts: {
   articles: () => Art[];
-  failPage?: (page: number) => number | null;
-  ignorePage?: boolean;
-  pageCap?: number;
+  fail?: number;
   requests?: string[];
   // A portal that one day serves drafts in the public listing, and one that declares no count.
   leakDrafts?: boolean;
   noCount?: boolean;
-  // A portal whose listing runs dry (or repeats page 1) before the count it declares.
+  // A listing short of the count it declares (a Chatwoot that pages by default, a cut body).
   truncateAt?: number;
   redirects?: (RequestRedirect | undefined)[];
 }): typeof fetch {
@@ -90,26 +89,23 @@ function portal(opts: {
     const url = new URL(String(input));
     opts.requests?.push(url.pathname + url.search);
     opts.redirects?.push(init?.redirect);
-    const page = Number(url.searchParams.get("page") ?? "1");
-    const failed = opts.failPage?.(page) ?? null;
-    if (failed) return new Response("boom", { status: failed });
+    // A failure whose body still parses as a listing (an empty one): the status is what says it
+    // failed, and reading the body anyway would take an outage for a portal with no articles.
+    if (opts.fail)
+      return Response.json(
+        { payload: [], meta: { articles_count: 0 } },
+        { status: opts.fail },
+      );
     const published = opts
       .articles()
       .filter(
         (a) => opts.leakDrafts || (a.status ?? "published") === "published",
       );
-    const per = Math.min(
-      Number(url.searchParams.get("per_page") ?? "25"),
-      opts.pageCap ?? 100,
-    );
     const served =
       opts.truncateAt !== undefined
         ? published.slice(0, opts.truncateAt)
         : published;
-    const slice = opts.ignorePage
-      ? served
-      : served.slice((page - 1) * per, page * per);
-    const payload = slice.map((a) => ({
+    const payload = served.map((a) => ({
       id: a.id,
       title: a.title,
       content: a.content,
@@ -123,6 +119,13 @@ function portal(opts: {
     });
   }) as unknown as typeof fetch;
 }
+
+const many = (n: number): Art[] =>
+  Array.from({ length: n }, (_, i) => ({
+    id: 301 + i,
+    title: `Artigo ${301 + i}`,
+    content: `MARCADOR-${301 + i}`,
+  }));
 
 const BASIC: Art[] = [
   {
@@ -409,7 +412,7 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     const before = await synced();
     const changed = BASIC.map((a) => ({ ...a, content: `${a.content}-novo` }));
     expect(
-      await sync(portal({ articles: () => changed, failPage: () => 500 })),
+      await sync(portal({ articles: () => changed, fail: 500 })),
     ).toBeNull();
     expect(await getSource(ctx(), kb, appDb)).toMatchObject({
       lastStatus: "error",
@@ -424,49 +427,19 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     );
   });
 
-  test("a failure on a later page deletes nothing that was on it", async () => {
+  test("the whole listing comes in one request, with no paging parameters", async () => {
     await configure();
-    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
-      id: 301 + i,
-      title: `Artigo ${301 + i}`,
-      content: `MARCADOR-${301 + i}`,
-    }));
-    await sync(portal({ articles: () => many }));
-    expect(await synced()).toHaveLength(130);
-    const r = await sync(
-      portal({ articles: () => many, failPage: (p) => (p >= 2 ? 500 : null) }),
-    );
-    expect(r).toBeNull();
-    expect(await synced()).toHaveLength(130);
-  });
-
-  test("the listing is read past its first page, however the portal pages it", async () => {
-    await configure();
-    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
-      id: 301 + i,
-      title: `Artigo ${301 + i}`,
-      content: `MARCADOR-${301 + i}`,
-    }));
     const requests: string[] = [];
-    await sync(portal({ articles: () => many, requests }));
-    // Two pages of 100 for 130 articles, and not a third: the declared count ends the listing.
-    expect(requests).toHaveLength(2);
+    await sync(portal({ articles: () => many(130), requests }));
+    // Paging is what repeats and skips articles (the listing orders by a position each category
+    // numbers on its own), so none is asked for.
+    expect(requests).toEqual(["/hc/ajuda/pt-BR/articles.json"]);
     const docs = await synced();
     expect(new Set(docs.map((d) => d.externalId)).size).toBe(130);
     expect(docs.find((d) => d.externalId === "430")?.content).toBe(
       "MARCADOR-430",
     );
-    // A portal whose page is smaller than asked (a cap below 100) is still read to the end.
-    await suDb.knowledgeDocument.deleteMany({
-      where: { knowledgeBaseId: kb, externalId: { not: null } },
-    });
-    await sync(portal({ articles: () => many, pageCap: 25 }));
-    expect(await synced()).toHaveLength(130);
-    // And one that ignores `page` and returns everything every time ends instead of looping.
-    await sync(portal({ articles: () => many, ignorePage: true }));
-    expect(await synced()).toHaveLength(130);
   });
-
   test("a renamed article slug moves the document's URL without re-embedding it", async () => {
     await configure();
     let arts = BASIC;
@@ -521,50 +494,56 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(await synced()).toHaveLength(3);
   });
 
-  test("a portal with no count that ignores the page is read once, not until the page limit", async () => {
+  test("a listing short of its declared count deletes nothing", async () => {
     await configure();
-    // A full first page (so a short page does not end the listing) and no declared count: only the
-    // absence of new ids on page 2 can end it.
-    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
-      id: 301 + i,
-      title: `Artigo ${301 + i}`,
-      content: `MARCADOR-${301 + i}`,
-    }));
-    const requests: string[] = [];
-    const r = await sync(
-      portal({
-        articles: () => many,
-        ignorePage: true,
-        noCount: true,
-        requests,
-      }),
-    );
-    expect(r).toMatchObject({ created: 130 });
-    expect(requests).toHaveLength(2);
-  });
-
-  test("a listing that runs dry before its declared count deletes nothing", async () => {
-    await configure();
-    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
-      id: 301 + i,
-      title: `Artigo ${301 + i}`,
-      content: `MARCADOR-${301 + i}`,
-    }));
-    await sync(portal({ articles: () => many }));
+    await sync(portal({ articles: () => many(130) }));
     expect(await synced()).toHaveLength(130);
-    // Page 2 comes back empty, then a portal that repeats page 1: 100 of the 130 it declares.
-    for (const extra of [{}, { ignorePage: true }]) {
-      const r = await sync(
-        portal({ articles: () => many, truncateAt: 100, ...extra }),
-      );
-      expect(r).toBeNull();
-      expect(await synced()).toHaveLength(130);
-      expect(await getSource(ctx(), kb, appDb)).toMatchObject({
-        lastStatus: "error",
-      });
-    }
+    const r = await sync(
+      portal({ articles: () => many(130), truncateAt: 100 }),
+    );
+    expect(r).toBeNull();
+    expect(await synced()).toHaveLength(130);
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      lastStatus: "error",
+      lastMessage: expect.stringContaining("100 of the 130"),
+    });
+    // With no count declared there is nothing to hold it to, and the listing is the portal.
+    expect(
+      await sync(portal({ articles: () => many(130), noCount: true })),
+    ).toMatchObject({ unchanged: 130 });
   });
 
+  test("a listing past the article or byte ceiling is refused, not buffered", async () => {
+    await configure();
+    await sync(portal({ articles: () => BASIC }));
+    expect(await sync(portal({ articles: () => many(5_001) }))).toBeNull();
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      lastMessage: expect.stringContaining("5001 articles"),
+    });
+    const huge = (async () =>
+      new Response("{}", {
+        headers: { "content-length": String(64 * 1024 * 1024) },
+      })) as unknown as typeof fetch;
+    expect(await sync(huge)).toBeNull();
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      lastMessage: expect.stringContaining("bytes"),
+    });
+    // And one that declares no length and streams past the ceiling is cut while it streams.
+    const mb = new Uint8Array(1024 * 1024).fill(32);
+    const streaming = (async () =>
+      new Response(
+        new ReadableStream({
+          pull(c) {
+            c.enqueue(mb);
+          },
+        }),
+      )) as unknown as typeof fetch;
+    expect(await sync(streaming)).toBeNull();
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      lastMessage: expect.stringContaining("above"),
+    });
+    expect(await synced()).toHaveLength(3);
+  });
   test("a portal that stalls its body is cut by the timeout, not waited on", async () => {
     await configure();
     await sync(portal({ articles: () => BASIC }));
@@ -704,28 +683,6 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     );
   });
 
-  test("the SSRF check is asked before every page, not once per run", async () => {
-    await configure();
-    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
-      id: 301 + i,
-      title: `Artigo ${301 + i}`,
-      content: `MARCADOR-${301 + i}`,
-    }));
-    const asked: string[] = [];
-    const r = await syncKnowledgeSource(tenantId, kb, {
-      base: appDb,
-      fetchImpl: portal({ articles: () => many }),
-      assertSafe: async (u) => {
-        asked.push(u);
-        if (asked.length > 1) throw new Error("resolves to a private address");
-      },
-    });
-    expect(r).toBeNull();
-    expect(asked).toHaveLength(2);
-    expect(asked[1]).toContain("page=2");
-    expect(await synced()).toHaveLength(0);
-  });
-
   test("a failed write is recorded on the source before the run gives up", async () => {
     await configure();
     await suDb.$executeRawUnsafe(
@@ -793,33 +750,8 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     });
   });
 
-  test("a slow portal of many pages is cut by the listing deadline, not per page", async () => {
+  test("a portal that hangs is cut by the listing deadline, not by the request timeout", async () => {
     await configure();
-    const many: Art[] = Array.from({ length: 330 }, (_, i) => ({
-      id: 301 + i,
-      title: `Artigo ${301 + i}`,
-      content: `MARCADOR-${301 + i}`,
-    }));
-    const inner = portal({ articles: () => many });
-    const slow = (async (u: string, init?: RequestInit) => {
-      await Bun.sleep(150);
-      return inner(u, init);
-    }) as unknown as typeof fetch;
-    const t0 = Date.now();
-    const r = await syncKnowledgeSource(tenantId, kb, {
-      base: appDb,
-      fetchImpl: slow,
-      assertSafe: allowAll,
-      timeoutMs: 10_000,
-      deadlineMs: 400,
-    });
-    expect(r).toBeNull();
-    expect(Date.now() - t0).toBeLessThan(2_000);
-    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
-      lastStatus: "error",
-    });
-    expect(await synced()).toHaveLength(0);
-    // And a single page that stalls is cut at what is left of the deadline, not at its own timeout.
     const hung = (async (_u: string, init?: RequestInit) =>
       new Promise<Response>((_, reject) =>
         init?.signal?.addEventListener("abort", () =>

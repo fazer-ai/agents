@@ -40,6 +40,8 @@ const MARKDOWN_LINK = new RegExp(
 // (`**https://…`), never between the item and a word (`abc_https://…`, `ops~billing@…`). CJK and
 // fullwidth punctuation (`。`, `，`) ends a URL: it is the sentence's, and no URL holds it. Letters in
 // those blocks (`佐々木`, fullwidth `ｗ`) are the URL's.
+const MAILTO =
+  /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)mailto:[^\s<>`]+/giu;
 const URL =
   /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. An
@@ -113,6 +115,15 @@ function itemSpans(text: string): Span[] {
     const end = m.index + m[0].length;
     if (!links.every((l) => end <= l.start || m.index >= l.end)) continue;
     links.push(widen(text, m.index, end, [m[1] ?? ""], ""));
+  }
+  // A bare `mailto:` URI hands over its recipient like any other `mailto:` link.
+  for (const m of text.matchAll(MAILTO)) {
+    const c = item(text, m.index, m[0]);
+    if (!links.every((l) => c.end <= l.start || c.start >= l.end)) continue;
+    links.push({
+      ...c,
+      items: [recipient((c.items[0] ?? "").replace(/^mailto:/i, ""))],
+    });
   }
   // Structure before text: bare items are searched only outside the links, so a greedy URL cannot
   // run across `[um](…),[outro](…)`. Blanking UTF-16 units keeps every index where it was.
@@ -203,12 +214,25 @@ function unclosedOpener(text: string, start: number, end: number): boolean {
   return !closesOnLine(text, mark, end);
 }
 
-// Whether `run` appears again after `end`, before the line breaks: the far half of a formatting
-// run or a quote that wraps a phrase, not only the item.
+// Whether `run` closes after `end`, before the line breaks: the far half of a formatting run or a
+// quote that wraps a phrase, not only the item.
 function closesOnLine(text: string, run: string, end: number): boolean {
-  const close = text.indexOf(run, end);
   const line = text.indexOf("\n", end);
-  return close !== -1 && (line === -1 || close < line);
+  for (
+    let i = text.indexOf(run, end);
+    i !== -1 && (line === -1 || i < line);
+    i = text.indexOf(run, i + 1)
+  ) {
+    // Only a right-flanking occurrence closes (CommonMark): after a non-space, before a space, a
+    // punctuation mark or the end. The `_` inside `sac_vendas@` closes nothing.
+    const after = text[i + run.length] ?? "";
+    if (
+      /\S/.test(text[i - 1] ?? "") &&
+      (after === "" || /[\s\p{P}]/u.test(after))
+    )
+      return true;
+  }
+  return false;
 }
 
 // A closing bracket the item did not open (`(https://x.com.br)`, `[https://x.com.br]`) is the

@@ -362,6 +362,7 @@ describe("planSpokenReply", () => {
     for (const text of [
       "Escreva para *sales@x.com.br e respondemos em 2 dias",
       "Escreva para ~sales@x.com.br e respondemos em 2 dias",
+      "Escreva para *sales@x.com.br e responda * aqui mesmo",
     ]) {
       expect(planSpokenReply(text).written).toEqual([]);
     }
@@ -575,6 +576,23 @@ describe("planSpokenReply", () => {
         "Fale com ops*billing@x.com.br e aguarde *dois dias* pela resposta",
       ).written,
     ).toEqual([]);
+  });
+
+  // Review round 19.
+  test("an underscore inside a later word does not close a leading one", () => {
+    expect(
+      planSpokenReply(
+        "Envie para _sac@x.com.br ou sac_vendas@x.com.br e aguarde nossa resposta",
+      ).written,
+    ).toEqual(["_sac@x.com.br", "sac_vendas@x.com.br"]);
+  });
+
+  test("a bare mailto URI hands over its decoded recipient", () => {
+    const plan = planSpokenReply(
+      "Escreva para mailto:foo%2Bbar@x.com.br?subject=Pedido. Respondemos em 2 dias",
+    );
+    expect(plan.written).toEqual(["foo+bar@x.com.br"]);
+    expect(plan.speech).not.toMatch(/mailto|subject|@/);
   });
 
   test("a decimal, a time and a file name are not URLs", () => {

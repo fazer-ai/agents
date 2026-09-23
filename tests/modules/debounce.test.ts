@@ -848,14 +848,18 @@ describe.skipIf(!dbUp)("debounce", () => {
   // one of an earlier conversation) is on the catch-up read and on no default page.
   function makeForkStub(opts: {
     latest: unknown;
-    after: unknown;
+    // A function answers each catch-up read by its cursor, for the walk past the fork's cap.
+    after: unknown | ((after: number) => unknown);
     sent: Array<[number, string]>;
     reads: Array<{ after?: number }>;
   }) {
     const client = {
       getMessages: async (_conv: number, o?: { after?: number }) => {
         opts.reads.push(o?.after != null ? { after: o.after } : {});
-        return o?.after != null ? opts.after : opts.latest;
+        if (o?.after == null) return opts.latest;
+        return typeof opts.after === "function"
+          ? opts.after(o.after)
+          : opts.after;
       },
       sendMessage: async (conversationId: number, content: string) => {
         opts.sent.push([conversationId, content]);
@@ -993,6 +997,102 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
     expect(model.seen[0]).toContain('<reação do cliente emoji="🙏"');
     expect(await watermarkOf(convId)).toBe(12);
+  });
+
+  // The catch-up read stops at a hundred rows (the fork's `CATCH_UP_LIMIT`). A burst further behind
+  // its page than that is walked until the read reaches the page: merging the first hundred alone
+  // would hand the selectors a history with a hole where the operator's reply sits, and a request
+  // that reply closed would be answered again (PR #821, review round 1).
+  const activityRows = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => ({
+      id: from + i,
+      content: "conversa reaberta",
+      type: 2,
+    }));
+
+  test("issue #746: a catch-up read past the fork's cap is walked until it reaches the page", async () => {
+    const convId = 7468;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 104, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          // The operator's reply is only in the gap: the page starts above it.
+          latest: page(activityRows(150, 150)),
+          after: (after: number) =>
+            after === 2
+              ? page([
+                  { id: 3, content: "quero cancelar" },
+                  ...activityRows(4, 102),
+                ])
+              : page([
+                  {
+                    id: 103,
+                    content: "Pronto, cancelei.",
+                    type: 1,
+                    sender: "user",
+                  },
+                  { id: 104, content: "❤️", reaction: true },
+                ]),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The page, then the walk; the post gate re-reads the page after the turn.
+    expect(reads.slice(0, 3)).toEqual([{}, { after: 2 }, { after: 102 }]);
+    expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
+    // The operator's reply is in the walked history, so the request it closed is not answered again.
+    expect(model.seen.join("\n")).not.toContain("quero cancelar");
+  });
+
+  test("issue #746: a catch-up walk the read cap cuts short adds nothing", async () => {
+    const convId = 7469;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 3, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          // Nothing on the page closes anything, so a merged hole would open a turn.
+          latest: page(activityRows(10_000, 10_000)),
+          // Always a full batch, always below the page: the walk never reaches it.
+          after: (after: number) =>
+            page(
+              after === 2
+                ? [
+                    { id: 3, content: "😡", reaction: true },
+                    ...activityRows(4, 102),
+                  ]
+                : activityRows(after + 1, after + 100),
+            ),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads).toEqual([
+      {},
+      { after: 2 },
+      { after: 102 },
+      { after: 202 },
+      { after: 302 },
+      { after: 402 },
+    ]);
+    // A history with a hole is not handed on: the page alone answers, and it holds nothing pending.
+    expect(model.seen).toHaveLength(0);
+    expect(sent).toEqual([]);
   });
 
   // The claim's own table, decided in one place and asked here directly: the paths above prove the

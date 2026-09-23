@@ -78,6 +78,10 @@ function incomingAfterLastOutgoing(
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       !m.private &&
+      // An operator's reaction is not a reply either, and the catch-up read now brings in the ones
+      // the default page left out: an emoji on an older message would close the request asked
+      // after it (PR #821, review round 1). Same exclusion as `foreignReplyBoundary`.
+      !m.isReaction &&
       m.id > lastOut
     ) {
       lastOut = m.id;

@@ -439,6 +439,46 @@ describe.skipIf(!dbUp)("reengage", () => {
     expect(sent).toEqual([[7466, REPLY]]);
   });
 
+  // PR #821, review round 1: the catch-up read also brings in an OPERATOR's reaction the default page
+  // left out. An emoji on an older message is not a reply, so the request asked before it stays
+  // the tail.
+  test("an operator's reaction the catch-up read brings in does not close the tail", async () => {
+    const id = await seedConversation(7470, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "já respondi", type: 1 },
+            { id: 3, content: "e o prazo?", type: 0 },
+          ]),
+          after: {
+            payload: [
+              { id: 3, content: "e o prazo?", message_type: 0, private: false },
+              {
+                id: 4,
+                content: "👍",
+                message_type: 1,
+                private: false,
+                sender: { id: 9, type: "user" },
+                content_attributes: { is_reaction: true },
+              },
+            ],
+          },
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(sent).toEqual([[7470, REPLY]]);
+  });
+
   test("nothing unanswered → empty (no post)", async () => {
     const id = await seedConversation(902);
     const sent: Array<[number, string]> = [];

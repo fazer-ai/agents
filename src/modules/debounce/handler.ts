@@ -284,14 +284,41 @@ async function withCaughtUp(
   if (!catchUp?.reactionArmed && !missingArmed) return page;
   const after = catchUp?.after ?? (armedLast !== null ? armedLast - 1 : null);
   if (after === null) return page;
-  const caught = parseChatwootMessages(
-    await client.getMessages(conversationId, { after }),
-  );
+  // The catch-up read answers at most a hundred rows from `after`, oldest first. Past that the rows it
+  // returned sit below a gap the page does not cover, and a reply in the gap would be missing from
+  // the history the reply-boundary selectors read: a request it already closed would come back as
+  // unanswered. So it is walked until it reaches the page, and a walk the cap cuts short adds
+  // nothing rather than a history with a hole in it (PR #821, review round 1).
+  const pageFloor = page.length > 0 ? Math.min(...page.map((m) => m.id)) : null;
+  const caught: ChatwootMessageRow[] = [];
+  let cursor = after;
+  for (let read = 0; ; read++) {
+    const batch = parseChatwootMessages(
+      await client.getMessages(conversationId, { after: cursor }),
+    );
+    caught.push(...batch);
+    const top = batch.length > 0 ? Math.max(...batch.map((m) => m.id)) : null;
+    if (
+      batch.length < CATCH_UP_PAGE ||
+      top === null ||
+      pageFloor === null ||
+      top >= pageFloor
+    ) {
+      break;
+    }
+    if (read + 1 >= CATCH_UP_MAX_READS) return page;
+    cursor = top;
+  }
   const known = new Set(page.map((m) => m.id));
   const added = caught.filter((m) => !known.has(m.id));
   if (added.length === 0) return page;
   return [...page, ...added].sort((a, b) => a.id - b.id);
 }
+
+// The fork's `MessageFinder::CATCH_UP_LIMIT`: a full batch means more may follow.
+const CATCH_UP_PAGE = 100;
+// A burst that fell this far behind its page is not one a reaction explains; the page alone answers.
+const CATCH_UP_MAX_READS = 5;
 
 export async function selectAnswerableBurst(
   ctx: Pick<

@@ -1044,6 +1044,35 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.labelSets).toEqual([["follow-up"]]);
   });
 
+  test("a follow-up whose hand-over failed still does not close the conversation", async () => {
+    await seedConv(9663, null);
+    const s = stub();
+    const client = s.client as unknown as {
+      toggleStatus: (c: number, st: string) => Promise<unknown>;
+    };
+    const record = client.toggleStatus;
+    client.toggleStatus = async (c, st) => {
+      await record(c, st);
+      if (st === "open") throw new Error("chatwoot 500");
+      return {};
+    };
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9663`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () => new NudgeSkipModel("needs_human") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.statuses).toEqual([[9663, "open"]]);
+  });
+
   test("a follow-up silent with acknowledged stays the ordinary quiet follow-up", async () => {
     await seedConv(9662, null);
     const s = stub();

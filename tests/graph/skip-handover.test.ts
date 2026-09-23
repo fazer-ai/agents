@@ -245,7 +245,7 @@ class SkipTwiceModel {
 
 type Call = [string, number, string];
 
-function recordingClient(calls: Call[]) {
+function recordingClient(calls: Call[], failOn?: string) {
   const client = {
     sendMessage: async (conversationId: number, content: string) => {
       calls.push(["sendMessage", conversationId, content]);
@@ -257,6 +257,7 @@ function recordingClient(calls: Call[]) {
     },
     toggleStatus: async (conversationId: number, status: string) => {
       calls.push(["toggleStatus", conversationId, status]);
+      if (status === failOn) throw new Error("chatwoot 500");
       return {};
     },
   } as unknown as ChatwootClient;
@@ -294,7 +295,7 @@ async function seed(convId: number, spoken: boolean) {
   });
 }
 
-async function turn(convId: number, model: unknown) {
+async function turn(convId: number, model: unknown, failOn?: string) {
   const calls: Call[] = [];
   const outcome = await runAgentTurn({
     tenantId,
@@ -304,7 +305,7 @@ async function turn(convId: number, model: unknown) {
     base: appDb,
     deps: {
       makeModel: () => model as BaseChatModel,
-      makeClient: recordingClient(calls),
+      makeClient: recordingClient(calls, failOn),
       checkpointer: new MemorySaver(),
     },
   });
@@ -478,6 +479,20 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
     expect(shape(calls)).toEqual([
       ["toggleStatus", 65_907, "open"],
       ["sendPrivateNote", 65_907, ""],
+    ]);
+  });
+
+  test("a resolve that failed to land does not keep the conversation from a person", async () => {
+    await seed(65_908, true);
+    const { calls } = await turn(
+      65_908,
+      new SkipModel({ reason: "needs_human" }, true),
+      "resolved",
+    );
+    expect(shape(calls)).toEqual([
+      ["toggleStatus", 65_908, "resolved"],
+      ["toggleStatus", 65_908, "open"],
+      ["sendPrivateNote", 65_908, ""],
     ]);
   });
 

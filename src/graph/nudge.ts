@@ -2069,18 +2069,19 @@ export async function runAgentNudge(
         : null;
     const handover = chosen ? skipHandoverKind(chosen, true) : null;
     if (handover && (await stillWanted())) {
-      const opened = await applySkipHandover({
+      await applySkipHandover({
         client,
         conversationId,
         kind: handover,
         detail: chosen?.detail ?? null,
         flow,
       });
-      // The ladder's own resolve would close the conversation just handed to a person. Its labels
-      // still apply.
+      // The ladder's own resolve would close the conversation the reason asked a person to see, and
+      // that holds whether or not the status change landed: a failed hand-over leaves it pending,
+      // which is still better than closed with nobody told. Its labels still apply.
       await applyPostActions({
         canMessage: canMessagePost,
-        ...(opened ? { allowResolve: false } : {}),
+        allowResolve: false,
       });
       await takeBackUndeliveredSilence(drafted.wroteText);
       return "silent";

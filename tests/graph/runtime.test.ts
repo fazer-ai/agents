@@ -3077,8 +3077,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // The turn still produced nothing — that part is true and unchanged. What must NOT happen is the
     // conversation closing as handled: nothing reached the customer and nothing in the turn chose
     // that, so the deferred intent is discarded like a takeover or a blocked output discards it.
+    // Nobody on our side had spoken here either, so since issue #659 it goes to a person: `open`,
+    // with a note, and never `resolved`.
     expect(outcome).toBe("empty");
-    expect(calls).toEqual([]);
+    expect(
+      calls.map(([op, id, arg]) => [op, id, op === "toggleStatus" ? arg : ""]),
+    ).toEqual([
+      ["toggleStatus", 912, "open"],
+      ["sendPrivateNote", 912, ""],
+    ]);
 
     // ...and the operator is told, because a turn that ends with nothing and no explanation is
     // exactly the one nobody can find afterwards. Fire-and-forget, so poll briefly.
@@ -3936,9 +3943,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           documentsStorageDir: dir,
         },
       });
-      // Nothing was sent and nothing failed: an empty turn, not a broken one.
+      // Nothing was sent and nothing failed: an empty turn, not a broken one. Nobody on our side had
+      // spoken here either, so since issue #659 this early exit also hands the conversation to a
+      // person, like every other way the turn ends empty.
       expect(outcome).toBe("empty");
-      expect(calls).toEqual([]);
+      expect(calls).toEqual([["toggleStatus", 946, "open"]]);
       // …and no deferred resolve closed a conversation the customer never heard back on.
       expect((await mirroredStatus(946)) === "resolved").toBe(false);
     } finally {

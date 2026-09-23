@@ -901,23 +901,45 @@ export function registerKnowledgeSourceHandler(): void {
   registered = true;
 }
 
-// Boot: every source gets its perpetual row back, due one interval out (a restart is not a reason
-// to hit every portal at once). Best-effort per source, like the other boot re-arms.
+// Boot: every source gets its perpetual row back, due when its interval since the last run ends (a
+// restart is not a reason to hit every portal at once). Never later than a row already pending: a
+// boot that pushed the run one interval out would starve the periodic sync on an app restarted more
+// often than its interval, and would postpone a sync someone just asked for. Best-effort per source,
+// like the other boot re-arms.
 export async function ensureAllKnowledgeSourceSyncs(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const sources = await asSuperAdminOn(base, (db) =>
-    db.knowledgeSource.findMany({
-      select: { tenantId: true, knowledgeBaseId: true, intervalMinutes: true },
-    }),
+  const [sources, pending] = await asSuperAdminOn(base, (db) =>
+    Promise.all([
+      db.knowledgeSource.findMany({
+        select: {
+          tenantId: true,
+          knowledgeBaseId: true,
+          intervalMinutes: true,
+          lastSyncAt: true,
+        },
+      }),
+      db.schedulerJob.findMany({
+        where: { kind: "KNOWLEDGE_SOURCE_SYNC", status: "PENDING" },
+        select: { tenantId: true, dedupeKey: true, runAt: true },
+      }),
+    ]),
   );
+  const pendingAt = new Map(
+    pending.map((j) => [`${j.tenantId}:${j.dedupeKey}`, j.runAt.getTime()]),
+  );
+  const now = Date.now();
   for (const s of sources) {
     try {
       await enqueueJob({
         tenantId: s.tenantId,
         kind: "KNOWLEDGE_SOURCE_SYNC",
         dedupeKey: syncKey(s.knowledgeBaseId),
-        runAt: new Date(Date.now() + s.intervalMinutes * 60_000),
+        runAt: bootRunAt(
+          s,
+          pendingAt.get(`${s.tenantId}:${syncKey(s.knowledgeBaseId)}`),
+          now,
+        ),
         rearm: "same-work",
         payload: { knowledgeBaseId: String(s.knowledgeBaseId) },
         base,
@@ -932,4 +954,18 @@ export async function ensureAllKnowledgeSourceSyncs(
       );
     }
   }
+}
+
+// When a source's row is due after a boot: one interval after its last run (now, if that has passed;
+// one interval out if it never ran), or the pending row's time when that is sooner.
+export function bootRunAt(
+  source: { intervalMinutes: number; lastSyncAt: Date | null },
+  pendingAt: number | undefined,
+  now: number,
+): Date {
+  const interval = source.intervalMinutes * 60_000;
+  const due = source.lastSyncAt
+    ? Math.max(now, source.lastSyncAt.getTime() + interval)
+    : now + interval;
+  return new Date(pendingAt === undefined ? due : Math.min(due, pendingAt));
 }

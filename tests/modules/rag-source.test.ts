@@ -24,7 +24,9 @@ import {
 import { deleteDocument, updateDocument } from "@/modules/rag/documents";
 import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import {
+  bootRunAt,
   deleteSource,
+  ensureAllKnowledgeSourceSyncs,
   getSource,
   nextSyncAt,
   parseSourceInput,
@@ -955,6 +957,33 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     ).toBeLessThanOrEqual(Date.now());
   });
 
+  test("a restart never pushes a source's sync later than it was due", async () => {
+    await configure();
+    const job = () =>
+      suDb.schedulerJob.findFirst({
+        where: { tenantId, kind: "KNOWLEDGE_SOURCE_SYNC" },
+      });
+    // A sync someone asked for is still due now after the boot, not one interval out.
+    await ensureAllKnowledgeSourceSyncs(suDb);
+    expect(
+      (await job())?.runAt.getTime() ?? Number.POSITIVE_INFINITY,
+    ).toBeLessThanOrEqual(Date.now());
+    // A source that ran two minutes ago with a five-minute interval is due in three, however many
+    // times the app restarts in between.
+    const ranAt = new Date(Date.now() - 120_000);
+    await suDb.knowledgeSource.update({
+      where: { knowledgeBaseId: kb },
+      data: { lastSyncAt: ranAt, intervalMinutes: 5 },
+    });
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, kind: "KNOWLEDGE_SOURCE_SYNC" },
+      data: { runAt: new Date(ranAt.getTime() + 300_000) },
+    });
+    await ensureAllKnowledgeSourceSyncs(suDb);
+    await ensureAllKnowledgeSourceSyncs(suDb);
+    expect((await job())?.runAt.getTime()).toBe(ranAt.getTime() + 300_000);
+  });
+
   test("a search over a synced article carries its URL into the passage the model reads", async () => {
     await configure();
     await sync(portal({ articles: () => BASIC }));
@@ -1072,6 +1101,23 @@ describe("when the next sync runs (issue #794)", () => {
       now + 600_000,
     );
     expect(nextSyncAt(null, 10, now).getTime()).toBe(now + 600_000);
+  });
+  test("after a boot the sync is due one interval after the last run, never later than a pending one", () => {
+    const now = 10_000_000;
+    const at = (lastSyncAt: number | null, pending?: number) =>
+      bootRunAt(
+        {
+          intervalMinutes: 10,
+          lastSyncAt: lastSyncAt === null ? null : new Date(lastSyncAt),
+        },
+        pending,
+        now,
+      ).getTime();
+    expect(at(now - 120_000)).toBe(now + 480_000);
+    expect(at(now - 3_600_000)).toBe(now);
+    expect(at(null)).toBe(now + 600_000);
+    expect(at(now - 120_000, now + 15_000)).toBe(now + 15_000);
+    expect(at(now - 120_000, now + 3_600_000)).toBe(now + 480_000);
   });
 });
 

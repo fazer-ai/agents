@@ -15,8 +15,9 @@
 //
 // What counts as a footer is deliberately narrow, because the cost of a false positive is losing a
 // sentence of the answer:
-//   - only at the END OF THE DOCUMENT (the caller says whether this passage is its tail; a paragraph
-//     that merely ends a middle chunk is text the chunker happened to cut there);
+//   - only at the END OF THE DOCUMENT: the passage that is its tail, or the one before it where the
+//     chunks' overlap carried the head of that same footer (a paragraph that merely ends a middle
+//     chunk and is not the document's footer is text the chunker happened to cut there);
 //   - only trailing paragraphs, walked backwards, each one short and carrying an e-mail, a phone
 //     number or an invitation to get in touch;
 //   - never the whole passage: a passage that is nothing but a footer is kept as it is, since it may
@@ -83,14 +84,60 @@ export function stripContactFooter(content: string): string {
   return parts.join("").trimEnd();
 }
 
-// A search row as the hit every reader gets: the footer gone when the base asks for it and the
-// passage is the tail of its document, and the two deciding columns dropped either way.
+// How much of the document's end the query hands back to find its footer: three paragraphs at the
+// cap, the separators and a heading above them fit with room to spare.
+export const FOOTER_TAIL_CHARS = 1500;
+
+// The shortest overlap read as the footer's head. The chunker cuts on paragraphs, then sentences,
+// then words, so a chunk that ends inside the footer ends on a piece of it; below this length the
+// match could be a short paragraph that merely starts like the footer does.
+const MIN_FOOTER_OVERLAP = 12;
+
+// The footer of a document, found on its tail: what stripContactFooter would remove there, starting
+// at a paragraph (or a dangling heading above it). null when the document has none.
+export function footerOfDocument(tail: string): string | null {
+  const kept = stripContactFooter(tail);
+  // Nothing stripped leaves nothing past `kept`.
+  const footer = tail.substring(kept.length).trim();
+  return footer || null;
+}
+
+// A passage that is NOT the document's tail can still end inside its footer: chunks overlap, so the
+// start of a two-paragraph footer lands at the end of the chunk before the last one. That passage
+// ends on a paragraph that begins the footer and continues it for as far as the chunk goes, and the
+// cut goes there. The same safeguard as the tail: a passage that would keep nothing but headings is
+// returned whole.
+export function stripFooterOverlap(content: string, footer: string): string {
+  const text = content.trimEnd();
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
+    const piece = text.substring(i + 1).trimStart();
+    const start = text.length - piece.length;
+    if (piece.length < MIN_FOOTER_OVERLAP || !footer.startsWith(piece))
+      continue;
+    const kept = text.substring(0, start).trimEnd();
+    const substantive = kept
+      .split(/\r?\n(?:[ \t]*\r?\n)+/)
+      .some((p) => p.trim() && !HEADING_OR_RULE.test(p.trim()));
+    return substantive ? kept : content;
+  }
+  return content;
+}
+
+// A search row as the hit every reader gets: the footer gone when the base asks for it, and the
+// deciding columns dropped either way. The tail of the document is cut by the footer walk; any other
+// passage only where it ends on the head of the document's own footer.
 export function passageOf({
   stripContactFooters,
   atDocumentEnd,
+  documentTail,
   ...hit
 }: ChunkRow): ChunkHit {
-  return stripContactFooters && atDocumentEnd
-    ? { ...hit, content: stripContactFooter(hit.content) }
+  if (!stripContactFooters) return hit;
+  if (atDocumentEnd) {
+    return { ...hit, content: stripContactFooter(hit.content) };
+  }
+  const footer = documentTail ? footerOfDocument(documentTail) : null;
+  return footer
+    ? { ...hit, content: stripFooterOverlap(hit.content, footer) }
     : hit;
 }

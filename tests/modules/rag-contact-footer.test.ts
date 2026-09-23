@@ -142,6 +142,7 @@ function row(over: Partial<ChunkRow>): ChunkRow {
     distance: 0.1,
     stripContactFooters: true,
     atDocumentEnd: true,
+    documentTail: null,
     ...over,
   };
 }
@@ -164,6 +165,64 @@ describe("the hit a search returns", () => {
     expect(passageOf(row({ atDocumentEnd: false })).content).toBe(
       `${ARTICLE}\n\n${FOOTER}`,
     );
+  });
+
+  // Chunks overlap, so the head of a footer also ends the chunk before the last one. That passage is
+  // not the document's tail, and it carries the same instruction the switch exists to remove.
+  const DOC_TAIL = `${ARTICLE}\n\n${FOOTER}\n\nsac@exemplo.com.br | (11) 3456-7890`;
+  const HEAD_OF_FOOTER = FOOTER.substring(0, 40);
+
+  test("a passage that ends on the head of the document's footer loses it", () => {
+    const hit = passageOf(
+      row({
+        atDocumentEnd: false,
+        documentTail: DOC_TAIL,
+        content: `${ARTICLE}\n\n${HEAD_OF_FOOTER}`,
+      }),
+    );
+    expect(hit.content).toBe(ARTICLE);
+    expect(hit).not.toHaveProperty("documentTail");
+  });
+
+  test("a paragraph that is not the document's footer stays, even one that reads like a footer", () => {
+    const content = `${ARTICLE}\n\nEntre em contato com o suporte se o link expirar.`;
+    expect(
+      passageOf(row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }))
+        .content,
+    ).toBe(content);
+  });
+
+  test("a paragraph that repeats the MIDDLE of the footer is not its head", () => {
+    const content = `${ARTICLE}\n\nnosso atendimento pelo e-mail sac@exemplo.com.br.`;
+    expect(
+      passageOf(
+        row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }),
+      ).content,
+    ).toBe(content);
+  });
+
+  test("a sliver shorter than a phrase is not read as the footer's head", () => {
+    const content = `${ARTICLE}\n\nAinda com`;
+    expect(
+      passageOf(row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }))
+        .content,
+    ).toBe(content);
+  });
+
+  test("a passage that would keep only a heading is kept whole", () => {
+    const content = `# Suporte\n\n${HEAD_OF_FOOTER}`;
+    expect(
+      passageOf(row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }))
+        .content,
+    ).toBe(content);
+  });
+
+  test("a document with no footer strips nothing from any passage", () => {
+    const content = `${ARTICLE}\n\n${HEAD_OF_FOOTER}`;
+    expect(
+      passageOf(row({ atDocumentEnd: false, documentTail: ARTICLE, content }))
+        .content,
+    ).toBe(content);
   });
 });
 
@@ -309,6 +368,9 @@ describe.skipIf(!dbUp)("the switch, stored and read by the search", () => {
       stripContactFooters: true,
       atDocumentEnd: false,
     });
+    // The document's end rides along for the overlap cut, only where the switch is on.
+    expect(by(kbOn, HEAD)?.documentTail?.endsWith(TAIL)).toBe(true);
+    expect(by(kbOff, TAIL)?.documentTail).toBeNull();
     // A base with the switch off never pays for the document read: the tail is not even asked.
     expect(by(kbOff, TAIL)).toMatchObject({
       stripContactFooters: false,

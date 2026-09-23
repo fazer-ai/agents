@@ -1,5 +1,6 @@
 import { Prisma } from "@/../generated/prisma/client";
 import type { ScopedDb } from "@/lib/tenancy";
+import { FOOTER_TAIL_CHARS } from "./contact-footer";
 import { EMBEDDING_DIM } from "./embeddings";
 
 // Raw pgvector access (Prisma cannot model vector(N) or the HNSW operator). All calls run INSIDE a
@@ -73,6 +74,9 @@ export interface ChunkHit {
 export interface ChunkRow extends ChunkHit {
   stripContactFooters: boolean;
   atDocumentEnd: boolean;
+  // The document's last FOOTER_TAIL_CHARS, where its footer is found for a passage that overlaps it
+  // without being the tail. null when the base does not strip.
+  documentTail: string | null;
 }
 
 export async function searchChunks(
@@ -105,7 +109,10 @@ export async function searchChunks(
            kb.strip_contact_footers AS "stripContactFooters",
            CASE WHEN kb.strip_contact_footers
                 THEN right(rtrim(d.content, E' \t\r\n'), length(c.content)) = c.content
-                ELSE false END AS "atDocumentEnd"
+                ELSE false END AS "atDocumentEnd",
+           CASE WHEN kb.strip_contact_footers
+                THEN right(rtrim(d.content, E' \t\r\n'), ${FOOTER_TAIL_CHARS})
+                ELSE NULL END AS "documentTail"
     FROM knowledge_chunks c
     JOIN knowledge_bases kb ON kb.id = c.knowledge_base_id
     JOIN knowledge_documents d ON d.id = c.document_id

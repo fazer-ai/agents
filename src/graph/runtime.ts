@@ -954,7 +954,10 @@ async function runTurnBody(
   // attendance ended while the human is in it. The post-generation recheck suppresses the SEND and
   // cannot unwrite a message. Same read that recheck makes, asked at the moment this writes; a read
   // that fails leaves the note OWED, which costs nothing because nothing is consumed to write it.
-  const botOwnsItNow = async (): Promise<boolean> =>
+  // The read itself, which THROWS when it cannot answer. `botOwnsItNow` below answers a failure as
+  // "not ours", which is right for the note it guards; the guardrail's transfer wants the opposite
+  // default, so it asks this one and decides for itself (issue #704).
+  const ownershipNow = async (): Promise<boolean> =>
     await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
@@ -974,7 +977,9 @@ async function runTurnBody(
         },
         { ourAgentBotId: loaded.agentBotId ?? agentBotId },
       );
-    }).catch((err) => {
+    });
+  const botOwnsItNow = async (): Promise<boolean> =>
+    await ownershipNow().catch((err) => {
       logger.warn(
         { err, conv: conversationId },
         "hand-back note: ownership read failed; leaving the note owed",
@@ -1307,7 +1312,7 @@ async function runTurnBody(
     if (blocked) return blocked;
     // A read that fails lets the transfer go ahead: the policy asked for a person, and a person is
     // what the transfer gives.
-    if (!(await botOwnsItNow().catch(() => true))) return "taken-over";
+    if (!(await ownershipNow().catch(() => true))) return "taken-over";
     if (!(await claimBeforeSend())) return "superseded";
     const handed = await applyGuardrailHandoff({
       client,
@@ -2564,7 +2569,13 @@ async function runTurnBody(
       if (outGuard.kind === "handed-off") {
         const handed = await handOverForGuardrail("output");
         if (handed !== "handed" && handed !== "failed") return refuse(handed);
-        // The line says a person will continue, so it goes out only when one will.
+        // A transfer that landed with nothing to say ends the turn here, as the operator's policy
+        // settling the message (`blocked`, the word a suppression uses), not as the model running
+        // dry (`empty`), which recovery would treat as still owed and run again.
+        if (handed === "handed" && replacement === null)
+          return refuse("blocked");
+        // The line says a person will continue, so it goes out only when one will. A failed
+        // transfer falls to the empty branch, where the message is still owed and retried.
         reply = handed === "handed" ? (replacement ?? "") : "";
       } else {
         if (replacement === null) return refuse("blocked");

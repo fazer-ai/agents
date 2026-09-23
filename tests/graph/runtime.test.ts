@@ -7674,7 +7674,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             checkpointer: new MemorySaver(),
           },
         });
-        expect(outcome).not.toBe("posted");
+        // Settled, like a suppression: the operator's policy answered this message, and recovery
+        // must not run it again as if the model had come up empty.
+        expect(outcome).toBe("blocked");
         expect(log.sent).toEqual([]);
         expect(log.toggles).toEqual([[7042, "open"]]);
         // `route` mode: Chatwoot's own routing, nothing assigned from here.
@@ -7763,7 +7765,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             checkpointer: new MemorySaver(),
           },
         });
-        expect(outcome).not.toBe("posted");
+        // Still owed: the transfer did not land, so recovery may run the message again.
+        expect(outcome).toBe("empty");
         expect(log.sent).toEqual([]);
         expect(
           log.notes.some(([, n]) =>

@@ -1974,6 +1974,7 @@
       "playground": "Playground"
     },
     "stage": {
+      "capacity": "Capacity",
       "channel_error": "Channel failure",
       "command": "Control command",
       "contact_auth": "Contact authorization",

@@ -50,6 +50,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.webhook", "Outbound webhook");
     case "dead_letter":
       return t("logs.stage.dead_letter", "Abandoned work");
+    case "capacity":
+      return t("logs.stage.capacity", "Capacity");
     default:
       return stage;
   }

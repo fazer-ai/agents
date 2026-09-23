@@ -52,6 +52,7 @@ const {
   HUB_UPDATES_TTL_MS,
   AGENT_MODEL_CONCURRENCY,
   AGENT_MODEL_CALL_TIMEOUT_MS,
+  AGENT_CAPACITY_WAIT_ALERT_MS,
   AGENT_PROMPT_MAX_CHARS,
   HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
@@ -383,6 +384,17 @@ const config = {
       "AGENT_MODEL_CALL_TIMEOUT_MS",
       120_000,
       "It is how long one call to the agent's own model may take, retries included, when no fallback model is configured.",
+      MAX_DURATION_MS,
+    ),
+    // NOTE: How long a reply may wait for capacity before the operator is told (issue #812): a due
+    // flush waiting for a slot of a full debounce lane, or a model call waiting for a permit of the
+    // semaphore above. Delay, not occupancy: a full lane that drains in seconds is healthy. The lane
+    // ticks every 2.5 s and a measured turn takes ~10 s, so 30 s is several turns of queue.
+    capacityWaitAlertMs: parseIntSetting(
+      AGENT_CAPACITY_WAIT_ALERT_MS,
+      "AGENT_CAPACITY_WAIT_ALERT_MS",
+      30_000,
+      "It is how long a reply may wait for a debounce slot or a model permit before a capacity warning is logged.",
       MAX_DURATION_MS,
     ),
     // NOTE: Hard cap (characters) on an agent's system prompt, enforced at the service layer for

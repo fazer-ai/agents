@@ -28,6 +28,7 @@ import {
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   buildGuardrailGate,
@@ -1159,6 +1160,10 @@ export async function runAgentNudge(
     stillWanted: toolFence,
     // Same warn line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one, and this path can page an alert channel.
+    // A reply that waited past the capacity threshold for a model permit (issue #812): the
+    // operator's signal that the instance, not the model, is what the customer is waiting on.
+    onModelPermitWait: (wait) =>
+      emitCapacityWait(flow, "model_semaphore", wait),
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",

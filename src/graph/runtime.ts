@@ -52,6 +52,7 @@ import {
   readSelectionState,
   selectOpenMessages,
 } from "@/modules/debounce/watermark";
+import { emitCapacityWait } from "@/modules/flowlog/capacity";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -1176,6 +1177,10 @@ async function runTurnBody(
     // A turn recovered from an empty provider response must not read like a clean one: without this
     // line the fault is invisible and its rate (issue #63 measured 1 in 184 on one install) can
     // never be told apart from a turn that simply worked.
+    // A reply that waited past the capacity threshold for a model permit (issue #812): the
+    // operator's signal that the instance, not the model, is what the customer is waiting on.
+    onModelPermitWait: (wait) =>
+      emitCapacityWait(flow, "model_semaphore", wait),
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",

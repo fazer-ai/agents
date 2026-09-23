@@ -23,7 +23,8 @@ export interface SpokenReplyPlan {
 // A path segment may carry one level of balanced parentheses (Wikipedia's `C_(language)`), and an
 // escaped one (`\)`) is the destination's, never the link's end.
 const TARGET = String.raw`(?:\\[()]|[^()\s]|\((?:\\[()]|[^()\s])*\))+`;
-// CommonMark's inline link: the destination bare or in `<…>`, then an optional title in `"…"`,
+// CommonMark's inline link: the label may hold one level of balanced or escaped brackets
+// (`[o pedido [123]]`), the destination bare or in `<…>`, then an optional title in `"…"`,
 // `'…'` or `(…)`. Group 1 is the label; groups 2/3 (angle) or 4/5 (bare) the `mailto:` and target.
 const AUTOLINK =
   /<(?:(mailto:)([^<>\s]+)|((?:https?:\/\/|www\.)[^<>\s]+|[^<>\s@]+@[^<>\s@]+))>/gi;
@@ -31,7 +32,7 @@ const AUTOLINK =
 // item verbatim, punctuation included (`https://ja.wikipedia.org/wiki/君の名は。`).
 const CODE_ITEM = /`((?:https?:\/\/|www\.)[^`\s]+|[^`\s@:]+@[^`\s@]+)`/gi;
 const MARKDOWN_LINK = new RegExp(
-  String.raw`\[([^\]\n]+)\]\(\s*(?:<(mailto:)?((?:\\[<>]|[^<>\n])+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
+  String.raw`\[((?:\\[[\]]|[^[\]\n]|\[(?:\\[[\]]|[^[\]\n])*\])+)\]\(\s*(?:<(mailto:)?((?:\\[<>]|[^<>\n])+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
   "g",
 );
 // A match never starts or ends inside a token: a written item that is only part of the destination
@@ -40,7 +41,7 @@ const MARKDOWN_LINK = new RegExp(
 // fullwidth punctuation (`。`, `，`) ends a URL: it is the sentence's, and no URL holds it. Letters in
 // those blocks (`佐々木`, fullwidth `ｗ`) are the URL's.
 const URL =
-  /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
+  /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. An
 // address starts only where a token starts (after whitespace, an opening bracket, a separator, a
 // quote or formatting, the last two checked for pairing below), so a local part the class cannot

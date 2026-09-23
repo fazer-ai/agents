@@ -525,6 +525,28 @@ describe("planSpokenReply", () => {
     expect(plan.speech).toBe("Abra o site quando puder");
   });
 
+  // Review round 15.
+  test("a link label with brackets is still a link", () => {
+    for (const text of [
+      "Abra [o pedido [123]](https://x.com.br/reset?token=abc_) e confirme os dados",
+      "Abra [o pedido \\[123](https://x.com.br/reset?token=abc_) e confirme os dados",
+    ]) {
+      const plan = planSpokenReply(text);
+      expect(plan.written).toEqual(["https://x.com.br/reset?token=abc_"]);
+      // The whole link left the speech, not only its last bracketed piece.
+      expect(plan.speech.startsWith("Abra o pedido")).toBe(true);
+    }
+  });
+
+  test("a www host never starts inside another host or an address", () => {
+    for (const text of [
+      "O portal fica em loja-www.x.com.br para acompanhar os pedidos",
+      "Escreva para a!b@www.x.com.br e respondemos em 2 dias",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([]);
+    }
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

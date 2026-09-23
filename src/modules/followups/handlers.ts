@@ -22,6 +22,7 @@ import {
 import {
   type ClaimedJob,
   enqueueJob,
+  enqueueJobUnlessClaimed,
   jobNotRetiredSql,
   jobRetired,
   jobRetiredStrict,
@@ -264,7 +265,11 @@ async function sweepHandler(
     `,
   );
   for (const t of threads) {
-    await enqueueJob({
+    // NOTE: Never over a CLAIMED row (issue #786). Step 0 stays eligible until it stamps, after its
+    // model call, and a pass inside that window superseded the run: its reschedule to the next step
+    // was discarded and the ladder never reached the step that labels and resolves. The run in
+    // flight IS the episode this arm would start.
+    await enqueueJobUnlessClaimed({
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: `followup:${t.thread_id}`,

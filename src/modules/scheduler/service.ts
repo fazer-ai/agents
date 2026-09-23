@@ -147,15 +147,17 @@ export interface EnqueueParams extends JobRowParams {
   base?: PrismaClient;
 }
 
-// The ONE place a scheduler_jobs row comes into existence, and the reason it takes a ScopedDb rather
-// than being folded into enqueueJob: armDebounce has to write inside its own advisory-lock
-// transaction, so it cannot call something that opens a second one. It used to hand-copy this block
+// Where a scheduler_jobs row comes into existence (`enqueueJobUnlessClaimed` writes the same
+// `jobRowWrites`), and the reason it takes a ScopedDb rather than being folded into enqueueJob:
+// armDebounce has to write inside its own advisory-lock transaction, so it cannot call something
+// that opens a second one. It used to hand-copy this block
 // instead, which is exactly how DEBOUNCE ended up with no answer to the `rearm` question at all.
 // tests/modules/scheduler-row-writers.test.ts is the fence that keeps a third copy from appearing.
 export async function upsertJobRow(
   db: ScopedDb,
   params: JobRowParams,
 ): Promise<bigint> {
+  const { create, update } = jobRowWrites(params);
   const row = await db.schedulerJob.upsert({
     where: {
       tenantId_kind_dedupeKey: {
@@ -164,6 +166,16 @@ export async function upsertJobRow(
         dedupeKey: params.dedupeKey,
       },
     },
+    create,
+    update,
+    select: { id: true },
+  });
+  return row.id;
+}
+
+// What arming a row writes, built once for both single-row writers so the two cannot drift.
+function jobRowWrites(params: JobRowParams) {
+  return {
     create: {
       tenantId: params.tenantId,
       kind: params.kind,
@@ -171,11 +183,11 @@ export async function upsertJobRow(
       runAt: params.runAt,
       payload: (params.payload ?? {}) as Prisma.InputJsonValue,
       payloadSecret: params.payloadSecret ?? null,
-      status: "PENDING",
+      status: "PENDING" as const,
     },
     update: {
       runAt: params.runAt,
-      status: "PENDING",
+      status: "PENDING" as const,
       lastError: null,
       // NOTE: Re-arming with a payload is authoritative (the latest enqueue wins): this resets a
       // stale payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on
@@ -192,9 +204,7 @@ export async function upsertJobRow(
         : {}),
       ...(params.rearm === "new-work" ? { attempts: 0 } : {}),
     },
-    select: { id: true },
-  });
-  return row.id;
+  };
 }
 
 // The SET-BASED sibling of `upsertJobRow`, for a caller arming many rows inside one transaction.
@@ -269,6 +279,39 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
   return runScopedOn(base, sysCtx(params.tenantId), (db) =>
     upsertJobRow(db, params),
   );
+}
+
+// `enqueueJob` for a caller whose re-arm must never supersede a run in flight (issue #786). The
+// upsert puts a CLAIMED row back to PENDING, the worker claims it again, and the running claim's
+// outcome is discarded by the CAS on its token. Right when the arm carries input the run has not
+// seen (a debounce burst that continues); wrong for the follow-up sweep, a clock re-pushing the
+// episode the claim is executing, where it dropped the step-1 reschedule. A claim that died is
+// re-pended by the reaper, so leaving it alone cannot strand the row.
+//
+// Two statements, since Prisma has no conditional upsert: the UPDATE re-checks its WHERE under the
+// row lock, so a claim that commits first makes it match nothing, and the INSERT then skips.
+export async function enqueueJobUnlessClaimed(
+  params: EnqueueParams,
+): Promise<boolean> {
+  const base = params.base ?? basePrisma;
+  const { create, update } = jobRowWrites(params);
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const updated = await db.schedulerJob.updateMany({
+      where: {
+        tenantId: params.tenantId,
+        kind: params.kind,
+        dedupeKey: params.dedupeKey,
+        status: { not: "CLAIMED" },
+      },
+      data: update,
+    });
+    if (updated.count > 0) return true;
+    const created = await db.schedulerJob.createMany({
+      data: [create],
+      skipDuplicates: true,
+    });
+    return created.count > 0;
+  });
 }
 
 // A customer reply (or opt-out) makes a pending proactive job moot: CAS-cancel the live PENDING

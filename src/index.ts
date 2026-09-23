@@ -1,6 +1,6 @@
 import { initSetupState } from "@/api/features/auth/setup.service";
 import { setPublisher } from "@/api/features/realtime/realtime.service";
-import logger, { deepSanitizeObject } from "@/api/lib/logger";
+import logger, { configForBootLog } from "@/api/lib/logger";
 import app from "@/app";
 import config from "@/config";
 import {
@@ -123,24 +123,7 @@ if (config.env === "production" && config.ssrf.allowPrivateTargets) {
 
 logger.info(
   "Loaded config %s",
-  JSON.stringify(
-    deepSanitizeObject(
-      { ...config, port },
-      {
-        omitKeys: [
-          "apiKey",
-          "secret",
-          "jwtSecret",
-          "encryptionKey",
-          "databaseUrl",
-          "mcpJwtSecret",
-          "langgraphDatabaseUrl",
-        ],
-      },
-    ),
-    null,
-    2,
-  ),
+  JSON.stringify(configForBootLog({ ...config, port }), null, 2),
 );
 
 // NOTE: Resolve first-run setup state once at boot (logs the setup URL/token

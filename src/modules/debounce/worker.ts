@@ -53,10 +53,14 @@ const lane: {
   fullSince: number | null;
   announced: Set<bigint>;
   asking: boolean;
+  // Bumped whenever a saturation ends, so an answer to a question asked during the previous one is
+  // recognised as stale.
+  generation: number;
 } = {
   fullSince: null,
   announced: new Set(),
   asking: false,
+  generation: 0,
 };
 
 // A row announced as waiting for a slot. `waitedMs` is measured when it is announced, so it is at
@@ -132,15 +136,26 @@ async function announceWaiting(
   if (fullSince === null || now - fullSince < thresholdMs) return;
   const waiting = deps.waiting ?? findWaitingDebounceJobs;
   const announce = deps.announce ?? announceLaneWait;
+  const generation = lane.generation;
   const rows = await waiting(
     new Date(now - thresholdMs),
     [...inFlight, ...lane.announced],
     base,
   );
+  // NOTE: the answer describes the lane as it was when the question was asked, and ticks kept
+  // running meanwhile. A saturation that ended since makes the whole answer stale, and a row a tick
+  // claimed since is no longer waiting: announcing it would warn about a running job, and marking it
+  // announced would swallow its next real wait.
+  if (lane.generation !== generation) return;
   const announcements: Array<void | Promise<void>> = [];
   for (const row of rows) {
     const waitedMs = now - Math.max(row.runAt.getTime(), fullSince);
-    if (waitedMs < thresholdMs || lane.announced.has(row.id)) continue;
+    if (
+      waitedMs < thresholdMs ||
+      lane.announced.has(row.id) ||
+      inFlight.has(row.id)
+    )
+      continue;
     lane.announced.add(row.id);
     announcements.push(
       (async () =>
@@ -208,6 +223,7 @@ export async function runDebounceTick(
   // (if there was one) is over. Exactly as many leaves the lane full, with maybe more behind it.
   let reported = Promise.resolve();
   if (jobs.length < free) {
+    if (lane.fullSince !== null) lane.generation++;
     lane.fullSince = null;
     lane.announced.clear();
   } else {

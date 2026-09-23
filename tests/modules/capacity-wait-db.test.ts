@@ -324,6 +324,8 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
       await runDebounceTick(appDb, 1, { claim: async () => [] });
       await clearFlowLog(suDb, { tenantId });
       await suDb.alertDelivery.deleteMany({ where: { channelId } });
+      // NOTE: the waiting row is still PENDING, and the next case's FIFO claim would take it.
+      await suDb.schedulerJob.deleteMany({ where: { tenantId } });
     }
   });
 

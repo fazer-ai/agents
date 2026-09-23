@@ -277,6 +277,72 @@ describe("the threshold is the operator's", () => {
 describe("a failing announcement never costs the drain", () => {
   beforeEach(emptyLane);
 
+  test("a row claimed while the question was open is not announced, and its next wait still is", async () => {
+    const w = world();
+    w.claimable.push(job(1));
+    await tick(1, w.deps);
+    w.waitingRows.push(row(2, 0));
+    let answer: () => void = () => {};
+    w.set(31_000);
+    const out = await runDebounceTick(base, 1, {
+      ...w.deps,
+      waiting: async (dueBefore, exclude) => {
+        const rows = await w.deps.waiting?.(dueBefore, exclude, base);
+        await new Promise<void>((r) => {
+          answer = r;
+        });
+        return rows ?? [];
+      },
+    });
+    // Meanwhile job 1 ends and a tick claims row 2.
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    w.claimable.push(job(2));
+    w.set(32_000);
+    await runDebounceTick(base, 1, { ...w.deps, waiting: async () => [] });
+    answer();
+    await out.reported;
+    expect(w.announced).toEqual([]);
+    // Row 2 runs to the end, is re-armed, and waits behind another job: that wait is announced.
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    w.claimable.push(job(3));
+    w.set(33_000);
+    await tick(1, w.deps);
+    w.waitingRows.splice(0);
+    w.waitingRows.push(row(2, 40_000));
+    w.set(71_000);
+    await tick(1, w.deps);
+    expect(w.announced.map((a) => a.jobId)).toEqual([2n]);
+  });
+
+  test("an answer to a question asked during a saturation that has since ended is dropped", async () => {
+    const w = world();
+    w.claimable.push(job(1));
+    await tick(1, w.deps);
+    w.waitingRows.push(row(2, 0));
+    let answer: () => void = () => {};
+    w.set(31_000);
+    const out = await runDebounceTick(base, 1, {
+      ...w.deps,
+      waiting: async (dueBefore, exclude) => {
+        const rows = await w.deps.waiting?.(dueBefore, exclude, base);
+        await new Promise<void>((r) => {
+          answer = r;
+        });
+        return rows ?? [];
+      },
+    });
+    // The lane drains: a tick finds room and nothing due.
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    w.set(32_000);
+    await runDebounceTick(base, 1, w.deps);
+    answer();
+    await out.reported;
+    expect(w.announced).toEqual([]);
+  });
+
   test("a slow question neither delays the jobs just claimed nor the tick's return", async () => {
     const w = world();
     w.claimable.push(job(1));

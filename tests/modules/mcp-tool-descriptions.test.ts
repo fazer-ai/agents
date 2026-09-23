@@ -247,7 +247,13 @@ const SETTINGS_DESC_CEILING = 2_000;
 // set_labels may add and what a title outside it meets: 348 characters on a base of 24,400. Trimmed
 // first, from 499: each field says only what the type cannot (that removal is not limited, that the
 // default refuses, that accept is counted). Re-measured on the tree that ships: 24,748.
-const SETTINGS_SCHEMA_CEILING = 24_760;
+//
+// RAISED for issue #646 by `contactAuth.rule`, the local verdict that replaces the endpoint for a
+// list of numbers or a mirrored attribute: a union of two object shapes, 665 characters on a base of
+// 24,760. Trimmed first: one description for the whole field, the attribute half reusing the
+// precondition's patterns. What is left is the shape, and a client that cannot see `phones` cannot
+// write the list. Re-measured on the tree that ships: 25,425.
+const SETTINGS_SCHEMA_CEILING = 25_440;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -634,6 +640,8 @@ describe("MCP tool descriptions", () => {
   // `knowledge_create` and `knowledge_update`, and its name in the two descriptions that list a
   // base's fields. Base 30,729 and 58,187, this tree 30,773 and 58,273, so 30,788 and 58,289 with the
   // same 15 and 16. What the switch does is on the REST field and the console, not repeated here.
+  // SCHEMA RAISED again by `contactAuth.rule` (#646), the same 665 characters as the
+  // agent_settings_set ceiling above, on top of the #747 raise.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -643,7 +651,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_788);
-    expect(schema).toBeLessThanOrEqual(58_289);
+    expect(schema).toBeLessThanOrEqual(1);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

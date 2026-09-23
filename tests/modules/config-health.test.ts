@@ -1829,6 +1829,21 @@ describe("issueHasAction", () => {
       ]);
     });
 
+    // Issue #646: a local rule is the other way to reach a verdict, and with one the endpoint is
+    // never asked, so neither the missing URL nor the endpoint-only switches are a problem.
+    test("a local rule answers instead, so a missing URL is not flagged", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          contactAuthEnabled: true,
+          contactAuthHasRule: true,
+          contactAuthIncludeMessageText: true,
+          contactAuthHandoffEnabled: true,
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }).map((i) => i.key),
+      ).toEqual([]);
+    });
+
     test("whitespace is not a URL", () => {
       expect(
         computeConfigIssues({

@@ -72,6 +72,7 @@ read, so a malformed bag can never break the webhook.
 | Field                   | Default | Meaning                                                             |
 | ----------------------- | ------- | ------------------------------------------------------------------- |
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
+| `rule`                  | `null`  | A local verdict instead of the endpoint (issue #646, see [Deciding locally](#deciding-locally-rule)). With a rule the endpoint is never called. |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
 | `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. The grant bookkeeping AFTER the answer is awaited without it, and that is deliberate: walking away from a Prisma statement does not stop it, so an abandoned upsert can commit after a later refusal deleted the row and revive an authorization the endpoint has withdrawn. A write nobody waits for is a write nobody can order. It costs one indexed single-statement transaction on the way out, and a failure there marks the contact unconfirmed. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
@@ -83,6 +84,47 @@ read, so a malformed bag can never break the webhook.
 | `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
 | `mode`                  | `"perMessage"` | `perMessage` re-checks every message. `once` stores the first positive verdict per contact and reuses it until it expires. Strict, like `enabled`: anything else reads as `perMessage`, so a malformed write can only ever make the gate ask MORE often. |
 | `grantTtlSeconds`       | `86400` | How long a stored verdict counts for under `once`. Clamped 60-2592000 (one minute to thirty days). It is part of the POLICY a grant is written under, so a stored verdict stops counting while a different value is in force — a match rule, not a way to clear them (see [Reusing a verdict](#reusing-a-verdict-mode-once)). |
+
+## Deciding locally (`rule`)
+
+For a verdict whose data we already hold, the endpoint is pure cost: a service to host, TLS, a
+vault credential, a timeout on the webhook path, and an availability dependency, because a
+fail-closed gate whose endpoint is down stops answering customers. A static list of five pilot
+numbers should not be that. `rule` decides from the mirror instead, under the same contract: the
+same notices, the same `denyMessage`, the same handoff, the same flow line.
+
+| `kind`      | Serves                                                                                                                     | Reads                                            |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `allowlist` | a contact whose mirrored phone is in `phones` (compared by digits: `+55 (11) 98888-7777` is `5511988887777`), or whose identifier is in `identifiers` (exact) | the contact row the gate already reads |
+| `attribute` | a contact or conversation whose mirrored attribute `key` is set, or equals `equals`. The same shape and the same evaluator as a tool precondition (`tool-preconditions.ts`) | one indexed read of the conversation row, for `scope: "conversation"` |
+
+- **Either the rule or the endpoint.** With a rule set, `url`, `credentialRef`, `timeoutMs`,
+  `includeMessageText` and `mode` are kept but not used, and the editor hides them. The
+  endpoint-only health warnings (`contactAuthNoUrl`, the credential, the unlock-versus-handoff
+  conflict) do not fire. A two-stage version (the rule answers first, the endpoint sees the rest)
+  was left out: it is what spares an expensive endpoint, and nobody has asked for it yet.
+- **Always per message, never stored.** A stored verdict exists to spare somebody's endpoint, and a
+  rule reads our own rows. A rule neither reads nor writes a grant, under either `mode`, so taking a
+  number off the list refuses that number's very next message. A grant the endpoint gave before the
+  rule was set is left where it is: if the rule is removed, the endpoint's policy is back, and so are
+  the answers it gave under it.
+- **Exact digits, never a suffix.** `11 98888-7777` without the country code does not match
+  `+55 11 98888-7777`. A suffix match is the one where a short entry quietly admits every number
+  ending the same way. Entries are 8 to 15 digits; the list holds 1 to 500 entries in total.
+- **Identity.** An `allowlist` compares the phone and the identifier, so a contact with neither is
+  `no_identity`, and one with only an email is refused as not listed. An `attribute` rule does not
+  ask about identity at all, and is decided before that check: a widget visitor with no phone, on a
+  conversation an operator marked, is exactly what `scope: "conversation"` is for.
+- **Refused, not repaired.** A malformed rule is refused at the write (REST, MCP, create, import)
+  with `errors.invalidContactAuthRule`, one bad entry refusing the whole list. The reader drops one
+  stored some other way, and an enabled gate with neither a rule nor a `url` is the fail-closed
+  `not_configured` it always was.
+- **The refusal says which rule.** The flow line carries `reason: rule_not_listed` or
+  `rule_unmet`, our codes, never the phone or the identifier. The operator note names the agent's
+  rule instead of the external check.
+- **Not here: a label condition.** Labels are not mirrored, so reading one is a Chatwoot round trip
+  before every turn, priced separately from the two above because it is not free. It is the
+  natural next condition, and the `kind` tag is where it would be added.
 
 ## Request / response contract
 

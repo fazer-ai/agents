@@ -81,6 +81,10 @@ import {
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import {
+  type ContactAuthRuleForm,
+  contactAuthRuleInvalid,
+} from "./contactAuthRuleForm";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 import {
   fallbackIsConfigured,
@@ -167,7 +171,7 @@ interface SttState {
 
 // NOTE: The contact authorization gate (agent.settings.contactAuth). Numbers stay text so a
 // half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
-export interface ContactAuthState {
+export interface ContactAuthState extends ContactAuthRuleForm {
   enabled: boolean;
   url: string;
   credentialRef: string;
@@ -1421,8 +1425,13 @@ export function BehaviorTab({
       return false;
     }
   })();
+  // With a local rule the endpoint is never asked (issue #646), so an empty URL is not an error.
+  const contactAuthUsesRule = contactAuth.ruleKind !== "";
+  const contactAuthRuleBad =
+    contactAuth.enabled && contactAuthRuleInvalid(contactAuth);
   const contactAuthUrlInvalid =
     contactAuth.enabled &&
+    !contactAuthUsesRule &&
     (!contactAuth.url.trim() ||
       !isValidHttpUrl(contactAuth.url) ||
       contactAuthUrlHasCredentials);
@@ -2921,174 +2930,340 @@ export function BehaviorTab({
               }
               label={t(
                 "editor.contactAuthEnabled",
-                "Only answer contacts the external check authorizes",
+                "Only answer authorized contacts",
               )}
             />
             {contactAuth.enabled && (
               <>
                 <FormField
-                  label={t("editor.contactAuthUrl", "Authorization URL")}
-                  description={t(
-                    "editor.contactAuthUrlHint",
-                    'Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { "authorized": true | false }.',
-                  )}
-                  error={
-                    contactAuthUrlInvalid
-                      ? t(
-                          "editor.contactAuthUrlInvalid",
-                          "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
-                        )
-                      : null
-                  }
-                >
-                  <Input
-                    value={contactAuth.url}
-                    onChange={(e) =>
-                      setContactAuth({ ...contactAuth, url: e.target.value })
-                    }
-                    placeholder="https://api.example.com/contacts/authorize"
-                  />
-                </FormField>
-                <FormField
-                  label={t("editor.contactAuthCredential", "Credential")}
-                  error={refusals.contactAuthCredential}
-                  group
-                  description={t(
-                    "editor.contactAuthCredentialHint",
-                    "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
-                  )}
-                >
-                  <CredentialPicker
-                    value={contactAuth.credentialRef}
-                    onChange={(v) =>
-                      setContactAuth({ ...contactAuth, credentialRef: v })
-                    }
-                    compatibleTypes={[
-                      "bearer_token",
-                      "header",
-                      "query",
-                      "basic_auth",
-                    ]}
-                    defaultCreateType="bearer_token"
-                    ariaLabel={t("editor.contactAuthCredential", "Credential")}
-                  />
-                </FormField>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField
-                    label={t("editor.contactAuthTimeout", "Timeout (ms)")}
-                    description={t(
-                      "editor.contactAuthTimeoutHint",
-                      "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
-                    )}
-                  >
-                    <Input
-                      type="number"
-                      min={1000}
-                      max={10000}
-                      value={contactAuth.timeoutMs}
-                      onChange={(e) =>
-                        setContactAuth({
-                          ...contactAuth,
-                          timeoutMs: e.target.value,
-                        })
-                      }
-                    />
-                  </FormField>
-                  <FormField
-                    label={t(
-                      "editor.contactAuthNoticeCooldown",
-                      "Notice cooldown (s)",
-                    )}
-                    description={t(
-                      "editor.contactAuthNoticeCooldownHint",
-                      "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
-                    )}
-                  >
-                    <Input
-                      type="number"
-                      min={0}
-                      max={3600}
-                      value={contactAuth.noticeCooldownSeconds}
-                      onChange={(e) =>
-                        setContactAuth({
-                          ...contactAuth,
-                          noticeCooldownSeconds: e.target.value,
-                        })
-                      }
-                    />
-                  </FormField>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <SwitchField
-                    checked={contactAuth.includeMessageText}
-                    onCheckedChange={(v) =>
-                      setContactAuth({ ...contactAuth, includeMessageText: v })
-                    }
-                    label={t(
-                      "editor.contactAuthIncludeText",
-                      "Send the customer's message text",
-                    )}
-                    help={t(
-                      "editor.contactAuthIncludeTextHelp",
-                      "This option sends the customer's message with the Contact authorization check.\n\nThis lets the check accept a code sent in that message.\n\nThe text remains separate from the contact's identity and never appears in Logs.",
-                    )}
-                  />
-                </div>
-                <FormField
-                  label={t(
-                    "editor.contactAuthMode",
-                    "How often the endpoint is asked",
-                  )}
+                  label={t("editor.contactAuthSource", "Who decides")}
                   help={t(
-                    "editor.contactAuthModeHelp",
-                    'Sets how often the external system checks whether the contact is authorized.\n\n"Every message" is the default and applies a revocation on the contact\'s next message.\n\n"Reuse" keeps checking until the first approval, then stores it for the selected period. During that time, a revocation in the external system has no effect.',
+                    "editor.contactAuthSourceHelp",
+                    "An external endpoint answers from your own system (a CRM, a customer list).\n\nA list or an attribute decides here, from what Chatwoot already holds for the contact, with no service to host. The endpoint is then never called.\n\nA list or an attribute is checked on every message, so an edit takes effect on the contact's next message.",
                   )}
                 >
                   <Select
-                    value={contactAuth.mode}
+                    value={contactAuth.ruleKind}
                     onChange={(e) =>
-                      setContactAuth({ ...contactAuth, mode: e.target.value })
+                      setContactAuth({
+                        ...contactAuth,
+                        ruleKind: e.target.value,
+                      })
                     }
                   >
-                    <option value="perMessage">
+                    <option value="">
                       {t(
-                        "editor.contactAuthModePerMessage",
-                        "On every message (recommended)",
+                        "editor.contactAuthSourceEndpoint",
+                        "External endpoint",
                       )}
                     </option>
-                    <option value="once">
+                    <option value="allowlist">
                       {t(
-                        "editor.contactAuthModeOnce",
-                        "Once per contact, then reuse the answer",
+                        "editor.contactAuthSourceAllowlist",
+                        "A list of phones or identifiers",
+                      )}
+                    </option>
+                    <option value="attribute">
+                      {t(
+                        "editor.contactAuthSourceAttribute",
+                        "A contact or conversation attribute",
                       )}
                     </option>
                   </Select>
                 </FormField>
-                {contactAuth.mode === "once" && (
-                  <FormField
-                    label={t(
-                      "editor.contactAuthGrantTtl",
-                      "Reuse the answer for (s)",
-                    )}
-                    help={t(
-                      "editor.contactAuthGrantTtlHelp",
-                      "Sets how long an approval may be reused, from 60 to 2,592,000 seconds, or 30 days.\n\nDenials are never stored. An approval stops applying when the contact's phone number, email, or identifier changes.\n\nChanging the period, address, or credential does not delete stored approvals. To stop reusing them, choose to check every message.",
-                    )}
-                  >
-                    <Input
-                      type="number"
-                      min={60}
-                      max={2592000}
-                      value={contactAuth.grantTtlSeconds}
-                      onChange={(e) =>
-                        setContactAuth({
-                          ...contactAuth,
-                          grantTtlSeconds: e.target.value,
-                        })
+                {contactAuth.ruleKind === "allowlist" && (
+                  <>
+                    <FormField
+                      label={t("editor.contactAuthRulePhones", "Phones")}
+                      description={t(
+                        "editor.contactAuthRulePhonesHint",
+                        "One per line, with the country code (+55 11 99999-0000). Compared by digits, never by the end of the number.",
+                      )}
+                      error={
+                        contactAuthRuleBad
+                          ? t(
+                              "editor.contactAuthRuleListInvalid",
+                              "The list needs 1 to 500 entries in total; each phone needs 8 to 15 digits and each identifier at most 200 characters.",
+                            )
+                          : null
                       }
-                    />
-                  </FormField>
+                    >
+                      <Textarea
+                        rows={4}
+                        value={contactAuth.rulePhones}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            rulePhones: e.target.value,
+                          })
+                        }
+                        placeholder="+55 11 99999-0000"
+                      />
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "editor.contactAuthRuleIdentifiers",
+                        "Identifiers",
+                      )}
+                      description={t(
+                        "editor.contactAuthRuleIdentifiersHint",
+                        "One per line: the contact's identifier in Chatwoot, compared exactly.",
+                      )}
+                    >
+                      <Textarea
+                        rows={3}
+                        value={contactAuth.ruleIdentifiers}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            ruleIdentifiers: e.target.value,
+                          })
+                        }
+                      />
+                    </FormField>
+                  </>
                 )}
+                {contactAuth.ruleKind === "attribute" && (
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <FormField
+                      label={t("editor.contactAuthRuleScope", "Attribute of")}
+                    >
+                      <Select
+                        value={contactAuth.ruleScope}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            ruleScope: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="contact">
+                          {t("editor.contactAuthRuleScopeContact", "Contact")}
+                        </option>
+                        <option value="conversation">
+                          {t(
+                            "editor.contactAuthRuleScopeConversation",
+                            "Conversation",
+                          )}
+                        </option>
+                      </Select>
+                    </FormField>
+                    <FormField
+                      label={t("editor.contactAuthRuleKey", "Attribute key")}
+                      error={
+                        contactAuthRuleBad
+                          ? t("editor.contactAuthRuleKeyRequired", "Required.")
+                          : null
+                      }
+                    >
+                      <Input
+                        value={contactAuth.ruleKey}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            ruleKey: e.target.value,
+                          })
+                        }
+                        placeholder="plano"
+                      />
+                    </FormField>
+                    <FormField
+                      label={t("editor.contactAuthRuleEquals", "Equal to")}
+                      description={t(
+                        "editor.contactAuthRuleEqualsHint",
+                        "Empty: any value counts.",
+                      )}
+                    >
+                      <Input
+                        value={contactAuth.ruleEquals}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            ruleEquals: e.target.value,
+                          })
+                        }
+                        placeholder="ativo"
+                      />
+                    </FormField>
+                  </div>
+                )}
+                {!contactAuthUsesRule && (
+                  <>
+                    <FormField
+                      label={t("editor.contactAuthUrl", "Authorization URL")}
+                      description={t(
+                        "editor.contactAuthUrlHint",
+                        'Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { "authorized": true | false }.',
+                      )}
+                      error={
+                        contactAuthUrlInvalid
+                          ? t(
+                              "editor.contactAuthUrlInvalid",
+                              "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
+                            )
+                          : null
+                      }
+                    >
+                      <Input
+                        value={contactAuth.url}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            url: e.target.value,
+                          })
+                        }
+                        placeholder="https://api.example.com/contacts/authorize"
+                      />
+                    </FormField>
+                    <FormField
+                      label={t("editor.contactAuthCredential", "Credential")}
+                      error={refusals.contactAuthCredential}
+                      group
+                      description={t(
+                        "editor.contactAuthCredentialHint",
+                        "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
+                      )}
+                    >
+                      <CredentialPicker
+                        value={contactAuth.credentialRef}
+                        onChange={(v) =>
+                          setContactAuth({ ...contactAuth, credentialRef: v })
+                        }
+                        compatibleTypes={[
+                          "bearer_token",
+                          "header",
+                          "query",
+                          "basic_auth",
+                        ]}
+                        defaultCreateType="bearer_token"
+                        ariaLabel={t(
+                          "editor.contactAuthCredential",
+                          "Credential",
+                        )}
+                      />
+                    </FormField>
+                    <FormField
+                      label={t("editor.contactAuthTimeout", "Timeout (ms)")}
+                      description={t(
+                        "editor.contactAuthTimeoutHint",
+                        "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+                      )}
+                    >
+                      <Input
+                        type="number"
+                        min={1000}
+                        max={10000}
+                        value={contactAuth.timeoutMs}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            timeoutMs: e.target.value,
+                          })
+                        }
+                      />
+                    </FormField>
+                    <div className="flex flex-col gap-1.5">
+                      <SwitchField
+                        checked={contactAuth.includeMessageText}
+                        onCheckedChange={(v) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            includeMessageText: v,
+                          })
+                        }
+                        label={t(
+                          "editor.contactAuthIncludeText",
+                          "Send the customer's message text",
+                        )}
+                        help={t(
+                          "editor.contactAuthIncludeTextHelp",
+                          "This option sends the customer's message with the Contact authorization check.\n\nThis lets the check accept a code sent in that message.\n\nThe text remains separate from the contact's identity and never appears in Logs.",
+                        )}
+                      />
+                    </div>
+                    <FormField
+                      label={t(
+                        "editor.contactAuthMode",
+                        "How often the endpoint is asked",
+                      )}
+                      help={t(
+                        "editor.contactAuthModeHelp",
+                        'Sets how often the external system checks whether the contact is authorized.\n\n"Every message" is the default and applies a revocation on the contact\'s next message.\n\n"Reuse" keeps checking until the first approval, then stores it for the selected period. During that time, a revocation in the external system has no effect.',
+                      )}
+                    >
+                      <Select
+                        value={contactAuth.mode}
+                        onChange={(e) =>
+                          setContactAuth({
+                            ...contactAuth,
+                            mode: e.target.value,
+                          })
+                        }
+                      >
+                        <option value="perMessage">
+                          {t(
+                            "editor.contactAuthModePerMessage",
+                            "On every message (recommended)",
+                          )}
+                        </option>
+                        <option value="once">
+                          {t(
+                            "editor.contactAuthModeOnce",
+                            "Once per contact, then reuse the answer",
+                          )}
+                        </option>
+                      </Select>
+                    </FormField>
+                    {contactAuth.mode === "once" && (
+                      <FormField
+                        label={t(
+                          "editor.contactAuthGrantTtl",
+                          "Reuse the answer for (s)",
+                        )}
+                        help={t(
+                          "editor.contactAuthGrantTtlHelp",
+                          "Sets how long an approval may be reused, from 60 to 2,592,000 seconds, or 30 days.\n\nDenials are never stored. An approval stops applying when the contact's phone number, email, or identifier changes.\n\nChanging the period, address, or credential does not delete stored approvals. To stop reusing them, choose to check every message.",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={60}
+                          max={2592000}
+                          value={contactAuth.grantTtlSeconds}
+                          onChange={(e) =>
+                            setContactAuth({
+                              ...contactAuth,
+                              grantTtlSeconds: e.target.value,
+                            })
+                          }
+                        />
+                      </FormField>
+                    )}
+                  </>
+                )}
+                <FormField
+                  label={t(
+                    "editor.contactAuthNoticeCooldown",
+                    "Notice cooldown (s)",
+                  )}
+                  description={t(
+                    "editor.contactAuthNoticeCooldownHint",
+                    "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
+                  )}
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    max={3600}
+                    value={contactAuth.noticeCooldownSeconds}
+                    onChange={(e) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        noticeCooldownSeconds: e.target.value,
+                      })
+                    }
+                  />
+                </FormField>
                 <FormField
                   label={t(
                     "editor.contactAuthDenyMessage",
@@ -3911,6 +4086,7 @@ export function BehaviorTab({
           fallbackModelMissing ||
           (!watcher &&
             (contactAuthUrlInvalid ||
+              contactAuthRuleBad ||
               normalizeBaseUrlInvalid ||
               normalizeBaseUrlUnsupported))
         }

@@ -34,6 +34,7 @@ import {
 } from "@/modules/agents/credential-paths";
 import {
   assertPromptSize,
+  assertSettingsContactAuthRule,
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
   assertSettingsProtectedLabels,
@@ -700,6 +701,8 @@ export async function agentSettingsSet(
     // working guard with nothing. Measured on this branch: `key: " "` passes the schema, and the
     // rule the operator had was gone.
     assertSettingsToolPreconditions(patch, current.settings);
+    // Same reason: the contactAuth reader drops a rule it cannot parse (issue #646).
+    assertSettingsContactAuthRule(patch, current.settings);
     // SAME REASON, one door further: the retired taxonomy keys are refused on the REST write, and
     // without this line MCP was the way past it. `mergeBehaviorSettings` normalizes each touched
     // block through its reader, and the reader no longer knows these keys, so by the time

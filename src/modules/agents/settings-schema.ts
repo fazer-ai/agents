@@ -353,8 +353,30 @@ const availability = z.looseObject({
     ),
 });
 
+// The local rule (issue #646). Either this or `url`: with a rule, the endpoint is never called.
+const contactAuthRule = z
+  .union([
+    z.object({
+      kind: z.literal("allowlist"),
+      phones: z.array(z.string()).optional(),
+      identifiers: z.array(z.string()).optional(),
+    }),
+    z.object({
+      kind: z.literal("attribute"),
+      scope: z.enum(["conversation", "contact"]),
+      key: nonBlank("must not be blank"),
+      equals: nonBlank("must not be blank").optional(),
+    }),
+  ])
+  .nullable()
+  .optional()
+  .describe(
+    "decides instead of `url`: allowlist = phone (with country code) or identifier listed, 1-500 entries; attribute = set, or equal to `equals`. null clears",
+  );
+
 const contactAuth = z.looseObject({
   enabled: z.boolean().optional(),
+  rule: contactAuthRule,
   url: z
     .string()
     .nullable()

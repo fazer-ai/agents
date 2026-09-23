@@ -458,6 +458,7 @@ export async function reengageConversation(
       tenantId,
       agentId: resolved.loaded.agentId,
       contactDbId: resolved.loaded.contactDbId,
+      conversationDbId: resolved.convDbId,
       conversationId: resolved.conversationId,
       inboxId: resolved.inboxChatwootId,
       channelType: resolved.loaded.channelType,

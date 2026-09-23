@@ -107,6 +107,7 @@
     "invalidColorMode": "Invalid color mode",
     "invalidColorToken": "Invalid color value",
     "invalidCompanyField": "This company profile field is not valid: {{reason}}",
+    "invalidContactAuthRule": "The contact authorization rule is invalid: a list needs 1 to 500 entries, phones with 8 to 15 digits (country code included) and identifiers up to 200 characters; an attribute rule needs a scope and a key.",
     "invalidCredentialKind": "This setting requires a credential of kind {{kind}}.",
     "invalidCredentialRef": "The credential reference is not valid.",
     "invalidCredentials": "Invalid email or password",

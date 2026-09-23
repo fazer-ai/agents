@@ -224,6 +224,9 @@ export interface ConfigHealthInput {
   // The endpoint itself. `readContactAuthConfig` normalizes a missing or malformed URL to null and
   // leaves `enabled` alone, so the pair is storable — and the gate then refuses every message.
   contactAuthUrl?: string;
+  // A local rule answers instead of the endpoint (issue #646), so the endpoint-only warnings are
+  // about a request that is never made.
+  contactAuthHasRule?: boolean;
   // The two sides of the unlock-vs-handoff contradiction, plus the copy: an enabled gate that
   // neither speaks nor hands over leaves a refused customer with nothing at all.
   contactAuthIncludeMessageText?: boolean;
@@ -757,6 +760,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "contactAuth", tab: "behavior", sectionId: "contactAuth" },
     credIssue(
       Boolean(input.contactAuthEnabled) &&
+        !input.contactAuthHasRule &&
         Boolean(input.contactAuthCredentialRef),
       input.contactAuthCredentialRef ?? "",
       // The one field here that is not an API key: the gate resolves it through
@@ -775,6 +779,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // wrong on its own, so this is said rather than silently resolved.
   if (
     input.contactAuthEnabled &&
+    !input.contactAuthHasRule &&
     input.contactAuthIncludeMessageText &&
     input.contactAuthHandoffEnabled
   ) {
@@ -789,7 +794,12 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // runtime then fails closed on EVERY message with `not_configured`. That is the loudest failure
   // this feature has (the agent answers nobody) and the quietest to diagnose, because nothing about
   // a blank field says the gate in front of it is armed.
-  if (input.contactAuthEnabled && !(input.contactAuthUrl ?? "").trim()) {
+  // A local rule is the other way to reach a verdict, and with one the endpoint is never asked.
+  if (
+    input.contactAuthEnabled &&
+    !input.contactAuthHasRule &&
+    !(input.contactAuthUrl ?? "").trim()
+  ) {
     issues.push({
       key: "contactAuthNoUrl",
       tab: "behavior",

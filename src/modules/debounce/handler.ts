@@ -2150,6 +2150,7 @@ export async function flushDebounceJob(
       tenantId,
       agentId: ctx.loaded.agentId,
       contactDbId: ctx.loaded.contactDbId,
+      conversationDbId: ctx.convDbId,
       conversationId,
       inboxId: ctx.inboxChatwootId,
       channelType: ctx.loaded.channelType,

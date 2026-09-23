@@ -40,6 +40,7 @@ import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
+import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
 import { documentToolName } from "@/modules/documents/slug";
 import { parseTemplateContent } from "@/modules/documents/validate";
 import {
@@ -469,6 +470,43 @@ export class InvalidToolPreconditionError extends AppError {
       `toolPreconditions.${toolName}`,
     );
   }
+}
+
+export class InvalidContactAuthRuleError extends AppError {
+  constructor() {
+    super(
+      "settings.contactAuth.rule is not a valid rule",
+      400,
+      "errors.invalidContactAuthRule",
+      {},
+      "contactAuth.rule",
+    );
+  }
+}
+
+function rawContactAuthRule(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return undefined;
+  const block = (settings as Record<string, unknown>).contactAuth;
+  return block && typeof block === "object"
+    ? (block as Record<string, unknown>).rule
+    : undefined;
+}
+
+// The contact gate's local rule (issue #646), refused on the same terms as a precondition and for a
+// sharper reason: the reader drops a rule it cannot parse, and an enabled gate without a rule falls
+// back to the endpoint, or to `not_configured` without one. A list saved with a typo would be
+// accepted, shown, and replaced by a different gate. Only a write that CHANGES the rule is refused,
+// so an unrelated PATCH over a bag stored some other way is not the moment to fix it.
+export function assertSettingsContactAuthRule(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const next = rawContactAuthRule(settings);
+  if (!invalidContactAuthRule(next)) return;
+  if (JSON.stringify(next) === JSON.stringify(rawContactAuthRule(stored))) {
+    return;
+  }
+  throw new InvalidContactAuthRuleError();
 }
 
 // A precondition that does not parse is REFUSED here rather than dropped at turn time, and the two
@@ -1725,6 +1763,7 @@ export async function updateAgent(
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
     assertSettingsSignature(rest.settings, before?.settings);
     assertSettingsToolPreconditions(rest.settings, before?.settings);
+    assertSettingsContactAuthRule(rest.settings, before?.settings);
     assertSettingsRetiredLabelKeys(rest.settings);
     stripRetiredNoteFlagInPlace(rest.settings);
     stripDerivedFullDetailInPlace(rest.settings);
@@ -1951,6 +1990,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   assertSettingsModelFallback(input.settings, undefined, "replace");
   assertSettingsSignature(input.settings, undefined);
   assertSettingsToolPreconditions(input.settings, undefined);
+  assertSettingsContactAuthRule(input.settings, undefined);
   assertSettingsRetiredLabelKeys(input.settings);
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);

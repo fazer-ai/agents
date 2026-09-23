@@ -266,6 +266,7 @@ export async function readAgentConfigHealth(
     visionCredentialRef: vision.credentialRef ?? "",
     contactAuthEnabled: contactAuth.enabled,
     contactAuthUrl: contactAuth.url ?? "",
+    contactAuthHasRule: contactAuth.rule !== null,
     contactAuthCredentialRef: contactAuth.credentialRef ?? "",
     contactAuthIncludeMessageText: contactAuth.includeMessageText,
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,

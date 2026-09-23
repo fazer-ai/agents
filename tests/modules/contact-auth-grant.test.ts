@@ -197,6 +197,7 @@ async function ask(params: {
     tenantId,
     agentId: params.agent ?? agentId,
     contactDbId: params.contact ?? contactId,
+    conversationDbId: null,
     conversationId: 5100,
     inboxId: 51,
     channelType: "Channel::Whatsapp",

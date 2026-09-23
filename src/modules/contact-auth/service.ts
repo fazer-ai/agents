@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { evaluatePrecondition } from "@/modules/agents/tool-preconditions";
 import type { FlowEvent } from "@/modules/flowlog/service";
 import {
   type InjectableCredential,
@@ -26,7 +27,11 @@ import {
   retryUnconfirmedWrite,
   writeContactAuthGrant,
 } from "./grants";
-import type { ContactAuthConfig } from "./settings";
+import {
+  type ContactAuthConfig,
+  type ContactAuthRule,
+  phoneDigits,
+} from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
@@ -70,6 +75,11 @@ export interface AuthorizeContactParams {
   agentId: bigint;
   // Our Contact row id (Conversation.contactId). null = the conversation has no mirrored contact.
   contactDbId: bigint | null;
+  // Our Conversation row id, for a local rule over the conversation's mirrored attributes. null =
+  // the caller has none, and a conversation-scoped rule then reads an empty bag (refuses). REQUIRED
+  // and nullable, so a new caller is asked the question by the compiler instead of silently refusing
+  // every conversation-scoped rule.
+  conversationDbId: bigint | null;
   conversationId: number;
   // The Chatwoot inbox id, for the POST body. null when unknown.
   inboxId: number | null;
@@ -93,6 +103,36 @@ export interface AuthorizeContactParams {
 
 function trimmed(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+function bagOf(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+// The two refusal codes a local rule gives (issue #646). OUR codes, like every `reason`, so they are
+// safe in the flow line: they name WHICH rule refused, never the value it compared. The phone and
+// the identifier stay out of telemetry exactly as they do on the endpoint path.
+export const RULE_NOT_LISTED = "rule_not_listed";
+export const RULE_UNMET = "rule_unmet";
+
+// The verdict of a local rule. Allowed or denied, nothing else: a rule reads rows we hold, so there
+// is no timeout, no status and no credential to fail. A read that throws is the one way it can fail,
+// and it propagates to singleFlight's caller the way a failed contact read already does.
+function allowlistVerdict(
+  rule: Extract<ContactAuthRule, { kind: "allowlist" }>,
+  phone: string | null,
+  identifier: string | null,
+): ContactAuthVerdict {
+  // EXACT digits, never a suffix: `11 99999-0000` is not `55 11 99999-0000` for this gate, because
+  // a suffix rule is the one where a short entry quietly lets in every number that ends the same way.
+  const listed =
+    (phone !== null && rule.phones.includes(phoneDigits(phone))) ||
+    (identifier !== null && rule.identifiers.includes(identifier));
+  return listed
+    ? { outcome: "allowed" }
+    : { outcome: "denied", reason: RULE_NOT_LISTED };
 }
 
 export async function authorizeContact(
@@ -124,6 +164,7 @@ export async function authorizeContact(
             email: true,
             chatwootContactId: true,
             attributes: true,
+            customAttributes: true,
           },
         }),
       );
@@ -135,12 +176,41 @@ export async function authorizeContact(
           ? (attrs as Record<string, unknown>).identifier
           : null,
       );
+      // A local rule answers here, and the endpoint is never asked (issue #646). Before the identity
+      // check for an ATTRIBUTE rule, because it does not ask about the contact's identity at all: a
+      // widget visitor with no phone and no email, on a conversation an operator marked, is exactly
+      // the case "serve the conversations we marked" exists for. No grant is read, written or
+      // dropped: grants exist to spare an endpoint, a rule reads our own rows on every message, and
+      // a stored verdict would only make a list edit take effect late.
+      const rule = cfg.rule;
+      if (rule && rule.kind === "attribute") {
+        const conversationDbId = params.conversationDbId;
+        const conv =
+          rule.scope === "conversation" && conversationDbId !== null
+            ? await runScopedOn(base, sysCtx(tenantId), (db) =>
+                db.conversation.findFirst({
+                  where: { id: conversationDbId },
+                  select: { customAttributes: true },
+                }),
+              )
+            : null;
+        return evaluatePrecondition(rule, {
+          conversationAttributes: bagOf(conv?.customAttributes),
+          contactAttributes: bagOf(contact?.customAttributes),
+        })
+          ? { outcome: "allowed" }
+          : { outcome: "denied", reason: RULE_UNMET };
+      }
       // NOTE: The Chatwoot contact id alone is NOT identity: it names the row to us and says
       // nothing to the operator's system. Without a phone, an email or an operator identifier
       // there is nothing to ask about.
       if (!phone && !email && !identifier) {
         return { outcome: "no_identity", reason: "no_identifiers" };
       }
+      // The list compares the phone and the identifier. A contact that has only an email has
+      // something the endpoint could ask about, and nothing this list can match: refused as not
+      // listed, which is what it is.
+      if (rule) return allowlistVerdict(rule, phone, identifier);
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
       // The stored verdict, when the operator asked for one (issue #189). Read here rather than
       // before the identity, because what a grant is ABOUT is the identity the mirror holds right

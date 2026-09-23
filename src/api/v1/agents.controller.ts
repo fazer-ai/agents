@@ -78,6 +78,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.invalidSettingsValue', '`{{field}}` expects {{expected}}, not {{got}}. The agent would ignore that value and use its default, so it is not stored.')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.invalidToolPrecondition', '`{{tool}}` has an invalid precondition: it must name an attribute scope and key.')
+// translate('errors.invalidContactAuthRule', 'The contact authorization rule is invalid: a list needs 1 to 500 entries, phones with 8 to 15 digits (country code included) and identifiers up to 200 characters; an attribute rule needs a scope and a key.')
 // translate('errors.retiredLabelSetting', '`settings.{{key}}` was retired: say which labels exist and which exclude each other in the `set_labels` usage guidance.')
 // translate('errors.tooManyProtectedLabels', '`Labels off limits` takes at most {{max}} labels.')
 // translate('errors.tooManyAllowedLabels', '`Labels it may add` takes at most {{max}} labels.')

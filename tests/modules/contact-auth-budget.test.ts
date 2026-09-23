@@ -38,6 +38,7 @@ let contactDbId = 0n;
 
 const cfg = (over: Partial<ContactAuthConfig> = {}): ContactAuthConfig => ({
   enabled: true,
+  rule: null,
   url: "https://ops.example.com/authorize",
   credentialRef: "vault:1",
   timeoutMs: 1000,
@@ -84,6 +85,7 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
       tenantId,
       agentId: 1n,
       contactDbId,
+      conversationDbId: null,
       conversationId: 5001,
       inboxId: 71,
       channelType: "Channel::Whatsapp",
@@ -113,6 +115,7 @@ describe.skipIf(!dbUp)("the gate's time budget", () => {
       tenantId,
       agentId: 1n,
       contactDbId,
+      conversationDbId: null,
       conversationId: 5002,
       inboxId: 71,
       channelType: "Channel::Whatsapp",

@@ -5,6 +5,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { owesHandbackNote } from "@/graph/handback";
 import { runAgentTurn } from "@/graph/runtime";
 import {
   chosenSilence,
@@ -99,6 +100,30 @@ describe("the reason on skip_reply", () => {
         }),
       ]),
     ).toBeNull();
+  });
+
+  test("a skip that handed the conversation over is what a later return to the bot announces", () => {
+    expect(
+      owesHandbackNote([new HumanMessage("oi"), skipLine("needs_human")]),
+    ).toBe(true);
+    expect(
+      owesHandbackNote([new HumanMessage("oi"), skipLine("not_for_us")]),
+    ).toBe(true);
+    expect(
+      owesHandbackNote([new HumanMessage("oi"), skipLine("acknowledged")]),
+    ).toBe(false);
+    // The name alone is not the tool.
+    expect(
+      owesHandbackNote([
+        new HumanMessage("oi"),
+        new ToolMessage({
+          content: "x",
+          tool_call_id: "c1",
+          name: SKIP_REPLY_TOOL,
+          additional_kwargs: { [SKIP_REPLY_REASON_KEY]: "needs_human" },
+        }),
+      ]),
+    ).toBe(false);
   });
 
   test("what hands the conversation to a person, and what does not", () => {
@@ -421,6 +446,38 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
     expect(shape(calls)).toEqual([
       ["toggleStatus", 65_905, "open"],
       ["sendPrivateNote", 65_905, ""],
+    ]);
+  });
+
+  test("a resolve the turn discarded does not stand in the way of the floor", async () => {
+    await seed(65_907, false);
+    // `resolve_conversation` and then an empty completion: the silence was not chosen, so the resolve
+    // is discarded, and the conversation nobody answered must still leave `pending`.
+    class ResolveThenEmpty {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    { name: "resolve_conversation", args: {}, id: "call_res" },
+                  ],
+                })
+              : new AIMessage("");
+          },
+        };
+      }
+    }
+    const { calls } = await turn(65_907, new ResolveThenEmpty());
+    expect(shape(calls)).toEqual([
+      ["toggleStatus", 65_907, "open"],
+      ["sendPrivateNote", 65_907, ""],
     ]);
   });
 

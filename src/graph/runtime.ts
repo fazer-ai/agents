@@ -2573,8 +2573,9 @@ async function runTurnBody(
       // it is not. The rule itself lives in ./close-intent.ts, asked the same way at all three
       // sites — it was answered differently at each until a review round found them one by one.
       // Asked before the resolve runs, because the resolve spends the flag: a conversation the agent
-      // closed is not one to hand to the queue.
-      const closing = turnState.resolveRequested;
+      // closed is not one to hand to the queue. Only a resolve that RAN counts, read below as the
+      // flag being spent: a requested one the gate discarded left the conversation where it was.
+      const requestedClose = turnState.resolveRequested;
       if (
         !unexplained &&
         mayCloseConversation({
@@ -2596,8 +2597,9 @@ async function runTurnBody(
       // closed it on purpose. An attachment that went out does not stand in the way: the model's own
       // "a person should see this" still holds after a picture, and a delivered attachment already
       // stamped the reply mark the floor reads.
+      const closed = requestedClose && !turnState.resolveRequested;
       if (
-        !closing &&
+        !closed &&
         handoffState?.completed !== true &&
         !(await writeCalledOff())
       ) {

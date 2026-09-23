@@ -8,6 +8,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { unstorableProblem } from "@/lib/text";
 import {
   markUndisclosed,
   refForAudit,
@@ -105,6 +106,53 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
   }
 }
 
+// The operator's guidance for a GENERIC instance's events (issue #818): trusted text that reaches
+// the model outside the data fence, on every event this instance delivers. Bounded because it rides
+// every one of those turns, and refused rather than repaired, like the header names above: the
+// operator typed it and a refusal that names the key is the only feedback there is.
+export const GENERIC_INSTRUCTIONS_MAX_CHARS = 2000;
+
+export function assertCatalogConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
+  if (catalogType !== "GENERIC") return;
+  const value = config.instructions;
+  if (value === undefined || value === null) return;
+  const problem =
+    typeof value !== "string"
+      ? "must be a string"
+      : value.length > GENERIC_INSTRUCTIONS_MAX_CHARS
+        ? `is ${value.length} characters, over the ${GENERIC_INSTRUCTIONS_MAX_CHARS} allowed`
+        : unstorableProblem(value, "config.instructions") === null
+          ? null
+          : "contains a character that cannot be stored";
+  if (problem === null) return;
+  throw new AppError(
+    `config.instructions ${problem}`,
+    400,
+    "errors.integrationInstructionsUnusable",
+    { field: "config.instructions" },
+    "config.instructions",
+  );
+}
+
+// An inbound route that makes the agent message a customer cannot be left open (GENERIC, #818).
+// Checked on create AND update, since a later PATCH to NONE opens the same door.
+function assertInboundAuthAllowed(
+  entry: CatalogEntry | undefined,
+  strategy: InboundAuthStrategy | undefined,
+): void {
+  if (!entry?.requiresInboundAuth || strategy !== "NONE") return;
+  throw new AppError(
+    "this integration makes the agent message customers, so its webhook needs authentication: choose a static header or an HMAC signature (NONE is not allowed)",
+    400,
+    "errors.integrationInboundAuthRequired",
+    { field: "inboundAuthStrategy" },
+    "inboundAuthStrategy",
+  );
+}
+
 // What the audit row carries.
 //
 // Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
@@ -180,7 +228,11 @@ export async function createIntegrationInstance(
   if (!entry) {
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
-  if (params.config) assertUsableHeaderNames(params.config);
+  if (params.config) {
+    assertUsableHeaderNames(params.config);
+    assertCatalogConfig(entry.catalogType, params.config);
+  }
+  assertInboundAuthAllowed(entry, params.inboundAuthStrategy);
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;
@@ -201,7 +253,8 @@ export async function createIntegrationInstance(
         config: (params.config ?? {}) as Prisma.InputJsonValue,
         credentialRef,
         inboundAuthStrategy: minted
-          ? (params.inboundAuthStrategy ?? "NONE")
+          ? (params.inboundAuthStrategy ??
+            (entry.requiresInboundAuth ? entry.defaultInboundAuth : "NONE"))
           : "NONE",
         inboundSecretRef,
         routeTokenHash: minted?.hash ?? null,
@@ -379,6 +432,11 @@ export async function updateIntegrationInstance(
         "errors.integrationInstanceNotFound",
       );
     }
+    if (params.config) assertCatalogConfig(current.catalogType, params.config);
+    assertInboundAuthAllowed(
+      getCatalogEntry(current.catalogType),
+      params.inboundAuthStrategy,
+    );
     const credentialRef = params.credentialRef
       ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;

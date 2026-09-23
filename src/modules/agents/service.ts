@@ -2757,15 +2757,19 @@ async function buildToolSelectionView(
         name: m.name,
         enabled: m.enabled,
       })),
-      integrationInstances: integrationInstances.map((i) => ({
-        id: String(i.id),
-        catalogType: i.catalogType,
-        kind: getCatalogEntry(i.catalogType)?.kind ?? null,
-        name: i.name,
-        enabled: i.enabled,
-        // name + arg specs (label/description come from the frontend's toolpackToolMeta).
-        tools: getToolpackToolViews(i.catalogType),
-      })),
+      // A WEBHOOK entry (GENERIC, #818) has no tools to grant: offering it here would list a
+      // selectable integration that gives the agent nothing.
+      integrationInstances: integrationInstances
+        .filter((i) => getCatalogEntry(i.catalogType)?.kind !== "WEBHOOK")
+        .map((i) => ({
+          id: String(i.id),
+          catalogType: i.catalogType,
+          kind: getCatalogEntry(i.catalogType)?.kind ?? null,
+          name: i.name,
+          enabled: i.enabled,
+          // name + arg specs (label/description come from the frontend's toolpackToolMeta).
+          tools: getToolpackToolViews(i.catalogType),
+        })),
       knowledgeBases: knowledgeBases.map((k) => ({
         id: String(k.id),
         name: k.name,

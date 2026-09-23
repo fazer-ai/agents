@@ -72,6 +72,10 @@ export interface LoadedHttpToolDef {
   // What this tool's response should look like by the time it reaches the model (issue #456).
   // Required for the same reason as the two above.
   outputSchema: unknown;
+  // The GENERIC instance this tool hands `{{conversation_ref}}` for (issue #818), or null. Required
+  // for the same reason as the three above: a forgotten column would read as "names no instance",
+  // and the tool would then refuse every call instead of failing to compile.
+  conversationRefIntegrationId: bigint | null;
 }
 
 // An operator-authored code tool, as the turn builds it (tools/code.ts). Required fields for the
@@ -222,6 +226,7 @@ export async function loadToolSelections(
           expectedStatuses: true,
           appointment: true,
           outputSchema: true,
+          conversationRefIntegrationId: true,
         },
       },
       mcpServerConnection: {
@@ -317,6 +322,7 @@ export async function loadToolSelections(
           expectedStatuses: td.expectedStatuses,
           appointment: td.appointment,
           outputSchema: td.outputSchema,
+          conversationRefIntegrationId: td.conversationRefIntegrationId,
         });
         break;
       }
@@ -478,6 +484,8 @@ export interface HttpToolBuildDeps {
   appointmentBooked?: HttpToolDeps["appointmentBooked"];
   cancelAppointment?: HttpToolDeps["cancelAppointment"];
   onSideEffectError?: HttpToolDeps["onSideEffectError"];
+  // Mints this conversation's `{{conversation_ref}}` for a GENERIC instance (issue #818).
+  conversationRef?: HttpToolDeps["conversationRef"];
   // Threaded like the fence: the tool reports a refusal that sent nothing (effect-free.ts).
   onNoEffect?: HttpToolDeps["onNoEffect"];
   // The caller's whole-turn deadline, forwarded so a handler that outlived the budget does not send
@@ -513,6 +521,7 @@ export function buildHttpTools(
       expectedStatuses: d.expectedStatuses,
       appointment: d.appointment,
       outputSchema: d.outputSchema,
+      conversationRefIntegrationId: d.conversationRefIntegrationId,
     };
     return buildHttpTool(def, deps);
   });

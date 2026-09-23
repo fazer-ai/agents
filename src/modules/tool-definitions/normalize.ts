@@ -39,6 +39,11 @@ export const CONTEXT_VAR_NAMES = [
   "agent_name",
 ] as const;
 
+// Names only an HTTP tool's templates can render, and not in `CONTEXT_VAR_NAMES` because a code
+// tool's `context` does not carry them. `conversation_ref` (issue #818) is minted on demand for a
+// tool that names a GENERIC integration, which a code tool, having no network, never is.
+export const HTTP_TOOL_ONLY_VAR_NAMES = ["conversation_ref"] as const;
+
 const JSON_SCHEMA_KEYWORDS = new Set([
   "$schema",
   "$id",
@@ -195,6 +200,45 @@ function collectUnknownTokens(
   }
 }
 
+// Every {{name}} a tool's templates RENDER: the URL, header values, query values, a raw body, kv body
+// values and legacy fixed fields. ONE reader for the two places that ask (issue #818): the write
+// refuses a tool that renders `{{conversation_ref}}` without naming its integration, and the runtime
+// mints the ref only for a tool that renders it. Two readers would disagree on the shape one of them
+// forgot, and the tool would then be accepted and refuse every call, or mint a ref it never sends.
+const DOUBLE_BRACE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+
+export function renderedVariableNames(shapes: {
+  urlTemplate?: unknown;
+  headers?: unknown;
+  query?: unknown;
+  body?: unknown;
+  inputSchema?: unknown;
+}): Set<string> {
+  const names = new Set<string>();
+  const add = (tpl: unknown) => {
+    if (typeof tpl !== "string") return;
+    for (const m of tpl.matchAll(DOUBLE_BRACE)) names.add(m[1] as string);
+  };
+  add(shapes.urlTemplate);
+  if (isPlainObject(shapes.headers))
+    for (const v of Object.values(shapes.headers)) add(v);
+  if (isPlainObject(shapes.query))
+    for (const v of Object.values(shapes.query)) add(v);
+  const body = shapes.body;
+  if (isPlainObject(body)) {
+    if (body.mode === "raw") add(body.raw);
+    if (body.mode === "kv" && Array.isArray(body.rows)) {
+      for (const row of body.rows) if (isPlainObject(row)) add(row.value);
+    }
+  }
+  if (isPlainObject(shapes.inputSchema)) {
+    for (const f of Object.values(shapes.inputSchema)) {
+      if (isPlainObject(f) && f.source === "fixed") add(f.value);
+    }
+  }
+  return names;
+}
+
 function fieldNames(schema: unknown): string[] {
   return isPlainObject(schema) ? Object.keys(schema) : [];
 }
@@ -275,6 +319,7 @@ export function normalizeToolShapes(
   const names = new Set<string>([
     ...fieldNames(effectiveSchema),
     ...CONTEXT_VAR_NAMES,
+    ...HTTP_TOOL_ONLY_VAR_NAMES,
     ...extraNames,
     "secret",
   ]);

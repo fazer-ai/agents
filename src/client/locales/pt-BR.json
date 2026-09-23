@@ -1314,6 +1314,7 @@
       "httpGrantNotFound": "A ferramenta \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
       "httpToolAmbiguous": "{{n}} ferramentas daqui já respondem pelo nome \"{{name}}\", então a ferramenta do pacote não foi importada. Renomeie-as para nomes distintos e importe de novo.",
       "httpToolBodyIgnored": "A ferramenta \"{{name}}\" tinha um corpo de requisição num formato que esta versão não aceita, então ele foi reduzido à parte que de fato estava sendo enviada. A requisição não mudou; abra em Corpo da requisição para conferir.",
+      "httpToolConversationRefNotFound": "A ferramenta \"{{tool}}\" entrega a referência da conversa ao webhook genérico \"{{integration}}\", que não foi encontrado aqui, então ela vai recusar a execução até um ser escolhido.",
       "httpToolCredNotFound": "A credencial \"{{credential}}\" da ferramenta \"{{tool}}\" não foi encontrada aqui, então ficou em branco.",
       "httpToolMethodUnsupported": "A ferramenta \"{{name}}\" pede o método HTTP {{method}}, que não é um dos que a plataforma envia, então ela não foi importada. O resto do agente foi.",
       "httpToolRenamed": "A ferramenta \"{{name}}\" tem o nome de uma ferramenta nativa, então foi importada como \"{{renamed}}\"; um prompt que a cite pelo nome precisa acompanhar.",
@@ -1736,6 +1737,7 @@
         "label": "Asaas"
       },
       "GENERIC": {
+        "description": "O seu próprio sistema falando de volta numa conversa. Uma ferramenta HTTP entrega a ele uma referência da conversa quando o agente a chama; depois o seu sistema envia um evento com essa referência para este webhook, e o agente o repassa ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
         "label": "Webhook genérico"
       },
       "GOOGLE_CALENDAR": {
@@ -1783,6 +1785,8 @@
       "folderSelected": "Pasta selecionada:",
       "foldersError": "Não foi possível listar as pastas. Verifique o escopo do Drive da credencial e tente novamente.",
       "foldersFromCredential": "Pastas da conta conectada",
+      "instructions": "Orientação para o agente",
+      "instructionsHint": "O agente lê isto junto com cada evento que este webhook entrega. Por padrão ele repassa o texto do evento como veio; diga aqui o que mais fazer.",
       "loadCalendars": "Carregar",
       "loadFolders": "Carregar",
       "minutesOption": "{{n}} min",
@@ -1835,7 +1839,8 @@
     "kind": {
       "MCP": "MCP",
       "NATIVE": "Nativa",
-      "TOOLPACK": "Ferramentas"
+      "TOOLPACK": "Ferramentas",
+      "WEBHOOK": "Webhook de entrada"
     },
     "loadError": "Não foi possível carregar esta integração.",
     "name": "Nome",
@@ -1849,12 +1854,14 @@
     "type": "Integração",
     "webhook": {
       "explain": "Depois de salvar, cole a URL no Asaas; quando a cobrança for paga, o agente retoma a conversa e decide se responde.",
+      "explainGeneric": "Depois de salvar, passe esta URL e o segredo para o seu sistema. Uma ferramenta HTTP que envia {{ref}} entrega ao seu sistema uma referência da conversa; o seu sistema então faz POST dos eventos aqui com essa referência, e o agente repassa cada um ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
       "rotate": "Gerar nova URL",
       "rotateConfirm": "Gerar",
       "rotateError": "Não foi possível gerar.",
       "rotateMessage": "A URL atual para de funcionar na hora. Você precisa colar a nova no painel do provedor, senão os avisos de pagamento deixam de chegar.",
       "rotateTitle": "Gerar uma nova URL",
       "title": "Webhook de pagamento",
+      "titleGeneric": "Webhook de entrada",
       "url": "URL do webhook",
       "urlHint": "Cole esta URL no painel do provedor.",
       "urlMissing": "Esta integração foi criada antes de a URL poder ser exibida de novo, então não temos mais como mostrá-la. Gere uma nova e atualize no painel do provedor.",
@@ -2717,6 +2724,12 @@
       "conversation": "Conversa",
       "utility": "Utilitária"
     },
+    "conversationRefIntegration": "Webhook da referência da conversa",
+    "conversationRefIntegrationGone": "Integração não está mais disponível",
+    "conversationRefIntegrationHint": "A integração de webhook genérico para a qual o seu sistema envia eventos com a referência que esta ferramenta entrega. Obrigatória enquanto a ferramenta enviar a referência da conversa.",
+    "conversationRefIntegrationNone": "Nenhuma integração de webhook genérico ainda: crie uma em Integrações",
+    "conversationRefIntegrationPick": "Escolha uma integração",
+    "conversationRefNoTest": "Esta ferramenta envia a referência da conversa, que só existe dentro de uma conversa, então não dá para testá-la aqui. Teste por uma conversa de teste.",
     "credential": "Credencial",
     "credentialHint": "A credencial selecionada é adicionada às requisições automaticamente.",
     "credentialHintHeader": "Será injetada automaticamente no header {{name}}.",
@@ -2836,6 +2849,8 @@
       "contactPhoneDesc": "O telefone do contato, se conhecido.",
       "conversationId": "ID da conversa",
       "conversationIdDesc": "ID da conversa no Chatwoot.",
+      "conversationRef": "Referência da conversa",
+      "conversationRefDesc": "Uma referência a esta conversa para o seu sistema devolver eventos por uma integração de webhook genérico.",
       "inboxId": "ID do canal",
       "inboxIdDesc": "ID do canal (inbox) no Chatwoot.",
       "inboxName": "Nome do canal",

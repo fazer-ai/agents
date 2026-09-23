@@ -7,6 +7,17 @@ import type { CatalogEntry } from "./types";
 // mapper does (inbound for it then fails closed until the mapper ships).
 export const CATALOG: ReadonlyArray<CatalogEntry> = [
   {
+    catalogType: "GENERIC",
+    label: "Generic webhook",
+    kind: "WEBHOOK",
+    description:
+      "Your own system speaking back into a conversation. An HTTP tool hands it `{{conversation_ref}}` when the agent calls it; later the system POSTs an event with that ref to this webhook, and the agent passes the event on to the customer (or leaves a private note when a person holds the conversation).",
+    supportsInbound: true,
+    defaultInboundAuth: "HMAC_SHA256",
+    // An open route here is a way to make the agent write to any customer who ever had a ref minted.
+    requiresInboundAuth: true,
+  },
+  {
     catalogType: "ASAAS",
     label: "Asaas",
     kind: "TOOLPACK",

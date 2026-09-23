@@ -26,6 +26,7 @@ import {
   Skeleton,
   SwitchField,
   Tabs,
+  Textarea,
   TimezonePicker,
   ToolArgPills,
   useModalController,
@@ -500,6 +501,10 @@ const INTEGRATION_INBOUND_FIELDS = [
   "inboundSecretRef",
 ] as const;
 
+// A GENERIC webhook draws no outward credential (#818), so its refusal has nothing to sit under.
+const withoutCredential = (fields: readonly string[]) =>
+  fields.filter((f) => f !== "credentialRef");
+
 // The body, from the form. ONE function, because it is also what a refusal is matched against.
 function currentOf(form: Form) {
   return {
@@ -524,6 +529,8 @@ export function IntegrationEditModal({
   const { t } = useTranslation();
   const catalogLabel = (c: CatalogEntry | undefined) => {
     switch (c?.catalogType) {
+      case "GENERIC":
+        return t("integrations.catalog.GENERIC.label", "Generic webhook");
       case "ASAAS":
         return t("integrations.catalog.ASAAS.label", "Asaas");
       case "GOOGLE_CALENDAR":
@@ -541,6 +548,11 @@ export function IntegrationEditModal({
   };
   const catalogDescription = (c: CatalogEntry | undefined) => {
     switch (c?.catalogType) {
+      case "GENERIC":
+        return t(
+          "integrations.catalog.GENERIC.description",
+          "Your own system speaking back into a conversation. An HTTP tool hands it a reference to the conversation when the agent calls it; later your system sends an event with that reference to this webhook, and the agent passes it on to the customer (or leaves a private note when a person holds the conversation).",
+        );
       case "ASAAS":
         return t(
           "integrations.catalog.ASAAS.description",
@@ -598,11 +610,16 @@ export function IntegrationEditModal({
   // The CURRENT form, readable from inside a request that started before it.
   const formRef = useRef(form);
   formRef.current = form;
+  const isGeneric = form.catalogType === "GENERIC";
+  const openFields =
+    form.inboundAuthStrategy !== "NONE"
+      ? INTEGRATION_INBOUND_FIELDS
+      : INTEGRATION_FIELDS;
   const refusal = useFieldRefusal(
     modal.isOpen
-      ? form.inboundAuthStrategy !== "NONE"
-        ? INTEGRATION_INBOUND_FIELDS
-        : INTEGRATION_FIELDS
+      ? isGeneric
+        ? withoutCredential(openFields)
+        : openFields
       : [],
   );
   const [saving, setSaving] = useState(false);
@@ -1129,27 +1146,31 @@ export function IntegrationEditModal({
               />
             </FormField>
 
-            <FormField
-              label={t("integrations.credential", "Credential")}
-              group
-              error={refusal.at("credentialRef", form.credentialRef || null)}
-            >
-              <CredentialPicker
-                value={form.credentialRef}
-                onChange={setCredential}
-                compatibleTypes={compat}
-                defaultCreateType={compat[0]}
-                ariaLabel={t("integrations.credential", "Credential")}
-              />
-              {needsGoogle && (
-                <p className="mt-1.5 text-text-muted text-xs">
-                  {t(
-                    "integrations.googleScopeHint",
-                    "Connect a Google account with the right scope (Calendar or Drive). If a tool returns a permission error, reconnect the credential adding that scope.",
-                  )}
-                </p>
-              )}
-            </FormField>
+            {/* A GENERIC webhook calls nothing outward, so it has no credential of its own: its only
+                secret is the inbound one below (#818). */}
+            {!isGeneric && (
+              <FormField
+                label={t("integrations.credential", "Credential")}
+                group
+                error={refusal.at("credentialRef", form.credentialRef || null)}
+              >
+                <CredentialPicker
+                  value={form.credentialRef}
+                  onChange={setCredential}
+                  compatibleTypes={compat}
+                  defaultCreateType={compat[0]}
+                  ariaLabel={t("integrations.credential", "Credential")}
+                />
+                {needsGoogle && (
+                  <p className="mt-1.5 text-text-muted text-xs">
+                    {t(
+                      "integrations.googleScopeHint",
+                      "Connect a Google account with the right scope (Calendar or Drive). If a tool returns a permission error, reconnect the credential adding that scope.",
+                    )}
+                  </p>
+                )}
+              </FormField>
+            )}
 
             {/* ── Per-toolpack configuration ── */}
             {form.catalogType === "ASAAS" && (
@@ -1816,7 +1837,7 @@ export function IntegrationEditModal({
               </div>
             )}
 
-            {/* ── Payment webhook (Asaas only) ── */}
+            {/* ── Inbound webhook: Asaas payments, or the operator's own system (GENERIC, #818) ── */}
             {selectedCatalog?.supportsInbound && (
               <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3">
                 <div className="flex items-center gap-2">
@@ -1825,14 +1846,25 @@ export function IntegrationEditModal({
                     aria-hidden="true"
                   />
                   <span className="font-medium text-sm text-text-primary">
-                    {t("integrations.webhook.title", "Payment webhook")}
+                    {isGeneric
+                      ? t(
+                          "integrations.webhook.titleGeneric",
+                          "Incoming webhook",
+                        )
+                      : t("integrations.webhook.title", "Payment webhook")}
                   </span>
                 </div>
                 <p className="text-text-muted text-xs">
-                  {t(
-                    "integrations.webhook.explain",
-                    "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
-                  )}
+                  {isGeneric
+                    ? t(
+                        "integrations.webhook.explainGeneric",
+                        "After saving, give this URL and its secret to your system. An HTTP tool that sends {{ref}} hands your system a reference to the conversation; your system then POSTs events with that reference here, and the agent passes each one on to the customer (or leaves a private note when a person holds the conversation).",
+                        { ref: "{{conversation_ref}}" },
+                      )
+                    : t(
+                        "integrations.webhook.explain",
+                        "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
+                      )}
                 </p>
                 {/* The URL only exists once the instance does, so it shows on edit, never create. */}
                 {editId && (
@@ -1889,14 +1921,44 @@ export function IntegrationEditModal({
                     </div>
                   </FormField>
                 )}
-                <SwitchField
-                  checked={cfg.notifyOnPayment !== false}
-                  onCheckedChange={(v) => setCfg({ notifyOnPayment: v })}
-                  label={t(
-                    "integrations.config.notifyOnPayment",
-                    "Wake the agent when a payment is confirmed",
-                  )}
-                />
+                {isGeneric ? (
+                  <FormField
+                    label={t(
+                      "integrations.config.instructions",
+                      "Guidance for the agent",
+                    )}
+                    description={t(
+                      "integrations.config.instructionsHint",
+                      "Read by the agent with every event this webhook delivers. By default it passes the event's text on as written; say here what else to do.",
+                    )}
+                    error={refusal.at(
+                      "config.instructions",
+                      typeof cfg.instructions === "string"
+                        ? cfg.instructions
+                        : null,
+                    )}
+                  >
+                    <Textarea
+                      rows={3}
+                      maxLength={2000}
+                      value={
+                        typeof cfg.instructions === "string"
+                          ? cfg.instructions
+                          : ""
+                      }
+                      onChange={(e) => setCfg({ instructions: e.target.value })}
+                    />
+                  </FormField>
+                ) : (
+                  <SwitchField
+                    checked={cfg.notifyOnPayment !== false}
+                    onCheckedChange={(v) => setCfg({ notifyOnPayment: v })}
+                    label={t(
+                      "integrations.config.notifyOnPayment",
+                      "Wake the agent when a payment is confirmed",
+                    )}
+                  />
+                )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <FormField
                     label={t("integrations.inboundAuth", "Webhook auth")}
@@ -1910,7 +1972,13 @@ export function IntegrationEditModal({
                         })
                       }
                     >
-                      {AUTH_STRATEGIES.map((s) => (
+                      {AUTH_STRATEGIES.filter(
+                        // An inbound that makes the agent message customers cannot be open.
+                        (s) =>
+                          !(
+                            selectedCatalog?.requiresInboundAuth && s === "NONE"
+                          ),
+                      ).map((s) => (
                         <option key={s} value={s}>
                           {authStrategyLabel(s)}
                         </option>

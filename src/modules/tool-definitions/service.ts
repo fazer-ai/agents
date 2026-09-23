@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -32,7 +33,7 @@ import {
   lockToolNames,
   toolsUnderModelName,
 } from "./namespace";
-import { normalizeToolShapes } from "./normalize";
+import { normalizeToolShapes, renderedVariableNames } from "./normalize";
 
 // Custom HTTP tool definitions (per-tenant). A definition is the LLM-facing parameter schema +
 // the server-trusted wiring (urlTemplate, allowedHosts, headers, credentialRef). The credential is
@@ -87,6 +88,8 @@ export interface ToolDefinitionDto {
   ackMessage: string | null;
   // What this tool's response declares about an appointment, or null (issue #352).
   appointment: Record<string, unknown> | null;
+  // The GENERIC integration instance this tool hands `{{conversation_ref}}` for, or null (#818).
+  conversationRefIntegrationId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -110,6 +113,7 @@ const SELECT = {
   ackEnabled: true,
   ackMessage: true,
   appointment: true,
+  conversationRefIntegrationId: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -133,6 +137,7 @@ function toDto(r: {
   ackEnabled: boolean;
   ackMessage: string | null;
   appointment: unknown;
+  conversationRefIntegrationId: bigint | null;
   createdAt: Date;
   updatedAt: Date;
 }): ToolDefinitionDto {
@@ -170,6 +175,10 @@ function toDto(r: {
       string,
       unknown
     > | null,
+    conversationRefIntegrationId:
+      r.conversationRefIntegrationId === null
+        ? null
+        : String(r.conversationRefIntegrationId),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -215,6 +224,7 @@ function auditProjection(r: {
   ackEnabled: boolean;
   ackMessage: string | null;
   appointment: unknown;
+  conversationRefIntegrationId: bigint | null;
 }) {
   const cred = refForAudit(r.credentialRef);
   return {
@@ -235,6 +245,12 @@ function auditProjection(r: {
     enabled: r.enabled,
     ackEnabled: r.ackEnabled,
     expectedStatuses: r.expectedStatuses,
+    // An id, and the door it names is the point of the trail: a tool starting to hand this
+    // conversation to an operator's system is exactly the change a reader of the trail looks for.
+    conversationRefIntegrationId:
+      r.conversationRefIntegrationId === null
+        ? null
+        : String(r.conversationRefIntegrationId),
   };
 }
 
@@ -318,6 +334,12 @@ export const toolDefinitionCreateSchema = z
         message:
           'appointment must be { action: "book"|"cancel", idPath, startPath (book only), summaryPath?, reminderOffsetsHours?, askConfirmationOnLast? }; a path is dot-separated keys with numeric array indexes, e.g. data.items.0.id',
       }),
+    // The GENERIC integration instance this tool hands `{{conversation_ref}}` for (issue #818). An
+    // id, as a string or a number (REST and MCP both carry either). Checked against the tenant's own
+    // instances in the service; null clears it.
+    conversationRefIntegrationId: z
+      .union([z.string().regex(/^[1-9]\d{0,18}$/), z.number().int().positive()])
+      .nullish(),
   })
   .strict();
 export type ToolDefinitionCreate = z.infer<typeof toolDefinitionCreateSchema>;
@@ -412,6 +434,62 @@ async function assertNameFree(
       "name",
     );
   }
+}
+
+// `{{conversation_ref}}` (issue #818). A tool that renders it has to name the GENERIC instance it
+// hands the handle for, and the instance has to be one: refused here rather than accepted and then
+// refusing every call, which is the silent kind of broken this module keeps turning into a 400.
+async function resolveConversationRefIntegration(
+  db: ScopedDb,
+  raw: string | number | null | undefined,
+): Promise<bigint | null> {
+  if (raw == null) return null;
+  const id = parseDbId(String(raw));
+  const instance =
+    id === null
+      ? null
+      : await db.integrationInstance.findUnique({
+          where: { id },
+          select: { catalogType: true },
+        });
+  if (id !== null && instance?.catalogType === "GENERIC") return id;
+  throw new AppError(
+    "conversationRefIntegrationId must name a generic webhook integration of this workspace",
+    400,
+    "errors.toolConversationRefIntegrationInvalid",
+    undefined,
+    "conversationRefIntegrationId",
+  );
+}
+
+function assertConversationRefNamed(
+  shapes: Parameters<typeof renderedVariableNames>[0],
+  integrationId: bigint | null,
+): void {
+  if (integrationId !== null) return;
+  if (!renderedVariableNames(shapes).has("conversation_ref")) return;
+  throw new AppError(
+    "this tool sends {{conversation_ref}}, so it has to name the generic webhook integration the reference is for (conversationRefIntegrationId)",
+    400,
+    "errors.toolConversationRefIntegrationRequired",
+    undefined,
+    "conversationRefIntegrationId",
+  );
+}
+
+// The same two questions for a caller that previews without writing (the MCP dry run), asked in a
+// scoped read of their own. ADVISORY, like the other preview checks: the apply asks them again inside
+// its own transaction, which is the authority.
+export async function assertToolConversationRefResolvable(
+  ctx: TenantContext,
+  shapes: Parameters<typeof renderedVariableNames>[0],
+  rawIntegrationId: string | number | null | undefined,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, async (db) => {
+    const id = await resolveConversationRefIntegration(db, rawIntegrationId);
+    assertConversationRefNamed(shapes, id);
+  });
 }
 
 function assertSupportedBody(body: unknown): void {
@@ -640,6 +718,12 @@ export async function createToolDefinition(
       (shapes.urlTemplate ?? data.urlTemplate) as string,
       credentialRef,
     );
+    const conversationRefIntegrationId =
+      await resolveConversationRefIntegration(
+        db,
+        data.conversationRefIntegrationId,
+      );
+    assertConversationRefNamed(shapes, conversationRefIntegrationId);
     const row = await db.toolDefinition.create({
       data: {
         tenantId,
@@ -666,6 +750,7 @@ export async function createToolDefinition(
         // runtime would ignore.
         appointment: (readAppointmentDeclaration(data.appointment) ??
           Prisma.DbNull) as unknown as Prisma.InputJsonValue,
+        conversationRefIntegrationId,
       },
       select: SELECT,
     });
@@ -783,6 +868,40 @@ export async function updateToolDefinition(
     if (data.appointment !== undefined)
       patchData.appointment = (readAppointmentDeclaration(data.appointment) ??
         Prisma.DbNull) as unknown as Prisma.InputJsonValue;
+    // The EFFECTIVE pair again, and for the same reason as the relative template above: judged only
+    // when the patch names a template or the instance, so a legacy row stays editable elsewhere.
+    const nextRefIntegration =
+      data.conversationRefIntegrationId !== undefined
+        ? await resolveConversationRefIntegration(
+            db,
+            data.conversationRefIntegrationId,
+          )
+        : current.conversationRefIntegrationId;
+    if (data.conversationRefIntegrationId !== undefined) {
+      patchData.conversationRefIntegration =
+        nextRefIntegration === null
+          ? { disconnect: true }
+          : { connect: { id: nextRefIntegration } };
+    }
+    if (
+      data.conversationRefIntegrationId !== undefined ||
+      data.urlTemplate !== undefined ||
+      data.headers !== undefined ||
+      data.query !== undefined ||
+      data.body !== undefined ||
+      data.inputSchema !== undefined
+    ) {
+      assertConversationRefNamed(
+        {
+          urlTemplate: shapes.urlTemplate ?? current.urlTemplate,
+          headers: shapes.headers ?? current.headers,
+          query: shapes.query ?? current.query,
+          body: shapes.body ?? current.body,
+          inputSchema: shapes.inputSchema ?? current.inputSchema,
+        },
+        nextRefIntegration,
+      );
+    }
     await db.toolDefinition.update({ where: { id }, data: patchData });
     const row = await db.toolDefinition.findUniqueOrThrow({
       where: { id },

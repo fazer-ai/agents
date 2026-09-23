@@ -57,7 +57,9 @@ import {
 } from "@/modules/tool-definitions/json-path";
 import {
   CONTEXT_VAR_NAMES,
+  HTTP_TOOL_ONLY_VAR_NAMES,
   normalizeToolShapes,
+  renderedVariableNames,
 } from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
@@ -124,6 +126,35 @@ const TOOL_TOKEN_SOURCE = "\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}";
 // valid var, not a typo) when it names a declared AI field, one of these, or {{secret}} (only when
 // a credential is selected).
 const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
+// Plus the names the runtime mints on the call rather than reads from the conversation
+// (`{{conversation_ref}}`, issue #818): valid in a template, but not a value a test run asks for,
+// because a test run has no conversation to mint one for.
+const KNOWN_VAR_NAMES = new Set<string>([
+  ...CONTEXT_VAR_NAMES,
+  ...HTTP_TOOL_ONLY_VAR_NAMES,
+]);
+
+// Whether the definition on screen sends `{{conversation_ref}}`, read by the server's own reader
+// so the picker below appears exactly when the save would require it.
+export function sendsConversationRef(
+  payload: {
+    urlTemplate?: unknown;
+    query?: unknown;
+    headers?: unknown;
+    body?: unknown;
+    inputSchema?: unknown;
+  } | null,
+): boolean {
+  if (!payload) return false;
+  const { shapes } = normalizeToolShapes({
+    urlTemplate: payload.urlTemplate as string | undefined,
+    query: payload.query,
+    headers: payload.headers,
+    body: payload.body,
+    inputSchema: payload.inputSchema,
+  });
+  return renderedVariableNames(shapes).has("conversation_ref");
+}
 
 // The conversation placeholders a definition actually writes, read off the NORMALIZED shapes rather
 // than off what the operator typed, because those are two different texts. An OpenAPI-style
@@ -285,7 +316,7 @@ function isKnownToolToken(
 ): boolean {
   return (
     params.includes(name) ||
-    NATIVE_VAR_NAMES.has(name) ||
+    KNOWN_VAR_NAMES.has(name) ||
     (includeSecret && name === "secret")
   );
 }
@@ -322,6 +353,8 @@ function emptyForm() {
     bodyMode: "kv" as "kv" | "raw",
     bodyRaw: "",
     credentialRef: "",
+    // The GENERIC integration this tool hands `{{conversation_ref}}` for (issue #818), by id.
+    conversationRefIntegrationId: "",
     expectedStatuses: "",
     ackEnabled: false,
     ackMessage: "",
@@ -577,6 +610,7 @@ export function payloadOf(form: ToolForm) {
           }
       : { mode: "kv", rows: [] },
     credentialRef: form.credentialRef || null,
+    conversationRefIntegrationId: form.conversationRefIntegrationId || null,
     expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
     ackEnabled: form.ackEnabled,
     ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
@@ -607,6 +641,7 @@ const TOOL_FIELDS = [
   "query",
   "outputSchema",
   "credentialRef",
+  "conversationRefIntegrationId",
   "expectedStatuses",
 ] as const;
 
@@ -706,6 +741,7 @@ export function formFromTool(tool: Tool) {
     bodyMode,
     bodyRaw,
     credentialRef: tool.credentialRef ?? "",
+    conversationRefIntegrationId: tool.conversationRefIntegrationId ?? "",
     expectedStatuses: (tool.expectedStatuses ?? []).join(", "),
     ackEnabled: tool.ackEnabled,
     ackMessage: tool.ackMessage ?? "",
@@ -1128,6 +1164,14 @@ function nativeVarItems(
       description: t("tools.vars.agentNameDesc", "This agent's name."),
     },
     {
+      name: "conversation_ref",
+      label: t("tools.vars.conversationRef", "Conversation reference"),
+      description: t(
+        "tools.vars.conversationRefDesc",
+        "A reference to this conversation for your own system to send events back through a generic webhook integration.",
+      ),
+    },
+    {
       name: "company_name",
       label: t("tools.vars.companyName", "Company name"),
       description: t(
@@ -1406,6 +1450,11 @@ export function ToolEditModal({
   const apptAskConfirmId = useId();
   const { showToast } = useToast();
   const [form, setForm] = useState(emptyForm());
+  // The generic webhook integrations a tool can hand `{{conversation_ref}}` for (issue #818), read
+  // on open. Null until loaded; an empty list is an answer, and the picker says so.
+  const [genericIntegrations, setGenericIntegrations] = useState<
+    { id: string; name: string }[] | null
+  >(null);
   // The CURRENT form, readable from inside a request that started before it: the operator can type
   // during the save, and a refusal about a value they have already replaced belongs in the banner
   // rather than under a box that no longer holds it.
@@ -1504,6 +1553,8 @@ export function ToolEditModal({
     [form],
   );
 
+  const sendsRef = useMemo(() => sendsConversationRef(payloadOf(form)), [form]);
+
   const refusal = useFieldRefusal(
     modal.isOpen
       ? [
@@ -1535,6 +1586,20 @@ export function ToolEditModal({
     const session = {};
     sessionRef.current = session;
     const mine = () => sessionRef.current === session;
+    setGenericIntegrations(null);
+    void (async () => {
+      try {
+        const { data } = await api.api.v1.integrations.instances.get();
+        if (!mine() || !data) return;
+        setGenericIntegrations(
+          data.instances
+            .filter((i) => i.catalogType === "GENERIC")
+            .map((i) => ({ id: String(i.id), name: i.name })),
+        );
+      } catch {
+        // The picker stays in its loading state; the save still names the problem if there is one.
+      }
+    })();
     if (payloadId) {
       // Edit: fetch the full tool by id (the agent editor only carries the id). Baseline is captured
       // once the loaded tool populates the form, so isDirty stays false until the operator edits.
@@ -1602,6 +1667,17 @@ export function ToolEditModal({
     const payload = payloadOf(form);
     if (!payload) {
       setFormError(t("tools.invalidJson", "Headers must be valid JSON."));
+      return;
+    }
+    // A test run has no conversation to hand a reference for (issue #818); the server refuses the
+    // same way, and saying it here spares the round trip.
+    if (sendsConversationRef(payload)) {
+      setFormError(
+        t(
+          "tools.conversationRefNoTest",
+          "This tool sends the conversation reference, which only exists inside a conversation, so it cannot be tested here. Try it from a test conversation.",
+        ),
+      );
       return;
     }
     testModal.open({
@@ -2168,6 +2244,64 @@ export function ToolEditModal({
                 ariaLabel={t("tools.credential", "Credential")}
               />
             </FormField>
+
+            {(sendsRef || form.conversationRefIntegrationId) && (
+              <FormField
+                label={t(
+                  "tools.conversationRefIntegration",
+                  "Webhook for the conversation reference",
+                )}
+                description={t(
+                  "tools.conversationRefIntegrationHint",
+                  "The generic webhook integration your system sends events to with the reference this tool hands it. Required while the tool sends the conversation reference.",
+                )}
+                error={refusal.at(
+                  "conversationRefIntegrationId",
+                  current.conversationRefIntegrationId,
+                )}
+              >
+                <Select
+                  value={form.conversationRefIntegrationId}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      conversationRefIntegrationId: e.target.value,
+                    })
+                  }
+                >
+                  <option value="">
+                    {genericIntegrations === null
+                      ? t("common.loading", "Loading…")
+                      : genericIntegrations.length === 0
+                        ? t(
+                            "tools.conversationRefIntegrationNone",
+                            "No generic webhook integration yet: create one under Integrations",
+                          )
+                        : t(
+                            "tools.conversationRefIntegrationPick",
+                            "Choose an integration",
+                          )}
+                  </option>
+                  {(genericIntegrations ?? []).map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.name}
+                    </option>
+                  ))}
+                  {form.conversationRefIntegrationId &&
+                    genericIntegrations !== null &&
+                    !genericIntegrations.some(
+                      (i) => i.id === form.conversationRefIntegrationId,
+                    ) && (
+                      <option value={form.conversationRefIntegrationId}>
+                        {t(
+                          "tools.conversationRefIntegrationGone",
+                          "Integration no longer available",
+                        )}
+                      </option>
+                    )}
+                </Select>
+              </FormField>
+            )}
 
             <FormField
               error={refusal.at("query", current.query)}

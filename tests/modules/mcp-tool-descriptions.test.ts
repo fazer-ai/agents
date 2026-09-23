@@ -676,6 +676,12 @@ describe("MCP tool descriptions", () => {
   //
   // SCHEMA RAISED by `tts.checkMode` (#802), the same 136 characters as the settings ceiling above:
   // this tree measures 60,523, so 60,539 with the same 16. No description changed.
+  //
+  // SCHEMA RAISED by `conversation_ref_integration_id` on `tool_create` and `tool_update` (#818), the
+  // MCP twin of the REST field that names the generic webhook a tool mints `{{conversation_ref}}` for.
+  // Measured over the three raises above: 60,523 before, 61,199 with it, so 61,215 with the same
+  // 16. The description was cut from 330 to what a caller cannot read off the schema; the mechanism
+  // is on the REST field. Descriptions are unchanged.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -685,7 +691,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_365);
-    expect(schema).toBeLessThanOrEqual(60_539);
+    expect(schema).toBeLessThanOrEqual(61_215);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

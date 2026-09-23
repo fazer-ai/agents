@@ -50,7 +50,7 @@ export const integrationsController = new Elysia({
     detail: {
       ...doc(
         "Generic inbound webhook",
-        "Public inbound receptor for integrations (n8n-style webhook node); authenticated by the opaque per-instance route token plus the per-instance auth strategy (e.g. HMAC or static header, verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and dispatches asynchronously; an unknown token and failed auth collapse into the same 401, so a probe cannot tell which routes are live.",
+        "Public inbound receptor for integrations (n8n-style webhook node); authenticated by the opaque per-instance route token plus the per-instance auth strategy (e.g. HMAC or static header, verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and dispatches asynchronously; an unknown token and failed auth collapse into the same 401, so a probe cannot tell which routes are live. A GENERIC integration takes `{event_id, conversation_ref, text (at most 4000 characters, line breaks kept), status?}`: `conversation_ref` is the value an HTTP tool of the agent sent as `{{conversation_ref}}`, `event_id` is the idempotency key, and the agent passes `text` on to the customer of that conversation (or leaves a private note when a person holds it). HMAC_SHA256 signs the raw body as hex in `x-webhook-signature` (optionally `sha256=`-prefixed).",
       ),
       security: [],
       responses: {
@@ -65,10 +65,11 @@ export const integrationsController = new Elysia({
                 t.Literal("ignored"),
                 t.Literal("no-mapper"),
                 t.Literal("invalid"),
+                t.Literal("uncorrelated"),
               ],
               {
                 description:
-                  "queued = accepted for async dispatch; duplicate = replay of an already-recorded delivery; ignored = deliberately-unhandled lifecycle event; no-mapper = the integration has no inbound mapper registered; invalid = the payload failed the mapper schema (recorded for inspection).",
+                  "queued = accepted for async dispatch; duplicate = replay of an already-recorded delivery; ignored = deliberately-unhandled lifecycle event; no-mapper = the integration has no inbound mapper registered; invalid = the payload failed the mapper schema (recorded for inspection); uncorrelated = a GENERIC event whose `conversation_ref` does not name a conversation on this integration (unknown, minted by another integration, or its integration deleted): nothing was recorded and nothing will act on it, so stop sending events for that ref.",
               },
             ),
           }),

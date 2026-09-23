@@ -71,7 +71,10 @@ import {
 import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { disarmFullDetail } from "@/modules/flowlog/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
-import { isKnownCatalogType } from "@/modules/integrations/catalog";
+import {
+  getCatalogEntry,
+  isKnownCatalogType,
+} from "@/modules/integrations/catalog";
 import {
   assertNoSecrets,
   assertNoSecretsInCode,
@@ -240,6 +243,10 @@ const exportedHttpToolSchema = z.object({
   // Optional for the same reason, one issue later (#352): a bundle exported before the column
   // existed carries nothing here, which is what every tool declared then.
   appointment: z.record(z.string(), z.unknown()).nullable().optional(),
+  // The NAME of the GENERIC integration this tool hands `{{conversation_ref}}` for (issue #818),
+  // bundled beside it in `integrations`. By name because an id is tenant-local; optional because a
+  // bundle written before the column carries nothing, which is what every tool declared then.
+  conversationRefIntegration: z.string().nullable().optional(),
 });
 // An operator-authored code tool (issue #363). The body is the "wiring", the way an HTTP tool's
 // request is, and it travels for the same reason: without it the grant points at nothing. No
@@ -774,6 +781,12 @@ export async function exportAgent(
       const httpRows = httpIds.length
         ? await db.toolDefinition.findMany({ where: { id: { in: httpIds } } })
         : [];
+      // The GENERIC instances the bundled tools hand `{{conversation_ref}}` for travel with them
+      // (issue #818): nothing grants a GENERIC to an agent, so the grant walk above never finds
+      // them, and a tool imported without its instance refuses every call at the destination.
+      const refIntegrationIds = httpRows
+        .map((r) => r.conversationRefIntegrationId)
+        .filter((x): x is bigint => x != null);
       const codeRows = codeIds.length
         ? await db.codeToolDefinition.findMany({
             where: { id: { in: codeIds } },
@@ -797,11 +810,17 @@ export async function exportAgent(
             where: { id: { in: documentTemplateIds } },
           })
         : [];
-      const integrationRows = integrationIds.length
+      const allIntegrationIds = [
+        ...new Set([...integrationIds, ...refIntegrationIds]),
+      ];
+      const integrationRows = allIntegrationIds.length
         ? await db.integrationInstance.findMany({
-            where: { id: { in: integrationIds } },
+            where: { id: { in: allIntegrationIds } },
           })
         : [];
+      const integrationNameById = new Map(
+        integrationRows.map((r) => [r.id.toString(), r.name]),
+      );
       // KB document source text (opt-in, ?documents=true). Grouped by KB id; only the text travels.
       const withDocs = opts.includeDocuments === true;
       const docRows =
@@ -893,6 +912,12 @@ export async function exportAgent(
             string,
             unknown
           > | null,
+          conversationRefIntegration:
+            r.conversationRefIntegrationId != null
+              ? (integrationNameById.get(
+                  r.conversationRefIntegrationId.toString(),
+                ) ?? null)
+              : null,
         })),
         codeTools: codeRows.map((r) => ({
           name: r.name,
@@ -2049,6 +2074,7 @@ async function createMissingComponents(
   // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
   // mapping (round 18); the second occurrence now finds the first one's row and is reused.
   const chosen = new Map<string, string>();
+  const conversationRefWiring: { tool: string; integration: string }[] = [];
   for (const tdef of components.httpTools) {
     // A bundle authored before a native took the name (PR #485, round 15). The assembly reserves
     // every native name (#457), so a tool stored under one would exist in the console and never
@@ -2241,6 +2267,15 @@ async function createMissingComponents(
       continue;
     }
     landed();
+    // Resolved after the integrations below exist: the bundle's GENERIC instance may be one this
+    // same import is about to create (issue #818). Only a tool this import CREATED is wired; a reused
+    // one keeps whatever its operator gave it.
+    if (tdef.conversationRefIntegration) {
+      conversationRefWiring.push({
+        tool: name,
+        integration: tdef.conversationRefIntegration,
+      });
+    }
     // Both warnings below describe the row that was just written, so they wait for the insert to
     // report one: the reuse path above says nothing about a body or a credential it did not store.
     if (badBody) {
@@ -2484,7 +2519,13 @@ async function createMissingComponents(
           name: i.name,
           config: config as Prisma.InputJsonValue,
           credentialRef: resolveCredName(i.credentialRef),
-          inboundAuthStrategy: "NONE",
+          // A GENERIC route cannot be open (issue #818): it is created with its catalog default and
+          // no secret, which answers 401 until the operator picks one, rather than NONE, which
+          // would let anyone holding a ref make the agent write to that customer.
+          inboundAuthStrategy: getCatalogEntry(i.catalogType)
+            ?.requiresInboundAuth
+            ? (getCatalogEntry(i.catalogType)?.defaultInboundAuth ?? "NONE")
+            : "NONE",
           inboundSecretRef: null,
           routeTokenHash: hash,
           enabled: true,
@@ -2507,6 +2548,28 @@ async function createMissingComponents(
     warnings.push(...configWarnings);
     // Created integrations are silent (only reused ones warn). The fresh inbound token is re-readable
     // any time on the integration page; for a clone the operator wires the external webhook from scratch.
+  }
+
+  // `{{conversation_ref}}` (issue #818): each tool this import created is wired to the GENERIC
+  // instance of that name — created just above, or already here and reused. One that is missing
+  // leaves the tool refusing every call, which is said now rather than at the first conversation.
+  for (const w of conversationRefWiring) {
+    const inst = await db.integrationInstance.findFirst({
+      where: { catalogType: "GENERIC", name: w.integration },
+      select: { id: true },
+    });
+    if (!inst) {
+      warnings.push({
+        code: "httpToolConversationRefNotFound",
+        params: { tool: w.tool, integration: w.integration },
+        target: { kind: "tool", name: w.tool },
+      });
+      continue;
+    }
+    await db.toolDefinition.updateMany({
+      where: { name: w.tool },
+      data: { conversationRefIntegrationId: inst.id },
+    });
   }
 
   for (const tpl of components.documentTemplates ?? []) {

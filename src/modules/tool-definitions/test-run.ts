@@ -25,6 +25,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import {
   buildHttpTool,
+  CONVERSATION_REF_VAR,
   DEFAULT_HTTP_TOOL_TIMEOUT_MS,
   type HttpToolDef,
 } from "@/graph/tools/http";
@@ -46,7 +47,11 @@ import {
   readVaultRefId,
 } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
-import { CONTEXT_VAR_NAMES } from "./normalize";
+import {
+  CONTEXT_VAR_NAMES,
+  normalizeToolShapes,
+  renderedVariableNames,
+} from "./normalize";
 import { readResponseTemplateResult } from "./response-template";
 import { DEFAULT_HTTP_METHOD, readHttpMethod } from "./service";
 
@@ -165,6 +170,26 @@ export async function runToolTest(
   // is also why an undeclared shape (a legacy JSON Schema someone wrote through MCP) still passes.
   const tpl = readResponseTemplateResult(d.outputSchema);
   if (tpl.declared && !tpl.ok) throw new AppError(tpl.problem, 400);
+
+  // `{{conversation_ref}}` names a conversation, and a test run has none (issue #818). Refused up
+  // front and in so many words: the runtime's own refusal would read as a definition problem ("names
+  // no integration") on a definition that may be perfectly fine.
+  if (
+    renderedVariableNames(
+      normalizeToolShapes({
+        urlTemplate: d.urlTemplate,
+        headers: d.headers,
+        query: d.query,
+        body: d.body,
+        inputSchema: d.inputSchema,
+      }).shapes,
+    ).has(CONVERSATION_REF_VAR)
+  ) {
+    throw new AppError(
+      "this tool sends {{conversation_ref}}, which only exists inside a conversation: a test run has none to hand. Try it from a test conversation instead.",
+      400,
+    );
+  }
 
   const credentialRef = d.credentialRef || null;
   // The credential's own metadata, read where the turn reads it, so a typed credential auto-injects

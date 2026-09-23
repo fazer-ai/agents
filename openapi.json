@@ -12418,6 +12418,29 @@
                       }
                     ]
                   },
+                  "conversationRefIntegrationId": {
+                    "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -12562,6 +12585,29 @@
                       }
                     ]
                   },
+                  "conversationRefIntegrationId": {
+                    "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -12700,6 +12746,29 @@
                         "patternProperties": {
                           "^(.*)$": {}
                         }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "conversationRefIntegrationId": {
+                    "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
                       },
                       {
                         "type": "null"
@@ -13167,6 +13236,29 @@
                       }
                     ]
                   },
+                  "conversationRefIntegrationId": {
+                    "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -13305,6 +13397,29 @@
                       }
                     ]
                   },
+                  "conversationRefIntegrationId": {
+                    "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -13437,6 +13552,29 @@
                         "patternProperties": {
                           "^(.*)$": {}
                         }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "conversationRefIntegrationId": {
+                    "description": "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "format": "integer",
+                            "default": 0,
+                            "type": "string"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
                       },
                       {
                         "type": "null"
@@ -27349,7 +27487,7 @@
           "Integrations"
         ],
         "summary": "Generic inbound webhook",
-        "description": "Public inbound receptor for integrations (n8n-style webhook node); authenticated by the opaque per-instance route token plus the per-instance auth strategy (e.g. HMAC or static header, verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and dispatches asynchronously; an unknown token and failed auth collapse into the same 401, so a probe cannot tell which routes are live.",
+        "description": "Public inbound receptor for integrations (n8n-style webhook node); authenticated by the opaque per-instance route token plus the per-instance auth strategy (e.g. HMAC or static header, verified in-handler after tenant resolution), not by a session cookie or bearer. Acks fast (<5s) and dispatches asynchronously; an unknown token and failed auth collapse into the same 401, so a probe cannot tell which routes are live. A GENERIC integration takes `{event_id, conversation_ref, text (at most 4000 characters, line breaks kept), status?}`: `conversation_ref` is the value an HTTP tool of the agent sent as `{{conversation_ref}}`, `event_id` is the idempotency key, and the agent passes `text` on to the customer of that conversation (or leaves a private note when a person holds it). HMAC_SHA256 signs the raw body as hex in `x-webhook-signature` (optionally `sha256=`-prefixed).",
         "security": [],
         "responses": {
           "200": {
@@ -27368,7 +27506,7 @@
                       "type": "boolean"
                     },
                     "outcome": {
-                      "description": "queued = accepted for async dispatch; duplicate = replay of an already-recorded delivery; ignored = deliberately-unhandled lifecycle event; no-mapper = the integration has no inbound mapper registered; invalid = the payload failed the mapper schema (recorded for inspection).",
+                      "description": "queued = accepted for async dispatch; duplicate = replay of an already-recorded delivery; ignored = deliberately-unhandled lifecycle event; no-mapper = the integration has no inbound mapper registered; invalid = the payload failed the mapper schema (recorded for inspection); uncorrelated = a GENERIC event whose `conversation_ref` does not name a conversation on this integration (unknown, minted by another integration, or its integration deleted): nothing was recorded and nothing will act on it, so stop sending events for that ref.",
                       "anyOf": [
                         {
                           "const": "queued",
@@ -27388,6 +27526,10 @@
                         },
                         {
                           "const": "invalid",
+                          "type": "string"
+                        },
+                        {
+                          "const": "uncorrelated",
                           "type": "string"
                         }
                       ]

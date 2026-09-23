@@ -81,6 +81,7 @@ import {
   readSendImageConfig,
   type SendImageConfig,
 } from "@/modules/images/settings";
+import { ensureConversationRef } from "@/modules/integrations/conversation-ref";
 import {
   buildToolpackTools,
   type IntegrationSelection,
@@ -1161,6 +1162,21 @@ export async function buildToolset(
     : undefined;
   const appointmentBookedFn = apptSideEffects?.booked;
   const cancelAppointmentFn = apptSideEffects?.cancel;
+  // `{{conversation_ref}}` (issue #818): the handle an HTTP tool gives the operator's own system so
+  // it can send an event back to THIS conversation later. Bound to the same thread key the
+  // appointment closures use. NOT on a muted turn, for the reason the reminders above give: the
+  // event is delivered later, through the inbox's responder and a client of its own, so handing the
+  // door out from a turn whose sends are refused is a send through a door the mute never sees.
+  const conversationRefFn =
+    apptThreadId && !ctx.client.muted
+      ? (integrationInstanceId: bigint) =>
+          ensureConversationRef({
+            tenantId: ctx.tenantId,
+            integrationInstanceId,
+            threadId: apptThreadId,
+            base: ctx.base,
+          })
+      : undefined;
   // Slow-tool ack emitter: posts the per-tool "I'll look into that…" message (with a typing
   // indicator) before the tool runs. Wired ONLY on a real conversation (conversationId > 0) — the
   // playground builds its toolset with conversationId 0 and a dummy client, so acks never fire
@@ -1517,6 +1533,7 @@ export async function buildToolset(
         // playground, where nothing is recorded, and the declaration then simply does nothing.
         appointmentBooked: appointmentBookedFn,
         cancelAppointment: cancelAppointmentFn,
+        conversationRef: conversationRefFn,
         onSideEffectError,
       }),
       ...buildCodeTools(cfg.codeToolDefs, {

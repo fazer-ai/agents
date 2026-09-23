@@ -505,15 +505,24 @@ export function effectiveAssignee(
     : held;
 }
 
+// `alsoResolved` is the one caller that may speak into a conversation the bot itself closed: an
+// event the operator's own system sends back for a job the customer asked for (issue #818). The
+// agent resolving the conversation after scheduling the job is the ordinary flow there, and reading
+// `resolved` as "not ours" would turn every later event into a private note. It is still refused
+// while anybody else holds the conversation, and `open` (handed to humans) stays closed: resolved
+// by the bot and resolved by a person differ exactly in the assignee this still checks.
 export function shouldBotHandle(
   e: {
     assigneeType: string | null;
     status: string | null;
     assigneeId?: number | null;
   },
-  opts: { ourAgentBotId?: number | null } = {},
+  opts: { ourAgentBotId?: number | null; alsoResolved?: boolean } = {},
 ): boolean {
-  if (e.status !== "pending") return false;
+  const statusIsOurs =
+    e.status === "pending" ||
+    (opts.alsoResolved === true && e.status === "resolved");
+  if (!statusIsOurs) return false;
   return !heldByAnotherParty(e, opts);
 }
 

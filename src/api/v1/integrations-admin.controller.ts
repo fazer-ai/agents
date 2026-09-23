@@ -35,7 +35,9 @@ import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 // translate('errors.googleDriveScopeDenied', "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope; 'Drive (app files)' cannot list existing folders.")
 // translate('errors.integrationHeaderNameUnusable', 'The "{{field}}" value is not a usable header name: use only letters, digits and !#$%&\'*+-.^_`|~ (no spaces or line breaks).')
 // translate('errors.integrationHttpError', '{{provider}} returned HTTP {{status}}.')
+// translate('errors.integrationInboundAuthRequired', 'This integration makes the agent message customers, so its webhook needs authentication: choose a static header or an HMAC signature.')
 // translate('errors.integrationInstanceNotFound', 'Integration instance not found.')
+// translate('errors.integrationInstructionsUnusable', 'The operator guidance ("{{field}}") must be text of at most 2000 characters, with no character that cannot be stored.')
 // translate('errors.integrationNoInboundWebhook', 'The {{integration}} integration has no inbound webhook.')
 // translate('errors.invalidCredentialRef', 'The credential reference is not valid.')
 

@@ -443,6 +443,7 @@ export async function fetchPortalArticles(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
   let body: { payload?: unknown; meta?: { articles_count?: unknown } };
+  let read = false;
   // The timer covers the body too: a portal that sends its headers and then stalls would otherwise
   // hold the run, and with it the scheduler tick every other shared-lane job waits on.
   try {
@@ -457,8 +458,12 @@ export async function fetchPortalArticles(
       throw new Error(`portal listing answered HTTP ${res.status}`);
     }
     body = JSON.parse(await readCapped(res, MAX_LISTING_BYTES)) as typeof body;
+    read = true;
   } finally {
     clearTimeout(timer);
+    // A listing refused before it was read (an error status, a body over the cap) is still coming
+    // down the wire; clearing the timer alone would let it finish downloading after the run gave up.
+    if (!read) ctrl.abort();
   }
   if (!Array.isArray(body.payload)) {
     throw new Error("portal listing has no payload array");

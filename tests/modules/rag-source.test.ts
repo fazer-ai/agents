@@ -819,6 +819,25 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(await synced()).toHaveLength(40);
   });
 
+  test("a refused listing is aborted, not left downloading", async () => {
+    await configure();
+    const signals: AbortSignal[] = [];
+    const refused = (status: number, headers: Record<string, string>) =>
+      (async (_u: string, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal);
+        return new Response(new ReadableStream({ pull() {} }), {
+          status,
+          headers,
+        });
+      }) as unknown as typeof fetch;
+    expect(await sync(refused(500, {}))).toBeNull();
+    expect(
+      await sync(refused(200, { "content-length": String(64 * 1024 * 1024) })),
+    ).toBeNull();
+    expect(signals).toHaveLength(2);
+    expect(signals.map((s) => s.aborted)).toEqual([true, true]);
+  });
+
   test("two syncs at once create each document once", async () => {
     await configure();
     const f = portal({ articles: () => BASIC });

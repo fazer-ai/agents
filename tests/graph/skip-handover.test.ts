@@ -6,7 +6,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { owesHandbackNote } from "@/graph/handback";
-import { runAgentTurn } from "@/graph/runtime";
+import { handoverRow, runAgentTurn } from "@/graph/runtime";
 import {
   chosenSilence,
   SKIP_REPLY_DETAIL_KEY,
@@ -489,6 +489,28 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
       ["sendPrivateNote", 65_904, ""],
     ]);
     expect(calls[1]?.[2]).toBe(skipHandoverNote("unanswered", null));
+  });
+
+  test("the hand-over reads ownership again: a conversation an operator resolved or took is not ours", async () => {
+    await seed(65_909, true);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 65_909 },
+      select: { id: true },
+    });
+    expect(await handoverRow(appDb, tenantId, conv.id, 19)).toEqual({
+      spoken: true,
+      ours: true,
+    });
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { status: "resolved" },
+    });
+    expect((await handoverRow(appDb, tenantId, conv.id, 19)).ours).toBe(false);
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { status: "pending", assigneeType: "User", assigneeId: 3 },
+    });
+    expect((await handoverRow(appDb, tenantId, conv.id, 19)).ours).toBe(false);
   });
 
   test("a reaffirmed silence writes one note", async () => {

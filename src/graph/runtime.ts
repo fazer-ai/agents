@@ -489,23 +489,44 @@ export interface RunLoadedTurnParams {
   waitedBeforeInvoke?: boolean;
 }
 
-// Whether anyone on our side has ever spoken in this conversation, read LIVE from the row: the
-// predicate the follow-up gate uses (`ourSideHasSpoken`), asked at the end of the turn because a
-// human reply that landed while the model ran counts. A row that cannot be found answers true, the
-// reading that changes nothing.
-async function ourSideSpokeIn(
+// What the hand-over asks of the conversation row, read LIVE at the end of the turn (issue #659):
+// whether anyone on our side has ever spoken in it (the predicate the follow-up gate uses,
+// `ourSideHasSpoken`; a human reply that landed while the model ran counts), and whether the bot
+// still owns it. The second is the post-generation recheck asked AGAIN, because moderation and
+// attachment delivery sit between that recheck and here, and an operator who resolved or snoozed the
+// conversation in that window must not see it reopened. A row that cannot be found answers "spoken"
+// and "not ours", the reading that changes nothing.
+export async function handoverRow(
   base: PrismaClient,
   tenantId: bigint,
   conversationDbId: bigint | null,
-): Promise<boolean> {
-  if (conversationDbId === null) return true;
+  ourBot: number | null,
+): Promise<{ spoken: boolean; ours: boolean }> {
+  if (conversationDbId === null) return { spoken: true, ours: false };
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findUnique({
       where: { id: conversationDbId },
-      select: { lastRepliedMessageId: true, chatwootFirstReplyAt: true },
+      select: {
+        lastRepliedMessageId: true,
+        chatwootFirstReplyAt: true,
+        assigneeType: true,
+        assigneeId: true,
+        status: true,
+      },
     }),
   );
-  return row ? ourSideHasSpoken(row) : true;
+  if (!row) return { spoken: true, ours: false };
+  return {
+    spoken: ourSideHasSpoken(row),
+    ours: shouldBotHandle(
+      {
+        assigneeType: row.assigneeType,
+        assigneeId: row.assigneeId,
+        status: row.status,
+      },
+      { ourAgentBotId: ourBot },
+    ),
+  };
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -2497,9 +2518,16 @@ async function runTurnBody(
         if (closed || handoffState?.completed === true) return;
         if (await writeCalledOff()) return;
         const msgs = result.messages as BaseMessage[];
+        const row = await handoverRow(
+          base,
+          tenantId,
+          loaded.conversationDbId,
+          ourBot,
+        );
+        if (!row.ours) return;
         const kind = skipHandoverKind(
           silenceWasChosen(msgs) ? chosenSilence(msgs) : null,
-          await ourSideSpokeIn(base, tenantId, loaded.conversationDbId),
+          row.spoken,
         );
         if (!kind) return;
         await applySkipHandover({

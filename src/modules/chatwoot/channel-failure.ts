@@ -306,6 +306,10 @@ export async function mediaFallbackHandler(
       throw new Error(
         "media fallback: a page of the conversation did not read",
       );
+    // The conversation holds at least the failed voice note, so a FIRST page with nothing on it is
+    // a read that did not see the conversation, not an empty one.
+    if (page === 0 && rows.length === 0)
+      throw new Error("media fallback: the conversation read back empty");
     if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
     const oldest = rows[0]?.id;
     if (oldest === undefined || oldest <= messageId) break;

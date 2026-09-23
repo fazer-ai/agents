@@ -293,8 +293,11 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // burst, but no claim that holds a fixed-rate kind ever holds it, so there is nothing for it to
   // starve. The traffic share is what it left, not what protects the reminders from it.
   OBSERVE: false,
-  // One per REJECTED attachment, which is a small fraction of traffic, not traffic itself.
-  MEDIA_TEXT_FALLBACK: false,
+  // One per REJECTED attachment, which is a small fraction of traffic on a normal day and ALL of the
+  // audio traffic during a media-upload outage, when every voice reply fails the same way. Armed for
+  // `now`, so they are the oldest rows of the batch too: the population and the shape are the
+  // recoveries' above, and so is the answer (review round 8).
+  MEDIA_TEXT_FALLBACK: true,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it

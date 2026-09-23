@@ -305,6 +305,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     recentSendIds?: string[];
     filler?: number;
     unreadable?: boolean;
+    emptyPage?: boolean;
     onRead?: () => Promise<void>;
     onLive?: () => Promise<void>;
   }) {
@@ -338,6 +339,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         getMessages: async (_c: number, o?: { before?: number }) => {
           await opts.onRead?.();
           if (opts.unreadable) return {};
+          if (opts.emptyPage) return { payload: [] };
           const thread = [
             { id: 9001, sendId: null as string | null },
             ...Array.from({ length: opts.filler ?? 0 }, (_, i) => ({
@@ -448,6 +450,14 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
 
   test("a page that did not read is not proof the send is missing: the job throws to retry", async () => {
     const cw = fakeChatwoot({ unreadable: true });
+    await expect(
+      mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient),
+    ).rejects.toThrow();
+    expect(cw.sent).toEqual([]);
+  });
+
+  test("an empty first page is not proof the send is missing either", async () => {
+    const cw = fakeChatwoot({ emptyPage: true });
     await expect(
       mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient),
     ).rejects.toThrow();

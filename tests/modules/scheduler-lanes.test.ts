@@ -175,7 +175,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // One row per observed CONVERSATION, which is the same shape as DEBOUNCE's, and now the same answer:
   // with a lane of its own (issue #621) no claim that holds a fixed-rate kind ever holds it.
   OBSERVE: false,
-  MEDIA_TEXT_FALLBACK: false,
+  MEDIA_TEXT_FALLBACK: true,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {

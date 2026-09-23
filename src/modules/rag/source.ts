@@ -7,12 +7,13 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
-import { auditMutation } from "@/modules/audit/service";
 import {
-  type ClaimedJob,
-  cancelPendingJob,
-  enqueueJob,
-} from "@/modules/scheduler/service";
+  markUndisclosed,
+  redactEndpoint,
+  undisclosedMoved,
+} from "@/modules/audit/projection";
+import { auditMutation } from "@/modules/audit/service";
+import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   createDocument,
@@ -106,6 +107,17 @@ export async function parseSourceInput(
     throw invalid("baseUrl is required", "baseUrl");
   }
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
+  // A portal's listing is public, so a URL that carries a credential is a credential pasted by
+  // mistake: refused rather than stored, shown back on every read, and fetched with.
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    throw invalid("baseUrl is not a URL", "baseUrl");
+  }
+  if (parsedUrl.username !== "" || parsedUrl.password !== "") {
+    throw invalid("baseUrl must not carry credentials", "baseUrl");
+  }
   try {
     await assertSafe(baseUrl);
   } catch (err) {
@@ -242,11 +254,21 @@ export async function setSource(
         intervalMinutes: parsed.intervalMinutes,
       },
     });
+    // The URL goes on the row as its origin (`redactEndpoint`, the rule for every URL an operator
+    // types); a change the origin does not show is marked on both sides instead of carried.
+    const hidden =
+      before !== null &&
+      undisclosedMoved(
+        { baseUrl: urlOf(before.config) },
+        { baseUrl: urlOf(saved.config) },
+        ["baseUrl"],
+      );
+    const mark = <T extends object>(p: T) => (hidden ? markUndisclosed(p) : p);
     await auditMutation(db, ctx, {
       action: "knowledge_source.set",
       target: `knowledge_base:${knowledgeBaseId}`,
-      before: before ? projection(before) : undefined,
-      after: projection(saved),
+      before: before ? mark(projection(before)) : undefined,
+      after: mark(projection(saved)),
     });
     return saved;
   });
@@ -259,12 +281,19 @@ function projection(row: {
   config: Prisma.JsonValue;
   intervalMinutes: number;
 }) {
+  const c = row.config as unknown as PortalConfig;
   return {
     kind: row.kind,
-    config: row.config,
+    baseUrl: redactEndpoint(c.baseUrl),
+    slug: c.slug,
+    locale: c.locale,
+    excludeIds: c.excludeIds ?? [],
     intervalMinutes: row.intervalMinutes,
   };
 }
+
+const urlOf = (config: Prisma.JsonValue) =>
+  (config as unknown as PortalConfig).baseUrl;
 
 // Removes the source and stops the sync. The synced documents STAY, with their external ids: the
 // agent keeps answering from what it has, and a source put back readopts them by id instead of
@@ -274,26 +303,30 @@ export async function deleteSource(
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const tenantId = ctx.tenantId as bigint;
   await runScopedOn(base, ctx, async (db) => {
     const existing = await db.knowledgeSource.findUnique({
       where: { knowledgeBaseId },
     });
     if (!existing) throw new NotFoundError("knowledge base has no source");
     await db.knowledgeSource.delete({ where: { knowledgeBaseId } });
+    // The pending run is cancelled IN this transaction, not after it: a source set again right after
+    // this commits arms a row under the same key, and a cancel running later would mark that one
+    // DONE and leave the new source configured and never synced. A run already claimed finds no
+    // source at its first write and stops.
+    await db.schedulerJob.updateMany({
+      where: {
+        kind: "KNOWLEDGE_SOURCE_SYNC",
+        dedupeKey: syncKey(knowledgeBaseId),
+        status: "PENDING",
+      },
+      data: { status: "DONE" },
+    });
     await auditMutation(db, ctx, {
       action: "knowledge_source.delete",
       target: `knowledge_base:${knowledgeBaseId}`,
       before: projection(existing),
     });
   });
-  // A run already claimed finds no source and stops; a pending one is cancelled here.
-  await cancelPendingJob(
-    tenantId,
-    "KNOWLEDGE_SOURCE_SYNC",
-    syncKey(knowledgeBaseId),
-    base,
-  );
 }
 
 // Asks for a sync now. The run is the scheduler's, so two requests at once are one row re-armed,

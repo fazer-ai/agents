@@ -623,6 +623,57 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     );
   });
 
+  test("the audit row carries the portal URL as its origin, and marks a change the origin hides", async () => {
+    await setSource(
+      ctx(),
+      kb,
+      {
+        kind: "chatwoot_portal",
+        baseUrl: "https://ajuda.loja-exemplo.com.br/suporte",
+        slug: "ajuda",
+        locale: "pt-BR",
+      },
+      appDb,
+      allowAll,
+    );
+    await setSource(
+      ctx(),
+      kb,
+      {
+        kind: "chatwoot_portal",
+        baseUrl: "https://ajuda.loja-exemplo.com.br/central",
+        slug: "ajuda",
+        locale: "pt-BR",
+      },
+      appDb,
+      allowAll,
+    );
+    await deleteSource(ctx(), kb, appDb);
+    const rows = await suDb.auditLog.findMany({
+      where: {
+        tenantId,
+        target: `knowledge_base:${kb}`,
+        action: { startsWith: "knowledge_source." },
+      },
+      orderBy: { id: "asc" },
+    });
+    const text = JSON.stringify(rows.map((r) => [r.before, r.after]));
+    expect(text).not.toContain("/suporte");
+    expect(text).not.toContain("/central");
+    expect(rows.map((r) => r.action)).toEqual([
+      "knowledge_source.set",
+      "knowledge_source.set",
+      "knowledge_source.delete",
+    ]);
+    expect(rows[0]?.after).toMatchObject({
+      baseUrl: "https://ajuda.loja-exemplo.com.br/…",
+      slug: "ajuda",
+    });
+    expect(rows[0]?.after).not.toHaveProperty("undisclosedChanged");
+    expect(rows[1]?.before).toMatchObject({ undisclosedChanged: true });
+    expect(rows[1]?.after).toMatchObject({ undisclosedChanged: true });
+  });
+
   test("two syncs at once create each document once", async () => {
     await configure();
     const f = portal({ articles: () => BASIC });
@@ -872,6 +923,8 @@ describe("knowledge source input (issue #794)", () => {
     [{ ...good, excludeIds: ["abc"] }, "excludeIds"],
     [{ ...good, excludeIds: [0] }, "excludeIds"],
     [{ ...good, intervalMinutes: 1 }, "intervalMinutes"],
+    [{ ...good, baseUrl: "https://op:segredo@ajuda.x.com.br" }, "baseUrl"],
+    [{ ...good, baseUrl: "not a url" }, "baseUrl"],
     [{ ...good, baseUrl: "" }, "baseUrl"],
   ])("refuses %p on %s", async (input, field) => {
     await expect(parseSourceInput(input, allowAll)).rejects.toMatchObject({

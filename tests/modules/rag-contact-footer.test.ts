@@ -38,6 +38,8 @@ describe("what counts as a contact footer", () => {
     expect(isContactFooterParagraph("atendimento@exemplo.com.br")).toBe(true);
     expect(isContactFooterParagraph("Ligue (11) 3456-7890.")).toBe(true);
     expect(isContactFooterParagraph("+55 11 98765-4321")).toBe(true);
+    expect(isContactFooterParagraph("Ligue 11 3456-7890")).toBe(true);
+    expect(isContactFooterParagraph("0800 123 4567")).toBe(true);
     expect(isContactFooterParagraph("Dúvidas? Fale conosco.")).toBe(true);
     expect(isContactFooterParagraph("Still stuck? Contact us.")).toBe(true);
   });
@@ -51,6 +53,12 @@ describe("what counts as a contact footer", () => {
     expect(isContactFooterParagraph("Guarde o protocolo 123-4567.")).toBe(
       false,
     );
+    // The digit runs an answer carries: a postal code, a tax id, an order number.
+    expect(isContactFooterParagraph("O CEP da loja é 01310-100.")).toBe(false);
+    expect(isContactFooterParagraph("CPF do titular: 123.456.789-00.")).toBe(
+      false,
+    );
+    expect(isContactFooterParagraph("Pedido 1234567890.")).toBe(false);
     expect(isContactFooterParagraph("O plano custa R$ 1.200,00 por ano.")).toBe(
       false,
     );
@@ -90,6 +98,14 @@ describe("stripping it from a passage", () => {
   test("a run of contact paragraphs longer than a footer is a list of channels, and stays", () => {
     const channels = `Nossos canais:\n\nVendas: vendas@exemplo.com.br\n\nSuporte: suporte@exemplo.com.br\n\nFinanceiro: financeiro@exemplo.com.br\n\nOuvidoria: ouvidoria@exemplo.com.br`;
     expect(stripContactFooter(channels)).toBe(channels);
+  });
+
+  test("several blank lines between the blocks of a footer are one separator", () => {
+    expect(
+      stripContactFooter(
+        `${ARTICLE}\n\nFale conosco.\n\n\n\natendimento@exemplo.com.br`,
+      ),
+    ).toBe(ARTICLE);
   });
 
   test("the separators that stay are the ones the document had", () => {

@@ -30,30 +30,21 @@ export const CONTACT_FOOTER_MAX_CHARS = 280;
 const MAX_FOOTER_PARAGRAPHS = 3;
 
 const EMAIL = /[^\s@<>()[\]]+@[^\s@<>()[\]]+\.[a-z]{2,}/i;
-// A run of digits with the separators a phone number is written with; judged by its digit count so
-// a date ("12/03/2026") or a price ("R$ 1.200,00") does not pass for one.
-const PHONE_CANDIDATE = /\+?\(?\d[\d\s().-]{6,}\d/g;
-// Dates are written with the same separators and reach the same digit count ("2026-03-12" is
-// eight), so they are taken out before the count: a validity date closing an article is content.
-const DATE =
-  /\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/g;
+// A phone number as a contact line writes one: an international prefix, an area code in
+// parentheses, or groups split by a separator ending in four digits ("11 3456-7890"), or a 0800
+// line. A bare digit count is not enough, because the numbers an answer carries are digit runs too:
+// a CEP ("01310-100"), a CPF ("123.456.789-00"), a date, an order number. Those are content.
+const PHONE =
+  /\+\d{1,3}[\s.-]?\(?\d{2,3}\)?[\s.-]?\d{4,5}[\s-]?\d{4}\b|\(\d{2,3}\)\s?\d{4,5}[\s-]?\d{4}\b|\b\d{2,3}[\s.-]\d{4,5}[\s-]\d{4}\b|\b0800[\s-]?\d{3}[\s-]?\d{4}\b/;
 const INVITATION =
   /(entr(?:e|ar) em contato|fale conosco|fale com (?:a gente|o nosso|a nossa|nosso|nossa)|central de (?:atendimento|relacionamento)|atendimento ao cliente|\bsac\b|contact us|get in touch|reach out to us|contact our|contáctenos|póngase en contacto)/i;
 // What a footer usually hangs under, and means nothing once the footer is gone.
 const HEADING_OR_RULE = /^(#{1,6}\s+[^\n]*|[-*_]{3,})$/;
 
-function hasPhone(text: string): boolean {
-  for (const m of text.replace(DATE, " ").matchAll(PHONE_CANDIDATE)) {
-    const digits = m[0].replace(/\D/g, "").length;
-    if (digits >= 8 && digits <= 15) return true;
-  }
-  return false;
-}
-
 export function isContactFooterParagraph(paragraph: string): boolean {
   const p = paragraph.trim();
   if (!p || p.length > CONTACT_FOOTER_MAX_CHARS) return false;
-  return EMAIL.test(p) || hasPhone(p) || INVITATION.test(p);
+  return EMAIL.test(p) || PHONE.test(p) || INVITATION.test(p);
 }
 
 // The passage without its trailing contact footer, or the passage unchanged when there is none (or
@@ -61,7 +52,9 @@ export function isContactFooterParagraph(paragraph: string): boolean {
 export function stripContactFooter(content: string): string {
   // Split keeping the separators, so what stays is byte-for-byte what was there.
   // CRLF too: text posted through the API keeps its line endings, and the chunker keeps them.
-  const parts = content.split(/(\r?\n[ \t]*\r?\n)/);
+  // A run of blank lines is ONE separator: split one by one, the empty paragraphs between them would
+  // stop the backward walk before it reached the rest of the footer.
+  const parts = content.split(/(\r?\n(?:[ \t]*\r?\n)+)/);
   const paragraphs = parts.filter((_, i) => i % 2 === 0);
   let run = 0;
   while (

@@ -430,13 +430,15 @@ export async function fetchPortalArticles(
     // Asked before EVERY page, not once: the name is the tenant's, and one that resolves publicly for
     // page 1 can resolve privately for page 2 (the embedding client asks per request for the same
     // reason).
-    await assertSafe(url);
-    const left = deadline - Date.now();
-    if (left <= 0) {
-      throw new Error(
+    const expired = () =>
+      new Error(
         `portal listing did not finish within ${deadlineMs / 1000}s (page ${page})`,
       );
-    }
+    // The check resolves the name, and a resolver that hangs is inside the deadline like the fetch
+    // is: the page is fetched only after the check PASSES, and the wait for it ends with the deadline.
+    await beforeDeadline(assertSafe(url), deadline, expired);
+    const left = deadline - Date.now();
+    if (left <= 0) throw expired();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
     let body: { payload?: unknown; meta?: { articles_count?: unknown } };
@@ -493,6 +495,25 @@ export async function fetchPortalArticles(
     }
   }
   throw new Error(`portal listing did not end within ${MAX_PAGES} pages`);
+}
+
+async function beforeDeadline<T>(
+  p: Promise<T>,
+  deadline: number,
+  expired: () => Error,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cut = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(expired()),
+      Math.max(0, deadline - Date.now()),
+    );
+  });
+  try {
+    return await Promise.race([p, cut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function toArticle(

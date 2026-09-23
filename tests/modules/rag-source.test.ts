@@ -834,6 +834,18 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
       }),
     ).toBeNull();
     expect(Date.now() - t1).toBeLessThan(2_000);
+    // And so is a resolver that hangs: the SSRF check is waited on only until the deadline.
+    const t2 = Date.now();
+    expect(
+      await syncKnowledgeSource(tenantId, kb, {
+        base: appDb,
+        fetchImpl: portal({ articles: () => BASIC }),
+        assertSafe: () => new Promise(() => {}),
+        timeoutMs: 10_000,
+        deadlineMs: 300,
+      }),
+    ).toBeNull();
+    expect(Date.now() - t2).toBeLessThan(2_000);
   });
 
   test("two syncs at once create each document once", async () => {

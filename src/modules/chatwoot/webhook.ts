@@ -132,7 +132,11 @@ import {
 import { extractMessageVisuals } from "@/modules/vision/extract-message";
 import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
-import { channelFailureOf, handleChannelFailure } from "./channel-failure";
+import {
+  channelFailureOf,
+  forgetMediaFallbacks,
+  handleChannelFailure,
+} from "./channel-failure";
 import type { ChatwootClient } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
 import { resetAckSendId } from "./constants";
@@ -3204,6 +3208,16 @@ async function maybeConsumeCommandOrGate(params: {
           debounceDedupeKey(chatwootThreadId(tenantId, instanceId, convId)),
           base,
         ),
+      );
+      // The text a channel refused as audio, waiting to go out again (issue #587): it is a reply
+      // of the episode this command closes, and its body is a customer's words the reset forgets.
+      await step("forget media fallbacks", "respostas em texto pendentes", () =>
+        forgetMediaFallbacks({
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          base,
+        }),
       );
     }
 

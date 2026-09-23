@@ -416,6 +416,71 @@ export async function mediaFallbackHandler(
   return { outcome: "done" };
 }
 
+// WHAT A `/reset` DOES TO THIS CONVERSATION'S FALLBACKS. A pending one is retired (its reply
+// belongs to the episode the command closed, and the job's own reset fence would stop it anyway), and
+// every one of them, DEAD included, loses the body while keeping its row: the key is the dedupe a
+// redelivered failure lands on, the body is a customer's words that the reset promised to forget.
+// A CLAIMED one is left to its own fence, which reads the reset before it sends and whose completion
+// clears the body.
+export async function forgetMediaFallbacks(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  base?: PrismaClient;
+}): Promise<void> {
+  const run = (db: ScopedDb) =>
+    db.schedulerJob.updateMany({
+      where: {
+        kind: "MEDIA_TEXT_FALLBACK",
+        status: { not: "CLAIMED" },
+        AND: [
+          {
+            payload: {
+              path: ["instanceId"],
+              equals: String(params.instanceId),
+            },
+          },
+          {
+            payload: {
+              path: ["conversationId"],
+              equals: params.conversationId,
+            },
+          },
+        ],
+      },
+      data: { payloadSecret: null },
+    });
+  const retire = (db: ScopedDb) =>
+    db.schedulerJob.updateMany({
+      where: {
+        kind: "MEDIA_TEXT_FALLBACK",
+        status: "PENDING",
+        AND: [
+          {
+            payload: {
+              path: ["instanceId"],
+              equals: String(params.instanceId),
+            },
+          },
+          {
+            payload: {
+              path: ["conversationId"],
+              equals: params.conversationId,
+            },
+          },
+        ],
+      },
+      data: { status: "DONE" },
+    });
+  const both = async (db: ScopedDb) => {
+    await retire(db);
+    await run(db);
+  };
+  if (params.base)
+    await runScopedOn(params.base, sysCtx(params.tenantId), both);
+  else await runScoped(sysCtx(params.tenantId), both);
+}
+
 let registered = false;
 export function registerMediaFallbackJob(): void {
   if (registered) return;

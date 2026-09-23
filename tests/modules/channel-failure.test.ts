@@ -685,6 +685,56 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(jobs.map((j) => j.status)).toEqual(["DONE"]);
   });
 
+  test("a /reset retires the conversation's pending fallback and forgets every body, keeping the keys", async () => {
+    await deliver(updated(9030));
+    await deliver(updated(9031));
+    const [dead] = await jobsFor(9031);
+    if (!dead) throw new Error("the job was not armed");
+    await suDb.schedulerJob.update({
+      where: { id: dead.id },
+      data: { status: "DEAD" },
+    });
+    await suDb.agent.update({ where: { id: agentId }, data: { mode: "test" } });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      data: { testActivatedAt: new Date() },
+    });
+    try {
+      const reset = normalizeChatwootEvent({
+        event: "message_created",
+        id: 9040,
+        content: "/reset",
+        message_type: "incoming",
+        private: false,
+        sender: { type: "contact", id: 31 },
+        conversation: {
+          id: CONV_ID,
+          inbox_id: INBOX_ID,
+          status: "pending",
+          meta: { sender: { id: 31, name: "Cliente" } },
+          last_activity_at: Math.floor(Date.now() / 1000),
+        },
+      });
+      if (!reset) throw new Error("unreachable");
+      await deliver(reset);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      });
+    }
+    const pending = (await jobsFor(9030))[0];
+    const after = (await jobsFor(9031))[0];
+    expect(pending?.status).toBe("DONE");
+    expect(pending?.payloadSecret).toBeNull();
+    expect(after?.status).toBe("DEAD");
+    expect(after?.payloadSecret).toBeNull();
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      data: { resetAtMessageId: null, testActivatedAt: null },
+    });
+  });
+
   test("a delivery-class failure sends nothing and names the code", async () => {
     await deliver(updated(9003, { error: "131026: Message undeliverable" }));
     expect(await jobsFor(9003)).toHaveLength(0);

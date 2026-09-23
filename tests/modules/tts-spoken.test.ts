@@ -568,6 +568,15 @@ describe("planSpokenReply", () => {
     ).toEqual([]);
   });
 
+  // Review round 18: pairing later on the line does not make a mid-token marker a token start.
+  test("a marker inside a local part stays the address's even when one closes later", () => {
+    expect(
+      planSpokenReply(
+        "Fale com ops*billing@x.com.br e aguarde *dois dias* pela resposta",
+      ).written,
+    ).toEqual([]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

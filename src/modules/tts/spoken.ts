@@ -43,12 +43,12 @@ const MARKDOWN_LINK = new RegExp(
 const URL =
   /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. An
-// address starts only where a token starts (after whitespace, an opening bracket, a separator, a
-// quote or formatting, the last two checked for pairing below), so a local part the class cannot
-// hold (`john!doe.smith@`, `a!b'finance@`) is left alone, never cut to the piece after its last
-// unsupported character.
+// address starts only where a token starts (after whitespace, an opening bracket or a separator,
+// then any quotes or formatting, which must also close later on the line, checked below), so a
+// local part the class cannot hold (`john!doe.smith@`, `a!b'finance@`, `ops*billing@`) is left
+// alone, never cut to the piece after its last unsupported character.
 const EMAIL =
-  /(?<=^|[\s\p{Ps}\p{Pi}<:;,，：；、"'*_~`])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
+  /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
 // GFM's autolink rule, plus straight and closing quotes (`\p{Pf}`: `’`, `”`, `»`): these end a
 // sentence or a formatting run, not a link.
 const TRAILING_PUNCTUATION = /[?!.,:*_~;'"\p{Pf}]$/u;

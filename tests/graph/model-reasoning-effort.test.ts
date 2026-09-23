@@ -359,7 +359,13 @@ describe("createChatModel leaves every other model alone", () => {
     ]) {
       expect([model, temp(model)]).toEqual([model, undefined]);
     }
-    for (const model of ["gpt-60", "gpt-6x", "gpt-6-chat-latest", "gpt-4o"]) {
+    for (const model of [
+      "gpt-60",
+      "gpt-6x",
+      "not-gpt-6-luna",
+      "gpt-6-chat-latest",
+      "gpt-4o",
+    ]) {
       expect([model, temp(model)]).toEqual([model, 0.3]);
     }
   });

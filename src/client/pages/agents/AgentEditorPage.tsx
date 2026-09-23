@@ -2448,6 +2448,12 @@ function AgentEditor() {
           'Tool "{{name}}" has a request URL this platform cannot call, so the tool was not imported. The rest of the agent was.',
           p,
         );
+      case "knowledgeSourceUnusable":
+        return t(
+          "editor.importWarning.knowledgeSourceUnusable",
+          'Knowledge base "{{name}}" was imported without its help center source, which this platform cannot store. Set the source again on the base.',
+          p,
+        );
       case "knowledgeBaseNameUnusable":
         return t(
           "editor.importWarning.knowledgeBaseNameUnusable",

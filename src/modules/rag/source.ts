@@ -5,7 +5,12 @@ import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import {
   markUndisclosed,
@@ -13,7 +18,11 @@ import {
   undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
-import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  enqueueJob,
+  upsertJobRow,
+} from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   createDocument,
@@ -189,24 +198,23 @@ function stateOf(row: {
 
 const syncKey = (knowledgeBaseId: bigint) => `source:${knowledgeBaseId}`;
 
-async function armSync(
+// Arms the base's sync for now, INSIDE the caller's transaction: a source that committed without its
+// row would be configured and never synced, with nothing but a restart to notice. The perpetual row
+// re-arms itself from then on, and the boot re-arm (`ensureAllKnowledgeSourceSyncs`) is the net.
+export async function armSourceSync(
+  db: ScopedDb,
   tenantId: bigint,
   knowledgeBaseId: bigint,
-  runAt: Date,
-  rearm: "new-work" | "same-work",
-  base: PrismaClient,
 ): Promise<void> {
-  await enqueueJob({
+  await upsertJobRow(db, {
     tenantId,
     kind: "KNOWLEDGE_SOURCE_SYNC",
     dedupeKey: syncKey(knowledgeBaseId),
-    runAt,
-    // NOTE: "new-work" from an operator (a source saved or a sync asked for: the portal may have
-    // changed since the run in flight read it, so that run is superseded), "same-work" from the boot
-    // re-arm, which is the clock pushing the same perpetual row again.
-    rearm,
+    runAt: new Date(),
+    // NOTE: an operator's act (a source saved, a sync asked for, an agent imported): the portal may
+    // have changed since the run in flight read it, so that run is superseded.
+    rearm: "new-work",
     payload: { knowledgeBaseId: String(knowledgeBaseId) },
-    base,
   });
 }
 
@@ -273,9 +281,9 @@ export async function setSource(
       before: before ? mark(projection(before)) : undefined,
       after: mark(projection(saved)),
     });
+    await armSourceSync(db, tenantId, knowledgeBaseId);
     return saved;
   });
-  await armSync(tenantId, knowledgeBaseId, new Date(), "new-work", base);
   return stateOf(row);
 }
 
@@ -357,8 +365,8 @@ export async function requestSync(
       action: "knowledge_source.sync",
       target: `knowledge_base:${knowledgeBaseId}`,
     });
+    await armSourceSync(db, tenantId, knowledgeBaseId);
   });
-  await armSync(tenantId, knowledgeBaseId, new Date(), "new-work", base);
 }
 
 // ── fetching ────────────────────────────────────────────────────────────────────────────────────

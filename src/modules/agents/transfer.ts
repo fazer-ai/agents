@@ -77,6 +77,7 @@ import {
   assertNoSecretsInCode,
 } from "@/modules/n8n-export/n8n";
 import { knowledgeBaseNameUsable } from "@/modules/rag/service";
+import { armSourceSync, parseSourceInput } from "@/modules/rag/source";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   canonicalBodyShape,
@@ -294,6 +295,21 @@ const exportedKnowledgeDocumentSchema = z.object({
   fileName: z.string().nullable().optional(),
   mimeType: z.string().nullable().optional(),
   content: z.string(),
+  // A synced document's article (issue #794). Carried so a base that keeps its source at the
+  // destination readopts these documents by id instead of creating a copy of each; optional for
+  // bundles from before it existed, which read as ordinary documents.
+  externalId: z.string().nullable().optional(),
+  sourceUrl: z.string().nullable().optional(),
+});
+// A base's help center source (issue #794), as the operator configured it. Re-validated on import
+// like the write validates it, so a bundle cannot store what the API would refuse.
+const exportedKnowledgeSourceSchema = z.object({
+  kind: z.string(),
+  baseUrl: z.string(),
+  slug: z.string(),
+  locale: z.string(),
+  excludeIds: z.array(z.number()).optional(),
+  intervalMinutes: z.number().optional(),
 });
 const exportedKnowledgeBaseSchema = z.object({
   name: z.string(),
@@ -304,6 +320,8 @@ const exportedKnowledgeBaseSchema = z.object({
   // Optional for bundles exported before the switch existed (issue #747): absent reads as off, the
   // column default, which is what those bases had.
   stripContactFooters: z.boolean().optional(),
+  // Optional: absent (older bundles) and null both mean the base mirrors nothing.
+  source: exportedKnowledgeSourceSchema.nullable().optional(),
   // Opt-in (?documents=true): the source text of every document, re-indexed at the destination. Last
   // so the heavy, optional payload sits at the end of each KB object.
   documents: z.array(exportedKnowledgeDocumentSchema).optional(),
@@ -647,6 +665,9 @@ export async function exportAgent(
               chunkSize: true,
               chunkOverlap: true,
               stripContactFooters: true,
+              source: {
+                select: { kind: true, config: true, intervalMinutes: true },
+              },
             },
           })
         : [];
@@ -794,6 +815,8 @@ export async function exportAgent(
                 fileName: true,
                 mimeType: true,
                 content: true,
+                externalId: true,
+                sourceUrl: true,
               },
               orderBy: { id: "asc" },
             })
@@ -807,6 +830,8 @@ export async function exportAgent(
           fileName: d.fileName,
           mimeType: d.mimeType,
           content: d.content,
+          externalId: d.externalId,
+          sourceUrl: d.sourceUrl,
         });
         docsByKb.set(d.knowledgeBaseId, list);
       }
@@ -917,6 +942,18 @@ export async function exportAgent(
           chunkSize: r.chunkSize,
           chunkOverlap: r.chunkOverlap,
           stripContactFooters: r.stripContactFooters,
+          source: r.source
+            ? {
+                kind: r.source.kind,
+                ...(r.source.config as {
+                  baseUrl: string;
+                  slug: string;
+                  locale: string;
+                  excludeIds: number[];
+                }),
+                intervalMinutes: r.source.intervalMinutes,
+              }
+            : null,
           ...(withDocs ? { documents: docsByKb.get(r.id) ?? [] } : {}),
         })),
         businessHours: bhRows.map((r) => ({
@@ -2653,18 +2690,55 @@ async function createMissingComponents(
     if (kb.documents && kb.documents.length > 0) {
       // Recreate the source documents as UNINDEXED — NOT via createDocument (which would enqueue a RAG
       // ingest job). They stay unindexed until the operator triggers re-indexing (manual re-ingest).
+      // An external id is unique per base, and a hand-edited bundle can repeat one: the first keeps
+      // it and the rest arrive as ordinary documents, rather than the whole import failing.
+      const seenExternal = new Set<string>();
       await db.knowledgeDocument.createMany({
-        data: kb.documents.map((d) => ({
-          tenantId,
-          knowledgeBaseId: createdKb.id,
-          title: d.title,
-          sourceType: d.sourceType,
-          fileName: d.fileName ?? null,
-          mimeType: d.mimeType ?? null,
-          content: d.content,
-          status: "UNINDEXED",
-        })),
+        data: kb.documents.map((d) => {
+          const externalId =
+            d.externalId != null && !seenExternal.has(d.externalId)
+              ? d.externalId
+              : null;
+          if (externalId !== null) seenExternal.add(externalId);
+          return {
+            tenantId,
+            knowledgeBaseId: createdKb.id,
+            title: d.title,
+            sourceType: d.sourceType,
+            fileName: d.fileName ?? null,
+            mimeType: d.mimeType ?? null,
+            content: d.content,
+            externalId,
+            sourceUrl: externalId !== null ? (d.sourceUrl ?? null) : null,
+            status: "UNINDEXED",
+          };
+        }),
       });
+    }
+    if (kb.source) {
+      // The source the base had, held to the write's rules (credentials, slug, locale, interval).
+      // The address is not resolved here: every run asks the SSRF check before every page, and an
+      // import is not where a resolver's answer at this minute should decide what gets stored.
+      try {
+        const parsed = await parseSourceInput(kb.source, async () => undefined);
+        await db.knowledgeSource.create({
+          data: {
+            tenantId,
+            knowledgeBaseId: createdKb.id,
+            kind: parsed.kind,
+            config: parsed.config as unknown as Prisma.InputJsonValue,
+            intervalMinutes: parsed.intervalMinutes,
+          },
+        });
+        await armSourceSync(db, tenantId, createdKb.id);
+      } catch (err) {
+        if (!(err instanceof AppError)) throw err;
+        warnings.push({
+          code: "knowledgeSourceUnusable",
+          params: { name: clipText(kb.name, 60) },
+          target: { kind: "knowledge", name: kb.name },
+        });
+      }
     }
     // A freshly created KB is silent (only reused ones warn). Imported-but-unindexed documents surface
     // through the editor's live "needs indexing" alert (config-health), not a one-shot import warning.

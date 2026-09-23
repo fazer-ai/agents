@@ -1296,6 +1296,7 @@
       "kbReusedDocsSkipped_one": "Knowledge base \"{{name}}\" already existed and was reused; its {{count}} bundled document was not imported.",
       "kbReusedDocsSkipped_other": "Knowledge base \"{{name}}\" already existed and was reused; its {{count}} bundled documents were not imported.",
       "knowledgeBaseNameUnusable": "Knowledge base \"{{name}}\" has a name this platform cannot store, so it was not imported. The rest of the agent was.",
+      "knowledgeSourceUnusable": "Knowledge base \"{{name}}\" was imported without its help center source, which this platform cannot store. Set the source again on the base.",
       "mcpGrantNotFound": "MCP server \"{{name}}\" was not found, so its grant was skipped.",
       "mcpReused": "MCP server \"{{name}}\" already existed and was reused; check it is right.",
       "mcpUnsafeStdio": "MCP server \"{{name}}\" has an unsupported command and was skipped.",

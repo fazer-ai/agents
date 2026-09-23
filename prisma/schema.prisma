@@ -1621,6 +1621,8 @@ model ToolDefinition {
   toolSelections             AgentToolSelection[]
 
   @@unique([tenantId, name])
+  // The SET NULL on the instance's deletion scans for referencing rows (migration 20260923200000).
+  @@index([conversationRefIntegrationId])
   @@map("tool_definitions")
 }
 

@@ -22,6 +22,10 @@ import { GENERIC_TEXT_MAX_CHARS } from "@/modules/integrations/types";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { toolCreate } from "@/modules/mcp/write-agents";
 import {
+  integrationCreate,
+  integrationUpdate,
+} from "@/modules/mcp/write-webhooks";
+import {
   createToolDefinition,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
@@ -537,6 +541,18 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       expect(status >= 400 && status < 500).toBe(true);
       expect(String(err)).toContain("conversationRefIntegrationId");
     }
+    // The name belongs to the minted ref, so a field that takes it is refused whatever else the tool
+    // says (review round 1).
+    await expect(
+      createToolDefinition(
+        ctx(),
+        refTool("campo_reservado", {
+          conversationRefIntegrationId: String(genericId),
+          inputSchema: { conversation_ref: { type: "string", source: "ai" } },
+        }) as never,
+        appDb,
+      ),
+    ).rejects.toMatchObject({ statusCode: 400, field: "inputSchema" });
     const ok = await createToolDefinition(
       ctx(),
       refTool("agendar_relatorio", {
@@ -554,6 +570,43 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
         appDb,
       ),
     ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  // Review round 1: the integration previews read the same refusals as the write.
+  test("the MCP integration previews refuse an open GENERIC route and unusable guidance", async () => {
+    const openCreate = await integrationCreate(
+      principal(),
+      {
+        catalog_type: "GENERIC",
+        name: "aberta",
+        inbound_auth_strategy: "NONE",
+      } as never,
+      { base: appDb },
+    );
+    expect(openCreate.ok).toBe(false);
+    const openUpdate = await integrationUpdate(
+      principal(),
+      { integration_id: String(genericId), inbound_auth_strategy: "NONE" },
+      { base: appDb },
+    );
+    expect(openUpdate.ok).toBe(false);
+    const longGuidance = await integrationUpdate(
+      principal(),
+      {
+        integration_id: String(genericId),
+        config: {
+          instructions: "x".repeat(GENERIC_INSTRUCTIONS_MAX_CHARS + 1),
+        },
+      },
+      { base: appDb },
+    );
+    expect(longGuidance.ok).toBe(false);
+    const fine = await integrationUpdate(
+      principal(),
+      { integration_id: String(genericId), config: { instructions: "ok" } },
+      { base: appDb },
+    );
+    expect(fine.ok).toBe(true);
   });
 
   test("the MCP dry run refuses what the apply would refuse", async () => {

@@ -466,6 +466,23 @@ function assertConversationRefNamed(
   shapes: Parameters<typeof renderedVariableNames>[0],
   integrationId: bigint | null,
 ): void {
+  // The name belongs to the minted ref: a field of that name would put a value the model (or a
+  // constant) chose where the receiver expects the handle, and the callback would never correlate.
+  const schema = shapes.inputSchema;
+  if (
+    schema &&
+    typeof schema === "object" &&
+    !Array.isArray(schema) &&
+    Object.hasOwn(schema, "conversation_ref")
+  ) {
+    throw new AppError(
+      "conversation_ref is reserved for the conversation reference the runtime mints; name the field something else",
+      400,
+      "errors.toolConversationRefFieldReserved",
+      undefined,
+      "inputSchema",
+    );
+  }
   if (integrationId !== null) return;
   if (!renderedVariableNames(shapes).has("conversation_ref")) return;
   throw new AppError(

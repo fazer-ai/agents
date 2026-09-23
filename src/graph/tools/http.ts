@@ -636,7 +636,8 @@ export function buildHttpTool(
     : urlTemplate;
 
   return failableTool(
-    async (input: Record<string, unknown>) => {
+    async (rawInput: Record<string, unknown>) => {
+      let input = rawInput;
       // 0a. `{{conversation_ref}}` (issue #818), minted BEFORE anything is sent — the ack included —
       // and before the request, because the receiver may call back while this call is still running
       // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
@@ -668,6 +669,13 @@ export function buildHttpTool(
           );
         }
         context = { ...baseContext, [CONVERSATION_REF_VAR]: minted.ref };
+        // The minted ref is the only value the name can have. The write refuses a field of that name,
+        // and this covers a row that reached the table another way: every renderer reads the input
+        // before the context, so a model-filled `conversation_ref` would otherwise go out instead.
+        if (CONVERSATION_REF_VAR in input) {
+          const { [CONVERSATION_REF_VAR]: _shadow, ...rest } = input;
+          input = rest;
+        }
       }
 
       // 0. Ack (the model-written holding message): required when an ack is configured. The schema
@@ -703,7 +711,7 @@ export function buildHttpTool(
       const fixedValues: Record<string, string> = {};
       const fixedMissingDeps = new Map<string, Set<string>>();
       for (const f of fields) {
-        if (f.source === "fixed") {
+        if (f.source === "fixed" && f.name !== CONVERSATION_REF_VAR) {
           const missing = new Set<string>();
           fixedValues[f.name] = interpolate(f.value, (n) => {
             const v = n === "secret" ? secret : ctxLookup(n);
@@ -868,7 +876,11 @@ export function buildHttpTool(
             const ph = value.match(LONE_PLACEHOLDER)?.[1];
             if (ph && ph in input) {
               if (input[ph] != null) payload[k] = input[ph];
-            } else if (ph && isAiFieldName(ph)) {
+            } else if (
+              ph &&
+              isAiFieldName(ph) &&
+              !(ph === CONVERSATION_REF_VAR && CONVERSATION_REF_VAR in context)
+            ) {
               // known aiField the model omitted → omit the key
             } else {
               payload[k] = interpolate(value, lookupWithSecret);

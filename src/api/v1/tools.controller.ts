@@ -25,6 +25,7 @@ import {
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.toolConversationRefIntegrationInvalid', 'The conversation reference has to be for a generic webhook integration of this workspace.')
+// translate('errors.toolConversationRefFieldReserved', 'The field name conversation_ref is reserved for the conversation reference the agent creates. Give the field another name.')
 // translate('errors.toolConversationRefIntegrationRequired', 'This tool sends the conversation reference (conversation_ref), so it has to name the generic webhook integration the reference is for.')
 // translate('errors.toolDefinitionNotFound', 'Tool definition not found.')
 // translate('errors.toolNameTaken', 'That tool name is already in use.')

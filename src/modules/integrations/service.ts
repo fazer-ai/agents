@@ -153,6 +153,27 @@ function assertInboundAuthAllowed(
   );
 }
 
+// Every refusal a write makes about the body itself, in ONE reader: the service calls it before the
+// write and the MCP previews before answering, so a preview never approves what the apply refuses
+// (docs/mcp.md, dry-run coherence). `catalogType` is the effective one: the argument on create, the
+// row's on update.
+export function assertIntegrationWritable(
+  catalogType: string,
+  params: {
+    config?: Record<string, unknown>;
+    inboundAuthStrategy?: InboundAuthStrategy;
+  },
+): void {
+  if (params.config) {
+    assertUsableHeaderNames(params.config);
+    assertCatalogConfig(catalogType, params.config);
+  }
+  assertInboundAuthAllowed(
+    getCatalogEntry(catalogType),
+    params.inboundAuthStrategy,
+  );
+}
+
 // What the audit row carries.
 //
 // Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
@@ -228,11 +249,7 @@ export async function createIntegrationInstance(
   if (!entry) {
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
-  if (params.config) {
-    assertUsableHeaderNames(params.config);
-    assertCatalogConfig(entry.catalogType, params.config);
-  }
-  assertInboundAuthAllowed(entry, params.inboundAuthStrategy);
+  assertIntegrationWritable(entry.catalogType, params);
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;
@@ -432,11 +449,7 @@ export async function updateIntegrationInstance(
         "errors.integrationInstanceNotFound",
       );
     }
-    if (params.config) assertCatalogConfig(current.catalogType, params.config);
-    assertInboundAuthAllowed(
-      getCatalogEntry(current.catalogType),
-      params.inboundAuthStrategy,
-    );
+    assertIntegrationWritable(current.catalogType, params);
     const credentialRef = params.credentialRef
       ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;

@@ -535,6 +535,53 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   // Driven through the injected ask, which is exactly the seam the scheduler uses: yes to the first
   // question (there was work to do), no to the one after the verdict (the command landed in
   // between). Counting the asks is what makes this measure the SECOND one rather than the first.
+  // Issue #818 (review round 1). An operator's event over a person is a note written without a
+  // model, so it spends nothing and the ceiling has nothing to refuse: over the budget the person
+  // still gets the report, which the receptor otherwise marks processed and loses.
+  test("an operator event over a person is noted even over the ceiling, with no model", async () => {
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
+    await spend("inbox", 1200);
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inboxDbId,
+        chatwootConversationId: 9480,
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 7,
+        threadId: `${tenantId}:${instanceId}:9480`,
+        lastEventAt: new Date(),
+        lastInboundAt: new Date(),
+      },
+    });
+    const s = stubChatwoot();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9480`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        framing: "operator_event",
+        text: "Entraram 120 de 400.",
+      },
+      deliverToResolved: true,
+      base: appDb,
+      deps: {
+        makeClient: s.makeClient as never,
+        makeModel: () => {
+          throw new Error("a note for a person needs no model");
+        },
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("noted");
+    expect(s.publicOn(9480)).toEqual([]);
+    expect(s.notesOn(9480)).toHaveLength(1);
+    expect(await ceilingRows(9480)).toEqual([]);
+  });
+
   test("a nudge retired while the ceiling was being read announces nothing", async () => {
     await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
     await spend("inbox", 1200);

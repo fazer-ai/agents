@@ -153,6 +153,22 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
   });
 });
 
+describe("the minted ref is the only value the name can have (review round 1)", () => {
+  test("a field of that name, filled by the model or fixed, does not replace the minted ref", async () => {
+    for (const field of [
+      { type: "string", source: "ai" },
+      { type: "string", source: "fixed", value: "cr_FIXED" },
+    ]) {
+      const h = harness(
+        { inputSchema: { conversation_ref: field } },
+        async () => ({ ok: true, ref: "cr_REAL" }),
+      );
+      await h.tool.invoke({ conversation_ref: "cr_MODEL_VALUE" });
+      expect(JSON.parse(h.sent[0]?.body ?? "{}")).toEqual({ ref: "cr_REAL" });
+    }
+  });
+});
+
 describe("an HTTP tool that does not render {{conversation_ref}}", () => {
   test("never mints, even when it names an instance", async () => {
     const h = harness(

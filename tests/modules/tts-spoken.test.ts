@@ -505,6 +505,26 @@ describe("planSpokenReply", () => {
     }
   });
 
+  // Review round 14.
+  test("inline code keeps its URL or address verbatim, punctuation included", () => {
+    const plan = planSpokenReply(
+      "Leia `https://ja.wikipedia.org/wiki/君の名は。` e escreva para `sac@x.com.br` depois",
+    );
+    expect(plan.written).toEqual([
+      "https://ja.wikipedia.org/wiki/君の名は。",
+      "sac@x.com.br",
+    ]);
+    expect(plan.speech).toBe("Leia e escreva para depois");
+  });
+
+  test("inline code inside a link label belongs to the link", () => {
+    const plan = planSpokenReply(
+      "Abra [o site `https://x.com.br/a`](https://x.com.br/b) quando puder",
+    );
+    expect(plan.written).toEqual(["https://x.com.br/b", "https://x.com.br/a"]);
+    expect(plan.speech).toBe("Abra o site quando puder");
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

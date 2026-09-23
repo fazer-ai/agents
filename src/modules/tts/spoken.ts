@@ -27,6 +27,9 @@ const TARGET = String.raw`(?:\\[()]|[^()\s]|\((?:\\[()]|[^()\s])*\))+`;
 // `'…'` or `(…)`. Group 1 is the label; groups 2/3 (angle) or 4/5 (bare) the `mailto:` and target.
 const AUTOLINK =
   /<(?:(mailto:)([^<>\s]+)|((?:https?:\/\/|www\.)[^<>\s]+|[^<>\s@]+@[^<>\s@]+))>/gi;
+// Inline code holding a URL or an address: CommonMark takes code literally, so its content is the
+// item verbatim, punctuation included (`https://ja.wikipedia.org/wiki/君の名は。`).
+const CODE_ITEM = /`((?:https?:\/\/|www\.)[^`\s]+|[^`\s@:]+@[^`\s@]+)`/gi;
 const MARKDOWN_LINK = new RegExp(
   String.raw`\[([^\]\n]+)\]\(\s*(?:<(mailto:)?((?:\\[<>]|[^<>\n])+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
   "g",
@@ -105,6 +108,11 @@ function itemSpans(text: string): Span[] {
     const written = m[1] ? recipient(m[2] ?? "") : (m[3] ?? "");
     links.push(widen(text, m.index, m.index + m[0].length, [written], ""));
   }
+  for (const m of text.matchAll(CODE_ITEM)) {
+    const end = m.index + m[0].length;
+    if (!links.every((l) => end <= l.start || m.index >= l.end)) continue;
+    links.push(widen(text, m.index, end, [m[1] ?? ""], ""));
+  }
   // Structure before text: bare items are searched only outside the links, so a greedy URL cannot
   // run across `[um](…),[outro](…)`. Blanking UTF-16 units keeps every index where it was.
   const units = text.split("");
@@ -180,10 +188,7 @@ const ENTITIES: Record<string, string> = {
 function item(text: string, start: number, match: string): Span {
   let s = start;
   let e = start + match.length;
-  // Backticks say where the item ends: nothing inside them is the sentence's (`<…>` is an
-  // autolink, parsed before any bare item).
-  const delimited = text[s - 1] === "`" && text[e] === "`";
-  for (; !delimited; ) {
+  for (;;) {
     const first = text[s] ?? "";
     const last = text[e - 1] ?? "";
     if (TRAILING_PUNCTUATION.test(last) || unbalanced(text.slice(s, e), last))

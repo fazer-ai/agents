@@ -336,15 +336,11 @@ export async function mediaFallbackHandler(
   );
   if (!live)
     throw new Error("media fallback: the conversation could not be read");
-  // A LOCAL STATUS CLAIM outranks the snapshot, as in the follow-up's probe: a colleague's reply
-  // claims `open` here before Chatwoot's toggle lands, and a live read taken in between still says
-  // `pending`. The reconcile returns what the row says after its own ordering decided, and a failure
-  // there THROWS: the claim is the one thing the snapshot cannot show.
-  let decided: {
-    status: string | null;
-    assigneeType: string | null;
-    assigneeId: number | null;
-  } = live;
+  // AND THE MIRROR, read through the reconcile: a local status claim (a colleague's reply claimed
+  // `open` before Chatwoot's toggle landed) and a takeover webhook committed after this snapshot are
+  // both newer than the live read, and the reconcile returns the row as its own ordering left it. A
+  // text that nobody is waiting on costs less than one over a person, so BOTH readings have to say
+  // the bot owns it. A reconcile that fails THROWS: the claim is what the snapshot cannot show.
   const reconciled = await reconcileMirrorFromLive({
     tenantId: job.tenantId,
     instanceId,
@@ -352,10 +348,13 @@ export async function mediaFallbackHandler(
     live,
     base,
   });
-  if (reconciled.refusedByStatusClaim && reconciled.state)
-    decided = reconciled.state;
+  const ours = (c: {
+    status: string | null;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  }) => shouldBotHandle(c, { ourAgentBotId: agentBotId });
   // With THIS bot's id: a conversation handed to another bot is not ours either.
-  if (!shouldBotHandle(decided, { ourAgentBotId: agentBotId })) {
+  if (!ours(live) || (reconciled.state !== null && !ours(reconciled.state))) {
     logger.info(
       "media fallback: conversation %s is no longer the bot's, the text is not sent",
       String(conversationId),

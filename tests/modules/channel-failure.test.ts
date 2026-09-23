@@ -325,6 +325,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
           return {
             id: CONV_ID,
             inbox_id: opts.liveInbox ?? INBOX_ID,
+            last_activity_at: Math.floor(Date.now() / 1000) - 60,
             status: opts.status ?? "pending",
             meta: {
               assignee: opts.assignee
@@ -515,6 +516,31 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
           statusClaimUntil: null,
           statusClaimFrom: null,
         },
+      });
+    }
+  });
+
+  test("a takeover the mirror recorded after Chatwoot's snapshot was taken stops the send", async () => {
+    const cw = fakeChatwoot({
+      onLive: async () => {
+        // The takeover webhook commits while the GET is in flight: newer than the snapshot.
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: {
+            assigneeType: "User",
+            assigneeId: 3,
+            lastEventAt: new Date(Date.now() + 3_600_000),
+          },
+        });
+      },
+    });
+    try {
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { assigneeType: null, assigneeId: null, lastEventAt: new Date() },
       });
     }
   });

@@ -338,6 +338,35 @@ describe("planSpokenReply", () => {
     expect(plan.textOnly).toBe(false);
   });
 
+  // Review round 6.
+  test("an autolink or inline code keeps the URL's own trailing characters", () => {
+    for (const text of [
+      "Redefina em <https://x.com.br/reset?token=abc_> ainda hoje",
+      "Redefina em `https://x.com.br/reset?token=abc_` ainda hoje",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([
+        "https://x.com.br/reset?token=abc_",
+      ]);
+    }
+  });
+
+  test("CJK sentence punctuation ends a URL and the prose after it stays spoken", () => {
+    const plan = planSpokenReply(
+      "物流进度：https://x.com.br/pedidos。明天我们会发货。",
+    );
+    expect(plan.written).toEqual(["https://x.com.br/pedidos"]);
+    expect(plan.speech).toContain("明天我们会发货");
+  });
+
+  test("an unpaired marker before an address leaves the address alone", () => {
+    for (const text of [
+      "Escreva para *sales@x.com.br e respondemos em 2 dias",
+      "Escreva para ~sales@x.com.br e respondemos em 2 dias",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([]);
+    }
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

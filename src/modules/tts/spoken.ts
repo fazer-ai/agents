@@ -29,12 +29,14 @@ const MARKDOWN_LINK = new RegExp(
 );
 // A match never starts or ends inside a token: a written item that is only part of the destination
 // sends the customer somewhere else. A formatting run may sit between the item and whitespace
-// (`**https://…`), never between the item and a word (`abc_https://…`, `ops~billing@…`).
-const URL = /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`]+/giu;
+// (`**https://…`), never between the item and a word (`abc_https://…`, `ops~billing@…`). CJK and
+// fullwidth punctuation (`。`, `，`) ends a URL: it is the sentence's, and no URL holds it.
+const URL =
+  /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`\u3000-\u303f\uff01-\uff65]+/giu;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. What
 // an address can hold and the class cannot (`!#$&*/=?^`{|}~`) stops the match instead of cutting it.
 const EMAIL =
-  /(?<![!#$&/=?^{|}\p{L}\p{N}\p{M}][*~`]*)[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
+  /(?<![!#$&/=?^{|}\p{L}\p{N}\p{M}])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
 // GFM's autolink rule, plus closing quotes: these end a sentence or a formatting run, not a link.
 const TRAILING_PUNCTUATION = /[?!.,:*_~;'"»”]$/;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
@@ -91,8 +93,12 @@ function itemSpans(text: string): Span[] {
   const candidates: Span[] = [];
   for (const m of bare.matchAll(URL))
     candidates.push(item(bare, m.index, m[0]));
-  for (const m of bare.matchAll(EMAIL))
-    candidates.push(item(bare, m.index, m[0]));
+  for (const m of bare.matchAll(EMAIL)) {
+    // `*sales@` and `~sales@` are valid addresses. A marker left unpaired after widening may be
+    // the address's own first character, so the address is left alone rather than cut.
+    const c = item(bare, m.index, m[0]);
+    if (!isWrapper(bare[c.start - 1] ?? "")) candidates.push(c);
+  }
 
   // Overlaps resolve to the longest match: the whole address over the `www.` host inside it, the
   // whole URL over an address in its query.
@@ -117,7 +123,11 @@ function target(mailto: string | undefined, destination: string): string {
 function item(text: string, start: number, match: string): Span {
   let s = start;
   let e = start + match.length;
-  for (;;) {
+  // `<…>` and backticks say where the item ends: nothing inside them is the sentence's.
+  const delimited =
+    (text[s - 1] === "<" && text[e] === ">") ||
+    (text[s - 1] === "`" && text[e] === "`");
+  for (; !delimited; ) {
     const first = text[s] ?? "";
     const last = text[e - 1] ?? "";
     if (TRAILING_PUNCTUATION.test(last) || unbalanced(text.slice(s, e), last))

@@ -10,6 +10,9 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
+import { isTestSilenced } from "@/modules/agents/test-mode";
+import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
+import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -120,8 +123,14 @@ async function agentBehindBot(
 // conversation that moved on by about a hundred messages since the voice note failed.
 const FALLBACK_READBACK_MAX_PAGES = 5;
 
-export function mediaFallbackDedupeKey(messageId: number): string {
-  return `msg:${messageId}`;
+// Per Chatwoot INSTANCE as well as per message: message ids are the server's own, and a tenant that
+// replaces its Chatwoot deployment keeps its scheduler rows, so a new server reusing an old id would
+// land on the old row and `once` would keep it.
+export function mediaFallbackDedupeKey(
+  instanceId: bigint,
+  messageId: number,
+): string {
+  return `msg:${instanceId}:${messageId}`;
 }
 
 // Acts on a failure: arms the text for a media failure that has one, and writes the line in every
@@ -162,7 +171,7 @@ export async function handleChannelFailure(params: {
         // The key names the FAILED MESSAGE, and the arm is `once`: a redelivered webhook, a second
         // bot route and a failure reported twice all land on this row and leave it as it is, so the
         // text goes out one time whatever the channel repeats.
-        dedupeKey: mediaFallbackDedupeKey(f.messageId),
+        dedupeKey: mediaFallbackDedupeKey(params.instanceId, f.messageId),
         rearm: "once",
         runAt: new Date(),
         // The reply in its own column, never in the Json payload: it is text the customer will read,
@@ -234,15 +243,6 @@ export async function mediaFallbackHandler(
       },
     }),
   );
-  const conv = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
-    db.conversation.findFirst({
-      where: {
-        chatwootInstanceId: instanceId,
-        chatwootConversationId: conversationId,
-      },
-      select: { threadId: true, lastInboundAt: true, resetAtMessageId: true },
-    }),
-  );
   const stop = (why: string): JobResult => {
     logger.warn(
       "media fallback: %s (conv=%s msg=%s), the text is not sent",
@@ -254,14 +254,65 @@ export async function mediaFallbackHandler(
   };
   if (!bot || bot.instance.disconnectedAt !== null)
     return stop("the bot is gone or the account is disconnected");
-  if (!conv) return stop("the conversation is not mirrored here");
-  // The reply belongs to the episode a `/reset` closed.
-  if (resetLandedAfter(messageId, conv.resetAtMessageId))
-    return stop("the conversation was reset after the failed reply");
-  // The seam every sender loads first (`loadAgentConfig`): it refuses a switched-off agent and a
-  // monitoring one, and it carries the signature, which the voice note's transcription never has.
-  const cfg = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
-    loadAgentConfig(
+  // The same reads a follow-up makes before it speaks (../../graph/nudge.ts), in the same order: the
+  // conversation, the agent its inbox is bound to NOW, the test-mode activation, and the config.
+  const gate = await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: job.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
+      select: {
+        inboxId: true,
+        threadId: true,
+        lastInboundAt: true,
+        resetAtMessageId: true,
+        testActivatedAt: true,
+        contactId: true,
+      },
+    });
+    if (!conv?.inboxId) return "the conversation is not mirrored here";
+    // The reply belongs to the episode a `/reset` closed.
+    if (resetLandedAfter(messageId, conv.resetAtMessageId))
+      return "the conversation was reset after the failed reply";
+    const inbox = await db.inbox.findUnique({
+      where: { id: conv.inboxId },
+      select: { agentId: true, chatwootInboxId: true },
+    });
+    // The inbox may have been unbound or handed to another agent while the job waited: the persona
+    // that sent the audio no longer answers here.
+    if (inbox?.agentId !== bot.agentId)
+      return "the inbox is no longer bound to this agent";
+    const agent = await db.agent.findUnique({
+      where: { id: bot.agentId },
+      select: { mode: true, settings: true },
+    });
+    if (
+      agent &&
+      isTestSilenced(
+        agent.mode,
+        await episodeTestActivatedAt({
+          tenantId: job.tenantId,
+          instanceId,
+          cfg: readChannelRedirectConfig(agent.settings),
+          agentMode: agent.mode,
+          conv: {
+            testActivatedAt: conv.testActivatedAt,
+            contactId: conv.contactId,
+            chatwootInboxId: inbox.chatwootInboxId,
+          },
+          base,
+          scoped: db,
+        }),
+      )
+    )
+      return "the agent is in test mode and this conversation was not activated";
+    // The seam every sender loads first: it refuses a switched-off agent and a monitoring one, and
+    // it carries the signature, which the voice note's transcription never has.
+    const cfg = await loadAgentConfig(
       db,
       {
         tenantId: job.tenantId,
@@ -272,9 +323,12 @@ export async function mediaFallbackHandler(
         lastIncomingAt: conv.lastInboundAt,
       },
       { skipExperiment: true },
-    ),
-  );
-  if (!cfg) return stop("the agent is off, monitoring or unloadable");
+    );
+    return cfg ?? "the agent is off, monitoring or unloadable";
+  });
+  if (typeof gate === "string") return stop(gate);
+  const cfg = gate;
+
   // SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
   // replacement is not (docs/signature.md).
   const sig = signatureFor(cfg.signatureConfig, cfg.promptVars, cfg.promptOpts);

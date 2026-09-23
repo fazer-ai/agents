@@ -131,7 +131,7 @@ const jobsFor = (messageId: number) =>
     where: {
       tenantId,
       kind: "MEDIA_TEXT_FALLBACK",
-      dedupeKey: mediaFallbackDedupeKey(messageId),
+      dedupeKey: mediaFallbackDedupeKey(instanceId, messageId),
     },
   });
 
@@ -200,6 +200,12 @@ describe("channelFailureOf", () => {
     ).toBeNull();
     expect(channelFailureOf(updated(11), null)).toBeNull();
   });
+});
+
+test("the fallback's key names the Chatwoot instance, so a replaced server cannot collide", () => {
+  expect(mediaFallbackDedupeKey(1n, 42)).not.toBe(
+    mediaFallbackDedupeKey(2n, 42),
+  );
 });
 
 describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
@@ -458,6 +464,38 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       await suDb.agent.update({
         where: { id: agentId },
         data: { settings: {} },
+      });
+    }
+  });
+
+  test("an inbox handed to another agent, or a test agent on a conversation never activated, gets nothing", async () => {
+    const other = await suDb.agent.create({
+      data: { tenantId, name: "Outro", systemPrompt: "x", settings: {} },
+      select: { id: true },
+    });
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: INBOX_ID },
+      data: { agentId: other.id },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        data: { agentId },
+      });
+    }
+    await suDb.agent.update({ where: { id: agentId }, data: { mode: "test" } });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
       });
     }
   });

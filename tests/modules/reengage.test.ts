@@ -62,6 +62,8 @@ function ctx(): TenantContext {
 function makeStub(opts: {
   page?: unknown;
   pages?: unknown[];
+  // What the catch-up read (`?after=`) answers (issue #746).
+  after?: unknown;
   sent: Array<[number, string]>;
   // Roda a cada leitura de mensagens, que é o único momento em que o hold do botão e a marca do
   // turno podem ser distinguidos de fora: o coalesce lê ANTES de o turno se marcar.
@@ -72,7 +74,11 @@ function makeStub(opts: {
 }) {
   let i = 0;
   const client = {
-    getMessages: async () => {
+    getMessages: async (_conv: number, o?: { after?: number }) => {
+      // The catch-up read (`?after=`) is the fork's listing by id, a read of its own that carries
+      // the reactions its default page leaves out (issue #746). It answers from `after`, and does
+      // not advance `pages`: that sequence is the default page as it moves under the code.
+      if (o?.after != null) return opts.after ?? { payload: [] };
       opts.onGetMessages?.();
       if (opts.onGetMessagesAsync) await opts.onGetMessagesAsync();
       if (!opts.pages) return opts.page;
@@ -394,6 +400,43 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("posted");
     expect(sent).toEqual([[911, REPLY]]);
+  });
+
+  // ISSUE #746: the tail is only a customer's reaction to an older message, which the fork's default
+  // page leaves out. The click asks the catch-up read from the mark and answers it, instead of
+  // reporting an empty tail.
+  test("a tail that is only a reaction no page carries is answered, not empty", async () => {
+    const id = await seedConversation(7466, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi", type: 0 },
+            { id: 2, content: "já respondi", type: 1 },
+          ]),
+          after: {
+            payload: [
+              {
+                id: 3,
+                content: "👍",
+                message_type: 0,
+                private: false,
+                content_attributes: { is_reaction: true },
+              },
+            ],
+          },
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(sent).toEqual([[7466, REPLY]]);
   });
 
   test("nothing unanswered → empty (no post)", async () => {

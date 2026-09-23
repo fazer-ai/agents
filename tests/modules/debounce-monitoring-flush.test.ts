@@ -70,6 +70,7 @@ const CONV_LADDER_FLIP = 9431;
 const CONV_CEILING_CLIENT = 9432;
 const CONV_PAST_BOUND = 9433;
 const CONV_CEILING_REMEMBERED = 9436;
+const CONV_REACTION = 9437;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
@@ -109,6 +110,8 @@ function stub(
     onFirstFetch?: () => Promise<void>;
     // Every fetch after the first fails: the observer's own re-read of the burst, in particular.
     laterFetchesFail?: boolean;
+    // The page Chatwoot answers for `after=<id>`, whatever the id (issue #746).
+    after?: unknown;
   } = {},
 ) {
   const sent: string[] = [];
@@ -123,6 +126,8 @@ function stub(
       if (calls.getMessages > 1 && opts.laterFetchesFail) {
         throw new Error("chatwoot down");
       }
+      const after = (o as { after?: number } | undefined)?.after;
+      if (after != null) return opts.after ?? { payload: [] };
       if (o?.before != null) {
         calls.before.push(o.before);
         return opts.before?.[o.before] ?? { payload: [] };
@@ -173,7 +178,11 @@ async function seedConversation(convId: number, contactInboxId: number | null) {
   });
 }
 
-async function claimedJob(convId: number, lastMessageId: number) {
+async function claimedJob(
+  convId: number,
+  lastMessageId: number,
+  extra: { reactionArmed?: boolean } = {},
+) {
   const thread = threadOf(convId);
   const row = await suDb.schedulerJob.create({
     data: {
@@ -187,6 +196,7 @@ async function claimedJob(convId: number, lastMessageId: number) {
         agentBotId: OUR_BOT,
         burstStartedAt: 1,
         lastMessageId,
+        ...(extra.reactionArmed ? { reactionArmed: true } : {}),
       },
     },
     select: { id: true, claimSeq: true },
@@ -200,6 +210,7 @@ async function claimedJob(convId: number, lastMessageId: number) {
       agentBotId: OUR_BOT,
       burstStartedAt: 1,
       lastMessageId,
+      ...(extra.reactionArmed ? { reactionArmed: true } : {}),
     },
     attempts: 0,
     claimSeq: row.claimSeq,
@@ -306,6 +317,7 @@ describe.skipIf(!dbUp)(
       await seedConversation(CONV_LADDER_FLIP, 94_310);
       await seedConversation(CONV_CEILING_CLIENT, 94_320);
       await seedConversation(CONV_PAST_BOUND, 94_330);
+      await seedConversation(CONV_REACTION, 94_370);
     });
 
     afterAll(async () => {
@@ -373,6 +385,58 @@ describe.skipIf(!dbUp)(
           "94100:2",
         ]);
         expect(await watermarkOf(CONV_OBSERVED)).toBe(2);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    // ISSUE #746: a reaction no default page carries is remembered by the observer as well. The
+    // walk reads pages; the burst's reaction mark asks the catch-up read for what they leave out.
+    test("a reaction no page carries is handed to ingestion with the rest of the burst", async () => {
+      const job = await claimedJob(CONV_REACTION, 3, { reactionArmed: true });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "monitoring" },
+      });
+      const s = stub(
+        [
+          page([
+            { id: 1, content: "oi" },
+            { id: 2, content: "quero cancelar" },
+          ]),
+        ],
+        {
+          after: {
+            payload: [
+              {
+                id: 3,
+                content: "🙏",
+                message_type: 0,
+                private: false,
+                content_attributes: { is_reaction: true },
+              },
+            ],
+          },
+        },
+      );
+      try {
+        const out = await flushDebounceJob({
+          job,
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("a monitoring agent must not reach the model");
+            },
+            makeClient: s.makeClient as never,
+          },
+        });
+        expect(out).toEqual({ outcome: "done" });
+        const keys = (await ingestJobs()).map((j) => j.dedupeKey);
+        expect(keys.some((k) => k.endsWith(":94370:3"))).toBe(true);
+        expect(await watermarkOf(CONV_REACTION)).toBe(3);
       } finally {
         await suDb.agent.update({
           where: { id: agentDbId },

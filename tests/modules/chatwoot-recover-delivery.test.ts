@@ -138,6 +138,9 @@ function stubChatwoot(opts: {
   // that reaches a turn — the recovery's own freshness read, then `shouldPost`'s — so this is how a
   // test puts a message into the window between them.
   recentAfterFirst?: unknown;
+  // What the catch-up read (`?after=`) returns: the fork's listing by id, which carries the
+  // reactions its paged reads leave out (issue #746).
+  caughtUp?: unknown;
   throwOnRead?: boolean;
   // The Nth send and every one after it are rejected — a Chatwoot that accepts the first balloon of a
   // split reply and refuses the rest, which is the shape issue #429 is about.
@@ -175,9 +178,13 @@ function stubChatwoot(opts: {
         },
       };
     },
-    getMessages: async (conversationId: number, o?: { before?: number }) => {
-      asked.push([conversationId, o?.before]);
+    getMessages: async (
+      conversationId: number,
+      o?: { before?: number; after?: number },
+    ) => {
       if (opts.throwOnRead) throw new Error("connect ECONNREFUSED");
+      if (o?.after !== undefined) return opts.caughtUp ?? { payload: [] };
+      asked.push([conversationId, o?.before]);
       if (o?.before === undefined) {
         unanchored += 1;
         if (unanchored > 1 && opts.recentAfterFirst !== undefined)
@@ -625,6 +632,44 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // reached the conversation nothing was going to answer.
     expect(stub.sent).toEqual([[convId, REPLY]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+  });
+
+  // A STRANDED REACTION NO PAGED READ CARRIES (issue #746). The fork keeps a reaction on a
+  // `before` page only when the message it reacts to is in that page of the same conversation, so a
+  // reaction to an older message reads as deleted there. The catch-up read finds it, and the
+  // customer's turn happens instead of the row being settled as unrecoverable.
+  test("a stranded reaction the anchored page leaves out is still recovered", async () => {
+    const convId = 8746;
+    const messageId = 9746;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const earlier = pageWith([{ id: messageId - 5, content: "obrigada!" }]);
+    const reaction = {
+      payload: [
+        {
+          ...(pageWith([{ id: messageId, content: "❤️" }]).payload[0] ?? {}),
+          content_attributes: { is_reaction: true },
+        },
+      ],
+    };
+    const stub = stubChatwoot({
+      page: earlier,
+      recent: earlier,
+      caughtUp: reaction,
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(outcome).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
   });
 
   // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW (issue #429).
@@ -4718,6 +4763,58 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       status: "PROCESSED",
       attempts: MAX_RECOVERY_ATTEMPTS,
     });
+  });
+
+  // Issue #746: the delivery path tells the arm the message is a reaction, so the flush knows to ask
+  // the catch-up read for what the page leaves out.
+  test("with debounce on, a reaction arms the burst with the reaction mark", async () => {
+    const convId = 8747;
+    const messageId = 9747;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const reaction = {
+      payload: [
+        {
+          ...(pageWith([{ id: messageId, content: "👍" }]).payload[0] ?? {}),
+          content_attributes: { is_reaction: true },
+        },
+      ],
+    };
+    const stub = stubChatwoot({ page: reaction });
+
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: true, windowSeconds: 15 } } },
+    });
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: { debounce: { enabled: false } } },
+      });
+    }
+    const job = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: `debounce:${threadOf(convId)}`,
+      },
+      select: { payload: true },
+    });
+    expect(
+      (job?.payload as { reactionArmed?: boolean } | undefined)?.reactionArmed,
+    ).toBe(true);
   });
 
   test("with debounce on, the recovery arms the burst instead of answering twice", async () => {

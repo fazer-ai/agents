@@ -71,6 +71,16 @@ export function readLastMessageId(payload: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// Whether any message of this burst is a customer's REACTION (issue #746). The fork's default page
+// carries a reaction only when the message it reacts to is among the page's last twenty of the same
+// conversation, so the flush cannot learn from the page that one is missing. The arm can: it saw the
+// webhook. Sticky across the burst's arms, like `lastMessageId`, so a text typed after an orphan
+// reaction does not hide it.
+export function readReactionArmed(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as Record<string, unknown>).reactionArmed === true;
+}
+
 // Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
 //
 // UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the
@@ -161,6 +171,8 @@ export interface ArmDebounceParams {
   // Chatwoot id of the inbound message arming this flush (see readLastMessageId). Optional: an arm
   // without it keeps the burst's previous high-water mark.
   lastMessageId?: number;
+  // Whether the arming message is a customer's reaction (issue #746): see `readReactionArmed`.
+  reaction?: boolean;
   base?: PrismaClient;
   now?: Date;
 }
@@ -213,6 +225,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         : null;
       const lastCandidate = Math.max(prevLast ?? 0, params.lastMessageId ?? 0);
       const lastMessageId = lastCandidate > 0 ? lastCandidate : null;
+      const reactionArmed =
+        params.reaction === true ||
+        (continuingBurst && readReactionArmed(existing.payload));
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
@@ -222,6 +237,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         agentBotId,
         burstStartedAt,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
+        ...(reactionArmed ? { reactionArmed: true } : {}),
         ...(deferringSince !== null ? { deferringSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {

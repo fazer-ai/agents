@@ -1079,15 +1079,23 @@ export class ChatwootClient {
   // `before` pages backwards through history (the fork's MessageFinder honors ?before=<message_id>,
   // returning the page of messages older than that id). Omitted → the most recent page (~20). Used by
   // the console's "load older messages" on scroll-up.
+  //
+  // `after` is the fork's catch-up read (`MessageFinder#messages_after`): every message with a
+  // higher id, by id, up to a hundred, and WITHOUT the reaction window the default page applies.
+  // That page keeps a reaction only when the message it reacts to is among the page's last twenty
+  // in the same conversation, so a reaction to anything older, or to a message of an earlier
+  // conversation, is on no default page at all (issue #746).
   getMessages(
     conversationId: number,
-    opts?: { before?: number },
+    opts?: { before?: number; after?: number },
     timeoutMs: number = INTERACTIVE_TIMEOUT_MS,
   ): Promise<unknown> {
     const qs =
       opts?.before != null
         ? `?before=${encodeURIComponent(String(opts.before))}`
-        : "";
+        : opts?.after != null
+          ? `?after=${encodeURIComponent(String(opts.after))}`
+          : "";
     return this.request(
       this.config.adminToken,
       "GET",

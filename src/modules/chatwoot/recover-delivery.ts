@@ -571,6 +571,17 @@ async function runRecovery(params: {
         })
       : null;
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
+    // A REACTION THE ANCHORED PAGE CANNOT CARRY (issue #746). The fork pages by the messages that
+    // are not reactions and keeps a reaction only when the message it reacts to is in the same page
+    // of the same conversation, so a customer's reaction to an older message, or to one of an
+    // earlier conversation, is on no `before` page, and reading it as deleted settled a stranded
+    // reaction as `unrecoverable`. The catch-up read lists by id with no such window.
+    if (findRawMessage(raw, messageId) === null) {
+      const caught = await client.getMessages(conversationId, {
+        after: messageId - 1,
+      });
+      if (findRawMessage(caught, messageId) !== null) raw = caught;
+    }
     // The NEWEST page, unanchored, and it answers a different question from the one above: whether
     // the customer has written again since. Two reads because one page cannot hold both ends — the
     // anchored page ends at the stranded message and says nothing about what came after, and the

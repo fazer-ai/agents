@@ -28,13 +28,15 @@ const MARKDOWN_LINK = new RegExp(
   "g",
 );
 // A match never starts or ends inside a token: a written item that is only part of the destination
-// sends the customer somewhere else. Formatting (`_`, `*`) may touch an item and is trimmed below.
-const URL = /(?<![\p{L}\p{N}\p{M}])(?:https?:\/\/|www\.)[^\s<>`]+/giu;
+// sends the customer somewhere else. A formatting run may sit between the item and whitespace
+// (`**https://…`), never between the item and a word (`abc_https://…`, `ops~billing@…`).
+const URL = /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`]+/giu;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. What
-// an address can hold and the class cannot (`!#$&/=?^{|}`) stops the match instead of cutting it.
+// an address can hold and the class cannot (`!#$&*/=?^`{|}~`) stops the match instead of cutting it.
 const EMAIL =
-  /(?<![!#$&/=?^{|}\p{L}\p{N}\p{M}])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
-const TRAILING_PUNCTUATION = /[.,;:!?'"»”]$/;
+  /(?<![!#$&/=?^{|}\p{L}\p{N}\p{M}][*~`]*)[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
+// GFM's autolink rule, plus closing quotes: these end a sentence or a formatting run, not a link.
+const TRAILING_PUNCTUATION = /[?!.,:*_~;'"»”]$/;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
 // the item and never enters the written copy.
 const WRAPPERS = "`*_~";
@@ -63,13 +65,13 @@ export function planSpokenReply(text: string): SpokenReplyPlan {
 }
 
 function itemSpans(text: string): Span[] {
-  const candidates: Span[] = [];
+  const links: Span[] = [];
   for (const m of text.matchAll(MARKDOWN_LINK)) {
     // The label goes through the same extraction, so an address or a URL used as its own label is
     // neither spoken nor lost; the target comes first, it is what the link points to.
     const label = m[1] ?? "";
     const inner = itemSpans(label);
-    candidates.push(
+    links.push(
       widen(
         text,
         m.index,
@@ -79,14 +81,20 @@ function itemSpans(text: string): Span[] {
       ),
     );
   }
-  for (const m of text.matchAll(URL))
-    candidates.push(item(text, m.index, m[0]));
-  for (const m of text.matchAll(EMAIL))
-    candidates.push(item(text, m.index, m[0]));
+  // Structure before text: bare items are searched only outside the links, so a greedy URL cannot
+  // run across `[um](…),[outro](…)`. Blanking UTF-16 units keeps every index where it was.
+  const units = text.split("");
+  for (const l of links) units.fill(" ", l.start, l.end);
+  const bare = units.join("");
+  const candidates: Span[] = [];
+  for (const m of bare.matchAll(URL))
+    candidates.push(item(bare, m.index, m[0]));
+  for (const m of bare.matchAll(EMAIL))
+    candidates.push(item(bare, m.index, m[0]));
 
   // Overlaps resolve to the longest match: the whole address over the `www.` host inside it, the
-  // whole URL over an address in its query, a markdown link over everything inside it.
-  const spans: Span[] = [];
+  // whole URL over an address in its query.
+  const spans: Span[] = [...links];
   for (const c of [...candidates].sort(
     (a, b) => b.end - b.start - (a.end - a.start),
   )) {
@@ -96,8 +104,8 @@ function itemSpans(text: string): Span[] {
 }
 
 // A bare URL or address, cut down to the destination. What the greedy match took from around it is
-// the sentence's: trailing punctuation, a closing bracket the destination did not open, and the
-// halves of a wrapper, recognised by the twin on the other side (an address's own `_` has none).
+// the sentence's: trailing punctuation or formatting, a closing bracket the destination did not
+// open, and an opening `_` whose twin closes the address (an address's own `_` has none).
 function item(text: string, start: number, match: string): Span {
   let s = start;
   let e = start + match.length;
@@ -106,7 +114,6 @@ function item(text: string, start: number, match: string): Span {
     const last = text[e - 1] ?? "";
     if (TRAILING_PUNCTUATION.test(last) || unbalanced(text.slice(s, e), last))
       e--;
-    else if (isWrapper(last) && last === text[s - 1]) e--;
     else if (isWrapper(first) && first === text[e]) s++;
     else break;
   }

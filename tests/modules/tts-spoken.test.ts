@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { prepareSpeechText } from "@/modules/tts/service";
 import { planSpokenReply } from "@/modules/tts/spoken";
 
 // Issue #787: a URL or an e-mail address in an audio reply is either read aloud (bare) or lost
@@ -156,9 +157,11 @@ describe("planSpokenReply", () => {
       written: ["https://x.com.br/pedidos"],
     },
     {
-      name: "a trailing underscore with no opening one is the URL's",
+      // GFM's autolink rule: `?!.,:*_~` at the end are not the link's, so a chat client would not
+      // have linked the underscore either.
+      name: "a trailing underscore is formatting, as in GFM autolinks",
       text: "O arquivo fica em https://x.com.br/arquivos/ingresso_ para baixar",
-      written: ["https://x.com.br/arquivos/ingresso_"],
+      written: ["https://x.com.br/arquivos/ingresso"],
     },
     {
       name: "a www host inside an e-mail address stays the address",
@@ -215,6 +218,17 @@ describe("planSpokenReply", () => {
       name: "a domain label that starts accented stays whole",
       text: "Escreva para sac@ágil.com.br e respondemos em até 2 dias",
       written: ["sac@ágil.com.br"],
+    },
+    // Review round 4: structure before text, and one boundary rule for both ends.
+    {
+      name: "adjacent markdown links are two links",
+      text: "Veja [um](https://x.com.br/a),[outro](https://x.com.br/b) para resolver seu pedido",
+      written: ["https://x.com.br/a", "https://x.com.br/b"],
+    },
+    {
+      name: "a bare URL glued to a markdown link is its own item",
+      text: "Veja https://x.com.br/a[outro](https://x.com.br/b) para resolver seu pedido",
+      written: ["https://x.com.br/a", "https://x.com.br/b"],
     },
     {
       name: "quotes around an address are the sentence's",
@@ -283,6 +297,8 @@ describe("planSpokenReply", () => {
     for (const text of [
       "Escreva para a!b@x.com.br e respondemos em 2 dias",
       "Escreva para sac@x.com.123 e respondemos em 2 dias",
+      "Fale com ops~billing@x.com.br para resolver seu pedido",
+      "Fale com ops*billing@x.com.br para resolver seu pedido",
     ]) {
       expect(planSpokenReply(text).written).toEqual([]);
     }
@@ -290,9 +306,20 @@ describe("planSpokenReply", () => {
 
   test("a URL glued to a word is not cut out of it", () => {
     expect(
-      planSpokenReply("O campo abchttps://x.com.br/a veio assim do sistema")
-        .written,
+      [
+        "O campo abchttps://x.com.br/a veio assim do sistema",
+        "O campo abc_https://x.com.br/a veio assim do sistema",
+      ].flatMap((t) => planSpokenReply(t).written),
     ).toEqual([]);
+  });
+
+  test("bold around a phrase that ends in a URL stays out of it", () => {
+    // The markers are the phrase's, so they stay with it and synthesis drops them, as it always did.
+    const plan = planSpokenReply(
+      "**Acompanhe seu pedido em https://x.com.br/pedido** e aguarde a confirmação",
+    );
+    expect(plan.written).toEqual(["https://x.com.br/pedido"]);
+    expect(prepareSpeechText(plan.speech)).not.toMatch(/[*]|https?:/);
   });
 
   test("a decimal, a time and a file name are not URLs", () => {

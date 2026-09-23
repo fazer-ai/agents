@@ -785,10 +785,12 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     if (result.outcome === "reschedule") {
       expect(result.runAt.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
       // Mesmo step (threadId preservado), com o contador de retries avançado. O backoff não vem da
-      // configuração, então não leva a versão: a varredura o preserva mesmo depois de uma edição.
+      // configuração, então é marcado como backoff e não com a versão: a varredura o preserva mesmo
+      // depois de uma edição.
       expect(result.payload).toEqual({
         threadId: threadOf(CONV),
         nudgeRetries: 1,
+        deferredUnder: "backoff",
       });
     }
     expect(s.sent).toEqual([]);

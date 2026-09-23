@@ -73,6 +73,7 @@ const CONV_SLOW = 79_607;
 const CONV_DEAD_NOW = 79_609;
 const CONV_DEAD_BEFORE = 79_610;
 const CONV_OLD_STEP = 79_611;
+const CONV_LEGACY = 79_613;
 const CONV_HOURS = 79_612;
 
 let tenantId = 0n;
@@ -325,6 +326,7 @@ describe.skipIf(!dbUp)(
       const retried = {
         threadId: threadOf(CONV_LATER),
         nudgeRetries: 2,
+        deferredUnder: "backoff",
       };
       await enqueueJob({
         tenantId,
@@ -364,7 +366,12 @@ describe.skipIf(!dbUp)(
         kind: "FOLLOWUP",
         dedupeKey: keyOf(CONV_OLD_STEP),
         runAt: new Date(Date.now() + 3 * 24 * 60 * 60_000),
-        payload: { threadId: threadOf(CONV_OLD_STEP), stepIndex: 2 },
+        // Marked as a backoff, so what decides is the step and not the missing mark.
+        payload: {
+          threadId: threadOf(CONV_OLD_STEP),
+          stepIndex: 2,
+          deferredUnder: "backoff",
+        },
         rearm: "same-work",
         base: appDb,
       });
@@ -374,6 +381,25 @@ describe.skipIf(!dbUp)(
       expect(r?.payload).toEqual({ threadId: threadOf(CONV_OLD_STEP) });
       expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
       expect(r?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+    });
+
+    // Review round 5: a deferral that says nothing about why it may be kept was written before
+    // deferrals were marked, from a configuration that may have changed since. It is re-armed once,
+    // and the handler recomputes and marks it.
+    test("an unmarked deferral is re-armed so the handler recomputes it", async () => {
+      await seedIdle(CONV_LEGACY, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_LEGACY),
+        runAt: new Date(Date.now() + 3 * 24 * 60 * 60_000),
+        payload: { threadId: threadOf(CONV_LEGACY) },
+        rearm: "same-work",
+        base: appDb,
+      });
+      await runSweep();
+      const r = await rowOf(CONV_LEGACY);
+      expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
     });
 
     // Found by the verifier: a model that keeps failing sends the row DEAD, which stamps nothing, and

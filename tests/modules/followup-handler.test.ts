@@ -643,6 +643,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         persistUsage: async () => {},
       });
       expect(result.outcome).toBe("reschedule");
+      // Marked as a backoff, so the sweep leaves it alone instead of pulling it back (issue #796).
+      expect(
+        (result as { payload?: Record<string, unknown> }).payload
+          ?.deferredUnder,
+      ).toBe("backoff");
       // Nothing sent, watermark untouched: the nudge was deferred, not fired mid-turn.
       expect(s.sent).toEqual([]);
       expect(s.notes).toEqual([]);
@@ -714,6 +719,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     // Held (rescheduled), NOT nudged and NOT ended — so it resumes once the appointment passes.
     expect(result.outcome).toBe("reschedule");
+    // Marked as a backoff, so the sweep leaves it alone instead of pulling it back (issue #796).
+    expect(
+      (result as { payload?: Record<string, unknown> }).payload?.deferredUnder,
+    ).toBe("backoff");
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect(await lastFollowUpOf(1012)).toBeNull();
@@ -1818,6 +1827,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         threadId: threadOf(1090),
         stepIndex: 0,
         nudgeRetries: 1,
+        deferredUnder: "backoff",
       });
     }
     expect(s.sent).toEqual([]);

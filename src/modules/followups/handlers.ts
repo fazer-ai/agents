@@ -360,16 +360,14 @@ export function followUpConfigVersion(
   return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
 }
 
-function withoutDeferral(
-  payload: Record<string, unknown>,
-): Record<string, unknown> {
-  const { deferredUnder: _, ...rest } = payload;
-  return rest;
-}
+// A deferral that does not depend on the configuration (a retry backoff, a turn in flight, a live
+// decline, an appointment hold) says so, and is kept whatever the configuration does.
+const BACKOFF_DEFERRAL = "backoff";
 
-// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral
-// without a version (a retry backoff, a turn in flight, a live decline) is not derived from the
-// configuration and is kept as it is.
+// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral is
+// kept only when it says why it is safe to keep: a backoff, or a version that is still current. One
+// that says nothing (written before deferrals were marked, review round 5) is re-armed once, and the
+// handler recomputes it under the current configuration and marks it.
 function isDeferralOfThisEpisode(
   payload: Prisma.JsonValue,
   configVersion: string,
@@ -379,7 +377,7 @@ function isDeferralOfThisEpisode(
   }
   const { stepIndex, deferredUnder } = payload as Record<string, unknown>;
   if (stepIndex !== undefined && stepIndex !== 0) return false;
-  return deferredUnder === undefined || deferredUnder === configVersion;
+  return deferredUnder === BACKOFF_DEFERRAL || deferredUnder === configVersion;
 }
 
 // WHAT A FOLLOW-UP STEP SAYS IT IS. Pure, and separate from the handler for the reason the redirect
@@ -563,6 +561,7 @@ export async function followUpHandler(
       return {
         outcome: "reschedule",
         runAt: new Date(Date.now() + APPOINTMENT_BACKOFF_MS),
+        payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
       };
     }
   }
@@ -685,6 +684,7 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
   }
 
@@ -746,6 +746,7 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + LIVE_DECLINE_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
   }
   // NOTE: Nothing was posted, for a reason that may not hold next time (the shared predicate names the
@@ -769,9 +770,14 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: retry.runAt,
-      // A retry backoff is not derived from the configuration, so it carries no version: the sweep
-      // leaves it alone even after a settings change, which is what keeps the retry count.
-      payload: { ...withoutDeferral(job.payload), nudgeRetries: retry.attempt },
+      // A retry backoff is not derived from the configuration, so it is marked as a backoff and not
+      // with a version: the sweep leaves it alone even after a settings change, which is what keeps
+      // the retry count.
+      payload: {
+        ...job.payload,
+        nudgeRetries: retry.attempt,
+        deferredUnder: BACKOFF_DEFERRAL,
+      },
     };
   }
 

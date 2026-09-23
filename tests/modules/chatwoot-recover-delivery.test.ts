@@ -710,6 +710,52 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
   });
 
+  // PR #821, review round 4: a FULL catch-up read stops short of the newest page, so it is no
+  // coverage. Merged, it would place the stranded reaction inside what was seen while a newer
+  // message sat in the gap; left out, the newest page says the reaction is more than a page behind.
+  test("a full catch-up read is not coverage for the freshness check", async () => {
+    const convId = 8749;
+    const messageId = 9749;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    // The newest page holds only our own reply: the customer's newer message sits in the gap.
+    const newest = {
+      payload: pageWith([{ id: messageId + 500, content: "ok" }]).payload.map(
+        (m) => ({ ...m, message_type: 1 }),
+      ),
+    };
+    const caught = pageWith(
+      Array.from({ length: 100 }, (_, i) => ({
+        id: messageId + i,
+        content: i === 0 ? "❤️" : "…",
+      })),
+    );
+    const stub = stubChatwoot({
+      page: newest,
+      recent: newest,
+      caughtUp: {
+        payload: caught.payload.map((m, i) =>
+          i === 0
+            ? { ...m, content_attributes: { is_reaction: true } }
+            : { ...m, message_type: 2 },
+        ),
+      },
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(outcome).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+  });
+
   // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW (issue #429).
   //
   // The row's whole purpose is "is this customer still owed a reply?", and after the first balloon

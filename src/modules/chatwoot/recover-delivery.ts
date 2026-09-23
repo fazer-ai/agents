@@ -600,11 +600,14 @@ async function runRecovery(params: {
     // which spends the recovery's budget over a page nothing was going to read.
     // ...and what the catch-up read found is part of the answer (PR #821, review round 3): a newer
     // reaction the default page leaves out is still the customer writing again, and a replay that
-    // missed it would answer the older one after the fact.
+    // missed it would answer the older one after the fact. Only a read that ran dry, though (round
+    // 4): a full one stops short of the newest page, and merged it would put the stranded id inside
+    // what was "seen" while a newer message sat unread in the gap. Left out, the newest page's own
+    // coverage check answers, and the message is more than a page behind.
     recent = replayPosts
       ? mergeById(
           parseChatwootMessages(await client.getMessages(conversationId)),
-          caughtUp,
+          caughtUp.length < CATCH_UP_PAGE ? caughtUp : [],
         )
       : [];
   } catch (e) {
@@ -1827,6 +1830,9 @@ export function registerDeliveryRecoveryHandler(): void {
   registerJobHandler("DELIVERY_RECOVERY", deliveryRecoveryHandler);
   registered = true;
 }
+
+// The fork's `MessageFinder::CATCH_UP_LIMIT`: a full catch-up read may have more behind it.
+const CATCH_UP_PAGE = 100;
 
 function mergeById(
   page: ReturnType<typeof parseChatwootMessages>,

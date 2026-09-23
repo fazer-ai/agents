@@ -132,6 +132,11 @@ import {
 import { extractMessageVisuals } from "@/modules/vision/extract-message";
 import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
+import {
+  channelFailureOf,
+  forgetMediaFallbacks,
+  handleChannelFailure,
+} from "./channel-failure";
 import type { ChatwootClient } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
 import { resetAckSendId } from "./constants";
@@ -3204,6 +3209,16 @@ async function maybeConsumeCommandOrGate(params: {
           base,
         ),
       );
+      // The text a channel refused as audio, waiting to go out again (issue #587): it is a reply
+      // of the episode this command closes, and its body is a customer's words the reset forgets.
+      await step("forget media fallbacks", "respostas em texto pendentes", () =>
+        forgetMediaFallbacks({
+          tenantId,
+          instanceId,
+          conversationId: convId,
+          base,
+        }),
+      );
     }
 
     // IMMEDIATELY after the retirements, and that pairing is the point. The order between the two is
@@ -4934,6 +4949,38 @@ export async function processChatwootDelivery(
         : {}),
     },
   );
+
+  // A REPLY THE CHANNEL REFUSED (issue #587), reported on a `message_updated` for the route's own
+  // outgoing message. Below the mirror so the line hangs off the conversation row; nothing else in
+  // this function reads such an event (it is outgoing and not a person's reply), so it runs no turn,
+  // arms no debounce and calls no model. Best-effort: a failure here is logged and the delivery goes
+  // on, because it is a report about a message already gone, not a message to answer.
+  const channelFailure = channelFailureOf(n, params.agentBotId);
+  if (channelFailure && params.agentBotId !== null) {
+    try {
+      await handleChannelFailure({
+        failure: channelFailure,
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        agentBotId: params.agentBotId,
+        flow: {
+          tenantId: params.tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: mirror.conversationRowId,
+          base,
+        },
+        base,
+      });
+    } catch (e) {
+      logger.warn(
+        "chatwoot: could not act on a channel failure (conv=%s msg=%s): %s",
+        String(channelFailure.conversationId),
+        String(channelFailure.messageId),
+        errMsg(e),
+      );
+    }
+  }
 
   // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
   // logs and in the conversation alike — which is what left issue #270 undiagnosable from the

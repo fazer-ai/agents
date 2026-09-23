@@ -38,6 +38,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.tts_check", "Audio check");
     case "split":
       return t("logs.stage.split", "Delivery");
+    case "channel_error":
+      return t("logs.stage.channel_error", "Channel failure");
     case "handoff":
       return t("logs.stage.handoff", "Handoff");
     case "memory":

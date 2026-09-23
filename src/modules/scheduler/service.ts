@@ -77,7 +77,8 @@ export type SchedulerJobKind =
   | "TAKEOVER_RECOVERY"
   | "HUMAN_REPLY_RECOVERY"
   | "SPEND_CEILING_POLL"
-  | "OBSERVE";
+  | "OBSERVE"
+  | "MEDIA_TEXT_FALLBACK";
 
 export interface ClaimedJob {
   id: bigint;
@@ -130,7 +131,13 @@ export interface ClaimedJob {
 // the same row re-armed by the follow-up sweep is the same broken follow-up), and per kind does not
 // separate them either, since FOLLOWUP's key is the thread and the sweep arms it for both. The
 // knowledge is the caller's, so the caller is the one asked.
-export type Rearm = "new-work" | "same-work";
+//
+//   "once":      this arm is work that may run AT MOST ONCE, and the key is what says so: an
+//                existing row, in whatever state, is left exactly as it is. The trigger is a
+//                redelivery of the event that armed it, and re-arming a DONE row would do the work a
+//                second time (issue #587: a text sent to the customer twice). Its kind must not be
+//                deleted on DONE, or the row that remembers "already done" would be gone.
+export type Rearm = "new-work" | "same-work" | "once";
 
 export interface JobRowParams {
   tenantId: bigint;
@@ -185,25 +192,30 @@ function jobRowWrites(params: JobRowParams) {
       payloadSecret: params.payloadSecret ?? null,
       status: "PENDING" as const,
     },
-    update: {
-      runAt: params.runAt,
-      status: "PENDING" as const,
-      lastError: null,
-      // NOTE: Re-arming with a payload is authoritative (the latest enqueue wins): this resets a
-      // stale payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on
-      // a row a prior run had advanced to a later step. A payload-less re-enqueue preserves the
-      // existing.
-      ...(params.payload !== undefined
-        ? { payload: params.payload as Prisma.InputJsonValue }
-        : {}),
-      // NOTE: Re-armed together with the payload it belongs to: the two halves describe one
-      // message, and a re-enqueue that refreshed only the JSON would leave a body from the previous
-      // arming.
-      ...(params.payload !== undefined
-        ? { payloadSecret: params.payloadSecret ?? null }
-        : {}),
-      ...(params.rearm === "new-work" ? { attempts: 0 } : {}),
-    },
+    // `once` arms a row that does not exist yet and leaves one that does exactly as it is: status,
+    // run time, body and all. See `Rearm`.
+    update:
+      params.rearm === "once"
+        ? {}
+        : {
+            runAt: params.runAt,
+            status: "PENDING" as const,
+            lastError: null,
+            // NOTE: Re-arming with a payload is authoritative (the latest enqueue wins): this resets a
+            // stale payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on
+            // a row a prior run had advanced to a later step. A payload-less re-enqueue preserves the
+            // existing.
+            ...(params.payload !== undefined
+              ? { payload: params.payload as Prisma.InputJsonValue }
+              : {}),
+            // NOTE: Re-armed together with the payload it belongs to: the two halves describe one
+            // message, and a re-enqueue that refreshed only the JSON would leave a body from the previous
+            // arming.
+            ...(params.payload !== undefined
+              ? { payloadSecret: params.payloadSecret ?? null }
+              : {}),
+            ...(params.rearm === "new-work" ? { attempts: 0 } : {}),
+          },
   };
 }
 
@@ -233,7 +245,8 @@ export async function upsertJobRows(
   params: {
     tenantId: bigint;
     kind: SchedulerJobKind;
-    rearm: Rearm;
+    // Not "once": the set-based statement re-arms on conflict, and no caller arms once-only rows in bulk.
+    rearm: Exclude<Rearm, "once">;
     runAt: Date;
     rows: { dedupeKey: string; payload: Record<string, unknown> }[];
   },
@@ -1305,7 +1318,11 @@ export async function completeJob(
           // dated PENDING states that `lastError` does tell apart (backoff vs stood down) are
           // rescheduleJob's problem, and a re-arm clears it before the row is claimable again
           // anyway.
-          data: { status: "DONE", attempts: 0 },
+          //
+          // `payloadSecret` is cleared too: a retained row is kept for its KEY (the dedupe a later
+          // enqueue lands on), never for its body, and the body is the part that can carry a
+          // customer's words (issue #587, review round 5). A re-arm writes its own.
+          data: { status: "DONE", attempts: 0, payloadSecret: null },
         }),
   );
   return { applied: count > 0 };

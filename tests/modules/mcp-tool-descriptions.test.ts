@@ -625,6 +625,10 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED to 58,171 by `setLabels.allowed`/`outsideAllowed` (#638), which reach tools/list
   // through `agent_settings_set`: 354 characters on the 57,801 the base measures, same 16 of
   // headroom. See SETTINGS_SCHEMA_CEILING above for the trim. Descriptions are unchanged.
+  //
+  // SCHEMA RAISED to 58,203 by the `channel_error` flow stage (#587), one more enum value wherever
+  // a tool filters or subscribes by stage: this tree measures 58,187 against the base's 58,155, same
+  // 16 of headroom. No tool and no description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -634,7 +638,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_744);
-    expect(schema).toBeLessThanOrEqual(58_171);
+    expect(schema).toBeLessThanOrEqual(58_203);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

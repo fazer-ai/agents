@@ -265,6 +265,7 @@ export function normalizeChatwootEvent(
       // the delivered event and the REST page cannot disagree about what the subject is.
       emailSubject: emailSubjectFrom(ca),
       imported: ca?.imported === true,
+      externalError: ca ? str(ca.external_error) || null : null,
     };
   }
   if ("changed_attributes" in payload) {

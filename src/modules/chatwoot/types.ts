@@ -87,6 +87,11 @@ export interface NormalizedChatwootMessage {
   emailSubject?: string | null;
   // content_attributes.imported. Set by the history importer on a backfilled row.
   imported?: boolean;
+  // content_attributes.external_error: what the CHANNEL said when it failed to deliver this message,
+  // e.g. `"131053: Media upload error"` on WhatsApp Cloud (issue #587). Chatwoot writes it only when
+  // the status becomes `failed` and clears it on every other transition, so its presence IS the
+  // failure signal (`status` itself is not in the webhook payload). Null when absent or empty.
+  externalError?: string | null;
   // Filled by the eager STT pass (NOT from the payload): the audio transcription, used by the direct
   // (no-debounce) path. The debounce flush instead reads it back from the attachment meta on re-fetch.
   transcribedText?: string | null;

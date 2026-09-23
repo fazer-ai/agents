@@ -94,26 +94,43 @@ export const FOOTER_TAIL_CHARS = 1500;
 const MIN_FOOTER_OVERLAP = 12;
 
 // The footer of a document, found on its tail: what stripContactFooter would remove there, starting
-// at a paragraph (or a dangling heading above it). null when the document has none.
-export function footerOfDocument(tail: string): string | null {
+// at a paragraph (or a dangling heading above it), and everything of the tail before it. null when
+// the document has none.
+export interface DocumentFooter {
+  footer: string;
+  before: string;
+}
+
+export function footerOfDocument(tail: string): DocumentFooter | null {
   const kept = stripContactFooter(tail);
   // Nothing stripped leaves nothing past `kept`.
   const footer = tail.substring(kept.length).trim();
-  return footer || null;
+  if (!footer) return null;
+  return {
+    footer,
+    before: tail.substring(0, tail.indexOf(footer, kept.length)),
+  };
 }
 
 // A passage that is NOT the document's tail can still end inside its footer: chunks overlap, so the
 // start of a two-paragraph footer lands at the end of the chunk before the last one. That passage
-// ends on a paragraph that begins the footer and continues it for as far as the chunk goes, and the
-// cut goes there. The same safeguard as the tail: a passage that would keep nothing but headings is
-// returned whole.
-export function stripFooterOverlap(content: string, footer: string): string {
+// ends on a paragraph that begins the footer, and it sits exactly where the footer does: the
+// document, read up to that point, ends with the passage (or, for a passage longer than the tail
+// the query returns, the passage ends with all of it). Wording alone is not enough, since an
+// article can repeat its footer's sentence anywhere. The same safeguard as the tail: a passage that
+// would keep nothing but headings is returned whole.
+export function stripFooterOverlap(
+  content: string,
+  { footer, before }: DocumentFooter,
+): string {
   const text = content.trimEnd();
   for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
     const piece = text.substring(i + 1).trimStart();
-    const start = text.length - piece.length;
     if (piece.length < MIN_FOOTER_OVERLAP || !footer.startsWith(piece))
       continue;
+    const docUpTo = before + piece;
+    if (!docUpTo.endsWith(text) && !text.endsWith(docUpTo)) continue;
+    const start = text.length - piece.length;
     const kept = text.substring(0, start).trimEnd();
     const substantive = kept
       .split(/\r?\n(?:[ \t]*\r?\n)+/)
@@ -136,8 +153,6 @@ export function passageOf({
   if (atDocumentEnd) {
     return { ...hit, content: stripContactFooter(hit.content) };
   }
-  const footer = documentTail ? footerOfDocument(documentTail) : null;
-  return footer
-    ? { ...hit, content: stripFooterOverlap(hit.content, footer) }
-    : hit;
+  const doc = documentTail ? footerOfDocument(documentTail) : null;
+  return doc ? { ...hit, content: stripFooterOverlap(hit.content, doc) } : hit;
 }

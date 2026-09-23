@@ -195,10 +195,45 @@ describe("the hit a search returns", () => {
   test("a paragraph that repeats the MIDDLE of the footer is not its head", () => {
     const content = `${ARTICLE}\n\nnosso atendimento pelo e-mail sac@exemplo.com.br.`;
     expect(
-      passageOf(
-        row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }),
-      ).content,
+      passageOf(row({ atDocumentEnd: false, documentTail: DOC_TAIL, content }))
+        .content,
     ).toBe(content);
+  });
+
+  test("a passage that starts inside the tail is placed by it", () => {
+    expect(
+      passageOf(
+        row({
+          atDocumentEnd: false,
+          documentTail: DOC_TAIL,
+          content: `O link de troca vale por 24 horas.\n\n${HEAD_OF_FOOTER}`,
+        }),
+      ).content,
+    ).toBe("O link de troca vale por 24 horas.");
+  });
+
+  test("a passage longer than the tail the query returns is still placed by it", () => {
+    const tail = `${ARTICLE.substring(20)}\n\n${FOOTER}\n\nsac@exemplo.com.br | (11) 3456-7890`;
+    expect(
+      passageOf(
+        row({
+          atDocumentEnd: false,
+          documentTail: tail,
+          content: `${ARTICLE}\n\n${HEAD_OF_FOOTER}`,
+        }),
+      ).content,
+    ).toBe(ARTICLE);
+  });
+
+  test("an earlier passage that repeats the footer's wording is not where the footer is", () => {
+    // The document ends with the same sentence this passage ends with, many paragraphs later.
+    const early = `Se o pagamento foi duplicado, siga esta orientação:\n\n${FOOTER}`;
+    const tail = `${early}\n\n${ARTICLE}\n\n${FOOTER}`;
+    expect(
+      passageOf(
+        row({ atDocumentEnd: false, documentTail: tail, content: early }),
+      ).content,
+    ).toBe(early);
   });
 
   test("a sliver shorter than a phrase is not read as the footer's head", () => {

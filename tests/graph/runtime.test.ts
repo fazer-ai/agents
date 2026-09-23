@@ -3416,7 +3416,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // one text message right after the voice note, or the whole reply goes as text when all that is
   // left to say is the introduction of the item.
   function recordingAudioClient(
-    log: Array<{ kind: string; text: string }>,
+    log: Array<{ kind: string; text: string; reply?: string }>,
     onAudio: () => Promise<void> = async () => {},
   ) {
     return async () =>
@@ -3430,9 +3430,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           _audio: unknown,
           _name: string,
           _mime: string,
-          meta?: { transcribedText?: string },
+          meta?: { transcribedText?: string; replyText?: string },
         ) => {
-          log.push({ kind: "audio", text: meta?.transcribedText ?? "" });
+          log.push({
+            kind: "audio",
+            text: meta?.transcribedText ?? "",
+            reply: meta?.replyText,
+          });
           await onAudio();
           return {};
         },
@@ -3458,7 +3462,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     opts: { ttsStatus?: number; onAudio?: () => Promise<void> } = {},
   ) {
     await seedConversation(conv, null);
-    const log: Array<{ kind: string; text: string }> = [];
+    const log: Array<{ kind: string; text: string; reply?: string }> = [];
     const spoken: string[] = [];
     const normalized: string[] = [];
     const outcome = await runAgentTurn({
@@ -3485,13 +3489,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   test("a URL leaves the speech and follows the voice note as text (#787)", async () => {
     await withTtsMirror(async () => {
       const url = "https://x.com.br/pedidos/123";
-      const r = await audioTurn(
-        787_01,
-        `Você pode acompanhar seu pedido em ${url} a qualquer momento, e ele chega em 2 dias`,
-      );
+      const reply = `Você pode acompanhar seu pedido em ${url} a qualquer momento, e ele chega em 2 dias`;
+      const r = await audioTurn(787_01, reply);
       expect(r.outcome).toBe("posted");
       expect(r.log.map((m) => m.kind)).toEqual(["audio", "text"]);
       expect(r.log[1]?.text).toBe(url);
+      // #792: the voice note also carries the whole reply, which is what goes as text if the channel
+      // refuses the audio; the speech alone reads "em a qualquer momento".
+      expect(r.log[0]?.reply).toBe(reply);
       for (const said of [...r.spoken, ...r.normalized, r.log[0]?.text ?? ""]) {
         expect(said).not.toContain("x.com.br");
         expect(said).toContain("acompanhar seu pedido");
@@ -3566,6 +3571,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         "Seu pedido foi confirmado, ligue para (11) 4003-1234 se precisar";
       const r = await audioTurn(787_05, reply);
       expect(r.log).toEqual([{ kind: "audio", text: reply }]);
+      // Nothing was taken out, so the transcription already is the reply and the bag stays untouched.
+      expect(r.log[0]?.reply).toBeUndefined();
       expect(r.normalized).toEqual([reply]);
     });
   });

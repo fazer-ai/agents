@@ -9,6 +9,7 @@ import {
   mediaFallbackHandler,
 } from "@/modules/chatwoot/channel-failure";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { CHATWOOT_REPLY_TEXT_KEY } from "@/modules/chatwoot/constants";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { type ClaimedJob, completeJob } from "@/modules/scheduler/service";
@@ -57,6 +58,8 @@ function updated(
     error?: string | null;
     sender?: { type: string; id: number } | null;
     transcribed?: string | null;
+    // The whole reply the voice note carries when its speech left an item out (#792).
+    replyText?: string;
     event?: string;
   } = {},
 ) {
@@ -70,10 +73,14 @@ function updated(
       opts.sender === undefined
         ? { type: "agent_bot", id: BOT_ID }
         : opts.sender,
-    content_attributes:
-      opts.error === null
+    content_attributes: {
+      ...(opts.error === null
         ? {}
-        : { external_error: opts.error ?? "131053: Media upload error" },
+        : { external_error: opts.error ?? "131053: Media upload error" }),
+      ...(opts.replyText === undefined
+        ? {}
+        : { [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }),
+    },
     attachments:
       opts.transcribed === null
         ? []
@@ -179,6 +186,26 @@ describe("channelFailureOf", () => {
     expect(
       channelFailureOf(updated(5, { error: "Media upload error" }), BOT_ID),
     ).toMatchObject({ code: null, kind: "unknown" });
+  });
+
+  // #792: since #787 the transcription is the speech, which has holes where a URL or an address was.
+  test("the whole reply the voice note carries is the text, not the speech with holes", () => {
+    const holed = "Acompanhe seu pedido em a qualquer momento";
+    const whole =
+      "Acompanhe seu pedido em https://x.com.br/p/1 a qualquer momento";
+    expect(
+      channelFailureOf(
+        updated(12, { transcribed: holed, replyText: whole }),
+        BOT_ID,
+      )?.text,
+    ).toBe(whole);
+    // A blank one is no reply: the transcription is still the text.
+    expect(
+      channelFailureOf(
+        updated(13, { transcribed: holed, replyText: "  " }),
+        BOT_ID,
+      )?.text,
+    ).toBe(holed);
   });
 
   test("anything but the route's own bot's failed outgoing message is not one", () => {
@@ -295,6 +322,20 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(
       JSON.stringify(lines, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
     ).not.toContain("Media upload error");
+  });
+
+  test("a voice note whose speech left a link out arms the whole reply, link included (#792)", async () => {
+    const whole = `${REPLY}, acompanhe em https://x.com.br/p/1`;
+    await deliver(
+      updated(9002, {
+        transcribed: `${REPLY}, acompanhe em`,
+        replyText: whole,
+      }),
+    );
+    const [job] = await jobsFor(9002);
+    expect(
+      job?.payloadSecret ? decryptJson<string>(job.payloadSecret) : null,
+    ).toBe(whole);
   });
 
   // The fake Chatwoot the job talks to: what the conversation looks like NOW, what its latest page

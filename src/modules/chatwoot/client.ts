@@ -3,7 +3,11 @@ import { withKeyedQueue } from "@/lib/locks";
 import { withDeadline } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
-import { CHATWOOT_AUTH_HEADER, CHATWOOT_SEND_ID_KEY } from "./constants";
+import {
+  CHATWOOT_AUTH_HEADER,
+  CHATWOOT_REPLY_TEXT_KEY,
+  CHATWOOT_SEND_ID_KEY,
+} from "./constants";
 
 // Chatwoot Application API client with the dual-identity profiles (validated against the
 // chatwoot-pro fork's BOT_ACCESSIBLE_ENDPOINTS):
@@ -504,7 +508,7 @@ export class ChatwootClient {
     audio: ArrayBuffer,
     fileName: string,
     mime: string,
-    opts: { transcribedText?: string } = {},
+    opts: { transcribedText?: string; replyText?: string } = {},
   ): Promise<unknown> {
     this.assertToken(this.config.botToken, "POST audio message");
     const form = new FormData();
@@ -523,6 +527,15 @@ export class ChatwootClient {
       form.append(
         `attachments_metadata[${fileName}][transcribed_text]`,
         opts.transcribedText,
+      );
+    }
+    // The whole reply, only when the speech is not it (issue #792): the text that replaces a refused
+    // voice note reads it from here. A JSON string, which is how the builder takes the bag on a
+    // multipart create.
+    if (opts.replyText) {
+      form.append(
+        "content_attributes",
+        JSON.stringify({ [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }),
       );
     }
     const res = await this.fetchImpl(

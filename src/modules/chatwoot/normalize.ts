@@ -1,3 +1,4 @@
+import { CHATWOOT_REPLY_TEXT_KEY } from "./constants";
 import type { RenderableLocation, RenderableMessage } from "./render";
 import type {
   NormalizedChatwootAttachment,
@@ -266,6 +267,7 @@ export function normalizeChatwootEvent(
       emailSubject: emailSubjectFrom(ca),
       imported: ca?.imported === true,
       externalError: ca ? str(ca.external_error) || null : null,
+      replyText: ca ? str(ca[CHATWOOT_REPLY_TEXT_KEY]) || null : null,
     };
   }
   if ("changed_attributes" in payload) {

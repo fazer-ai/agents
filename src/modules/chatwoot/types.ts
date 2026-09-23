@@ -92,6 +92,9 @@ export interface NormalizedChatwootMessage {
   // the status becomes `failed` and clears it on every other transition, so its presence IS the
   // failure signal (`status` itself is not in the webhook payload). Null when absent or empty.
   externalError?: string | null;
+  // content_attributes.fazer_ai_reply_text: the whole reply an audio reply of ours was cut from, when
+  // the speech left something out (issue #792). Null everywhere else.
+  replyText?: string | null;
   // Filled by the eager STT pass (NOT from the payload): the audio transcription, used by the direct
   // (no-debounce) path. The debounce flush instead reads it back from the attachment meta on re-fetch.
   transcribedText?: string | null;

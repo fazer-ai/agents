@@ -617,6 +617,49 @@ describe("ChatwootClient", () => {
     expect(wire[1]).not.toContain('filename="blob"');
   });
 
+  // #792: a voice note whose speech left a URL out carries the whole reply in its bag, as the JSON
+  // string the builder parses on a multipart create; one with nothing left out carries no bag.
+  test("the whole reply rides content_attributes only when the speech is not it", async () => {
+    const bodies: BodyInit[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      if (init?.body) bodies.push(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const whole = "Acompanhe em https://x.com.br/p/1 a qualquer momento";
+    await client.sendAudioMessage(
+      42,
+      new ArrayBuffer(4),
+      "r.ogg",
+      "audio/ogg",
+      {
+        transcribedText: "Acompanhe em a qualquer momento",
+        replyText: whole,
+      },
+    );
+    await client.sendAudioMessage(
+      42,
+      new ArrayBuffer(4),
+      "s.ogg",
+      "audio/ogg",
+      {
+        transcribedText: "Confirmei para quinta",
+      },
+    );
+    const forms = bodies as FormData[];
+    expect(forms[0]?.get("content_attributes")).toBe(
+      JSON.stringify({ fazer_ai_reply_text: whole }),
+    );
+    expect(forms[1]?.has("content_attributes")).toBe(false);
+  });
+
   test("an admin-token call on that same client still works", async () => {
     const { fetchImpl, calls } = stub(200, { payload: [] });
     const client = await createChatwootClient(

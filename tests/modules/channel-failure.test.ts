@@ -5,6 +5,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import {
   channelFailureOf,
+  channelParts,
   mediaFallbackDedupeKey,
   mediaFallbackHandler,
 } from "@/modules/chatwoot/channel-failure";
@@ -207,6 +208,15 @@ test("the fallback's key names the Chatwoot instance, so a replaced server canno
   expect(mediaFallbackDedupeKey(1n, 42)).not.toBe(
     mediaFallbackDedupeKey(2n, 42),
   );
+});
+
+test("parts never exceed the limit, never cut an emoji, and a short text is one part", () => {
+  expect(channelParts("oi", 10)).toEqual(["oi"]);
+  const parts = channelParts(`${"😀".repeat(25)}\n\n${"x".repeat(5)}`, 10);
+  for (const p of parts) expect(Array.from(p).length).toBeLessThanOrEqual(10);
+  expect(parts.join("")).toBe(`${"😀".repeat(25)}${"x".repeat(5)}`);
+  expect(parts.every((p) => !/[\uD800-\uDBFF]$/.test(p))).toBe(true);
+  expect(channelParts("um\n\ndois", 20)).toEqual(["um\n\ndois"]);
 });
 
 describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
@@ -491,6 +501,47 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         data: { channelType: null, provider: null },
       });
     }
+  });
+
+  test("a colleague's reply claimed the conversation before Chatwoot's toggle landed: nothing from the bot", async () => {
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      data: {
+        status: "open",
+        statusClaimUntil: new Date(Date.now() + 60_000),
+        statusClaimFrom: "pending",
+      },
+    });
+    try {
+      // Chatwoot still answers `pending`: its toggle is on the wire.
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: {
+          status: "pending",
+          statusClaimUntil: null,
+          statusClaimFrom: null,
+        },
+      });
+    }
+  });
+
+  test("a long reply goes in parts the channel takes, and a rerun sends only the missing ones", async () => {
+    const para = (c: string) => c.repeat(3_000);
+    const long = `${para("a")}\n\n${para("b")}`;
+    const job = { ...(await claimed(9001)), payloadSecret: encryptJson(long) };
+    const first = fakeChatwoot({});
+    await mediaFallbackHandler(job, appDb, first.makeClient);
+    expect(first.sent.map((m) => [m.sendId, m.text.length])).toEqual([
+      ["media-fallback:9001:1", 3_000],
+      ["media-fallback:9001:2", 3_000],
+    ]);
+    const rerun = fakeChatwoot({ recentSendIds: ["media-fallback:9001:1"] });
+    await mediaFallbackHandler(job, appDb, rerun.makeClient);
+    expect(rerun.sent.map((m) => m.sendId)).toEqual(["media-fallback:9001:2"]);
   });
 
   test("a job whose body a reset forgot finishes without sending", async () => {

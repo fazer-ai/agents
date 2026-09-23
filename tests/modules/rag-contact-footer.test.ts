@@ -44,6 +44,10 @@ describe("what counts as a contact footer", () => {
 
   test("a date, a price or plain content is not one", () => {
     expect(isContactFooterParagraph("Válido até 12/03/2026.")).toBe(false);
+    expect(isContactFooterParagraph("Válido até 2026-03-12.")).toBe(false);
+    expect(isContactFooterParagraph("Válido de 01-03-2026 a 31-03-2026.")).toBe(
+      false,
+    );
     expect(isContactFooterParagraph("Guarde o protocolo 123-4567.")).toBe(
       false,
     );
@@ -91,6 +95,13 @@ describe("stripping it from a passage", () => {
   test("the separators that stay are the ones the document had", () => {
     const spaced = "Primeiro passo.\n\n\nSegundo passo.\n \nTerceiro passo.";
     expect(stripContactFooter(`${spaced}\n\n${FOOTER}`)).toBe(spaced);
+  });
+
+  test("Windows line endings separate paragraphs too, and stay in what is kept", () => {
+    const crlf = "Primeiro passo.\r\n\r\nSegundo passo.";
+    expect(stripContactFooter(`${crlf}\r\n\r\nDúvidas? Fale conosco.`)).toBe(
+      crlf,
+    );
   });
 
   test("nothing to strip returns the passage untouched", () => {

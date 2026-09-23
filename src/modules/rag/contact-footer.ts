@@ -33,13 +33,17 @@ const EMAIL = /[^\s@<>()[\]]+@[^\s@<>()[\]]+\.[a-z]{2,}/i;
 // A run of digits with the separators a phone number is written with; judged by its digit count so
 // a date ("12/03/2026") or a price ("R$ 1.200,00") does not pass for one.
 const PHONE_CANDIDATE = /\+?\(?\d[\d\s().-]{6,}\d/g;
+// Dates are written with the same separators and reach the same digit count ("2026-03-12" is
+// eight), so they are taken out before the count: a validity date closing an article is content.
+const DATE =
+  /\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/g;
 const INVITATION =
   /(entr(?:e|ar) em contato|fale conosco|fale com (?:a gente|o nosso|a nossa|nosso|nossa)|central de (?:atendimento|relacionamento)|atendimento ao cliente|\bsac\b|contact us|get in touch|reach out to us|contact our|contáctenos|póngase en contacto)/i;
 // What a footer usually hangs under, and means nothing once the footer is gone.
 const HEADING_OR_RULE = /^(#{1,6}\s+[^\n]*|[-*_]{3,})$/;
 
 function hasPhone(text: string): boolean {
-  for (const m of text.matchAll(PHONE_CANDIDATE)) {
+  for (const m of text.replace(DATE, " ").matchAll(PHONE_CANDIDATE)) {
     const digits = m[0].replace(/\D/g, "").length;
     if (digits >= 8 && digits <= 15) return true;
   }
@@ -56,7 +60,8 @@ export function isContactFooterParagraph(paragraph: string): boolean {
 // when removing it would leave nothing).
 export function stripContactFooter(content: string): string {
   // Split keeping the separators, so what stays is byte-for-byte what was there.
-  const parts = content.split(/(\n[ \t]*\n)/);
+  // CRLF too: text posted through the API keeps its line endings, and the chunker keeps them.
+  const parts = content.split(/(\r?\n[ \t]*\r?\n)/);
   const paragraphs = parts.filter((_, i) => i % 2 === 0);
   let run = 0;
   while (

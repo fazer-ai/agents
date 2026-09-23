@@ -29,6 +29,10 @@ export async function applyGuardrailHandoff(params: {
   handoff: HandoffConfig;
   direction: "input" | "output";
   flow: FlowContext;
+  // The caller's withdrawal fence, asked between the status and the assignment: a `/reset` or an
+  // agent switched off while the status change is in flight must not be followed by a routing
+  // write. The status already landed and stays; what this stops is the second write.
+  stillWanted?: () => Promise<boolean>;
 }): Promise<boolean> {
   const { client, conversationId, direction, flow } = params;
   try {
@@ -56,8 +60,11 @@ export async function applyGuardrailHandoff(params: {
     return false;
   }
   const target = pinnedHandoffTarget(params.handoff, params.instanceId);
-  let assigned: "agent" | "team" | "routing" | "failed" = "routing";
-  if (target) {
+  let assigned: "agent" | "team" | "routing" | "failed" | "withdrawn" =
+    "routing";
+  if (target && params.stillWanted && !(await params.stillWanted())) {
+    assigned = "withdrawn";
+  } else if (target) {
     try {
       if (target.kind === "agent")
         await client.assignToAgent(conversationId, target.id);

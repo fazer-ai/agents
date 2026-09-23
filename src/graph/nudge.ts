@@ -2189,6 +2189,7 @@ export async function runAgentNudge(
         handoff: cfg.handoffConfig,
         direction: "output",
         flow,
+        stillWanted,
       });
       handoffState.completed = handed;
       // The transfer is one or two requests, and the send below is still ahead.

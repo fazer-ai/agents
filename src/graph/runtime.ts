@@ -1293,12 +1293,18 @@ async function runTurnBody(
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });
-  // The transfer a `handoff` verdict asks for (issue #704). It moves the conversation, so it passes
-  // every gate a send passes, and all of them AFTER the judge, whose model call is exactly the
-  // stretch in which the earlier answers went stale: the turn not called off and not superseded, the
-  // bot still the owner (a person who took the case during the judge's call must not have it routed
-  // away), and the burst claimed. Then called off is asked once more, because the transfer is one or
-  // two requests of its own and the caller still has a sentence to send.
+  // The transfer a `handoff` verdict asks for (issue #704). It moves the conversation, so it waits
+  // for the gates that say this turn may still act, and all of them AFTER the judge, whose model call
+  // is exactly the stretch in which the earlier answers went stale: the turn not called off and not
+  // superseded, and the bot still the owner (a person who took the case during the judge's call must
+  // not have it routed away). Called off is asked again inside the transfer, before the assignment,
+  // and once more after it, because the caller still has a sentence to send.
+  //
+  // NOT the reply claim. That claim is permanent and means "this burst was answered" (see
+  // docs/debounce.md), and a transfer that fails, or one with nothing to say, answered nobody: a
+  // manual re-engage after the conversation comes back must still be able to answer it. Two turns
+  // racing here can both transfer, which is harmless (the same status, the same target); only the
+  // line is at-most-once, and it takes the claim where it is sent.
   //
   // The resolve falls with the VERDICT, not with the transfer: a case the policy said needs a person
   // is not closed because the status change failed. A transfer that landed is marked on the handoff
@@ -1313,7 +1319,6 @@ async function runTurnBody(
     // A read that fails lets the transfer go ahead: the policy asked for a person, and a person is
     // what the transfer gives.
     if (!(await ownershipNow().catch(() => true))) return "taken-over";
-    if (!(await claimBeforeSend())) return "superseded";
     const handed = await applyGuardrailHandoff({
       client,
       conversationId,
@@ -1321,6 +1326,7 @@ async function runTurnBody(
       handoff: loaded.handoffConfig,
       direction,
       flow,
+      stillWanted: async () => !(await writeCalledOff()),
     });
     handoffState.completed = handed;
     if (await writeCalledOff()) return standDown();
@@ -2094,6 +2100,7 @@ async function runTurnBody(
         if (handed !== "handed" && handed !== "failed") return handed;
         // The line says a person will continue, so it goes out only when one will.
         if (handed === "failed" || inReply === null) return "blocked";
+        if (!(await claimBeforeSend())) return "superseded";
         await client.sendMessage(conversationId, inReply);
         deliveredBalloons = 1;
         return "posted";

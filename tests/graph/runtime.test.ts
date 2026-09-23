@@ -7645,6 +7645,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
         expect(outcome).toBe("posted");
         expect(log.sent).toEqual([[7041, "ENCAMINHADO"]]);
+        // The line WAS sent, and it claimed the burst the way every send does.
+        const claimed = await suDb.conversation.findFirst({
+          where: { tenantId: gTenantId, chatwootConversationId: 7041 },
+          select: { lastRepliedMessageId: true },
+        });
+        expect(claimed?.lastRepliedMessageId ?? null).not.toBeNull();
         expect(log.toggles).toEqual([[7041, "open"]]);
         expect(log.assigns).toEqual([`team:7041:${TEAM}`]);
         // One note, and it is the reader's handover: what tripped, that the case is theirs, and the
@@ -7683,6 +7689,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(log.assigns).toEqual([]);
         // The skip hand-over (#659) must not add a second note on top of this one.
         expect(log.notes).toHaveLength(1);
+        // Nothing was sent, so nothing claims the burst as answered: the reply claim is permanent,
+        // and a re-engage after the conversation comes back must still be able to answer it.
+        const conv = await suDb.conversation.findFirst({
+          where: { tenantId: gTenantId, chatwootConversationId: 7042 },
+          select: { lastRepliedMessageId: true },
+        });
+        expect(conv?.lastRepliedMessageId ?? null).toBeNull();
       });
 
       test("a refused customer message is handed over before the agent runs", async () => {

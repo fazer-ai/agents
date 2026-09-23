@@ -186,6 +186,22 @@ describe("the transfer", () => {
     expect(t.calls).toEqual(["status:9:open", "team:9:22"]);
   });
 
+  test("a turn withdrawn while the status changed does not go on to assign", async () => {
+    const c = client({});
+    const ok = await applyGuardrailHandoff({
+      client: c.client,
+      conversationId: 9,
+      instanceId: 3n,
+      handoff: hc({ mode: "pinned", targetTeamId: 22 }),
+      direction: "output",
+      flow: FLOW,
+      stillWanted: async () => false,
+    });
+    // The status already landed, so the transfer happened; only the routing write is withheld.
+    expect(ok).toBe(true);
+    expect(c.calls).toEqual(["status:9:open"]);
+  });
+
   test("a pin picked in another account is not used here", () => {
     expect(
       pinnedHandoffTarget(

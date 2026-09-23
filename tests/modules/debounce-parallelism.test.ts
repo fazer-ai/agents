@@ -290,6 +290,7 @@ describe.skipIf(!dbUp)("debounce parallelism", () => {
           },
         }).then(() => {}),
     });
+    await out.settled;
     const elapsed = performance.now() - started;
 
     console.log(

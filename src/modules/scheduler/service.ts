@@ -1280,14 +1280,23 @@ export function countOwedByKeyPrefix(
   );
 }
 
-// The fast debounce tick claims ONLY debounce jobs.
+// The fast debounce tick claims ONLY debounce jobs. `excludeIds` is the drain's in-flight set
+// (../debounce/worker.ts).
 export function claimDueDebounceJobs(
   limit: number,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   tenantId?: bigint,
+  excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
-  return claimWhere(limit, base, now, laneFilter("debounce"), tenantId);
+  return claimWhere(
+    limit,
+    base,
+    now,
+    laneFilter("debounce"),
+    tenantId,
+    excludeIds,
+  );
 }
 
 // The compaction lane claims ONLY compaction jobs. It exists for BUDGET, not for duration: it fires

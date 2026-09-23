@@ -304,18 +304,50 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
 //
 // Two statements, since Prisma has no conditional upsert: the UPDATE re-checks its WHERE under the
 // row lock, so a claim that commits first makes it match nothing, and the INSERT then skips.
+//
+// NOR OVER A RUN ALREADY SCHEDULED FOR LATER, when the caller asks (issue #796). A PENDING row whose
+// `run_at` is still ahead was put there by its handler on purpose — a retry backoff, business hours,
+// the cadence of a step that is not due yet — and the re-arm would pull it back to now and replace its
+// payload, which drops the retry count the backoff was keeping. For a clock that re-pushes the same
+// episode every minute that turned each of those deferrals into a run every minute. A row that is
+// already due, finished, or absent is armed as before. The caller says which deferred rows are its own
+// work (`leaveLaterRun` reads the row's payload, and its `lastError`, which is what tells a failure
+// backoff from a row that merely stood down): a deferral left by an EARLIER episode is not, and the
+// arm must replace it instead of waiting days for a step that no longer applies. Read first, then the
+// UPDATE is pinned to the `run_at` that was read, so a handler rescheduling in between makes it match
+// nothing, and the INSERT skips.
 export async function enqueueJobUnlessClaimed(
-  params: EnqueueParams,
+  params: EnqueueParams & {
+    leaveLaterRun?: (row: {
+      payload: Prisma.JsonValue;
+      lastError: string | null;
+    }) => boolean | Promise<boolean>;
+  },
 ): Promise<boolean> {
   const base = params.base ?? basePrisma;
   const { create, update } = jobRowWrites(params);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const key = {
+      tenantId: params.tenantId,
+      kind: params.kind,
+      dedupeKey: params.dedupeKey,
+    };
+    const later = params.leaveLaterRun
+      ? await db.schedulerJob.findFirst({
+          where: { ...key, status: "PENDING", runAt: { gt: new Date() } },
+          select: { runAt: true, payload: true, lastError: true },
+        })
+      : null;
+    if (later && (await params.leaveLaterRun?.(later))) return false;
     const updated = await db.schedulerJob.updateMany({
       where: {
-        tenantId: params.tenantId,
-        kind: params.kind,
-        dedupeKey: params.dedupeKey,
+        ...key,
         status: { not: "CLAIMED" },
+        ...(later
+          ? { status: "PENDING", runAt: later.runAt }
+          : params.leaveLaterRun
+            ? { NOT: { status: "PENDING", runAt: { gt: new Date() } } }
+            : {}),
       },
       data: update,
     });

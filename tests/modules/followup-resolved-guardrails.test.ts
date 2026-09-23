@@ -777,14 +777,20 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     const s = stubClient(() => {
       throw new Error("chatwoot indisponível");
     });
-    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    // Um job que já tinha sido adiado pela cadência carrega a versão da configuração (issue #796).
+    const job = jobFor(CONV);
+    job.payload = { ...job.payload, deferredUnder: "1:0" };
+    const result = await followUpHandler(job, appDb, handlerDeps(s));
     expect(result.outcome).toBe("reschedule");
     if (result.outcome === "reschedule") {
       expect(result.runAt.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
-      // Mesmo step (threadId preservado), com o contador de retries avançado.
-      expect(result.payload).toMatchObject({
+      // Mesmo step (threadId preservado), com o contador de retries avançado. O backoff não vem da
+      // configuração, então é marcado como backoff e não com a versão: a varredura o preserva mesmo
+      // depois de uma edição.
+      expect(result.payload).toEqual({
         threadId: threadOf(CONV),
         nudgeRetries: 1,
+        deferredUnder: "backoff",
       });
     }
     expect(s.sent).toEqual([]);
@@ -836,9 +842,13 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     });
     const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
     expect(gets).toBeGreaterThan(0);
-    // O live diz resolved → o follow-up morre (o fluxo reativo atende a reabertura), mas o
-    // espelho mais novo NÃO é sobrescrito pelo snapshot velho.
-    expect(result).toEqual({ outcome: "done" });
+    // O live diz resolved → nada sai (o fluxo reativo atende a reabertura), mas o espelho mais novo
+    // NÃO é sobrescrito pelo snapshot velho. E como o espelho segue `pending`, a varredura
+    // selecionaria a conversa de novo no minuto seguinte: a linha fica estacionada por uma hora em
+    // vez de terminar (issue #796). A resposta do cliente que reabriu cancela a linha pendente.
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    const runAt = (result as { runAt?: Date }).runAt?.getTime() ?? 0;
+    expect(runAt).toBeGreaterThan(Date.now() + 55 * 60_000);
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect((await mirroredConv(CONV)).status).toBe("pending");

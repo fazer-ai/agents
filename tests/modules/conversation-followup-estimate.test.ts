@@ -1552,6 +1552,63 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(true);
   });
 
+  // Issue #796, review round 3: a follow-up that died in this episode is not offered again by the
+  // sweep, so the console must not promise its step 1. One that died in an EARLIER episode does not
+  // count: the new one is estimated as before.
+  test("a follow-up that died in this episode → no countdown; one that died before it → step 1", async () => {
+    const { threadId } = await suDb.conversation.findUniqueOrThrow({
+      where: { id: convNewEpisode },
+      select: { threadId: true },
+    });
+    const key = `followup:${threadId}`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: key,
+        status: "DEAD",
+        runAt: new Date(),
+        payload: { threadId },
+        attempts: 5,
+      },
+    });
+    try {
+      const died = await getConversationDetail(
+        ctx(tenant),
+        convNewEpisode,
+        appDb,
+      );
+      expect(died.followUp?.nextStep).toBeNull();
+      expect(died.followUp?.nextRunAt).toBeNull();
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET updated_at = ${new Date(REPLY_AT.getTime() - 60 * 60_000)}
+         WHERE tenant_id = ${tenant} AND dedupe_key = ${key}`;
+      const earlier = await getConversationDetail(
+        ctx(tenant),
+        convNewEpisode,
+        appDb,
+      );
+      expect(earlier.followUp?.nextStep).toBe(1);
+      // Review round 7: the episode written on the row decides over the death time. Marked with an
+      // older silence, a death just now is still an earlier episode's.
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs
+           SET updated_at = now(),
+               payload = jsonb_build_object('threadId', ${threadId}::text, 'episode', '1')
+         WHERE tenant_id = ${tenant} AND dedupe_key = ${key}`;
+      const marked = await getConversationDetail(
+        ctx(tenant),
+        convNewEpisode,
+        appDb,
+      );
+      expect(marked.followUp?.nextStep).toBe(1);
+    } finally {
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId: tenant, dedupeKey: key },
+      });
+    }
+  });
+
   test("a conversation the bot still owns is not abandoned", async () => {
     const d = await getConversationDetail(ctx(tenant), convNewEpisode, appDb);
     expect(d.followUp?.abandoned).toBe(false);

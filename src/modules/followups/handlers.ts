@@ -55,6 +55,11 @@ const IN_FLIGHT_BACKOFF_MS = 30_000;
 // cancelled. Coarse (1h) because the sweep already filters these out — this only catches a FOLLOWUP
 // that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
+// How long a follow-up the live gate declined waits before it is offered again (issue #796). The
+// decline stamps nothing, so the sweep would select the conversation on its next pass; parked for
+// this long instead, the pass leaves the row alone. An hour rather than never, because the mirror the
+// sweep read may be the stale half and the live gate is the only thing that repairs it.
+const LIVE_DECLINE_BACKOFF_MS = 3_600_000;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -120,11 +125,9 @@ async function sweepHandler(
   //
   // NOTE: `cfg.enabled` first, and it is not redundant. An agent whose follow-up is OFF can still
   // carry a step-0 exemption from when it was on, and `appointmentPauseApplies` would answer about
-  // it — correctly, since it decides the pause and nothing else. Exempting it would lift the fence
-  // for an agent that sends nothing: the sweep's SQL never tests `followUp.enabled` (it tests
-  // `follow_up_armed_at`, which is stamped on the OFF→ON transition and never cleared going back),
-  // so those conversations would be enqueued every minute for the handler to discard on its first
-  // look, each one holding a slot of the LIMIT 500 away from an agent that would actually send.
+  // it — correctly, since it decides the pause and nothing else. The sweep now selects only agents
+  // whose follow-up is on (below), so an exemption from an OFF agent would reach no row; the filter
+  // stays so this list says what it means on its own.
   const unfencedAgentIds = configs
     .filter(
       ({ cfg }) => cfg.enabled && !appointmentPauseApplies(cfg, cfg.steps[0]),
@@ -136,6 +139,16 @@ async function sweepHandler(
   const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
     unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
   )}]::bigint[]`;
+  // THE AGENTS WHOSE FOLLOW-UP IS ON, and only those are swept (issue #796). The SQL tests
+  // `follow_up_armed_at`, which is stamped on the OFF→ON transition and never cleared going back, so
+  // an agent switched off kept every one of its conversations in the selection: armed each minute,
+  // claimed, and dropped by the handler's first look, forever, each holding a slot of the LIMIT 500.
+  // Read from the same `cfg.enabled` that computes the cutoff above, so the two cannot disagree.
+  // Never empty here: the early return above left when no agent has follow-up on.
+  const followUpAgentIds = configs
+    .filter(({ cfg }) => cfg.enabled)
+    .map(({ id }) => id);
+  const followUpIdsSql = Prisma.sql`ARRAY[${Prisma.join(followUpAgentIds)}]::bigint[]`;
 
   // NOTE: column-to-column comparison (lastInboundAt > lastFollowUpAt) requires raw SQL;
   // Prisma's query builder cannot express it. The filter mirrors the handler's watermark gate
@@ -146,22 +159,56 @@ async function sweepHandler(
     base,
     sysCtx(tenantId),
     (db) =>
-      db.$queryRaw<Array<{ thread_id: string }>>`
-      SELECT c.thread_id
+      db.$queryRaw<
+        Array<{
+          thread_id: string;
+          agent_updated_at: Date;
+          hours_updated_at: Date | null;
+          other_episode: boolean;
+          episode: string;
+        }>
+      >`
+      SELECT c.thread_id,
+             a.updated_at AS agent_updated_at,
+             h.updated_at AS hours_updated_at,
+             -- A row armed for another episode (or before episodes were written) spent its budget on
+             -- that one, whether it ended DEAD or was retired by a reply with its attempts still
+             -- counted, so the arm is new work, with a fresh budget. A DEAD row of THIS episode never
+             -- gets here: the NOT EXISTS below keeps the conversation out.
+             EXISTS (
+               SELECT 1
+                 FROM scheduler_jobs jd
+                WHERE jd.tenant_id = c.tenant_id
+                  AND jd.kind = 'FOLLOWUP'
+                  AND jd.dedupe_key = 'followup:' || c.thread_id
+                  AND jd.payload->>'episode' IS DISTINCT FROM
+                        (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
+             ) AS other_episode,
+             -- The episode, as followUpEpisodeKey() writes it: the silence start in epoch ms.
+             (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
+               AS episode
       FROM conversations c
       JOIN inboxes i ON i.id = c.inbox_id
       JOIN agents a ON a.id = i.agent_id
+      -- The schedule the handler reads (follow-up hours, else business hours), for the configuration
+      -- version a deferral is compared against below.
+      LEFT JOIN business_hours h
+        ON h.id = COALESCE(a.follow_up_hours_id, a.business_hours_id)
       WHERE c.tenant_id = ${tenantId}
         AND c.status = 'pending'
         -- NOTE: Bot-owned = anything but a human, mirroring shouldBotHandle: NULL (unassigned — Chatwoot
         -- < 4.16.2, Dialogflow-style hooks) AND 'AgentBot' (the NORMAL state since Chatwoot 4.16.2
         -- auto-assigns the connected bot at conversation creation). IS DISTINCT FROM because
-        -- NULL <> 'User' evaluates to NULL. A foreign bot's AgentBot is deliberately NOT filtered
-        -- here: the nudge's own ownership gate (assignee bot id vs ours) re-checks before invoking
-        -- the model, so a rare false positive costs one no-op job cycle.
+        -- NULL <> 'User' evaluates to NULL.
         AND c.assignee_type IS DISTINCT FROM 'User'
+        -- A foreign bot's AgentBot is deliberately NOT filtered here: the mirror's assignee can be
+        -- stale (a lost assignment webhook), and the nudge's live gate is what reads Chatwoot and
+        -- repairs it. What keeps that from costing a job cycle every minute is the handler's own
+        -- backoff on a live decline (LIVE_DECLINE_BACKOFF_MS) together with the re-arm below leaving
+        -- a deferred row alone (issue #796).
         AND c.inbox_id IS NOT NULL
         AND a.enabled = true
+        AND a.id = ANY(${followUpIdsSql})
         -- The same arms isFollowUpLive has (followups/eligibility.ts): a monitoring agent chases
         -- nobody, and excluding it HERE is what keeps its silent conversations from filling the
         -- batch the handler would only drop — LIMIT below is over eligible rows or it is nothing.
@@ -190,6 +237,31 @@ async function sweepHandler(
         AND (
           c.last_follow_up_at IS NULL
           OR GREATEST(c.last_inbound_at, c.last_replied_at) > c.last_follow_up_at
+        )
+        -- A FOLLOW-UP THAT DIED IN THIS EPISODE is not offered again (issue #796, found by the
+        -- verifier). A row goes DEAD when its handler threw MAX_ATTEMPTS times (a model that keeps
+        -- failing), and the death stamps nothing on the conversation, so the next pass re-armed it
+        -- and the handler ran, and called the model, once a minute without end. Dated by the row's
+        -- updated_at against when the current silence began: a death in an EARLIER episode does not
+        -- keep a new one out, and either side speaking again opens that new episode.
+        --
+        -- WHICH episode the row died in is read from the row (its payload's episode, written when it
+        -- was armed), not from when it died: a claim of the previous episode can die after the new
+        -- silence began, and it spent none of this episode's budget. A row armed before the episode
+        -- was written falls back to the death time.
+        AND NOT EXISTS (
+          SELECT 1
+            FROM scheduler_jobs j
+           WHERE j.tenant_id = c.tenant_id
+             AND j.kind = 'FOLLOWUP'
+             AND j.dedupe_key = 'followup:' || c.thread_id
+             AND j.status = 'DEAD'
+             AND CASE
+                   WHEN j.payload->>'episode' IS NOT NULL THEN
+                     j.payload->>'episode'
+                       = (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
+                   ELSE j.updated_at >= GREATEST(c.last_inbound_at, c.last_replied_at)
+                 END
         )
         -- Activation fence: only conversations that became LIVE after follow-up was armed for this
         -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition and re-stamped
@@ -279,8 +351,27 @@ async function sweepHandler(
       // is the same episode being pushed again, and clearing the budget would hand a follow-up that
       // keeps failing five fresh attempts every minute forever. A follow-up that DID go out
       // completes, which is what clears the count for the next episode.
-      rearm: "same-work",
-      payload: { threadId: t.thread_id },
+      //
+      // Except over a row of an earlier episode: its budget was spent on that one, and keeping it
+      // would dead-letter this episode on its first transient failure, after which the exclusion
+      // above would keep it out for good (review rounds 6 and 8).
+      rearm: t.other_episode ? "new-work" : "same-work",
+      payload: { threadId: t.thread_id, episode: t.episode },
+      // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
+      // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
+      // run every minute, and the retry count the backoff was keeping was replaced with it. Only a
+      // STEP-0 deferral is this episode's: the sweep selects a thread only at the start of a fresh
+      // episode, so a later step still pending is left over from an earlier one (our own reply opens
+      // a new episode without cancelling it), and waiting for it would delay this episode's first
+      // follow-up by that step's cadence. And only while the configuration it was computed from still
+      // holds: a cadence shortened, or a schedule opened, after the deferral must not wait out the
+      // old instant, so a row marked with an older version is re-armed and the handler recomputes.
+      leaveLaterRun: (row) =>
+        isDeferralOfThisEpisode(
+          row,
+          t.episode,
+          followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
+        ),
       base,
     });
   }
@@ -288,6 +379,56 @@ async function sweepHandler(
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
   };
+}
+
+// WHICH CONFIGURATION A DEFERRAL WAS COMPUTED FROM (issue #796, review round 4). The cadence and the
+// business-hours deferrals are functions of the agent's settings and of its schedule, and a change to
+// either makes the stored instant wrong. Both rows stamp `updated_at` on every write, so the pair is
+// a version that moves whenever the inputs can have moved; an unrelated edit to the agent also moves
+// it, which costs one extra handler pass and nothing else.
+export function followUpConfigVersion(
+  agentUpdatedAt: Date,
+  hoursUpdatedAt: Date | null | undefined,
+): string {
+  return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
+}
+
+// A deferral that does not depend on the configuration (a retry backoff, a turn in flight, a live
+// decline) says so, and is kept whatever the configuration does.
+const BACKOFF_DEFERRAL = "backoff";
+// An appointment hold, which the sweep re-arms whenever it selects the conversation (see the hold).
+const APPOINTMENT_HOLD = "appointment";
+
+// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral is
+// kept only when it says why it is safe to keep: a backoff, or a version that is still current. One
+// that says nothing (written before deferrals were marked, review round 5) is re-armed once, and the
+// handler recomputes it under the current configuration and marks it.
+function isDeferralOfThisEpisode(
+  {
+    payload,
+    lastError,
+  }: { payload: Prisma.JsonValue; lastError: string | null },
+  episode: string,
+  configVersion: string,
+): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const {
+    stepIndex,
+    deferredUnder,
+    episode: deferredEpisode,
+  } = payload as Record<string, unknown>;
+  // Armed for another episode (review round 7): our own reply opens a new one without cancelling
+  // the old deferral, and the new episode must not inherit its backoff or its retry count.
+  if (deferredEpisode !== episode) return false;
+  if (stepIndex !== undefined && stepIndex !== 0) return false;
+  // The scheduler's own retry backoff: the handler threw, and `failJob` re-pended the row with the
+  // error and a delay, leaving the payload as it was. `lastError` is what the scheduler itself reads
+  // to tell a backoff from a stand-down (claimWhere), and pulling it back spent the whole budget one
+  // attempt per pass instead of across the backoff (found by the acceptance run).
+  if (lastError !== null) return true;
+  return deferredUnder === BACKOFF_DEFERRAL || deferredUnder === configVersion;
 }
 
 // WHAT A FOLLOW-UP STEP SAYS IT IS. Pure, and separate from the handler for the reason the redirect
@@ -375,6 +516,7 @@ export async function followUpHandler(
         businessHoursId: true,
         followUpHoursId: true,
         followUpArmedAt: true,
+        updatedAt: true,
       },
     });
     if (!agent) return null;
@@ -420,10 +562,21 @@ export async function followUpHandler(
     const hours = hoursId
       ? await db.businessHours.findUnique({
           where: { id: hoursId },
-          select: { windows: true, exceptions: true, timezone: true },
+          select: {
+            windows: true,
+            exceptions: true,
+            timezone: true,
+            updatedAt: true,
+          },
         })
       : null;
-    return { conv, followUpCfg, hours, armedAt: agent.followUpArmedAt };
+    return {
+      conv,
+      followUpCfg,
+      hours,
+      armedAt: agent.followUpArmedAt,
+      configVersion: followUpConfigVersion(agent.updatedAt, hours?.updatedAt),
+    };
   });
   if (!ctx) return { outcome: "done" };
 
@@ -459,6 +612,11 @@ export async function followUpHandler(
       return {
         outcome: "reschedule",
         runAt: new Date(Date.now() + APPOINTMENT_BACKOFF_MS),
+        // Never kept by the sweep: it selects a conversation only when no live appointment holds it
+        // (or the agent is exempt), so a selected conversation is one whose hold has lifted, by the
+        // appointment ending or by the pause setting changing, and the hold must not be waited out
+        // (review rounds 6 and 8). While the appointment is live the sweep does not reach it.
+        payload: { ...job.payload, deferredUnder: APPOINTMENT_HOLD },
       };
     }
   }
@@ -494,7 +652,8 @@ export async function followUpHandler(
   }
 
   // Cadence: step 0 measures inactivity from the last conversation activity; later steps measure from
-  // when the previous step fired (lastFollowUpAt). Not due yet → reschedule precisely (same payload).
+  // when the previous step fired (lastFollowUpAt). Not due yet → reschedule precisely, marking the
+  // configuration the instant was computed from so the sweep can tell when it no longer holds.
   const anchor =
     stepIndex === 0
       ? lastActivityAt(lastEventAt, ctx.conv.lastRepliedAt)
@@ -502,7 +661,11 @@ export async function followUpHandler(
   if (anchor) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
     if (Date.now() < dueAt) {
-      return { outcome: "reschedule", runAt: new Date(dueAt) };
+      return {
+        outcome: "reschedule",
+        runAt: new Date(dueAt),
+        payload: { ...job.payload, deferredUnder: ctx.configVersion },
+      };
     }
   }
 
@@ -538,14 +701,20 @@ export async function followUpHandler(
     return stamped > 0;
   };
 
-  // Business hours: reschedule into the next open window rather than messaging out of hours (same
-  // payload — the step index is preserved).
+  // Business hours: reschedule into the next open window rather than messaging out of hours (the step
+  // index is preserved, and the configuration version marked, as for the cadence above).
   if (ctx.hours) {
     const hours = parseSchedule(ctx.hours);
     const now = new Date();
     if (hours.windows.length > 0 && !isOpenAt(hours, now)) {
       const next = nextOpenAt(hours, now);
-      if (next) return { outcome: "reschedule", runAt: next };
+      if (next) {
+        return {
+          outcome: "reschedule",
+          runAt: next,
+          payload: { ...job.payload, deferredUnder: ctx.configVersion },
+        };
+      }
       // Nothing opens within the scan horizon — a schedule closed for a year, which before date
       // exceptions could not be expressed at all (a weekly grid always repeats inside the scan). There
       // is no instant to defer to, so the episode is abandoned WITH A STAMP, exactly like the
@@ -570,6 +739,7 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
   }
 
@@ -609,9 +779,31 @@ export async function followUpHandler(
     deps,
   });
 
-  // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over) —
-  // the episode is moot. No watermark, no next step; the reconciled mirror keeps the sweep away.
-  if (nudgeOutcome === "stale") return { outcome: "done" };
+  // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over /
+  // another bot holds it), or the run was retired. No watermark, no next step. A retired run ends here.
+  // The reconciled mirror keeps the sweep away from a resolved or human-held conversation, so those
+  // end here. Not from one another bot holds, which is pending and bot-assigned in both readings: a
+  // bare `done` put it back in the selection every minute, forever (issue #796). That one is parked
+  // for LIVE_DECLINE_BACKOFF_MS, which the sweep's re-arm leaves alone, and asked again then: a
+  // conversation the other bot handed back is followed up, one that moved on ends at the first look.
+  if (nudgeOutcome === "stale") {
+    if (await jobRetired(job, base)) return { outcome: "done" };
+    // Asked of the mirror AFTER the gate reconciled it, the same two columns the sweep selects on:
+    // only a conversation the next pass would select again is parked.
+    const after = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: { id: ctx.conv.id },
+        select: { status: true, assigneeType: true },
+      }),
+    );
+    if (after?.status !== "pending" || after.assigneeType === "User")
+      return { outcome: "done" };
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + LIVE_DECLINE_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
   // NOTE: Nothing was posted, for a reason that may not hold next time (the shared predicate names the
   // three). Retry the SAME step later instead of stamping a follow-up that never happened, but
   // bounded (NUDGE_RETRY_LIMIT): on exhaustion, abandon the episode with a stamp so the sweep stays
@@ -633,7 +825,14 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: retry.runAt,
-      payload: { ...job.payload, nudgeRetries: retry.attempt },
+      // A retry backoff is not derived from the configuration, so it is marked as a backoff and not
+      // with a version: the sweep leaves it alone even after a settings change, which is what keeps
+      // the retry count.
+      payload: {
+        ...job.payload,
+        nudgeRetries: retry.attempt,
+        deferredUnder: BACKOFF_DEFERRAL,
+      },
     };
   }
 
@@ -656,7 +855,14 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + stepDelayMinutes(nextStep) * 60_000),
-      payload: { threadId, stepIndex: nextIndex },
+      // The episode rides along, so a later step that dies is still dated to this one.
+      payload: {
+        threadId,
+        stepIndex: nextIndex,
+        ...(typeof job.payload.episode === "string"
+          ? { episode: job.payload.episode }
+          : {}),
+      },
     };
   }
   return { outcome: "done" };

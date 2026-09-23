@@ -163,6 +163,97 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     expect(r.payload).toEqual({ v: "running", stepIndex: 0 });
   });
 
+  // `leaveLaterRun` (issue #796): uma linha PENDING com `run_at` no futuro foi adiada pelo handler de
+  // propósito, e o arme da varredura não a puxa de volta nem troca o payload dela. Uma já vencida,
+  // uma terminada e uma ausente se armam como antes, e uma adiada que o chamador não reconhece como
+  // sua (o predicado recusa o payload) é substituída.
+  test("leaveLaterRun keeps a PENDING row scheduled for later, and arms every other state", async () => {
+    const { id } = await row();
+    const later = new Date(Date.now() + 10 * 60_000);
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: {
+        status: "PENDING",
+        runAt: later,
+        payload: { v: "handler", nudgeRetries: 2 },
+      },
+    });
+    expect(
+      await enqueueJobUnlessClaimed({
+        ...arm(new Date()),
+        leaveLaterRun: ({ payload }) =>
+          (payload as { v?: string }).v === "handler",
+      }),
+    ).toBe(false);
+    const kept = await row();
+    expect(kept.runAt.getTime()).toBe(later.getTime());
+    expect(kept.payload).toEqual({ v: "handler", nudgeRetries: 2 });
+
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: { payload: { v: "older-episode" } },
+    });
+    expect(
+      await enqueueJobUnlessClaimed({
+        ...arm(new Date()),
+        leaveLaterRun: ({ payload }) =>
+          (payload as { v?: string }).v === "handler",
+      }),
+    ).toBe(true);
+    const replaced = await row();
+    expect(replaced.payload).toEqual({ v: "sweep" });
+    expect(replaced.runAt.getTime()).toBeLessThan(later.getTime());
+
+    for (const [status, runAt] of [
+      ["PENDING", new Date(Date.now() - 1_000)],
+      ["DONE", later],
+      ["DEAD", later],
+    ] as const) {
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: { status, runAt, payload: { v: "handler" } },
+      });
+      expect(
+        await enqueueJobUnlessClaimed({
+          ...arm(new Date()),
+          leaveLaterRun: ({ payload }) =>
+            (payload as { v?: string }).v === "handler",
+        }),
+      ).toBe(true);
+      const r = await row();
+      expect(r.status).toBe("PENDING");
+      expect(r.payload).toEqual({ v: "sweep" });
+    }
+  });
+
+  // A corrida entre a leitura e o UPDATE: o predicado recusou a linha adiada (é de outro episódio),
+  // e antes do UPDATE o handler a reagendou para outro instante. O UPDATE fica preso ao `run_at` que
+  // foi lido, então não pisa no reagendamento; sem o pino, o arme puxava a linha nova para agora.
+  test("leaveLaterRun does not overwrite a row its handler rescheduled after the read", async () => {
+    const { id } = await row();
+    const later = new Date(Date.now() + 10 * 60_000);
+    const moved = new Date(Date.now() + 20 * 60_000);
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: { status: "PENDING", runAt: later, payload: { v: "older" } },
+    });
+    const armed = await enqueueJobUnlessClaimed({
+      ...arm(new Date()),
+      leaveLaterRun: async () => {
+        // O predicado roda entre a leitura e a escrita: é a janela do handler.
+        await suDb.schedulerJob.update({
+          where: { id },
+          data: { runAt: moved, payload: { v: "handler" } },
+        });
+        return false;
+      },
+    });
+    const r = await row();
+    expect(armed).toBe(false);
+    expect(r.runAt.getTime()).toBe(moved.getTime());
+    expect(r.payload).toEqual({ v: "handler" });
+  });
+
   // O outro lado do raio: quem arma pelo `enqueueJob` continua suplantando a execução em voo. A
   // rajada que continua uma janela de debounce depende disso para a mensagem nova não se perder.
   test("enqueueJob still re-arms a CLAIMED row, which is what every other caller relies on", async () => {

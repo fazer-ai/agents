@@ -281,7 +281,7 @@ describe("the Channels tab of a watcher", () => {
     // back out of it with the section itself (issue #567): a validator is asked wherever its fields
     // are, and those are on screen again.
     expect(behavior).toContain(
-      "(!watcher && (contactAuthUrlInvalid || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
+      "(!watcher && (contactAuthUrlInvalid || contactAuthRuleBad || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
     );
     expect(behavior).toContain(
       "fallbackBaseUrlInvalid || fallbackBaseUrlUnsupported || fallbackModelMissing ||",

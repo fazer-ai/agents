@@ -49,6 +49,11 @@ export const CONTACT_AUTH_ALLOWLIST_ENTRY_MAX = 200;
 // ever loosened. Refused at the write, dropped by the reader.
 export const CONTACT_AUTH_PHONE_MIN_DIGITS = 8;
 export const CONTACT_AUTH_PHONE_MAX_DIGITS = 15;
+// The editor's text boxes, one entry per line: room for a full list of entries at their widest
+// (a formatted phone runs to about 25 characters), and not a byte more.
+export const CONTACT_AUTH_PHONES_TEXT_MAX = CONTACT_AUTH_ALLOWLIST_MAX * 26;
+export const CONTACT_AUTH_IDENTIFIERS_TEXT_MAX =
+  CONTACT_AUTH_ALLOWLIST_MAX * (CONTACT_AUTH_ALLOWLIST_ENTRY_MAX + 1);
 
 export function phoneDigits(v: string): string {
   return v.replace(/\D+/g, "");

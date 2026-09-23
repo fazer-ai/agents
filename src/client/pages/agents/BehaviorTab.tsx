@@ -72,6 +72,10 @@ import {
 } from "@/modules/agents/text-caps";
 import { formatWindowsSummary } from "@/modules/business-hours/announce";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
+import {
+  CONTACT_AUTH_IDENTIFIERS_TEXT_MAX,
+  CONTACT_AUTH_PHONES_TEXT_MAX,
+} from "@/modules/contact-auth/settings";
 import { debugModesFrom } from "@/modules/flowlog/debug-mode";
 import {
   FULL_DETAIL_ARM_HOURS,
@@ -2990,6 +2994,7 @@ export function BehaviorTab({
                     >
                       <Textarea
                         rows={4}
+                        maxLength={CONTACT_AUTH_PHONES_TEXT_MAX}
                         value={contactAuth.rulePhones}
                         onChange={(e) =>
                           setContactAuth({
@@ -3012,6 +3017,7 @@ export function BehaviorTab({
                     >
                       <Textarea
                         rows={3}
+                        maxLength={CONTACT_AUTH_IDENTIFIERS_TEXT_MAX}
                         value={contactAuth.ruleIdentifiers}
                         onChange={(e) =>
                           setContactAuth({

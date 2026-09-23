@@ -26,6 +26,7 @@ import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import {
   deleteSource,
   getSource,
+  nextSyncAt,
   parseSourceInput,
   requestSync,
   setSource,
@@ -179,6 +180,8 @@ const sync = (fetchImpl: typeof fetch) =>
     base: appDb,
     fetchImpl,
     assertSafe: allowAll,
+    // Above every listing here: batching has a test of its own.
+    writesPerRun: 1_000,
   });
 
 // What an ingest would have left: the synced documents indexed, so a sync that re-embeds shows up
@@ -848,6 +851,42 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(Date.now() - t2).toBeLessThan(2_000);
   });
 
+  test("a large first sync is written in batches, each run resuming where the last stopped", async () => {
+    await configure();
+    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
+      id: 301 + i,
+      title: `Artigo ${301 + i}`,
+      content: `MARCADOR-${301 + i}`,
+    }));
+    const run = (arts: Art[]) =>
+      syncKnowledgeSource(tenantId, kb, {
+        base: appDb,
+        fetchImpl: portal({ articles: () => arts }),
+        assertSafe: allowAll,
+        writesPerRun: 50,
+      });
+    expect(await run(many)).toMatchObject({ created: 50, more: true });
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      lastMessage: expect.stringContaining("more to do"),
+    });
+    expect(await run(many)).toMatchObject({
+      created: 50,
+      unchanged: 50,
+      more: true,
+    });
+    expect(await run(many)).toMatchObject({
+      created: 30,
+      unchanged: 100,
+      more: false,
+    });
+    expect(new Set((await synced()).map((d) => d.externalId)).size).toBe(130);
+    // Deletions share the budget and are carried over the same way.
+    const fewer = many.slice(0, 40);
+    expect(await run(fewer)).toMatchObject({ deleted: 50, more: true });
+    expect(await run(fewer)).toMatchObject({ deleted: 40, more: false });
+    expect(await synced()).toHaveLength(40);
+  });
+
   test("two syncs at once create each document once", async () => {
     await configure();
     const f = portal({ articles: () => BASIC });
@@ -1061,6 +1100,27 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     )) as { ok: boolean };
     expect(removed.ok).toBe(true);
     expect(await getSource(ctx(), kb, appDb)).toBeNull();
+  });
+});
+
+describe("when the next sync runs (issue #794)", () => {
+  const base = {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    unchanged: 0,
+    requeued: 0,
+    emptyListing: false,
+  };
+  test("a run stopped at its budget continues in seconds, any other at the interval", () => {
+    const now = 1_000_000;
+    expect(nextSyncAt({ ...base, more: true }, 10, now).getTime()).toBe(
+      now + 15_000,
+    );
+    expect(nextSyncAt({ ...base, more: false }, 10, now).getTime()).toBe(
+      now + 600_000,
+    );
+    expect(nextSyncAt(null, 10, now).getTime()).toBe(now + 600_000);
   });
 });
 

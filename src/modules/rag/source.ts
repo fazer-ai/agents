@@ -87,6 +87,12 @@ const FETCH_TIMEOUT_MS = 15_000;
 // waits on (reminders, follow-ups, every tenant's), so a slow portal of many pages must not be able
 // to hold it for pages × the per-page timeout.
 const LISTING_DEADLINE_MS = 60_000;
+// And the writes, for the same tick: a first sync of a portal with thousands of articles is thousands
+// of transactions. A run writes at most this many documents and says there is more; the handler then
+// comes back in seconds instead of an interval, and the reconcile, being by id, resumes where the last
+// run stopped without remembering anything.
+const WRITES_PER_RUN = 100;
+const CONTINUE_AFTER_MS = 15_000;
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 const LOCALE = /^[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,8})?$/;
 
@@ -550,6 +556,8 @@ export interface SyncResult {
   unchanged: number;
   // Unchanged documents whose lost ingest this run re-armed.
   requeued: number;
+  // The run stopped at its write budget with work left; the next one continues it.
+  more: boolean;
   // A listing with zero articles deletes nothing that round (see runSync).
   emptyListing: boolean;
 }
@@ -579,6 +587,7 @@ export async function syncKnowledgeSource(
     assertSafe?: AssertSafe;
     timeoutMs?: number;
     deadlineMs?: number;
+    writesPerRun?: number;
   } = {},
 ): Promise<SyncResult | null> {
   const base = deps.base ?? basePrisma;
@@ -637,11 +646,21 @@ export async function syncKnowledgeSource(
     deleted: 0,
     unchanged: 0,
     requeued: 0,
+    more: false,
     emptyListing: articles.length === 0,
   };
 
   try {
-    await reconcile(ctx, knowledgeBaseId, wanted, have, result, fence, base);
+    await reconcile(
+      ctx,
+      knowledgeBaseId,
+      wanted,
+      have,
+      result,
+      fence,
+      base,
+      deps.writesPerRun ?? WRITES_PER_RUN,
+    );
   } catch (err) {
     // Removed or replaced while this run was out: its listing no longer answers for the base. A
     // replacement armed a run of its own; a removal wants nothing more written.
@@ -668,7 +687,7 @@ export async function syncKnowledgeSource(
     result.emptyListing ? "warning" : "ok",
     result.emptyListing
       ? "the portal listed no published articles; nothing was deleted this round"
-      : `created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}${result.requeued ? ` (${result.requeued} re-queued for indexing)` : ""}`,
+      : `created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}${result.requeued ? ` (${result.requeued} re-queued for indexing)` : ""}${result.more ? "; more to do, continuing shortly" : ""}`,
   );
   return result;
 }
@@ -681,10 +700,22 @@ async function reconcile(
   result: SyncResult,
   fence: SourceFence,
   base: PrismaClient,
+  writesPerRun: number,
 ): Promise<void> {
+  let writes = 0;
+  // Asked before every write: false once the budget is spent, and then the run says there is more.
+  const budget = () => {
+    if (writes >= writesPerRun) {
+      result.more = true;
+      return false;
+    }
+    writes++;
+    return true;
+  };
   for (const [externalId, a] of wanted) {
     const row = have.get(externalId);
     if (!row) {
+      if (!budget()) return;
       try {
         await createDocument({
           ctx,
@@ -715,6 +746,7 @@ async function reconcile(
       // a PENDING document, and this branch would otherwise see the article unchanged forever: the
       // sync is the one caller that comes back, so it re-arms what was lost.
       if (row.ingestStranded) {
+        if (!budget()) return;
         await enqueueJob({
           tenantId: ctx.tenantId as bigint,
           kind: "RAG_INGEST",
@@ -730,6 +762,7 @@ async function reconcile(
       result.unchanged++;
       continue;
     }
+    if (!budget()) return;
     await ignoreGone(
       updateDocument(
         ctx,
@@ -754,6 +787,7 @@ async function reconcile(
   if (!result.emptyListing) {
     for (const [externalId, row] of have) {
       if (wanted.has(externalId)) continue;
+      if (!budget()) return;
       await ignoreGone(deleteDocument(ctx, row.id, base, { bySource: fence }));
       result.deleted++;
     }
@@ -826,11 +860,24 @@ async function sourceSyncHandler(
   );
   // Removed while the row waited: the sync ends with it.
   if (!source) return { outcome: "done" };
-  await syncKnowledgeSource(job.tenantId, knowledgeBaseId, { base });
+  const result = await syncKnowledgeSource(job.tenantId, knowledgeBaseId, {
+    base,
+  });
   return {
     outcome: "reschedule",
-    runAt: new Date(Date.now() + source.intervalMinutes * 60_000),
+    runAt: nextSyncAt(result, source.intervalMinutes, Date.now()),
   };
+}
+
+// A run that stopped at its write budget continues in seconds; any other comes back at the interval.
+export function nextSyncAt(
+  result: SyncResult | null,
+  intervalMinutes: number,
+  now: number,
+): Date {
+  return new Date(
+    now + (result?.more ? CONTINUE_AFTER_MS : intervalMinutes * 60_000),
+  );
 }
 
 let registered = false;

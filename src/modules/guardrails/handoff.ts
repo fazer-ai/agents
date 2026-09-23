@@ -20,7 +20,10 @@ import {
 // Returns whether the conversation left `pending`. The caller decides what that means for the text
 // it was about to send; this never throws.
 export async function applyGuardrailHandoff(params: {
-  client: Pick<ChatwootClient, "toggleStatus" | "assignToAgent" | "assignTeam">;
+  client: Pick<
+    ChatwootClient,
+    "toggleStatus" | "assignToAgent" | "assignTeam" | "sendPrivateNote"
+  >;
   conversationId: number;
   instanceId: bigint;
   handoff: HandoffConfig;
@@ -42,6 +45,14 @@ export async function applyGuardrailHandoff(params: {
       detail: { outcome: "guardrail_handoff_failed", direction },
       errorMessage: err instanceof Error ? err.message : String(err),
     });
+    // The screening's note already said the case was asked to go to the team; this is the half the
+    // person reading it needs next. Best-effort like the note it corrects.
+    await client
+      .sendPrivateNote(
+        conversationId,
+        "Guardrail: não consegui passar a conversa para a equipe. Ela continua com o agente, e nada foi enviado ao cliente.",
+      )
+      .catch(() => {});
     return false;
   }
   const target = pinnedHandoffTarget(params.handoff, params.instanceId);

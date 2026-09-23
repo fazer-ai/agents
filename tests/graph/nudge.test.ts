@@ -4469,6 +4469,115 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The transfer failing is not a license to close: the policy said this case needs a person. No
+  // line promising one goes out, and the note says the transfer did not land.
+  test("a follow-up whose hand-over fails sends nothing and is not resolved", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9705, null);
+        const s = statusClient({ failOn: "open" });
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9705`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "fora da política",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("silent");
+        expect(s.messages).toEqual([]);
+        expect(s.statuses).toEqual([[9705, "open-THREW"]]);
+        expect(s.labelSets).toEqual([["follow-up"]]);
+        expect(
+          s.notes.some(([, n]) =>
+            n.includes("não consegui passar a conversa para a equipe"),
+          ),
+        ).toBe(true);
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
+  test("a follow-up retired during its hand-over sends no line after it", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9706, null);
+        const s = statusClient();
+        await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9706`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"] },
+          base: appDb,
+          // Wanted until the transfer lands, and not after it.
+          stillWanted: async () => s.statuses.length === 0,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "fora da política",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(s.statuses).toEqual([[9706, "open"]]);
+        expect(s.messages).toEqual([]);
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
   // A proactive message answers no question, so answer_relevance has nothing to judge. `splitAnalyses`
   // already skips the relevance CALL when no customer message travels, but the POLICY would still be
   // listed in the other call's prompt, where a model asked to score relevance against silence has

@@ -2182,7 +2182,7 @@ export async function runAgentNudge(
     // Only while the bot still owns the conversation, which is the same answer every send here
     // waits for: a person already on it needs no transfer.
     if (decision.kind === "handed-off" && canMessagePost) {
-      handoffState.completed = await applyGuardrailHandoff({
+      const handed = await applyGuardrailHandoff({
         client,
         conversationId,
         instanceId,
@@ -2190,6 +2190,18 @@ export async function runAgentNudge(
         direction: "output",
         flow,
       });
+      handoffState.completed = handed;
+      // The transfer is one or two requests, and the send below is still ahead.
+      if (!(await stillWanted())) return refuse(standDown());
+      // A transfer that did not land sends no line promising a person, and the ladder's resolve
+      // stays off all the same: the policy said this case needs one.
+      if (!handed) {
+        await applyPostActions({
+          canMessage: canMessagePost,
+          allowResolve: false,
+        });
+        return "silent";
+      }
     }
     if (screened === null) {
       await applyPostActions({ canMessage: canMessagePost });

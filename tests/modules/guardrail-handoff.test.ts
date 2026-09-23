@@ -70,7 +70,7 @@ describe("what the gate hands the caller", () => {
       refused: "RESPOSTA-RECUSADA",
     });
     expect(out).toContain("HEAD");
-    expect(out).toContain("O caso foi encaminhado para a equipe.");
+    expect(out).toContain("O guardrail pediu que o caso fosse para a equipe.");
     expect(out).toContain("RESPOSTA-RECUSADA");
     const inp = handedOffNote("HEAD", {
       direction: "input",
@@ -133,6 +133,10 @@ function client(opts: { toggleThrows?: boolean; assignThrows?: boolean }) {
       assignTeam: async (c: number, id: number) => {
         if (opts.assignThrows) throw new Error("nope");
         calls.push(`team:${c}:${id}`);
+        return {};
+      },
+      sendPrivateNote: async (c: number, t: string) => {
+        calls.push(`note:${c}:${t.startsWith("Guardrail: não consegui")}`);
         return {};
       },
     } as unknown as ChatwootClient,
@@ -211,7 +215,8 @@ describe("the transfer", () => {
       flow: FLOW,
     });
     expect(ok).toBe(false);
-    expect(c.calls).toEqual([]);
+    // Nothing assigned; only the note telling the reader the transfer did not land.
+    expect(c.calls).toEqual(["note:9:true"]);
   });
 
   test("an assignment that fails does not undo the transfer", async () => {

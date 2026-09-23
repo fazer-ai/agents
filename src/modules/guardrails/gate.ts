@@ -139,7 +139,9 @@ export function chatwootNoteSink(
 export const REFUSED_REPLY_NOTE_MAX = 3000;
 export function handedOffNote(head: string, r: GuardrailReport): string {
   if (r.outcome !== "handed-off") return head;
-  const lines = [head, "O caso foi encaminhado para a equipe."];
+  // "Asked for", not "done": this is posted during the screening, before the caller's gates and
+  // the transfer itself. A transfer that fails writes its own note saying so.
+  const lines = [head, "O guardrail pediu que o caso fosse para a equipe."];
   if (r.direction === "output" && r.refused)
     lines.push(
       `Resposta reprovada (não enviada ao cliente):\n${clipText(r.refused, REFUSED_REPLY_NOTE_MAX)}`,

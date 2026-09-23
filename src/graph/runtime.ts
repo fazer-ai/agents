@@ -1288,15 +1288,28 @@ async function runTurnBody(
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });
-  // The transfer a `handoff` verdict asks for (issue #704), made by the caller at the point its own
-  // gates allow. Marked on the handoff state like a transfer the tool made, because everything
-  // downstream keys on that: a transferred conversation is not resolved, not handed over a second
-  // time for a silence, and not answered by the bot again.
+  // The transfer a `handoff` verdict asks for (issue #704). It moves the conversation, so it passes
+  // every gate a send passes, and all of them AFTER the judge, whose model call is exactly the
+  // stretch in which the earlier answers went stale: the turn not called off and not superseded, the
+  // bot still the owner (a person who took the case during the judge's call must not have it routed
+  // away), and the burst claimed. Then called off is asked once more, because the transfer is one or
+  // two requests of its own and the caller still has a sentence to send.
+  //
+  // The resolve falls with the VERDICT, not with the transfer: a case the policy said needs a person
+  // is not closed because the status change failed. A transfer that landed is marked on the handoff
+  // state like one the tool made, which is what keeps the silence hand-over (#659) from writing a
+  // second note on it.
   const handOverForGuardrail = async (
     direction: "input" | "output",
-  ): Promise<void> => {
+  ): Promise<"handed" | "failed" | RunAgentTurnOutcome> => {
     turnState.resolveRequested = false;
-    handoffState.completed = await applyGuardrailHandoff({
+    const blocked = await postBlocked();
+    if (blocked) return blocked;
+    // A read that fails lets the transfer go ahead: the policy asked for a person, and a person is
+    // what the transfer gives.
+    if (!(await botOwnsItNow().catch(() => true))) return "taken-over";
+    if (!(await claimBeforeSend())) return "superseded";
+    const handed = await applyGuardrailHandoff({
       client,
       conversationId,
       instanceId,
@@ -1304,6 +1317,9 @@ async function runTurnBody(
       direction,
       flow,
     });
+    handoffState.completed = handed;
+    if (await writeCalledOff()) return standDown();
+    return handed ? "handed" : "failed";
   };
 
   // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the
@@ -2069,11 +2085,10 @@ async function runTurnBody(
       // superseded or stale turn must not give away a conversation a newer turn is about to answer.
       // The transfer comes first and the sentence after it, the order `handoff_to_human` keeps.
       if (inGuard.kind === "handed-off") {
-        const blocked = await postBlocked();
-        if (blocked) return blocked;
-        if (!(await claimBeforeSend())) return "superseded";
-        await handOverForGuardrail("input");
-        if (inReply === null) return "blocked";
+        const handed = await handOverForGuardrail("input");
+        if (handed !== "handed" && handed !== "failed") return handed;
+        // The line says a person will continue, so it goes out only when one will.
+        if (handed === "failed" || inReply === null) return "blocked";
         await client.sendMessage(conversationId, inReply);
         deliveredBalloons = 1;
         return "posted";
@@ -2547,8 +2562,10 @@ async function runTurnBody(
       // the operator's "say nothing", so the reply is blanked and the empty branch below runs with
       // the transfer already marked, which is what keeps it from resolving or handing over twice.
       if (outGuard.kind === "handed-off") {
-        await handOverForGuardrail("output");
-        reply = replacement ?? "";
+        const handed = await handOverForGuardrail("output");
+        if (handed !== "handed" && handed !== "failed") return refuse(handed);
+        // The line says a person will continue, so it goes out only when one will.
+        reply = handed === "handed" ? (replacement ?? "") : "";
       } else {
         if (replacement === null) return refuse("blocked");
         reply = replacement;

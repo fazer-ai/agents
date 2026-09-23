@@ -49,6 +49,7 @@ import {
 import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
+import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -7759,7 +7760,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         await seedConv(7046);
         const log = newLog();
         const saver = new MemorySaver();
-        const outcome = await runAgentTurn({
+        const turn = runAgentTurn({
           tenantId: gTenantId,
           instanceId: gInstanceId,
           agentBotId: G_BOT,
@@ -7779,8 +7780,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             checkpointer: saver,
           },
         });
-        // Still owed: the transfer did not land, so recovery may run the message again.
-        expect(outcome).toBe("empty");
+        // Still owed: every word a turn returns settles the message (`empty` advances the watermark
+        // just like `blocked`), so a transfer that did not land throws, and the flush retries it.
+        await expect(turn).rejects.toBeInstanceOf(GuardrailHandoffFailedError);
         expect(log.sent).toEqual([]);
         // And the refused reply is not left in the thread, where the next turn would read it as
         // something the customer was told.
@@ -7879,7 +7881,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
         await seedConv(7049);
         const log = newLog();
-        const outcome = await runAgentTurn({
+        const turn = runAgentTurn({
           tenantId: gTenantId,
           instanceId: gInstanceId,
           agentBotId: G_BOT,
@@ -7899,8 +7901,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             checkpointer: new MemorySaver(),
           },
         });
-        // Still owed: "blocked" would settle it as handled, and recovery would drop it.
-        expect(outcome).toBe("empty");
+        // Still owed, as on the output side: thrown, not settled.
+        await expect(turn).rejects.toBeInstanceOf(GuardrailHandoffFailedError);
         expect(log.sent).toEqual([]);
       });
 

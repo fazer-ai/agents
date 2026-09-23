@@ -64,7 +64,10 @@ import {
   guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
-import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
+import {
+  applyGuardrailHandoff,
+  GuardrailHandoffFailedError,
+} from "@/modules/guardrails/handoff";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { signatureFor } from "@/modules/signature/service";
@@ -1622,6 +1625,10 @@ async function runTurnBody(
   // in-flight flag the rollback refuses on has been released. The messages travel rather than a
   // boolean because the rollback runs outside the scope that has them.
   let silenceProduced: BaseMessage[] | null = null;
+  // A guardrail hand-over that did not land (issue #704). The turn ends through its ordinary refusal,
+  // rollback included, and the error is thrown on the way out, after every release below: every
+  // outcome word settles the message, and a throw is what keeps it owed.
+  let handoffFailed: "input" | "output" | null = null;
   // Set when the hand-back note was OWED and could not be appended durably, because an older invoke
   // was reading the channel. It then rides in this turn's own invoke input instead (issue #457,
   // review round 6): deferring the durable write is right, but deferring the CORRECTION would leave
@@ -2103,9 +2110,12 @@ async function runTurnBody(
         const handed = await handOverForGuardrail("input");
         if (handed !== "handed" && handed !== "failed") return handed;
         // The line says a person will continue, so it goes out only when one will. A transfer that
-        // failed answered nobody: "empty" keeps the message owed (recovery and a later flush still
-        // see it), where "blocked" would settle it as handled, the same split the output side makes.
-        if (handed === "failed") return "empty";
+        // failed answered nobody, and every word a turn returns settles the message, so it throws:
+        // the flush retries it and the direct path leaves it for recovery.
+        if (handed === "failed") {
+          handoffFailed = "input";
+          return "empty";
+        }
         if (inReply === null) return "blocked";
         if (!(await claimBeforeSend())) return "superseded";
         await client.sendMessage(conversationId, inReply);
@@ -2588,10 +2598,13 @@ async function runTurnBody(
         // dry (`empty`), which recovery would treat as still owed and run again.
         if (handed === "handed" && replacement === null)
           return refuse("blocked");
-        // The line says a person will continue, so it goes out only when one will. A failed
-        // transfer ends `empty`, still owed and retried, and through `refuse`: the refused reply is
-        // already in the checkpoint, and left there the next turn would read it as said.
-        if (handed === "failed") return refuse("empty");
+        // The line says a person will continue, so it goes out only when one will. A failed transfer
+        // throws, like the input side, so the message stays owed; the refused reply is rolled out of
+        // the checkpoint first, since left there the retry would read it as said.
+        if (handed === "failed") {
+          handoffFailed = "output";
+          return refuse("empty");
+        }
         reply = replacement ?? "";
       } else {
         if (replacement === null) return refuse("blocked");
@@ -3018,6 +3031,9 @@ async function runTurnBody(
       });
     }
     status.finished(deliveredBalloons);
+    // Last, so nothing above is skipped by it.
+    // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose
+    if (handoffFailed) throw new GuardrailHandoffFailedError(handoffFailed);
   }
 }
 

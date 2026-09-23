@@ -17,6 +17,18 @@ import {
 // or team is assigned, and every other mode leaves it to Chatwoot's routing (there is no model here
 // to pick a name).
 //
+// A transfer the policy asked for that did not land, thrown by a REACTIVE turn so the message stays
+// owed. Every word a turn can return settles something: `blocked` settles the message, and `empty`
+// advances the watermark and dispenses it just the same. A throw is what the flush retries (with its
+// attempts and its dead-letter announcement) and what the direct path leaves unanswered for
+// recovery. The failure note has already been posted, so the operator sees it on the first attempt.
+export class GuardrailHandoffFailedError extends Error {
+  constructor(direction: "input" | "output") {
+    super(`guardrail hand-over (${direction}) did not reach Chatwoot`);
+    this.name = "GuardrailHandoffFailedError";
+  }
+}
+
 // Returns whether the conversation left `pending`. The caller decides what that means for the text
 // it was about to send; this never throws.
 export async function applyGuardrailHandoff(params: {

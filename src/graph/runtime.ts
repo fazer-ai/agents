@@ -1297,8 +1297,8 @@ async function runTurnBody(
   // for the gates that say this turn may still act, and all of them AFTER the judge, whose model call
   // is exactly the stretch in which the earlier answers went stale: the turn not called off and not
   // superseded, and the bot still the owner (a person who took the case during the judge's call must
-  // not have it routed away). Called off is asked again inside the transfer, before the assignment,
-  // and once more after it, because the caller still has a sentence to send.
+  // not have it routed away). Called off is asked again after the ownership read, inside the transfer
+  // before the assignment, and once more after it, because the caller still has a sentence to send.
   //
   // NOT the reply claim. That claim is permanent and means "this burst was answered" (see
   // docs/debounce.md), and a transfer that fails, or one with nothing to say, answered nobody: a
@@ -1319,6 +1319,10 @@ async function runTurnBody(
     // A read that fails lets the transfer go ahead: the policy asked for a person, and a person is
     // what the transfer gives.
     if (!(await ownershipNow().catch(() => true))) return "taken-over";
+    // Asked again after that read, because the status change below cannot be undone by any later
+    // check: a /reset or a switch-off landing while the read was in flight would otherwise still
+    // open the conversation.
+    if (await writeCalledOff()) return standDown();
     const handed = await applyGuardrailHandoff({
       client,
       conversationId,

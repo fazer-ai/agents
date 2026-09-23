@@ -7941,6 +7941,104 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(log.sent).toEqual([]);
       });
 
+      test("a turn withdrawn while the ownership read is in flight opens nothing", async () => {
+        // The agent is switched off INSIDE the read that asks whether the bot still owns the case:
+        // every check before it saw the turn as wanted, so only a check after that read can stop
+        // the status change, which nothing later can undo.
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7051);
+        const log = newLog();
+        let switchedOff = false;
+        let ownershipReads = 0;
+        const isOwnershipRead = (args: unknown) => {
+          const sel = (args as { select?: Record<string, unknown> })?.select;
+          return Boolean(sel?.assigneeType && sel.assigneeId && sel.status);
+        };
+        // biome-ignore lint/suspicious/noExplicitAny: Prisma's extension surface is not expressible here
+        const real = appDb as any;
+        const base = new Proxy(real, {
+          get(target, prop) {
+            if (prop === "$extends") {
+              // biome-ignore lint/suspicious/noExplicitAny: same
+              return (...args: any[]) => {
+                const extended = target.$extends(...args);
+                return new Proxy(extended, {
+                  get(t, p) {
+                    if (p !== "$transaction") {
+                      const v = Reflect.get(t, p);
+                      return typeof v === "function" ? v.bind(t) : v;
+                    }
+                    // biome-ignore lint/suspicious/noExplicitAny: same
+                    return (fn: any, opts: any) =>
+                      // biome-ignore lint/suspicious/noExplicitAny: same
+                      t.$transaction((tx: any) => {
+                        const conversation = new Proxy(tx.conversation, {
+                          get(c, m) {
+                            const v = Reflect.get(c, m);
+                            if (m !== "findUnique") {
+                              return typeof v === "function" ? v.bind(c) : v;
+                            }
+                            return async (args: unknown) => {
+                              const row = await v.call(c, args);
+                              // The FIRST such read is the turn's own, before the judge ran; the
+                              // second is the one the transfer makes after it.
+                              if (isOwnershipRead(args)) ownershipReads += 1;
+                              if (!switchedOff && ownershipReads === 2) {
+                                switchedOff = true;
+                                await suDb.agent.update({
+                                  where: { id: gAgentId },
+                                  data: { enabled: false },
+                                });
+                              }
+                              return row;
+                            };
+                          },
+                        });
+                        return fn(
+                          new Proxy(tx, {
+                            get(x, q) {
+                              if (q === "conversation") return conversation;
+                              const v = Reflect.get(x, q);
+                              return typeof v === "function" ? v.bind(x) : v;
+                            },
+                          }),
+                        );
+                      }, opts);
+                  },
+                });
+              };
+            }
+            const v = Reflect.get(target, prop);
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        }) as PrismaClient;
+        try {
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: 7051, inboxId: G_INBOX }),
+            base,
+            deps: {
+              makeModel: branchingModel(TRIP),
+              makeClient: handoffStub(log),
+              checkpointer: new MemorySaver(),
+            },
+          });
+        } finally {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: { enabled: true },
+          });
+        }
+        expect(switchedOff).toBe(true);
+        expect(log.toggles).toEqual([]);
+        expect(log.sent).toEqual([]);
+      });
+
       test("a clean verdict changes nothing", async () => {
         await configure("output", {
           action: "handoff",

@@ -170,6 +170,57 @@ describe("planSpokenReply", () => {
       text: "Use https://x.com.br/contato?para=sac@x.com.br e respondemos em até 2 dias",
       written: ["https://x.com.br/contato?para=sac@x.com.br"],
     },
+    // Review round 3: a match that starts or ends inside a token writes someone else's destination.
+    {
+      name: "italics around a URL do not hide it",
+      text: "Abra _https://x.com.br/pedidos_ e confirme o pedido na tela",
+      written: ["https://x.com.br/pedidos"],
+    },
+    {
+      name: "double underscores around a URL do not hide it",
+      text: "Abra __https://x.com.br/pedidos__ e confirme o pedido na tela",
+      written: ["https://x.com.br/pedidos"],
+    },
+    {
+      name: "brackets in a URL's query belong to it",
+      text: "Veja https://x.com.br/busca?ids[]=1&ids[]=2 para os dois pedidos",
+      written: ["https://x.com.br/busca?ids[]=1&ids[]=2"],
+    },
+    {
+      name: "an unbalanced closing bracket is the sentence's",
+      text: "Confira o site [https://x.com.br/troca] antes de comprar",
+      written: ["https://x.com.br/troca"],
+    },
+    {
+      name: "an apostrophe in an address stays in it",
+      text: "Escreva para d'angelo@x.com.br e respondemos em até 2 dias",
+      written: ["d'angelo@x.com.br"],
+    },
+    {
+      name: "a punycode top-level domain stays whole",
+      text: "Escreva para equipe@exemplo.xn--p1ai e respondemos em até 2 dias",
+      written: ["equipe@exemplo.xn--p1ai"],
+    },
+    {
+      name: "an accented local part stays whole",
+      text: "Escreva para joão@x.com.br e respondemos em até 2 dias",
+      written: ["joão@x.com.br"],
+    },
+    {
+      name: "an accented domain stays whole",
+      text: "Escreva para sac@ingressos.bahía.com.br e respondemos em até 2 dias",
+      written: ["sac@ingressos.bahía.com.br"],
+    },
+    {
+      name: "a domain label that starts accented stays whole",
+      text: "Escreva para sac@ágil.com.br e respondemos em até 2 dias",
+      written: ["sac@ágil.com.br"],
+    },
+    {
+      name: "quotes around an address are the sentence's",
+      text: "Escreva para 'sac@x.com.br' e respondemos em até 2 dias",
+      written: ["sac@x.com.br"],
+    },
   ];
 
   for (const row of exact) {
@@ -224,6 +275,24 @@ describe("planSpokenReply", () => {
       written: ["https://x.com.br/contato", "sac@x.com.br"],
       textOnly: false,
     });
+  });
+
+  test("an address the pattern cannot hold whole is left alone, not cut", () => {
+    // `a!b@` is a valid local part the class does not cover; `b@x.com.br` would write a stranger's.
+    // A domain whose last label is not a name (`x.com.123`) is not cut back to `x.com` either.
+    for (const text of [
+      "Escreva para a!b@x.com.br e respondemos em 2 dias",
+      "Escreva para sac@x.com.123 e respondemos em 2 dias",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([]);
+    }
+  });
+
+  test("a URL glued to a word is not cut out of it", () => {
+    expect(
+      planSpokenReply("O campo abchttps://x.com.br/a veio assim do sistema")
+        .written,
+    ).toEqual([]);
   });
 
   test("a decimal, a time and a file name are not URLs", () => {

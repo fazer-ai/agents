@@ -27,9 +27,13 @@ const MARKDOWN_LINK = new RegExp(
   String.raw`\[([^\]\n]+)\]\(\s*(mailto:)?(${TARGET})\s*\)`,
   "g",
 );
-const URL = /\b(?:https?:\/\/|www\.)[^\s<>[\]`]+/gi;
+// A match never starts or ends inside a token: a written item that is only part of the destination
+// sends the customer somewhere else. Formatting (`_`, `*`) may touch an item and is trimmed below.
+const URL = /(?<![\p{L}\p{N}\p{M}])(?:https?:\/\/|www\.)[^\s<>`]+/giu;
+// Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. What
+// an address can hold and the class cannot (`!#$&/=?^{|}`) stops the match instead of cutting it.
 const EMAIL =
-  /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+  /(?<![!#$&/=?^{|}\p{L}\p{N}\p{M}])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
 const TRAILING_PUNCTUATION = /[.,;:!?'"»”]$/;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
 // the item and never enters the written copy.
@@ -92,7 +96,7 @@ function itemSpans(text: string): Span[] {
 }
 
 // A bare URL or address, cut down to the destination. What the greedy match took from around it is
-// the sentence's: trailing punctuation, a closing parenthesis the destination did not open, and the
+// the sentence's: trailing punctuation, a closing bracket the destination did not open, and the
 // halves of a wrapper, recognised by the twin on the other side (an address's own `_` has none).
 function item(text: string, start: number, match: string): Span {
   let s = start;
@@ -100,15 +104,22 @@ function item(text: string, start: number, match: string): Span {
   for (;;) {
     const first = text[s] ?? "";
     const last = text[e - 1] ?? "";
-    const opens = (text.slice(s, e).match(/\(/g) ?? []).length;
-    const closes = (text.slice(s, e).match(/\)/g) ?? []).length;
-    if (TRAILING_PUNCTUATION.test(last) || (last === ")" && opens < closes))
+    if (TRAILING_PUNCTUATION.test(last) || unbalanced(text.slice(s, e), last))
       e--;
     else if (isWrapper(last) && last === text[s - 1]) e--;
     else if (isWrapper(first) && first === text[e]) s++;
     else break;
   }
   return widen(text, s, e, [text.slice(s, e)], "");
+}
+
+// A closing bracket the item did not open (`(https://x.com.br)`, `[https://x.com.br]`) is the
+// sentence's; a balanced one is the destination's (`C_(language)`, `?ids[]=1`).
+function unbalanced(item: string, last: string): boolean {
+  const open = last === ")" ? "(" : last === "]" ? "[" : "";
+  if (!open) return false;
+  const count = (c: string) => item.split(c).length - 1;
+  return count(open) < count(last);
 }
 
 // The span, widened over a formatting run that wraps it symmetrically, and over a markdown

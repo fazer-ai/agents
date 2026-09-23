@@ -311,13 +311,17 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
 // payload, which drops the retry count the backoff was keeping. For a clock that re-pushes the same
 // episode every minute that turned each of those deferrals into a run every minute. A row that is
 // already due, finished, or absent is armed as before. The caller says which deferred rows are its own
-// work (`leaveLaterRun` reads the row's payload): a deferral left by an EARLIER episode is not, and the
+// work (`leaveLaterRun` reads the row's payload, and its `lastError`, which is what tells a failure
+// backoff from a row that merely stood down): a deferral left by an EARLIER episode is not, and the
 // arm must replace it instead of waiting days for a step that no longer applies. Read first, then the
 // UPDATE is pinned to the `run_at` that was read, so a handler rescheduling in between makes it match
 // nothing, and the INSERT skips.
 export async function enqueueJobUnlessClaimed(
   params: EnqueueParams & {
-    leaveLaterRun?: (payload: Prisma.JsonValue) => boolean | Promise<boolean>;
+    leaveLaterRun?: (row: {
+      payload: Prisma.JsonValue;
+      lastError: string | null;
+    }) => boolean | Promise<boolean>;
   },
 ): Promise<boolean> {
   const base = params.base ?? basePrisma;
@@ -331,10 +335,10 @@ export async function enqueueJobUnlessClaimed(
     const later = params.leaveLaterRun
       ? await db.schedulerJob.findFirst({
           where: { ...key, status: "PENDING", runAt: { gt: new Date() } },
-          select: { runAt: true, payload: true },
+          select: { runAt: true, payload: true, lastError: true },
         })
       : null;
-    if (later && (await params.leaveLaterRun?.(later.payload))) return false;
+    if (later && (await params.leaveLaterRun?.(later))) return false;
     const updated = await db.schedulerJob.updateMany({
       where: {
         ...key,

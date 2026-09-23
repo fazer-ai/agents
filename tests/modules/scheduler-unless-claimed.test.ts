@@ -181,7 +181,8 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     expect(
       await enqueueJobUnlessClaimed({
         ...arm(new Date()),
-        leaveLaterRun: (p) => (p as { v?: string }).v === "handler",
+        leaveLaterRun: ({ payload }) =>
+          (payload as { v?: string }).v === "handler",
       }),
     ).toBe(false);
     const kept = await row();
@@ -195,7 +196,8 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     expect(
       await enqueueJobUnlessClaimed({
         ...arm(new Date()),
-        leaveLaterRun: (p) => (p as { v?: string }).v === "handler",
+        leaveLaterRun: ({ payload }) =>
+          (payload as { v?: string }).v === "handler",
       }),
     ).toBe(true);
     const replaced = await row();
@@ -214,7 +216,8 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
       expect(
         await enqueueJobUnlessClaimed({
           ...arm(new Date()),
-          leaveLaterRun: (p) => (p as { v?: string }).v === "handler",
+          leaveLaterRun: ({ payload }) =>
+            (payload as { v?: string }).v === "handler",
         }),
       ).toBe(true);
       const r = await row();

@@ -366,9 +366,9 @@ async function sweepHandler(
       // follow-up by that step's cadence. And only while the configuration it was computed from still
       // holds: a cadence shortened, or a schedule opened, after the deferral must not wait out the
       // old instant, so a row marked with an older version is re-armed and the handler recomputes.
-      leaveLaterRun: (payload) =>
+      leaveLaterRun: (row) =>
         isDeferralOfThisEpisode(
-          payload,
+          row,
           t.episode,
           followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
         ),
@@ -404,7 +404,10 @@ const APPOINTMENT_HOLD = "appointment";
 // that says nothing (written before deferrals were marked, review round 5) is re-armed once, and the
 // handler recomputes it under the current configuration and marks it.
 function isDeferralOfThisEpisode(
-  payload: Prisma.JsonValue,
+  {
+    payload,
+    lastError,
+  }: { payload: Prisma.JsonValue; lastError: string | null },
   episode: string,
   configVersion: string,
 ): boolean {
@@ -420,6 +423,11 @@ function isDeferralOfThisEpisode(
   // the old deferral, and the new episode must not inherit its backoff or its retry count.
   if (deferredEpisode !== episode) return false;
   if (stepIndex !== undefined && stepIndex !== 0) return false;
+  // The scheduler's own retry backoff: the handler threw, and `failJob` re-pended the row with the
+  // error and a delay, leaving the payload as it was. `lastError` is what the scheduler itself reads
+  // to tell a backoff from a stand-down (claimWhere), and pulling it back spent the whole budget one
+  // attempt per pass instead of across the backoff (found by the acceptance run).
+  if (lastError !== null) return true;
   return deferredUnder === BACKOFF_DEFERRAL || deferredUnder === configVersion;
 }
 

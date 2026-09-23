@@ -83,6 +83,7 @@ const CONV_DEAD_LATE = 79_615;
 const CONV_DEAD_MARKED = 79_616;
 const CONV_RETIRED = 79_617;
 const CONV_HELD = 79_618;
+const CONV_FAILED = 79_619;
 const CONV_HOURS = 79_612;
 
 let tenantId = 0n;
@@ -522,6 +523,39 @@ describe.skipIf(!dbUp)(
       expect((await rowOf(CONV_HELD))?.runAt.getTime()).toBeLessThanOrEqual(
         Date.now(),
       );
+    });
+
+    // Found by the acceptance run: the handler threw, and the scheduler re-pended the row with the
+    // error and its own backoff, leaving the payload unmarked. That backoff is kept like the handler's
+    // own, or a failing model spends the whole budget one attempt per pass.
+    test("the scheduler's failure backoff is kept, with its error and its budget", async () => {
+      await seedIdle(CONV_FAILED, INBOX_ON);
+      const later = new Date(Date.now() + 4 * 60_000);
+      const payload = {
+        threadId: threadOf(CONV_FAILED),
+        episode: await episodeOf(CONV_FAILED),
+      };
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_FAILED),
+        runAt: later,
+        payload,
+        rearm: "same-work",
+        base: appDb,
+      });
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET attempts = 2, last_error = 'model down'
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_FAILED)}`;
+      await runSweep();
+      const r = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, kind: "FOLLOWUP", dedupeKey: keyOf(CONV_FAILED) },
+        select: { runAt: true, attempts: true, lastError: true, payload: true },
+      });
+      expect(r.runAt.getTime()).toBe(later.getTime());
+      expect(r.attempts).toBe(2);
+      expect(r.lastError).toBe("model down");
+      expect(r.payload).toEqual(payload);
     });
 
     // Found by the verifier: a model that keeps failing sends the row DEAD, which stamps nothing, and

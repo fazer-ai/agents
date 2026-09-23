@@ -547,6 +547,27 @@ describe("planSpokenReply", () => {
     }
   });
 
+  // Review round 16.
+  test("addresses inside a longer formatted phrase are extracted", () => {
+    for (const text of [
+      "Envie para **sac@x.com.br ou vendas@x.com.br** e respondemos em 2 dias",
+      "Envie para _sac@x.com.br ou vendas@x.com.br_ e respondemos em 2 dias",
+      "Envie para 'sac@x.com.br ou vendas@x.com.br' e respondemos em 2 dias",
+    ]) {
+      const plan = planSpokenReply(text);
+      expect(plan.written).toEqual(["sac@x.com.br", "vendas@x.com.br"]);
+      expect(plan.speech).not.toContain("@");
+    }
+  });
+
+  test("a marker closed only on a later line does not pair", () => {
+    expect(
+      planSpokenReply(
+        "Escreva para *sales@x.com.br e respondemos\nem 2 dias *mesmo*",
+      ).written,
+    ).toEqual([]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

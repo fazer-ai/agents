@@ -123,14 +123,11 @@ function itemSpans(text: string): Span[] {
   for (const m of bare.matchAll(URL))
     candidates.push(item(bare, m.index, m[0]));
   for (const m of bare.matchAll(EMAIL)) {
-    // `*sales@`, `~sales@` and `'sales@` are valid addresses. A marker left unpaired after
-    // widening, or a quote not closed right after the address, may be the address's own first
-    // character, so the address is left alone rather than cut.
+    // `*sales@`, `~sales@` and `'sales@` are valid addresses. A marker or quote before the
+    // address is formatting when the same run closes later on the line (`**sac@… ou vendas@…**`);
+    // one that never closes may be the address's own first character, so it is left alone.
     const c = item(bare, m.index, m[0]);
-    const before = bare[c.start - 1] ?? "";
-    const quoted = before === "'" || before === '"';
-    if (isWrapper(before) || (quoted && bare[c.end] !== before)) continue;
-    candidates.push(c);
+    if (!unclosedOpener(bare, c.start, c.end)) candidates.push(c);
   }
 
   // Overlaps resolve to the longest match: the whole address over the `www.` host inside it, the
@@ -185,7 +182,7 @@ const ENTITIES: Record<string, string> = {
 
 // A bare URL or address, cut down to the destination. What the greedy match took from around it is
 // the sentence's: trailing punctuation or formatting, a closing bracket the destination did not
-// open, and an opening `_` whose twin closes the address (an address's own `_` has none).
+// open, and an opening `_` whose twin closes later on the line (an address's own `_` has none).
 function item(text: string, start: number, match: string): Span {
   let s = start;
   let e = start + match.length;
@@ -194,10 +191,24 @@ function item(text: string, start: number, match: string): Span {
     const last = text[e - 1] ?? "";
     if (TRAILING_PUNCTUATION.test(last) || unbalanced(text.slice(s, e), last))
       e--;
-    else if (isWrapper(first) && first === text[e]) s++;
+    else if (isWrapper(first) && closesOnLine(text, first, e)) s++;
     else break;
   }
   return widen(text, s, e, [text.slice(s, e)], "");
+}
+
+function unclosedOpener(text: string, start: number, end: number): boolean {
+  const mark = text[start - 1] ?? "";
+  if (!isWrapper(mark) && mark !== "'" && mark !== '"') return false;
+  return !closesOnLine(text, mark, end);
+}
+
+// Whether `run` appears again after `end`, before the line breaks: the far half of a formatting
+// run or a quote that wraps a phrase, not only the item.
+function closesOnLine(text: string, run: string, end: number): boolean {
+  const close = text.indexOf(run, end);
+  const line = text.indexOf("\n", end);
+  return close !== -1 && (line === -1 || close < line);
 }
 
 // A closing bracket the item did not open (`(https://x.com.br)`, `[https://x.com.br]`) is the

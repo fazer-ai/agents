@@ -1,4 +1,5 @@
 import logger from "@/api/lib/logger";
+import type { GateCloseDetail } from "@/modules/chatwoot/gate-close";
 
 // A PERSON TAKING THE CONVERSATION OVER MID-TURN (issue #717). The turn's own gates ask ownership
 // BEFORE the invoke (#711) and AFTER it (the post-generation recheck that suppresses the send), and
@@ -23,13 +24,19 @@ import logger from "@/api/lib/logger";
 //
 // The cost is one local Postgres read per tool-calling hop, and only on a turn that calls tools.
 //
-// It also REMEMBERS that it was the owner that refused, because the caller reads the refusal off the
-// result (`turnWasCalledOff`) and cannot ask the fence again to learn why: a turn withdrawn by
-// `/reset` is "stale", one that a person took over is "taken-over", and the two settle the customer's
-// message differently.
+// It also REMEMBERS the verdict that refused, from the read that refused, because the caller reads
+// the refusal off the result (`turnWasCalledOff`) and cannot ask the fence again to learn why: a turn
+// withdrawn by `/reset` is "stale", one that a person took over is "taken-over", and the two settle
+// the customer's message differently. A second read would answer about another moment, and could
+// fail or find the conversation back with the bot (review round 2).
+export type OwnershipVerdict =
+  | { ours: true }
+  | { ours: false; closed: GateCloseDetail | null };
+
 export interface OwnershipFence {
   ask: () => Promise<boolean>;
-  lostOwnership: () => boolean;
+  // The refusing read's verdict, or null when the owner never refused.
+  lost: () => { closed: GateCloseDetail | null } | null;
 }
 
 export function withOwnershipFence(
@@ -37,31 +44,34 @@ export function withOwnershipFence(
   opts: {
     ownedAtStart: boolean;
     ownerChangedByThisTurn: () => boolean;
-    ownsNow: () => Promise<boolean>;
+    ownsNow: () => Promise<OwnershipVerdict>;
     conversationId: number;
   },
 ): OwnershipFence {
-  let lost = false;
+  let lost: { closed: GateCloseDetail | null } | null = null;
   return {
-    lostOwnership: () => lost,
+    lost: () => lost,
     ask: async () => {
       if (!(await fence())) return false;
       if (!opts.ownedAtStart || opts.ownerChangedByThisTurn()) return true;
-      const ours = await opts.ownsNow().catch((err: unknown) => {
+      const verdict = await opts.ownsNow().catch((err: unknown) => {
         logger.warn(
           { err, conv: opts.conversationId },
           "turn: ownership at the tool boundary could not be read; letting the tool calls run",
         );
-        return true;
+        return { ours: true } as const;
       });
-      if (!ours) {
-        lost = true;
-        logger.info(
-          "turn: conversation %s changed hands mid-turn, so its remaining tool calls are refused",
-          String(opts.conversationId),
-        );
-      }
-      return ours;
+      if (verdict.ours) return true;
+      // ASKED AGAIN AFTER THE READ: calls of one batch run concurrently, so a label's own ask can
+      // start before the handoff beside it completed and read the `open` that handoff wrote. That is
+      // still the turn's own transfer (review round 2).
+      if (opts.ownerChangedByThisTurn()) return true;
+      lost ??= { closed: verdict.closed };
+      logger.info(
+        "turn: conversation %s changed hands mid-turn, so its remaining tool calls are refused",
+        String(opts.conversationId),
+      );
+      return false;
     },
   };
 }

@@ -1113,8 +1113,16 @@ async function runTurnBody(
       // Unreadable is not ours: the fence then never asks, so a failing read lets the tools run.
       ownedAtStart: await ownershipNow().catch(() => false),
       ownerChangedByThisTurn: () =>
-        handoffState.completed || handoffState.closedByThisTurn === true,
-      ownsNow: ownershipNow,
+        handoffState.ownerChangedByThisTurn === true,
+      // The shared reader, which carries the closed gate's detail with its "no".
+      ownsNow: () =>
+        conversationOwnershipNow({
+          tenantId,
+          instanceId,
+          conversationId,
+          ourAgentBotId: loaded.agentBotId ?? agentBotId,
+          base,
+        }),
       conversationId,
     },
   );
@@ -2422,19 +2430,14 @@ async function runTurnBody(
     // recheck's outcome reached one hop earlier, so it gets that outcome and that line, not the
     // withdrawal's.
     if (turnWasCalledOff(result.messages)) {
-      if (ownershipFence.lostOwnership()) {
-        const posse = await conversationOwnershipNow({
-          tenantId,
-          instanceId,
-          conversationId,
-          ourAgentBotId: loaded.agentBotId ?? agentBotId,
-          base,
-        }).catch(() => null);
-        if (posse && !posse.ours && posse.closed !== null) {
+      const lost = ownershipFence.lost();
+      if (lost) {
+        // The detail of the read that refused, not of a second one.
+        if (lost.closed !== null) {
           emitFlowEvent(flow, {
             stage: "handoff",
             status: "ok",
-            detail: posse.closed,
+            detail: lost.closed,
           });
         }
         return refuse("taken-over");

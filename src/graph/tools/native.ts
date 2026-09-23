@@ -150,10 +150,28 @@ export interface HandoffTurnState {
   // Optional because the turn-state shape is spelled out by hand at five call sites that build the
   // toolset, and absent is exactly what it means: nobody declared anything.
   declinedToSpeak?: boolean;
-  // THIS turn closed the conversation itself, through the IMMEDIATE `resolve_conversation` (the
-  // nudge's; the reactive turn defers its close past the graph). The tool boundary's ownership
-  // question reads it: a status the turn wrote is not a person taking over (issue #717).
-  closedByThisTurn?: boolean;
+  // THIS turn changed the conversation's owner itself: its transfer, or the nudge's IMMEDIATE close
+  // (the reactive turn defers its close past the graph). Set BEFORE the call to Chatwoot and cleared
+  // if the call throws, because the calls of one batch run concurrently and a label's ask can read the
+  // mirror the status webhook already moved while the transfer's own call has not returned. The tool
+  // boundary's ownership question reads it: a status the turn wrote is not a person taking over
+  // (issue #717, review rounds 1 and 2).
+  ownerChangedByThisTurn?: boolean;
+}
+
+// The status change a tool of this turn makes on purpose, marked from before the call so the tool
+// boundary's ownership question does not read it as somebody else's.
+async function ownStatusChange(
+  ctx: { handoffState?: HandoffTurnState },
+  write: () => Promise<unknown>,
+): Promise<void> {
+  if (ctx.handoffState) ctx.handoffState.ownerChangedByThisTurn = true;
+  try {
+    await write();
+  } catch (e) {
+    if (ctx.handoffState) ctx.handoffState.ownerChangedByThisTurn = false;
+    throw e;
+  }
 }
 
 // Whether the handoff supplies this turn's customer-facing text, which is the ONE question both
@@ -521,7 +539,9 @@ function handoffTool(ctx: ToolCtx) {
       }
       // Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
       // bot and the human queue picks it up.
-      await ctx.client.toggleStatus(ctx.conversationId, "open");
+      await ownStatusChange(ctx, () =>
+        ctx.client.toggleStatus(ctx.conversationId, "open"),
+      );
       // Only here: everything above can throw, and a handoff that did not reach this line has not
       // happened. The optional assignment below is best-effort by design — the conversation is
       // already out of `pending`, so a routing miss does not put it back.
@@ -1575,8 +1595,9 @@ function resolveConversationTool(ctx: ToolCtx) {
         ctx.onNoEffect?.("resolve_conversation");
         return "Did not resolve the conversation (the run was called off while this read was in flight).";
       }
-      await ctx.client.toggleStatus(ctx.conversationId, "resolved");
-      if (ctx.handoffState) ctx.handoffState.closedByThisTurn = true;
+      await ownStatusChange(ctx, () =>
+        ctx.client.toggleStatus(ctx.conversationId, "resolved"),
+      );
       // NOTE: Same origin as the deferred path in runtime.ts: the agent judged the request handled.
       if (recordable) {
         await recordResolutionOrigin({

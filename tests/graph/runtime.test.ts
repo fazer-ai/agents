@@ -3373,6 +3373,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("taken-over");
     // Neither the label nor anything else reached the conversation the person now holds.
     expect(calls).toEqual([]);
+    // And the trail says the gate closed, from the read that refused (review round 2).
+    const closedLines = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "handoff",
+        threadId: `${tenantId}:${instanceId}:9717`,
+      },
+      select: { detail: true },
+    });
+    expect(closedLines.length).toBe(1);
     // ONE model call: the refusal ends the turn instead of routing back to the model.
     expect(m.calls()).toBe(1);
     // And the thread is resumable: no assistant turn is left with a call nothing answered.
@@ -3419,6 +3429,166 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
   // The turn's OWN transfer changes the owner too, and the calls after it in the same answer are the
   // turn's intent: a label written after the handoff is not a write over somebody.
+  // Review round 2: the calls of one batch run concurrently, so the label's own ask inside its queue
+  // can read the `open` the handoff beside it just wrote. Still the turn's own transfer.
+  test("issue #717: a handoff and a label in the same batch both run", async () => {
+    await seedConversation(9720, null);
+    const calls: Array<[string, number, string]> = [];
+    const m = scriptedToolModel([
+      {
+        message: new AIMessage({
+          content: "",
+          tool_calls: [
+            {
+              name: "handoff_to_human",
+              args: { customerMessage: "" },
+              id: "call_717_hb",
+            },
+            {
+              name: "set_labels",
+              args: { add: ["em-andamento"] },
+              id: "call_717_lb",
+            },
+          ],
+        }),
+      },
+      { message: new AIMessage("") },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9720 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: ownershipClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.map(([op]) => op).sort()).toEqual([
+      "setConversationLabels",
+      "toggleStatus",
+    ]);
+  });
+
+  // And the other order of the same batch: the status webhook reaches the mirror BEFORE the transfer's
+  // own call returns, and the label reads it in that gap.
+  test("issue #717: a label reading the mirror while the handoff's own call is in flight still runs", async () => {
+    await seedConversation(9721, null);
+    const calls: Array<[string, number, string]> = [];
+    const base = ownershipClient(calls);
+    const inner = await base();
+    const mirrored = Promise.withResolvers<void>();
+    let armed = false;
+    const client = {
+      ...inner,
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        await suDb.conversation.updateMany({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: c,
+          },
+          data: { status },
+        });
+        mirrored.resolve();
+        // The response comes back well after the webhook landed.
+        await new Promise((r) => setTimeout(r, 300));
+        return {};
+      },
+      // Armed inside the model call: the turn reads the labels while it prepares, too.
+      getConversationLabels: async (c: number) => {
+        if (armed) await mirrored.promise;
+        return inner.getConversationLabels(c);
+      },
+    } as unknown as ChatwootClient;
+    const m = scriptedToolModel([
+      {
+        before: async () => {
+          armed = true;
+        },
+        message: new AIMessage({
+          content: "",
+          tool_calls: [
+            {
+              name: "handoff_to_human",
+              args: { customerMessage: "" },
+              id: "call_717_hc",
+            },
+            {
+              name: "set_labels",
+              args: { add: ["em-andamento"] },
+              id: "call_717_lc",
+            },
+          ],
+        }),
+      },
+      { message: new AIMessage("") },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9721 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.map(([op]) => op).sort()).toEqual([
+      "setConversationLabels",
+      "toggleStatus",
+    ]);
+  });
+
+  // A transfer whose call THREW changed no owner, so it must not leave the fence thinking one is in
+  // flight: a person taking over after it is still a takeover.
+  test("issue #717: a failed transfer does not exempt a later takeover", async () => {
+    await seedConversation(9722, null);
+    const calls: Array<[string, number, string]> = [];
+    const inner = await ownershipClient(calls)();
+    const client = {
+      ...inner,
+      toggleStatus: async () => {
+        throw new Error("chatwoot 500");
+      },
+    } as unknown as ChatwootClient;
+    const m = scriptedToolModel([
+      {
+        message: new AIMessage({
+          content: "",
+          tool_calls: [
+            {
+              name: "handoff_to_human",
+              args: { customerMessage: "" },
+              id: "call_717_hf",
+            },
+          ],
+        }),
+      },
+      { before: () => takeOver(9722), message: labelsCall("call_717_lf") },
+      { message: new AIMessage("") },
+    ]);
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9722 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    expect(calls).toEqual([]);
+  });
+
   test("issue #717: after this turn's own handoff, its next tool call still runs", async () => {
     await seedConversation(9719, null);
     const calls: Array<[string, number, string]> = [];

@@ -68,7 +68,7 @@ import {
   nudgeMessage,
   turnWasCalledOff,
 } from "./markers";
-import { withOwnershipFence } from "./ownership-fence";
+import { type OwnershipVerdict, withOwnershipFence } from "./ownership-fence";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -872,7 +872,7 @@ export async function runAgentNudge(
   // the follow-up's model runs stops the calls that would write over them. The MIRROR, in both modes:
   // the live probe is an HTTP round trip, and this is asked once per tool-calling hop; the live gate
   // above already reconciled the mirror before the model ran. ./ownership-fence.ts says the rest.
-  const mirrorOwnsIt = async (): Promise<boolean> =>
+  const mirrorOwnsIt = async (): Promise<OwnershipVerdict> =>
     await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
@@ -891,16 +891,21 @@ export async function runAgentNudge(
           status: conv?.status ?? null,
         },
         { ourAgentBotId: cfg.agentBotId },
-      );
+      )
+        ? { ours: true as const }
+        : {
+            ours: false as const,
+            closed: describeClosedGate({
+              assigneeType: conv?.assigneeType ?? null,
+              status: conv?.status ?? null,
+            }),
+          };
     });
-  // A refusal it causes ends the run as "stale", the outcome a known takeover already has here: the
-  // episode ends and nothing retries.
   const toolFence = withOwnershipFence(() => stillWanted(), {
     // A follow-up that may only NOTE started on a conversation that is not the bot's, and keeps
     // doing what it did: what the fence detects is the owner changing during the run.
     ownedAtStart: canMessagePre,
-    ownerChangedByThisTurn: () =>
-      handoffState.completed || handoffState.closedByThisTurn === true,
+    ownerChangedByThisTurn: () => handoffState.ownerChangedByThisTurn === true,
     ownsNow: mirrorOwnsIt,
     conversationId,
   }).ask;

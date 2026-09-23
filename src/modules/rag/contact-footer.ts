@@ -68,6 +68,15 @@ export function stripContactFooter(content: string): string {
   let keep = paragraphs.length - run;
   while (keep > 1 && HEADING_OR_RULE.test((paragraphs[keep - 1] ?? "").trim()))
     keep--;
+  // What stays has to be something besides headings: a page that is a title over its channels
+  // ("# Suporte", then the e-mail and the phone) is the answer to "how do I reach you", and cutting
+  // the channels would leave the title alone.
+  if (
+    !paragraphs.some(
+      (p, i) => i < keep && p.trim() && !HEADING_OR_RULE.test(p.trim()),
+    )
+  )
+    return content;
   // Array truncation, not a text cut: `parts` alternates paragraph and separator, so this keeps the
   // first `keep` paragraphs with the separators between them.
   parts.length = 2 * keep - 1;

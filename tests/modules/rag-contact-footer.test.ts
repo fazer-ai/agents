@@ -89,6 +89,11 @@ describe("stripping it from a passage", () => {
     expect(stripContactFooter(passage)).toBe(passage);
   });
 
+  test("a contact page under a title is kept whole, not cut down to the title", () => {
+    const page = "# Suporte\n\nsuporte@exemplo.com.br\n\n(11) 3456-7890";
+    expect(stripContactFooter(page)).toBe(page);
+  });
+
   test("a passage that is only a footer is kept whole", () => {
     expect(stripContactFooter(FOOTER)).toBe(FOOTER);
     const twoBlocks = "Fale conosco.\n\nsac@exemplo.com.br";

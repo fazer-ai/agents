@@ -34,6 +34,26 @@ describe("agentTurn", () => {
     expect(turn.role === "note" && turn.trace).toBe(trace);
   });
 
+  // Issue #704: a hand-over with nothing to say to the customer empties the reply too, and it must
+  // not read as a suppression. It says where the case went, from the verdict a reload restores.
+  test("an empty hand-over is a note saying the case would go to the team", () => {
+    const trace = [
+      { type: "guardrail", direction: "output", outcome: "handed-off" },
+    ] as unknown as Parameters<typeof agentTurn>[1]["trace"];
+    const turn = agentTurn(t, { ...base, text: "", suppressed: true, trace });
+    expect(role(turn)).toBe("note");
+    expect(turn.text).toBe(
+      "Nothing would be sent to the customer: the guardrail would hand the case to the team.",
+    );
+    expect(
+      guardrailTraceLabel(t, {
+        direction: "output",
+        outcome: "handed-off",
+        action: "handoff",
+      }),
+    ).toBe("blocked, the case would go to the team");
+  });
+
   test("suppression outranks silence, so a blocked follow-up reads as blocked", () => {
     const turn = agentTurn(t, {
       ...base,

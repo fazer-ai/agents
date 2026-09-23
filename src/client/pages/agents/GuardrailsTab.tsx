@@ -43,7 +43,12 @@ interface GuardrailsTabProps {
   onDiscard: () => void;
 }
 
-const ACTIONS: GuardrailAction[] = ["template", "generated", "silent"];
+const ACTIONS: GuardrailAction[] = [
+  "template",
+  "generated",
+  "silent",
+  "handoff",
+];
 
 export function GuardrailsTab({
   guardrails: g,
@@ -101,10 +106,15 @@ export function GuardrailsTab({
             "editor.guardrails.actionGenerated",
             "Reply with a guardrails-generated message",
           )
-        : t(
-            "editor.guardrails.actionSilent",
-            "Send nothing (leave the customer without a reply)",
-          );
+        : a === "handoff"
+          ? t(
+              "editor.guardrails.actionHandoff",
+              "Hand the conversation to the team",
+            )
+          : t(
+              "editor.guardrails.actionSilent",
+              "Send nothing (leave the customer without a reply)",
+            );
 
   const renderDirection = (dir: "input" | "output") => {
     const d = g[dir];
@@ -196,7 +206,36 @@ export function GuardrailsTab({
                 replacement is written: when the model returns none, and always when the relevance
                 check is what tripped. Hiding it here left the operator unable to see or edit the
                 message their customers actually receive. */}
-            {d.action !== "silent" && (
+            {/* The hand-over's own sentence (issue #704). Not the template: that one is a refusal,
+                and this says a person will continue. Empty is a choice, so the box may be left
+                blank on purpose. */}
+            {d.action === "handoff" && (
+              <FormField
+                label={t(
+                  "editor.guardrails.handoffMessage",
+                  "Message to the customer",
+                )}
+                description={t(
+                  "editor.guardrails.handoffMessageHint",
+                  "Sent when the case goes to the team. Leave it empty to hand over without writing to the customer.",
+                )}
+                error={
+                  dir === "input"
+                    ? refusals.inputHandoffMessage
+                    : refusals.outputHandoffMessage
+                }
+              >
+                <Textarea
+                  value={d.handoffMessage}
+                  onChange={(e) =>
+                    setDir(dir, { handoffMessage: e.target.value })
+                  }
+                  rows={2}
+                  maxLength={TEMPLATE_MESSAGE_MAX}
+                />
+              </FormField>
+            )}
+            {d.action !== "silent" && d.action !== "handoff" && (
               <FormField
                 label={t("editor.guardrails.template", "Template message")}
                 error={

@@ -163,12 +163,23 @@ export function agentTurn(
   },
 ): PlaygroundTurn {
   if (r.suppressed) {
+    // A hand-over with no message to the customer empties the reply too, and it is a different
+    // outcome from a suppression: the case would reach a person (issue #704). Read off the verdict,
+    // which a reload restores with the turn.
+    const handedOff = r.trace.some(
+      (e) => e.type === "guardrail" && e.outcome === "handed-off",
+    );
     return {
       role: "note",
-      text: t(
-        "playground.suppressedNote",
-        "Nothing would be sent: the guardrail acted on this turn.",
-      ),
+      text: handedOff
+        ? t(
+            "playground.handedOffNote",
+            "Nothing would be sent to the customer: the guardrail would hand the case to the team.",
+          )
+        : t(
+            "playground.suppressedNote",
+            "Nothing would be sent: the guardrail acted on this turn.",
+          ),
       trace: r.trace,
     };
   }

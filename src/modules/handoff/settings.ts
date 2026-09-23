@@ -126,3 +126,19 @@ export function readTakeoverConfig(settings: unknown): TakeoverConfig {
     onHumanReply: (s as Record<string, unknown>).onHumanReply !== false,
   };
 }
+
+// The pinned target a transfer on THIS conversation may use, or null when the transfer goes to
+// Chatwoot's own routing. The rule `buildToolset` applies to the handoff tool (a pin picked in
+// another account names an id that is invalid here), as a function, for the transfer the runtime
+// makes on its own (issue #704), which has no model to fall back to `agent_choice` with.
+export function pinnedHandoffTarget(
+  hc: HandoffConfig,
+  instanceId: bigint,
+): { kind: "agent" | "team"; id: number } | null {
+  if (hc.mode !== "pinned") return null;
+  if (hc.targetInstanceId != null && hc.targetInstanceId !== Number(instanceId))
+    return null;
+  if (hc.targetAgentId) return { kind: "agent", id: hc.targetAgentId };
+  if (hc.targetTeamId) return { kind: "team", id: hc.targetTeamId };
+  return null;
+}

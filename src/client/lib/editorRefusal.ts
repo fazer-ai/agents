@@ -266,6 +266,16 @@ const OWNED_FIELDS: readonly OwnedField[] = [
     needs: "guardrailsEnabled",
   },
   {
+    field: "guardrails.input.handoffMessage",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  {
+    field: "guardrails.output.handoffMessage",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  {
     field: "guardrails.output.generationPrompt",
     tab: "guardrails",
     needs: "guardrailsEnabled",

@@ -1182,6 +1182,8 @@ function AgentEditor() {
     "guardrails.customPolicy": guardrails.customPolicy,
     "guardrails.input.templateMessage": guardrails.input.templateMessage,
     "guardrails.output.templateMessage": guardrails.output.templateMessage,
+    "guardrails.input.handoffMessage": guardrails.input.handoffMessage,
+    "guardrails.output.handoffMessage": guardrails.output.handoffMessage,
     "guardrails.output.generationPrompt": guardrails.output.generationPrompt,
     // Through the serializer for the handoff note, and mirroring saveTools for the rest: it trims
     // every one of them, and a raw copy here reads surrounding whitespace as an edit made while the
@@ -4094,6 +4096,14 @@ function AgentEditor() {
                   outputGenerationPrompt: refusal.at(
                     "guardrails.output.generationPrompt",
                     currentRef.current["guardrails.output.generationPrompt"],
+                  ),
+                  inputHandoffMessage: refusal.at(
+                    "guardrails.input.handoffMessage",
+                    currentRef.current["guardrails.input.handoffMessage"],
+                  ),
+                  outputHandoffMessage: refusal.at(
+                    "guardrails.output.handoffMessage",
+                    currentRef.current["guardrails.output.handoffMessage"],
                   ),
                 }}
                 dirty={dirty.guardrails}

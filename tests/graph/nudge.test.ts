@@ -4413,6 +4413,249 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // ISSUE #704. A follow-up the judge refuses with `handoff` goes to the team: the refused text is
+  // not sent, the conversation opens, the hand-over line goes out instead, and the ladder's own
+  // resolve falls with the transfer (a conversation the human queue owns is not ours to close).
+  test("a follow-up the guardrail hands over opens the conversation and is not resolved", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9704, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9704`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "fora da política",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("messaged");
+        expect(s.messages).toEqual([[9704, "ENCAMINHADO-NUDGE"]]);
+        // One status change, and it is the transfer: the ladder's resolve did not follow it.
+        expect(s.statuses).toEqual([[9704, "open"]]);
+        expect(s.labelSets).toEqual([["follow-up"]]);
+        expect(s.notes[0]?.[1]).toContain("Some sumido, hein?");
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
+  // The transfer failing is not a license to close: the policy said this case needs a person. No
+  // line promising one goes out, and the note says the transfer did not land.
+  test("a follow-up whose hand-over fails sends nothing and is not resolved", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9705, null);
+        const s = statusClient({ failOn: "open" });
+        const saver = new MemorySaver();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9705`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "fora da política",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: saver,
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("silent");
+        expect(s.messages).toEqual([]);
+        expect(s.statuses).toEqual([[9705, "open-THREW"]]);
+        // The refused follow-up is not left in the thread as something the customer was told.
+        const state = await buildThreadStateGraph(saver).getState({
+          configurable: { thread_id: `${tenantId}:${instanceId}:9705` },
+        });
+        const said = (
+          ((state.values as { messages?: BaseMessage[] })?.messages ??
+            []) as BaseMessage[]
+        ).filter((m) => m.getType() === "ai");
+        expect(said.length).toBe(0);
+        expect(s.labelSets).toEqual([["follow-up"]]);
+        expect(
+          s.notes.some(([, n]) =>
+            n.includes("não consegui passar a conversa para a equipe"),
+          ),
+        ).toBe(true);
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
+  // The window can close during the judge's call. The ordinary template says nothing about a
+  // transfer, so it does not go out in the hand-over line's place: the operator gets the line.
+  test("a follow-up handed over after the window closed notes the line, not the template", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        const t0 = new Date();
+        await seedConv(9707, null, new Date(t0.getTime() - 23 * 3_600_000));
+        const s = stub();
+        let judged = false;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9707`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            now: () => (judged ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: true,
+                        categories: ["toxicity"],
+                        rationale: "fora da política",
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Some sumido, hein?"],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(judged).toBe(true);
+        expect(outcome).toBe("noted-window");
+        expect(s.templates).toEqual([]);
+        expect(s.messages).toEqual([]);
+        expect(s.notes.some(([, n]) => n.endsWith("ENCAMINHADO-NUDGE"))).toBe(
+          true,
+        );
+        // One status change, and it is the transfer: the ladder's resolve did not follow it.
+        expect(s.statuses).toEqual([[9707, "open"]]);
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
+  test("a follow-up retired during its hand-over sends no line after it", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9706, null);
+        const s = statusClient();
+        await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9706`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"] },
+          base: appDb,
+          // Wanted until the transfer lands, and not after it.
+          stillWanted: async () => s.statuses.length === 0,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "fora da política",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(s.statuses).toEqual([[9706, "open"]]);
+        expect(s.messages).toEqual([]);
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
   // A proactive message answers no question, so answer_relevance has nothing to judge. `splitAnalyses`
   // already skips the relevance CALL when no customer message travels, but the POLICY would still be
   // listed in the other call's prompt, where a model asked to score relevance against silence has

@@ -144,6 +144,13 @@ function cappedFields(settings: unknown): CappedField[] {
         `guardrails.${dir}.templateMessage`,
         TEMPLATE_MESSAGE_MAX,
       );
+      // The hand-over sentence (issue #704): the same customer-facing copy as the template.
+      add(
+        d,
+        "handoffMessage",
+        `guardrails.${dir}.handoffMessage`,
+        TEMPLATE_MESSAGE_MAX,
+      );
       // Output only, same rule as the unknown tool names above: the input direction never writes a
       // replacement (src/modules/guardrails/analyze.ts), so its guidance reaches no prompt and a cap
       // on it caps nothing. Keeping it here would refuse a write over text nothing reads, and — the

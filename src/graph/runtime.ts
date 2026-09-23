@@ -64,6 +64,10 @@ import {
   guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
+import {
+  applyGuardrailHandoff,
+  GuardrailHandoffFailedError,
+} from "@/modules/guardrails/handoff";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { signatureFor } from "@/modules/signature/service";
@@ -953,7 +957,10 @@ async function runTurnBody(
   // attendance ended while the human is in it. The post-generation recheck suppresses the SEND and
   // cannot unwrite a message. Same read that recheck makes, asked at the moment this writes; a read
   // that fails leaves the note OWED, which costs nothing because nothing is consumed to write it.
-  const botOwnsItNow = async (): Promise<boolean> =>
+  // The read itself, which THROWS when it cannot answer. `botOwnsItNow` below answers a failure as
+  // "not ours", which is right for the note it guards; the guardrail's transfer wants the opposite
+  // default, so it asks this one and decides for itself (issue #704).
+  const ownershipNow = async (): Promise<boolean> =>
     await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
@@ -973,7 +980,9 @@ async function runTurnBody(
         },
         { ourAgentBotId: loaded.agentBotId ?? agentBotId },
       );
-    }).catch((err) => {
+    });
+  const botOwnsItNow = async (): Promise<boolean> =>
+    await ownershipNow().catch((err) => {
       logger.warn(
         { err, conv: conversationId },
         "hand-back note: ownership read failed; leaving the note owed",
@@ -1287,6 +1296,49 @@ async function runTurnBody(
     persistUsage: params.deps?.persistUsage,
     langfuseCfg: loaded.langfuseCfg,
   });
+  // The transfer a `handoff` verdict asks for (issue #704). It moves the conversation, so it waits
+  // for the gates that say this turn may still act, and all of them AFTER the judge, whose model call
+  // is exactly the stretch in which the earlier answers went stale: the turn not called off and not
+  // superseded, and the bot still the owner (a person who took the case during the judge's call must
+  // not have it routed away). Called off is asked again after the ownership read, inside the transfer
+  // before the assignment, and once more after it, because the caller still has a sentence to send.
+  //
+  // NOT the reply claim. That claim is permanent and means "this burst was answered" (see
+  // docs/debounce.md), and a transfer that fails, or one with nothing to say, answered nobody: a
+  // manual re-engage after the conversation comes back must still be able to answer it. Two turns
+  // racing here can both transfer, which is harmless (the same status, the same target); only the
+  // line is at-most-once, and it takes the claim where it is sent.
+  //
+  // The resolve falls with the VERDICT, not with the transfer: a case the policy said needs a person
+  // is not closed because the status change failed. A transfer that landed is marked on the handoff
+  // state like one the tool made, which is what keeps the silence hand-over (#659) from writing a
+  // second note on it.
+  const handOverForGuardrail = async (
+    direction: "input" | "output",
+  ): Promise<"handed" | "failed" | RunAgentTurnOutcome> => {
+    turnState.resolveRequested = false;
+    const blocked = await postBlocked();
+    if (blocked) return blocked;
+    // A read that fails lets the transfer go ahead: the policy asked for a person, and a person is
+    // what the transfer gives.
+    if (!(await ownershipNow().catch(() => true))) return "taken-over";
+    // Asked again after that read, because the status change below cannot be undone by any later
+    // check: a /reset or a switch-off landing while the read was in flight would otherwise still
+    // open the conversation.
+    if (await writeCalledOff()) return standDown();
+    const handed = await applyGuardrailHandoff({
+      client,
+      conversationId,
+      instanceId,
+      handoff: loaded.handoffConfig,
+      direction,
+      flow,
+      stillWanted: async () => !(await writeCalledOff()),
+    });
+    handoffState.completed = handed;
+    if (await writeCalledOff()) return standDown();
+    return handed ? "handed" : "failed";
+  };
 
   // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the
   // modality calls for it, otherwise split into typing-paced balloons. Returns how many balloons
@@ -1573,6 +1625,10 @@ async function runTurnBody(
   // in-flight flag the rollback refuses on has been released. The messages travel rather than a
   // boolean because the rollback runs outside the scope that has them.
   let silenceProduced: BaseMessage[] | null = null;
+  // A guardrail hand-over that did not land (issue #704). The turn ends through its ordinary refusal,
+  // rollback included, and the error is thrown on the way out, after every release below: every
+  // outcome word settles the message, and a throw is what keeps it owed.
+  let handoffFailed: "input" | "output" | null = null;
   // Set when the hand-back note was OWED and could not be appended durably, because an older invoke
   // was reading the channel. It then rides in this turn's own invoke input instead (issue #457,
   // review round 6): deferring the durable write is right, but deferring the CORRECTION would leave
@@ -2047,6 +2103,25 @@ async function runTurnBody(
     if (await writeCalledOff()) return standDown();
     if (guardrailTripped(inGuard)) {
       const inReply = screenedText(inGuard, text);
+      // A hand-over moves the conversation, so it waits for the same two gates a post does: a
+      // superseded or stale turn must not give away a conversation a newer turn is about to answer.
+      // The transfer comes first and the sentence after it, the order `handoff_to_human` keeps.
+      if (inGuard.kind === "handed-off") {
+        const handed = await handOverForGuardrail("input");
+        if (handed !== "handed" && handed !== "failed") return handed;
+        // The line says a person will continue, so it goes out only when one will. A transfer that
+        // failed answered nobody, and every word a turn returns settles the message, so it throws:
+        // the flush retries it and the direct path leaves it for recovery.
+        if (handed === "failed") {
+          handoffFailed = "input";
+          return "empty";
+        }
+        if (inReply === null) return "blocked";
+        if (!(await claimBeforeSend())) return "superseded";
+        await client.sendMessage(conversationId, inReply);
+        deliveredBalloons = 1;
+        return "posted";
+      }
       if (inReply !== null) {
         // NOTE: The guardrail reply is a post like any other, so it passes the same two gates:
         // without them, two concurrent deliveries that both trip the guardrail each post their
@@ -2512,8 +2587,29 @@ async function runTurnBody(
     if (outGuard && guardrailTripped(outGuard)) {
       turnState.pendingAttachments.length = 0;
       const replacement = screenedText(outGuard, screened);
-      if (replacement === null) return refuse("blocked");
-      reply = replacement;
+      // The refused reply goes nowhere and the case goes to the team. An empty hand-over message is
+      // the operator's "say nothing", so the reply is blanked and the empty branch below runs with
+      // the transfer already marked, which is what keeps it from resolving or handing over twice.
+      if (outGuard.kind === "handed-off") {
+        const handed = await handOverForGuardrail("output");
+        if (handed !== "handed" && handed !== "failed") return refuse(handed);
+        // A transfer that landed with nothing to say ends the turn here, as the operator's policy
+        // settling the message (`blocked`, the word a suppression uses), not as the model running
+        // dry (`empty`), which recovery would treat as still owed and run again.
+        if (handed === "handed" && replacement === null)
+          return refuse("blocked");
+        // The line says a person will continue, so it goes out only when one will. A failed transfer
+        // throws, like the input side, so the message stays owed; the refused reply is rolled out of
+        // the checkpoint first, since left there the retry would read it as said.
+        if (handed === "failed") {
+          handoffFailed = "output";
+          return refuse("empty");
+        }
+        reply = replacement ?? "";
+      } else {
+        if (replacement === null) return refuse("blocked");
+        reply = replacement;
+      }
     }
 
     // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply
@@ -2935,6 +3031,9 @@ async function runTurnBody(
       });
     }
     status.finished(deliveredBalloons);
+    // Last, so nothing above is skipped by it.
+    // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose
+    if (handoffFailed) throw new GuardrailHandoffFailedError(handoffFailed);
   }
 }
 

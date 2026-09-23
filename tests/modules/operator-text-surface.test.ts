@@ -74,8 +74,12 @@ const EVERY_BLOCK = {
   toolGuidance: Object.fromEntries(NATIVE_TOOL_NAMES.map((n) => [n, HUGE])),
   guardrails: {
     customPolicy: HUGE,
-    input: { templateMessage: HUGE },
-    output: { templateMessage: HUGE, generationPrompt: HUGE },
+    input: { templateMessage: HUGE, handoffMessage: HUGE },
+    output: {
+      templateMessage: HUGE,
+      generationPrompt: HUGE,
+      handoffMessage: HUGE,
+    },
   },
   signature: { text: HUGE },
   vision: { extractionPrompt: HUGE },

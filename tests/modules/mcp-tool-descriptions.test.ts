@@ -253,7 +253,13 @@ const SETTINGS_DESC_CEILING = 2_000;
 // 24,760. Trimmed first: one description for the whole field, the attribute half reusing the
 // precondition's patterns. What is left is the shape, and a client that cannot see `phones` cannot
 // write the list. Re-measured on the tree that ships: 25,425.
-const SETTINGS_SCHEMA_CEILING = 25_440;
+//
+// RAISED for issue #704 by the guardrail's `handoff` action: the enum value and its clause in the
+// action description, and `handoffMessage`, on BOTH directions, because the two direction objects
+// carry the same fields. 450 characters on top of the #646 raise. Trimmed first, by 100: the clause
+// says what the action does and the field only what the type cannot (that empty is a choice, and the
+// cap). Re-measured on the tree that ships: 25,875.
+const SETTINGS_SCHEMA_CEILING = 25_890;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -641,7 +647,10 @@ describe("MCP tool descriptions", () => {
   // base's fields. Base 30,729 and 58,187, this tree 30,773 and 58,273, so 30,788 and 58,289 with the
   // same 15 and 16. What the switch does is on the REST field and the console, not repeated here.
   // SCHEMA RAISED again by `contactAuth.rule` (#646), the same 665 characters as the
-  // agent_settings_set ceiling above, on top of the #747 raise: this tree measures 58,950.
+  // agent_settings_set ceiling above, on top of the #747 raise: that tree measured 58,950.
+  // SCHEMA RAISED again by the guardrail `handoff` action (#704), which reaches tools/list through
+  // `agent_settings_set`: this tree measures 59,400, 450 over the #646 raise, same 16 of headroom. See
+  // SETTINGS_SCHEMA_CEILING above. Descriptions are unchanged.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -651,7 +660,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(30_788);
-    expect(schema).toBeLessThanOrEqual(58_966);
+    expect(schema).toBeLessThanOrEqual(59_416);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

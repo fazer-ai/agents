@@ -94,6 +94,8 @@ export interface GuardrailsRefusals {
   inputTemplateMessage: string | null;
   outputTemplateMessage: string | null;
   outputGenerationPrompt: string | null;
+  inputHandoffMessage: string | null;
+  outputHandoffMessage: string | null;
 }
 
 export interface ToolRefusals {

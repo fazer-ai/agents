@@ -613,7 +613,7 @@ const outputChecks = z.looseObject({
 });
 
 const ACTION_DESC =
-  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing";
+  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and give the conversation to the team";
 
 const directionCommon = {
   enabled: z.boolean().optional(),
@@ -621,6 +621,12 @@ const directionCommon = {
     .string()
     .optional()
     .describe(`refused above ${TEMPLATE_MESSAGE_MAX} characters, not trimmed`),
+  handoffMessage: z
+    .string()
+    .optional()
+    .describe(
+      `sent on handoff; empty = hand over without writing. Refused above ${TEMPLATE_MESSAGE_MAX} characters, not trimmed`,
+    ),
 };
 
 const guardrailInput = z.looseObject({

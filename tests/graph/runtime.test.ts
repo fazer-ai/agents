@@ -49,6 +49,7 @@ import {
 import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
+import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -7541,6 +7542,540 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[965, "TEMPLATE-RELEVANCE"]]);
+    });
+    // ISSUE #704: the `handoff` action. The refused text does not go out, the conversation goes to
+    // the team through the agent's own handoff target, and the customer reads the hand-over line
+    // (or nothing, when the operator left it empty). The note is what the person taking over reads.
+    describe("the 'handoff' action", () => {
+      const TEAM = 55;
+      const handoffStub =
+        (log: {
+          sent: Array<[number, string]>;
+          notes: Array<[number, string]>;
+          toggles: Array<[number, string]>;
+          assigns: string[];
+        }) =>
+        async () =>
+          ({
+            sendMessage: async (c: number, content: string) => {
+              log.sent.push([c, content]);
+              return {};
+            },
+            sendPrivateNote: async (c: number, content: string) => {
+              log.notes.push([c, content]);
+              return {};
+            },
+            toggleStatus: async (c: number, status: string) => {
+              log.toggles.push([c, status]);
+              return {};
+            },
+            assignTeam: async (c: number, id: number) => {
+              log.assigns.push(`team:${c}:${id}`);
+              return {};
+            },
+            assignToAgent: async (c: number, id: number) => {
+              log.assigns.push(`agent:${c}:${id}`);
+              return {};
+            },
+            toggleTyping: async () => ({}),
+          }) as unknown as ChatwootClient;
+      const newLog = () => ({
+        sent: [] as Array<[number, string]>,
+        notes: [] as Array<[number, string]>,
+        toggles: [] as Array<[number, string]>,
+        assigns: [] as string[],
+      });
+      const configure = (
+        dir: "input" | "output",
+        extra: { [k: string]: JsonValue },
+        handoff: { [k: string]: JsonValue } = { mode: "route" },
+      ) =>
+        suDb.agent.update({
+          where: { id: gAgentId },
+          data: {
+            settings: {
+              split: { enabled: false },
+              handoff,
+              guardrails: {
+                enabled: true,
+                provider: "openai",
+                model: GUARD_MODEL,
+                credentialRef: gVaultRef,
+                input: { enabled: false },
+                output: { enabled: false },
+                [dir]: {
+                  enabled: true,
+                  checks: {
+                    toxicity: true,
+                    unsafeContent: false,
+                    competitorMentions: false,
+                    promptAdherence: false,
+                  },
+                  templateMessage: "TEMPLATE-RECUSA",
+                  ...extra,
+                },
+              },
+            },
+          },
+        });
+      const TRIP = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "fora da política",
+      });
+
+      test("a refused reply goes to the pinned team, and the customer reads the hand-over line", async () => {
+        await configure(
+          "output",
+          { action: "handoff", handoffMessage: "ENCAMINHADO" },
+          { mode: "pinned", targetTeamId: TEAM },
+        );
+        await seedConv(7041);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7041, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7041, "ENCAMINHADO"]]);
+        // The line WAS sent, and it claimed the burst the way every send does.
+        const claimed = await suDb.conversation.findFirst({
+          where: { tenantId: gTenantId, chatwootConversationId: 7041 },
+          select: { lastRepliedMessageId: true },
+        });
+        expect(claimed?.lastRepliedMessageId ?? null).not.toBeNull();
+        expect(log.toggles).toEqual([[7041, "open"]]);
+        expect(log.assigns).toEqual([`team:7041:${TEAM}`]);
+        // One note, and it is the reader's handover: what tripped, that the case is theirs, and the
+        // reply the customer was NOT sent.
+        expect(log.notes).toHaveLength(1);
+        const note = log.notes[0]?.[1] ?? "";
+        expect(note).toContain("handoff");
+        expect(note).toContain(
+          "O guardrail pediu que o caso fosse para a equipe.",
+        );
+        expect(note).toContain(REPLY);
+      });
+
+      test("an empty hand-over line hands over without writing to the customer", async () => {
+        await configure("output", { action: "handoff", handoffMessage: "" });
+        await seedConv(7042);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7042, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        // Settled, like a suppression: the operator's policy answered this message, and recovery
+        // must not run it again as if the model had come up empty.
+        expect(outcome).toBe("blocked");
+        expect(log.sent).toEqual([]);
+        expect(log.toggles).toEqual([[7042, "open"]]);
+        // `route` mode: Chatwoot's own routing, nothing assigned from here.
+        expect(log.assigns).toEqual([]);
+        // The skip hand-over (#659) must not add a second note on top of this one.
+        expect(log.notes).toHaveLength(1);
+        // Nothing was sent, so nothing claims the burst as answered: the reply claim is permanent,
+        // and a re-engage after the conversation comes back must still be able to answer it.
+        const conv = await suDb.conversation.findFirst({
+          where: { tenantId: gTenantId, chatwootConversationId: 7042 },
+          select: { lastRepliedMessageId: true },
+        });
+        expect(conv?.lastRepliedMessageId ?? null).toBeNull();
+      });
+
+      test("a refused customer message is handed over before the agent runs", async () => {
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7043);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7043, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7043, "ENCAMINHADO-IN"]]);
+        // Only the hand-over line: the agent's own reply never came to be.
+        expect(log.toggles).toEqual([[7043, "open"]]);
+        // The input side quotes nothing: the refused text is the customer's own message.
+        expect(log.notes[0]?.[1]).toContain(
+          "O guardrail pediu que o caso fosse para a equipe.",
+        );
+        expect(log.notes[0]?.[1]).not.toContain("Resposta reprovada");
+      });
+
+      test("the template action still refuses and leaves the conversation where it was", async () => {
+        await configure("output", { action: "template" });
+        await seedConv(7044);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7044, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7044, "TEMPLATE-RECUSA"]]);
+        expect(log.toggles).toEqual([]);
+        expect(log.assigns).toEqual([]);
+      });
+
+      // A transfer that did not land sends no line promising a person, and the note says so.
+      test("a status change that fails sends no hand-over line", async () => {
+        await configure("output", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+        });
+        await seedConv(7046);
+        const log = newLog();
+        const saver = new MemorySaver();
+        const turn = runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7046, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: async () => {
+              const c = await handoffStub(log)();
+              return {
+                ...c,
+                toggleStatus: async () => {
+                  throw new Error("chatwoot 500");
+                },
+              } as unknown as ChatwootClient;
+            },
+            checkpointer: saver,
+          },
+        });
+        // Still owed: every word a turn returns settles the message (`empty` advances the watermark
+        // just like `blocked`), so a transfer that did not land throws, and the flush retries it.
+        await expect(turn).rejects.toBeInstanceOf(GuardrailHandoffFailedError);
+        expect(log.sent).toEqual([]);
+        // And the refused reply is not left in the thread, where the next turn would read it as
+        // something the customer was told.
+        const thread = await threadChannel(saver, 7046, {
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+        });
+        expect(thread.filter(([type]) => type === "ai")).toEqual([]);
+        expect(
+          log.notes.some(([, n]) =>
+            n.includes("não consegui passar a conversa para a equipe"),
+          ),
+        ).toBe(true);
+      });
+
+      // The judge's call is a stretch of time, and a person can take the case inside it. The
+      // transfer must not route it away from them.
+      test("a person who took the case while the judge read keeps it", async () => {
+        await configure(
+          "output",
+          { action: "handoff", handoffMessage: "ENCAMINHADO" },
+          { mode: "pinned", targetTeamId: TEAM },
+        );
+        await seedConv(7047);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7047, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    await suDb.conversation.updateMany({
+                      where: {
+                        tenantId: gTenantId,
+                        chatwootConversationId: 7047,
+                      },
+                      data: { assigneeType: "User", assigneeId: 8 },
+                    });
+                    return { content: TRIP };
+                  })
+                : new FakeListChatModel({ responses: [REPLY] }),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("taken-over");
+        expect(log.toggles).toEqual([]);
+        expect(log.assigns).toEqual([]);
+        expect(log.sent).toEqual([]);
+      });
+
+      // A newer customer message makes this turn's verdict obsolete: the next turn screens again.
+      test("a turn superseded while the judge read hands nothing over", async () => {
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7048);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7048, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: async () => {
+              const c = await handoffStub(log)();
+              return {
+                ...c,
+                getMessages: async () => ({
+                  payload: [
+                    { id: 1, content: "x", message_type: 0, private: false },
+                    { id: 2, content: "y", message_type: 0, private: false },
+                  ],
+                }),
+              } as unknown as ChatwootClient;
+            },
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("superseded");
+        expect(log.toggles).toEqual([]);
+        expect(log.sent).toEqual([]);
+      });
+
+      test("on the input side too, a failed transfer sends no hand-over line", async () => {
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7049);
+        const log = newLog();
+        const turn = runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7049, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(TRIP),
+            makeClient: async () => {
+              const c = await handoffStub(log)();
+              return {
+                ...c,
+                toggleStatus: async () => {
+                  throw new Error("chatwoot 500");
+                },
+              } as unknown as ChatwootClient;
+            },
+            checkpointer: new MemorySaver(),
+          },
+        });
+        // Still owed, as on the output side: thrown, not settled.
+        await expect(turn).rejects.toBeInstanceOf(GuardrailHandoffFailedError);
+        expect(log.sent).toEqual([]);
+      });
+
+      // The transfer is a request or two of its own. An agent switched off during it does not
+      // send the line afterwards; the transfer, already made, stands. On the input side, where the
+      // line is sent straight after the transfer with no delivery gate of its own in between.
+      test("an agent switched off during the transfer sends no line after it", async () => {
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7050);
+        const log = newLog();
+        try {
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: 7050, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: branchingModel(TRIP),
+              makeClient: async () => {
+                const c = await handoffStub(log)();
+                return {
+                  ...c,
+                  toggleStatus: async (conv: number, status: string) => {
+                    log.toggles.push([conv, status]);
+                    await suDb.agent.update({
+                      where: { id: gAgentId },
+                      data: { enabled: false },
+                    });
+                    return {};
+                  },
+                } as unknown as ChatwootClient;
+              },
+              checkpointer: new MemorySaver(),
+            },
+          });
+        } finally {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: { enabled: true },
+          });
+        }
+        expect(log.toggles).toEqual([[7050, "open"]]);
+        expect(log.sent).toEqual([]);
+      });
+
+      test("a turn withdrawn while the ownership read is in flight opens nothing", async () => {
+        // The agent is switched off INSIDE the read that asks whether the bot still owns the case:
+        // every check before it saw the turn as wanted, so only a check after that read can stop
+        // the status change, which nothing later can undo.
+        await configure("input", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-IN",
+        });
+        await seedConv(7051);
+        const log = newLog();
+        let switchedOff = false;
+        let ownershipReads = 0;
+        const isOwnershipRead = (args: unknown) => {
+          const sel = (args as { select?: Record<string, unknown> })?.select;
+          return Boolean(sel?.assigneeType && sel.assigneeId && sel.status);
+        };
+        // biome-ignore lint/suspicious/noExplicitAny: Prisma's extension surface is not expressible here
+        const real = appDb as any;
+        const base = new Proxy(real, {
+          get(target, prop) {
+            if (prop === "$extends") {
+              // biome-ignore lint/suspicious/noExplicitAny: same
+              return (...args: any[]) => {
+                const extended = target.$extends(...args);
+                return new Proxy(extended, {
+                  get(t, p) {
+                    if (p !== "$transaction") {
+                      const v = Reflect.get(t, p);
+                      return typeof v === "function" ? v.bind(t) : v;
+                    }
+                    // biome-ignore lint/suspicious/noExplicitAny: same
+                    return (fn: any, opts: any) =>
+                      // biome-ignore lint/suspicious/noExplicitAny: same
+                      t.$transaction((tx: any) => {
+                        const conversation = new Proxy(tx.conversation, {
+                          get(c, m) {
+                            const v = Reflect.get(c, m);
+                            if (m !== "findUnique") {
+                              return typeof v === "function" ? v.bind(c) : v;
+                            }
+                            return async (args: unknown) => {
+                              const row = await v.call(c, args);
+                              // The FIRST such read is the turn's own, before the judge ran; the
+                              // second is the one the transfer makes after it.
+                              if (isOwnershipRead(args)) ownershipReads += 1;
+                              if (!switchedOff && ownershipReads === 2) {
+                                switchedOff = true;
+                                await suDb.agent.update({
+                                  where: { id: gAgentId },
+                                  data: { enabled: false },
+                                });
+                              }
+                              return row;
+                            };
+                          },
+                        });
+                        return fn(
+                          new Proxy(tx, {
+                            get(x, q) {
+                              if (q === "conversation") return conversation;
+                              const v = Reflect.get(x, q);
+                              return typeof v === "function" ? v.bind(x) : v;
+                            },
+                          }),
+                        );
+                      }, opts);
+                  },
+                });
+              };
+            }
+            const v = Reflect.get(target, prop);
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        }) as PrismaClient;
+        try {
+          await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId: 7051, inboxId: G_INBOX }),
+            base,
+            deps: {
+              makeModel: branchingModel(TRIP),
+              makeClient: handoffStub(log),
+              checkpointer: new MemorySaver(),
+            },
+          });
+        } finally {
+          await suDb.agent.update({
+            where: { id: gAgentId },
+            data: { enabled: true },
+          });
+        }
+        expect(switchedOff).toBe(true);
+        expect(log.toggles).toEqual([]);
+        expect(log.sent).toEqual([]);
+      });
+
+      test("a clean verdict changes nothing", async () => {
+        await configure("output", {
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO",
+        });
+        await seedConv(7045);
+        const log = newLog();
+        const outcome = await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: 7045, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: branchingModel(
+              JSON.stringify({ violated: false, categories: [] }),
+            ),
+            makeClient: handoffStub(log),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+        expect(log.sent).toEqual([[7045, REPLY]]);
+        expect(log.toggles).toEqual([]);
+        expect(log.notes).toEqual([]);
+      });
     });
   });
   // ISSUE #749. A metade REATIVA do mesmo eixo: aqui a entrega do webhook traz a mensagem, então o

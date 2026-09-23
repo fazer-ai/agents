@@ -45,6 +45,11 @@ function direction(
       read.generationPrompt,
       GENERATION_PROMPT_MAX,
     ),
+    handoffMessage: raw(
+      bag.handoffMessage,
+      read.handoffMessage,
+      TEMPLATE_MESSAGE_MAX,
+    ),
   };
 }
 

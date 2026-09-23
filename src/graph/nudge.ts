@@ -37,6 +37,7 @@ import {
   guardrailRan,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
 import { armCompaction } from "@/modules/memory/compact";
 import {
   buildTemplatePayload,
@@ -2176,6 +2177,50 @@ export async function runAgentNudge(
     // one: suppression posts no message but still fires the post-actions, so a check placed after it
     // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
     if (!(await stillWanted())) return refuse(standDown());
+    // A follow-up the judge refused with `handoff` (issue #704) goes to the team: the refused text
+    // is not sent, and the ladder's resolve falls with the transfer like it does for the tool's.
+    // Only while the bot still owns the conversation, which is the same answer every send here
+    // waits for: a person already on it needs no transfer.
+    if (decision.kind === "handed-off" && canMessagePost) {
+      const handed = await applyGuardrailHandoff({
+        client,
+        conversationId,
+        instanceId,
+        handoff: cfg.handoffConfig,
+        direction: "output",
+        flow,
+        stillWanted,
+      });
+      handoffState.completed = handed;
+      // The transfer is one or two requests, and the send below is still ahead.
+      if (!(await stillWanted())) return refuse(standDown());
+      // A transfer that did not land sends no line promising a person, and the ladder's resolve
+      // stays off all the same: the policy said this case needs one.
+      // Through `refuse`, because the refused reply is already in the thread: left there, the next
+      // turn on this still-bot-owned conversation would read it as said.
+      if (!handed) {
+        await applyPostActions({
+          canMessage: canMessagePost,
+          allowResolve: false,
+        });
+        return refuse("silent");
+      }
+      // The window closed during the judge's call or the transfer. The ordinary template below says
+      // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
+      // as a note, which is what `deliverPromisedLine` does for the tool's own transfer.
+      if (screened !== null && sendModeNow() !== "freeform") {
+        await client.sendPrivateNote(
+          conversationId,
+          `${OUTSIDE_WINDOW_NOTE_PREFIX}${screened}`,
+        );
+        markFollowUp("noted-window");
+        await applyPostActions({
+          canMessage: canMessagePost,
+          allowResolve: false,
+        });
+        return "noted-window";
+      }
+    }
     if (screened === null) {
       await applyPostActions({ canMessage: canMessagePost });
       return "silent";

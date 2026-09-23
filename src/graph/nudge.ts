@@ -905,7 +905,16 @@ export async function runAgentNudge(
   const toolFence = withOwnershipFence(() => stillWanted(), {
     // A follow-up that may only NOTE started on a conversation that is not the bot's, and keeps
     // doing what it did: what the fence detects is the owner changing during the run.
-    ownedAtStart: canMessagePre,
+    //
+    // From the MIRROR, the source every later ask reads (review round 4). Outside the live mode that
+    // is what `canMessagePre` already is, read with the rest of the row. In the live mode it is the
+    // live probe's word, and a reconcile that refused to apply the snapshot (its own activity and
+    // version ordering) leaves a mirror that never read bot-owned, so the first hop would take a
+    // disagreement between two sources for a takeover: that mode reads the mirror again, here.
+    // Unreadable is not ours.
+    ownedAtStart: params.requireLiveBotOwnership
+      ? (await mirrorOwnsIt().catch(() => ({ ours: false }))).ours
+      : canMessagePre,
     ownerChangedByThisTurn: () => ownerChangedByTurn(handoffState),
     ownsNow: mirrorOwnsIt,
     conversationId,

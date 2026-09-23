@@ -803,6 +803,84 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(rounds).toBe(1);
   });
 
+  // ISSUE #717, review round 4: in the live mode the probe can say the bot owns it while the mirror,
+  // whose reconcile refused that snapshot by its own ordering, still reads `open`. Nobody took over
+  // during the run, so the first hop must not read the disagreement as a takeover.
+  test("a live-owned follow-up whose mirror never read bot-owned is not refused at the first hop", async () => {
+    const contactInboxId = 8894;
+    await seedConv(9719, null, new Date(), contactInboxId);
+    await suDb.conversation.updateMany({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9719,
+      },
+      data: { status: "open", lastEventAt: new Date() },
+    });
+    const s = stub();
+    const client = {
+      ...(await s.makeClient()),
+      // Unversioned and with activity OLDER than the mirror's: the reconcile keeps its own row.
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "pending",
+        meta: {},
+        last_activity_at: Math.floor(Date.now() / 1000) - 3600,
+      }),
+    } as unknown as ChatwootClient;
+    let rounds = 0;
+    class LabelModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-label";
+      }
+      async _generate(): Promise<ChatResult> {
+        rounds += 1;
+        const message =
+          rounds === 1
+            ? new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { add: ["seguimento"], scope: "conversation" },
+                    id: "call_717_live",
+                  },
+                ],
+              })
+            : new AIMessage("");
+        return { generations: [{ text: "", message }] };
+      }
+    }
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9719`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () => new LabelModel(),
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    // The control that this is the case under test: the mirror really stayed `open`.
+    const row = await suDb.conversation.findFirst({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9719,
+      },
+      select: { status: true },
+    });
+    expect(row?.status).toBe("open");
+    expect(outcome).not.toBe("stale");
+    expect(s.labelSets.flat()).toContain("seguimento");
+  });
+
   // ISSUE #717, review round 1: the follow-up's `resolve_conversation` closes IMMEDIATELY, and a
   // status webhook mirrored before the next hop reads `resolved`, which is not the bot's. That is the
   // turn's own close, not a person taking over, so the call after it still runs.

@@ -4,9 +4,12 @@ import type { PrettyOptions } from "pino-pretty";
 import config from "@/config";
 import { clipText } from "@/lib/text";
 
-function omitKeys(obj: Record<string, unknown>, keys: string[]) {
+function omitKeys(
+  obj: Record<string, unknown>,
+  isSecret: (key: string, value: unknown) => boolean,
+) {
   for (const key in obj) {
-    if (keys.includes(key)) {
+    if (isSecret(key, obj[key])) {
       obj[key] = "********";
     }
   }
@@ -29,7 +32,7 @@ function sanitizeItem(
 }
 
 interface DeepSanitizeObjectOptions {
-  omitKeys?: string[];
+  isSecret?: (key: string, value: unknown) => boolean;
 }
 
 export function deepSanitizeObject(
@@ -37,8 +40,8 @@ export function deepSanitizeObject(
   options?: DeepSanitizeObjectOptions,
 ) {
   const output = structuredClone(obj);
-  if (options?.omitKeys) {
-    omitKeys(output, options.omitKeys);
+  if (options?.isSecret) {
+    omitKeys(output, options.isSecret);
   }
 
   for (const key in output) {
@@ -46,6 +49,18 @@ export function deepSanitizeObject(
   }
 
   return output;
+}
+
+// A config field is masked in the boot log by its NAME, not by joining a list: the list missed
+// `ttsCheck.token` the release it was added (issue #799), and the log printed 50 of its characters.
+// Only strings are masked, so a flag like `setupTokenRequired` stays readable.
+const SECRET_CONFIG_KEY = /secret|token|password|key|databaseurl/i;
+
+export function configForBootLog(cfg: Record<string, unknown>) {
+  return deepSanitizeObject(cfg, {
+    isSecret: (key, value) =>
+      typeof value === "string" && SECRET_CONFIG_KEY.test(key),
+  });
 }
 
 // A PINO TRANSPORT IS FOR A HUMAN WATCHING A TERMINAL, AND ONLY DEVELOPMENT HAS ONE.

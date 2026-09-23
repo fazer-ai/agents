@@ -2102,8 +2102,11 @@ async function runTurnBody(
       if (inGuard.kind === "handed-off") {
         const handed = await handOverForGuardrail("input");
         if (handed !== "handed" && handed !== "failed") return handed;
-        // The line says a person will continue, so it goes out only when one will.
-        if (handed === "failed" || inReply === null) return "blocked";
+        // The line says a person will continue, so it goes out only when one will. A transfer that
+        // failed answered nobody: "empty" keeps the message owed (recovery and a later flush still
+        // see it), where "blocked" would settle it as handled, the same split the output side makes.
+        if (handed === "failed") return "empty";
+        if (inReply === null) return "blocked";
         if (!(await claimBeforeSend())) return "superseded";
         await client.sendMessage(conversationId, inReply);
         deliveredBalloons = 1;

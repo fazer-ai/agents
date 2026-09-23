@@ -7891,7 +7891,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             checkpointer: new MemorySaver(),
           },
         });
-        expect(outcome).toBe("blocked");
+        // Still owed: "blocked" would settle it as handled, and recovery would drop it.
+        expect(outcome).toBe("empty");
         expect(log.sent).toEqual([]);
       });
 

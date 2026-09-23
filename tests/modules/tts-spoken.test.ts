@@ -491,6 +491,20 @@ describe("planSpokenReply", () => {
     ).toEqual(["https://x.com.br/Meu%20Arquivo.pdf"]);
   });
 
+  // Review round 13.
+  test("a closing typographic quote is the sentence's", () => {
+    for (const text of [
+      "O endereço ‘https://x.com.br/pedidos’ permite acompanhar seu pedido",
+      "O endereço “https://x.com.br/pedidos” permite acompanhar seu pedido",
+      "O endereço «https://x.com.br/pedidos» permite acompanhar seu pedido",
+      "O endereço ‹https://x.com.br/pedidos› permite acompanhar seu pedido",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([
+        "https://x.com.br/pedidos",
+      ]);
+    }
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

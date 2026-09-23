@@ -1,6 +1,8 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
+import { loadAgentConfig } from "@/graph/prepare";
+import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import {
   runScoped,
@@ -11,8 +13,9 @@ import {
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
-import { parseChatwootMessages } from "./messages";
+import { chatwootMessageListLength, parseChatwootMessages } from "./messages";
 import { parseLiveConversation, shouldBotHandle } from "./normalize";
 import type { NormalizedChatwootEvent } from "./types";
 
@@ -214,12 +217,10 @@ export async function mediaFallbackHandler(
   if (job.payloadSecret == null)
     throw new Error("media fallback: the job carries no text");
   const text = decryptJson<string>(job.payloadSecret);
-  // The bot the failed message came from, by the id the conversation knows it by, so the text goes
-  // out under the same identity the audio did.
   // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
-  // switches the agent off or disconnects the account, and the bot's stored token outlives both. The
-  // bot is found by the id the conversation knows it by, so the text goes out under the same identity
-  // the audio did.
+  // switches the agent off, flips it to monitoring, disconnects the account or `/reset`s the
+  // conversation, and the bot's stored token outlives all four. The bot is found by the id the
+  // conversation knows it by, so the text goes out under the same identity the audio did.
   const bot = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
     db.chatwootAgentBot.findFirst({
       where: {
@@ -228,19 +229,58 @@ export async function mediaFallbackHandler(
       },
       select: {
         accessToken: true,
-        agent: { select: { enabled: true } },
+        agentId: true,
         instance: { select: { disconnectedAt: true } },
       },
     }),
   );
-  if (!bot?.agent.enabled || bot.instance.disconnectedAt !== null) {
+  const conv = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+      },
+      select: { threadId: true, lastInboundAt: true, resetAtMessageId: true },
+    }),
+  );
+  const stop = (why: string): JobResult => {
     logger.warn(
-      "media fallback: bot %s on instance %s is gone, off or disconnected, the text is not sent",
-      String(agentBotId),
-      String(instanceId),
+      "media fallback: %s (conv=%s msg=%s), the text is not sent",
+      why,
+      String(conversationId),
+      String(messageId),
     );
     return { outcome: "done" };
-  }
+  };
+  if (!bot || bot.instance.disconnectedAt !== null)
+    return stop("the bot is gone or the account is disconnected");
+  if (!conv) return stop("the conversation is not mirrored here");
+  // The reply belongs to the episode a `/reset` closed.
+  if (resetLandedAfter(messageId, conv.resetAtMessageId))
+    return stop("the conversation was reset after the failed reply");
+  // The seam every sender loads first (`loadAgentConfig`): it refuses a switched-off agent and a
+  // monitoring one, and it carries the signature, which the voice note's transcription never has.
+  const cfg = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+    loadAgentConfig(
+      db,
+      {
+        tenantId: job.tenantId,
+        instanceId,
+        conversationId,
+        agentId: bot.agentId,
+        threadId: conv.threadId,
+        lastIncomingAt: conv.lastInboundAt,
+      },
+      { skipExperiment: true },
+    ),
+  );
+  if (!cfg) return stop("the agent is off, monitoring or unloadable");
+  // SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
+  // replacement is not (docs/signature.md).
+  const sig = signatureFor(cfg.signatureConfig, cfg.promptVars, cfg.promptOpts);
+  const [signed = text] = sig
+    ? attachSignature([text], sig, cfg.signatureConfig)
+    : [text];
   const client = await loadChatwootClient(job.tenantId, instanceId, {
     base,
     botToken: decryptJson<string>(bot.accessToken),
@@ -281,18 +321,23 @@ export async function mediaFallbackHandler(
       );
       return { outcome: "done" };
     }
-    const rows = parseChatwootMessages(
-      await client.getMessages(
-        conversationId,
-        before === undefined ? undefined : { before },
-      ),
+    const raw = await client.getMessages(
+      conversationId,
+      before === undefined ? undefined : { before },
     );
+    const rows = parseChatwootMessages(raw);
+    // A page read INCOMPLETELY (not a list, or rows that did not parse) cannot say the send is not
+    // there, only that it could not tell: THROW and retry, never resend on it.
+    if (chatwootMessageListLength(raw) !== rows.length)
+      throw new Error(
+        "media fallback: a page of the conversation did not read",
+      );
     if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
     const oldest = rows[0]?.id;
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
   }
-  await client.sendMessage(conversationId, text, { sendId });
+  await client.sendMessage(conversationId, signed, { sendId });
   return { outcome: "done" };
 }
 

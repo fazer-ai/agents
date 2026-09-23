@@ -227,6 +227,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         systemPrompt: "x",
         enabled: true,
         mode: "production",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
         settings: {},
       },
       select: { id: true },
@@ -296,6 +297,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     assignee?: { type: string; id: number } | null;
     recentSendIds?: string[];
     filler?: number;
+    unreadable?: boolean;
   }) {
     const sent: {
       conv: number;
@@ -322,6 +324,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         // Pages the way Chatwoot does: the latest ~20, or the ~20 older than `before`. The thread is
         // the failed voice note, `filler` newer messages, and the named sends.
         getMessages: async (_c: number, o?: { before?: number }) => {
+          if (opts.unreadable) return {};
           const thread = [
             { id: 9001, sendId: null as string | null },
             ...Array.from({ length: opts.filler ?? 0 }, (_, i) => ({
@@ -428,6 +431,66 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     const lost = fakeChatwoot({ filler: 200 });
     await mediaFallbackHandler(await claimed(9001), appDb, lost.makeClient);
     expect(lost.sent).toEqual([]);
+  });
+
+  test("a page that did not read is not proof the send is missing: the job throws to retry", async () => {
+    const cw = fakeChatwoot({ unreadable: true });
+    await expect(
+      mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient),
+    ).rejects.toThrow();
+    expect(cw.sent).toEqual([]);
+  });
+
+  test("a signature the agent carries is on the text, as on any text reply", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          signature: { enabled: true, text: "Equipe Voz", position: "bottom" },
+        },
+      },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent.map((m) => m.text)).toEqual([`${REPLY}\n\nEquipe Voz`]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: {} },
+      });
+    }
+  });
+
+  test("a monitoring agent, or a conversation reset after the failure, gets nothing", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { mode: "monitoring" },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      });
+    }
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      data: { resetAtMessageId: 9001 },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { resetAtMessageId: null },
+      });
+    }
   });
 
   test("an agent switched off or an account disconnected while the job waited sends nothing", async () => {

@@ -387,6 +387,36 @@ describe("planSpokenReply", () => {
     ).toEqual(["foo+bar@x.com.br"]);
   });
 
+  // Review round 8: the rest of CommonMark's link destination.
+  test("a titled or angle-bracketed markdown link is a link", () => {
+    for (const text of [
+      'Redefina [aqui](https://x.com.br/reset?token=abc_ "Redefinir senha") ainda hoje',
+      "Redefina [aqui](https://x.com.br/reset?token=abc_ 'Redefinir senha') ainda hoje",
+      "Redefina [aqui](https://x.com.br/reset?token=abc_ (Redefinir senha)) ainda hoje",
+      "Redefina [aqui](<https://x.com.br/reset?token=abc_>) ainda hoje",
+    ]) {
+      const plan = planSpokenReply(text);
+      expect(plan.written).toEqual(["https://x.com.br/reset?token=abc_"]);
+      expect(plan.speech).toBe("Redefina aqui ainda hoje");
+    }
+  });
+
+  test("numeric character references in a destination are decoded", () => {
+    expect(
+      planSpokenReply(
+        "Veja [o pedido](https://x.com.br/b?a=1&#38;c=2) e [a nota](https://x.com.br/n?a=1&#x26;c=2) quando puder",
+      ).written,
+    ).toEqual(["https://x.com.br/b?a=1&c=2", "https://x.com.br/n?a=1&c=2"]);
+  });
+
+  test("an angle-bracketed mailto hands over its recipient", () => {
+    expect(
+      planSpokenReply(
+        "Se preferir, [escreva para o suporte](<mailto:sac@x.com.br?subject=Pedido>) e respondemos em 2 dias",
+      ).written,
+    ).toEqual(["sac@x.com.br"]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

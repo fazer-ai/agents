@@ -22,9 +22,10 @@ export interface SpokenReplyPlan {
 
 // A path segment may carry one level of balanced parentheses (Wikipedia's `C_(language)`).
 const TARGET = String.raw`(?:[^()\s]|\([^()\s]*\))+`;
-// Group 1 is the label, group 3 the target without a `mailto:`.
+// CommonMark's inline link: the destination bare or in `<…>`, then an optional title in `"…"`,
+// `'…'` or `(…)`. Group 1 is the label; groups 2/3 (angle) or 4/5 (bare) the `mailto:` and target.
 const MARKDOWN_LINK = new RegExp(
-  String.raw`\[([^\]\n]+)\]\(\s*(mailto:)?(${TARGET})\s*\)`,
+  String.raw`\[([^\]\n]+)\]\(\s*(?:<(mailto:)?([^<>\n]+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
   "g",
 );
 // A match never starts or ends inside a token: a written item that is only part of the destination
@@ -80,7 +81,10 @@ function itemSpans(text: string): Span[] {
         text,
         m.index,
         m.index + m[0].length,
-        [target(m[2], m[3] ?? ""), ...inner.flatMap((s) => s.items)],
+        [
+          target(m[2] ?? m[4], m[3] ?? m[5] ?? ""),
+          ...inner.flatMap((s) => s.items),
+        ],
         splice(label, inner),
       ),
     );
@@ -112,13 +116,19 @@ function itemSpans(text: string): Span[] {
 }
 
 // A markdown destination is written in markdown: the link points to it after CommonMark decodes
-// backslash escapes and entities (`Function_\(x\)`, `a=1&amp;b=2`). A `mailto:` link hands over
+// backslash escapes and character references (`Function_\(x\)`, `a=1&amp;b=2`, `&#38;`); of the
+// named ones only those a URL can carry are decoded. A `mailto:` link hands over
 // its recipient: `?subject=…` makes it neither the address nor a URI a chat client opens, and out
 // of the URI its percent escapes would name another mailbox (`foo%2Bbar@` is `foo+bar@`).
 function target(mailto: string | undefined, destination: string): string {
   const decoded = destination
     .replace(/\\([!-/:-@[-`{-~])/g, "$1")
-    .replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) => ENTITIES[e] ?? "");
+    .replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) => ENTITIES[e] ?? "")
+    .replace(/&#(?:([0-9]{1,7})|[xX]([0-9a-fA-F]{1,6}));/g, (_, d, h) => {
+      // CommonMark: an invalid code point decodes to U+FFFD.
+      const cp = d ? Number(d) : Number.parseInt(h, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "\uFFFD";
+    });
   if (!mailto) return decoded;
   const recipient = decoded.split("?")[0] ?? "";
   try {

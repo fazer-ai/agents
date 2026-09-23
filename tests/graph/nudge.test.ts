@@ -4493,6 +4493,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       async () => {
         await seedConv(9705, null);
         const s = statusClient({ failOn: "open" });
+        const saver = new MemorySaver();
         const outcome = await runAgentNudge({
           tenantId,
           threadId: `${tenantId}:${instanceId}:9705`,
@@ -4509,19 +4510,96 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
               new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
             ) as never,
             makeClient: s.makeClient,
-            checkpointer: new MemorySaver(),
+            checkpointer: saver,
             persistUsage: async () => {},
           },
         });
         expect(outcome).toBe("silent");
         expect(s.messages).toEqual([]);
         expect(s.statuses).toEqual([[9705, "open-THREW"]]);
+        // The refused follow-up is not left in the thread as something the customer was told.
+        const state = await buildThreadStateGraph(saver).getState({
+          configurable: { thread_id: `${tenantId}:${instanceId}:9705` },
+        });
+        const said = (
+          ((state.values as { messages?: BaseMessage[] })?.messages ??
+            []) as BaseMessage[]
+        ).filter((m) => m.getType() === "ai");
+        expect(said.length).toBe(0);
         expect(s.labelSets).toEqual([["follow-up"]]);
         expect(
           s.notes.some(([, n]) =>
             n.includes("não consegui passar a conversa para a equipe"),
           ),
         ).toBe(true);
+      },
+      { handoff: { mode: "route" } },
+    );
+  });
+
+  // The window can close during the judge's call. The ordinary template says nothing about a
+  // transfer, so it does not go out in the hand-over line's place: the operator gets the line.
+  test("a follow-up handed over after the window closed notes the line, not the template", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "handoff",
+          handoffMessage: "ENCAMINHADO-NUDGE",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        const t0 = new Date();
+        await seedConv(9707, null, new Date(t0.getTime() - 23 * 3_600_000));
+        const s = stub();
+        let judged = false;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9707`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            now: () => (judged ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: true,
+                        categories: ["toxicity"],
+                        rationale: "fora da política",
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Some sumido, hein?"],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(judged).toBe(true);
+        expect(outcome).toBe("noted-window");
+        expect(s.templates).toEqual([]);
+        expect(s.messages).toEqual([]);
+        expect(s.notes.some(([, n]) => n.endsWith("ENCAMINHADO-NUDGE"))).toBe(
+          true,
+        );
+        // One status change, and it is the transfer: the ladder's resolve did not follow it.
+        expect(s.statuses).toEqual([[9707, "open"]]);
       },
       { handoff: { mode: "route" } },
     );

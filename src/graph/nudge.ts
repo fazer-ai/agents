@@ -2196,12 +2196,29 @@ export async function runAgentNudge(
       if (!(await stillWanted())) return refuse(standDown());
       // A transfer that did not land sends no line promising a person, and the ladder's resolve
       // stays off all the same: the policy said this case needs one.
+      // Through `refuse`, because the refused reply is already in the thread: left there, the next
+      // turn on this still-bot-owned conversation would read it as said.
       if (!handed) {
         await applyPostActions({
           canMessage: canMessagePost,
           allowResolve: false,
         });
-        return "silent";
+        return refuse("silent");
+      }
+      // The window closed during the judge's call or the transfer. The ordinary template below says
+      // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
+      // as a note, which is what `deliverPromisedLine` does for the tool's own transfer.
+      if (screened !== null && sendModeNow() !== "freeform") {
+        await client.sendPrivateNote(
+          conversationId,
+          `${OUTSIDE_WINDOW_NOTE_PREFIX}${screened}`,
+        );
+        markFollowUp("noted-window");
+        await applyPostActions({
+          canMessage: canMessagePost,
+          allowResolve: false,
+        });
+        return "noted-window";
       }
     }
     if (screened === null) {

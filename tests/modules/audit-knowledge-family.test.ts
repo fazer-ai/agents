@@ -297,6 +297,8 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
       mimeType: null,
       status: "PENDING",
       chars: BODY.length,
+      externalId: null,
+      sourceUrl: null,
     });
     expect(dump(row?.after)).not.toContain(BODY);
     await collect();

@@ -651,6 +651,12 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED again by the guardrail `handoff` action (#704), which reaches tools/list through
   // `agent_settings_set`: this tree measures 59,400, 450 over the #646 raise, same 16 of headroom. See
   // SETTINGS_SCHEMA_CEILING above. Descriptions are unchanged.
+  //
+  // BOTH RAISED by the knowledge source tools (#794): `knowledge_source_set`, `_sync` and `_remove`,
+  // the MCP twins of the three `/v1/knowledge/bases/:id/source` routes. Base 30,773 and 59,400, this
+  // tree 31,350 and 60,186, so 31,365 and 60,202 with the same 15 and 16. The three descriptions were
+  // cut by 197 from their first draft to what a caller cannot read off the schema: that only
+  // documents with an external id are the sync's, and that removing the source keeps them.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -659,8 +665,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_788);
-    expect(schema).toBeLessThanOrEqual(59_416);
+    expect(desc).toBeLessThanOrEqual(31_365);
+    expect(schema).toBeLessThanOrEqual(60_202);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

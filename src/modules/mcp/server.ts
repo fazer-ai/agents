@@ -170,6 +170,9 @@ import {
   knowledgeEdit,
   knowledgeReindex,
   knowledgeReject,
+  knowledgeSourceRemove,
+  knowledgeSourceSet,
+  knowledgeSourceSync,
   knowledgeUpdate,
 } from "./write-knowledge";
 import {
@@ -2676,6 +2679,71 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await knowledgeReindex(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_source_set",
+      {
+        description:
+          'Mirror a Chatwoot help center portal into a knowledge base (kind "chatwoot_portal"): each published article becomes a document keyed by its article id, kept in sync. Documents without an external id are never touched. Replaces an existing source. Changes nothing unless dry_run is false.',
+        inputSchema: {
+          knowledge_base_id: z.string(),
+          kind: z.string(),
+          base_url: z.string(),
+          slug: z.string(),
+          locale: z.string(),
+          exclude_ids: z.array(z.number()).optional(),
+          interval_minutes: z.number().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          knowledge_base_id: string;
+          kind: string;
+          base_url: string;
+          slug: string;
+          locale: string;
+          exclude_ids?: number[];
+          interval_minutes?: number;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await knowledgeSourceSet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_source_sync",
+      {
+        description:
+          "Sync a knowledge base against its portal now. Asynchronous: the outcome shows on the base's source state. Acts only when dry_run is false.",
+        inputSchema: {
+          knowledge_base_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { knowledge_base_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await knowledgeSourceSync(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "knowledge_source_remove",
+      {
+        description:
+          "Stop syncing a knowledge base from its portal. The synced documents stay, and a source set again readopts them. Changes nothing unless dry_run is false.",
+        inputSchema: {
+          knowledge_base_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { knowledge_base_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await knowledgeSourceRemove(eff, args)),
     );
 
     registerTenantTool(

@@ -33,6 +33,7 @@ const HIT: ChunkHit = {
   knowledgeBaseName: "Support",
   documentId: 30n,
   documentTitle: "Refund policy",
+  documentUrl: null,
   content: "Refunds are issued within 5 business days.",
   metadata: { sourceUrl: "https://example.com/refunds" },
   distance: 0.12,

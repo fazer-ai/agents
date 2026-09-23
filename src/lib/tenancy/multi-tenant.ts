@@ -31,6 +31,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "BusinessHours",
   "KnowledgeBase",
   "KnowledgeChunk",
+  "KnowledgeSource",
   "ApprovalQueueItem",
   "VaultEntry",
   "ToolDefinition",

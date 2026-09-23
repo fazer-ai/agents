@@ -7,11 +7,16 @@ import {
   EMBEDDING_BLOCK_KEY,
   type EmbeddingBlockReason,
 } from "@/lib/embedding-block";
-import { AppError, NotFoundError } from "@/lib/errors";
+import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
+import {
+  markUndisclosed,
+  redactEndpoint,
+  undisclosedMoved,
+} from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
@@ -207,10 +212,71 @@ export interface CreateDocumentParams {
   knowledgeBaseId: bigint;
   title: string;
   text: string;
-  sourceType: "text" | "file" | "approval";
+  sourceType: "text" | "file" | "approval" | "chatwoot_portal";
   fileName?: string;
   mimeType?: string;
+  // Set only by a knowledge source's sync (issue #794): the upstream item this document mirrors, and
+  // its public URL. Unique per base, so a second writer of the same item gets P2002, not a copy.
+  externalId?: string;
+  sourceUrl?: string;
+  // The sync's own write (issue #794), fenced against the source it read: see holdSource.
+  bySource?: SourceFence;
   base?: PrismaClient;
+}
+
+// A synced document is the source's to change (issue #794): an edit through the document API or an
+// MCP tool would be overwritten on the next sync, silently or not depending on timing, so it is
+// refused while the base still has a source. With the source removed the documents keep their
+// external ids (so a source put back readopts them) and become ordinary documents again.
+export const SYNCED_DOCUMENT_REFUSAL =
+  "This document is synced from the knowledge base's help center portal and would be overwritten on the next sync; fix the article in the portal instead";
+
+// The same question for a caller that previews before writing (the MCP tools): a preview that said
+// "ok" for a write the apply then refuses is the #510 shape.
+export async function assertDocumentNotSynced(
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) => refuseSyncedWrite(db, id));
+}
+
+// A sync run reads its source, goes out to the portal, and writes afterwards; the source can be
+// removed or replaced in between. Every write of the run carries the source's config as the run read
+// it and checks it INSIDE the write's own transaction, holding the row with FOR SHARE: a removal or a
+// replacement waits for the write in flight and makes every later one refuse, so a stale run cannot
+// touch a document after "stop syncing" returned, or reconcile against a config that is gone.
+export interface SourceFence {
+  knowledgeBaseId: bigint;
+  // `config::text` as the run read it: jsonb renders canonically, so equal text is equal config.
+  config: string;
+}
+
+export class SourceChangedError extends Error {}
+
+async function holdSource(db: ScopedDb, fence: SourceFence): Promise<void> {
+  const rows = await db.$queryRaw<{ config: string }[]>`
+    SELECT config::text AS config FROM knowledge_sources
+     WHERE knowledge_base_id = ${fence.knowledgeBaseId}
+     FOR SHARE`;
+  if (rows[0]?.config !== fence.config) {
+    throw new SourceChangedError(
+      "the knowledge base's source was removed or replaced during the run",
+    );
+  }
+}
+
+async function refuseSyncedWrite(db: ScopedDb, id: bigint): Promise<void> {
+  const doc = await db.knowledgeDocument.findUnique({
+    where: { id },
+    select: {
+      externalId: true,
+      kb: { select: { source: { select: { id: true } } } },
+    },
+  });
+  if (doc?.externalId != null && doc.kb.source) {
+    throw new ConflictError(SYNCED_DOCUMENT_REFUSAL);
+  }
 }
 
 // What a document's audit row carries, and the one thing it never does.
@@ -229,6 +295,8 @@ type DocAuditRow = {
   mimeType: string | null;
   status: string;
   chars: number;
+  externalId: string | null;
+  sourceUrl: string | null;
 };
 
 function docAuditProjection(r: DocAuditRow) {
@@ -241,6 +309,10 @@ function docAuditProjection(r: DocAuditRow) {
     mimeType: r.mimeType,
     status: r.status,
     chars: r.chars,
+    // A synced document's article (issue #794): the id as is, the URL as its origin, like every URL
+    // on the trail. A move the origin hides is marked by the update (`undisclosedMoved`).
+    externalId: r.externalId,
+    sourceUrl: r.sourceUrl === null ? null : redactEndpoint(r.sourceUrl),
   };
 }
 
@@ -267,11 +339,13 @@ async function readDocForAudit(
       mime_type: string | null;
       status: string;
       chars: number;
+      external_id: string | null;
+      source_url: string | null;
       text_moved: boolean;
     }[]
   >`
     SELECT id, knowledge_base_id, title, source_type, file_name, mime_type, status,
-           length(content) AS chars,
+           length(content) AS chars, external_id, source_url,
            (content IS DISTINCT FROM ${compareText}::text) AS text_moved
       FROM knowledge_documents
      WHERE id = ${id}
@@ -288,6 +362,8 @@ async function readDocForAudit(
       mimeType: r.mime_type,
       status: r.status,
       chars: Number(r.chars),
+      externalId: r.external_id,
+      sourceUrl: r.source_url,
     },
     textMoved: r.text_moved,
   };
@@ -323,6 +399,7 @@ export async function createDocument(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
+    if (params.bySource) await holdSource(db, params.bySource);
     const created = await db.knowledgeDocument.create({
       data: {
         tenantId,
@@ -332,6 +409,8 @@ export async function createDocument(
         fileName: params.fileName,
         mimeType: params.mimeType,
         content: params.text,
+        externalId: params.externalId,
+        sourceUrl: params.sourceUrl,
         status: "PENDING",
       },
       select: { id: true, status: true },
@@ -378,6 +457,8 @@ interface DocumentListRow {
   status: string;
   error: string | null;
   chunkCount: number | null;
+  externalId: string | null;
+  sourceUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
   contentChars: number;
@@ -442,6 +523,8 @@ export async function listDocuments(
              status,
              error,
              chunk_count      AS "chunkCount",
+             external_id      AS "externalId",
+             source_url       AS "sourceUrl",
              created_at       AS "createdAt",
              updated_at       AS "updatedAt",
              length(content)  AS "contentChars"
@@ -478,6 +561,8 @@ export async function getDocument(
         status: true,
         error: true,
         chunkCount: true,
+        externalId: true,
+        sourceUrl: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -491,8 +576,11 @@ export async function deleteDocument(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
+  opts: { bySource?: SourceFence } = {},
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    if (opts.bySource) await holdSource(db, opts.bySource);
+    else await refuseSyncedWrite(db, id);
     // NOTE: Read with the row LOCKED before the delete, so the row describes the document actually
     // removed rather than a version an edit replaced in between.
     const existing = await readDocForAudit(db, id, null);
@@ -511,6 +599,10 @@ export async function deleteDocument(
 export interface UpdateDocumentParams {
   title?: string;
   text?: string;
+  // Sync-only (issue #794): the item's public URL moved (a renamed slug). A write that carries the
+  // source's fence is the source's own, so it is fenced against the source instead of refused.
+  sourceUrl?: string | null;
+  bySource?: SourceFence;
 }
 
 // Edit a document's title and/or text. Changing the text RE-INGESTS it (status → PENDING → the
@@ -525,7 +617,10 @@ export async function updateDocument(
   const tenantId = ctx.tenantId as bigint;
   const hasTitle = params.title !== undefined;
   const hasText = params.text !== undefined;
-  if (!hasTitle && !hasText) throw new AppError("nothing to update", 400);
+  const hasUrl =
+    params.bySource !== undefined && params.sourceUrl !== undefined;
+  if (!hasTitle && !hasText && !hasUrl)
+    throw new AppError("nothing to update", 400);
   // Same rule as the create, and asked here too because an edit is a write of its own: the create's
   // check says nothing about the text an update carries.
   refuseUnstorable([
@@ -534,6 +629,8 @@ export async function updateDocument(
   ]);
 
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
+    if (params.bySource) await holdSource(db, params.bySource);
+    else await refuseSyncedWrite(db, id);
     // NOTE: LOCKED, because this reading is both the reingest decision and the row's `before`, and
     // two overlapping edits would otherwise each compare against a text the other one replaced. The
     // comparison happens in the DATABASE, where the old text already is: what comes back is whether
@@ -552,6 +649,7 @@ export async function updateDocument(
       where: { id },
       data: {
         ...(hasTitle ? { title: params.title } : {}),
+        ...(hasUrl ? { sourceUrl: params.sourceUrl } : {}),
         ...(reingest
           ? { content: params.text, status: "PENDING", error: null }
           : {}),
@@ -561,13 +659,19 @@ export async function updateDocument(
     const after = await readDocForAudit(db, id, null);
     if (!after) throw new NotFoundError("document not found");
     const updated = after.row;
-    const beforeProj = docAuditProjection(existing.row);
-    const afterProj = docAuditProjection(updated);
+    const hidden = undisclosedMoved(
+      { sourceUrl: existing.row.sourceUrl },
+      { sourceUrl: updated.sourceUrl },
+      ["sourceUrl"],
+    );
+    const mark = <T extends object>(p: T) => (hidden ? markUndisclosed(p) : p);
+    const beforeProj = mark(docAuditProjection(existing.row));
+    const afterProj = mark(docAuditProjection(updated));
     // NOTE: The action this issue invents: `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
     // an edit to a document reached the trail through nothing at all. Recorded only when it moved,
     // which for a body means its LENGTH moved or the title did: the text itself is neither carried
     // nor compared here (`reingest` above compares it, and that is the ingest's business).
-    if (reingest || projectionMoved(beforeProj, afterProj)) {
+    if (reingest || hidden || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "knowledge_document.update",
         target: `knowledge_document:${id}`,

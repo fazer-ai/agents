@@ -137,6 +137,7 @@ function row(over: Partial<ChunkRow>): ChunkRow {
     knowledgeBaseName: "Ajuda",
     documentId: 1n,
     documentTitle: "Trocar a senha",
+    documentUrl: null,
     content: `${ARTICLE}\n\n${FOOTER}`,
     metadata: {},
     distance: 0.1,

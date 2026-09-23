@@ -78,7 +78,8 @@ export type SchedulerJobKind =
   | "HUMAN_REPLY_RECOVERY"
   | "SPEND_CEILING_POLL"
   | "OBSERVE"
-  | "MEDIA_TEXT_FALLBACK";
+  | "MEDIA_TEXT_FALLBACK"
+  | "KNOWLEDGE_SOURCE_SYNC";
 
 export interface ClaimedJob {
   id: bigint;

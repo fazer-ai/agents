@@ -398,6 +398,9 @@ const GUARD_CALLS: Record<string, number> = {
   "src/modules/flowlog/alerts.ts": 1,
   "src/modules/flowlog/service.ts": 2,
   "src/modules/rag/documents.ts": 1,
+  // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
+  // and the boot re-arm's before it reaches the log (issue #794).
+  "src/modules/rag/source.ts": 3,
   "src/modules/scheduler/service.ts": 2,
   // The Langfuse error text, before it reaches `poll_error` (issue #426, review round 1).
   "src/modules/spend-ceiling/poll.ts": 1,

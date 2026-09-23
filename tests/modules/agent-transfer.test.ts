@@ -3644,3 +3644,212 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
     expect(docCount).toBe(2);
   });
 });
+
+// Issue #794: a base that mirrors a help center portal keeps what makes it a mirror across an export.
+// Without the article ids, setting the source again at the destination would read every imported
+// document as curated and create a second copy of each article.
+describe.skipIf(!dbUp)("agent export/import with a knowledge source", () => {
+  let srcTenant = 0n;
+  let dstTenant = 0n;
+  let srcAgentId = 0n;
+  const ctxOf = (tenantId: bigint): TenantContext => ({
+    tenantId,
+    userId: null,
+    role: "TENANT_ADMIN",
+  });
+
+  async function agentWithBase(
+    name: string,
+    source: Record<string, unknown> | null,
+  ): Promise<bigint> {
+    const kb = await suDb.knowledgeBase.create({
+      data: { tenantId: srcTenant, name },
+    });
+    if (source) {
+      await suDb.knowledgeSource.create({
+        data: {
+          tenantId: srcTenant,
+          knowledgeBaseId: kb.id,
+          kind: "chatwoot_portal",
+          config: source as never,
+          intervalMinutes: 30,
+        },
+      });
+    }
+    await suDb.knowledgeDocument.createMany({
+      data: [
+        {
+          tenantId: srcTenant,
+          knowledgeBaseId: kb.id,
+          title: "Prazo de reembolso",
+          sourceType: "chatwoot_portal",
+          content: "MARCADOR-102",
+          externalId: "102",
+          sourceUrl: "https://ajuda.x.com.br/hc/ajuda/articles/102-prazo",
+          status: "READY",
+        },
+        {
+          tenantId: srcTenant,
+          knowledgeBaseId: kb.id,
+          title: "Nota curada",
+          sourceType: "text",
+          content: "CURADO",
+          status: "READY",
+        },
+      ],
+    });
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: srcTenant,
+        name: `Agente ${name}`,
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {},
+      },
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId: srcTenant,
+        agentId: agent.id,
+        source: "RAG",
+        enabledTools: ["search_knowledge"],
+        knowledgeBaseIds: [kb.id],
+      },
+    });
+    return agent.id;
+  }
+
+  beforeAll(async () => {
+    srcTenant = (
+      await suDb.tenant.create({
+        data: { name: "KsSrc", slug: `ks-src-${process.pid}` },
+      })
+    ).id;
+    dstTenant = (
+      await suDb.tenant.create({
+        data: { name: "KsDst", slug: `ks-dst-${process.pid}` },
+      })
+    ).id;
+    srcAgentId = await agentWithBase("PortalKB", {
+      baseUrl: "https://ajuda.x.com.br",
+      slug: "ajuda",
+      locale: "pt-BR",
+      excludeIds: [7],
+    });
+  });
+
+  afterAll(async () => {
+    for (const tid of [srcTenant, dstTenant]) {
+      if (!tid) continue;
+      for (const table of [
+        "agent_tool_selections",
+        "scheduler_jobs",
+        "knowledge_sources",
+        "knowledge_documents",
+        "knowledge_bases",
+        "agents",
+        "audit_logs",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tid}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tid}`);
+    }
+  });
+
+  test("the source and the article ids travel, and the import arms the sync", async () => {
+    const exp = await exportAgent(ctxOf(srcTenant), srcAgentId, appDb, {
+      includeComponents: true,
+      includeDocuments: true,
+    });
+    const kbExp = exp.components?.knowledgeBases.find(
+      (k) => k.name === "PortalKB",
+    );
+    expect(kbExp?.source).toEqual({
+      kind: "chatwoot_portal",
+      baseUrl: "https://ajuda.x.com.br",
+      slug: "ajuda",
+      locale: "pt-BR",
+      excludeIds: [7],
+      intervalMinutes: 30,
+    });
+    const { warnings } = await importAgent(ctxOf(dstTenant), exp, appDb);
+    expect(warnings.some((w) => w.code === "knowledgeSourceUnusable")).toBe(
+      false,
+    );
+    const kb = await suDb.knowledgeBase.findFirst({
+      where: { tenantId: dstTenant, name: "PortalKB" },
+      include: { source: true },
+    });
+    expect(kb?.source).toMatchObject({
+      kind: "chatwoot_portal",
+      intervalMinutes: 30,
+      config: {
+        baseUrl: "https://ajuda.x.com.br",
+        slug: "ajuda",
+        locale: "pt-BR",
+        excludeIds: [7],
+      },
+    });
+    const docs = await suDb.knowledgeDocument.findMany({
+      where: { knowledgeBaseId: kb?.id },
+      orderBy: { title: "asc" },
+      select: { title: true, externalId: true, sourceUrl: true },
+    });
+    expect(docs).toEqual([
+      { title: "Nota curada", externalId: null, sourceUrl: null },
+      {
+        title: "Prazo de reembolso",
+        externalId: "102",
+        sourceUrl: "https://ajuda.x.com.br/hc/ajuda/articles/102-prazo",
+      },
+    ]);
+    const job = await suDb.schedulerJob.findFirst({
+      where: { tenantId: dstTenant, kind: "KNOWLEDGE_SOURCE_SYNC" },
+    });
+    expect(job).toMatchObject({
+      status: "PENDING",
+      dedupeKey: `source:${kb?.id}`,
+    });
+  });
+
+  test("a bundle whose source the write would refuse imports the base without it, with a warning", async () => {
+    const exp = await exportAgent(ctxOf(srcTenant), srcAgentId, appDb, {
+      includeComponents: true,
+      includeDocuments: true,
+    });
+    const kbExp = exp.components?.knowledgeBases.find(
+      (k) => k.name === "PortalKB",
+    );
+    if (!kbExp?.source) throw new Error("the bundle has no source");
+    kbExp.name = "PortalKB-2";
+    kbExp.source.baseUrl = "file:///tmp/portal";
+    // Two documents claiming one article: the first keeps the id, the import does not fail.
+    kbExp.documents = [
+      ...(kbExp.documents ?? []),
+      {
+        title: "Cópia",
+        sourceType: "chatwoot_portal",
+        content: "MARCADOR-102-bis",
+        externalId: "102",
+        sourceUrl: "https://ajuda.x.com.br/hc/ajuda/articles/102-bis",
+      },
+    ];
+    const { warnings } = await importAgent(ctxOf(dstTenant), exp, appDb);
+    expect(
+      warnings.filter((w) => w.code === "knowledgeSourceUnusable"),
+    ).toHaveLength(1);
+    const kb = await suDb.knowledgeBase.findFirst({
+      where: { tenantId: dstTenant, name: "PortalKB-2" },
+      include: { source: true },
+    });
+    expect(kb).not.toBeNull();
+    expect(kb?.source).toBeNull();
+    const withId = await suDb.knowledgeDocument.findMany({
+      where: { knowledgeBaseId: kb?.id, externalId: "102" },
+      select: { content: true },
+    });
+    expect(withId).toEqual([{ content: "MARCADOR-102" }]);
+  });
+});

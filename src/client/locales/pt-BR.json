@@ -1329,6 +1329,7 @@
       "kbReusedDocsSkipped_many": "A base de conhecimento \"{{name}}\" já existia e foi reaproveitada; {{count}} documentos do pacote não foram importados.",
       "kbReusedDocsSkipped_other": "A base de conhecimento \"{{name}}\" já existia e foi reaproveitada; {{count}} documentos do pacote não foram importados.",
       "knowledgeBaseNameUnusable": "A base de conhecimento \"{{name}}\" tem um nome que a plataforma não consegue armazenar, então ela não foi importada. O resto do agente foi.",
+      "knowledgeSourceUnusable": "A base de conhecimento \"{{name}}\" foi importada sem a fonte da central de ajuda, que a plataforma não consegue armazenar. Configure a fonte de novo na base.",
       "mcpGrantNotFound": "O servidor MCP \"{{name}}\" não foi encontrado, então a concessão foi ignorada.",
       "mcpReused": "O servidor MCP \"{{name}}\" já existia e foi reaproveitado; confira se está certo.",
       "mcpUnsafeStdio": "O servidor MCP \"{{name}}\" tem um comando não suportado e foi ignorado.",

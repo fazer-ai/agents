@@ -32,6 +32,12 @@ import {
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import {
+  deleteSource,
+  getSource,
+  requestSync,
+  setSource,
+} from "@/modules/rag/source";
 import type { ChunkHit } from "@/modules/rag/sql";
 
 // Knowledge base + human-approval REST surface (same core the agent tools and MCP project over).
@@ -88,6 +94,7 @@ export function searchHitDto(h: ChunkHit) {
     knowledgeBaseName: h.knowledgeBaseName,
     documentId: String(h.documentId),
     documentTitle: h.documentTitle,
+    documentUrl: h.documentUrl,
     content: h.content,
     metadata: h.metadata,
     distance: h.distance,
@@ -162,13 +169,15 @@ export const knowledgeController = new Elysia({
   .get(
     "/bases/:id",
     async ({ tenantContext, params }) => {
-      const kb = await getKnowledgeBase({
-        ctx: ctxOrThrow(tenantContext),
-        id: requireDbId(params.id),
-      });
+      const ctx = ctxOrThrow(tenantContext);
+      const id = requireDbId(params.id);
+      const kb = await getKnowledgeBase({ ctx, id });
+      // The base's help center source, if it has one (issue #794): its config and the last run's
+      // outcome, which is where an operator reads a failed or suspicious sync.
+      const source = await getSource(ctx, id);
       return {
         instance: instanceIdentity,
-        base: { ...kb, id: String(kb.id) },
+        base: { ...kb, id: String(kb.id), source },
       };
     },
     {
@@ -238,6 +247,93 @@ export const knowledgeController = new Elysia({
           }),
         ),
         stripContactFooters: t.Optional(STRIP_CONTACT_FOOTERS_FIELD),
+      }),
+    },
+  )
+  .put(
+    "/bases/:id/source",
+    async ({ tenantContext, params, body }) => {
+      const source = await setSource(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        body,
+      );
+      return { instance: instanceIdentity, source };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Set knowledge base source",
+        "Make the knowledge base mirror a Chatwoot help center portal: every published article becomes a document keyed by its article id, kept in sync periodically. Replaces an existing source; documents without an external id are never touched. Arms a sync right away.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+      params: t.Object({
+        id: t.String({
+          description: "Knowledge base id (BigInt as a string).",
+        }),
+      }),
+      body: t.Object({
+        kind: t.String({
+          description: 'Source kind. Only "chatwoot_portal" today.',
+        }),
+        baseUrl: t.String({
+          description:
+            "The portal's public base URL (https), e.g. the help center domain or the Chatwoot URL.",
+        }),
+        slug: t.Optional(t.String({ description: "Portal slug." })),
+        locale: t.Optional(
+          t.String({ description: "Portal locale, e.g. pt-BR." }),
+        ),
+        excludeIds: t.Optional(
+          t.Array(t.Unknown(), {
+            description: "Article ids to leave out of the base.",
+          }),
+        ),
+        intervalMinutes: t.Optional(
+          t.Integer({
+            description: "Minutes between periodic syncs (default 10).",
+          }),
+        ),
+      }),
+    },
+  )
+  .delete(
+    "/bases/:id/source",
+    async ({ tenantContext, params }) => {
+      await deleteSource(ctxOrThrow(tenantContext), requireDbId(params.id));
+      return { instance: instanceIdentity, success: true };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Remove knowledge base source",
+        "Stop syncing the knowledge base from its portal. The synced documents stay, with their external ids, so setting the source again readopts them.",
+      ),
+      response: errors(400, 401, 403, 404),
+      params: t.Object({
+        id: t.String({
+          description: "Knowledge base id (BigInt as a string).",
+        }),
+      }),
+    },
+  )
+  .post(
+    "/bases/:id/source/sync",
+    async ({ tenantContext, params }) => {
+      await requestSync(ctxOrThrow(tenantContext), requireDbId(params.id));
+      return { instance: instanceIdentity, success: true };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Sync knowledge base source now",
+        "Arm a sync of the knowledge base against its portal right away, instead of waiting for the periodic one. The run is asynchronous; its outcome shows on the base's source state.",
+      ),
+      response: errors(400, 401, 403, 404, 409),
+      params: t.Object({
+        id: t.String({
+          description: "Knowledge base id (BigInt as a string).",
+        }),
       }),
     },
   )

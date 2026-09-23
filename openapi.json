@@ -29795,6 +29795,557 @@
         "operationId": "deleteV1KnowledgeBasesById"
       }
     },
+    "/v1/knowledge/bases/{id}/source": {
+      "put": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Set knowledge base source",
+        "description": "Make the knowledge base mirror a Chatwoot help center portal: every published article becomes a document keyed by its article id, kept in sync periodically. Replaces an existing source; documents without an external id are never touched. Arms a sync right away.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Knowledge base id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "baseUrl"
+                ],
+                "properties": {
+                  "kind": {
+                    "description": "Source kind. Only \"chatwoot_portal\" today.",
+                    "type": "string"
+                  },
+                  "baseUrl": {
+                    "description": "The portal's public base URL (https), e.g. the help center domain or the Chatwoot URL.",
+                    "type": "string"
+                  },
+                  "slug": {
+                    "description": "Portal slug.",
+                    "type": "string"
+                  },
+                  "locale": {
+                    "description": "Portal locale, e.g. pt-BR.",
+                    "type": "string"
+                  },
+                  "excludeIds": {
+                    "description": "Article ids to leave out of the base.",
+                    "type": "array",
+                    "items": {}
+                  },
+                  "intervalMinutes": {
+                    "description": "Minutes between periodic syncs (default 10).",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "description": "Minutes between periodic syncs (default 10).",
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "baseUrl"
+                ],
+                "properties": {
+                  "kind": {
+                    "description": "Source kind. Only \"chatwoot_portal\" today.",
+                    "type": "string"
+                  },
+                  "baseUrl": {
+                    "description": "The portal's public base URL (https), e.g. the help center domain or the Chatwoot URL.",
+                    "type": "string"
+                  },
+                  "slug": {
+                    "description": "Portal slug.",
+                    "type": "string"
+                  },
+                  "locale": {
+                    "description": "Portal locale, e.g. pt-BR.",
+                    "type": "string"
+                  },
+                  "excludeIds": {
+                    "description": "Article ids to leave out of the base.",
+                    "type": "array",
+                    "items": {}
+                  },
+                  "intervalMinutes": {
+                    "description": "Minutes between periodic syncs (default 10).",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "description": "Minutes between periodic syncs (default 10).",
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "baseUrl"
+                ],
+                "properties": {
+                  "kind": {
+                    "description": "Source kind. Only \"chatwoot_portal\" today.",
+                    "type": "string"
+                  },
+                  "baseUrl": {
+                    "description": "The portal's public base URL (https), e.g. the help center domain or the Chatwoot URL.",
+                    "type": "string"
+                  },
+                  "slug": {
+                    "description": "Portal slug.",
+                    "type": "string"
+                  },
+                  "locale": {
+                    "description": "Portal locale, e.g. pt-BR.",
+                    "type": "string"
+                  },
+                  "excludeIds": {
+                    "description": "Article ids to leave out of the base.",
+                    "type": "array",
+                    "items": {}
+                  },
+                  "intervalMinutes": {
+                    "description": "Minutes between periodic syncs (default 10).",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "description": "Minutes between periodic syncs (default 10).",
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putV1KnowledgeBasesByIdSource"
+      },
+      "delete": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Remove knowledge base source",
+        "description": "Stop syncing the knowledge base from its portal. The synced documents stay, with their external ids, so setting the source again readopts them.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Knowledge base id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteV1KnowledgeBasesByIdSource"
+      }
+    },
+    "/v1/knowledge/bases/{id}/source/sync": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Sync knowledge base source now",
+        "description": "Arm a sync of the knowledge base against its portal right away, instead of waiting for the periodic one. The run is asynchronous; its outcome shows on the base's source state.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Knowledge base id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1KnowledgeBasesByIdSourceSync"
+      }
+    },
     "/v1/knowledge/embedding-block": {
       "get": {
         "tags": [

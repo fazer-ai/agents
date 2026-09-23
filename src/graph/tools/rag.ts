@@ -5,6 +5,7 @@ import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import { sysCtx } from "@/modules/rag/documents";
 import { createSuggestion, searchKnowledge } from "@/modules/rag/service";
+import type { ChunkHit } from "@/modules/rag/sql";
 import { markEffectFree } from "./effect-free";
 
 // RAG tools the agent can call mid-turn. search_knowledge retrieves from the tenant's knowledge
@@ -120,6 +121,16 @@ function chunkSource(meta: unknown): { title?: string; url?: string } {
   return { ...(title ? { title } : {}), ...(url ? { url } : {}) };
 }
 
+// One retrieved passage as the model reads it: the base it came from and, for an article synced from a
+// help center portal, the article's public URL (issue #794), so the agent can hand the customer the
+// link the article lives at instead of guessing one.
+export function passageWithSource(
+  h: Pick<ChunkHit, "knowledgeBaseName" | "documentUrl" | "content">,
+): string {
+  const url = h.documentUrl ? `, ${h.documentUrl}` : "";
+  return `(source: ${h.knowledgeBaseName}${url}) ${h.content}`;
+}
+
 // Resolve which base ids a search call targets. A valid knowledge_base pick scopes to EVERY base
 // with that name (KnowledgeBase.name is not unique per tenant, so nothing is silently excluded);
 // an unknown/unset pick falls back to all selected bases (empty ⇒ undefined ⇒ all of the tenant's
@@ -216,9 +227,7 @@ function searchTool(ctx: RagToolCtx) {
       }));
       // Attribute each passage with its source KB (so the model can ground its answer naturally), but
       // WITHOUT a bracket marker: the model never sees a [n] to copy, so none can leak into the reply.
-      const content = grounded
-        .map((h) => `(source: ${h.knowledgeBaseName}) ${h.content}`)
-        .join("\n\n");
+      const content = grounded.map(passageWithSource).join("\n\n");
       return [content, { sources }] as const;
     },
     {

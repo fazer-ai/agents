@@ -1589,6 +1589,19 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         appDb,
       );
       expect(earlier.followUp?.nextStep).toBe(1);
+      // Review round 7: the episode written on the row decides over the death time. Marked with an
+      // older silence, a death just now is still an earlier episode's.
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs
+           SET updated_at = now(),
+               payload = jsonb_build_object('threadId', ${threadId}::text, 'episode', '1')
+         WHERE tenant_id = ${tenant} AND dedupe_key = ${key}`;
+      const marked = await getConversationDetail(
+        ctx(tenant),
+        convNewEpisode,
+        appDb,
+      );
+      expect(marked.followUp?.nextStep).toBe(1);
     } finally {
       await suDb.schedulerJob.deleteMany({
         where: { tenantId: tenant, dedupeKey: key },

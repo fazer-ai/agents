@@ -88,6 +88,16 @@ export function silenceStartedAt(
   return laterOf(lastInboundAt, lastRepliedAt);
 }
 
+// THE EPISODE A FOLLOW-UP JOB BELONGS TO, written on the job by the sweep that arms it and carried by
+// every reschedule (issue #796, review round 7). The silence start in epoch milliseconds, as text so
+// the sweep's SQL builds the same string (`floor(extract(epoch from …) * 1000)::bigint::text`, the
+// columns being millisecond timestamps). Dating a job by when it was deferred or when it died is not
+// the same thing: a claim from the previous episode can die after the new silence began, and our own
+// reply opens a new episode without cancelling the old deferral.
+export function followUpEpisodeKey(silenceStart: Date): string {
+  return String(silenceStart.getTime());
+}
+
 // WHEN THE CONVERSATION LAST MOVED, our own reply included. `lastEventAt` is mirrored from Chatwoot
 // and only advances when the webhook for the message we just sent comes back; between the send and
 // that return it still describes the OLD activity. A reader of the cadence in that gap concludes the

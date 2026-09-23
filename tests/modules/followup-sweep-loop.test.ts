@@ -11,6 +11,10 @@ import {
   registerFollowUpHandlers,
 } from "@/modules/followups/handlers";
 import {
+  followUpEpisodeKey,
+  silenceStartedAt,
+} from "@/modules/followups/settings";
+import {
   type ClaimedJob,
   claimDueJobs,
   enqueueJob,
@@ -74,6 +78,9 @@ const CONV_DEAD_NOW = 79_609;
 const CONV_DEAD_BEFORE = 79_610;
 const CONV_OLD_STEP = 79_611;
 const CONV_LEGACY = 79_613;
+const CONV_OTHER_EPISODE = 79_614;
+const CONV_DEAD_LATE = 79_615;
+const CONV_DEAD_MARKED = 79_616;
 const CONV_HOURS = 79_612;
 
 let tenantId = 0n;
@@ -145,6 +152,17 @@ async function rowOf(convId: number) {
       attempts: true,
     },
   });
+}
+
+// O episódio que a varredura grava no job: o início do silêncio da conversa, como o handler o lê.
+async function episodeOf(convId: number): Promise<string> {
+  const c = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, threadId: threadOf(convId) },
+    select: { lastInboundAt: true, lastRepliedAt: true },
+  });
+  const start = silenceStartedAt(c.lastInboundAt, c.lastRepliedAt);
+  if (!start) throw new Error("conversa sem silêncio");
+  return followUpEpisodeKey(start);
 }
 
 // Uma conversa parada há dois minutos, respondida por nós, que a varredura seleciona para o passo 0.
@@ -331,6 +349,7 @@ describe.skipIf(!dbUp)(
       const later = new Date(Date.now() + 30 * 60_000);
       const retried = {
         threadId: threadOf(CONV_LATER),
+        episode: await episodeOf(CONV_LATER),
         nudgeRetries: 2,
         deferredUnder: "backoff",
       };
@@ -362,7 +381,10 @@ describe.skipIf(!dbUp)(
       expect(kept?.runAt.getTime()).toBe(later.getTime());
       expect(kept?.payload).toEqual(retried);
       const due = await rowOf(CONV_DUE);
-      expect(due?.payload).toEqual({ threadId: threadOf(CONV_DUE) });
+      expect(due?.payload).toEqual({
+        threadId: threadOf(CONV_DUE),
+        episode: await episodeOf(CONV_DUE),
+      });
       expect(due?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
       expect(due?.attempts).toBe(2);
     });
@@ -377,9 +399,10 @@ describe.skipIf(!dbUp)(
         kind: "FOLLOWUP",
         dedupeKey: keyOf(CONV_OLD_STEP),
         runAt: new Date(Date.now() + 3 * 24 * 60 * 60_000),
-        // Marked as a backoff, so what decides is the step and not the missing mark.
+        // Marked as a backoff and with this episode, so what decides is the step alone.
         payload: {
           threadId: threadOf(CONV_OLD_STEP),
+          episode: await episodeOf(CONV_OLD_STEP),
           stepIndex: 2,
           deferredUnder: "backoff",
         },
@@ -389,7 +412,10 @@ describe.skipIf(!dbUp)(
       const before = Date.now();
       await runSweep();
       const r = await rowOf(CONV_OLD_STEP);
-      expect(r?.payload).toEqual({ threadId: threadOf(CONV_OLD_STEP) });
+      expect(r?.payload).toEqual({
+        threadId: threadOf(CONV_OLD_STEP),
+        episode: await episodeOf(CONV_OLD_STEP),
+      });
       expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
       expect(r?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
     });
@@ -404,12 +430,43 @@ describe.skipIf(!dbUp)(
         kind: "FOLLOWUP",
         dedupeKey: keyOf(CONV_LEGACY),
         runAt: new Date(Date.now() + 3 * 24 * 60 * 60_000),
-        payload: { threadId: threadOf(CONV_LEGACY) },
+        // This episode, so what decides is the missing mark alone.
+        payload: {
+          threadId: threadOf(CONV_LEGACY),
+          episode: await episodeOf(CONV_LEGACY),
+        },
         rearm: "same-work",
         base: appDb,
       });
       await runSweep();
       const r = await rowOf(CONV_LEGACY);
+      expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    // Review round 7: our own reply opens a new episode without cancelling the old one's deferral.
+    // A backoff armed for the previous episode is not this one's, and its retry count is not either.
+    test("a backoff armed for an earlier episode is replaced, and its retry count with it", async () => {
+      await seedIdle(CONV_OTHER_EPISODE, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_OTHER_EPISODE),
+        runAt: new Date(Date.now() + 60 * 60_000),
+        payload: {
+          threadId: threadOf(CONV_OTHER_EPISODE),
+          episode: followUpEpisodeKey(new Date(Date.now() - DAY_MS)),
+          nudgeRetries: 3,
+          deferredUnder: "backoff",
+        },
+        rearm: "same-work",
+        base: appDb,
+      });
+      await runSweep();
+      const r = await rowOf(CONV_OTHER_EPISODE);
+      expect(r?.payload).toEqual({
+        threadId: threadOf(CONV_OTHER_EPISODE),
+        episode: await episodeOf(CONV_OTHER_EPISODE),
+      });
       expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
     });
 
@@ -438,7 +495,47 @@ describe.skipIf(!dbUp)(
         UPDATE scheduler_jobs
            SET status = 'DEAD', attempts = 5, updated_at = now() - interval '1 day'
          WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_BEFORE)}`;
+      // Review round 7: a claim of the PREVIOUS episode that died after this silence began. Its death
+      // time says "this episode"; the episode written on it says otherwise, and that is what counts.
+      await seedIdle(CONV_DEAD_LATE, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_DEAD_LATE),
+        runAt: new Date(Date.now() - 60_000),
+        payload: {
+          threadId: threadOf(CONV_DEAD_LATE),
+          episode: followUpEpisodeKey(new Date(Date.now() - DAY_MS)),
+        },
+        rearm: "same-work",
+        base: appDb,
+      });
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET status = 'DEAD', attempts = 5, updated_at = now()
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_LATE)}`;
+      // And one marked with THIS episode stays out even though it died before the silence began by
+      // the clock: the mark is what is read.
+      await seedIdle(CONV_DEAD_MARKED, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_DEAD_MARKED),
+        runAt: new Date(Date.now() - 60_000),
+        payload: {
+          threadId: threadOf(CONV_DEAD_MARKED),
+          episode: await episodeOf(CONV_DEAD_MARKED),
+        },
+        rearm: "same-work",
+        base: appDb,
+      });
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs
+           SET status = 'DEAD', attempts = 5, updated_at = now() - interval '1 day'
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_MARKED)}`;
       await runSweep();
+      expect((await rowOf(CONV_DEAD_MARKED))?.status).toBe("DEAD");
+      expect((await rowOf(CONV_DEAD_LATE))?.status).toBe("PENDING");
+      expect((await rowOf(CONV_DEAD_LATE))?.attempts).toBe(0);
       expect((await rowOf(CONV_DEAD_NOW))?.status).toBe("DEAD");
       const revived = await rowOf(CONV_DEAD_BEFORE);
       expect(revived?.status).toBe("PENDING");
@@ -493,7 +590,10 @@ describe.skipIf(!dbUp)(
       const before = Date.now();
       await runSweep();
       const rearmed = await rowOf(CONV_SLOW);
-      expect(rearmed?.payload).toEqual({ threadId: threadOf(CONV_SLOW) });
+      expect(rearmed?.payload).toEqual({
+        threadId: threadOf(CONV_SLOW),
+        episode: await episodeOf(CONV_SLOW),
+      });
       expect(rearmed?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
       expect(rearmed?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
       await suDb.agent.update({
@@ -521,6 +621,7 @@ describe.skipIf(!dbUp)(
       const later = new Date(Date.now() + 6 * 60 * 60_000);
       const payload = {
         threadId: threadOf(CONV_HOURS),
+        episode: await episodeOf(CONV_HOURS),
         deferredUnder: followUpConfigVersion(agentAt, hours.updatedAt),
       };
       await enqueueJob({
@@ -544,7 +645,10 @@ describe.skipIf(!dbUp)(
         });
         await runSweep();
         const rearmed = await rowOf(CONV_HOURS);
-        expect(rearmed?.payload).toEqual({ threadId: threadOf(CONV_HOURS) });
+        expect(rearmed?.payload).toEqual({
+          threadId: threadOf(CONV_HOURS),
+          episode: await episodeOf(CONV_HOURS),
+        });
         expect(rearmed?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
       } finally {
         await suDb.agent.update({

@@ -46,6 +46,7 @@ import {
 } from "@/modules/followups/eligibility";
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
+  followUpEpisodeKey,
   isNewFollowUpEpisode,
   lastActivityAt,
   readFollowUpConfig,
@@ -1136,10 +1137,15 @@ export async function getConversationDetail(
     // A follow-up that died in THIS episode (its row went DEAD after the silence began): the sweep
     // leaves the conversation out until either side speaks again, so the estimate must not promise
     // a step 1 that will not run (issue #796). The same comparison as the sweep's SQL.
+    // Dated by the episode written on the row when there is one, as the sweep does.
+    const deadEpisode = (jobRow?.payload as { episode?: unknown } | null)
+      ?.episode;
     const diedThisEpisode =
       jobRow?.status === "DEAD" &&
       fencedSilenceStart != null &&
-      jobRow.updatedAt >= fencedSilenceStart;
+      (typeof deadEpisode === "string"
+        ? deadEpisode === followUpEpisodeKey(fencedSilenceStart)
+        : jobRow.updatedAt >= fencedSilenceStart);
     // The episode, through the same function the other two readers use. It moves UP here, instead of
     // living only in the branch below, because of issue #750: before it a fresh episode was born from
     // the customer speaking, and the inbound webhook cancels the pending job in the same movement. Our

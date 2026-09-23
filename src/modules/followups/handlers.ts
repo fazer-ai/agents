@@ -165,6 +165,7 @@ async function sweepHandler(
           agent_updated_at: Date;
           hours_updated_at: Date | null;
           died_before: boolean;
+          episode: string;
         }>
       >`
       SELECT c.thread_id,
@@ -179,7 +180,10 @@ async function sweepHandler(
                   AND jd.kind = 'FOLLOWUP'
                   AND jd.dedupe_key = 'followup:' || c.thread_id
                   AND jd.status = 'DEAD'
-             ) AS died_before
+             ) AS died_before,
+             -- The episode, as followUpEpisodeKey() writes it: the silence start in epoch ms.
+             (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
+               AS episode
       FROM conversations c
       JOIN inboxes i ON i.id = c.inbox_id
       JOIN agents a ON a.id = i.agent_id
@@ -237,6 +241,11 @@ async function sweepHandler(
         -- and the handler ran, and called the model, once a minute without end. Dated by the row's
         -- updated_at against when the current silence began: a death in an EARLIER episode does not
         -- keep a new one out, and either side speaking again opens that new episode.
+        --
+        -- WHICH episode the row died in is read from the row (its payload's episode, written when it
+        -- was armed), not from when it died: a claim of the previous episode can die after the new
+        -- silence began, and it spent none of this episode's budget. A row armed before the episode
+        -- was written falls back to the death time.
         AND NOT EXISTS (
           SELECT 1
             FROM scheduler_jobs j
@@ -244,7 +253,12 @@ async function sweepHandler(
              AND j.kind = 'FOLLOWUP'
              AND j.dedupe_key = 'followup:' || c.thread_id
              AND j.status = 'DEAD'
-             AND j.updated_at >= GREATEST(c.last_inbound_at, c.last_replied_at)
+             AND CASE
+                   WHEN j.payload->>'episode' IS NOT NULL THEN
+                     j.payload->>'episode'
+                       = (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
+                   ELSE j.updated_at >= GREATEST(c.last_inbound_at, c.last_replied_at)
+                 END
         )
         -- Activation fence: only conversations that became LIVE after follow-up was armed for this
         -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition and re-stamped
@@ -339,7 +353,7 @@ async function sweepHandler(
       // keeping it would dead-letter this episode on its first transient failure, after which the
       // exclusion above would keep it out for good (review round 6).
       rearm: t.died_before ? "new-work" : "same-work",
-      payload: { threadId: t.thread_id },
+      payload: { threadId: t.thread_id, episode: t.episode },
       // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
       // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
       // run every minute, and the retry count the backoff was keeping was replaced with it. Only a
@@ -352,6 +366,7 @@ async function sweepHandler(
       leaveLaterRun: (payload) =>
         isDeferralOfThisEpisode(
           payload,
+          t.episode,
           followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
         ),
       base,
@@ -385,12 +400,20 @@ const BACKOFF_DEFERRAL = "backoff";
 // handler recomputes it under the current configuration and marks it.
 function isDeferralOfThisEpisode(
   payload: Prisma.JsonValue,
+  episode: string,
   configVersion: string,
 ): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return true;
+    return false;
   }
-  const { stepIndex, deferredUnder } = payload as Record<string, unknown>;
+  const {
+    stepIndex,
+    deferredUnder,
+    episode: deferredEpisode,
+  } = payload as Record<string, unknown>;
+  // Armed for another episode (review round 7): our own reply opens a new one without cancelling
+  // the old deferral, and the new episode must not inherit its backoff or its retry count.
+  if (deferredEpisode !== episode) return false;
   if (stepIndex !== undefined && stepIndex !== 0) return false;
   return deferredUnder === BACKOFF_DEFERRAL || deferredUnder === configVersion;
 }
@@ -818,7 +841,14 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + stepDelayMinutes(nextStep) * 60_000),
-      payload: { threadId, stepIndex: nextIndex },
+      // The episode rides along, so a later step that dies is still dated to this one.
+      payload: {
+        threadId,
+        stepIndex: nextIndex,
+        ...(typeof job.payload.episode === "string"
+          ? { episode: job.payload.episode }
+          : {}),
+      },
     };
   }
   return { outcome: "done" };

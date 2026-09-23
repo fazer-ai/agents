@@ -299,6 +299,8 @@ describe.skipIf(!dbUp)(
       expect(after.payload).toEqual({
         threadId: threadOf(CONV_ESCADA),
         stepIndex: 1,
+        // O episódio que a varredura gravou no passo 0 segue com a escada (issue #796).
+        episode: expect.any(String),
       });
       expect(after.claimSeq).toBe(step0.claimSeq);
       expect(after.runAt.getTime()).toBeGreaterThan(Date.now() + DAY_MS / 2);

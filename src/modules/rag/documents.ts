@@ -12,6 +12,11 @@ import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
+import {
+  markUndisclosed,
+  redactEndpoint,
+  undisclosedMoved,
+} from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
@@ -290,6 +295,8 @@ type DocAuditRow = {
   mimeType: string | null;
   status: string;
   chars: number;
+  externalId: string | null;
+  sourceUrl: string | null;
 };
 
 function docAuditProjection(r: DocAuditRow) {
@@ -302,6 +309,10 @@ function docAuditProjection(r: DocAuditRow) {
     mimeType: r.mimeType,
     status: r.status,
     chars: r.chars,
+    // A synced document's article (issue #794): the id as is, the URL as its origin, like every URL
+    // on the trail. A move the origin hides is marked by the update (`undisclosedMoved`).
+    externalId: r.externalId,
+    sourceUrl: r.sourceUrl === null ? null : redactEndpoint(r.sourceUrl),
   };
 }
 
@@ -328,11 +339,13 @@ async function readDocForAudit(
       mime_type: string | null;
       status: string;
       chars: number;
+      external_id: string | null;
+      source_url: string | null;
       text_moved: boolean;
     }[]
   >`
     SELECT id, knowledge_base_id, title, source_type, file_name, mime_type, status,
-           length(content) AS chars,
+           length(content) AS chars, external_id, source_url,
            (content IS DISTINCT FROM ${compareText}::text) AS text_moved
       FROM knowledge_documents
      WHERE id = ${id}
@@ -349,6 +362,8 @@ async function readDocForAudit(
       mimeType: r.mime_type,
       status: r.status,
       chars: Number(r.chars),
+      externalId: r.external_id,
+      sourceUrl: r.source_url,
     },
     textMoved: r.text_moved,
   };
@@ -644,13 +659,19 @@ export async function updateDocument(
     const after = await readDocForAudit(db, id, null);
     if (!after) throw new NotFoundError("document not found");
     const updated = after.row;
-    const beforeProj = docAuditProjection(existing.row);
-    const afterProj = docAuditProjection(updated);
+    const hidden = undisclosedMoved(
+      { sourceUrl: existing.row.sourceUrl },
+      { sourceUrl: updated.sourceUrl },
+      ["sourceUrl"],
+    );
+    const mark = <T extends object>(p: T) => (hidden ? markUndisclosed(p) : p);
+    const beforeProj = mark(docAuditProjection(existing.row));
+    const afterProj = mark(docAuditProjection(updated));
     // NOTE: The action this issue invents: `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
     // an edit to a document reached the trail through nothing at all. Recorded only when it moved,
     // which for a body means its LENGTH moved or the title did: the text itself is neither carried
     // nor compared here (`reingest` above compares it, and that is the ingest's business).
-    if (reingest || projectionMoved(beforeProj, afterProj)) {
+    if (reingest || hidden || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "knowledge_document.update",
         target: `knowledge_document:${id}`,

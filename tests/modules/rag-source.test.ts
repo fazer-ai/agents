@@ -674,6 +674,91 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(rows[1]?.after).toMatchObject({ undisclosedChanged: true });
   });
 
+  test("a URL-only move of a synced document is audited, with the URL as its origin", async () => {
+    await configure();
+    let arts = BASIC;
+    await sync(portal({ articles: () => arts }));
+    arts = BASIC.map((a) =>
+      a.id === 102 ? { ...a, slug: "102-reembolso" } : a,
+    );
+    await sync(portal({ articles: () => arts }));
+    const doc = (await synced())[1] as { id: bigint };
+    const rows = await suDb.auditLog.findMany({
+      where: {
+        tenantId,
+        action: "knowledge_document.update",
+        target: `knowledge_document:${doc.id}`,
+      },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.after).toMatchObject({
+      externalId: "102",
+      sourceUrl: `${PORTAL}/…`,
+      undisclosedChanged: true,
+    });
+    expect(JSON.stringify([rows[0]?.before, rows[0]?.after])).not.toContain(
+      "102-reembolso",
+    );
+  });
+
+  test("the SSRF check is asked before every page, not once per run", async () => {
+    await configure();
+    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
+      id: 301 + i,
+      title: `Artigo ${301 + i}`,
+      content: `MARCADOR-${301 + i}`,
+    }));
+    const asked: string[] = [];
+    const r = await syncKnowledgeSource(tenantId, kb, {
+      base: appDb,
+      fetchImpl: portal({ articles: () => many }),
+      assertSafe: async (u) => {
+        asked.push(u);
+        if (asked.length > 1) throw new Error("resolves to a private address");
+      },
+    });
+    expect(r).toBeNull();
+    expect(asked).toHaveLength(2);
+    expect(asked[1]).toContain("page=2");
+    expect(await synced()).toHaveLength(0);
+  });
+
+  test("a failed write is recorded on the source before the run gives up", async () => {
+    await configure();
+    await suDb.$executeRawUnsafe(
+      "CREATE OR REPLACE FUNCTION ks794_refuse() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'refused by test'; END $$",
+    );
+    await suDb.$executeRawUnsafe(
+      "CREATE TRIGGER ks794_refuse BEFORE INSERT ON knowledge_documents FOR EACH ROW WHEN (NEW.external_id = '102') EXECUTE FUNCTION ks794_refuse()",
+    );
+    try {
+      await expect(sync(portal({ articles: () => BASIC }))).rejects.toThrow();
+      expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+        lastStatus: "error",
+      });
+    } finally {
+      await suDb.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS ks794_refuse ON knowledge_documents",
+      );
+      await suDb.$executeRawUnsafe("DROP FUNCTION IF EXISTS ks794_refuse()");
+    }
+  });
+
+  test("a run's outcome is written only onto the source it read", async () => {
+    await configure();
+    await sync(portal({ articles: () => BASIC }));
+    const replaced = (async () => {
+      await configure({ excludeIds: [103] });
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    // The old run fails AFTER the source was replaced: the replacement's state is not its to write.
+    expect(await sync(replaced)).toBeNull();
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      excludeIds: [103],
+      lastStatus: "ok",
+    });
+  });
+
   test("two syncs at once create each document once", async () => {
     await configure();
     const f = portal({ articles: () => BASIC });

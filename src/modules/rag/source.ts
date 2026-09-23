@@ -385,13 +385,16 @@ export async function fetchPortalArticles(
   assertSafe: AssertSafe = assertSafeOutboundUrl,
   timeoutMs: number = FETCH_TIMEOUT_MS,
 ): Promise<PortalArticle[]> {
-  await assertSafe(config.baseUrl);
   const articles = new Map<number, PortalArticle>();
   // Every id the portal listed, kept or not (a draft, an untitled one): what its count counts.
   const listed = new Set<unknown>();
   let expected: number | null = null;
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `${config.baseUrl}/hc/${encodeURIComponent(config.slug)}/${encodeURIComponent(config.locale)}/articles.json?per_page=${PAGE_SIZE}&page=${page}`;
+    // Asked before EVERY page, not once: the name is the tenant's, and one that resolves publicly for
+    // page 1 can resolve privately for page 2 (the embedding client asks per request for the same
+    // reason).
+    await assertSafe(url);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let body: { payload?: unknown; meta?: { articles_count?: unknown } };
@@ -535,13 +538,7 @@ export async function syncKnowledgeSource(
       deps.timeoutMs,
     );
   } catch (err) {
-    await recordRun(
-      base,
-      ctx,
-      knowledgeBaseId,
-      "error",
-      sanitizeErrorMessage(err),
-    );
+    await recordRun(base, ctx, fence, "error", sanitizeErrorMessage(err));
     return null;
   }
 
@@ -583,13 +580,16 @@ export async function syncKnowledgeSource(
       );
       return null;
     }
+    // A write that failed (the database, the ingest enqueue) is the source's outcome too: without
+    // it the source keeps showing its previous `ok` while the scheduler retries and gives up.
+    await recordRun(base, ctx, fence, "error", sanitizeErrorMessage(err));
     throw err;
   }
 
   await recordRun(
     base,
     ctx,
-    knowledgeBaseId,
+    fence,
     result.emptyListing ? "warning" : "ok",
     result.emptyListing
       ? "the portal listed no published articles; nothing was deleted this round"
@@ -687,20 +687,22 @@ async function ignoreGone(p: Promise<unknown>): Promise<void> {
 async function recordRun(
   base: PrismaClient,
   ctx: TenantContext,
-  knowledgeBaseId: bigint,
+  fence: SourceFence,
   status: "ok" | "warning" | "error",
   message: string,
 ): Promise<void> {
-  // updateMany: the source may have been removed while the run was out fetching.
-  await runScopedOn(base, ctx, (db) =>
-    db.knowledgeSource.updateMany({
-      where: { knowledgeBaseId },
-      data: {
-        lastSyncAt: new Date(),
-        lastStatus: status,
-        lastMessage: clipText(message, 500),
-      },
-    }),
+  const { knowledgeBaseId } = fence;
+  // Written only onto the source this run read: one removed while the run was out matches nothing,
+  // and one REPLACED meanwhile has a run of its own whose outcome this one must not overwrite.
+  await runScopedOn(
+    base,
+    ctx,
+    (db) =>
+      db.$executeRaw`
+      UPDATE knowledge_sources
+         SET last_sync_at = now(), last_status = ${status},
+             last_message = ${clipText(message, 500)}, updated_at = now()
+       WHERE knowledge_base_id = ${knowledgeBaseId} AND config::text = ${fence.config}`,
   );
   if (status !== "ok") {
     logger.warn(

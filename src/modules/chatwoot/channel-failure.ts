@@ -16,6 +16,7 @@ import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { proactiveSendMode } from "@/modules/service-window/service";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { mediaAnnotationFor } from "./annotations";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
@@ -367,7 +368,12 @@ export async function mediaFallbackHandler(
       return "the conversation was reset after the failed reply";
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true, chatwootInboxId: true },
+      select: {
+        agentId: true,
+        chatwootInboxId: true,
+        channelType: true,
+        provider: true,
+      },
     });
     // The inbox may have been unbound or handed to another agent while the job waited: the persona
     // that sent the audio no longer answers here.
@@ -412,6 +418,21 @@ export async function mediaFallbackHandler(
       { skipExperiment: true },
     );
     if (!cfg) return "the agent is off, monitoring or unloadable";
+    // THE 24H WINDOW, the proactive paths' rule: a job that waited out an outage past it would post
+    // a free-form message the channel rejects, and finish DONE with nothing delivered. A template is
+    // not the reply either, so outside the window the text simply does not go.
+    if (
+      proactiveSendMode(
+        cfg.serviceWindowConfig,
+        conv.lastInboundAt,
+        new Date(),
+        {
+          channelType: inbox.channelType,
+          provider: inbox.provider,
+        },
+      ) !== "freeform"
+    )
+      return "the channel's 24h service window has closed";
     return { cfg, chatwootInboxId: inbox.chatwootInboxId };
   });
   if (typeof gate === "string") return stop(gate);

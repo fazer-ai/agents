@@ -464,6 +464,35 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(cw.sent).toEqual([]);
   });
 
+  test("past the WhatsApp 24h window the text does not go out", async () => {
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: INBOX_ID },
+      data: { channelType: "Channel::Whatsapp", provider: "whatsapp_cloud" },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      data: { lastInboundAt: new Date(Date.now() - 25 * 3_600_000) },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+      // ...and inside it, it does.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { lastInboundAt: new Date() },
+      });
+      const inside = fakeChatwoot({});
+      await mediaFallbackHandler(await claimed(9001), appDb, inside.makeClient);
+      expect(inside.sent).toHaveLength(1);
+    } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        data: { channelType: null, provider: null },
+      });
+    }
+  });
+
   test("a job whose body a reset forgot finishes without sending", async () => {
     const job = { ...(await claimed(9001)), payloadSecret: null };
     const cw = fakeChatwoot({});

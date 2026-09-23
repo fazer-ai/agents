@@ -51,9 +51,10 @@ const URL =
 // alone, never cut to the piece after its last unsupported character.
 const EMAIL =
   /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
-// GFM's autolink rule, plus straight and closing quotes (`\p{Pf}`: `’`, `”`, `»`): these end a
-// sentence or a formatting run, not a link.
-const TRAILING_PUNCTUATION = /[?!.,:*_~;'"\p{Pf}]$/u;
+// GFM's autolink rule, plus straight and closing quotes (`\p{Pf}`: `’`, `”`, `»`) and the non-ASCII
+// sentence terminators outside the CJK blocks (`…`, `‼`, `‽`): these end a sentence or a formatting
+// run, not a link.
+const TRAILING_PUNCTUATION = /[?!.,:*_~;'"\p{Pf}…‼‽⁇⁈⁉]$/u;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
 // the item and never enters the written copy.
 const WRAPPERS = "`*_~";

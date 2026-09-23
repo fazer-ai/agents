@@ -595,6 +595,22 @@ describe("planSpokenReply", () => {
     expect(plan.speech).not.toMatch(/mailto|subject|@/);
   });
 
+  // Review round 21.
+  test("a Unicode ellipsis or terminator ends the sentence, not the URL", () => {
+    for (const text of [
+      "Acompanhe em https://x.com.br/pedido… Depois aguarde a confirmação",
+      "Acompanhe em https://x.com.br/pedido‼ Depois aguarde a confirmação",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([
+        "https://x.com.br/pedido",
+      ]);
+    }
+    // Delimited, the destination stays verbatim.
+    expect(
+      planSpokenReply("Acompanhe em `https://x.com.br/pedido…` depois").written,
+    ).toEqual(["https://x.com.br/pedido…"]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

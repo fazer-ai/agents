@@ -18,8 +18,8 @@ import { isEmptyCompletionFault } from "./empty-completion";
 // overloaded becomes one attempt against a provider that did not.
 //
 // Nothing here fires for an install that configured no fallback. The bounds below are applied only
-// where a second model was resolved, so an install that names none keeps LangChain's six retries and
-// its unbounded wait, byte for byte.
+// where a second model was resolved, so an install that names none keeps LangChain's six retries,
+// and the whole call runs under `config.agent.modelCallTimeoutMs` instead (issue #809).
 
 // One attempt, not six. The number is not a tuning knob: with anything above zero the fallback
 // inherits the exponential backoff measured above, and the customer is already gone when it runs.

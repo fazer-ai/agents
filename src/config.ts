@@ -51,6 +51,7 @@ const {
   AGENTS_UPDATE_CHECK_URL,
   HUB_UPDATES_TTL_MS,
   AGENT_MODEL_CONCURRENCY,
+  AGENT_MODEL_CALL_TIMEOUT_MS,
   AGENT_PROMPT_MAX_CHARS,
   HTTP_TOOL_TIMEOUT_MS,
   DB_POOL_MAX,
@@ -372,6 +373,17 @@ const config = {
       20,
       "It is the only throttle on concurrent model calls, process-wide.",
       MAX_COUNT,
+    ),
+    // NOTE: How long one call to an agent's own model may take, retries included, when no fallback
+    // model is configured (issue #809). Without it a provider that accepts the connection and never
+    // answers held the turn for as long as it liked: measured in #807 at 5 min 36 s. A turn with a
+    // fallback is bounded by the fallback's own 45 s ceiling instead (src/graph/model-fallback.ts).
+    modelCallTimeoutMs: parseIntSetting(
+      AGENT_MODEL_CALL_TIMEOUT_MS,
+      "AGENT_MODEL_CALL_TIMEOUT_MS",
+      120_000,
+      "It is how long one call to the agent's own model may take, retries included, when no fallback model is configured.",
+      MAX_DURATION_MS,
     ),
     // NOTE: Hard cap (characters) on an agent's system prompt, enforced at the service layer for
     // every transport (console/REST/MCP) and at import. A deliberate checkpoint, not a technical

@@ -1936,9 +1936,11 @@ export async function buildModelAndGraph(
   const makeModel = deps.makeModel ?? createChatModel;
   const effectiveBaseUrl = cfg.credentialBaseUrl ?? cfg.mc.baseURL;
   const fallback = buildFallbackModel(cfg, makeModel, deps);
-  // Bounded ONLY when something was actually built behind it. An install with no fallback keeps
-  // LangChain's six retries and its unbounded wait, byte for byte — see ./model-fallback for what
-  // those cost when there IS a second provider waiting for the turn.
+  // Two bounds, and exactly one of them applies. With a fallback behind it, the primary gets one
+  // attempt with the SDK's 45 s ceiling (see ./model-fallback). With none, it keeps LangChain's six
+  // retries, and the whole call, retries included, runs under `config.agent.modelCallTimeoutMs`
+  // instead (issue #809): a per-attempt ceiling alone does not bound it, because the SDK retries a
+  // timeout (measured, 2s per attempt and still waiting at 90s), and the Google adapter drops it.
   const model = makeModel({
     ...cfg.mc,
     apiKey: cfg.apiKey,
@@ -1971,5 +1973,6 @@ export async function buildModelAndGraph(
     onHistoryTrim: deps.onHistoryTrim,
     noReplyChannel: deps.noReplyChannel,
     stillWanted: deps.stillWanted,
+    primaryDeadlineMs: fallback ? undefined : config.agent.modelCallTimeoutMs,
   });
 }

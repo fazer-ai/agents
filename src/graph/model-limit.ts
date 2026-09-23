@@ -90,9 +90,33 @@ export interface ModelCallOptions<T> {
   // Fired when a call is retried, so the runtime can leave a warn on the turn's trail. Best-effort.
   onRetry?: (info: ModelRetryInfo) => void;
   // Absent for every caller that has nothing behind its provider, which is every caller today except
-  // the agent turn. Absent also means UNCHANGED: none of the bounds in `model-fallback` apply to a
-  // model built without one.
+  // the agent turn. None of the bounds in `model-fallback` apply to a model built without one; the
+  // agent turn bounds that call with `callWithDeadline` instead (issue #809).
   fallback?: ModelFallback<T>;
+}
+
+// A deadline on ONE model call, retries included, that holds whether or not the adapter honours the
+// abort signal (issue #809). The signal goes to the call, so an adapter that listens cancels its own
+// request: measured, the OpenAI-shaped clients and Anthropic stop in the same 2.0s. The race is what
+// holds on one that does not: the Google adapter ignores both `signal` and `timeout` (measured, still
+// waiting at 90s), so its request is left to finish on its own while the turn has already failed.
+// `signal.reason` is the DOMException `TimeoutError`, which `provider-failure` already reads as
+// "timeout".
+//
+// Built INSIDE the thunk `runModelCall` runs, never before it, for the reason summarize.ts gives: a
+// signal created outside spends its budget waiting on the semaphore.
+export function callWithDeadline<T>(
+  ms: number,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const signal = AbortSignal.timeout(ms);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    run(signal)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 export async function runModelCall<T>(

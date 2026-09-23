@@ -58,7 +58,7 @@ const FALLBACK = {
 };
 
 describe("what the model factory is asked to build", () => {
-  test("with no fallback, the primary carries NO bounds — today's behaviour, untouched", async () => {
+  test("with no fallback, the factory is handed no per-attempt bounds (the call's deadline lives in the graph)", async () => {
     const seen = await configsHandedToTheFactory(makeConfig({}));
     expect(seen).toHaveLength(1);
     // Absent, not zero and not a large number: `models.ts` spreads the field only when it is

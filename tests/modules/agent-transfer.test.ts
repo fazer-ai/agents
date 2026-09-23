@@ -779,7 +779,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       },
     });
     const kb = await suDb.knowledgeBase.create({
-      data: { tenantId: srcTenant, name: "Catálogo", chunkSize: 500 },
+      data: {
+        tenantId: srcTenant,
+        name: "Catálogo",
+        chunkSize: 500,
+        stripContactFooters: true,
+      },
     });
     const bh = await suDb.businessHours.create({
       data: {
@@ -942,6 +947,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(c?.mcpServers.find((m) => m.name === "tools-server")).toBeDefined();
     expect(c?.integrations.find((i) => i.name === "Pagamentos")).toBeDefined();
     expect(c?.knowledgeBases.find((k) => k.name === "Catálogo")).toBeDefined();
+    // The contact-footer switch changes what a search returns (issue #747), so it travels.
+    expect(
+      c?.knowledgeBases.find((k) => k.name === "Catálogo")?.stripContactFooters,
+    ).toBe(true);
     // A DOCUMENT grant names a template by SLUG, so the template itself has to travel with it —
     // otherwise the import has a grant pointing at a component the destination never heard of, and
     // the only thing it can do is drop the grant with a warning.
@@ -1206,6 +1215,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, name: "Catálogo" },
     });
     expect(kb?.chunkSize).toBe(500);
+    expect(kb?.stripContactFooters).toBe(true);
     // KB created empty (no bundled documents). Creation is SILENT now — only a reuse warns — so no
     // kbCreatedEmpty warning fires; the empty base just exists.
     expect(warnings.some((w) => w.code === "kbCreatedEmpty")).toBe(false);

@@ -242,16 +242,21 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
       name: renamed,
       chunkSize: 1200,
       chunkOverlap: 120,
+      stripContactFooters: true,
       base: appDb,
     });
     const [row, ...rest] = await rows();
     expect(rest).toEqual([]);
     expect(row?.action).toBe("knowledge.update");
-    expect(row?.before).toMatchObject({ chunkSize: expect.any(Number) });
+    expect(row?.before).toMatchObject({
+      chunkSize: expect.any(Number),
+      stripContactFooters: false,
+    });
     expect(row?.after).toMatchObject({
       name: renamed,
       chunkSize: 1200,
       chunkOverlap: 120,
+      stripContactFooters: true,
     });
     await collect();
   });

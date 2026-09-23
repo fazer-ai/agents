@@ -67,10 +67,18 @@ export interface ChunkHit {
   distance: number;
 }
 
+// What the query reads to decide the contact footer (issue #747), stripped before a hit leaves the
+// service: the base's switch, and whether this passage is the tail of its document, the only place a
+// footer lives.
+export interface ChunkRow extends ChunkHit {
+  stripContactFooters: boolean;
+  atDocumentEnd: boolean;
+}
+
 export async function searchChunks(
   db: ScopedDb,
   params: SearchChunksParams,
-): Promise<ChunkHit[]> {
+): Promise<ChunkRow[]> {
   if (params.knowledgeBaseIds.length === 0) return [];
   const vec = toVectorLiteral(params.queryEmbedding);
   const limit = Math.min(Math.max(Math.floor(params.limit), 1), 50);
@@ -80,7 +88,10 @@ export async function searchChunks(
   // ANY(ARRAY[...]::bigint[]) — Prisma.join serializes the ids; the explicit cast keeps them bigint
   // (a bare tagged template would serialize to text[]). RLS already fences by tenant; the kb filter
   // narrows to the (tenant-owned, validated) bases.
-  const rows = await db.$queryRaw<ChunkHit[]>`
+  // `atDocumentEnd`: the chunker trims each chunk, and splits on paragraphs first, so the document's
+  // last chunk is exactly the tail of its (right-trimmed) text. Any mismatch (a document mid-reindex,
+  // an unusual whitespace) reads as "not the tail", which only means nothing is stripped.
+  const rows = await db.$queryRaw<ChunkRow[]>`
     SELECT c.id,
            c.knowledge_base_id AS "knowledgeBaseId",
            kb.name AS "knowledgeBaseName",
@@ -88,7 +99,9 @@ export async function searchChunks(
            d.title AS "documentTitle",
            c.content,
            c.metadata,
-           (c.embedding <=> ${vec}::vector) AS distance
+           (c.embedding <=> ${vec}::vector) AS distance,
+           kb.strip_contact_footers AS "stripContactFooters",
+           right(rtrim(d.content, E' \t\r\n'), length(c.content)) = c.content AS "atDocumentEnd"
     FROM knowledge_chunks c
     JOIN knowledge_bases kb ON kb.id = c.knowledge_base_id
     JOIN knowledge_documents d ON d.id = c.document_id

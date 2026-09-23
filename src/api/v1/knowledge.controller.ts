@@ -52,6 +52,11 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
 // translate('errors.unsupportedFileType', 'Unsupported file type: {{type}}')
 
+const STRIP_CONTACT_FOOTERS_FIELD = t.Boolean({
+  description:
+    "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+});
+
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
@@ -122,6 +127,7 @@ export const knowledgeController = new Elysia({
         name: body.name,
         description: body.description,
         embeddingModel: body.embeddingModel,
+        stripContactFooters: body.stripContactFooters,
       });
       return { instance: instanceIdentity, base: { id: String(base.id) } };
     },
@@ -149,6 +155,7 @@ export const knowledgeController = new Elysia({
               "Embedding model identifier used to index documents. Defaults to the configured model.",
           }),
         ),
+        stripContactFooters: t.Optional(STRIP_CONTACT_FOOTERS_FIELD),
       }),
     },
   )
@@ -185,6 +192,7 @@ export const knowledgeController = new Elysia({
         description: body.description,
         chunkSize: body.chunkSize,
         chunkOverlap: body.chunkOverlap,
+        stripContactFooters: body.stripContactFooters,
       });
       return { instance: instanceIdentity, success: true };
     },
@@ -192,7 +200,7 @@ export const knowledgeController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Update knowledge base",
-        "Update a knowledge base name, description, or chunking parameters.",
+        "Update a knowledge base name, description, chunking parameters, or contact-footer switch.",
       ),
       response: errors(400, 401, 403, 404, 422),
       params: t.Object({
@@ -229,6 +237,7 @@ export const knowledgeController = new Elysia({
               "Number of overlapping characters between consecutive chunks.",
           }),
         ),
+        stripContactFooters: t.Optional(STRIP_CONTACT_FOOTERS_FIELD),
       }),
     },
   )

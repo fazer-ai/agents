@@ -80,6 +80,7 @@ export async function knowledgeCreate(
     name: string;
     description?: string;
     embedding_model?: string;
+    strip_contact_footers?: boolean;
     dry_run?: boolean;
   },
   deps: WriteDeps = {},
@@ -106,6 +107,7 @@ export async function knowledgeCreate(
           name: args.name,
           description: args.description ?? null,
           embeddingModel: args.embedding_model ?? "(tenant default)",
+          stripContactFooters: args.strip_contact_footers ?? false,
         },
       });
     }
@@ -114,6 +116,7 @@ export async function knowledgeCreate(
       name: args.name,
       description: args.description,
       embeddingModel: args.embedding_model,
+      stripContactFooters: args.strip_contact_footers,
       base,
     });
     const target = `knowledge_base:${created.id}`;
@@ -131,6 +134,7 @@ export async function knowledgeUpdate(
     description?: string | null;
     chunk_size?: number;
     chunk_overlap?: number;
+    strip_contact_footers?: boolean;
     dry_run?: boolean;
   },
   deps: WriteDeps = {},
@@ -145,14 +149,17 @@ export async function knowledgeUpdate(
     description?: string | null;
     chunkSize?: number;
     chunkOverlap?: number;
+    stripContactFooters?: boolean;
   } = {};
   if (args.name !== undefined) patch.name = args.name;
   if (args.description !== undefined) patch.description = args.description;
   if (args.chunk_size !== undefined) patch.chunkSize = args.chunk_size;
   if (args.chunk_overlap !== undefined) patch.chunkOverlap = args.chunk_overlap;
+  if (args.strip_contact_footers !== undefined)
+    patch.stripContactFooters = args.strip_contact_footers;
   if (Object.keys(patch).length === 0) {
     return err(
-      "no updatable fields provided (name, description, chunk_size, chunk_overlap)",
+      "no updatable fields provided (name, description, chunk_size, chunk_overlap, strip_contact_footers)",
     );
   }
   const bad = unstorable([
@@ -168,6 +175,7 @@ export async function knowledgeUpdate(
       description: current.description,
       chunkSize: current.chunkSize,
       chunkOverlap: current.chunkOverlap,
+      stripContactFooters: current.stripContactFooters,
     };
     if (args.dry_run !== false) {
       assertKnowledgeBaseNameUsable(patch.name);
@@ -185,6 +193,8 @@ export async function knowledgeUpdate(
             : patch.description,
         chunkSize: patch.chunkSize ?? current.chunkSize,
         chunkOverlap: patch.chunkOverlap ?? current.chunkOverlap,
+        stripContactFooters:
+          patch.stripContactFooters ?? current.stripContactFooters,
       };
       return ok({
         dryRun: true,

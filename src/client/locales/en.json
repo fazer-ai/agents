@@ -1887,6 +1887,8 @@
     "retried": "Retrying...",
     "retry": "Retry",
     "retryError": "Could not retry.",
+    "stripContactFooters": "Remove contact footers from passages",
+    "stripContactFootersHelp": "When a document ends with a short \"contact us\" paragraph (an e-mail, a phone number, an invitation to get in touch), the agent receives the passage without it.\n\nArticles written for a website often end like this, and the agent reads the line as an instruction to hand the customer off, even when the answer was in the article.\n\nThe documents are not changed, and turning this off gives the paragraph back without re-indexing.",
     "subtitle": "Knowledge bases your agents can search to answer questions.",
     "tabArquivo": "File",
     "tabTexto": "Text",

@@ -629,6 +629,11 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED to 58,203 by the `channel_error` flow stage (#587), one more enum value wherever
   // a tool filters or subscribes by stage: this tree measures 58,187 against the base's 58,155, same
   // 16 of headroom. No tool and no description changed.
+  //
+  // BOTH RAISED by the contact-footer switch on a knowledge base (#747): `strip_contact_footers` on
+  // `knowledge_create` and `knowledge_update`, and its name in the two descriptions that list a
+  // base's fields. Base 30,729 and 58,187, this tree 30,773 and 58,273, so 30,788 and 58,289 with the
+  // same 15 and 16. What the switch does is on the REST field and the console, not repeated here.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -637,8 +642,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_744);
-    expect(schema).toBeLessThanOrEqual(58_203);
+    expect(desc).toBeLessThanOrEqual(30_788);
+    expect(schema).toBeLessThanOrEqual(58_289);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

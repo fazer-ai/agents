@@ -1,5 +1,6 @@
 import { Prisma } from "@/../generated/prisma/client";
 import type { ScopedDb } from "@/lib/tenancy";
+import { FOOTER_TAIL_CHARS } from "./contact-footer";
 import { EMBEDDING_DIM } from "./embeddings";
 
 // Raw pgvector access (Prisma cannot model vector(N) or the HNSW operator). All calls run INSIDE a
@@ -67,10 +68,21 @@ export interface ChunkHit {
   distance: number;
 }
 
+// What the query reads to decide the contact footer (issue #747), stripped before a hit leaves the
+// service: the base's switch, and whether this passage is the tail of its document, the only place a
+// footer lives.
+export interface ChunkRow extends ChunkHit {
+  stripContactFooters: boolean;
+  atDocumentEnd: boolean;
+  // The document's last FOOTER_TAIL_CHARS, where its footer is found for a passage that overlaps it
+  // without being the tail. null when the base does not strip.
+  documentTail: string | null;
+}
+
 export async function searchChunks(
   db: ScopedDb,
   params: SearchChunksParams,
-): Promise<ChunkHit[]> {
+): Promise<ChunkRow[]> {
   if (params.knowledgeBaseIds.length === 0) return [];
   const vec = toVectorLiteral(params.queryEmbedding);
   const limit = Math.min(Math.max(Math.floor(params.limit), 1), 50);
@@ -80,7 +92,12 @@ export async function searchChunks(
   // ANY(ARRAY[...]::bigint[]) — Prisma.join serializes the ids; the explicit cast keeps them bigint
   // (a bare tagged template would serialize to text[]). RLS already fences by tenant; the kb filter
   // narrows to the (tenant-owned, validated) bases.
-  const rows = await db.$queryRaw<ChunkHit[]>`
+  // `atDocumentEnd`: the chunker trims each chunk, and splits on paragraphs first, so the document's
+  // last chunk is exactly the tail of its (right-trimmed) text. Any mismatch (a document mid-reindex,
+  // an unusual whitespace) reads as "not the tail", which only means nothing is stripped.
+  // Asked only of a base that switched stripping on: the comparison reads the whole document, which
+  // can be millions of characters, and on every other base its answer is thrown away.
+  const rows = await db.$queryRaw<ChunkRow[]>`
     SELECT c.id,
            c.knowledge_base_id AS "knowledgeBaseId",
            kb.name AS "knowledgeBaseName",
@@ -88,7 +105,14 @@ export async function searchChunks(
            d.title AS "documentTitle",
            c.content,
            c.metadata,
-           (c.embedding <=> ${vec}::vector) AS distance
+           (c.embedding <=> ${vec}::vector) AS distance,
+           kb.strip_contact_footers AS "stripContactFooters",
+           CASE WHEN kb.strip_contact_footers
+                THEN right(rtrim(d.content, E' \t\r\n'), length(c.content)) = c.content
+                ELSE false END AS "atDocumentEnd",
+           CASE WHEN kb.strip_contact_footers
+                THEN right(rtrim(d.content, E' \t\r\n'), ${FOOTER_TAIL_CHARS})
+                ELSE NULL END AS "documentTail"
     FROM knowledge_chunks c
     JOIN knowledge_bases kb ON kb.id = c.knowledge_base_id
     JOIN knowledge_documents d ON d.id = c.document_id

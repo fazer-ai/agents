@@ -5,6 +5,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
+import { passageOf } from "./contact-footer";
 import {
   assertChunkingUpdatable,
   cancelPendingJob,
@@ -68,7 +69,7 @@ export async function searchKnowledge(
   const queryEmbedding = await embedQuery(params.query, prep.cfg);
 
   // Phase 3 (scoped tx): KNN search (raw SQL, RLS-fenced).
-  return runScopedOn(base, ctx, (db) =>
+  const rows = await runScopedOn(base, ctx, (db) =>
     searchChunks(db, {
       knowledgeBaseIds: prep.ids,
       queryEmbedding,
@@ -76,6 +77,9 @@ export async function searchKnowledge(
       efSearch: params.efSearch,
     }),
   );
+  // Here and not in one consumer, so the agent's tool, the console's test search and the MCP search
+  // all return the passage the agent is actually given.
+  return rows.map(passageOf);
 }
 
 // ── knowledge base CRUD ──
@@ -94,6 +98,7 @@ export async function listKnowledgeBases(
         embeddingModel: true,
         chunkSize: true,
         chunkOverlap: true,
+        stripContactFooters: true,
         createdAt: true,
         _count: { select: { documents: true } },
       },
@@ -107,8 +112,9 @@ export async function listKnowledgeBases(
 
 // What a knowledge base's audit row carries.
 //
-// Identity and the indexing policy: the name, the description, the embedding model and the two chunk
-// parameters, all of which an operator sets and any of which changes what a search returns. Nothing
+// Identity and the indexing policy: the name, the description, the embedding model, the two chunk
+// parameters and the contact-footer switch, all of which an operator sets and any of which changes
+// what a search returns. Nothing
 // here is content: the documents are the payload, and they have their own action and their own rule
 // (`documents.ts`).
 type KbAuditRow = {
@@ -118,6 +124,7 @@ type KbAuditRow = {
   embeddingModel: string;
   chunkSize: number;
   chunkOverlap: number;
+  stripContactFooters: boolean;
 };
 
 function auditProjection(r: KbAuditRow) {
@@ -128,6 +135,7 @@ function auditProjection(r: KbAuditRow) {
     embeddingModel: r.embeddingModel,
     chunkSize: r.chunkSize,
     chunkOverlap: r.chunkOverlap,
+    stripContactFooters: r.stripContactFooters,
   };
 }
 
@@ -138,6 +146,7 @@ const KB_AUDIT_SELECT = {
   embeddingModel: true,
   chunkSize: true,
   chunkOverlap: true,
+  stripContactFooters: true,
 } as const;
 
 export const KB_NAME_MAX = 200;
@@ -182,6 +191,7 @@ export async function createKnowledgeBase(params: {
   name: string;
   description?: string;
   embeddingModel?: string;
+  stripContactFooters?: boolean;
   base?: PrismaClient;
 }): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
@@ -203,6 +213,9 @@ export async function createKnowledgeBase(params: {
         name: params.name,
         description: params.description,
         embeddingModel,
+        ...(params.stripContactFooters !== undefined
+          ? { stripContactFooters: params.stripContactFooters }
+          : {}),
       },
       select: KB_AUDIT_SELECT,
     });
@@ -660,6 +673,7 @@ export async function getKnowledgeBase(params: {
   embeddingModel: string;
   chunkSize: number;
   chunkOverlap: number;
+  stripContactFooters: boolean;
   chunkCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -678,6 +692,7 @@ export async function getKnowledgeBase(params: {
         // against (#524).
         chunkSize: true,
         chunkOverlap: true,
+        stripContactFooters: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -702,6 +717,7 @@ export async function updateKnowledgeBase(params: {
   description?: string | null;
   chunkSize?: number;
   chunkOverlap?: number;
+  stripContactFooters?: boolean;
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
@@ -741,6 +757,9 @@ export async function updateKnowledgeBase(params: {
           : {}),
         ...(params.chunkOverlap !== undefined
           ? { chunkOverlap: params.chunkOverlap }
+          : {}),
+        ...(params.stripContactFooters !== undefined
+          ? { stripContactFooters: params.stripContactFooters }
           : {}),
       },
     });

@@ -24,6 +24,7 @@ import {
   Modal,
   ModalCancelButton,
   Skeleton,
+  SwitchField,
   type TabItem,
   Tabs,
   Textarea,
@@ -173,6 +174,7 @@ export function useKnowledgeManager(opts: {
   const [description, setDescription] = useState("");
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
+  const [stripContactFooters, setStripContactFooters] = useState(false);
   const [chunkSizeError, setChunkSizeError] = useState("");
   const [chunkOverlapError, setChunkOverlapError] = useState("");
 
@@ -253,12 +255,14 @@ export function useKnowledgeManager(opts: {
 
   const [busy, setBusy] = useState(false);
 
-  const createDirty = name.trim() !== "" || description.trim() !== "";
+  const createDirty =
+    name.trim() !== "" || description.trim() !== "" || stripContactFooters;
   const editDirty =
     name.trim() !== (editModal.payload?.name ?? "") ||
     description.trim() !== (editModal.payload?.description ?? "") ||
     chunkSize !== (editModal.payload?.chunkSize ?? 1000) ||
-    chunkOverlap !== (editModal.payload?.chunkOverlap ?? 200);
+    chunkOverlap !== (editModal.payload?.chunkOverlap ?? 200) ||
+    stripContactFooters !== (editModal.payload?.stripContactFooters ?? false);
   const addContentDirty =
     addTab === "texto"
       ? docTitle.trim() !== "" || text.trim() !== ""
@@ -379,6 +383,7 @@ export function useKnowledgeManager(opts: {
     setDescription("");
     setChunkSize(1000);
     setChunkOverlap(200);
+    setStripContactFooters(false);
     setChunkSizeError("");
     setChunkOverlapError("");
   });
@@ -392,6 +397,7 @@ export function useKnowledgeManager(opts: {
     setDescription(b.description ?? "");
     setChunkSize(b.chunkSize ?? 1000);
     setChunkOverlap(b.chunkOverlap ?? 200);
+    setStripContactFooters(b.stripContactFooters ?? false);
     setChunkSizeError("");
     setChunkOverlapError("");
   });
@@ -488,6 +494,7 @@ export function useKnowledgeManager(opts: {
       const { data, error: err } = await api.api.v1.knowledge.bases.post({
         name: name.trim(),
         description: description.trim() || undefined,
+        ...(stripContactFooters ? { stripContactFooters } : {}),
       });
       if (err || !data) throw err;
       baseRefusal.clear();
@@ -526,6 +533,7 @@ export function useKnowledgeManager(opts: {
           description: description.trim() || null,
           chunkSize,
           chunkOverlap,
+          stripContactFooters,
         });
       if (err) throw err;
       baseRefusal.clear();
@@ -1080,6 +1088,24 @@ export function useKnowledgeManager(opts: {
       ? text.trim() !== ""
       : picked.some((p) => p.status !== "done");
 
+  // Same switch in both dialogs. Worded for what it does to the agent, because that is the reason
+  // to turn it on: the footer of an article written for a website reads, inside an agent, as an
+  // order to hand the customer off (issue #747).
+  const contactFooterSwitch = (
+    <SwitchField
+      checked={stripContactFooters}
+      onCheckedChange={setStripContactFooters}
+      label={t(
+        "knowledge.stripContactFooters",
+        "Remove contact footers from passages",
+      )}
+      help={t(
+        "knowledge.stripContactFootersHelp",
+        'When a document ends with a short "contact us" paragraph (an e-mail, a phone number, an invitation to get in touch), the agent receives the passage without it.\n\nArticles written for a website often end like this, and the agent reads the line as an instruction to hand the customer off, even when the answer was in the article.\n\nThe documents are not changed, and turning this off gives the paragraph back without re-indexing.',
+      )}
+    />
+  );
+
   const modals = (
     <>
       {/* Create KB modal */}
@@ -1153,6 +1179,7 @@ export function useKnowledgeManager(opts: {
               onChange={(e) => setChunkOverlap(Number(e.target.value))}
             />
           </FormField>
+          {contactFooterSwitch}
         </div>
       </Modal>
 
@@ -1222,6 +1249,7 @@ export function useKnowledgeManager(opts: {
               onChange={(e) => setChunkOverlap(Number(e.target.value))}
             />
           </FormField>
+          {contactFooterSwitch}
         </div>
       </Modal>
 

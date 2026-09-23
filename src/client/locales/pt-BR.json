@@ -1941,6 +1941,8 @@
     "retried": "Tentando novamente...",
     "retry": "Tentar de novo",
     "retryError": "Não foi possível tentar novamente.",
+    "stripContactFooters": "Remover o rodapé de contato das passagens",
+    "stripContactFootersHelp": "Quando um documento termina com um parágrafo curto de \"fale conosco\" (um e-mail, um telefone, um convite para entrar em contato), o agente recebe a passagem sem ele.\n\nArtigos escritos para um site costumam terminar assim, e o agente lê a linha como uma instrução para transferir o cliente, mesmo quando a resposta estava no próprio artigo.\n\nOs documentos não são alterados, e desligar a opção devolve o parágrafo sem reindexar.",
     "subtitle": "Bases de conhecimento que seus agentes podem consultar para responder.",
     "tabArquivo": "Arquivo",
     "tabTexto": "Texto",

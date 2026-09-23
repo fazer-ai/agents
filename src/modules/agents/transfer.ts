@@ -301,6 +301,9 @@ const exportedKnowledgeBaseSchema = z.object({
   embeddingModel: z.string().optional(),
   chunkSize: z.number().optional(),
   chunkOverlap: z.number().optional(),
+  // Optional for bundles exported before the switch existed (issue #747): absent reads as off, the
+  // column default, which is what those bases had.
+  stripContactFooters: z.boolean().optional(),
   // Opt-in (?documents=true): the source text of every document, re-indexed at the destination. Last
   // so the heavy, optional payload sits at the end of each KB object.
   documents: z.array(exportedKnowledgeDocumentSchema).optional(),
@@ -643,6 +646,7 @@ export async function exportAgent(
               embeddingModel: true,
               chunkSize: true,
               chunkOverlap: true,
+              stripContactFooters: true,
             },
           })
         : [];
@@ -912,6 +916,7 @@ export async function exportAgent(
           embeddingModel: r.embeddingModel,
           chunkSize: r.chunkSize,
           chunkOverlap: r.chunkOverlap,
+          stripContactFooters: r.stripContactFooters,
           ...(withDocs ? { documents: docsByKb.get(r.id) ?? [] } : {}),
         })),
         businessHours: bhRows.map((r) => ({
@@ -2639,6 +2644,9 @@ async function createMissingComponents(
         ...(kb.embeddingModel ? { embeddingModel: kb.embeddingModel } : {}),
         ...(kb.chunkSize != null ? { chunkSize: kb.chunkSize } : {}),
         ...(kb.chunkOverlap != null ? { chunkOverlap: kb.chunkOverlap } : {}),
+        ...(kb.stripContactFooters != null
+          ? { stripContactFooters: kb.stripContactFooters }
+          : {}),
       },
       select: { id: true },
     });

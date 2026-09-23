@@ -1313,6 +1313,10 @@ model KnowledgeBase {
   embeddingModel String   @default("text-embedding-3-small") @map("embedding_model")
   chunkSize      Int      @default(1000) @map("chunk_size")
   chunkOverlap   Int      @default(200) @map("chunk_overlap")
+  // Drop a document's trailing contact footer from the passages a search returns (issue #747).
+  // Applied at search time, so switching it never needs a re-index. Off by default: it removes
+  // text, and only the operator knows whether the base is a help center written for a website.
+  stripContactFooters Boolean @default(false) @map("strip_contact_footers")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 

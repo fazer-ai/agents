@@ -833,7 +833,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_list",
       {
         description:
-          "List the tenant's knowledge bases (id, name, description, embeddingModel, chunkSize/chunkOverlap, documentCount).",
+          "List the tenant's knowledge bases (id, name, description, embeddingModel, chunkSize/chunkOverlap, stripContactFooters, documentCount).",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await knowledgeList(eff)),
@@ -2510,6 +2510,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: z.string(),
           description: z.string().optional(),
           embedding_model: z.string().optional(),
+          strip_contact_footers: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2518,6 +2519,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: string;
           description?: string;
           embedding_model?: string;
+          strip_contact_footers?: boolean;
           dry_run?: boolean;
         },
         eff,
@@ -2530,13 +2532,14 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_update",
       {
         description:
-          "Update a knowledge base (name, description, chunk_size, chunk_overlap). Previews a diff and applies NOTHING unless dry_run is false.",
+          "Update a knowledge base (name, description, chunk_size, chunk_overlap, strip_contact_footers). Previews a diff and applies NOTHING unless dry_run is false.",
         inputSchema: {
           knowledge_base_id: z.string(),
           name: z.string().optional(),
           description: z.string().nullable().optional(),
           chunk_size: z.number().int().optional(),
           chunk_overlap: z.number().int().optional(),
+          strip_contact_footers: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2547,6 +2550,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           description?: string | null;
           chunk_size?: number;
           chunk_overlap?: number;
+          strip_contact_footers?: boolean;
           dry_run?: boolean;
         },
         eff,

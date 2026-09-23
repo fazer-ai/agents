@@ -29020,6 +29020,10 @@
                   "embeddingModel": {
                     "description": "Embedding model identifier used to index documents. Defaults to the configured model.",
                     "type": "string"
+                  },
+                  "stripContactFooters": {
+                    "description": "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -29044,6 +29048,10 @@
                   "embeddingModel": {
                     "description": "Embedding model identifier used to index documents. Defaults to the configured model.",
                     "type": "string"
+                  },
+                  "stripContactFooters": {
+                    "description": "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -29068,6 +29076,10 @@
                   "embeddingModel": {
                     "description": "Embedding model identifier used to index documents. Defaults to the configured model.",
                     "type": "string"
+                  },
+                  "stripContactFooters": {
+                    "description": "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -29328,7 +29340,7 @@
           "Resources"
         ],
         "summary": "Update knowledge base",
-        "description": "Update a knowledge base name, description, or chunking parameters.",
+        "description": "Update a knowledge base name, description, chunking parameters, or contact-footer switch.",
         "parameters": [
           {
             "name": "id",
@@ -29410,6 +29422,10 @@
                         "type": "integer"
                       }
                     ]
+                  },
+                  "stripContactFooters": {
+                    "description": "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -29470,6 +29486,10 @@
                         "type": "integer"
                       }
                     ]
+                  },
+                  "stripContactFooters": {
+                    "description": "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -29530,6 +29550,10 @@
                         "type": "integer"
                       }
                     ]
+                  },
+                  "stripContactFooters": {
+                    "description": "Drop a document's trailing contact footer (a short closing paragraph with an e-mail, a phone number or an invitation to get in touch) from the passages a search returns. Applied at search time, so no re-index. Off by default.",
+                    "type": "boolean"
                   }
                 }
               }

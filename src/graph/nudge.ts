@@ -306,6 +306,11 @@ export const DATA_FENCE = "⟦external-data⟧";
 // template configured). Explains WHY the follow-up became a private note and what to configure —
 // without it the yellow note reads as a bug. Same hardcoded pt-BR register as the one-shot
 // test-mode/out-of-hours notices in the webhook gate.
+// The note an operator's event becomes when a person holds the conversation (issue #818). pt-BR,
+// the register of the other notes here: it is read by the operator's team, not by the customer.
+export const OPERATOR_EVENT_NOTE_PREFIX =
+  "📨 Evento do sistema conectado, NÃO enviado ao cliente porque a conversa está com uma pessoa:\n\n";
+
 export const OUTSIDE_WINDOW_NOTE_PREFIX =
   "⏳ Fora da janela de 24h do WhatsApp: a mensagem abaixo NÃO foi enviada ao cliente. " +
   "Para reengajar fora da janela, configure um template aprovado (HSM) na aba Comportamento do agente.\n\n";
@@ -880,6 +885,31 @@ export async function runAgentNudge(
           alsoResolved: params.deliverToResolved,
         },
       );
+
+  // AN OPERATOR'S EVENT OVER A PERSON IS WRITTEN, NOT JUDGED (issue #818). The note directive lets
+  // the model stay silent when it finds nothing worth flagging, which is right for a payment nudge
+  // and wrong here: the operator's system sent this text to be delivered, the person holding the
+  // conversation is now the only one who can deliver it, and a model that went quiet dropped it with
+  // nothing left anywhere (measured live: a report fired three seconds after a takeover vanished).
+  // So the text goes to them as it arrived, deterministically, with no model call to pay for or to
+  // paraphrase the numbers it exists to carry.
+  if (params.nudge.framing === "operator_event" && !canMessagePre) {
+    const text = params.nudge.text
+      ? sanitizeFreeBlock(params.nudge.text, GENERIC_TEXT_MAX_CHARS)
+      : "";
+    if (!text) return "silent";
+    await client.sendPrivateNote(
+      conversationId,
+      `${OPERATOR_EVENT_NOTE_PREFIX}${text}`,
+    );
+    logger.info(
+      "agentNudge noted (operator event, held by a person): conv=%s source=%s",
+      String(conversationId),
+      params.nudge.source,
+    );
+    markFollowUp("noted");
+    return "noted";
+  }
 
   // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW (issue #457, review round 6). `canMessagePre` is
   // computed once, up here, and the hand-back note is written far below — after the ingestion drain,

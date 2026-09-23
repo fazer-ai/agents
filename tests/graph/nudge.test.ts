@@ -25,6 +25,7 @@ import {
 import {
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
+  OPERATOR_EVENT_NOTE_PREFIX,
   OUTSIDE_WINDOW_NOTE_PREFIX,
   parseThreadId,
   renderNudge,
@@ -623,25 +624,33 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(conv.status).toBe("resolved");
   });
 
+  // Where a person holds the conversation the event is the person's to deliver, so it reaches them
+  // as it arrived, and no model is asked: the model here would answer with the silence sentinel, the
+  // answer that dropped a live report without a trace before the note became deterministic.
+  const heldNote = [`${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`];
+
   test("the same event on a resolved conversation without the flag is only a note", async () => {
     await seedStatus(8182, "resolved", null);
-    const { s, run } = runOn(8182, false, "Nota.");
+    const { s, run } = runOn(8182, false, FOLLOWUP_SKIP_SENTINEL);
     expect(await run).toBe("noted");
     expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
   });
 
-  test("a conversation a person resolved (assignee a User) stays a note", async () => {
+  test("a conversation a person resolved (assignee a User) stays a note, the text as it came", async () => {
     await seedStatus(8183, "resolved", "User", 55);
-    const { s, run } = runOn(8183, true, "Nota.");
+    const { s, run } = runOn(8183, true, FOLLOWUP_SKIP_SENTINEL);
     expect(await run).toBe("noted");
     expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
   });
 
-  test("a handed-off conversation (open, nobody assigned) stays a note", async () => {
+  test("a handed-off conversation (open, nobody assigned) stays a note, the text as it came", async () => {
     await seedStatus(8184, "open", null);
-    const { s, run } = runOn(8184, true, "Nota.");
+    const { s, run } = runOn(8184, true, FOLLOWUP_SKIP_SENTINEL);
     expect(await run).toBe("noted");
     expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
   });
 
   test("bot-handling conversation → messages the customer", async () => {

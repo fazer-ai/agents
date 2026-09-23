@@ -71,6 +71,7 @@ const CONV_DUE = 79_606;
 const CONV_SLOW = 79_607;
 const CONV_DEAD_NOW = 79_609;
 const CONV_DEAD_BEFORE = 79_610;
+const CONV_OLD_STEP = 79_611;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -348,6 +349,28 @@ describe.skipIf(!dbUp)(
       const due = await rowOf(CONV_DUE);
       expect(due?.payload).toEqual({ threadId: threadOf(CONV_DUE) });
       expect(due?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+    });
+
+    // Review round 3: only a STEP-0 deferral is this episode's. Our own reply opens a new episode
+    // without cancelling the old one's later step, and waiting for that step (days of cadence) would
+    // hold back the new episode's first follow-up. The sweep replaces it with step 0.
+    test("a later step left over from an earlier episode is replaced by this episode's step 0", async () => {
+      await seedIdle(CONV_OLD_STEP, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_OLD_STEP),
+        runAt: new Date(Date.now() + 3 * 24 * 60 * 60_000),
+        payload: { threadId: threadOf(CONV_OLD_STEP), stepIndex: 2 },
+        rearm: "same-work",
+        base: appDb,
+      });
+      const before = Date.now();
+      await runSweep();
+      const r = await rowOf(CONV_OLD_STEP);
+      expect(r?.payload).toEqual({ threadId: threadOf(CONV_OLD_STEP) });
+      expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(r?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
     });
 
     // Found by the verifier: a model that keeps failing sends the row DEAD, which stamps nothing, and

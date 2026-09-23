@@ -1088,18 +1088,25 @@ export async function getConversationDetail(
           )
         : null;
     const hours = hoursRow ? parseSchedule(hoursRow) : null;
-    const job = managedByRedirect
+    // The conversation's one FOLLOWUP row, whatever its state: PENDING is the job the estimate reads,
+    // and DEAD is a follow-up the sweep will not offer again in this episode (issue #796).
+    const jobRow = managedByRedirect
       ? null
       : await runScopedOn(base, ctx, (db) =>
           db.schedulerJob.findFirst({
             where: {
               kind: "FOLLOWUP",
               dedupeKey: `followup:${conv.threadId}`,
-              status: "PENDING",
             },
-            select: { runAt: true, payload: true },
+            select: {
+              runAt: true,
+              payload: true,
+              status: true,
+              updatedAt: true,
+            },
           }),
         );
+    const job = jobRow?.status === "PENDING" ? jobRow : null;
     let nextStep: number | null = null;
     let nextRunAt: string | null = null;
     // True when the configured cadence landed outside the send window, so the estimate was pushed to
@@ -1126,6 +1133,13 @@ export async function getConversationDetail(
       conv.lastInboundAt,
       conv.lastRepliedAt,
     );
+    // A follow-up that died in THIS episode (its row went DEAD after the silence began): the sweep
+    // leaves the conversation out until either side speaks again, so the estimate must not promise
+    // a step 1 that will not run (issue #796). The same comparison as the sweep's SQL.
+    const diedThisEpisode =
+      jobRow?.status === "DEAD" &&
+      fencedSilenceStart != null &&
+      jobRow.updatedAt >= fencedSilenceStart;
     // The episode, through the same function the other two readers use. It moves UP here, instead of
     // living only in the branch below, because of issue #750: before it a fresh episode was born from
     // the customer speaking, and the inbound webhook cancels the pending job in the same movement. Our
@@ -1232,6 +1246,7 @@ export async function getConversationDetail(
       agent?.followUpArmedAt != null &&
       fencedSilenceStart != null &&
       fencedSilenceStart >= agent.followUpArmedAt &&
+      !diedThisEpisode &&
       movedAt
     ) {
       nextStep = 1;

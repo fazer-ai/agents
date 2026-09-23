@@ -315,8 +315,12 @@ async function sweepHandler(
       payload: { threadId: t.thread_id },
       // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
       // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
-      // run every minute, and the retry count the backoff was keeping was replaced with it.
-      leaveLaterRuns: true,
+      // run every minute, and the retry count the backoff was keeping was replaced with it. Only a
+      // STEP-0 deferral is this episode's: the sweep selects a thread only at the start of a fresh
+      // episode, so a later step still pending is left over from an earlier one (our own reply opens
+      // a new episode without cancelling it), and waiting for it would delay this episode's first
+      // follow-up by that step's cadence.
+      leaveLaterRun: isStepZeroPayload,
       base,
     });
   }
@@ -324,6 +328,15 @@ async function sweepHandler(
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
   };
+}
+
+// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one.
+function isStepZeroPayload(payload: Prisma.JsonValue): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return true;
+  }
+  const stepIndex = (payload as Record<string, unknown>).stepIndex;
+  return stepIndex === undefined || stepIndex === 0;
 }
 
 // WHAT A FOLLOW-UP STEP SAYS IT IS. Pure, and separate from the handler for the reason the redirect

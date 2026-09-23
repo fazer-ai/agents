@@ -310,24 +310,40 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
 // the cadence of a step that is not due yet — and the re-arm would pull it back to now and replace its
 // payload, which drops the retry count the backoff was keeping. For a clock that re-pushes the same
 // episode every minute that turned each of those deferrals into a run every minute. A row that is
-// already due, finished, or absent is armed as before.
+// already due, finished, or absent is armed as before. The caller says which deferred rows are its own
+// work (`leaveLaterRun` reads the row's payload): a deferral left by an EARLIER episode is not, and the
+// arm must replace it instead of waiting days for a step that no longer applies. Read first, then the
+// UPDATE is pinned to the `run_at` that was read, so a handler rescheduling in between makes it match
+// nothing, and the INSERT skips.
 export async function enqueueJobUnlessClaimed(
-  params: EnqueueParams & { leaveLaterRuns?: boolean },
+  params: EnqueueParams & {
+    leaveLaterRun?: (payload: Prisma.JsonValue) => boolean | Promise<boolean>;
+  },
 ): Promise<boolean> {
   const base = params.base ?? basePrisma;
   const { create, update } = jobRowWrites(params);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const key = {
+      tenantId: params.tenantId,
+      kind: params.kind,
+      dedupeKey: params.dedupeKey,
+    };
+    const later = params.leaveLaterRun
+      ? await db.schedulerJob.findFirst({
+          where: { ...key, status: "PENDING", runAt: { gt: new Date() } },
+          select: { runAt: true, payload: true },
+        })
+      : null;
+    if (later && (await params.leaveLaterRun?.(later.payload))) return false;
     const updated = await db.schedulerJob.updateMany({
       where: {
-        tenantId: params.tenantId,
-        kind: params.kind,
-        dedupeKey: params.dedupeKey,
+        ...key,
         status: { not: "CLAIMED" },
-        ...(params.leaveLaterRuns
-          ? {
-              NOT: { status: "PENDING", runAt: { gt: new Date() } },
-            }
-          : {}),
+        ...(later
+          ? { status: "PENDING", runAt: later.runAt }
+          : params.leaveLaterRun
+            ? { NOT: { status: "PENDING", runAt: { gt: new Date() } } }
+            : {}),
       },
       data: update,
     });

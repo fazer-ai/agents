@@ -417,6 +417,31 @@ describe("planSpokenReply", () => {
     ).toEqual(["sac@x.com.br"]);
   });
 
+  // Review round 9.
+  test("an escaped parenthesis is the destination's, not the link's end", () => {
+    const plan = planSpokenReply(
+      "Abra [o pedido](https://x.com.br/a\\)) e confirme na tela",
+    );
+    expect(plan.written).toEqual(["https://x.com.br/a)"]);
+    expect(plan.speech).toBe("Abra o pedido e confirme na tela");
+  });
+
+  test("a destination is decoded in one pass", () => {
+    expect(
+      planSpokenReply(
+        "Veja [um](https://x.com.br/?q=&amp;#38;) e [outro](https://x.com.br/?r=\\&amp;) quando puder",
+      ).written,
+    ).toEqual(["https://x.com.br/?q=&#38;", "https://x.com.br/?r=&amp;"]);
+  });
+
+  test("an escaped angle bracket stays in an angle-bracketed destination", () => {
+    expect(
+      planSpokenReply(
+        "Abra [o pedido](<https://x.com.br/a\\>b>) e confirme na tela",
+      ).written,
+    ).toEqual(["https://x.com.br/a>b"]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

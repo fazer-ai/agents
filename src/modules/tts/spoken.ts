@@ -20,12 +20,13 @@ export interface SpokenReplyPlan {
   textOnly: boolean;
 }
 
-// A path segment may carry one level of balanced parentheses (Wikipedia's `C_(language)`).
-const TARGET = String.raw`(?:[^()\s]|\([^()\s]*\))+`;
+// A path segment may carry one level of balanced parentheses (Wikipedia's `C_(language)`), and an
+// escaped one (`\)`) is the destination's, never the link's end.
+const TARGET = String.raw`(?:\\[()]|[^()\s]|\((?:\\[()]|[^()\s])*\))+`;
 // CommonMark's inline link: the destination bare or in `<…>`, then an optional title in `"…"`,
 // `'…'` or `(…)`. Group 1 is the label; groups 2/3 (angle) or 4/5 (bare) the `mailto:` and target.
 const MARKDOWN_LINK = new RegExp(
-  String.raw`\[([^\]\n]+)\]\(\s*(?:<(mailto:)?([^<>\n]+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
+  String.raw`\[([^\]\n]+)\]\(\s*(?:<(mailto:)?((?:\\[<>]|[^<>\n])+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
   "g",
 );
 // A match never starts or ends inside a token: a written item that is only part of the destination
@@ -121,14 +122,18 @@ function itemSpans(text: string): Span[] {
 // its recipient: `?subject=…` makes it neither the address nor a URI a chat client opens, and out
 // of the URI its percent escapes would name another mailbox (`foo%2Bbar@` is `foo+bar@`).
 function target(mailto: string | undefined, destination: string): string {
-  const decoded = destination
-    .replace(/\\([!-/:-@[-`{-~])/g, "$1")
-    .replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) => ENTITIES[e] ?? "")
-    .replace(/&#(?:([0-9]{1,7})|[xX]([0-9a-fA-F]{1,6}));/g, (_, d, h) => {
+  // One pass, so what one replacement produces is never read as markdown again (`&amp;#38;` is
+  // `&#38;`, `\&amp;` is `&amp;`).
+  const decoded = destination.replace(
+    /\\([!-/:-@[-`{-~])|&(amp|lt|gt|quot);|&#(?:([0-9]{1,7})|[xX]([0-9a-fA-F]{1,6}));/g,
+    (_, escaped?: string, named?: string, dec?: string, hex?: string) => {
+      if (escaped) return escaped;
+      if (named) return ENTITIES[named] ?? "";
       // CommonMark: an invalid code point decodes to U+FFFD.
-      const cp = d ? Number(d) : Number.parseInt(h, 16);
+      const cp = dec ? Number(dec) : Number.parseInt(hex ?? "", 16);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "\uFFFD";
-    });
+    },
+  );
   if (!mailto) return decoded;
   const recipient = decoded.split("?")[0] ?? "";
   try {
@@ -142,7 +147,6 @@ const ENTITIES: Record<string, string> = {
   lt: "<",
   gt: ">",
   quot: '"',
-  "#39": "'",
 };
 
 // A bare URL or address, cut down to the destination. What the greedy match took from around it is

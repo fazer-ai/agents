@@ -1088,6 +1088,10 @@ describe("knowledge source input (issue #794)", () => {
     [{ ...good, baseUrl: "https://op:segredo@ajuda.x.com.br" }, "baseUrl"],
     [{ ...good, baseUrl: "not a url" }, "baseUrl"],
     [{ ...good, baseUrl: "https://1.1.1.1/\u0000" }, "baseUrl"],
+    [{ ...good, baseUrl: "file:///tmp/portal" }, "baseUrl"],
+    [{ ...good, baseUrl: "https://ajuda.x.com.br/#ajuda" }, "baseUrl"],
+    [{ ...good, baseUrl: "https://ajuda.x.com.br/?lang=pt" }, "baseUrl"],
+    [{ ...good, baseUrl: "https://ajuda.x.com.br/?" }, "baseUrl"],
     [{ ...good, baseUrl: "" }, "baseUrl"],
   ])("refuses %p on %s", async (input, field) => {
     await expect(parseSourceInput(input, allowAll)).rejects.toMatchObject({

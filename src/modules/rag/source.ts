@@ -136,6 +136,20 @@ export async function parseSourceInput(
   if (parsedUrl.username !== "" || parsedUrl.password !== "") {
     throw invalid("baseUrl must not carry credentials", "baseUrl");
   }
+  // Static, so it holds where the address is not resolved (an import): the SSRF check below is the
+  // one that knows the scheme rules, but it is also the one that needs DNS.
+  if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
+    throw invalid("baseUrl must be an http(s) URL", "baseUrl");
+  }
+  // The listing path is appended to this string, and after a `?` or a `#` it would land inside the
+  // query or the fragment: the source would save and every run would fetch the wrong page.
+  if (
+    parsedUrl.search !== "" ||
+    parsedUrl.hash !== "" ||
+    /[?#]/.test(baseUrl)
+  ) {
+    throw invalid("baseUrl must not carry a query or a fragment", "baseUrl");
+  }
   try {
     await assertSafe(baseUrl);
   } catch (err) {

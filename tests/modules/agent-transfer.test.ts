@@ -3824,7 +3824,7 @@ describe.skipIf(!dbUp)("agent export/import with a knowledge source", () => {
     );
     if (!kbExp?.source) throw new Error("the bundle has no source");
     kbExp.name = "PortalKB-2";
-    kbExp.source.baseUrl = "https://op:segredo@ajuda.x.com.br";
+    kbExp.source.baseUrl = "file:///tmp/portal";
     // Two documents claiming one article: the first keeps the id, the import does not fail.
     kbExp.documents = [
       ...(kbExp.documents ?? []),

@@ -136,6 +136,26 @@ describe("planSpokenReply", () => {
       written: ["https://x.com.br/troca"],
     },
     {
+      name: "underscores around an address are italics, not part of it",
+      text: "Escreva para _sac@x.com.br_ e respondemos em até 2 dias",
+      written: ["sac@x.com.br"],
+    },
+    {
+      name: "bold around an address is not part of it",
+      text: "Escreva para **sac@x.com.br** e respondemos em até 2 dias",
+      written: ["sac@x.com.br"],
+    },
+    {
+      name: "an address used as its own link label is not spoken",
+      text: "Escreva para [sac@x.com.br](mailto:sac@x.com.br) e respondemos em até 2 dias",
+      written: ["sac@x.com.br"],
+    },
+    {
+      name: "a URL used as its own link label is not spoken",
+      text: "Os pedidos ficam em [https://x.com.br/pedidos](https://x.com.br/pedidos) depois da compra",
+      written: ["https://x.com.br/pedidos"],
+    },
+    {
       name: "a trailing underscore with no opening one is the URL's",
       text: "O arquivo fica em https://x.com.br/arquivos/ingresso_ para baixar",
       written: ["https://x.com.br/arquivos/ingresso_"],
@@ -169,6 +189,41 @@ describe("planSpokenReply", () => {
         "Veja [o artigo](https://en.wikipedia.org/wiki/C_(programming_language)) para detalhes",
       ).speech,
     ).toBe("Veja o artigo para detalhes");
+  });
+
+  test("an address with its own underscore keeps it", () => {
+    expect(
+      planSpokenReply(
+        "Escreva para sac_vendas@x.com.br e respondemos em 2 dias",
+      ).written,
+    ).toEqual(["sac_vendas@x.com.br"]);
+  });
+
+  test("a link label keeps its words and loses only the address inside it", () => {
+    expect(
+      planSpokenReply(
+        "Escreva para [o time em sac@x.com.br](mailto:sac@x.com.br) e respondemos em 2 dias",
+      ).speech,
+    ).toBe("Escreva para o time em e respondemos em 2 dias");
+  });
+
+  test("a leading underscore with no closing one is the address's", () => {
+    expect(
+      planSpokenReply("Escreva para _sac@x.com.br e respondemos em 2 dias")
+        .written,
+    ).toEqual(["_sac@x.com.br"]);
+  });
+
+  test("an item inside a link label is handed over along with the target", () => {
+    expect(
+      planSpokenReply(
+        "Escreva para [o time em sac@x.com.br](https://x.com.br/contato) e respondemos em 2 dias",
+      ),
+    ).toEqual({
+      speech: "Escreva para o time em e respondemos em 2 dias",
+      written: ["https://x.com.br/contato", "sac@x.com.br"],
+      textOnly: false,
+    });
   });
 
   test("a decimal, a time and a file name are not URLs", () => {

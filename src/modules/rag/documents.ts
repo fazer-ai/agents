@@ -214,6 +214,8 @@ export interface CreateDocumentParams {
   // its public URL. Unique per base, so a second writer of the same item gets P2002, not a copy.
   externalId?: string;
   sourceUrl?: string;
+  // The sync's own write (issue #794), fenced against the source it read: see holdSource.
+  bySource?: SourceFence;
   base?: PrismaClient;
 }
 
@@ -232,6 +234,31 @@ export async function assertDocumentNotSynced(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, (db) => refuseSyncedWrite(db, id));
+}
+
+// A sync run reads its source, goes out to the portal, and writes afterwards; the source can be
+// removed or replaced in between. Every write of the run carries the source's config as the run read
+// it and checks it INSIDE the write's own transaction, holding the row with FOR SHARE: a removal or a
+// replacement waits for the write in flight and makes every later one refuse, so a stale run cannot
+// touch a document after "stop syncing" returned, or reconcile against a config that is gone.
+export interface SourceFence {
+  knowledgeBaseId: bigint;
+  // `config::text` as the run read it: jsonb renders canonically, so equal text is equal config.
+  config: string;
+}
+
+export class SourceChangedError extends Error {}
+
+async function holdSource(db: ScopedDb, fence: SourceFence): Promise<void> {
+  const rows = await db.$queryRaw<{ config: string }[]>`
+    SELECT config::text AS config FROM knowledge_sources
+     WHERE knowledge_base_id = ${fence.knowledgeBaseId}
+     FOR SHARE`;
+  if (rows[0]?.config !== fence.config) {
+    throw new SourceChangedError(
+      "the knowledge base's source was removed or replaced during the run",
+    );
+  }
 }
 
 async function refuseSyncedWrite(db: ScopedDb, id: bigint): Promise<void> {
@@ -357,6 +384,7 @@ export async function createDocument(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
+    if (params.bySource) await holdSource(db, params.bySource);
     const created = await db.knowledgeDocument.create({
       data: {
         tenantId,
@@ -533,10 +561,11 @@ export async function deleteDocument(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
-  opts: { bySource?: boolean } = {},
+  opts: { bySource?: SourceFence } = {},
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
-    if (!opts.bySource) await refuseSyncedWrite(db, id);
+    if (opts.bySource) await holdSource(db, opts.bySource);
+    else await refuseSyncedWrite(db, id);
     // NOTE: Read with the row LOCKED before the delete, so the row describes the document actually
     // removed rather than a version an edit replaced in between.
     const existing = await readDocForAudit(db, id, null);
@@ -555,10 +584,10 @@ export async function deleteDocument(
 export interface UpdateDocumentParams {
   title?: string;
   text?: string;
-  // Sync-only (issue #794): the item's public URL moved (a renamed slug), and the write is the
-  // source's own, so the synced-document refusal does not apply.
+  // Sync-only (issue #794): the item's public URL moved (a renamed slug). A write that carries the
+  // source's fence is the source's own, so it is fenced against the source instead of refused.
   sourceUrl?: string | null;
-  bySource?: boolean;
+  bySource?: SourceFence;
 }
 
 // Edit a document's title and/or text. Changing the text RE-INGESTS it (status → PENDING → the
@@ -573,7 +602,8 @@ export async function updateDocument(
   const tenantId = ctx.tenantId as bigint;
   const hasTitle = params.title !== undefined;
   const hasText = params.text !== undefined;
-  const hasUrl = params.bySource === true && params.sourceUrl !== undefined;
+  const hasUrl =
+    params.bySource !== undefined && params.sourceUrl !== undefined;
   if (!hasTitle && !hasText && !hasUrl)
     throw new AppError("nothing to update", 400);
   // Same rule as the create, and asked here too because an edit is a write of its own: the create's
@@ -584,7 +614,8 @@ export async function updateDocument(
   ]);
 
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
-    if (!params.bySource) await refuseSyncedWrite(db, id);
+    if (params.bySource) await holdSource(db, params.bySource);
+    else await refuseSyncedWrite(db, id);
     // NOTE: LOCKED, because this reading is both the reingest decision and the row's `before`, and
     // two overlapping edits would otherwise each compare against a text the other one replaced. The
     // comparison happens in the DATABASE, where the old text already is: what comes back is whether

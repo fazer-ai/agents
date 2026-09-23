@@ -81,6 +81,8 @@ function portal(opts: {
   // A portal that one day serves drafts in the public listing, and one that declares no count.
   leakDrafts?: boolean;
   noCount?: boolean;
+  // A portal whose listing runs dry (or repeats page 1) before the count it declares.
+  truncateAt?: number;
   redirects?: (RequestRedirect | undefined)[];
 }): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
@@ -99,9 +101,13 @@ function portal(opts: {
       Number(url.searchParams.get("per_page") ?? "25"),
       opts.pageCap ?? 100,
     );
+    const served =
+      opts.truncateAt !== undefined
+        ? published.slice(0, opts.truncateAt)
+        : published;
     const slice = opts.ignorePage
-      ? published
-      : published.slice((page - 1) * per, page * per);
+      ? served
+      : served.slice((page - 1) * per, page * per);
     const payload = slice.map((a) => ({
       id: a.id,
       title: a.title,
@@ -532,6 +538,89 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     );
     expect(r).toMatchObject({ created: 130 });
     expect(requests).toHaveLength(2);
+  });
+
+  test("a listing that runs dry before its declared count deletes nothing", async () => {
+    await configure();
+    const many: Art[] = Array.from({ length: 130 }, (_, i) => ({
+      id: 301 + i,
+      title: `Artigo ${301 + i}`,
+      content: `MARCADOR-${301 + i}`,
+    }));
+    await sync(portal({ articles: () => many }));
+    expect(await synced()).toHaveLength(130);
+    // Page 2 comes back empty, then a portal that repeats page 1: 100 of the 130 it declares.
+    for (const extra of [{}, { ignorePage: true }]) {
+      const r = await sync(
+        portal({ articles: () => many, truncateAt: 100, ...extra }),
+      );
+      expect(r).toBeNull();
+      expect(await synced()).toHaveLength(130);
+      expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+        lastStatus: "error",
+      });
+    }
+  });
+
+  test("a portal that stalls its body is cut by the timeout, not waited on", async () => {
+    await configure();
+    await sync(portal({ articles: () => BASIC }));
+    const stalled = (async (_u: string, init?: RequestInit) =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"payload":['));
+            init?.signal?.addEventListener("abort", () =>
+              c.error(new Error("aborted")),
+            );
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const t0 = Date.now();
+    const r = await syncKnowledgeSource(tenantId, kb, {
+      base: appDb,
+      fetchImpl: stalled,
+      assertSafe: allowAll,
+      timeoutMs: 200,
+    });
+    expect(r).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(await synced()).toHaveLength(3);
+  });
+
+  test("a run whose source is removed or replaced while it fetches writes nothing", async () => {
+    await configure();
+    await sync(portal({ articles: () => BASIC }));
+    await markIndexed();
+    const before = await synced();
+    const changed = [
+      { ...BASIC[0], content: "MARCADOR-101-v2" } as Art,
+      { id: 104, title: "Troca de tamanho", content: "MARCADOR-104" },
+    ];
+    const meanwhile = (act: () => Promise<unknown>) => {
+      const inner = portal({ articles: () => changed });
+      return (async (u: string, init?: RequestInit) => {
+        await act();
+        return inner(u, init);
+      }) as unknown as typeof fetch;
+    };
+    // Removed: the run finds the source gone at its first write and stops.
+    expect(
+      await sync(meanwhile(() => deleteSource(ctx(), kb, appDb))),
+    ).toBeNull();
+    const afterRemoval = await synced();
+    expect(afterRemoval.map((d) => [d.id, d.content, d.status])).toEqual(
+      before.map((d) => [d.id, d.content, d.status]),
+    );
+    // Replaced with another config: the stale run's listing no longer answers for the base.
+    await configure();
+    expect(
+      await sync(meanwhile(() => configure({ excludeIds: [103] }))),
+    ).toBeNull();
+    expect((await synced()).map((d) => [d.id, d.content])).toEqual(
+      before.map((d) => [d.id, d.content]),
+    );
   });
 
   test("two syncs at once create each document once", async () => {

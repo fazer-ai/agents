@@ -14,7 +14,13 @@ import {
   enqueueJob,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
-import { createDocument, deleteDocument, updateDocument } from "./documents";
+import {
+  createDocument,
+  deleteDocument,
+  SourceChangedError,
+  type SourceFence,
+  updateDocument,
+} from "./documents";
 
 // A knowledge base that mirrors a Chatwoot help center portal (issue #794).
 //
@@ -344,35 +350,37 @@ export async function fetchPortalArticles(
   config: PortalConfig,
   fetchImpl: typeof fetch = fetch,
   assertSafe: AssertSafe = assertSafeOutboundUrl,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
 ): Promise<PortalArticle[]> {
   await assertSafe(config.baseUrl);
   const articles = new Map<number, PortalArticle>();
+  // Every id the portal listed, kept or not (a draft, an untitled one): what its count counts.
+  const listed = new Set<unknown>();
   let expected: number | null = null;
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `${config.baseUrl}/hc/${encodeURIComponent(config.slug)}/${encodeURIComponent(config.locale)}/articles.json?per_page=${PAGE_SIZE}&page=${page}`;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-    let res: Response;
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let body: { payload?: unknown; meta?: { articles_count?: unknown } };
+    // The timer covers the body too: a portal that sends its headers and then stalls would otherwise
+    // hold the run, and with it the scheduler tick every other shared-lane job waits on.
     try {
       // `manual`: a redirect is not followed, because the SSRF check above vouched for this host
       // and nothing else.
-      res = await fetchImpl(url, {
+      const res = await fetchImpl(url, {
         signal: ctrl.signal,
         redirect: "manual",
         headers: { accept: "application/json" },
       });
+      if (!res.ok) {
+        throw new Error(
+          `portal listing page ${page} answered HTTP ${res.status}`,
+        );
+      }
+      body = (await res.json()) as typeof body;
     } finally {
       clearTimeout(timer);
     }
-    if (!res.ok) {
-      throw new Error(
-        `portal listing page ${page} answered HTTP ${res.status}`,
-      );
-    }
-    const body = (await res.json()) as {
-      payload?: unknown;
-      meta?: { articles_count?: unknown };
-    };
     if (!Array.isArray(body.payload)) {
       throw new Error(`portal listing page ${page} has no payload array`);
     }
@@ -380,22 +388,29 @@ export async function fetchPortalArticles(
     if (expected === null && typeof count === "number") expected = count;
     let added = 0;
     for (const raw of body.payload as RawArticle[]) {
+      if (listed.has(raw.id)) continue;
+      listed.add(raw.id);
+      added++;
       const a = toArticle(raw, config);
-      if (a && !articles.has(a.id)) {
-        articles.set(a.id, a);
-        added++;
-      }
+      if (a) articles.set(a.id, a);
     }
     // Done when nothing new arrived (an empty page, or a portal that ignores `page` and returns
     // everything every time) or the count the portal declared is reached. A short page ends the
     // listing only when there is no count: a portal whose cap is below the size asked for serves
     // short pages all the way through.
-    if (
+    const done =
       added === 0 ||
       (expected !== null
-        ? articles.size >= expected
-        : body.payload.length < PAGE_SIZE)
-    ) {
+        ? listed.size >= expected
+        : body.payload.length < PAGE_SIZE);
+    if (done) {
+      // A listing that ran dry before the count it declared is a partial one (an empty or repeated
+      // page mid-way), and a partial listing reads the missing articles as deleted.
+      if (expected !== null && listed.size < expected) {
+        throw new Error(
+          `portal listing ended at ${listed.size} of the ${expected} articles it declared`,
+        );
+      }
       return [...articles.values()];
     }
   }
@@ -459,15 +474,24 @@ export async function syncKnowledgeSource(
     base?: PrismaClient;
     fetchImpl?: typeof fetch;
     assertSafe?: AssertSafe;
+    timeoutMs?: number;
   } = {},
 ): Promise<SyncResult | null> {
   const base = deps.base ?? basePrisma;
   const ctx = sysCtx(tenantId);
-  const source = await runScopedOn(base, ctx, (db) =>
-    db.knowledgeSource.findUnique({ where: { knowledgeBaseId } }),
+  // The config as TEXT, the way every write of this run checks it (see `SourceFence`).
+  const rows = await runScopedOn(
+    base,
+    ctx,
+    (db) =>
+      db.$queryRaw<{ config: string }[]>`
+      SELECT config::text AS config FROM knowledge_sources
+       WHERE knowledge_base_id = ${knowledgeBaseId}`,
   );
-  if (!source) return null;
-  const config = source.config as unknown as PortalConfig;
+  const configText = rows[0]?.config;
+  if (configText === undefined) return null;
+  const config = JSON.parse(configText) as PortalConfig;
+  const fence: SourceFence = { knowledgeBaseId, config: configText };
 
   let articles: PortalArticle[];
   try {
@@ -475,6 +499,7 @@ export async function syncKnowledgeSource(
       config,
       deps.fetchImpl,
       deps.assertSafe,
+      deps.timeoutMs,
     );
   } catch (err) {
     await recordRun(
@@ -510,6 +535,45 @@ export async function syncKnowledgeSource(
     emptyListing: articles.length === 0,
   };
 
+  try {
+    await reconcile(ctx, knowledgeBaseId, wanted, have, result, fence, base);
+  } catch (err) {
+    // Removed or replaced while this run was out: its listing no longer answers for the base. A
+    // replacement armed a run of its own; a removal wants nothing more written.
+    if (err instanceof SourceChangedError) {
+      logger.info(
+        {
+          tenantId: String(tenantId),
+          knowledgeBaseId: String(knowledgeBaseId),
+        },
+        "knowledge source sync: the source changed during the run; stopped",
+      );
+      return null;
+    }
+    throw err;
+  }
+
+  await recordRun(
+    base,
+    ctx,
+    knowledgeBaseId,
+    result.emptyListing ? "warning" : "ok",
+    result.emptyListing
+      ? "the portal listed no published articles; nothing was deleted this round"
+      : `created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}`,
+  );
+  return result;
+}
+
+async function reconcile(
+  ctx: TenantContext,
+  knowledgeBaseId: bigint,
+  wanted: Map<string, PortalArticle>,
+  have: Map<string, SyncedRow>,
+  result: SyncResult,
+  fence: SourceFence,
+  base: PrismaClient,
+): Promise<void> {
   for (const [externalId, a] of wanted) {
     const row = have.get(externalId);
     if (!row) {
@@ -522,6 +586,7 @@ export async function syncKnowledgeSource(
           sourceType: "chatwoot_portal",
           externalId,
           sourceUrl: a.url,
+          bySource: fence,
           base,
         });
         result.created++;
@@ -548,7 +613,7 @@ export async function syncKnowledgeSource(
           ...(titleMoved ? { title: a.title } : {}),
           ...(textMoved ? { text: a.content } : {}),
           ...(urlMoved ? { sourceUrl: a.url } : {}),
-          bySource: true,
+          bySource: fence,
         },
         base,
       ),
@@ -564,21 +629,10 @@ export async function syncKnowledgeSource(
   if (!result.emptyListing) {
     for (const [externalId, row] of have) {
       if (wanted.has(externalId)) continue;
-      await ignoreGone(deleteDocument(ctx, row.id, base, { bySource: true }));
+      await ignoreGone(deleteDocument(ctx, row.id, base, { bySource: fence }));
       result.deleted++;
     }
   }
-
-  await recordRun(
-    base,
-    ctx,
-    knowledgeBaseId,
-    result.emptyListing ? "warning" : "ok",
-    result.emptyListing
-      ? "the portal listed no published articles; nothing was deleted this round"
-      : `created ${result.created}, updated ${result.updated}, deleted ${result.deleted}, unchanged ${result.unchanged}`,
-  );
-  return result;
 }
 
 function isUniqueViolation(err: unknown): boolean {

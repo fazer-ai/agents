@@ -470,6 +470,25 @@ describe("planSpokenReply", () => {
     expect(plan.speech).toBe("Escreva para e respondemos em 2 dias");
   });
 
+  // Review round 11.
+  test("a quote or marker inside a local part does not restart the address", () => {
+    for (const text of [
+      "Escreva para a!b'finance@x.com.br e respondemos em 2 dias",
+      "Escreva para a!b_finance@x.com.br e respondemos em 2 dias",
+      "Escreva para a!b*finance@x.com.br e respondemos em 2 dias",
+    ]) {
+      expect(planSpokenReply(text).written).toEqual([]);
+    }
+  });
+
+  test("whitespace in a markdown destination is percent-encoded", () => {
+    expect(
+      planSpokenReply(
+        "Baixe [o documento](<https://x.com.br/Meu Arquivo.pdf>) quando puder",
+      ).written,
+    ).toEqual(["https://x.com.br/Meu%20Arquivo.pdf"]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

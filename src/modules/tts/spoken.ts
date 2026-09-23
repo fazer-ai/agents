@@ -39,11 +39,11 @@ const MARKDOWN_LINK = new RegExp(
 const URL =
   /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. An
-// address starts only where a token starts (after whitespace, an opening bracket or quote, a
-// separator, or formatting), so a local part the class cannot hold (`john!doe.smith@`) is left
-// alone, never cut to the piece after its last unsupported character.
+// address starts only where a token starts (after whitespace, an opening bracket, or a separator,
+// then any quotes or formatting), so a local part the class cannot hold (`john!doe.smith@`,
+// `a!b'finance@`) is left alone, never cut to the piece after its last unsupported character.
 const EMAIL =
-  /(?<=^|[\s\p{Ps}\p{Pi}<"':;,，：；、*_~`])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
+  /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
 // GFM's autolink rule, plus closing quotes: these end a sentence or a formatting run, not a link.
 const TRAILING_PUNCTUATION = /[?!.,:*_~;'"»”]$/;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
@@ -147,7 +147,10 @@ function target(mailto: string | undefined, destination: string): string {
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "\uFFFD";
     },
   );
-  return mailto ? recipient(decoded) : decoded;
+  // Delivered as bare text, a space would end the link where a renderer would have sent `%20`.
+  return mailto
+    ? recipient(decoded)
+    : decoded.replace(/\s/g, (c) => encodeURIComponent(c));
 }
 
 function recipient(uri: string): string {

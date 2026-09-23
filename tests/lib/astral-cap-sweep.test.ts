@@ -533,6 +533,10 @@ const BARE_SLICES: Record<
   // inside a surrogate pair; the result is parsed, never shown, so a cut there could not truncate
   // anything in front of a reader either.
   "src/modules/tool-definitions/response-template.ts": [2, "array"],
+  // Drops the URL's last character only after checking it is one of a closed set of marks
+  // (punctuation, a formatting wrapper, a closing parenthesis; `»` and `”` are the only non-ASCII
+  // ones, both single UTF-16 units), so the cut never splits a pair.
+  "src/modules/tts/spoken.ts": [1, "ascii"],
   "src/modules/updates/semver.ts": [1, "array"],
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
   // never stored, never shown, never sent anywhere.

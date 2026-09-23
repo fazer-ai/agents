@@ -17,45 +17,115 @@ export interface SpokenReplyPlan {
   textOnly: boolean;
 }
 
+// A path segment may carry one level of balanced parentheses (Wikipedia's `C_(language)`).
+const TARGET = String.raw`(?:[^()\s]|\([^()\s]*\))+`;
 // Group 1 is the label, group 3 the target without a `mailto:`.
-const MARKDOWN_LINK = /\[([^\]\n]+)\]\(\s*(mailto:)?([^)\s]+)\s*\)/g;
-const URL = /\b(?:https?:\/\/|www\.)[^\s<>()[\]]+/gi;
+const MARKDOWN_LINK = new RegExp(
+  String.raw`\[([^\]\n]+)\]\(\s*(mailto:)?(${TARGET})\s*\)`,
+  "g",
+);
+const URL = /\b(?:https?:\/\/|www\.)[^\s<>[\]`]+/gi;
 const EMAIL =
   /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
-// The sentence's own punctuation, which the greedy URL match swallows.
-const TRAILING = /[.,;:!?'"»”]+$/;
+const TRAILING_PUNCTUATION = /[.,;:!?'"»”]$/;
+// Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
+// the item and never enters the written copy.
+const WRAPPERS = "`*_~";
 const INTRODUCTION_MAX_WORDS = 4;
+// `includes("")` is true, and the character before index 0 or past the end is "".
+const isWrapper = (c: string) => c.length === 1 && WRAPPERS.includes(c);
+
+interface Span {
+  start: number;
+  end: number;
+  item: string;
+  // What the span becomes in the speech: a markdown link keeps its label.
+  spoken: string;
+}
 
 export function planSpokenReply(text: string): SpokenReplyPlan {
-  // Each pass blanks what it took, so the next one cannot match inside it and every position stays
-  // a position in the original text, which is what "order of first appearance" is measured in.
-  const items: Array<{ at: number; item: string }> = [];
-  const blank = (m: string) => " ".repeat(m.length);
+  const candidates: Span[] = [];
   for (const m of text.matchAll(MARKDOWN_LINK)) {
-    items.push({ at: m.index, item: m[3] ?? "" });
+    candidates.push(span(text, m.index, m[0].length, m[3] ?? "", m[1] ?? ""));
   }
-  const noMarkdown = text.replace(MARKDOWN_LINK, blank);
-  for (const m of noMarkdown.matchAll(URL)) {
-    items.push({ at: m.index, item: m[0].replace(TRAILING, "") });
+  for (const m of text.matchAll(URL)) {
+    const item = trimUrl(m[0], text[m.index - 1] ?? "");
+    candidates.push(span(text, m.index, item.length, item, ""));
   }
-  for (const m of noMarkdown.replace(URL, blank).matchAll(EMAIL)) {
-    items.push({ at: m.index, item: m[0] });
+  for (const m of text.matchAll(EMAIL)) {
+    candidates.push(span(text, m.index, m[0].length, m[0], ""));
   }
-  if (items.length === 0) return { speech: text, written: [], textOnly: false };
+  if (candidates.length === 0)
+    return { speech: text, written: [], textOnly: false };
 
-  items.sort((a, b) => a.at - b.at);
-  const speech = tidy(
-    text
-      .replace(MARKDOWN_LINK, (_m, label: string) => label)
-      .replace(URL, (m) => m.slice(m.replace(TRAILING, "").length))
-      .replace(EMAIL, ""),
-  );
+  // Overlaps resolve to the longest match: the whole address over the `www.` host inside it, the
+  // whole URL over an address in its query, a markdown link over the target inside it.
+  const spans: Span[] = [];
+  for (const c of [...candidates].sort(
+    (a, b) => b.end - b.start - (a.end - a.start),
+  )) {
+    if (spans.every((s) => c.end <= s.start || c.start >= s.end)) spans.push(c);
+  }
+  spans.sort((a, b) => a.start - b.start);
+
+  let speech = "";
+  let at = 0;
+  for (const s of spans) {
+    speech += text.slice(at, s.start) + s.spoken;
+    at = s.end;
+  }
+  speech = tidy(speech + text.slice(at));
   const words = speech.match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? [];
   return {
     speech,
-    written: [...new Set(items.map((i) => i.item))],
+    written: [...new Set(spans.map((s) => s.item))],
     textOnly: words.length <= INTRODUCTION_MAX_WORDS,
   };
+}
+
+// The item's span, widened over a formatting run that wraps it symmetrically, and over a markdown
+// autolink's angle brackets.
+function span(
+  text: string,
+  start: number,
+  length: number,
+  item: string,
+  spoken: string,
+): Span {
+  let s = start;
+  let e = start + length;
+  for (;;) {
+    const open = text[s - 1] ?? "";
+    const close = text[e] ?? "";
+    const wraps =
+      (isWrapper(open) && open === close) || (open === "<" && close === ">");
+    if (!wraps) break;
+    s--;
+    e++;
+  }
+  return { start: s, end: e, item, spoken };
+}
+
+// The sentence's punctuation, the closing half of a wrapper the URL sits in, and a closing
+// parenthesis the URL did not open are the greedy match's, not the URL's. A wrapper character with
+// no opening twin before the URL is the URL's own (`.../ingresso_`).
+function trimUrl(m: string, before: string): string {
+  let u = m;
+  for (;;) {
+    const last = u.at(-1) ?? "";
+    const unbalanced =
+      last === ")" &&
+      (u.match(/\(/g)?.length ?? 0) < (u.match(/\)/g)?.length ?? 0);
+    if (
+      TRAILING_PUNCTUATION.test(last) ||
+      (isWrapper(last) && last === before) ||
+      unbalanced
+    ) {
+      u = u.slice(0, -1);
+    } else {
+      return u;
+    }
+  }
 }
 
 // The holes the items leave: doubled spaces, a space before punctuation, a comma right after

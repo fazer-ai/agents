@@ -3414,7 +3414,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // Issue #787: a URL or an e-mail address never goes into the speech. It is handed over verbatim in
   // one text message right after the voice note, or the whole reply goes as text when all that is
   // left to say is the introduction of the item.
-  function recordingAudioClient(log: Array<{ kind: string; text: string }>) {
+  function recordingAudioClient(
+    log: Array<{ kind: string; text: string }>,
+    onAudio: () => Promise<void> = async () => {},
+  ) {
     return async () =>
       ({
         sendMessage: async (_c: number, content: string) => {
@@ -3429,6 +3432,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           meta?: { transcribedText?: string },
         ) => {
           log.push({ kind: "audio", text: meta?.transcribedText ?? "" });
+          await onAudio();
           return {};
         },
         toggleStatus: async () => ({}),
@@ -3450,7 +3454,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   async function audioTurn(
     conv: number,
     reply: string,
-    opts: { ttsStatus?: number } = {},
+    opts: { ttsStatus?: number; onAudio?: () => Promise<void> } = {},
   ) {
     await seedConversation(conv, null);
     const log: Array<{ kind: string; text: string }> = [];
@@ -3465,7 +3469,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       deps: {
         makeModel: () =>
           new CaptureReplyModel(reply) as unknown as BaseChatModel,
-        makeClient: recordingAudioClient(log),
+        makeClient: recordingAudioClient(log, opts.onAudio),
         checkpointer: new MemorySaver(),
         ttsFetch: recordingTts(spoken, opts.ttsStatus),
         normalizeSpeech: async (t: string) => {
@@ -3521,6 +3525,37 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         "Você pode acompanhar seu pedido em https://x.com.br/pedidos/123 a qualquer momento";
       const r = await audioTurn(787_04, reply, { ttsStatus: 500 });
       expect(r.log).toEqual([{ kind: "text", text: reply }]);
+    });
+  });
+
+  // Review round 1 of #788: the written follow-up is a second write, and a /reset or a disabled agent
+  // landing while the voice note was being sent has to stop it like it stops any other write.
+  test("an agent disabled during the voice note does not send the written follow-up (#787)", async () => {
+    await withTtsMirror(async () => {
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      try {
+        const r = await audioTurn(
+          787_06,
+          "Você pode acompanhar seu pedido em https://x.com.br/pedidos/123 a qualquer momento",
+          {
+            onAudio: async () => {
+              await suDb.agent.update({
+                where: { id: agent.id },
+                data: { enabled: false },
+              });
+            },
+          },
+        );
+        expect(r.log.map((m) => m.kind)).toEqual(["audio"]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { enabled: true },
+        });
+      }
     });
   });
 

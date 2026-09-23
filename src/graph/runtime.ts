@@ -1381,7 +1381,9 @@ async function runTurnBody(
           // reaches this line: it is caught below and the reply falls back to text, which is its
           // own delivery question and a different mechanism from this one (issue #499 covers the
           // text path only).
-          if (spoken.written.length === 0) {
+          // The voice note landed, so a stand-down from here on still reports it as delivered.
+          // `deliverReply` with split off never asks `calledOff`, so the check is made here.
+          if (spoken.written.length === 0 || (await writeCalledOff())) {
             return { delivered: 1, failed: false, unproven: false };
           }
           // One balloon, unsigned: it is the rest of the voice note, not a reply of its own.

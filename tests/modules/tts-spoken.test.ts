@@ -102,6 +102,75 @@ describe("planSpokenReply", () => {
     });
   }
 
+  // Review round 1 of #788: the item written is the only copy of the destination the customer gets,
+  // so it has to survive the characters around it.
+  const exact: Array<{ name: string; text: string; written: string[] }> = [
+    {
+      name: "balanced parentheses belong to the URL",
+      text: "Veja https://en.wikipedia.org/wiki/C_(programming_language) para detalhes",
+      written: ["https://en.wikipedia.org/wiki/C_(programming_language)"],
+    },
+    {
+      name: "a markdown target keeps its balanced parentheses",
+      text: "Veja [o artigo](https://en.wikipedia.org/wiki/C_(programming_language)) para detalhes",
+      written: ["https://en.wikipedia.org/wiki/C_(programming_language)"],
+    },
+    {
+      name: "an unbalanced closing parenthesis is the sentence's",
+      text: "Confira o site (https://x.com.br/troca) antes de comprar",
+      written: ["https://x.com.br/troca"],
+    },
+    {
+      name: "inline code around a URL is not part of it",
+      text: "Abra `https://x.com.br/troca` e confirme a troca na tela",
+      written: ["https://x.com.br/troca"],
+    },
+    {
+      name: "bold around a URL is not part of it",
+      text: "Abra **https://x.com.br/troca** e confirme a troca na tela",
+      written: ["https://x.com.br/troca"],
+    },
+    {
+      name: "a markdown autolink's brackets are not part of it",
+      text: "Abra <https://x.com.br/troca> e confirme a troca na tela",
+      written: ["https://x.com.br/troca"],
+    },
+    {
+      name: "a trailing underscore with no opening one is the URL's",
+      text: "O arquivo fica em https://x.com.br/arquivos/ingresso_ para baixar",
+      written: ["https://x.com.br/arquivos/ingresso_"],
+    },
+    {
+      name: "a www host inside an e-mail address stays the address",
+      text: "Escreva para suporte@www.example.com e respondemos em até 2 dias",
+      written: ["suporte@www.example.com"],
+    },
+    {
+      name: "an address inside a URL's query stays the URL",
+      text: "Use https://x.com.br/contato?para=sac@x.com.br e respondemos em até 2 dias",
+      written: ["https://x.com.br/contato?para=sac@x.com.br"],
+    },
+  ];
+
+  for (const row of exact) {
+    test(row.name, () => {
+      const plan = planSpokenReply(row.text);
+      expect(plan.written).toEqual(row.written);
+      for (const item of row.written) {
+        expect(plan.speech).not.toContain(item);
+      }
+      expect(plan.speech).not.toMatch(/[`*@<>]|https?:|www\./);
+    });
+  }
+
+  test("a markdown link with parentheses in its target still speaks only its label", () => {
+    expect(
+      planSpokenReply(
+        "Veja [o artigo](https://en.wikipedia.org/wiki/C_(programming_language)) para detalhes",
+      ).speech,
+    ).toBe("Veja o artigo para detalhes");
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

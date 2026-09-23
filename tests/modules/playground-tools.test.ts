@@ -68,12 +68,15 @@ describe("applyToolMocks (P4)", () => {
     );
     const skip = tools.find((t) => t.name === "skip_reply");
     expect(skip).toBeDefined();
-    const out = String(await skip?.invoke({}));
+    const out = String(await skip?.invoke({ reason: "acknowledged" }));
     expect(out.toLowerCase()).not.toContain("simulated");
     expect(out).toContain("Produce no message now");
     // With a reason, the real tool echoes it — and it still never reaches the exploding client.
     const withReason = String(
-      await skip?.invoke({ reason: "nothing new to say" }),
+      await skip?.invoke({
+        reason: "acknowledged",
+        detail: "nothing new to say",
+      }),
     );
     expect(withReason).toContain("nothing new to say");
     // The neighbours are untouched: this is an exemption for one tool, not the end of simulation.
@@ -123,7 +126,7 @@ describe("applyToolMocks (P4)", () => {
       type: "tool_call",
       id: "c1",
       name: SKIP_REPLY_TOOL,
-      args: {},
+      args: { reason: "acknowledged" },
     } as never)) as ToolMessage;
     expect(String(out.content)).not.toBe("vou responder sim");
     expect(skipReplyRan(out)).toBe(true);

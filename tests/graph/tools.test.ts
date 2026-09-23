@@ -2854,7 +2854,7 @@ describe("the fence rule, over every native tool", () => {
       label: "",
       args: { url: "https://imgs.example/x.png" },
     },
-    { tool: "skip_reply", label: "", args: {} },
+    { tool: "skip_reply", label: "", args: { reason: "acknowledged" } },
     { tool: "calculator", label: "", args: { expression: "1+1" } },
     { tool: "get_current_time", label: "", args: {} },
   ];

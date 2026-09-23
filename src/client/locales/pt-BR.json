@@ -2212,7 +2212,7 @@
       "label": "Preferência de voz"
     },
     "skip_reply": {
-      "desc": "Decide não responder quando a mensagem não pede resposta (ex.: só 'ok' ou um emoji).",
+      "desc": "Decide não responder quando a mensagem não pede resposta (ex.: só 'ok' ou um emoji). Quando o agente diz que a conversa não é para ele ou precisa de uma pessoa, ou quando ninguém respondeu nela ainda, ela vai para a equipe como aberta, com uma nota privada, e o agente deixa de responder ali.",
       "label": "Não responder"
     },
     "update_kanban_task": {

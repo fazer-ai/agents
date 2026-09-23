@@ -31,6 +31,7 @@ import {
   runAgentNudge,
 } from "@/graph/nudge";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import { skipHandoverNote } from "@/graph/skip-handover";
 import {
   claimIngestWrite,
   markTurnOwning,
@@ -307,6 +308,8 @@ function stub() {
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
   const resolved: number[] = [];
+  // What each status call asked for, beside `resolved`, which only names the conversation.
+  const statuses: Array<[number, string]> = [];
   // The approved HSM sends. Reachable from the moderated branch only since the service-window mode
   // started being read after the judge instead of before it.
   const templates: Array<[number, string]> = [];
@@ -331,8 +334,9 @@ function stub() {
       order.push("label");
       return {};
     },
-    toggleStatus: async (c: number, _status: string) => {
+    toggleStatus: async (c: number, status: string) => {
       resolved.push(c);
+      statuses.push([c, status]);
       order.push("resolve");
       return {};
     },
@@ -348,6 +352,7 @@ function stub() {
     notes,
     labelSets,
     resolved,
+    statuses,
     templates,
     order,
     makeClient: async () => client,
@@ -984,6 +989,176 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(isTurnInFlight(graphThreadId)).toBe(false);
   });
 
+  // Issue #659: a follow-up that stays quiet because the conversation needs a person hands it to
+  // `open` with a note, and the ladder's own resolve does not close it behind that. `acknowledged`
+  // is the ordinary quiet follow-up and changes nothing about it.
+  class NudgeSkipModel {
+    constructor(private reason: string) {}
+    async invoke(): Promise<AIMessage> {
+      return new AIMessage("");
+    }
+    bindTools(_tools: unknown) {
+      const self = this;
+      let n = 0;
+      return {
+        async invoke(): Promise<AIMessage> {
+          n++;
+          return n === 1
+            ? new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "skip_reply",
+                    args: { reason: self.reason },
+                    id: "call_skip",
+                  },
+                ],
+              })
+            : new AIMessage("");
+        },
+      };
+    }
+  }
+
+  test("a follow-up silent with needs_human opens the conversation with a note, and does not close it", async () => {
+    await seedConv(9661, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9661`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () => new NudgeSkipModel("needs_human") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    expect(s.statuses).toEqual([[9661, "open"]]);
+    expect(s.notes).toEqual([[9661, skipHandoverNote("needs_human", null)]]);
+    // The label still applies: it is how the operator triages what the bot left behind.
+    expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  test("a follow-up whose hand-over failed still does not close the conversation", async () => {
+    await seedConv(9663, null);
+    const s = stub();
+    const client = s.client as unknown as {
+      toggleStatus: (c: number, st: string) => Promise<unknown>;
+    };
+    const record = client.toggleStatus;
+    client.toggleStatus = async (c, st) => {
+      await record(c, st);
+      if (st === "open") throw new Error("chatwoot 500");
+      return {};
+    };
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9663`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () => new NudgeSkipModel("needs_human") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.statuses).toEqual([[9663, "open"]]);
+  });
+
+  test("a follow-up that closed the conversation itself does not reopen it for the queue", async () => {
+    await seedConv(9664, null);
+    const s = stub();
+    const makeClient = async () => {
+      const base = (await s.makeClient()) as unknown as Record<string, unknown>;
+      return {
+        ...base,
+        getConversation: async () => ({
+          id: 9664,
+          status: "pending",
+          meta: { assignee_type: null, assignee: null },
+          last_activity_at: 1_700_500_000,
+        }),
+      } as never;
+    };
+    class ResolveThenSkip {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "r1" },
+                ],
+              });
+            if (n === 2)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "skip_reply",
+                    args: { reason: "needs_human" },
+                    id: "s1",
+                  },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9664`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new ResolveThenSkip() as never,
+        makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.statuses).toEqual([[9664, "resolved"]]);
+    expect(s.notes).toEqual([]);
+  });
+
+  test("a follow-up silent with acknowledged stays the ordinary quiet follow-up", async () => {
+    await seedConv(9662, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9662`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () => new NudgeSkipModel("acknowledged") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(s.statuses).toEqual([[9662, "resolved"]]);
+  });
+
   test("handoff customerMessage is terminal when the nudge mirror event lags", async () => {
     await seedConv(999, null);
     const s = stub();
@@ -1078,7 +1253,13 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "n1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "n1",
+                  },
+                ],
               });
             // `resolve_conversation` rather than `set_labels`, and it is not indifference: the two
             // trees this round lives in disagree about `set_labels`' schema while the #710 backport

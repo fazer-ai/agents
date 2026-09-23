@@ -207,6 +207,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // turno num turno que nao decidiu silencio.
   "tests/graph/runtime.test.ts": 21,
   "tests/graph/side-effect-flowlog.test.ts": 1,
+  "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's
   // delivery is read — that one drives the callback by hand, so it cannot go through the helper.
   "tests/graph/skip-reply-turn-delivered.test.ts": 2,

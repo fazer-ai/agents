@@ -57,6 +57,7 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 import {
   buildGuardrailGate,
   chatwootNoteSink,
@@ -101,7 +102,12 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import { stillInSameEpisode } from "./reset-episode";
-import { customerFacingReply, silenceWasChosen } from "./silence";
+import {
+  chosenSilence,
+  customerFacingReply,
+  silenceWasChosen,
+} from "./silence";
+import { applySkipHandover, skipHandoverKind } from "./skip-handover";
 import { AgentStatusReporter } from "./status";
 import {
   clearTurnOwning,
@@ -483,6 +489,46 @@ export interface RunLoadedTurnParams {
   waitedBeforeInvoke?: boolean;
 }
 
+// What the hand-over asks of the conversation row, read LIVE at the end of the turn (issue #659):
+// whether anyone on our side has ever spoken in it (the predicate the follow-up gate uses,
+// `ourSideHasSpoken`; a human reply that landed while the model ran counts), and whether the bot
+// still owns it. The second is the post-generation recheck asked AGAIN, because moderation and
+// attachment delivery sit between that recheck and here, and an operator who resolved or snoozed the
+// conversation in that window must not see it reopened. A row that cannot be found answers "spoken"
+// and "not ours", the reading that changes nothing.
+export async function handoverRow(
+  base: PrismaClient,
+  tenantId: bigint,
+  conversationDbId: bigint | null,
+  ourBot: number | null,
+): Promise<{ spoken: boolean; ours: boolean }> {
+  if (conversationDbId === null) return { spoken: true, ours: false };
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findUnique({
+      where: { id: conversationDbId },
+      select: {
+        lastRepliedMessageId: true,
+        chatwootFirstReplyAt: true,
+        assigneeType: true,
+        assigneeId: true,
+        status: true,
+      },
+    }),
+  );
+  if (!row) return { spoken: true, ours: false };
+  return {
+    spoken: ourSideHasSpoken(row),
+    ours: shouldBotHandle(
+      {
+        assigneeType: row.assigneeType,
+        assigneeId: row.assigneeId,
+        status: row.status,
+      },
+      { ourAgentBotId: ourBot },
+    ),
+  };
+}
+
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
 // records the intent (see tools/native.ts TurnState): toggling mid-turn makes the webhook mirror
 // flip Conversation.status before the recheck, which then reads our own resolve as a human
@@ -490,7 +536,8 @@ export interface RunLoadedTurnParams {
 // it anyway (same invariant as nudge.ts applyPostActions). Invariant: called ONLY on the
 // "posted" and "empty" outcomes; the intent is discarded on taken-over / superseded / blocked /
 // throw. Best-effort, never throws: the reply is already out, so a failed toggle only leaves the
-// conversation pending (flow warn pages the operator).
+// conversation pending (flow warn pages the operator). Answers whether the conversation was CLOSED,
+// which is the toggle landing and nothing less (issue #659, review round 2).
 async function applyDeferredResolve(
   client: ChatwootClient,
   conversationId: number,
@@ -505,9 +552,10 @@ async function applyDeferredResolve(
     // tell it from somebody else's.
     observed: ObservedConversation;
   },
-): Promise<void> {
-  if (!turnState.resolveRequested) return;
+): Promise<boolean> {
+  if (!turnState.resolveRequested) return false;
   turnState.resolveRequested = false;
+  let closed = false;
   try {
     // NOTE: Read live before the toggle, not from `origin.observed`. That snapshot is the ownership
     // recheck's, taken BEFORE delivery, and delivery is not quick on this path: the output guardrail
@@ -520,6 +568,8 @@ async function applyDeferredResolve(
       origin.observed,
     );
     await client.toggleStatus(conversationId, "resolved");
+    // Closed from here on, whatever the bookkeeping below does: that is what a caller asks.
+    closed = true;
     // NOTE: The one closing the Resolution funnel counts: the agent called resolve_conversation, so it
     // judged the customer's request handled. Every other way a conversation reaches "resolved" is
     // recorded under its own origin, or not at all when it happens outside our code.
@@ -553,6 +603,7 @@ async function applyDeferredResolve(
       errorMessage: msg,
     });
   }
+  return closed;
 }
 
 // Delivers the files the agent queued this turn (an image, a document), AFTER the same gates the
@@ -2456,6 +2507,40 @@ async function runTurnBody(
     if (!reply) {
       // Nothing has left this turn yet on this branch, so the whole thing stands down.
       if (await writeCalledOff()) return refuse(standDown());
+      // A SILENCE A PERSON HAS TO SEE (issue #659, ./skip-handover.ts): a reason that names one, or
+      // any silence at all on a conversation nobody on our side has ever answered. Asked on EVERY
+      // way this branch ends empty, and only when nothing else already took the conversation
+      // somewhere: a transfer put a person on it, and a resolve that landed closed it on purpose. An
+      // attachment that went out does not stand in the way: the model's own "a person should see
+      // this" still holds after a picture, and a delivered attachment already stamped the reply mark
+      // the floor reads.
+      const handOverIfOwed = async (closed: boolean): Promise<void> => {
+        if (closed || handoffState?.completed === true) return;
+        if (await writeCalledOff()) return;
+        const msgs = result.messages as BaseMessage[];
+        const row = await handoverRow(
+          base,
+          tenantId,
+          loaded.conversationDbId,
+          ourBot,
+        );
+        if (!row.ours) return;
+        // A slow tool's acknowledgement already on the customer's phone is our side speaking, and
+        // nothing stamps the row for it.
+        const kind = skipHandoverKind(
+          silenceWasChosen(msgs) ? chosenSilence(msgs) : null,
+          row.spoken || turnState.spokeOutsideTheReply === true,
+        );
+        if (!kind) return;
+        await applySkipHandover({
+          client,
+          conversationId,
+          kind,
+          detail: chosenSilence(msgs)?.detail ?? null,
+          flow,
+          stillWanted: async () => !(await writeCalledOff()),
+        });
+      };
       const queued = turnState.pendingAttachments.length;
       const {
         sent,
@@ -2499,6 +2584,9 @@ async function runTurnBody(
             "envio de anexo: nada foi entregue e o turno não tinha resposta em texto",
           );
         }
+        // Nothing to close here (a conversation the customer never heard back on must not), but a
+        // silence that asked for a person still gets one.
+        await handOverIfOwed(false);
         return "empty";
       }
       // NOTHING REACHED THE CUSTOMER AND NOBODY CHOSE THAT (issue #773). The model called a tool and
@@ -2547,6 +2635,7 @@ async function runTurnBody(
       // `resolved` conversation tells the operator this attendance is finished when the agent knows
       // it is not. The rule itself lives in ./close-intent.ts, asked the same way at all three
       // sites — it was answered differently at each until a review round found them one by one.
+      let closed = false;
       if (
         !unexplained &&
         mayCloseConversation({
@@ -2555,15 +2644,20 @@ async function runTurnBody(
         }) &&
         !(await writeCalledOff())
       ) {
-        await applyDeferredResolve(client, conversationId, turnState, flow, {
-          tenantId,
-          instanceId,
-          base,
-          observed: recheck.observed,
-        });
+        closed = await applyDeferredResolve(
+          client,
+          conversationId,
+          turnState,
+          flow,
+          {
+            tenantId,
+            instanceId,
+            base,
+            observed: recheck.observed,
+          },
+        );
       }
-      // Partial here too, and the same rule: a batch where one file failed is an attendance the
-      // customer did not fully receive, so it neither closes nor clears the badge.
+      await handOverIfOwed(closed);
       if (!sent && !handedOff) return "empty";
       const postedFiles = postedOutcomeFor({
         replyPartial: false,

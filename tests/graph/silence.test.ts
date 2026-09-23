@@ -387,21 +387,26 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
   test("an AI message that CALLED it is not a result", () => {
     const ai = new AIMessage({
       content: "",
-      tool_calls: [{ id: "c1", name: SKIP_REPLY_TOOL, args: {} }],
+      tool_calls: [
+        { id: "c1", name: SKIP_REPLY_TOOL, args: { reason: "acknowledged" } },
+      ],
     });
     expect(skipReplyRan(ai as never)).toBe(false);
   });
 
   // The anti-drift half: the reader recognises what the REAL tool returns, both of its variants, and
   // the mark is something only the tool can set — a response body cannot.
-  test("the real tool's own return is recognised, with and without a reason", async () => {
+  test("the real tool's own return is recognised, with and without a detail", async () => {
     // `skip_reply` calls nothing, so the ctx it is bound to is never reached — the client below
     // exists only to satisfy the signature, and a call reaching it would be the test's own failure.
     const skip = buildNativeTools({ client: {} as never, conversationId: 1 }, [
       SKIP_REPLY_TOOL,
     ]).find((t) => t.name === SKIP_REPLY_TOOL);
     expect(skip).toBeDefined();
-    for (const args of [{}, { reason: "customer only sent 'ok'" }]) {
+    for (const args of [
+      { reason: "acknowledged" },
+      { reason: "not_for_us", detail: "DMARC report" },
+    ]) {
       // Invoked as a TOOL CALL, which is how the graph invokes it: without one there is no
       // `tool_call_id` to build a ToolMessage around, and the tool degrades to the plain string the
       // same way `failableTool` does.
@@ -762,7 +767,13 @@ describe("silenceWasChosen — the decision belongs to THIS turn", () => {
         new HumanMessage("obrigado!"),
         new AIMessage({
           content: "",
-          tool_calls: [{ id: "c1", name: SKIP_REPLY_TOOL, args: {} }],
+          tool_calls: [
+            {
+              id: "c1",
+              name: SKIP_REPLY_TOOL,
+              args: { reason: "acknowledged" },
+            },
+          ],
         }),
         marked(),
       ]),

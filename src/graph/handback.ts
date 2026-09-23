@@ -4,6 +4,7 @@ import {
   isHumanAgentTurn,
   isHumanHandback,
 } from "./markers";
+import { chosenSilence, skipReplyRan } from "./silence";
 import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./tools/catalog";
 
 // DOES THIS TURN OWE THE THREAD A HAND-BACK NOTE? (issue #457)
@@ -49,6 +50,7 @@ export function owesHandbackNote(messages: BaseMessage[]): boolean {
     if (isHumanHandback(m)) return false;
     if (isHumanAgentTurn(m)) return true;
     if (handoffSucceeded(m)) return true;
+    if (skipHandedOver(m)) return true;
     // The compacted form of the same evidence, and it is reached LAST by construction: the head sits
     // at the front of the channel, so anything after it decides first.
     if (endedInHumanAttendance(m)) return true;
@@ -65,6 +67,18 @@ export function owesHandbackNote(messages: BaseMessage[]): boolean {
 // so: every native name is reserved there, the built ones by order and the ones an agent's allowlist
 // left out by an explicit reservation (./tools/unique-names.ts) — without which an agent with the
 // transfer tool turned OFF would leave the name free for someone else to answer under.
+// A SILENCE THAT HANDED THE CONVERSATION TO A PERSON (issue #659): `skip_reply` with `not_for_us` or
+// `needs_human`, read off the tool's MARK and never its name. It counts because of the question this
+// file answers, which is what the MODEL believes: the tool's own description tells it those two
+// reasons hand the conversation to the team, so a model reading its own call believes a person owns
+// it, whether or not the status change that followed landed. When it did not, the conversation stayed
+// with the bot and the note says so, which is also true.
+function skipHandedOver(message: BaseMessage): boolean {
+  if (!skipReplyRan(message)) return false;
+  const reason = chosenSilence([message])?.reason;
+  return reason === "not_for_us" || reason === "needs_human";
+}
+
 function handoffSucceeded(message: BaseMessage): boolean {
   return (
     message.getType() === "tool" &&

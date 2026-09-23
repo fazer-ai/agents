@@ -109,6 +109,10 @@ export type RagToolName = (typeof RAG_TOOL_NAMES)[number];
 // runs, so it is written just as much when `toggleStatus` throws and when an operator's precondition
 // refuses the call — and both of those leave the conversation bot-owned, with nothing to announce
 // the end of. The hand-back decision (../handback.ts) matches this prefix on the TOOL RESULT.
+// The immediate close's own result, shared so a reader asking "did this turn close the
+// conversation" matches the same literal the tool writes (issue #659, review round 3).
+export const RESOLVE_DONE = "Conversation resolved.";
+
 export const HANDOFF_DONE_PREFIX = "Handed off to a human";
 
 // The tool that produces it, named here for the same reason. A result is only that tool's result if

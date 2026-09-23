@@ -92,6 +92,7 @@ import {
   readDeferringSince,
   readLastMessageId,
   readReactionArmed,
+  readReactionFrom,
   stampDeferral,
 } from "./service";
 import { readDebounceConfig } from "./settings";
@@ -216,6 +217,8 @@ export interface CoalesceTurnContext {
     armedLast: number | null;
     after: number | null;
     reactionArmed: boolean;
+    // The burst's earliest reaction, for a conversation with no mark (see `readReactionFrom`).
+    reactionFrom?: number | null;
   };
 }
 
@@ -282,14 +285,19 @@ async function withCaughtUp(
   const missingArmed =
     armedLast !== null && !page.some((m) => m.id === armedLast);
   if (!catchUp?.reactionArmed && !missingArmed) return page;
-  const after = catchUp?.after ?? (armedLast !== null ? armedLast - 1 : null);
+  const starts = [armedLast, catchUp?.reactionFrom ?? null].filter(
+    (n): n is number => n !== null,
+  );
+  const after =
+    catchUp?.after ?? (starts.length > 0 ? Math.min(...starts) - 1 : null);
   if (after === null) return page;
-  // The catch-up read answers at most a hundred rows from `after`, oldest first. Past that the rows it
-  // returned sit below a gap the page does not cover, and a reply in the gap would be missing from
-  // the history the reply-boundary selectors read: a request it already closed would come back as
-  // unanswered. So it is walked until it reaches the page, and a walk the cap cuts short adds
-  // nothing rather than a history with a hole in it (PR #821, review round 1).
-  const pageFloor = page.length > 0 ? Math.min(...page.map((m) => m.id)) : null;
+  // The catch-up read answers at most a hundred rows from `after`, oldest first, so it is read until
+  // it runs dry. Stopping where it meets the page is not enough: the reaction it is asked for sorts
+  // above the page's non-reaction messages, and a stop at the overlap leaves it unread (PR #821,
+  // review round 2). Merging a partial read is worse than not merging: the rows sit below a gap, and
+  // a reply in the gap would be missing from the history the reply-boundary selectors read, so a
+  // request it already closed would come back as unanswered (round 1). A read the cap cuts short
+  // therefore adds nothing.
   const caught: ChatwootMessageRow[] = [];
   let cursor = after;
   for (let read = 0; ; read++) {
@@ -297,17 +305,9 @@ async function withCaughtUp(
       await client.getMessages(conversationId, { after: cursor }),
     );
     caught.push(...batch);
-    const top = batch.length > 0 ? Math.max(...batch.map((m) => m.id)) : null;
-    if (
-      batch.length < CATCH_UP_PAGE ||
-      top === null ||
-      pageFloor === null ||
-      top >= pageFloor
-    ) {
-      break;
-    }
+    if (batch.length < CATCH_UP_PAGE) break;
     if (read + 1 >= CATCH_UP_MAX_READS) return page;
-    cursor = top;
+    cursor = Math.max(...batch.map((m) => m.id));
   }
   const known = new Set(page.map((m) => m.id));
   const added = caught.filter((m) => !known.has(m.id));
@@ -1190,6 +1190,7 @@ async function handOverGateExitIfObserving(args: {
   armedLast: number | null;
   // Whether the burst holds a customer's reaction (issue #746); see `readReactionArmed`.
   reactionArmed?: boolean;
+  reactionFrom?: number | null;
   // Another BOT holds the conversation (round 16): Chatwoot fans one message out to both routes,
   // and the owner's own delivery of it may be in flight. The burst is still the observer's to
   // remember, but its delivery rows are not this route's to settle — the same scope
@@ -1223,6 +1224,7 @@ async function handOverGateExitIfObserving(args: {
     conversationId: args.conversationId,
     armedLast: args.armedLast,
     reactionArmed: args.reactionArmed,
+    reactionFrom: args.reactionFrom,
     ctx: {
       convDbId: args.convDbId,
       agentId,
@@ -1241,6 +1243,7 @@ async function ingestObservedBurst(args: {
   conversationId: number;
   armedLast: number | null;
   reactionArmed?: boolean;
+  reactionFrom?: number | null;
   ctx: {
     convDbId: bigint;
     agentId: bigint;
@@ -1346,6 +1349,7 @@ async function ingestObservedBurst(args: {
         armedLast,
         after: floor,
         reactionArmed: args.reactionArmed === true,
+        reactionFrom: args.reactionFrom ?? null,
       });
       if (caught !== messages) messages.splice(0, messages.length, ...caught);
       overlayMediaAnnotations(tenantId, instanceId, messages);
@@ -1716,6 +1720,7 @@ export async function flushDebounceJob(
       conversationId,
       armedLast: readLastMessageId(job.payload),
       reactionArmed: readReactionArmed(job.payload),
+      reactionFrom: readReactionFrom(job.payload),
       ctx,
       base,
       deps,
@@ -1766,6 +1771,7 @@ export async function flushDebounceJob(
       contactInboxId: ctx.contactInboxId,
       armedLast: last,
       reactionArmed: readReactionArmed(job.payload),
+      reactionFrom: readReactionFrom(job.payload),
       heldByAnotherBot: ctx.heldByAnotherBot,
       base,
       deps,
@@ -1905,6 +1911,7 @@ export async function flushDebounceJob(
       conversationId,
       armedLast: readLastMessageId(job.payload),
       reactionArmed: readReactionArmed(job.payload),
+      reactionFrom: readReactionFrom(job.payload),
       ctx: {
         convDbId: ctx.convDbId,
         agentId: ctx.loaded.agentId,
@@ -1917,6 +1924,13 @@ export async function flushDebounceJob(
   };
 
   const armedLast = readLastMessageId(job.payload);
+  // The catch-up read the two burst reads below ask (issue #746): see `readBurstPage`.
+  const flushCatchUp = {
+    armedLast,
+    after: ctx.watermark ?? null,
+    reactionArmed: readReactionArmed(job.payload),
+    reactionFrom: readReactionFrom(job.payload),
+  };
   // ONLY WHILE THE SCALAR STILL SPEAKS FOR THE WHOLE BACKLOG (issue #698). The shortcut reads "the
   // mark covers this payload's last id, so there is nothing left to answer and nothing to refuse" —
   // a statement about every message below the mark, which was safe while the selection asked the
@@ -2001,11 +2015,7 @@ export async function flushDebounceJob(
             selectPending,
             settings: ctx.settings,
             label: "debounce flush",
-            catchUp: {
-              armedLast,
-              after: ctx.watermark ?? null,
-              reactionArmed: readReactionArmed(job.payload),
-            },
+            catchUp: flushCatchUp,
           },
           base,
           deps,
@@ -2606,11 +2616,7 @@ export async function flushDebounceJob(
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
-        catchUp: {
-          armedLast,
-          after: ctx.watermark ?? null,
-          reactionArmed: readReactionArmed(job.payload),
-        },
+        catchUp: flushCatchUp,
         // The flush answers messages ABOVE the mark, so a mark at or past its target says something
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,

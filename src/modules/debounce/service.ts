@@ -81,6 +81,15 @@ export function readReactionArmed(payload: unknown): boolean {
   return (payload as Record<string, unknown>).reactionArmed === true;
 }
 
+// The id of the burst's EARLIEST reaction (PR #821, review round 2). A conversation the agent never
+// answered has no mark to catch up from, and the id that armed the flush last is the newest one: a
+// reaction followed by a text would be read past. The flush catches up from here instead.
+export function readReactionFrom(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).reactionFrom;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 // Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
 //
 // UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the
@@ -228,6 +237,19 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const reactionArmed =
         params.reaction === true ||
         (continuingBurst && readReactionArmed(existing.payload));
+      const prevReactionFrom = continuingBurst
+        ? readReactionFrom(existing.payload)
+        : null;
+      const ownReactionFrom =
+        params.reaction === true && params.lastMessageId != null
+          ? params.lastMessageId
+          : null;
+      const reactionFrom =
+        prevReactionFrom === null
+          ? ownReactionFrom
+          : ownReactionFrom === null
+            ? prevReactionFrom
+            : Math.min(prevReactionFrom, ownReactionFrom);
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
@@ -238,6 +260,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         burstStartedAt,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
         ...(reactionArmed ? { reactionArmed: true } : {}),
+        ...(reactionFrom !== null ? { reactionFrom } : {}),
         ...(deferringSince !== null ? { deferringSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {

@@ -25,6 +25,7 @@ import {
   armDebounce,
   debounceDedupeKey,
   readReactionArmed,
+  readReactionFrom,
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
 import {
@@ -270,7 +271,11 @@ async function seedConversation(
 
 function jobFor(
   convId: number,
-  extra: { lastMessageId?: number; reactionArmed?: boolean } = {},
+  extra: {
+    lastMessageId?: number;
+    reactionArmed?: boolean;
+    reactionFrom?: number;
+  } = {},
 ): ClaimedJob {
   return {
     id: phantomJobId,
@@ -284,6 +289,9 @@ function jobFor(
         ? { lastMessageId: extra.lastMessageId }
         : {}),
       ...(extra.reactionArmed ? { reactionArmed: true } : {}),
+      ...(extra.reactionFrom != null
+        ? { reactionFrom: extra.reactionFrom }
+        : {}),
     },
     attempts: 0,
     claimSeq: 0,
@@ -570,12 +578,16 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(readReactionArmed(await payloadOf())).toBe(true);
     await arm(false, 21);
     expect(readReactionArmed(await payloadOf())).toBe(true);
+    // The earliest reaction of the burst, not the latest arm (PR #821, review round 2).
+    await arm(true, 23);
+    expect(readReactionFrom(await payloadOf())).toBe(20);
     await suDb.schedulerJob.updateMany({
       where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
       data: { status: "DONE" },
     });
     await arm(false, 22);
     expect(readReactionArmed(await payloadOf())).toBe(false);
+    expect(readReactionFrom(await payloadOf())).toBeNull();
   });
 
   // /reset retires the burst, but a flush already CLAIMED is past every cancel — and this one is a
@@ -1050,6 +1062,77 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
     // The operator's reply is in the walked history, so the request it closed is not answered again.
     expect(model.seen.join("\n")).not.toContain("quero cancelar");
+  });
+
+  // PR #821, review round 2: meeting the page is not reaching the reaction. The orphan sorts above
+  // the page's non-reaction messages, so the read goes on until it runs dry.
+  test("issue #746: the catch-up read goes past the page to the reaction above it", async () => {
+    const convId = 7471;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 120, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: page(activityRows(100, 119)),
+          after: (after: number) =>
+            page(
+              after === 2
+                ? activityRows(3, 102)
+                : [
+                    ...activityRows(103, 119),
+                    { id: 120, content: "🔥", reaction: true },
+                  ],
+            ),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads.slice(0, 3)).toEqual([{}, { after: 2 }, { after: 102 }]);
+    expect(model.seen[0]).toContain('<reação do cliente emoji="🔥"');
+  });
+
+  // PR #821, review round 2: a conversation the agent never answered has no mark, and the flush was
+  // armed last by the text typed after the reaction. The read starts at the burst's earliest
+  // reaction, not at the arming message.
+  test("issue #746: with no mark, the catch-up read starts at the burst's first reaction", async () => {
+    const convId = 7472;
+    await seedConversation(convId);
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, {
+        lastMessageId: 11,
+        reactionArmed: true,
+        reactionFrom: 10,
+      }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: page([{ id: 11, content: "oi, tudo bem?" }]),
+          after: (after: number) =>
+            page(
+              [
+                { id: 10, content: "👋", reaction: true },
+                { id: 11, content: "oi, tudo bem?" },
+              ].filter((m) => m.id > after),
+            ),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads[1]).toEqual({ after: 9 });
+    expect(model.seen[0]).toContain('<reação do cliente emoji="👋"');
   });
 
   test("issue #746: a catch-up walk the read cap cuts short adds nothing", async () => {

@@ -394,7 +394,7 @@ function redactContactAuthRule(
     [before.contactAuth, rb],
     [after.contactAuth, ra],
   ] as const) {
-    if (!r || r.kind !== "allowlist") continue;
+    if (r?.kind !== "allowlist") continue;
     const shape: Record<string, unknown> = {
       kind: "allowlist",
       phones: entries(r, "phones")?.length ?? 0,

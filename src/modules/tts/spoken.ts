@@ -41,6 +41,8 @@ const TRAILING_PUNCTUATION = /[?!.,:*_~;'"»”]$/;
 // the item and never enters the written copy.
 const WRAPPERS = "`*_~";
 const INTRODUCTION_MAX_WORDS = 4;
+// Unicode word boundaries (UAX #29), so a language written without spaces is not one long word.
+const WORDS = new Intl.Segmenter(undefined, { granularity: "word" });
 // `includes("")` is true, and the character before index 0 or past the end is "".
 const isWrapper = (c: string) => c.length === 1 && WRAPPERS.includes(c);
 
@@ -56,7 +58,7 @@ export function planSpokenReply(text: string): SpokenReplyPlan {
   const spans = itemSpans(text);
   if (spans.length === 0) return { speech: text, written: [], textOnly: false };
   const speech = tidy(splice(text, spans));
-  const words = speech.match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? [];
+  const words = [...WORDS.segment(speech)].filter((w) => w.isWordLike);
   return {
     speech,
     written: [...new Set(spans.flatMap((s) => s.items))],
@@ -76,7 +78,7 @@ function itemSpans(text: string): Span[] {
         text,
         m.index,
         m.index + m[0].length,
-        [m[3] ?? "", ...inner.flatMap((s) => s.items)],
+        [target(m[2], m[3] ?? ""), ...inner.flatMap((s) => s.items)],
         splice(label, inner),
       ),
     );
@@ -101,6 +103,12 @@ function itemSpans(text: string): Span[] {
     if (spans.every((s) => c.end <= s.start || c.start >= s.end)) spans.push(c);
   }
   return spans.sort((a, b) => a.start - b.start);
+}
+
+// A `mailto:` link hands over its recipient: `?subject=…` makes it neither the address nor a URI a
+// chat client opens.
+function target(mailto: string | undefined, destination: string): string {
+  return mailto ? (destination.split("?")[0] ?? "") : destination;
 }
 
 // A bare URL or address, cut down to the destination. What the greedy match took from around it is

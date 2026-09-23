@@ -322,6 +322,22 @@ describe("planSpokenReply", () => {
     expect(prepareSpeechText(plan.speech)).not.toMatch(/[*]|https?:/);
   });
 
+  test("a mailto link with parameters hands over only its recipient", () => {
+    expect(
+      planSpokenReply(
+        "Se preferir, [escreva para o suporte](mailto:suporte@x.com.br?subject=Pedido) e respondemos em 2 dias",
+      ).written,
+    ).toEqual(["suporte@x.com.br"]);
+  });
+
+  test("a language written without spaces counts its words, not its clauses", () => {
+    const plan = planSpokenReply(
+      "您的订单已经确认，我们会在两个工作日内安排发货，请通过以下链接查看物流进度：https://x.com.br/pedidos/123",
+    );
+    expect(plan.written).toEqual(["https://x.com.br/pedidos/123"]);
+    expect(plan.textOnly).toBe(false);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

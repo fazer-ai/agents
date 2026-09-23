@@ -29,13 +29,19 @@ interface FakeOpenAI {
 // on every one of those models, and answers 400 for an ABSENT effort only on the gpt-5.6 family
 // (whose server-side default is not "none"). /v1/responses answers 200 for every effort on every
 // one of them. So the ceiling belongs to the endpoint, not to the family.
+//
+// Measured again on 2026-09-23 on gpt-6-luna (issue #804): the same 400 for an absent effort and for
+// every effort above "none" alongside tools, 200 with "none". The gpt-6 family's server-side default
+// is not "none" either.
 function completionsRejects(model: string, body: Record<string, unknown>) {
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   if (!hasTools) return false;
   const effort = body.reasoning_effort;
   if (effort === "none") return false;
   if (effort === undefined)
-    return /^(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i.test(model);
+    return /^(?:ft:)?(?:[\w.-]+\/)?gpt-(?:5\.6|6(?![\w]))(?:[.-]|$)/i.test(
+      model,
+    );
   return true;
 }
 
@@ -305,6 +311,56 @@ describe("createChatModel leaves every other model alone", () => {
       const { sent } = await turn(model);
       expect(sent).not.toHaveProperty("reasoning_effort");
       fake?.restore();
+    }
+  });
+
+  // Issue #804: the gpt-6 family refuses tools without "none" exactly like gpt-5.6 (measured on
+  // gpt-6-luna, 2026-09-23), in every spelling an operator can configure.
+  test("the gpt-6 family carries it too, bare, routed and fine-tuned", async () => {
+    for (const [model, provider] of [
+      ["gpt-6-luna", "openai"],
+      ["gpt-6-sol", "openai"],
+      ["gpt-6", "openai"],
+      ["gpt-6.1-luna", "openai"],
+      ["ft:gpt-6-luna:acme::x1", "openai"],
+      ["openai/gpt-6-luna", "openrouter"],
+    ] as const) {
+      const { reply, sent } = await turn(model, provider);
+      expect([model, sent.reasoning_effort]).toEqual([model, "none"]);
+      expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
+      fake?.restore();
+    }
+  });
+
+  test("an id that only looks like gpt-6 is untouched", async () => {
+    for (const model of ["gpt-60", "gpt-6x", "not-gpt-6-luna", "gpt-4o"]) {
+      const { sent } = await turn(model);
+      expect([model, sent.reasoning_effort]).toEqual([model, undefined]);
+      fake?.restore();
+    }
+  });
+
+  test("temperature is dropped for the gpt-6 family and kept for its look-alikes", () => {
+    const temp = (model: string) =>
+      (
+        createChatModel({
+          provider: "openai",
+          model,
+          apiKey: "test",
+          temperature: 0.3,
+        }) as ChatOpenAI
+      ).temperature;
+    for (const model of [
+      "gpt-6-luna",
+      "gpt-6",
+      "gpt-6.1-luna",
+      "ft:gpt-6-luna:acme::x1",
+      "openai/gpt-6-luna",
+    ]) {
+      expect([model, temp(model)]).toEqual([model, undefined]);
+    }
+    for (const model of ["gpt-60", "gpt-6x", "gpt-6-chat-latest", "gpt-4o"]) {
+      expect([model, temp(model)]).toEqual([model, 0.3]);
     }
   });
 

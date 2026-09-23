@@ -269,7 +269,7 @@ export function GeneralTab({
             label={t("editor.reasoningEffort", "Reasoning effort")}
             description={t(
               "editor.reasoningEffortHint",
-              "How much the model thinks before answering. Reasoning models only (o-series, gpt-5); more effort means slower, costlier answers.",
+              "How much the model thinks before answering. Reasoning models only (o-series, gpt-5, gpt-6); more effort means slower, costlier answers.",
             )}
           >
             <Select

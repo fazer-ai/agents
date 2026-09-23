@@ -7758,6 +7758,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         });
         await seedConv(7046);
         const log = newLog();
+        const saver = new MemorySaver();
         const outcome = await runAgentTurn({
           tenantId: gTenantId,
           instanceId: gInstanceId,
@@ -7775,12 +7776,19 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                 },
               } as unknown as ChatwootClient;
             },
-            checkpointer: new MemorySaver(),
+            checkpointer: saver,
           },
         });
         // Still owed: the transfer did not land, so recovery may run the message again.
         expect(outcome).toBe("empty");
         expect(log.sent).toEqual([]);
+        // And the refused reply is not left in the thread, where the next turn would read it as
+        // something the customer was told.
+        const thread = await threadChannel(saver, 7046, {
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+        });
+        expect(thread.filter(([type]) => type === "ai")).toEqual([]);
         expect(
           log.notes.some(([, n]) =>
             n.includes("não consegui passar a conversa para a equipe"),

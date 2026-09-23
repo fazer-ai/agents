@@ -2589,8 +2589,10 @@ async function runTurnBody(
         if (handed === "handed" && replacement === null)
           return refuse("blocked");
         // The line says a person will continue, so it goes out only when one will. A failed
-        // transfer falls to the empty branch, where the message is still owed and retried.
-        reply = handed === "handed" ? (replacement ?? "") : "";
+        // transfer ends `empty`, still owed and retried, and through `refuse`: the refused reply is
+        // already in the checkpoint, and left there the next turn would read it as said.
+        if (handed === "failed") return refuse("empty");
+        reply = replacement ?? "";
       } else {
         if (replacement === null) return refuse("blocked");
         reply = replacement;

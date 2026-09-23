@@ -71,6 +71,7 @@ import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
+import { planSpokenReply } from "@/modules/tts/spoken";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -1302,7 +1303,10 @@ async function runTurnBody(
       params.userSentAudio ?? false,
       voiceReply,
     );
-    if (wantAudio) {
+    // A URL or an e-mail address is never said: it follows the voice note in writing, or the whole
+    // reply goes as text when nothing but its introduction would be said (issue #787).
+    const spoken = planSpokenReply(text);
+    if (wantAudio && !spoken.textOnly) {
       try {
         // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are
         // built fresh rather than reusing this turn's array: same usage/trace identity, different
@@ -1323,7 +1327,7 @@ async function runTurnBody(
         const tts = await synthesizeReply({
           tenantId,
           cfg: loaded.ttsConfig,
-          text,
+          text: spoken.speech,
           channelType: loaded.channelType,
           base,
           deps: {
@@ -1347,7 +1351,7 @@ async function runTurnBody(
             tts.audio,
             tts.fileName,
             tts.mime,
-            { transcribedText: text },
+            { transcribedText: spoken.speech },
           );
           // AND KEEP THE WORDS WHERE OUR OWN READERS LOOK, which on upstream Chatwoot is the only
           // place they survive (issue #763). `transcribedText` above rides in
@@ -1364,7 +1368,7 @@ async function runTurnBody(
           if (Number.isSafeInteger(sentId)) {
             stashMediaAnnotation(
               { tenantId, instanceId, messageId: sentId },
-              { transcribedText: text },
+              { transcribedText: spoken.speech },
             );
           }
           logger.info(
@@ -1377,7 +1381,21 @@ async function runTurnBody(
           // reaches this line: it is caught below and the reply falls back to text, which is its
           // own delivery question and a different mechanism from this one (issue #499 covers the
           // text path only).
-          return { delivered: 1, failed: false, unproven: false };
+          if (spoken.written.length === 0) {
+            return { delivered: 1, failed: false, unproven: false };
+          }
+          // One balloon, unsigned: it is the rest of the voice note, not a reply of its own.
+          const items = await deliverReply(
+            client,
+            conversationId,
+            spoken.written.join("\n"),
+            { ...loaded.splitConfig, enabled: false },
+            params.deps?.sleep,
+            flow,
+            writeCalledOff,
+            Number.isSafeInteger(sentId) ? sentId : null,
+          );
+          return { ...items, delivered: 1 + items.delivered };
         }
       } catch (e) {
         logger.warn(

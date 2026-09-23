@@ -3411,6 +3411,129 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
+  // Issue #787: a URL or an e-mail address never goes into the speech. It is handed over verbatim in
+  // one text message right after the voice note, or the whole reply goes as text when all that is
+  // left to say is the introduction of the item.
+  function recordingAudioClient(log: Array<{ kind: string; text: string }>) {
+    return async () =>
+      ({
+        sendMessage: async (_c: number, content: string) => {
+          log.push({ kind: "text", text: content });
+          return {};
+        },
+        sendAudioMessage: async (
+          _c: number,
+          _audio: unknown,
+          _name: string,
+          _mime: string,
+          meta?: { transcribedText?: string },
+        ) => {
+          log.push({ kind: "audio", text: meta?.transcribedText ?? "" });
+          return {};
+        },
+        toggleStatus: async () => ({}),
+      }) as unknown as ChatwootClient;
+  }
+
+  function recordingTts(spoken: string[], status = 200) {
+    return (async (_url: string, init?: RequestInit) => {
+      spoken.push(String(JSON.parse(String(init?.body ?? "{}")).input ?? ""));
+      return status === 200
+        ? new Response(new Uint8Array([1, 2, 3]), {
+            status: 200,
+            headers: { "Content-Type": "audio/mpeg" },
+          })
+        : new Response("boom", { status });
+    }) as unknown as typeof fetch;
+  }
+
+  async function audioTurn(
+    conv: number,
+    reply: string,
+    opts: { ttsStatus?: number } = {},
+  ) {
+    await seedConversation(conv, null);
+    const log: Array<{ kind: string; text: string }> = [];
+    const spoken: string[] = [];
+    const normalized: string[] = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: audioIncoming(conv),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new CaptureReplyModel(reply) as unknown as BaseChatModel,
+        makeClient: recordingAudioClient(log),
+        checkpointer: new MemorySaver(),
+        ttsFetch: recordingTts(spoken, opts.ttsStatus),
+        normalizeSpeech: async (t: string) => {
+          normalized.push(t);
+          return t;
+        },
+      },
+    });
+    return { outcome, log, spoken, normalized };
+  }
+
+  test("a URL leaves the speech and follows the voice note as text (#787)", async () => {
+    await withTtsMirror(async () => {
+      const url = "https://x.com.br/pedidos/123";
+      const r = await audioTurn(
+        787_01,
+        `Você pode acompanhar seu pedido em ${url} a qualquer momento, e ele chega em 2 dias`,
+      );
+      expect(r.outcome).toBe("posted");
+      expect(r.log.map((m) => m.kind)).toEqual(["audio", "text"]);
+      expect(r.log[1]?.text).toBe(url);
+      for (const said of [...r.spoken, ...r.normalized, r.log[0]?.text ?? ""]) {
+        expect(said).not.toContain("x.com.br");
+        expect(said).toContain("acompanhar seu pedido");
+      }
+    });
+  });
+
+  test("a markdown link's URL is no longer lost (#787)", async () => {
+    await withTtsMirror(async () => {
+      const r = await audioTurn(
+        787_02,
+        "Para trocar, [acesse aqui](https://x.com.br/troca) e siga os passos da tela. Depois, escreva para sac@x.com.br se precisar",
+      );
+      expect(r.log.map((m) => m.kind)).toEqual(["audio", "text"]);
+      expect(r.log[1]?.text).toBe("https://x.com.br/troca\nsac@x.com.br");
+      expect(r.spoken.join(" ")).not.toContain("x.com.br");
+    });
+  });
+
+  test("only the introduction is left: the whole reply goes as text, no synthesis (#787)", async () => {
+    await withTtsMirror(async () => {
+      const reply = "Segue o link: https://x.com.br/meus-ingressos";
+      const r = await audioTurn(787_03, reply);
+      expect(r.spoken).toEqual([]);
+      expect(r.log).toEqual([{ kind: "text", text: reply }]);
+    });
+  });
+
+  test("a failed synthesis falls back to the reply as text, with the URL once (#787)", async () => {
+    await withTtsMirror(async () => {
+      const reply =
+        "Você pode acompanhar seu pedido em https://x.com.br/pedidos/123 a qualquer momento";
+      const r = await audioTurn(787_04, reply, { ttsStatus: 500 });
+      expect(r.log).toEqual([{ kind: "text", text: reply }]);
+    });
+  });
+
+  test("a reply with no URL and no e-mail is still one voice note, spoken as written (#787)", async () => {
+    await withTtsMirror(async () => {
+      const reply =
+        "Seu pedido foi confirmado, ligue para (11) 4003-1234 se precisar";
+      const r = await audioTurn(787_05, reply);
+      expect(r.log).toEqual([{ kind: "audio", text: reply }]);
+      expect(r.normalized).toEqual([reply]);
+    });
+  });
+
   // #160, and the finding waived on #159: the closing line is a reply like any other, so a customer
   // being answered in audio has to HEAR it. Today the tool writes it as text, so the one turn where
   // the agent says the least is also the one where it drops the modality the customer asked for.

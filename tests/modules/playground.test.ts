@@ -358,6 +358,67 @@ describe.skipIf(!dbUp)("playground", () => {
     ]);
   });
 
+  // Issue #787: the operator hears what the customer hears, so the URL stays out of the speech here
+  // too, and the reply itself keeps it.
+  test("a URL is kept out of the playground's speech, and stays in the reply (#787)", async () => {
+    const spoken: string[] = [];
+    const ttsFetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string };
+      if (typeof body.input === "string") spoken.push(body.input);
+      return new Response(new ArrayBuffer(16), {
+        status: 200,
+        headers: { "content-type": "audio/ogg" },
+      });
+    }) as unknown as typeof fetch;
+    const reply =
+      "Você pode acompanhar seu pedido em https://x.com.br/pedidos/123 a qualquer momento";
+    const model = new UsageReportingModel([reply, "falado"]);
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentAudio,
+      message: "oi",
+      forceAudio: true,
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        ttsFetch,
+      },
+    });
+    expect(r.reply).toBe(reply);
+    expect(model.calls[1]).toContain("acompanhar seu pedido");
+    expect(model.calls[1]).not.toContain("x.com.br");
+    expect(spoken).toEqual(["falado"]);
+  });
+
+  test("a reply that only introduces its link gets no audio in the playground (#787)", async () => {
+    const spoken: string[] = [];
+    const ttsFetch = (async (_url: unknown, init?: RequestInit) => {
+      spoken.push(String(init?.body ?? ""));
+      return new Response(new ArrayBuffer(16), {
+        status: 200,
+        headers: { "content-type": "audio/ogg" },
+      });
+    }) as unknown as typeof fetch;
+    const reply = "Segue o link: https://x.com.br/meus-ingressos";
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentAudio,
+      message: "oi",
+      forceAudio: true,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new UsageReportingModel([reply]) as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        ttsFetch,
+      },
+    });
+    expect(r.reply).toBe(reply);
+    expect(spoken).toEqual([]);
+    expect(r.ttsMediaId).toBeUndefined();
+  });
+
   test("a forged threadId (real conversation shape) is rejected → fresh thread", async () => {
     const forged = `${tenantId}:5:900`; // tenant:instance:conv — NOT a playground thread
     const r = await runPlaygroundTurn({

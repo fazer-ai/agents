@@ -72,6 +72,7 @@ import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
+import { planSpokenReply } from "@/modules/tts/spoken";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import { type PlaygroundMediaKind, savePlaygroundMedia } from "./media";
@@ -895,8 +896,12 @@ export async function runPlaygroundTurn(
   // TTS reply: the agent's mode decides (mirror/preference), or the manual toggle forces it. Audio
   // is best-effort — synthesis failure falls back to the text reply.
   let ttsMediaId: string | undefined;
+  // The same plan production delivers by (issue #787): the operator hears no URL or e-mail, and a
+  // reply that is only the introduction of its link gets no audio. The items stay in `reply`.
+  const spoken = planSpokenReply(reply ?? "");
   const wantAudio =
     !!reply &&
+    !spoken.textOnly &&
     (params.forceAudio ||
       shouldReplyWithAudio(
         loaded.ttsConfig.mode,
@@ -908,7 +913,7 @@ export async function runPlaygroundTurn(
       const tts = await synthesizeReply({
         tenantId,
         cfg: loaded.ttsConfig,
-        text: reply,
+        text: spoken.speech,
         base,
         // NOTE: the playground synthesized WITHOUT the speech normalizer until now, so the operator
         // heard a different rendering of the same reply than the customer does, which is the one setting the

@@ -49,9 +49,14 @@ const inFlight = new Set<bigint>();
 // saturation: whatever is due fitted, so nothing is waiting, and the next one measures from scratch.
 //
 // Both are per process, like the in-flight set above.
-const lane: { fullSince: number | null; announced: Set<bigint> } = {
+const lane: {
+  fullSince: number | null;
+  announced: Set<bigint>;
+  asking: boolean;
+} = {
   fullSince: null,
   announced: new Set(),
+  asking: false,
 };
 
 // A row announced as waiting for a slot. `waitedMs` is measured when it is announced, so it is at
@@ -167,7 +172,11 @@ export async function runDebounceTick(
   base: PrismaClient,
   slots: number,
   deps: DebounceTickDeps = {},
-): Promise<{ claimed: number; settled: Promise<void> }> {
+): Promise<{
+  claimed: number;
+  settled: Promise<void>;
+  reported: Promise<void>;
+}> {
   const claim = deps.claim ?? claimDueDebounceJobs;
   const run = deps.run ?? runClaimed;
   const now = deps.now?.() ?? new Date();
@@ -175,21 +184,16 @@ export async function runDebounceTick(
   // NOTE: not a claim of zero. claimWhere clamps its limit to at least 1, so asking with a full
   // lane would take one job past the slots on every tick.
   if (free <= 0) {
-    await noteFullLane(base, now, deps);
-    return { claimed: 0, settled: Promise.resolve() };
+    return {
+      claimed: 0,
+      settled: Promise.resolve(),
+      reported: noteFullLane(base, now, deps),
+    };
   }
   const jobs = await claim(free, base, now, undefined, [...inFlight]);
   for (const job of jobs) {
     inFlight.add(job.id);
     lane.announced.delete(job.id);
-  }
-  // NOTE: fewer than the free slots means everything due fitted, so nothing waits and the saturation
-  // (if there was one) is over. Exactly as many leaves the lane full, with maybe more behind it.
-  if (jobs.length < free) {
-    lane.fullSince = null;
-    lane.announced.clear();
-  } else {
-    await noteFullLane(base, now, deps);
   }
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // strand a slot. The async wrapper turns a synchronous throw into a rejection, so `finally` runs.
@@ -200,22 +204,38 @@ export async function runDebounceTick(
       }),
     ),
   ).then(() => {});
-  return { claimed: jobs.length, settled };
+  // NOTE: fewer than the free slots means everything due fitted, so nothing waits and the saturation
+  // (if there was one) is over. Exactly as many leaves the lane full, with maybe more behind it.
+  let reported = Promise.resolve();
+  if (jobs.length < free) {
+    lane.fullSince = null;
+    lane.announced.clear();
+  } else {
+    reported = noteFullLane(base, now, deps);
+  }
+  return { claimed: jobs.length, settled, reported };
 }
 
 // The lane is full at `now`: start its clock if it just filled, and announce whoever has waited too
-// long. Never throws: a failed question costs one announcement, never the drain.
-async function noteFullLane(
+// long. OFF the drain's path: the tick returns without waiting for it, so a slow question never
+// delays the jobs just claimed nor the next claim, which is when a saturated lane can least afford
+// it. `reported` is how a test waits for it. One question at a time: a tick that finds the previous
+// one still running skips its own, and the next tick asks again. Never rejects.
+function noteFullLane(
   base: PrismaClient,
   now: Date,
   deps: DebounceTickDeps,
 ): Promise<void> {
   lane.fullSince ??= now.getTime();
-  try {
-    await announceWaiting(base, now.getTime(), deps);
-  } catch (err) {
-    logger.warn({ err }, "debounce lane: asking who is waiting failed");
-  }
+  if (lane.asking) return Promise.resolve();
+  lane.asking = true;
+  return announceWaiting(base, now.getTime(), deps)
+    .catch((err) => {
+      logger.warn({ err }, "debounce lane: asking who is waiting failed");
+    })
+    .finally(() => {
+      lane.asking = false;
+    });
 }
 
 interface Holder {

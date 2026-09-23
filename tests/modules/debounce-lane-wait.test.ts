@@ -92,6 +92,13 @@ function world() {
   };
 }
 
+// One tick, and the capacity question it may have started, which runs off the drain's path.
+async function tick(slots: number, deps: DebounceTickDeps) {
+  const out = await runDebounceTick(base, slots, deps);
+  await out.reported;
+  return out;
+}
+
 // Leaves the lane state as a fresh process would: a tick that finds room and nothing due.
 async function emptyLane() {
   await runDebounceTick(base, 1, { claim: async () => [] });
@@ -110,13 +117,13 @@ describe("a flush waiting for a slot of a full lane", () => {
   test("is announced once it has waited past the threshold, with the wait and the limit", async () => {
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps); // job 1 takes the only slot
+    await tick(1, w.deps); // job 1 takes the only slot
     w.waitingRows.push(row(2, 2_000)); // due 2 s later, and nowhere to go
     w.set(2_500);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toEqual([]);
     w.set(32_500);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toHaveLength(1);
     expect(w.announced[0]).toMatchObject({
       jobId: 2n,
@@ -130,11 +137,11 @@ describe("a flush waiting for a slot of a full lane", () => {
   test("is announced once, not once per tick while it keeps waiting", async () => {
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.waitingRows.push(row(2, 0));
     for (const ms of [31_000, 33_500, 36_000, 60_000]) {
       w.set(ms);
-      await runDebounceTick(base, 1, w.deps);
+      await tick(1, w.deps);
     }
     expect(w.announced.map((a) => a.jobId)).toEqual([2n]);
   });
@@ -142,10 +149,10 @@ describe("a flush waiting for a slot of a full lane", () => {
   test("a row announced, claimed and due again later is a new wait, announced again", async () => {
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.waitingRows.push(row(2, 0));
     w.set(31_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toHaveLength(1);
     // The slot frees and row 2 is claimed and runs to the end; then it is re-armed and stuck behind
     // another hung job.
@@ -157,33 +164,33 @@ describe("a flush waiting for a slot of a full lane", () => {
     w.waitingRows.splice(0);
     w.claimable.push(job(2));
     w.set(32_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     await flush();
     w.claimable.push(job(3));
     w.set(35_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.waitingRows.push(row(2, 40_000));
     w.set(71_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced.map((a) => a.jobId)).toEqual([2n, 2n]);
   });
 
   test("a wait below the threshold is not announced", async () => {
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.waitingRows.push(row(2, 10_000));
     w.set(39_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toEqual([]);
   });
 
   test("the rows in flight are never announced as waiting", async () => {
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.set(31_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.asked.at(-1)?.exclude).toContain(1n);
   });
 });
@@ -196,9 +203,9 @@ describe("a wait that is not the lane's doing is not announced", () => {
     w.claimable.push(job(1));
     w.waitingRows.push(row(9, -120_000));
     w.set(0);
-    await runDebounceTick(base, 5, w.deps);
+    await tick(5, w.deps);
     w.set(60_000);
-    await runDebounceTick(base, 5, w.deps);
+    await tick(5, w.deps);
     expect(w.asked).toEqual([]);
     expect(w.announced).toEqual([]);
   });
@@ -209,12 +216,12 @@ describe("a wait that is not the lane's doing is not announced", () => {
     w.waitingRows.push(row(2, -120_000));
     w.claimable.push(job(1));
     w.set(0);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.set(20_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toEqual([]);
     w.set(30_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toHaveLength(1);
     expect(w.announced[0]?.waitedMs).toBe(30_000);
   });
@@ -223,20 +230,20 @@ describe("a wait that is not the lane's doing is not announced", () => {
     const w = world();
     w.claimable.push(job(1));
     w.set(0);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     for (const release of hung.splice(0)) release();
     await new Promise((r) => setTimeout(r, 0));
     w.set(20_000);
-    await runDebounceTick(base, 1, w.deps); // room, nothing due: not full any more
+    await tick(1, w.deps); // room, nothing due: not full any more
     w.claimable.push(job(3));
     w.set(25_000);
-    await runDebounceTick(base, 1, w.deps); // full again from here
+    await tick(1, w.deps); // full again from here
     w.waitingRows.push(row(4, 0));
     w.set(50_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toEqual([]);
     w.set(55_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced[0]?.waitedMs).toBe(30_000);
   });
 
@@ -244,9 +251,9 @@ describe("a wait that is not the lane's doing is not announced", () => {
     const w = world();
     w.claimable.push(job(1));
     w.set(0);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.set(29_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.asked).toEqual([]);
   });
 });
@@ -258,10 +265,10 @@ describe("the threshold is the operator's", () => {
     config.agent.capacityWaitAlertMs = 10_000;
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.waitingRows.push(row(2, 0));
     w.set(19_000);
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     expect(w.announced).toHaveLength(1);
     expect(w.announced[0]?.thresholdMs).toBe(10_000);
   });
@@ -270,10 +277,48 @@ describe("the threshold is the operator's", () => {
 describe("a failing announcement never costs the drain", () => {
   beforeEach(emptyLane);
 
+  test("a slow question neither delays the jobs just claimed nor the tick's return", async () => {
+    const w = world();
+    w.claimable.push(job(1));
+    await tick(1, w.deps);
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    // The lane is full again from job 2, and the question about who waits takes forever.
+    let answer: () => void = () => {};
+    const started: bigint[] = [];
+    w.claimable.push(job(2));
+    w.set(40_000);
+    const out = await runDebounceTick(base, 1, {
+      ...w.deps,
+      run: (j) => {
+        started.push(j.id);
+        return hang();
+      },
+      waiting: () =>
+        new Promise((resolve) => {
+          answer = () => resolve([]);
+        }),
+    });
+    expect(out.claimed).toBe(1);
+    expect(started).toEqual([2n]);
+    // A second tick while the question is still open does not stack another one on it.
+    let asked = 0;
+    await runDebounceTick(base, 1, {
+      ...w.deps,
+      waiting: async () => {
+        asked++;
+        return [];
+      },
+    });
+    expect(asked).toBe(0);
+    answer();
+    await out.reported;
+  });
+
   test("the waiting query throwing still leaves the claim done", async () => {
     const w = world();
     w.claimable.push(job(1));
-    await runDebounceTick(base, 1, w.deps);
+    await tick(1, w.deps);
     w.set(31_000);
     const out = await runDebounceTick(base, 1, {
       ...w.deps,

@@ -282,17 +282,23 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
         findWaitingDebounceJobs(dueBefore, exclude, appDb, tenantId),
     };
     try {
-      await runDebounceTick(appDb, 1, { ...deps, now: () => new Date(t0) });
+      await (
+        await runDebounceTick(appDb, 1, { ...deps, now: () => new Date(t0) })
+      ).reported;
       await armDue(4102, new Date(t0));
-      await runDebounceTick(appDb, 1, {
-        ...deps,
-        now: () => new Date(t0 + THRESHOLD_MS + 200),
-      });
+      await (
+        await runDebounceTick(appDb, 1, {
+          ...deps,
+          now: () => new Date(t0 + THRESHOLD_MS + 200),
+        })
+      ).reported;
       // Asked again while it still waits: one line, not one per tick.
-      await runDebounceTick(appDb, 1, {
-        ...deps,
-        now: () => new Date(t0 + THRESHOLD_MS + 2_000),
-      });
+      await (
+        await runDebounceTick(appDb, 1, {
+          ...deps,
+          now: () => new Date(t0 + THRESHOLD_MS + 2_000),
+        })
+      ).reported;
       // The conversation holding the slot waited for nothing.
       expect(await capacityLines(holder.id)).toEqual([]);
       const lines = await capacityLines(waiter.id);

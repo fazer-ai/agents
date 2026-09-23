@@ -471,11 +471,13 @@ describe("planSpokenReply", () => {
   });
 
   // Review round 11.
-  test("a quote or marker inside a local part does not restart the address", () => {
+  test("a quote or marker the address may own leaves it alone", () => {
     for (const text of [
       "Escreva para a!b'finance@x.com.br e respondemos em 2 dias",
       "Escreva para a!b_finance@x.com.br e respondemos em 2 dias",
       "Escreva para a!b*finance@x.com.br e respondemos em 2 dias",
+      "Escreva para 'sales@x.com.br e respondemos em 2 dias",
+      'Escreva para "sales@x.com.br e respondemos em 2 dias',
     ]) {
       expect(planSpokenReply(text).written).toEqual([]);
     }

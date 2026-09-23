@@ -39,11 +39,12 @@ const MARKDOWN_LINK = new RegExp(
 const URL =
   /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
 // Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. An
-// address starts only where a token starts (after whitespace, an opening bracket, or a separator,
-// then any quotes or formatting), so a local part the class cannot hold (`john!doe.smith@`,
-// `a!b'finance@`) is left alone, never cut to the piece after its last unsupported character.
+// address starts only where a token starts (after whitespace, an opening bracket, a separator, a
+// quote or formatting, the last two checked for pairing below), so a local part the class cannot
+// hold (`john!doe.smith@`, `a!b'finance@`) is left alone, never cut to the piece after its last
+// unsupported character.
 const EMAIL =
-  /(?<=(?:^|[\s\p{Ps}\p{Pi}<:;,，：；、])["'*_~`]*)[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
+  /(?<=^|[\s\p{Ps}\p{Pi}<:;,，：；、"'*_~`])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
 // GFM's autolink rule, plus closing quotes: these end a sentence or a formatting run, not a link.
 const TRAILING_PUNCTUATION = /[?!.,:*_~;'"»”]$/;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
@@ -112,10 +113,14 @@ function itemSpans(text: string): Span[] {
   for (const m of bare.matchAll(URL))
     candidates.push(item(bare, m.index, m[0]));
   for (const m of bare.matchAll(EMAIL)) {
-    // `*sales@` and `~sales@` are valid addresses. A marker left unpaired after widening may be
-    // the address's own first character, so the address is left alone rather than cut.
+    // `*sales@`, `~sales@` and `'sales@` are valid addresses. A marker left unpaired after
+    // widening, or a quote not closed right after the address, may be the address's own first
+    // character, so the address is left alone rather than cut.
     const c = item(bare, m.index, m[0]);
-    if (!isWrapper(bare[c.start - 1] ?? "")) candidates.push(c);
+    const before = bare[c.start - 1] ?? "";
+    const quoted = before === "'" || before === '"';
+    if (isWrapper(before) || (quoted && bare[c.end] !== before)) continue;
+    candidates.push(c);
   }
 
   // Overlaps resolve to the longest match: the whole address over the `www.` host inside it, the

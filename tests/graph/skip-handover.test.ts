@@ -70,6 +70,16 @@ describe("the reason on skip_reply", () => {
     }
   });
 
+  test("an observer is not promised a hand-over it does not run, and is pointed at handoff_to_human", () => {
+    const describe = (muted: boolean) =>
+      buildNativeTools({ client: { muted } as never, conversationId: 1 }, [
+        SKIP_REPLY_TOOL,
+      ])[0]?.description ?? "";
+    expect(describe(false)).toContain("hand the conversation to the team");
+    expect(describe(true)).not.toContain("hand the conversation to the team");
+    expect(describe(true)).toContain("handoff_to_human");
+  });
+
   test("the turn's reason is the most severe one, and only this turn's", () => {
     expect(
       chosenSilence([

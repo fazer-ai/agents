@@ -1892,11 +1892,19 @@ function reactToMessageTool(ctx: ToolCtx) {
   );
 }
 
+const SKIP_REPLY_DESCRIPTION =
+  "Decide NOT to send any reply this turn, then output NO reply text (end your turn). `reason` decides what happens next: `acknowledged` when a reply would add nothing (the customer sent just 'ok', 'obrigado' or an emoji, optionally after react_to_message) and the conversation stays with you; `not_for_us` when this is not a real conversation (an automated report, a payment notice, a newsletter, an unsolicited pitch); `needs_human` when it is a real request you cannot resolve. The last two hand the conversation to the team with a private note, and so does ANY skip on a conversation nobody on our side has answered yet.";
+
 // Deliberately produce NO reply this turn. The agent calls this, then ends without any customer-facing
 // text, so the runtime posts nothing (it already skips an empty reply). The call is recorded in the
 // conversation timeline (via the tool flow log) as a "decided not to respond" marker, and its REASON
 // decides whether the conversation stays with the bot or goes to a person (issue #659, ../silence.ts).
-function skipReplyTool(_ctx: ToolCtx) {
+function skipReplyTool(ctx: ToolCtx) {
+  // A MUTED turn (an observer) runs no hand-over after it: nothing reads the reason back out of an
+  // observation, which throws its final output away. So the promise is not made there, and the way
+  // to put a person on the conversation is named instead, the contract `handoff_to_human` already
+  // gives the same turn.
+  const speaks = !ctx.client?.muted;
   return tool(
     async (
       { reason, detail }: { reason: SkipReplyReason; detail?: string },
@@ -1932,8 +1940,10 @@ function skipReplyTool(_ctx: ToolCtx) {
     },
     {
       name: "skip_reply",
-      description:
-        "Decide NOT to send any reply this turn, then output NO reply text (end your turn). `reason` decides what happens next: `acknowledged` when a reply would add nothing (the customer sent just 'ok', 'obrigado' or an emoji, optionally after react_to_message) and the conversation stays with you; `not_for_us` when this is not a real conversation (an automated report, a payment notice, a newsletter, an unsolicited pitch); `needs_human` when it is a real request you cannot resolve. The last two hand the conversation to the team with a private note, and so does ANY skip on a conversation nobody on our side has answered yet.",
+      description: speaks
+        ? SKIP_REPLY_DESCRIPTION
+        : "Record that this turn adds nothing, then output NO text (end your turn). This turn does not answer the customer, and `reason` is only recorded: nothing is handed over by it. To put a person on the conversation, call handoff_to_human.",
+
       schema: z.object({
         reason: z.enum(SKIP_REPLY_REASONS),
         detail: z

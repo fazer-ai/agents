@@ -777,12 +777,16 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     const s = stubClient(() => {
       throw new Error("chatwoot indisponível");
     });
-    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    // Um job que já tinha sido adiado pela cadência carrega a versão da configuração (issue #796).
+    const job = jobFor(CONV);
+    job.payload = { ...job.payload, deferredUnder: "1:0" };
+    const result = await followUpHandler(job, appDb, handlerDeps(s));
     expect(result.outcome).toBe("reschedule");
     if (result.outcome === "reschedule") {
       expect(result.runAt.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
-      // Mesmo step (threadId preservado), com o contador de retries avançado.
-      expect(result.payload).toMatchObject({
+      // Mesmo step (threadId preservado), com o contador de retries avançado. O backoff não vem da
+      // configuração, então não leva a versão: a varredura o preserva mesmo depois de uma edição.
+      expect(result.payload).toEqual({
         threadId: threadOf(CONV),
         nudgeRetries: 1,
       });

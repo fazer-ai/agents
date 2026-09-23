@@ -6,6 +6,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
+  followUpConfigVersion,
   followUpHandler,
   registerFollowUpHandlers,
 } from "@/modules/followups/handlers";
@@ -72,6 +73,7 @@ const CONV_SLOW = 79_607;
 const CONV_DEAD_NOW = 79_609;
 const CONV_DEAD_BEFORE = 79_610;
 const CONV_OLD_STEP = 79_611;
+const CONV_HOURS = 79_612;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -264,6 +266,7 @@ describe.skipIf(!dbUp)(
           "inboxes",
           "chatwoot_agent_bots",
           "agents",
+          "business_hours",
           "vault_entries",
           "chatwoot_instances",
         ]) {
@@ -426,6 +429,88 @@ describe.skipIf(!dbUp)(
       expect(after?.runAt.getTime()).toBe(dueAt);
       expect(after?.claimSeq).toBe(deferred?.claimSeq);
       expect(s.sent).toEqual([]);
+
+      // Review round 4: the operator shortens the cadence after the deferral. The instant the handler
+      // computed no longer holds, so the next pass re-arms the row now instead of waiting it out.
+      const slow = await suDb.agent.findFirstOrThrow({
+        where: { tenantId, name: "slow" },
+        select: { id: true, settings: true },
+      });
+      await suDb.agent.update({
+        where: { id: slow.id },
+        data: {
+          settings: {
+            followUp: {
+              enabled: true,
+              steps: [
+                { delayValue: 1, delayUnit: "minutes", instructions: "a" },
+              ],
+            },
+          },
+        },
+      });
+      const before = Date.now();
+      await runSweep();
+      const rearmed = await rowOf(CONV_SLOW);
+      expect(rearmed?.payload).toEqual({ threadId: threadOf(CONV_SLOW) });
+      expect(rearmed?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+      expect(rearmed?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+      await suDb.agent.update({
+        where: { id: slow.id },
+        data: { settings: slow.settings ?? {} },
+      });
+    });
+
+    // The schedule is the other input of a deferral, and it lives in its own row: editing the hours
+    // moves the version as well, while a deferral under the current version is left alone.
+    test("editing the schedule a deferral was computed from re-arms it; the same schedule keeps it", async () => {
+      const hours = await suDb.businessHours.create({
+        data: { tenantId, name: "fu796" },
+      });
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId, name: "slow" },
+        select: { id: true },
+      });
+      const { updatedAt: agentAt } = await suDb.agent.update({
+        where: { id: agent.id },
+        data: { followUpHoursId: hours.id },
+        select: { updatedAt: true },
+      });
+      await seedIdle(CONV_HOURS, INBOX_SLOW);
+      const later = new Date(Date.now() + 6 * 60 * 60_000);
+      const payload = {
+        threadId: threadOf(CONV_HOURS),
+        deferredUnder: followUpConfigVersion(agentAt, hours.updatedAt),
+      };
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_HOURS),
+        runAt: later,
+        payload,
+        rearm: "same-work",
+        base: appDb,
+      });
+      try {
+        await runSweep();
+        const kept = await rowOf(CONV_HOURS);
+        expect(kept?.runAt.getTime()).toBe(later.getTime());
+        expect(kept?.payload).toEqual(payload);
+
+        await suDb.businessHours.update({
+          where: { id: hours.id },
+          data: { timezone: "UTC" },
+        });
+        await runSweep();
+        const rearmed = await rowOf(CONV_HOURS);
+        expect(rearmed?.payload).toEqual({ threadId: threadOf(CONV_HOURS) });
+        expect(rearmed?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { followUpHoursId: null },
+        });
+      }
     });
   },
 );

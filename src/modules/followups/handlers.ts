@@ -159,11 +159,23 @@ async function sweepHandler(
     base,
     sysCtx(tenantId),
     (db) =>
-      db.$queryRaw<Array<{ thread_id: string }>>`
-      SELECT c.thread_id
+      db.$queryRaw<
+        Array<{
+          thread_id: string;
+          agent_updated_at: Date;
+          hours_updated_at: Date | null;
+        }>
+      >`
+      SELECT c.thread_id,
+             a.updated_at AS agent_updated_at,
+             h.updated_at AS hours_updated_at
       FROM conversations c
       JOIN inboxes i ON i.id = c.inbox_id
       JOIN agents a ON a.id = i.agent_id
+      -- The schedule the handler reads (follow-up hours, else business hours), for the configuration
+      -- version a deferral is compared against below.
+      LEFT JOIN business_hours h
+        ON h.id = COALESCE(a.follow_up_hours_id, a.business_hours_id)
       WHERE c.tenant_id = ${tenantId}
         AND c.status = 'pending'
         -- NOTE: Bot-owned = anything but a human, mirroring shouldBotHandle: NULL (unassigned — Chatwoot
@@ -319,8 +331,14 @@ async function sweepHandler(
       // STEP-0 deferral is this episode's: the sweep selects a thread only at the start of a fresh
       // episode, so a later step still pending is left over from an earlier one (our own reply opens
       // a new episode without cancelling it), and waiting for it would delay this episode's first
-      // follow-up by that step's cadence.
-      leaveLaterRun: isStepZeroPayload,
+      // follow-up by that step's cadence. And only while the configuration it was computed from still
+      // holds: a cadence shortened, or a schedule opened, after the deferral must not wait out the
+      // old instant, so a row marked with an older version is re-armed and the handler recomputes.
+      leaveLaterRun: (payload) =>
+        isDeferralOfThisEpisode(
+          payload,
+          followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
+        ),
       base,
     });
   }
@@ -330,13 +348,38 @@ async function sweepHandler(
   };
 }
 
-// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one.
-function isStepZeroPayload(payload: Prisma.JsonValue): boolean {
+// WHICH CONFIGURATION A DEFERRAL WAS COMPUTED FROM (issue #796, review round 4). The cadence and the
+// business-hours deferrals are functions of the agent's settings and of its schedule, and a change to
+// either makes the stored instant wrong. Both rows stamp `updated_at` on every write, so the pair is
+// a version that moves whenever the inputs can have moved; an unrelated edit to the agent also moves
+// it, which costs one extra handler pass and nothing else.
+export function followUpConfigVersion(
+  agentUpdatedAt: Date,
+  hoursUpdatedAt: Date | null | undefined,
+): string {
+  return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
+}
+
+function withoutDeferral(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const { deferredUnder: _, ...rest } = payload;
+  return rest;
+}
+
+// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral
+// without a version (a retry backoff, a turn in flight, a live decline) is not derived from the
+// configuration and is kept as it is.
+function isDeferralOfThisEpisode(
+  payload: Prisma.JsonValue,
+  configVersion: string,
+): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return true;
   }
-  const stepIndex = (payload as Record<string, unknown>).stepIndex;
-  return stepIndex === undefined || stepIndex === 0;
+  const { stepIndex, deferredUnder } = payload as Record<string, unknown>;
+  if (stepIndex !== undefined && stepIndex !== 0) return false;
+  return deferredUnder === undefined || deferredUnder === configVersion;
 }
 
 // WHAT A FOLLOW-UP STEP SAYS IT IS. Pure, and separate from the handler for the reason the redirect
@@ -424,6 +467,7 @@ export async function followUpHandler(
         businessHoursId: true,
         followUpHoursId: true,
         followUpArmedAt: true,
+        updatedAt: true,
       },
     });
     if (!agent) return null;
@@ -469,10 +513,21 @@ export async function followUpHandler(
     const hours = hoursId
       ? await db.businessHours.findUnique({
           where: { id: hoursId },
-          select: { windows: true, exceptions: true, timezone: true },
+          select: {
+            windows: true,
+            exceptions: true,
+            timezone: true,
+            updatedAt: true,
+          },
         })
       : null;
-    return { conv, followUpCfg, hours, armedAt: agent.followUpArmedAt };
+    return {
+      conv,
+      followUpCfg,
+      hours,
+      armedAt: agent.followUpArmedAt,
+      configVersion: followUpConfigVersion(agent.updatedAt, hours?.updatedAt),
+    };
   });
   if (!ctx) return { outcome: "done" };
 
@@ -543,7 +598,8 @@ export async function followUpHandler(
   }
 
   // Cadence: step 0 measures inactivity from the last conversation activity; later steps measure from
-  // when the previous step fired (lastFollowUpAt). Not due yet → reschedule precisely (same payload).
+  // when the previous step fired (lastFollowUpAt). Not due yet → reschedule precisely, marking the
+  // configuration the instant was computed from so the sweep can tell when it no longer holds.
   const anchor =
     stepIndex === 0
       ? lastActivityAt(lastEventAt, ctx.conv.lastRepliedAt)
@@ -551,7 +607,11 @@ export async function followUpHandler(
   if (anchor) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
     if (Date.now() < dueAt) {
-      return { outcome: "reschedule", runAt: new Date(dueAt) };
+      return {
+        outcome: "reschedule",
+        runAt: new Date(dueAt),
+        payload: { ...job.payload, deferredUnder: ctx.configVersion },
+      };
     }
   }
 
@@ -587,14 +647,20 @@ export async function followUpHandler(
     return stamped > 0;
   };
 
-  // Business hours: reschedule into the next open window rather than messaging out of hours (same
-  // payload — the step index is preserved).
+  // Business hours: reschedule into the next open window rather than messaging out of hours (the step
+  // index is preserved, and the configuration version marked, as for the cadence above).
   if (ctx.hours) {
     const hours = parseSchedule(ctx.hours);
     const now = new Date();
     if (hours.windows.length > 0 && !isOpenAt(hours, now)) {
       const next = nextOpenAt(hours, now);
-      if (next) return { outcome: "reschedule", runAt: next };
+      if (next) {
+        return {
+          outcome: "reschedule",
+          runAt: next,
+          payload: { ...job.payload, deferredUnder: ctx.configVersion },
+        };
+      }
       // Nothing opens within the scan horizon — a schedule closed for a year, which before date
       // exceptions could not be expressed at all (a weekly grid always repeats inside the scan). There
       // is no instant to defer to, so the episode is abandoned WITH A STAMP, exactly like the
@@ -703,7 +769,9 @@ export async function followUpHandler(
     return {
       outcome: "reschedule",
       runAt: retry.runAt,
-      payload: { ...job.payload, nudgeRetries: retry.attempt },
+      // A retry backoff is not derived from the configuration, so it carries no version: the sweep
+      // leaves it alone even after a settings change, which is what keeps the retry count.
+      payload: { ...withoutDeferral(job.payload), nudgeRetries: retry.attempt },
     };
   }
 

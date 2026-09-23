@@ -361,6 +361,11 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
     });
     expect(result.outcome).toBe("reschedule");
     const runAt = (result as { runAt: Date }).runAt;
+    // The deferral names the configuration it was computed from, agent AND schedule, so the sweep
+    // re-arms it when either changes (issue #796).
+    expect(
+      (result as { payload?: Record<string, unknown> }).payload?.deferredUnder,
+    ).toMatch(/^\d+:[1-9]\d*$/);
     // The closure covers today and tomorrow, so the first open instant is the day after that.
     expect(
       new Intl.DateTimeFormat("en-CA", {

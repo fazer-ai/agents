@@ -44,6 +44,8 @@ inbox_bind { "inbox_id":"<id do inbox no fazer.ai agents>", "agent_id":"<id do a
 
 O bind **provisiona/conecta o bot do agente no Chatwoot** (Agent Bot + webhook `/v1/chatwoot/webhook/:routeToken`); o `routeTokenHash`/`inboundSecretRef` ficam encriptados no fazer.ai agents e **nunca** saem no export. Não precisa setar `webhook_url` à mão. Verifique: bot-status do inbox = `active`.
 
+Se o bind falhar com `Chatwoot agent_bot create: missing id/access_token/secret`, o Chatwoot é anterior à `v4.13.0` e não devolve o `secret` do Agent Bot. Não tente contornar: sinalize ao usuário, atualize o Chatwoot com backup do banco antes (decisão dele, ver `01b-brownfield.md` §4) e refaça o bind.
+
 ## Só MCP (nada de REST à mão)
 
 O fazer.ai agents expõe endpoints REST equivalentes por baixo (o que a tela `/channels` chama), mas **não os chame à mão**: as tools MCP `deployment_connect`/`inbox_bind` são o único caminho (regra MCP-only, ver `SKILL.md` e `06-setup-and-mcp.md`).

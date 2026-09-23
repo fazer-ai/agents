@@ -39,5 +39,5 @@ Resumo (detalhe em [`guardrails.md`](guardrails.md)):
 
 ## Skills irmãs
 
-- `agents-onboarding`: subir uma instância nova num VPS (do zero ao agente).
+- `agents-onboarding`: subir uma instância nova num VPS (do zero ao agente) e revalidar a infraestrutura de uma que já está no ar. Problema de infraestrutura (serviço fora do ar, Coolify sem acesso ao próprio servidor, deploy ou atualização falhando, DNS/TLS) é com ela; esta skill cuida do comportamento do agente.
 - `agents-dev`: trabalhar no código-fonte (Free/Full, implementar, gerar imagem).

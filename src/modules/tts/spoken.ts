@@ -25,6 +25,8 @@ export interface SpokenReplyPlan {
 const TARGET = String.raw`(?:\\[()]|[^()\s]|\((?:\\[()]|[^()\s])*\))+`;
 // CommonMark's inline link: the destination bare or in `<…>`, then an optional title in `"…"`,
 // `'…'` or `(…)`. Group 1 is the label; groups 2/3 (angle) or 4/5 (bare) the `mailto:` and target.
+const AUTOLINK =
+  /<(?:(mailto:)([^<>\s]+)|((?:https?:\/\/|www\.)[^<>\s]+|[^<>\s@]+@[^<>\s@]+))>/gi;
 const MARKDOWN_LINK = new RegExp(
   String.raw`\[([^\]\n]+)\]\(\s*(?:<(mailto:)?((?:\\[<>]|[^<>\n])+)>|(mailto:)?(${TARGET}))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)`,
   "g",
@@ -32,13 +34,16 @@ const MARKDOWN_LINK = new RegExp(
 // A match never starts or ends inside a token: a written item that is only part of the destination
 // sends the customer somewhere else. A formatting run may sit between the item and whitespace
 // (`**https://…`), never between the item and a word (`abc_https://…`, `ops~billing@…`). CJK and
-// fullwidth punctuation (`。`, `，`) ends a URL: it is the sentence's, and no URL holds it.
+// fullwidth punctuation (`。`, `，`) ends a URL: it is the sentence's, and no URL holds it. Letters in
+// those blocks (`佐々木`, fullwidth `ｗ`) are the URL's.
 const URL =
-  /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`\u3000-\u303f\uff01-\uff65]+/giu;
-// Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. What
-// an address can hold and the class cannot (`!#$&*/=?^`{|}~`) stops the match instead of cutting it.
+  /(?<![\p{L}\p{N}\p{M}][*_~`]*)(?:https?:\/\/|www\.)[^\s<>`[[\u3000-\u303f\uff01-\uff65]--[\p{L}\p{N}\p{M}]]]+/giv;
+// Unicode and `'` in the local part (`d'angelo@`), Unicode and punycode labels in the domain. An
+// address starts only where a token starts (after whitespace, an opening bracket or quote, a
+// separator, or formatting), so a local part the class cannot hold (`john!doe.smith@`) is left
+// alone, never cut to the piece after its last unsupported character.
 const EMAIL =
-  /(?<![!#$&/=?^{|}\p{L}\p{N}\p{M}])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
+  /(?<=^|[\s\p{Ps}\p{Pi}<"':;,，：；、*_~`])[\p{L}\p{N}\p{M}_%+-][\p{L}\p{N}\p{M}._%+'-]*@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+\p{L}[\p{L}\p{N}\p{M}-]*(?![\p{L}\p{N}\p{M}-]|\.[\p{L}\p{N}])/gu;
 // GFM's autolink rule, plus closing quotes: these end a sentence or a formatting run, not a link.
 const TRAILING_PUNCTUATION = /[?!.,:*_~;'"»”]$/;
 // Formatting that wraps an item (`code`, **bold**, _italic_, ~~strike~~): it leaves the speech with
@@ -90,6 +95,14 @@ function itemSpans(text: string): Span[] {
       ),
     );
   }
+  // A CommonMark autolink says where it starts and ends, and a `mailto:` one hands over its
+  // recipient the way an inline `mailto:` link does. Inside an inline link's `(<…>)` it is that link's.
+  for (const m of text.matchAll(AUTOLINK)) {
+    const end = m.index + m[0].length;
+    if (!links.every((l) => end <= l.start || m.index >= l.end)) continue;
+    const written = m[1] ? recipient(m[2] ?? "") : (m[3] ?? "");
+    links.push(widen(text, m.index, m.index + m[0].length, [written], ""));
+  }
   // Structure before text: bare items are searched only outside the links, so a greedy URL cannot
   // run across `[um](…),[outro](…)`. Blanking UTF-16 units keeps every index where it was.
   const units = text.split("");
@@ -134,12 +147,15 @@ function target(mailto: string | undefined, destination: string): string {
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "\uFFFD";
     },
   );
-  if (!mailto) return decoded;
-  const recipient = decoded.split("?")[0] ?? "";
+  return mailto ? recipient(decoded) : decoded;
+}
+
+function recipient(uri: string): string {
+  const address = uri.split("?")[0] ?? "";
   try {
-    return decodeURIComponent(recipient);
+    return decodeURIComponent(address);
   } catch {
-    return recipient;
+    return address;
   }
 }
 const ENTITIES: Record<string, string> = {
@@ -155,10 +171,9 @@ const ENTITIES: Record<string, string> = {
 function item(text: string, start: number, match: string): Span {
   let s = start;
   let e = start + match.length;
-  // `<…>` and backticks say where the item ends: nothing inside them is the sentence's.
-  const delimited =
-    (text[s - 1] === "<" && text[e] === ">") ||
-    (text[s - 1] === "`" && text[e] === "`");
+  // Backticks say where the item ends: nothing inside them is the sentence's (`<…>` is an
+  // autolink, parsed before any bare item).
+  const delimited = text[s - 1] === "`" && text[e] === "`";
   for (; !delimited; ) {
     const first = text[s] ?? "";
     const last = text[e - 1] ?? "";
@@ -179,8 +194,7 @@ function unbalanced(item: string, last: string): boolean {
   return count(open) < count(last);
 }
 
-// The span, widened over a formatting run that wraps it symmetrically, and over a markdown
-// autolink's angle brackets.
+// The span, widened over a formatting run that wraps it symmetrically.
 function widen(
   text: string,
   start: number,
@@ -193,9 +207,7 @@ function widen(
   for (;;) {
     const open = text[s - 1] ?? "";
     const close = text[e] ?? "";
-    const wraps =
-      (isWrapper(open) && open === close) || (open === "<" && close === ">");
-    if (!wraps) break;
+    if (!isWrapper(open) || open !== close) break;
     s--;
     e++;
   }

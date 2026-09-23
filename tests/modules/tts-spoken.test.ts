@@ -442,6 +442,34 @@ describe("planSpokenReply", () => {
     ).toEqual(["https://x.com.br/a>b"]);
   });
 
+  // Review round 10.
+  test("an address never restarts inside a local part it cannot hold", () => {
+    expect(
+      planSpokenReply(
+        "Escreva para john!doe.smith@x.com.br e respondemos em 2 dias",
+      ).written,
+    ).toEqual([]);
+  });
+
+  test("letters in the CJK and fullwidth blocks belong to the URL", () => {
+    expect(
+      planSpokenReply(
+        "Veja https://ja.wikipedia.org/wiki/佐々木 e https://x.com.br/ｗｗｗ para detalhes",
+      ).written,
+    ).toEqual([
+      "https://ja.wikipedia.org/wiki/佐々木",
+      "https://x.com.br/ｗｗｗ",
+    ]);
+  });
+
+  test("a mailto autolink hands over its decoded recipient", () => {
+    const plan = planSpokenReply(
+      "Escreva para <mailto:foo%2Bbar@x.com.br> e respondemos em 2 dias",
+    );
+    expect(plan.written).toEqual(["foo+bar@x.com.br"]);
+    expect(plan.speech).toBe("Escreva para e respondemos em 2 dias");
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

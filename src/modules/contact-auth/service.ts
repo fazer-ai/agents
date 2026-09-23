@@ -144,11 +144,18 @@ export async function authorizeContact(
     return { outcome: "no_identity", shared: false, reason: "no_contact" };
   }
   const contactDbId = params.contactDbId;
+  // A conversation-scoped rule answers about the CONVERSATION, so two conversations of one contact
+  // are two questions: sharing a flight would hand the marked one's allow to the unmarked one.
+  const rule = cfg.rule;
+  const conversationScoped =
+    rule?.kind === "attribute" && rule.scope === "conversation";
   const key = contactAuthFlightKey(
     tenantId,
     agentId,
     contactDbId,
-    params.requestKey,
+    conversationScoped
+      ? `${params.requestKey}:conv:${params.conversationDbId ?? "none"}`
+      : params.requestKey,
   );
   const { verdict, shared } = await singleFlight(
     key,
@@ -182,7 +189,6 @@ export async function authorizeContact(
       // the case "serve the conversations we marked" exists for. No grant is read, written or
       // dropped: grants exist to spare an endpoint, a rule reads our own rows on every message, and
       // a stored verdict would only make a list edit take effect late.
-      const rule = cfg.rule;
       if (rule && rule.kind === "attribute") {
         const conversationDbId = params.conversationDbId;
         const conv =

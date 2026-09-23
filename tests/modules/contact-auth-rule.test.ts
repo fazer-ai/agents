@@ -448,6 +448,37 @@ describe.skipIf(!dbUp)("a local rule decides without the endpoint", () => {
     expect(ep.calls).toHaveLength(0);
   });
 
+  test("two conversations of one contact, asked at once, are two questions", async () => {
+    const ep = endpoint();
+    const rule = parseContactAuthRule({
+      kind: "attribute",
+      scope: "conversation",
+      key: "liberado",
+    }) as ContactAuthRule;
+    const both = (conv: bigint) =>
+      authorizeContact({
+        tenantId,
+        agentId,
+        contactDbId: bareContact,
+        conversationDbId: conv,
+        conversationId: 6460,
+        inboxId: 64,
+        channelType: "Channel::Whatsapp",
+        messageText: null,
+        // The SAME asking key on purpose: the webhook's default when no text is forwarded.
+        requestKey: "inbox",
+        cfg: cfg(rule),
+        base: appDb,
+        fetchImpl: ep.fetchImpl,
+      });
+    const [marked, unmarked] = await Promise.all([
+      both(markedConversation),
+      both(unmarkedConversation),
+    ]);
+    expect(marked.outcome).toBe("allowed");
+    expect(unmarked.outcome).toBe("denied");
+  });
+
   test("under mode once, a rule neither reads nor writes a stored verdict", async () => {
     const ep = endpoint();
     // A grant the endpoint gave this contact earlier, under exactly this policy.
@@ -571,6 +602,35 @@ describe.skipIf(!dbUp)("a local rule decides without the endpoint", () => {
         phones: ["5511988887777"],
         identifiers: [],
       });
+      // The rule is replaced whole: a new attribute rule does not inherit the old one's `equals`,
+      // and nothing of the list survives beside it.
+      for (const rule of [
+        { kind: "attribute", scope: "contact", key: "plano", equals: "ativo" },
+        { kind: "attribute", scope: "contact", key: "status" },
+      ]) {
+        const r = await agentSettingsSet(
+          principal(),
+          {
+            agent_id: String(agentId),
+            contactAuth: { rule },
+            dry_run: false,
+          },
+          { base: appDb },
+        );
+        expect(r.ok).toBe(true);
+      }
+      const replaced = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      });
+      expect(
+        (
+          (replaced.settings as Record<string, unknown>).contactAuth as Record<
+            string,
+            unknown
+          >
+        ).rule,
+      ).toEqual({ kind: "attribute", scope: "contact", key: "status" });
       const cleared = await agentSettingsSet(
         principal(),
         {

@@ -739,6 +739,70 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(left).toEqual([]);
   });
 
+  // ISSUE #717, on the follow-up: a person taking the conversation over while the follow-up's model
+  // runs. Every ask the job makes is about the job; this one is about the owner, and the flip lands
+  // inside the model call, which is the window.
+  test("a person taking over during the model call stops the follow-up's tools", async () => {
+    const contactInboxId = 8892;
+    await seedConv(9717, null, new Date(), contactInboxId);
+    const s = stub();
+    let rounds = 0;
+    class TakenOverMidCallModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-taken-over-mid-call";
+      }
+      async _generate(): Promise<ChatResult> {
+        rounds += 1;
+        if (rounds === 1) {
+          await suDb.conversation.updateMany({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: 9717,
+            },
+            data: { status: "open", assigneeType: "User", assigneeId: 5 },
+          });
+        }
+        const message =
+          rounds === 1
+            ? new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "set_labels",
+                    args: { add: ["seguimento"], scope: "conversation" },
+                    id: "call_717_nudge",
+                  },
+                ],
+              })
+            : new AIMessage("Tudo certo?");
+        return { generations: [{ text: "", message }] };
+      }
+    }
+
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9717`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new TakenOverMidCallModel(),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+
+    expect(outcome).toBe("stale");
+    expect(s.labelSets).toEqual([]);
+    expect(s.messages).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(rounds).toBe(1);
+  });
+
   // REVIEW ROUND 5, and it is the same non-monotonicity that put the empty terminator there. The
   // fences this path hands down are not all one-way: the channel-redirect one reads `agent.enabled`
   // on every ask, so an operator who switches the agent off during the model call and back on before

@@ -97,6 +97,7 @@ import {
   turnWasCalledOff,
 } from "./markers";
 import type { ResolvedModelConfig } from "./models";
+import { withOwnershipFence } from "./ownership-fence";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -1101,8 +1102,21 @@ async function runTurnBody(
   // ack that posts to the customer — for an agent flipped to monitoring inside the model call, while
   // the reply after it was refused. Always present now, where it used to be absent for a turn
   // nothing could retire: the switch and the mode can change under any turn.
-  const stillWantedFence = async (): Promise<boolean> =>
-    !(await writeCalledOff());
+  //
+  // AND WHETHER THE CONVERSATION IS STILL THE BOT'S (issue #717), asked at the tool boundary against
+  // the owner it had when the turn started: a person taking it over while the model runs stops the
+  // calls that would write over them. ./ownership-fence.ts says when it asks and when it does not.
+  const ownershipFence = withOwnershipFence(
+    async () => !(await writeCalledOff()),
+    {
+      // Unreadable is not ours: the fence then never asks, so a failing read lets the tools run.
+      ownedAtStart: await ownershipNow().catch(() => false),
+      handedOffByThisTurn: () => handoffState.completed,
+      ownsNow: ownershipNow,
+      conversationId,
+    },
+  );
+  const stillWantedFence = ownershipFence.ask;
 
   const tools = await buildToolset(
     loaded,
@@ -2401,7 +2415,30 @@ async function runTurnBody(
     // handled watermark over a customer message nothing answered and skips the rollback (issue #449,
     // review round 5). Before `drafted`, which is the first line that treats the empty turn as a
     // result.
-    if (turnWasCalledOff(result.messages)) return refuse(standDown());
+    //
+    // AND WHICH REFUSAL IT WAS (issue #717): the owner changing mid-turn is the post-generation
+    // recheck's outcome reached one hop earlier, so it gets that outcome and that line, not the
+    // withdrawal's.
+    if (turnWasCalledOff(result.messages)) {
+      if (ownershipFence.lostOwnership()) {
+        const posse = await conversationOwnershipNow({
+          tenantId,
+          instanceId,
+          conversationId,
+          ourAgentBotId: loaded.agentBotId ?? agentBotId,
+          base,
+        }).catch(() => null);
+        if (posse && !posse.ours && posse.closed !== null) {
+          emitFlowEvent(flow, {
+            stage: "handoff",
+            status: "ok",
+            detail: posse.closed,
+          });
+        }
+        return refuse("taken-over");
+      }
+      return refuse(standDown());
+    }
 
     // The follow-up's silence token is not vocabulary of this path, but it IS in this thread: the
     // memory is keyed per contact-inbox, so every silent follow-up leaves an assistant turn whose

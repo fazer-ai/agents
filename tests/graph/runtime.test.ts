@@ -3275,6 +3275,189 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(warned?.resolveDiscarded).toBe(false);
   });
 
+  // ISSUE #717. A person taking the conversation over WHILE the model runs: the gates before the
+  // invoke (#711) have already answered, and the recheck after it only holds the send. Between them
+  // the tools ran over the person. The mirror flip happens inside the model call, which is the
+  // window, and the next hop's calls are what the fence has to stop.
+  function ownershipClient(calls: Array<[string, number, string]>) {
+    let labels: string[] = [];
+    return async () =>
+      ({
+        sendMessage: async (c: number, t: string) => {
+          calls.push(["sendMessage", c, t]);
+          return {};
+        },
+        sendPrivateNote: async (c: number, t: string) => {
+          calls.push(["sendPrivateNote", c, t]);
+          return {};
+        },
+        getConversationLabels: async () => labels,
+        setConversationLabels: async (c: number, next: string[]) => {
+          labels = next;
+          calls.push(["setConversationLabels", c, next.join(",")]);
+          return {};
+        },
+        toggleStatus: async (c: number, status: string) => {
+          calls.push(["toggleStatus", c, status]);
+          // The status webhook mirrored at once, the worst case for the turn's own transfer.
+          await suDb.conversation.updateMany({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: c,
+            },
+            data: { status },
+          });
+          return {};
+        },
+      }) as unknown as ChatwootClient;
+  }
+
+  async function takeOver(convId: number) {
+    await suDb.conversation.updateMany({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+      },
+      data: { status: "open", assigneeType: "User", assigneeId: 5 },
+    });
+  }
+
+  // Answers each round from the script, running the round's hook first (inside the model call).
+  function scriptedToolModel(
+    rounds: Array<{ before?: () => Promise<void>; message: AIMessage }>,
+  ) {
+    let n = 0;
+    const model = {
+      invoke: async () => new AIMessage(""),
+      bindTools: () => ({
+        invoke: async () => {
+          const round = rounds[n] ?? { message: new AIMessage("") };
+          n++;
+          await round.before?.();
+          return round.message;
+        },
+      }),
+      calls: () => n,
+    };
+    return model;
+  }
+
+  const labelsCall = (id: string) =>
+    new AIMessage({
+      content: "",
+      tool_calls: [{ name: "set_labels", args: { add: ["em-andamento"] }, id }],
+    });
+
+  test("issue #717: a person taking over mid-turn stops the turn's remaining tool calls", async () => {
+    await seedConversation(9717, null);
+    const calls: Array<[string, number, string]> = [];
+    const m = scriptedToolModel([
+      { before: () => takeOver(9717), message: labelsCall("call_717_a") },
+      { message: new AIMessage("Marquei aqui.") },
+    ]);
+    const checkpointer = new MemorySaver();
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9717 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: ownershipClient(calls),
+        checkpointer,
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    // Neither the label nor anything else reached the conversation the person now holds.
+    expect(calls).toEqual([]);
+    // ONE model call: the refusal ends the turn instead of routing back to the model.
+    expect(m.calls()).toBe(1);
+    // And the thread is resumable: no assistant turn is left with a call nothing answered.
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: { thread_id: `${tenantId}:${instanceId}:9717` },
+    });
+    const msgs = (state.values as { messages?: BaseMessage[] }).messages ?? [];
+    const asked = msgs.flatMap((x) =>
+      x.getType() === "ai"
+        ? ((x as AIMessage).tool_calls ?? []).map((c) => String(c.id))
+        : [],
+    );
+    const answered = msgs
+      .filter((x) => x.getType() === "tool")
+      .map((x) => String((x as ToolMessage).tool_call_id));
+    expect([...answered].sort()).toEqual([...asked].sort());
+  });
+
+  test("issue #717, control: with nobody taking over, the same call runs", async () => {
+    await seedConversation(9718, null);
+    const calls: Array<[string, number, string]> = [];
+    const m = scriptedToolModel([
+      { message: labelsCall("call_717_b") },
+      { message: new AIMessage("Marquei aqui.") },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9718 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: ownershipClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls).toContainEqual([
+      "setConversationLabels",
+      9718,
+      "em-andamento",
+    ]);
+  });
+
+  // The turn's OWN transfer changes the owner too, and the calls after it in the same answer are the
+  // turn's intent: a label written after the handoff is not a write over somebody.
+  test("issue #717: after this turn's own handoff, its next tool call still runs", async () => {
+    await seedConversation(9719, null);
+    const calls: Array<[string, number, string]> = [];
+    const m = scriptedToolModel([
+      {
+        message: new AIMessage({
+          content: "",
+          tool_calls: [
+            {
+              name: "handoff_to_human",
+              args: { customerMessage: "" },
+              id: "call_717_h",
+            },
+          ],
+        }),
+      },
+      { message: labelsCall("call_717_c") },
+      { message: new AIMessage("") },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9719 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: ownershipClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The mirror reads `open` after the transfer, and the label still went on.
+    expect(await mirroredStatus(9719)).toBe("open");
+    expect(calls.map(([op]) => op)).toEqual([
+      "toggleStatus",
+      "setConversationLabels",
+    ]);
+  });
+
   // The audio-delivery apply point: TTS on (mirror) + the customer sent audio. The stub carries a
   // pre-transcribed voice note so no STT call happens; ttsFetch stubs the synthesis provider.
   const audioIncoming = (convId: number) =>

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import {
   channelFailureOf,
   mediaFallbackDedupeKey,
@@ -10,7 +11,7 @@ import {
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
-import type { ClaimedJob } from "@/modules/scheduler/service";
+import { type ClaimedJob, completeJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -304,6 +305,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     recentSendIds?: string[];
     filler?: number;
     unreadable?: boolean;
+    onRead?: () => Promise<void>;
   }) {
     const sent: {
       conv: number;
@@ -330,6 +332,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         // Pages the way Chatwoot does: the latest ~20, or the ~20 older than `before`. The thread is
         // the failed voice note, `filler` newer messages, and the named sends.
         getMessages: async (_c: number, o?: { before?: number }) => {
+          await opts.onRead?.();
           if (opts.unreadable) return {};
           const thread = [
             { id: 9001, sendId: null as string | null },
@@ -498,6 +501,65 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         data: { mode: "production" },
       });
     }
+  });
+
+  test("a reset that lands while the job reads the conversation still stops the send", async () => {
+    const cw = fakeChatwoot({
+      onRead: async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { resetAtMessageId: 9001 },
+        });
+      },
+    });
+    try {
+      await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
+      expect(cw.sent).toEqual([]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { resetAtMessageId: null },
+      });
+    }
+  });
+
+  test("a finished job keeps its key and drops the reply it carried", async () => {
+    const [row] = await jobsFor(9001);
+    if (!row) throw new Error("the job was not armed");
+    await suDb.schedulerJob.update({
+      where: { id: row.id },
+      data: { status: "CLAIMED" },
+    });
+    await completeJob(
+      tenantId,
+      row.id,
+      row.claimSeq,
+      "MEDIA_TEXT_FALLBACK",
+      appDb,
+    );
+    const after = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(after.status).toBe("DONE");
+    expect(after.dedupeKey).toBe(mediaFallbackDedupeKey(instanceId, 9001));
+    expect(after.payloadSecret).toBeNull();
+    // Back to what the tests below expect to claim.
+    await suDb.schedulerJob.update({
+      where: { id: row.id },
+      data: { status: "PENDING", payloadSecret: encryptJson(REPLY) },
+    });
+  });
+
+  test("an upstream Chatwoot with no transcription on the attachment still gets the text this process spoke", async () => {
+    stashMediaAnnotation(
+      { tenantId, instanceId, messageId: 9010 },
+      { transcribedText: REPLY },
+    );
+    await deliver(updated(9010, { transcribed: null }));
+    const [job] = await jobsFor(9010);
+    expect(
+      job?.payloadSecret ? decryptJson<string>(job.payloadSecret) : null,
+    ).toBe(REPLY);
   });
 
   test("a monitoring agent, or a conversation reset after the failure, gets nothing", async () => {

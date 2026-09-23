@@ -17,6 +17,7 @@ import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
+import { mediaAnnotationFor } from "./annotations";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootMessageListLength, parseChatwootMessages } from "./messages";
 import { parseLiveConversation, shouldBotHandle } from "./normalize";
@@ -144,7 +145,21 @@ export async function handleChannelFailure(params: {
   flow: FlowContext;
   base?: PrismaClient;
 }): Promise<void> {
-  const { failure: f } = params;
+  // The reply the voice note was rendered from. The fork keeps it on the attachment; an upstream
+  // Chatwoot drops that metadata, and then the text this process stashed when it sent the audio is
+  // the one place it still is.
+  const f: ChannelFailure =
+    params.failure.kind === "media" && params.failure.text === null
+      ? {
+          ...params.failure,
+          text:
+            mediaAnnotationFor(
+              params.tenantId,
+              params.instanceId,
+              params.failure.messageId,
+            )?.transcribedText?.trim() || null,
+        }
+      : params.failure;
   // The line belongs to the AGENT behind the bot that sent the message, so the Logs page filtered by
   // agent shows it: the flow log stores the agent it is handed and infers nothing.
   const flow: FlowContext =
@@ -254,6 +269,48 @@ export async function mediaFallbackHandler(
   };
   if (!bot || bot.instance.disconnectedAt !== null)
     return stop("the bot is gone or the account is disconnected");
+  const client = await loadChatwootClient(job.tenantId, instanceId, {
+    base,
+    botToken: decryptJson<string>(bot.accessToken),
+    ...(makeClient ? { makeClient } : {}),
+  });
+  // FIRST, because it is the slow part: every gate below is asked AFTER these reads, so a person
+  // taking the conversation or a `/reset` landing while they run still stops the send.
+  //
+  // THE SEND CARRIES A NAME, and a retry looks for it before sending again. The row is armed once,
+  // but the HANDLER can run twice: a POST that landed and whose response was lost, or a crash between
+  // the send and `completeJob`, both come back here, and the second one only after the stale-claim
+  // interval, when newer messages may have pushed the first send off the latest page. So the read
+  // pages back to the FAILED message, which the text can only have followed. A read that fails
+  // THROWS, for the same reason as above; a conversation too busy to reach that boundary within the
+  // page ceiling sends nothing, because a text that late is worth less than a duplicate costs.
+  const sendId = `media-fallback:${messageId}`;
+  let before: number | undefined;
+  for (let page = 0; ; page++) {
+    if (page === FALLBACK_READBACK_MAX_PAGES) {
+      logger.warn(
+        "media fallback: could not reach message %s in conversation %s, the text is not sent",
+        String(messageId),
+        String(conversationId),
+      );
+      return { outcome: "done" };
+    }
+    const raw = await client.getMessages(
+      conversationId,
+      before === undefined ? undefined : { before },
+    );
+    const rows = parseChatwootMessages(raw);
+    // A page read INCOMPLETELY (not a list, or rows that did not parse) cannot say the send is not
+    // there, only that it could not tell: THROW and retry, never resend on it.
+    if (chatwootMessageListLength(raw) !== rows.length)
+      throw new Error(
+        "media fallback: a page of the conversation did not read",
+      );
+    if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
+    const oldest = rows[0]?.id;
+    if (oldest === undefined || oldest <= messageId) break;
+    before = oldest;
+  }
   // The same reads a follow-up makes before it speaks (../../graph/nudge.ts), in the same order: the
   // conversation, the agent its inbox is bound to NOW, the test-mode activation, and the config.
   const gate = await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
@@ -335,11 +392,6 @@ export async function mediaFallbackHandler(
   const [signed = text] = sig
     ? attachSignature([text], sig, cfg.signatureConfig)
     : [text];
-  const client = await loadChatwootClient(job.tenantId, instanceId, {
-    base,
-    botToken: decryptJson<string>(bot.accessToken),
-    ...(makeClient ? { makeClient } : {}),
-  });
   // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
   // send and this one, and a person may have taken the conversation in between: posting as the bot
   // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
@@ -356,40 +408,6 @@ export async function mediaFallbackHandler(
       String(conversationId),
     );
     return { outcome: "done" };
-  }
-  // THE SEND CARRIES A NAME, and a retry looks for it before sending again. The row is armed once,
-  // but the HANDLER can run twice: a POST that landed and whose response was lost, or a crash between
-  // the send and `completeJob`, both come back here, and the second one only after the stale-claim
-  // interval, when newer messages may have pushed the first send off the latest page. So the read
-  // pages back to the FAILED message, which the text can only have followed. A read that fails
-  // THROWS, for the same reason as above; a conversation too busy to reach that boundary within the
-  // page ceiling sends nothing, because a text that late is worth less than a duplicate costs.
-  const sendId = `media-fallback:${messageId}`;
-  let before: number | undefined;
-  for (let page = 0; ; page++) {
-    if (page === FALLBACK_READBACK_MAX_PAGES) {
-      logger.warn(
-        "media fallback: could not reach message %s in conversation %s, the text is not sent",
-        String(messageId),
-        String(conversationId),
-      );
-      return { outcome: "done" };
-    }
-    const raw = await client.getMessages(
-      conversationId,
-      before === undefined ? undefined : { before },
-    );
-    const rows = parseChatwootMessages(raw);
-    // A page read INCOMPLETELY (not a list, or rows that did not parse) cannot say the send is not
-    // there, only that it could not tell: THROW and retry, never resend on it.
-    if (chatwootMessageListLength(raw) !== rows.length)
-      throw new Error(
-        "media fallback: a page of the conversation did not read",
-      );
-    if (rows.some((m) => m.sendId === sendId)) return { outcome: "done" };
-    const oldest = rows[0]?.id;
-    if (oldest === undefined || oldest <= messageId) break;
-    before = oldest;
   }
   await client.sendMessage(conversationId, signed, { sendId });
   return { outcome: "done" };

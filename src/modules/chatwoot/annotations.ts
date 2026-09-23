@@ -96,6 +96,20 @@ export function stashMediaAnnotation(
 
 // Fills IN PLACE the annotation fields a fetched page is missing. A value already present on the
 // attachment meta (the fork write-back landed) is authoritative and never overwritten.
+// One message's annotation, when this process still holds it. The audio reply stashes the text it
+// spoke under the id Chatwoot gave the send, which is how a channel failure reported minutes later
+// recovers the reply on an upstream Chatwoot that drops the attachment metadata (issue #587).
+export function mediaAnnotationFor(
+  tenantId: bigint,
+  instanceId: bigint,
+  messageId: number,
+  nowMs: number = Date.now(),
+): MediaAnnotation | null {
+  const hit = store.get(keyOf(tenantId, instanceId, messageId));
+  if (!hit || nowMs - hit.at >= TTL_MS) return null;
+  return hit.note;
+}
+
 export function overlayMediaAnnotations(
   tenantId: bigint,
   instanceId: bigint,

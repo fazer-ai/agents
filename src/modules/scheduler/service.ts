@@ -1318,7 +1318,11 @@ export async function completeJob(
           // dated PENDING states that `lastError` does tell apart (backoff vs stood down) are
           // rescheduleJob's problem, and a re-arm clears it before the row is claimable again
           // anyway.
-          data: { status: "DONE", attempts: 0 },
+          //
+          // `payloadSecret` is cleared too: a retained row is kept for its KEY (the dedupe a later
+          // enqueue lands on), never for its body, and the body is the part that can carry a
+          // customer's words (issue #587, review round 5). A re-arm writes its own.
+          data: { status: "DONE", attempts: 0, payloadSecret: null },
         }),
   );
   return { applied: count > 0 };

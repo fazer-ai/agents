@@ -1063,6 +1063,14 @@ export function dropUnusableImportedSettingsInPlace(
     delete (guards as Record<string, unknown>)[name];
     takePath(dropped, `toolPreconditions.${name}`);
   }
+  // The contact gate's local rule (issue #646), on the same terms: the reader drops one that does not
+  // parse, and create refuses it, so an import that carried it silently would store a gate that reads
+  // as a list in the bundle and as no rule at runtime. Taken out and named instead.
+  const contactAuth = plainObject(bag.contactAuth);
+  if (contactAuth && invalidContactAuthRule(contactAuth.rule)) {
+    delete contactAuth.rule;
+    takePath(dropped, "contactAuth.rule");
+  }
   // THE INVARIANT: what the runtime reads does not change. A closed value the reader throws away is
   // taken out, which by definition leaves the block's reading as it was; a change the reader would
   // notice is not a normalization, and review round 1 found three (a padded guard scope whose field

@@ -81,6 +81,8 @@ const CONV_LEGACY = 79_613;
 const CONV_OTHER_EPISODE = 79_614;
 const CONV_DEAD_LATE = 79_615;
 const CONV_DEAD_MARKED = 79_616;
+const CONV_RETIRED = 79_617;
+const CONV_HELD = 79_618;
 const CONV_HOURS = 79_612;
 
 let tenantId = 0n;
@@ -367,7 +369,11 @@ describe.skipIf(!dbUp)(
         kind: "FOLLOWUP",
         dedupeKey: keyOf(CONV_DUE),
         runAt: new Date(Date.now() - 60_000),
-        payload: { threadId: threadOf(CONV_DUE), nudgeRetries: 1 },
+        payload: {
+          threadId: threadOf(CONV_DUE),
+          episode: await episodeOf(CONV_DUE),
+          nudgeRetries: 1,
+        },
         rearm: "same-work",
         base: appDb,
       });
@@ -468,6 +474,54 @@ describe.skipIf(!dbUp)(
         episode: await episodeOf(CONV_OTHER_EPISODE),
       });
       expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    // Review round 8: a reply retires the row DONE with its attempts still counted. The next episode
+    // is new work and starts with a fresh budget, or one transient failure would dead-letter it.
+    test("a row retired in an earlier episode is re-armed with a fresh budget", async () => {
+      await seedIdle(CONV_RETIRED, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_RETIRED),
+        runAt: new Date(Date.now() - 60_000),
+        payload: {
+          threadId: threadOf(CONV_RETIRED),
+          episode: followUpEpisodeKey(new Date(Date.now() - DAY_MS)),
+        },
+        rearm: "same-work",
+        base: appDb,
+      });
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET status = 'DONE', attempts = 4
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_RETIRED)}`;
+      await runSweep();
+      const r = await rowOf(CONV_RETIRED);
+      expect(r?.status).toBe("PENDING");
+      expect(r?.attempts).toBe(0);
+    });
+
+    // Review round 8: an appointment hold is released as soon as the sweep selects the conversation,
+    // which it does only once no live appointment holds it (the appointment ended or was cancelled).
+    test("an appointment hold is re-armed once the sweep selects the conversation", async () => {
+      await seedIdle(CONV_HELD, INBOX_ON);
+      await enqueueJob({
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: keyOf(CONV_HELD),
+        runAt: new Date(Date.now() + 60 * 60_000),
+        payload: {
+          threadId: threadOf(CONV_HELD),
+          episode: await episodeOf(CONV_HELD),
+          deferredUnder: "appointment",
+        },
+        rearm: "same-work",
+        base: appDb,
+      });
+      await runSweep();
+      expect((await rowOf(CONV_HELD))?.runAt.getTime()).toBeLessThanOrEqual(
+        Date.now(),
+      );
     });
 
     // Found by the verifier: a model that keeps failing sends the row DEAD, which stamps nothing, and

@@ -164,23 +164,26 @@ async function sweepHandler(
           thread_id: string;
           agent_updated_at: Date;
           hours_updated_at: Date | null;
-          died_before: boolean;
+          other_episode: boolean;
           episode: string;
         }>
       >`
       SELECT c.thread_id,
              a.updated_at AS agent_updated_at,
              h.updated_at AS hours_updated_at,
-             -- A row that went DEAD and is selected anyway died in an EARLIER episode (the NOT EXISTS
-             -- below keeps out one that died in this one), so the arm is new work, with a fresh budget.
+             -- A row armed for another episode (or before episodes were written) spent its budget on
+             -- that one, whether it ended DEAD or was retired by a reply with its attempts still
+             -- counted, so the arm is new work, with a fresh budget. A DEAD row of THIS episode never
+             -- gets here: the NOT EXISTS below keeps the conversation out.
              EXISTS (
                SELECT 1
                  FROM scheduler_jobs jd
                 WHERE jd.tenant_id = c.tenant_id
                   AND jd.kind = 'FOLLOWUP'
                   AND jd.dedupe_key = 'followup:' || c.thread_id
-                  AND jd.status = 'DEAD'
-             ) AS died_before,
+                  AND jd.payload->>'episode' IS DISTINCT FROM
+                        (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
+             ) AS other_episode,
              -- The episode, as followUpEpisodeKey() writes it: the silence start in epoch ms.
              (floor(extract(epoch from GREATEST(c.last_inbound_at, c.last_replied_at)) * 1000))::bigint::text
                AS episode
@@ -349,10 +352,10 @@ async function sweepHandler(
       // keeps failing five fresh attempts every minute forever. A follow-up that DID go out
       // completes, which is what clears the count for the next episode.
       //
-      // Except over a row that died in an earlier episode: its budget was spent on that one, and
-      // keeping it would dead-letter this episode on its first transient failure, after which the
-      // exclusion above would keep it out for good (review round 6).
-      rearm: t.died_before ? "new-work" : "same-work",
+      // Except over a row of an earlier episode: its budget was spent on that one, and keeping it
+      // would dead-letter this episode on its first transient failure, after which the exclusion
+      // above would keep it out for good (review rounds 6 and 8).
+      rearm: t.other_episode ? "new-work" : "same-work",
       payload: { threadId: t.thread_id, episode: t.episode },
       // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
       // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
@@ -393,6 +396,8 @@ export function followUpConfigVersion(
 // A deferral that does not depend on the configuration (a retry backoff, a turn in flight, a live
 // decline) says so, and is kept whatever the configuration does.
 const BACKOFF_DEFERRAL = "backoff";
+// An appointment hold, which the sweep re-arms whenever it selects the conversation (see the hold).
+const APPOINTMENT_HOLD = "appointment";
 
 // The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral is
 // kept only when it says why it is safe to keep: a backoff, or a version that is still current. One
@@ -599,10 +604,11 @@ export async function followUpHandler(
       return {
         outcome: "reschedule",
         runAt: new Date(Date.now() + APPOINTMENT_BACKOFF_MS),
-        // Marked with the configuration version, not as a backoff: whether an appointment holds the
-        // follow-up is a setting (the pause and its exemption), and lifting it must not wait out the
-        // hold (review round 6).
-        payload: { ...job.payload, deferredUnder: ctx.configVersion },
+        // Never kept by the sweep: it selects a conversation only when no live appointment holds it
+        // (or the agent is exempt), so a selected conversation is one whose hold has lifted, by the
+        // appointment ending or by the pause setting changing, and the hold must not be waited out
+        // (review rounds 6 and 8). While the appointment is live the sweep does not reach it.
+        payload: { ...job.payload, deferredUnder: APPOINTMENT_HOLD },
       };
     }
   }

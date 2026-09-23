@@ -790,6 +790,52 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     });
   });
 
+  test("a slow portal of many pages is cut by the listing deadline, not per page", async () => {
+    await configure();
+    const many: Art[] = Array.from({ length: 330 }, (_, i) => ({
+      id: 301 + i,
+      title: `Artigo ${301 + i}`,
+      content: `MARCADOR-${301 + i}`,
+    }));
+    const inner = portal({ articles: () => many });
+    const slow = (async (u: string, init?: RequestInit) => {
+      await Bun.sleep(150);
+      return inner(u, init);
+    }) as unknown as typeof fetch;
+    const t0 = Date.now();
+    const r = await syncKnowledgeSource(tenantId, kb, {
+      base: appDb,
+      fetchImpl: slow,
+      assertSafe: allowAll,
+      timeoutMs: 10_000,
+      deadlineMs: 400,
+    });
+    expect(r).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(await getSource(ctx(), kb, appDb)).toMatchObject({
+      lastStatus: "error",
+    });
+    expect(await synced()).toHaveLength(0);
+    // And a single page that stalls is cut at what is left of the deadline, not at its own timeout.
+    const hung = (async (_u: string, init?: RequestInit) =>
+      new Promise<Response>((_, reject) =>
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        ),
+      )) as unknown as typeof fetch;
+    const t1 = Date.now();
+    expect(
+      await syncKnowledgeSource(tenantId, kb, {
+        base: appDb,
+        fetchImpl: hung,
+        assertSafe: allowAll,
+        timeoutMs: 10_000,
+        deadlineMs: 300,
+      }),
+    ).toBeNull();
+    expect(Date.now() - t1).toBeLessThan(2_000);
+  });
+
   test("two syncs at once create each document once", async () => {
     await configure();
     const f = portal({ articles: () => BASIC });
@@ -1041,6 +1087,7 @@ describe("knowledge source input (issue #794)", () => {
     [{ ...good, intervalMinutes: 1 }, "intervalMinutes"],
     [{ ...good, baseUrl: "https://op:segredo@ajuda.x.com.br" }, "baseUrl"],
     [{ ...good, baseUrl: "not a url" }, "baseUrl"],
+    [{ ...good, baseUrl: "https://1.1.1.1/\u0000" }, "baseUrl"],
     [{ ...good, baseUrl: "" }, "baseUrl"],
   ])("refuses %p on %s", async (input, field) => {
     await expect(parseSourceInput(input, allowAll)).rejects.toMatchObject({

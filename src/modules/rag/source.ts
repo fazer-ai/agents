@@ -27,6 +27,7 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   createDocument,
   deleteDocument,
+  refuseUnstorable,
   SourceChangedError,
   type SourceFence,
   updateDocument,
@@ -82,6 +83,10 @@ const PAGE_SIZE = 100;
 // and a listing that never ends (a portal that ignores `page`) must not loop forever.
 const MAX_PAGES = 50;
 const FETCH_TIMEOUT_MS = 15_000;
+// The whole listing, not each page: a run is awaited by the scheduler tick every shared-lane job
+// waits on (reminders, follow-ups, every tenant's), so a slow portal of many pages must not be able
+// to hold it for pages × the per-page timeout.
+const LISTING_DEADLINE_MS = 60_000;
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/;
 const LOCALE = /^[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,8})?$/;
 
@@ -115,6 +120,10 @@ export async function parseSourceInput(
   if (typeof input.baseUrl !== "string" || input.baseUrl.trim() === "") {
     throw invalid("baseUrl is required", "baseUrl");
   }
+  // The string that is KEPT, held to what the column stores: the URL parser below drops a trailing
+  // control character before it validates, so a NUL would pass it and then fail at the database,
+  // after a preview had already said yes.
+  refuseUnstorable([["baseUrl", input.baseUrl]]);
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
   // A portal's listing is public, so a URL that carries a credential is a credential pasted by
   // mistake: refused rather than stored, shown back on every read, and fetched with.
@@ -395,7 +404,9 @@ export async function fetchPortalArticles(
   fetchImpl: typeof fetch = fetch,
   assertSafe: AssertSafe = assertSafeOutboundUrl,
   timeoutMs: number = FETCH_TIMEOUT_MS,
+  deadlineMs: number = LISTING_DEADLINE_MS,
 ): Promise<PortalArticle[]> {
+  const deadline = Date.now() + deadlineMs;
   const articles = new Map<number, PortalArticle>();
   // Every id the portal listed, kept or not (a draft, an untitled one): what its count counts.
   const listed = new Set<unknown>();
@@ -406,8 +417,14 @@ export async function fetchPortalArticles(
     // page 1 can resolve privately for page 2 (the embedding client asks per request for the same
     // reason).
     await assertSafe(url);
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      throw new Error(
+        `portal listing did not finish within ${deadlineMs / 1000}s (page ${page})`,
+      );
+    }
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, left));
     let body: { payload?: unknown; meta?: { articles_count?: unknown } };
     // The timer covers the body too: a portal that sends its headers and then stalls would otherwise
     // hold the run, and with it the scheduler tick every other shared-lane job waits on.
@@ -526,6 +543,7 @@ export async function syncKnowledgeSource(
     fetchImpl?: typeof fetch;
     assertSafe?: AssertSafe;
     timeoutMs?: number;
+    deadlineMs?: number;
   } = {},
 ): Promise<SyncResult | null> {
   const base = deps.base ?? basePrisma;
@@ -551,6 +569,7 @@ export async function syncKnowledgeSource(
       deps.fetchImpl,
       deps.assertSafe,
       deps.timeoutMs,
+      deps.deadlineMs,
     );
   } catch (err) {
     await recordRun(base, ctx, fence, "error", sanitizeErrorMessage(err));

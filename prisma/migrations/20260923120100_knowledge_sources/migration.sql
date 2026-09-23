@@ -3,16 +3,17 @@
 --
 -- Wrapped in a transaction for the same reason as 20260917180000: a failure between the CREATE
 -- TABLE and the FORCE ROW LEVEL SECURITY below would leave a tenant-scoped table that does not bind
--- its own owner. Nothing here builds an index concurrently.
+-- its own owner. The two ADD COLUMNs are nullable without a default, so they change the catalog and
+-- rewrite nothing.
 BEGIN;
 
 ALTER TABLE "knowledge_documents" ADD COLUMN "external_id" TEXT;
 ALTER TABLE "knowledge_documents" ADD COLUMN "source_url" TEXT;
 
--- Every existing document has a NULL external id, and NULLs never collide, so this builds over
--- today's rows without a conflict and without a backfill.
-CREATE UNIQUE INDEX "knowledge_documents_knowledge_base_id_external_id_key"
-  ON "knowledge_documents"("knowledge_base_id", "external_id");
+-- The unique index on (knowledge_base_id, external_id) is NOT here: built inside this transaction it
+-- would scan a populated `knowledge_documents` under the ACCESS EXCLUSIVE these ALTERs hold, and the
+-- old container still serving searches would stop. It is built CONCURRENTLY by the next migration,
+-- and asserted by the one after it (.claude/rules/prisma.md).
 
 CREATE TABLE "knowledge_sources" (
     "id" BIGSERIAL NOT NULL,

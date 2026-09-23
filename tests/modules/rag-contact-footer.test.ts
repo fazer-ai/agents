@@ -304,9 +304,10 @@ describe.skipIf(!dbUp)("the switch, stored and read by the search", () => {
       stripContactFooters: true,
       atDocumentEnd: false,
     });
+    // A base with the switch off never pays for the document read: the tail is not even asked.
     expect(by(kbOff, TAIL)).toMatchObject({
       stripContactFooters: false,
-      atDocumentEnd: true,
+      atDocumentEnd: false,
     });
     // Same call, two bases: only the one that asked loses its footer.
     const passages = rows.map(passageOf);

@@ -91,6 +91,8 @@ export async function searchChunks(
   // `atDocumentEnd`: the chunker trims each chunk, and splits on paragraphs first, so the document's
   // last chunk is exactly the tail of its (right-trimmed) text. Any mismatch (a document mid-reindex,
   // an unusual whitespace) reads as "not the tail", which only means nothing is stripped.
+  // Asked only of a base that switched stripping on: the comparison reads the whole document, which
+  // can be millions of characters, and on every other base its answer is thrown away.
   const rows = await db.$queryRaw<ChunkRow[]>`
     SELECT c.id,
            c.knowledge_base_id AS "knowledgeBaseId",
@@ -101,7 +103,9 @@ export async function searchChunks(
            c.metadata,
            (c.embedding <=> ${vec}::vector) AS distance,
            kb.strip_contact_footers AS "stripContactFooters",
-           right(rtrim(d.content, E' \t\r\n'), length(c.content)) = c.content AS "atDocumentEnd"
+           CASE WHEN kb.strip_contact_footers
+                THEN right(rtrim(d.content, E' \t\r\n'), length(c.content)) = c.content
+                ELSE false END AS "atDocumentEnd"
     FROM knowledge_chunks c
     JOIN knowledge_bases kb ON kb.id = c.knowledge_base_id
     JOIN knowledge_documents d ON d.id = c.document_id

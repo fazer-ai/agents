@@ -8,12 +8,14 @@ import {
   expect,
   test,
 } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cleanup, render, screen } from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import {
   type ContactAuthRuleForm,
   contactAuthRuleInvalid,
   contactAuthRulePayload,
+  contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthRuleForm,
 } from "@/client/pages/agents/contactAuthRuleForm";
@@ -70,6 +72,35 @@ describe("the rule's form state", () => {
   test("no rule saves as null, which clears a stored one", () => {
     expect(contactAuthRulePayload(EMPTY_CONTACT_AUTH_RULE_FORM)).toBeNull();
     expect(readContactAuthRuleForm(undefined).ruleKind).toBe("");
+  });
+
+  test("switching the gate off never sends an invalid draft", () => {
+    const emptied = { ...EMPTY_CONTACT_AUTH_RULE_FORM, ruleKind: "allowlist" };
+    // Off: the draft the server would refuse is cleared, so the switch-off itself goes through.
+    expect(contactAuthRuleToSave(emptied, false)).toBeNull();
+    // On: sent as it is, and the save is blocked before it gets there.
+    expect(contactAuthRuleToSave(emptied, true)).toEqual({
+      kind: "allowlist",
+      phones: [],
+      identifiers: [],
+    });
+    // Off with a valid rule: kept, so turning the gate back on later finds it.
+    const valid = { ...emptied, rulePhones: "+55 11 98888-7777" };
+    expect(contactAuthRuleToSave(valid, false)).toEqual(
+      contactAuthRulePayload(valid),
+    );
+  });
+
+  // Checked on the source for the reason tests/client/contact-auth-ttl-zero.test.ts gives: rendering
+  // the whole editor page pulls auth, theme, toast and a live catalog.
+  test("and the Behavior save is the one that goes through it", () => {
+    const src = readFileSync(
+      "src/client/pages/agents/AgentEditorPage.tsx",
+      "utf8",
+    );
+    expect(src).toContain(
+      "rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled)",
+    );
   });
 
   test("the editor refuses exactly what the server refuses", () => {

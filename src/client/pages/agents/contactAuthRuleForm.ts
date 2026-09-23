@@ -82,3 +82,16 @@ export function contactAuthRuleInvalid(f: ContactAuthRuleForm): boolean {
   const payload = contactAuthRulePayload(f);
   return payload !== null && parseContactAuthRule(payload) === null;
 }
+
+// What the Behavior save writes for the rule. With the gate ON an invalid draft is sent as it is, and
+// the save is blocked before it gets there. With the gate OFF the rule's controls are hidden and the
+// save is open, so an invalid draft (a list emptied, an attribute with no key) would be refused by
+// the server and take the switch-off down with it: the gate the operator was turning off would stay
+// on. That draft is cleared instead, which is what emptying the list said.
+export function contactAuthRuleToSave(
+  f: ContactAuthRuleForm,
+  enabled: boolean,
+): Record<string, unknown> | null {
+  if (!enabled && contactAuthRuleInvalid(f)) return null;
+  return contactAuthRulePayload(f);
+}

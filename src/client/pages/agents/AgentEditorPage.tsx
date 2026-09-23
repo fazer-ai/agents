@@ -120,7 +120,7 @@ import {
 } from "./ChannelRedirectTab";
 import { ChannelsTab } from "./ChannelsTab";
 import {
-  contactAuthRulePayload,
+  contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthRuleForm,
 } from "./contactAuthRuleForm";
@@ -1725,7 +1725,7 @@ function AgentEditor() {
       },
       contactAuth: {
         enabled: contactAuth.enabled,
-        rule: contactAuthRulePayload(contactAuth),
+        rule: contactAuthRuleToSave(contactAuth, contactAuth.enabled),
         url: contactAuth.url.trim() || null,
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,

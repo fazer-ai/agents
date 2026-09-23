@@ -3589,6 +3589,54 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([]);
   });
 
+  // Review round 3: a second transfer that throws must not erase the first one, which landed.
+  test("issue #717: a failed second transfer does not undo the first one's exemption", async () => {
+    await seedConversation(9723, null);
+    const calls: Array<[string, number, string]> = [];
+    const inner = await ownershipClient(calls)();
+    let toggles = 0;
+    const client = {
+      ...inner,
+      toggleStatus: async (
+        c: number,
+        status: Parameters<ChatwootClient["toggleStatus"]>[1],
+      ) => {
+        toggles++;
+        if (toggles > 1) throw new Error("chatwoot 500");
+        return inner.toggleStatus(c, status);
+      },
+    } as unknown as ChatwootClient;
+    const handoff = (id: string) =>
+      new AIMessage({
+        content: "",
+        tool_calls: [
+          { name: "handoff_to_human", args: { customerMessage: "" }, id },
+        ],
+      });
+    const m = scriptedToolModel([
+      { message: handoff("call_717_h1") },
+      { message: handoff("call_717_h2") },
+      { message: labelsCall("call_717_l3") },
+      { message: new AIMessage("") },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9723 }),
+      base: appDb,
+      deps: {
+        makeModel: () => m as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.map(([op]) => op)).toEqual([
+      "toggleStatus",
+      "setConversationLabels",
+    ]);
+  });
+
   test("issue #717: after this turn's own handoff, its next tool call still runs", async () => {
     await seedConversation(9719, null);
     const calls: Array<[string, number, string]> = [];

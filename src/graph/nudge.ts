@@ -112,6 +112,7 @@ import {
   type HandoffTurnState,
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
+  ownerChangedByTurn,
 } from "./tools/native";
 
 // agentNudge consumption: an inbound domain event (correlated to a conversation thread) is
@@ -905,7 +906,7 @@ export async function runAgentNudge(
     // A follow-up that may only NOTE started on a conversation that is not the bot's, and keeps
     // doing what it did: what the fence detects is the owner changing during the run.
     ownedAtStart: canMessagePre,
-    ownerChangedByThisTurn: () => handoffState.ownerChangedByThisTurn === true,
+    ownerChangedByThisTurn: () => ownerChangedByTurn(handoffState),
     ownsNow: mirrorOwnsIt,
     conversationId,
   }).ask;

@@ -132,6 +132,7 @@ import {
   type HandoffTurnState,
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
+  ownerChangedByTurn,
   type TurnState,
   turnDeliveredToCustomer,
   turnReachedTheCustomer,
@@ -1112,8 +1113,7 @@ async function runTurnBody(
     {
       // Unreadable is not ours: the fence then never asks, so a failing read lets the tools run.
       ownedAtStart: await ownershipNow().catch(() => false),
-      ownerChangedByThisTurn: () =>
-        handoffState.ownerChangedByThisTurn === true,
+      ownerChangedByThisTurn: () => ownerChangedByTurn(handoffState),
       // The shared reader, which carries the closed gate's detail with its "no".
       ownsNow: () =>
         conversationOwnershipNow({

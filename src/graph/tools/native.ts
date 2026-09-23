@@ -151,12 +151,19 @@ export interface HandoffTurnState {
   // toolset, and absent is exactly what it means: nobody declared anything.
   declinedToSpeak?: boolean;
   // THIS turn changed the conversation's owner itself: its transfer, or the nudge's IMMEDIATE close
-  // (the reactive turn defers its close past the graph). Set BEFORE the call to Chatwoot and cleared
-  // if the call throws, because the calls of one batch run concurrently and a label's ask can read the
-  // mirror the status webhook already moved while the transfer's own call has not returned. The tool
-  // boundary's ownership question reads it: a status the turn wrote is not a person taking over
-  // (issue #717, review rounds 1 and 2).
-  ownerChangedByThisTurn?: boolean;
+  // (the reactive turn defers its close past the graph). Two marks, because they answer different
+  // things: `ownerChanged` is set when a change LANDED and never cleared, and `ownerChangesInFlight`
+  // counts the calls to Chatwoot still out. The calls of one batch run concurrently, so a label's ask
+  // can read the mirror the status webhook already moved while the transfer's own call has not
+  // returned; and a later call that throws must not erase a change that already landed. The tool
+  // boundary's ownership question reads both (`ownerChangedByTurn`): a status the turn wrote is not a
+  // person taking over (issue #717, review rounds 1 to 3).
+  ownerChanged?: boolean;
+  ownerChangesInFlight?: number;
+}
+
+export function ownerChangedByTurn(state: HandoffTurnState): boolean {
+  return state.ownerChanged === true || (state.ownerChangesInFlight ?? 0) > 0;
 }
 
 // The status change a tool of this turn makes on purpose, marked from before the call so the tool
@@ -165,12 +172,14 @@ async function ownStatusChange(
   ctx: { handoffState?: HandoffTurnState },
   write: () => Promise<unknown>,
 ): Promise<void> {
-  if (ctx.handoffState) ctx.handoffState.ownerChangedByThisTurn = true;
+  const state = ctx.handoffState;
+  if (state) state.ownerChangesInFlight = (state.ownerChangesInFlight ?? 0) + 1;
   try {
     await write();
-  } catch (e) {
-    if (ctx.handoffState) ctx.handoffState.ownerChangedByThisTurn = false;
-    throw e;
+    if (state) state.ownerChanged = true;
+  } finally {
+    if (state)
+      state.ownerChangesInFlight = (state.ownerChangesInFlight ?? 1) - 1;
   }
 }
 

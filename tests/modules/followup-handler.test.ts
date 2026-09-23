@@ -719,10 +719,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     // Held (rescheduled), NOT nudged and NOT ended — so it resumes once the appointment passes.
     expect(result.outcome).toBe("reschedule");
-    // Marked as a backoff, so the sweep leaves it alone instead of pulling it back (issue #796).
+    // Marked with the configuration version and not as a backoff: the pause is a setting, and
+    // lifting it re-arms the hold instead of waiting it out (issue #796).
     expect(
       (result as { payload?: Record<string, unknown> }).payload?.deferredUnder,
-    ).toBe("backoff");
+    ).toMatch(/^\d+:\d+$/);
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect(await lastFollowUpOf(1012)).toBeNull();

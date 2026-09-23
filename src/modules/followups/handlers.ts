@@ -164,11 +164,22 @@ async function sweepHandler(
           thread_id: string;
           agent_updated_at: Date;
           hours_updated_at: Date | null;
+          died_before: boolean;
         }>
       >`
       SELECT c.thread_id,
              a.updated_at AS agent_updated_at,
-             h.updated_at AS hours_updated_at
+             h.updated_at AS hours_updated_at,
+             -- A row that went DEAD and is selected anyway died in an EARLIER episode (the NOT EXISTS
+             -- below keeps out one that died in this one), so the arm is new work, with a fresh budget.
+             EXISTS (
+               SELECT 1
+                 FROM scheduler_jobs jd
+                WHERE jd.tenant_id = c.tenant_id
+                  AND jd.kind = 'FOLLOWUP'
+                  AND jd.dedupe_key = 'followup:' || c.thread_id
+                  AND jd.status = 'DEAD'
+             ) AS died_before
       FROM conversations c
       JOIN inboxes i ON i.id = c.inbox_id
       JOIN agents a ON a.id = i.agent_id
@@ -323,7 +334,11 @@ async function sweepHandler(
       // is the same episode being pushed again, and clearing the budget would hand a follow-up that
       // keeps failing five fresh attempts every minute forever. A follow-up that DID go out
       // completes, which is what clears the count for the next episode.
-      rearm: "same-work",
+      //
+      // Except over a row that died in an earlier episode: its budget was spent on that one, and
+      // keeping it would dead-letter this episode on its first transient failure, after which the
+      // exclusion above would keep it out for good (review round 6).
+      rearm: t.died_before ? "new-work" : "same-work",
       payload: { threadId: t.thread_id },
       // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
       // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
@@ -361,7 +376,7 @@ export function followUpConfigVersion(
 }
 
 // A deferral that does not depend on the configuration (a retry backoff, a turn in flight, a live
-// decline, an appointment hold) says so, and is kept whatever the configuration does.
+// decline) says so, and is kept whatever the configuration does.
 const BACKOFF_DEFERRAL = "backoff";
 
 // The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral is
@@ -561,7 +576,10 @@ export async function followUpHandler(
       return {
         outcome: "reschedule",
         runAt: new Date(Date.now() + APPOINTMENT_BACKOFF_MS),
-        payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+        // Marked with the configuration version, not as a backoff: whether an appointment holds the
+        // follow-up is a setting (the pause and its exemption), and lifting it must not wait out the
+        // hold (review round 6).
+        payload: { ...job.payload, deferredUnder: ctx.configVersion },
       };
     }
   }

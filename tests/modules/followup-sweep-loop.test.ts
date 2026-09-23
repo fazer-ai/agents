@@ -137,7 +137,13 @@ async function runSweep(): Promise<void> {
 async function rowOf(convId: number) {
   return suDb.schedulerJob.findFirst({
     where: { tenantId, kind: "FOLLOWUP", dedupeKey: keyOf(convId) },
-    select: { status: true, payload: true, runAt: true, claimSeq: true },
+    select: {
+      status: true,
+      payload: true,
+      runAt: true,
+      claimSeq: true,
+      attempts: true,
+    },
   });
 }
 
@@ -346,6 +352,10 @@ describe.skipIf(!dbUp)(
         rearm: "same-work",
         base: appDb,
       });
+      // A re-arm of the same episode keeps the budget it has been spending.
+      await suDb.$executeRaw`
+        UPDATE scheduler_jobs SET attempts = 2
+         WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DUE)}`;
       const before = Date.now();
       await runSweep();
       const kept = await rowOf(CONV_LATER);
@@ -354,6 +364,7 @@ describe.skipIf(!dbUp)(
       const due = await rowOf(CONV_DUE);
       expect(due?.payload).toEqual({ threadId: threadOf(CONV_DUE) });
       expect(due?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+      expect(due?.attempts).toBe(2);
     });
 
     // Review round 3: only a STEP-0 deferral is this episode's. Our own reply opens a new episode
@@ -429,7 +440,11 @@ describe.skipIf(!dbUp)(
          WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_BEFORE)}`;
       await runSweep();
       expect((await rowOf(CONV_DEAD_NOW))?.status).toBe("DEAD");
-      expect((await rowOf(CONV_DEAD_BEFORE))?.status).toBe("PENDING");
+      const revived = await rowOf(CONV_DEAD_BEFORE);
+      expect(revived?.status).toBe("PENDING");
+      // Review round 6: the budget was spent on the earlier episode, so this one starts with a fresh
+      // one instead of dead-lettering on its first transient failure.
+      expect(revived?.attempts).toBe(0);
     });
 
     // The cadence of a step longer than the cutoff: the handler reschedules to when the step is due,

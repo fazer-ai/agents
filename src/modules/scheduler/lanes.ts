@@ -100,6 +100,9 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Shared (issue #587): one Chatwoot send per rejected attachment, rare, and the customer already
   // waited out the channel's own failure report, so a tick's wait adds nothing felt.
   MEDIA_TEXT_FALLBACK: "shared",
+  // Shared (issue #794): one per knowledge source, every ten minutes, one paginated fetch and a
+  // reconcile. What it creates is embedded by RAG_INGEST jobs, which are the ones that spend.
+  KNOWLEDGE_SOURCE_SYNC: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -156,6 +159,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   OBSERVE: true,
   // One Chatwoot send, no model.
   MEDIA_TEXT_FALLBACK: false,
+  // A fetch and database writes; the embedding it causes is spent by the RAG_INGEST jobs it arms.
+  KNOWLEDGE_SOURCE_SYNC: false,
 };
 
 // How many OBSERVE rows one shared tick claims (issue #621): enough to keep the provider bound busy
@@ -227,6 +232,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // went out, and a redelivered failure webhook arms it `once`. Deleted, the next redelivery would
   // find no row and send the text again. Bounded by the channel's failure rate on media (~0.1%).
   MEDIA_TEXT_FALLBACK: false,
+  // One row per source, re-armed by its own reschedule: bounded by sources, reused forever.
+  KNOWLEDGE_SOURCE_SYNC: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -298,6 +305,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // `now`, so they are the oldest rows of the batch too: the population and the shape are the
   // recoveries' above, and so is the answer (review round 8).
   MEDIA_TEXT_FALLBACK: true,
+  // One per knowledge source, whatever the traffic.
+  KNOWLEDGE_SOURCE_SYNC: false,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -388,6 +397,10 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // `error`: the customer's reply was lost at the channel and the text that would replace it was
   // lost here too, with no way back for the operator but reading the conversation.
   MEDIA_TEXT_FALLBACK: "error",
+  // `warn`: the base keeps the last content it synced, the agent keeps answering from it, and the
+  // source records the failure where the operator reads it. A failed run does not reach here at all
+  // (the handler records it and reschedules); only a throw that escapes the handler does.
+  KNOWLEDGE_SOURCE_SYNC: "warn",
 };
 
 // HOW FAR APART ONE KIND'S RETRIES ARE, as the base of `backoffMs` in ./service.ts (issue #744).
@@ -432,6 +445,7 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   HUMAN_REPLY_RECOVERY: 60_000,
   OBSERVE: 2_000,
   MEDIA_TEXT_FALLBACK: 2_000,
+  KNOWLEDGE_SOURCE_SYNC: 2_000,
 };
 
 export function kindsInLane(

@@ -385,6 +385,42 @@ const TABLE: Record<string, Row> = {
     args: { approval_id: "abc" },
     why: "approval_id is not a number",
   },
+  knowledge_source_remove: {
+    args: { knowledge_base_id: NOPE },
+    why: "base does not exist",
+    pastOwnership:
+      "measured on a base that EXISTS with no source: the preview reads the source `deleteSource` reads, and both refuse.",
+  },
+  knowledge_source_set: {
+    args: {
+      knowledge_base_id: NOPE,
+      kind: "chatwoot_portal",
+      base_url: "https://1.1.1.1",
+      slug: "ajuda",
+      locale: "pt-BR",
+    },
+    why: "base does not exist",
+    pastOwnership:
+      "measured on a base that EXISTS: the preview runs `parseSourceInput`, the same parse the apply runs first, SSRF check included.",
+    also: [
+      {
+        args: {
+          knowledge_base_id: NOPE,
+          kind: "url_crawl",
+          base_url: "https://1.1.1.1",
+          slug: "ajuda",
+          locale: "pt-BR",
+        },
+        why: "a source kind that does not exist",
+      },
+    ],
+  },
+  knowledge_source_sync: {
+    args: { knowledge_base_id: NOPE },
+    why: "base does not exist",
+    pastOwnership:
+      "measured on a base that EXISTS with no source: the preview reads the source `requestSync` reads, and both refuse.",
+  },
   knowledge_update: {
     args: { knowledge_base_id: NOPE, name: "x" },
     why: "base does not exist",

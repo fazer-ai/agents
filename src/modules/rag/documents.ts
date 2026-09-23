@@ -7,7 +7,7 @@ import {
   EMBEDDING_BLOCK_KEY,
   type EmbeddingBlockReason,
 } from "@/lib/embedding-block";
-import { AppError, NotFoundError } from "@/lib/errors";
+import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -207,10 +207,44 @@ export interface CreateDocumentParams {
   knowledgeBaseId: bigint;
   title: string;
   text: string;
-  sourceType: "text" | "file" | "approval";
+  sourceType: "text" | "file" | "approval" | "chatwoot_portal";
   fileName?: string;
   mimeType?: string;
+  // Set only by a knowledge source's sync (issue #794): the upstream item this document mirrors, and
+  // its public URL. Unique per base, so a second writer of the same item gets P2002, not a copy.
+  externalId?: string;
+  sourceUrl?: string;
   base?: PrismaClient;
+}
+
+// A synced document is the source's to change (issue #794): an edit through the document API or an
+// MCP tool would be overwritten on the next sync, silently or not depending on timing, so it is
+// refused while the base still has a source. With the source removed the documents keep their
+// external ids (so a source put back readopts them) and become ordinary documents again.
+export const SYNCED_DOCUMENT_REFUSAL =
+  "This document is synced from the knowledge base's help center portal and would be overwritten on the next sync; fix the article in the portal instead";
+
+// The same question for a caller that previews before writing (the MCP tools): a preview that said
+// "ok" for a write the apply then refuses is the #510 shape.
+export async function assertDocumentNotSynced(
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) => refuseSyncedWrite(db, id));
+}
+
+async function refuseSyncedWrite(db: ScopedDb, id: bigint): Promise<void> {
+  const doc = await db.knowledgeDocument.findUnique({
+    where: { id },
+    select: {
+      externalId: true,
+      kb: { select: { source: { select: { id: true } } } },
+    },
+  });
+  if (doc?.externalId != null && doc.kb.source) {
+    throw new ConflictError(SYNCED_DOCUMENT_REFUSAL);
+  }
 }
 
 // What a document's audit row carries, and the one thing it never does.
@@ -332,6 +366,8 @@ export async function createDocument(
         fileName: params.fileName,
         mimeType: params.mimeType,
         content: params.text,
+        externalId: params.externalId,
+        sourceUrl: params.sourceUrl,
         status: "PENDING",
       },
       select: { id: true, status: true },
@@ -378,6 +414,8 @@ interface DocumentListRow {
   status: string;
   error: string | null;
   chunkCount: number | null;
+  externalId: string | null;
+  sourceUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
   contentChars: number;
@@ -442,6 +480,8 @@ export async function listDocuments(
              status,
              error,
              chunk_count      AS "chunkCount",
+             external_id      AS "externalId",
+             source_url       AS "sourceUrl",
              created_at       AS "createdAt",
              updated_at       AS "updatedAt",
              length(content)  AS "contentChars"
@@ -478,6 +518,8 @@ export async function getDocument(
         status: true,
         error: true,
         chunkCount: true,
+        externalId: true,
+        sourceUrl: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -491,8 +533,10 @@ export async function deleteDocument(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
+  opts: { bySource?: boolean } = {},
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    if (!opts.bySource) await refuseSyncedWrite(db, id);
     // NOTE: Read with the row LOCKED before the delete, so the row describes the document actually
     // removed rather than a version an edit replaced in between.
     const existing = await readDocForAudit(db, id, null);
@@ -511,6 +555,10 @@ export async function deleteDocument(
 export interface UpdateDocumentParams {
   title?: string;
   text?: string;
+  // Sync-only (issue #794): the item's public URL moved (a renamed slug), and the write is the
+  // source's own, so the synced-document refusal does not apply.
+  sourceUrl?: string | null;
+  bySource?: boolean;
 }
 
 // Edit a document's title and/or text. Changing the text RE-INGESTS it (status → PENDING → the
@@ -525,7 +573,9 @@ export async function updateDocument(
   const tenantId = ctx.tenantId as bigint;
   const hasTitle = params.title !== undefined;
   const hasText = params.text !== undefined;
-  if (!hasTitle && !hasText) throw new AppError("nothing to update", 400);
+  const hasUrl = params.bySource === true && params.sourceUrl !== undefined;
+  if (!hasTitle && !hasText && !hasUrl)
+    throw new AppError("nothing to update", 400);
   // Same rule as the create, and asked here too because an edit is a write of its own: the create's
   // check says nothing about the text an update carries.
   refuseUnstorable([
@@ -534,6 +584,7 @@ export async function updateDocument(
   ]);
 
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
+    if (!params.bySource) await refuseSyncedWrite(db, id);
     // NOTE: LOCKED, because this reading is both the reingest decision and the row's `before`, and
     // two overlapping edits would otherwise each compare against a text the other one replaced. The
     // comparison happens in the DATABASE, where the old text already is: what comes back is whether
@@ -552,6 +603,7 @@ export async function updateDocument(
       where: { id },
       data: {
         ...(hasTitle ? { title: params.title } : {}),
+        ...(hasUrl ? { sourceUrl: params.sourceUrl } : {}),
         ...(reingest
           ? { content: params.text, status: "PENDING", error: null }
           : {}),

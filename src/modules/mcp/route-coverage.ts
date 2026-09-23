@@ -172,6 +172,11 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/knowledge/bases/:id": { gap: "one knowledge base by id" },
   "PATCH /v1/knowledge/bases/:id": { tool: "knowledge_update" },
   "DELETE /v1/knowledge/bases/:id": { tool: "knowledge_delete" },
+  "PUT /v1/knowledge/bases/:id/source": { tool: "knowledge_source_set" },
+  "DELETE /v1/knowledge/bases/:id/source": { tool: "knowledge_source_remove" },
+  "POST /v1/knowledge/bases/:id/source/sync": {
+    tool: "knowledge_source_sync",
+  },
   "GET /v1/knowledge/embedding-block": { none: EMBEDDING_BLOCK },
   "GET /v1/knowledge/bases/:id/documents": { tool: "knowledge_documents_list" },
   "POST /v1/knowledge/bases/:id/documents": {

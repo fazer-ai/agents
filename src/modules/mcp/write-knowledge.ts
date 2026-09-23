@@ -4,6 +4,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
 import {
   assertChunkingUpdatable,
+  assertDocumentNotSynced,
   assertDocumentRetryable,
   createDocument,
   deleteDocument,
@@ -24,6 +25,13 @@ import {
   rejectApprovalItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import {
+  deleteSource,
+  getSource,
+  parseSourceInput,
+  requestSync,
+  setSource,
+} from "@/modules/rag/source";
 import { vaultFillUrl } from "./console-links";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
@@ -314,6 +322,7 @@ export async function knowledgeDocumentDelete(
     const target = `knowledge_document:${id}`;
     const beforeProj = { id: String(current.id), title: current.title };
     if (args.dry_run !== false) {
+      await assertDocumentNotSynced(ctx, id, base);
       return ok({
         dryRun: true,
         action: "delete",
@@ -364,6 +373,7 @@ export async function knowledgeDocumentUpdate(
     const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;
     if (args.dry_run !== false) {
+      await assertDocumentNotSynced(ctx, id, base);
       return ok({
         dryRun: true,
         action: "update",
@@ -610,6 +620,118 @@ export async function knowledgeEdit(
       base,
     });
     return ok({ dryRun: false, applied: true, target, outcome });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// The base's help center source (issue #794): the twins of PUT/DELETE /v1/knowledge/bases/:id/source
+// and POST .../source/sync. Same spine: the preview asks the questions the apply asks (the input is
+// parsed, the SSRF check included, and the base must exist) and changes nothing.
+export async function knowledgeSourceSet(
+  principal: VerifiedToken,
+  args: {
+    knowledge_base_id: string;
+    kind: string;
+    base_url: string;
+    slug: string;
+    locale: string;
+    exclude_ids?: number[];
+    interval_minutes?: number;
+    dry_run?: boolean;
+  },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
+  if (typeof id !== "bigint") return id;
+  const target = `knowledge_base:${id}`;
+  const input = {
+    kind: args.kind,
+    baseUrl: args.base_url,
+    slug: args.slug,
+    locale: args.locale,
+    excludeIds: args.exclude_ids,
+    intervalMinutes: args.interval_minutes,
+  };
+  try {
+    if (args.dry_run !== false) {
+      await getKnowledgeBase({ ctx, id, base });
+      const parsed = await parseSourceInput(input);
+      const current = await getSource(ctx, id, base);
+      return ok({
+        dryRun: true,
+        action: current ? "replace_source" : "set_source",
+        target,
+        current,
+        after: {
+          kind: parsed.kind,
+          ...parsed.config,
+          intervalMinutes: parsed.intervalMinutes,
+        },
+        note: "Arms a sync right away. Documents without an external id are never touched.",
+      });
+    }
+    const source = await setSource(ctx, id, input, base);
+    return ok({ dryRun: false, applied: true, target, source });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function knowledgeSourceSync(
+  principal: VerifiedToken,
+  args: { knowledge_base_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
+  if (typeof id !== "bigint") return id;
+  const target = `knowledge_base:${id}`;
+  try {
+    if (args.dry_run !== false) {
+      await getKnowledgeBase({ ctx, id, base });
+      const current = await getSource(ctx, id, base);
+      if (!current) return err("knowledge base has no source to sync");
+      return ok({ dryRun: true, action: "sync_source", target, current });
+    }
+    await requestSync(ctx, id, base);
+    return ok({ dryRun: false, applied: true, target });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function knowledgeSourceRemove(
+  principal: VerifiedToken,
+  args: { knowledge_base_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
+  if (typeof id !== "bigint") return id;
+  const target = `knowledge_base:${id}`;
+  try {
+    if (args.dry_run !== false) {
+      await getKnowledgeBase({ ctx, id, base });
+      const current = await getSource(ctx, id, base);
+      if (!current) return err("knowledge base has no source");
+      return ok({
+        dryRun: true,
+        action: "remove_source",
+        target,
+        current,
+        note: "Stops the sync. The synced documents stay, with their external ids.",
+      });
+    }
+    await deleteSource(ctx, id, base);
+    return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
   }

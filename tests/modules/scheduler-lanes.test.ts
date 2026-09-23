@@ -105,6 +105,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // every ingestion row armed before it, five rows a tick for the whole install.
   OBSERVE: "observe",
   MEDIA_TEXT_FALLBACK: "shared",
+  KNOWLEDGE_SOURCE_SYNC: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -140,6 +141,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OBSERVE: true,
   MEDIA_TEXT_FALLBACK: false,
+  KNOWLEDGE_SOURCE_SYNC: false,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -176,6 +178,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // with a lane of its own (issue #621) no claim that holds a fixed-rate kind ever holds it.
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: true,
+  KNOWLEDGE_SOURCE_SYNC: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -202,6 +205,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   SPEND_CEILING_POLL: false,
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: false,
+  KNOWLEDGE_SOURCE_SYNC: false,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -234,6 +238,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   SPEND_CEILING_POLL: "error",
   OBSERVE: "warn",
   MEDIA_TEXT_FALLBACK: "error",
+  KNOWLEDGE_SOURCE_SYNC: "warn",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

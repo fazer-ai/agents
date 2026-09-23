@@ -61,6 +61,9 @@ export interface ChunkHit {
   // open the exact document that grounded the answer; never sent to the customer.
   documentId: bigint;
   documentTitle: string;
+  // The public URL of the item a synced document mirrors (issue #794); null on every other document.
+  // Shown to the model next to the passage, so the agent can send the link instead of paraphrasing.
+  documentUrl: string | null;
   content: string;
   // Free-form chunk metadata (title/sourceUrl/… when the ingest supplied them). Used to build the
   // structured source ref for the playground trace; never sent to the customer.
@@ -103,6 +106,7 @@ export async function searchChunks(
            kb.name AS "knowledgeBaseName",
            c.document_id AS "documentId",
            d.title AS "documentTitle",
+           d.source_url AS "documentUrl",
            c.content,
            c.metadata,
            (c.embedding <=> ${vec}::vector) AS distance,

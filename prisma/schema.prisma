@@ -73,6 +73,7 @@ enum SchedulerJobKind {
   SPEND_CEILING_POLL
   OBSERVE
   MEDIA_TEXT_FALLBACK
+  KNOWLEDGE_SOURCE_SYNC
 }
 
 enum SchedulerJobStatus {
@@ -131,6 +132,7 @@ model Tenant {
   knowledgeBases                KnowledgeBase[]
   knowledgeChunks               KnowledgeChunk[]
   knowledgeDocuments            KnowledgeDocument[]
+  knowledgeSources              KnowledgeSource[]
   playgroundSessions            PlaygroundSession[]
   playgroundMedia               PlaygroundMedia[]
   playgroundTurnNotes           PlaygroundTurnNote[]
@@ -338,32 +340,32 @@ model ChatwootAgentBot {
 // event) → dedupes transport retries; semantic dedup (no double reply) is the per-conversation
 // advisory lock + attribution re-read in the runtime, not this row.
 model ChatwootWebhookDelivery {
-  id                  BigInt                @id @default(autoincrement())
-  tenantId            BigInt                @map("tenant_id")
-  chatwootInstanceId  BigInt                @map("chatwoot_instance_id")
-  deliveryId          String                @map("delivery_id")
-  event               String
-  status              InboundDeliveryStatus @default(PENDING)
-  attempts            Int                   @default(0)
-  receivedAt          DateTime              @default(now()) @map("received_at")
-  processedAt         DateTime?             @map("processed_at")
+  id                         BigInt                @id @default(autoincrement())
+  tenantId                   BigInt                @map("tenant_id")
+  chatwootInstanceId         BigInt                @map("chatwoot_instance_id")
+  deliveryId                 String                @map("delivery_id")
+  event                      String
+  status                     InboundDeliveryStatus @default(PENDING)
+  attempts                   Int                   @default(0)
+  receivedAt                 DateTime              @default(now()) @map("received_at")
+  processedAt                DateTime?             @map("processed_at")
   // When the CURRENT attempt claimed this row (the tx1 CAS `PENDING -> PROCESSING`). The staleness
   // clock for a row being worked, and it has to be separate from `receivedAt`: a redelivery is
   // deliberately allowed to claim a row stranded on PENDING (see `recordAndProcessChatwootDelivery`),
   // and measuring that live attempt from the ORIGINAL receipt makes it look abandoned the moment it
   // starts. NULL = never claimed, so the row is still measured from receipt.
-  claimedAt           DateTime?             @map("claimed_at")
+  claimedAt                  DateTime?             @map("claimed_at")
   // The Chatwoot display id this delivery was about. What the stranded-delivery sweep files its
   // report against, and deliberately the only thing stored: an id, never the event body, so nothing
   // here can hold what the customer wrote. Null on an event that names no conversation, and on every
   // row written before this column existed.
-  conversationId      Int?                  @map("conversation_id")
+  conversationId             Int?                  @map("conversation_id")
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
   // a customer message — a conversation update, the bot's own reply coming back around — which is
   // what lets the sweep tell a row where nothing was lost from one where a customer went unanswered.
   // Matched by id when a turn retires the rows it covered, never read for content: an id, like the
   // column above, and nothing here can hold what the customer wrote.
-  inboundMessageId    Int?                  @map("inbound_message_id")
+  inboundMessageId           Int?                  @map("inbound_message_id")
   // WHAT THIS DELIVERY OWED, when what it owed was a human-reply takeover (issue #439). `composer`
   // or `device`, from `humanReplyShape` — the half of the route the PAYLOAD answers, written at
   // INSERT so a process that dies before the takeover still leaves the fact behind. Null on every
@@ -375,27 +377,27 @@ model ChatwootWebhookDelivery {
   //
   // Not the event body, and not a sender: the same rule the two ids above follow. What a person
   // wrote is never held here.
-  humanReplyShape     String?               @map("human_reply_shape")
+  humanReplyShape            String?               @map("human_reply_shape")
   // WHICH BOT ROUTE this delivery arrived on — the Chatwoot Agent Bot id the ownership question was
   // asked about when it was live. Chatwoot fans one message to up to TWO routes (the conversation's
   // assignee bot AND the inbox's), and only the route that holds the conversation passes the gate,
   // so a recovery that derived the identity from the inbox would ask a different question than the
   // delivery did and refuse the takeover it exists to run. Null on a delivery whose route resolved
   // to no bot, and on every row written before this column existed.
-  routeAgentBotId     Int?                  @map("route_agent_bot_id")
+  routeAgentBotId            Int?                  @map("route_agent_bot_id")
   // Whether that route was an OBSERVER's, recorded by the receiver the moment it reads it rather
   // than inferred later (issue #476). What the role is cannot be derived after the fact: the row
   // that says so is written after Chatwoot agrees, so a delivery inside the attach window has none,
   // and a binding that changed since answers about a different moment. Null on every event this
   // question was never asked of — a responder's delivery, and every row written before this column.
-  routeObserved       Boolean?              @map("route_observed")
+  routeObserved              Boolean?              @map("route_observed")
   // WHICH MESSAGE the owed takeover was about (issue #469), written at INSERT beside the shape. The
   // recovery of issue #439 rebuilds a takeover from this row, and the fence it has to pass is
   // ordered by the source's message sequence — a coordinate the row is the only place to hold, since
   // the payload is never stored (issue #228) and `inboundMessageId` is null on a colleague's reply
   // by construction. NULL on every delivery that owed no takeover, and on every row an older build
   // wrote, where the recovery falls back to its unfenced form.
-  humanReplyMessageId Int?                  @map("human_reply_message_id")
+  humanReplyMessageId        Int?                  @map("human_reply_message_id")
   // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), written at INSERT
   // and never again. Every later reader compares it against the inbox's generation now: equal means
   // nothing about who routes this inbox has moved since the message arrived, so a fact re-derived
@@ -413,7 +415,7 @@ model ChatwootWebhookDelivery {
   // reader may treat it as generation zero. Deliberately NOT in `LEDGER_FILLABLE`: a redelivery's
   // reading is about a later moment, and filling it would put a present-day world on a row that
   // arrived in an older one.
-  bindingGeneration   Int?                  @map("binding_generation")
+  bindingGeneration          Int?                  @map("binding_generation")
   // WHETHER THIS DELIVERY'S ROUTE FOLDS INTO MEMORY WHAT IT DOES NOT ANSWER (issue #540, window 3),
   // stated by the claim beside the role, from the runtime that claim resolved. True on an observer's
   // route, whose whole work is the memory; true on a responder that is switched on and ingests
@@ -430,7 +432,7 @@ model ChatwootWebhookDelivery {
   // Null on a row an older build wrote and on one that stranded before the claim — the same
   // signature `routeObserved` carries. A reader falls back to the mode reading there, which is what
   // every delivery had before this column.
-  routeRemembers      Boolean?              @map("route_remembers")
+  routeRemembers             Boolean?              @map("route_remembers")
   // WHETHER A TURN FOLDED THIS DELIVERY'S MESSAGE INTO THE THREAD (issue #576), written where the
   // settlement is decided (`retireCoveredDeliveries`) and supplied by every caller, which is the only
   // side that knows.
@@ -458,7 +460,7 @@ model ChatwootWebhookDelivery {
   // Null on a row an older build wrote, on one that stranded before settling, and on one whose
   // settlement never reached it. All three are "this row cannot say", and the reader falls back to
   // the ownership reading every delivery made before this column.
-  turnCovered         Boolean?              @map("turn_covered")
+  turnCovered                Boolean?              @map("turn_covered")
   // WHETHER THIS PASS OWED MEMORY AND NOTHING ELSE (issue #725), written by the receiver at the
   // moment it decides no turn will run on this delivery and BEFORE it arms the ingestion — which is
   // the only order that works, because arming is what fails on the rows this fact exists for.
@@ -483,7 +485,7 @@ model ChatwootWebhookDelivery {
   // Null on a row an older build wrote and on one whose pass did run a turn, which read the same
   // way: "nothing here says this pass was memory-only", and the reader falls back to the event and
   // the role, which is what every delivery had before this column.
-  owesMemoryOnly      Boolean?              @map("owes_memory_only")
+  owesMemoryOnly             Boolean?              @map("owes_memory_only")
   // HOW WIDE THE SETTLEMENT OF THAT PASS WOULD HAVE BEEN (issue #725, review round 2). The column
   // above is not enough on its own, and the gap is the same one it was added to close: the scope is
   // DERIVED from who held the conversation at the moment of the stand-down — scoped to this delivery
@@ -498,7 +500,7 @@ model ChatwootWebhookDelivery {
   // uses, so the two facts are recorded at the one instant both are true. Null reads as "this row
   // cannot say" and falls back to deriving it now, which is what every delivery did before the
   // column.
-  settleScopedToThisDelivery Boolean?          @map("settle_scoped_to_this_delivery")
+  settleScopedToThisDelivery Boolean?              @map("settle_scoped_to_this_delivery")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -1306,26 +1308,53 @@ model BusinessHours {
 // ──────────────────────────────────────────────── knowledge (RAG) ──
 
 model KnowledgeBase {
-  id             BigInt   @id @default(autoincrement())
-  tenantId       BigInt   @map("tenant_id")
-  name           String
-  description    String?
-  embeddingModel String   @default("text-embedding-3-small") @map("embedding_model")
-  chunkSize      Int      @default(1000) @map("chunk_size")
-  chunkOverlap   Int      @default(200) @map("chunk_overlap")
+  id                  BigInt   @id @default(autoincrement())
+  tenantId            BigInt   @map("tenant_id")
+  name                String
+  description         String?
+  embeddingModel      String   @default("text-embedding-3-small") @map("embedding_model")
+  chunkSize           Int      @default(1000) @map("chunk_size")
+  chunkOverlap        Int      @default(200) @map("chunk_overlap")
   // Drop a document's trailing contact footer from the passages a search returns (issue #747).
   // Applied at search time, so switching it never needs a re-index. Off by default: it removes
   // text, and only the operator knows whether the base is a help center written for a website.
-  stripContactFooters Boolean @default(false) @map("strip_contact_footers")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  stripContactFooters Boolean  @default(false) @map("strip_contact_footers")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
   tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   chunks    KnowledgeChunk[]
   documents KnowledgeDocument[]
+  source    KnowledgeSource?
 
   @@index([tenantId])
   @@map("knowledge_bases")
+}
+
+// Where a base's synced documents come from (issue #794). At most one per base. The platform owns
+// the link between each upstream item and its document through `KnowledgeDocument.externalId`, so
+// nothing outside it keeps a map that can go stale.
+model KnowledgeSource {
+  id              BigInt    @id @default(autoincrement())
+  tenantId        BigInt    @map("tenant_id")
+  knowledgeBaseId BigInt    @unique @map("knowledge_base_id")
+  // `chatwoot_portal` is the only kind today; a string, like `KnowledgeDocument.sourceType`.
+  kind            String
+  // Kind-specific, validated on write: { baseUrl, slug, locale, excludeIds[] } for a portal.
+  config          Json
+  intervalMinutes Int       @default(10) @map("interval_minutes")
+  lastSyncAt      DateTime? @map("last_sync_at")
+  // "ok" | "warning" | "error": the last run's outcome, and what an operator reads next to it.
+  lastStatus      String?   @map("last_status")
+  lastMessage     String?   @map("last_message")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kb     KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("knowledge_sources")
 }
 
 // NOTE: `embedding` is pgvector vector(1536) with a manual HNSW index; Prisma cannot model
@@ -1363,6 +1392,11 @@ model KnowledgeDocument {
   status          String   @default("PENDING")
   error           String?
   chunkCount      Int      @default(0) @map("chunk_count")
+  // The upstream item a synced document mirrors (issue #794): an article id for a portal source.
+  // NULL on every document an operator or the agent wrote, which a sync never touches.
+  externalId      String?  @map("external_id")
+  // The item's public URL, shown to the model next to the passage so it can send the link.
+  sourceUrl       String?  @map("source_url")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
@@ -1370,6 +1404,8 @@ model KnowledgeDocument {
   kb     KnowledgeBase    @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
   chunks KnowledgeChunk[]
 
+  // One document per upstream item per base; NULLs never collide, so curated documents are free.
+  @@unique([knowledgeBaseId, externalId])
   @@index([tenantId, knowledgeBaseId])
   @@map("knowledge_documents")
 }

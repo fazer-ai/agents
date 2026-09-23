@@ -367,6 +367,26 @@ describe("planSpokenReply", () => {
     }
   });
 
+  // Review round 7: the written item is the destination the link points to, not its markdown source.
+  test("a markdown destination is handed over decoded", () => {
+    expect(
+      planSpokenReply(
+        "Veja [o artigo](https://en.wikipedia.org/wiki/Function_\\(mathematics\\)) e [a busca](https://x.com.br/b?a=1&amp;c=2) quando puder",
+      ).written,
+    ).toEqual([
+      "https://en.wikipedia.org/wiki/Function_(mathematics)",
+      "https://x.com.br/b?a=1&c=2",
+    ]);
+  });
+
+  test("a mailto recipient is handed over without its percent escapes", () => {
+    expect(
+      planSpokenReply(
+        "Se preferir, [escreva para o suporte](mailto:foo%2Bbar@x.com.br) e respondemos em 2 dias",
+      ).written,
+    ).toEqual(["foo+bar@x.com.br"]);
+  });
+
   test("a decimal, a time and a file name are not URLs", () => {
     const text =
       "O valor é R$ 1.500,00 às 20.30 e o comprovante vai no arquivo recibo.pdf anexado";

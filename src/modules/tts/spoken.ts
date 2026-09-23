@@ -111,11 +111,29 @@ function itemSpans(text: string): Span[] {
   return spans.sort((a, b) => a.start - b.start);
 }
 
-// A `mailto:` link hands over its recipient: `?subject=…` makes it neither the address nor a URI a
-// chat client opens.
+// A markdown destination is written in markdown: the link points to it after CommonMark decodes
+// backslash escapes and entities (`Function_\(x\)`, `a=1&amp;b=2`). A `mailto:` link hands over
+// its recipient: `?subject=…` makes it neither the address nor a URI a chat client opens, and out
+// of the URI its percent escapes would name another mailbox (`foo%2Bbar@` is `foo+bar@`).
 function target(mailto: string | undefined, destination: string): string {
-  return mailto ? (destination.split("?")[0] ?? "") : destination;
+  const decoded = destination
+    .replace(/\\([!-/:-@[-`{-~])/g, "$1")
+    .replace(/&(amp|lt|gt|quot|#39);/g, (_, e: string) => ENTITIES[e] ?? "");
+  if (!mailto) return decoded;
+  const recipient = decoded.split("?")[0] ?? "";
+  try {
+    return decodeURIComponent(recipient);
+  } catch {
+    return recipient;
+  }
 }
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  "#39": "'",
+};
 
 // A bare URL or address, cut down to the destination. What the greedy match took from around it is
 // the sentence's: trailing punctuation or formatting, a closing bracket the destination did not

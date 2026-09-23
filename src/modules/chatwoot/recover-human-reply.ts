@@ -21,6 +21,7 @@ import {
 } from "./normalize";
 import { buildRecoveryPayload } from "./recover-payload";
 import { renderAttendantMessage } from "./render";
+import { responderCoversMessage } from "./responder-coverage";
 import { isHumanReplyShape } from "./stranded-delivery";
 
 // Folding back into the contact's memory the colleague's reply an ingestion lost (issue #728).
@@ -246,7 +247,14 @@ export async function recoverStrandedHumanReply(
     if (conv.inboxId === null) return "sparse" as const;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { id: true, agentId: true, provider: true },
+      select: {
+        id: true,
+        agentId: true,
+        provider: true,
+        // When the responder was bound, which is what `responderCoversMessage` dates the message
+        // against below (issue #742).
+        responderBoundAt: true,
+      },
     });
     if (!inbox?.agentId) return null;
     // THE ROUTE'S OWN AGENT, AND THE TWO ROUTES RESOLVE IT DIFFERENTLY — which is not symmetry the
@@ -342,8 +350,24 @@ export async function recoverStrandedHumanReply(
     // reading `routeRemembers` makes.
     const responder = await db.agent.findUnique({
       where: { id: inbox.agentId },
-      select: { enabled: true },
+      select: { enabled: true, mode: true, settings: true },
     });
+    // The responder's bot, which names its route in the ledger: whether it received this message is
+    // asked of its own delivery row (issue #742). Read only on a watcher's route, the one place it
+    // decides anything.
+    const responderBotId =
+      observed && responder !== null
+        ? ((
+            await db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                agentId: inbox.agentId,
+              },
+              select: { chatwootAgentBotId: true },
+            })
+          )?.chatwootAgentBotId ?? null)
+        : null;
     return {
       contactInboxId: conv.contactInboxId,
       // The MIRROR's row id, which is what a flow-log line hangs on — the reports an operator reads
@@ -355,6 +379,17 @@ export async function recoverStrandedHumanReply(
       enabled: agent.enabled,
       settings: agent.settings,
       responderExists: responder !== null,
+      responder:
+        responder === null
+          ? null
+          : {
+              agentId: inbox.agentId,
+              enabled: responder.enabled,
+              mode: responder.mode,
+              settings: responder.settings,
+              botId: responderBotId,
+              boundAt: inbox.responderBoundAt,
+            },
       // The role as this recovery RESOLVED it, which is the ledger's when the claim stated one and
       // the binding's when it did not.
       observed,
@@ -699,6 +734,41 @@ export async function recoverStrandedHumanReply(
     return "not-owed";
   }
 
+  // WHOSE MEMORY IT IS FILED UNDER (issue #742), the rule the live path applies (`memoryOwner` in
+  // ./webhook.ts). A watcher's route beside a responder writes the responder's thread, and both
+  // stranded rows of one reply arm the same job, the later arm replacing the payload. The payload's
+  // agent decides whose compaction settings summarise the attendance this append closes, so it was
+  // whichever row the sweep reached last. Filed under the responder whenever that responder received
+  // the message and remembers continuously, both rows arm the same payload. Otherwise the route's
+  // own agent: a responder in `test`, switched off, or bound after the message holds no part of it.
+  const responder = bound.responder;
+  const ownedByResponder =
+    bound.observed &&
+    responder !== null &&
+    responder.botId !== null &&
+    responder.enabled &&
+    ingestsContinuously(responder.mode) &&
+    (await responderCoversMessage(
+      tenantId,
+      instanceId,
+      params.deliveryRowId,
+      responder.boundAt,
+      responder.botId,
+      conversationId,
+      { id: messageId, column: "humanReply" },
+      // WHEN CHATWOOT EMITTED IT, which is when it chose the recipients (review r1). The message read
+      // back above carries its own `created_at`, and that is the clock the live path reads from the
+      // payload; the receipt is the fallback only where the page names none. Dated by the receipt, a
+      // reply emitted before the responder was bound and delivered to the observer after it read as
+      // covered, and was filed under a responder that never received it.
+      messageCreatedAt(message),
+      base,
+    ));
+  const owner =
+    ownedByResponder && responder !== null
+      ? { agentId: responder.agentId, settings: responder.settings }
+      : { agentId: bound.agentId, settings: bound.settings };
+
   try {
     await armIngest({
       tenantId,
@@ -714,8 +784,8 @@ export async function recoverStrandedHumanReply(
       messageId,
       text,
       role: "human_agent",
-      agentId: bound.agentId,
-      compactionEnabled: readMemoryConfig(bound.settings).compaction.enabled,
+      agentId: owner.agentId,
+      compactionEnabled: readMemoryConfig(owner.settings).compaction.enabled,
       base,
     });
   } catch (e) {
@@ -754,6 +824,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function readMessagePage(raw: unknown): unknown[] | null {
   if (Array.isArray(raw)) return raw;
   if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload;
+  return null;
+}
+
+// Chatwoot's REST page dates a message in epoch seconds; an ISO string is read as well, and anything
+// else is no clock at all, which leaves the caller on the receipt.
+function messageCreatedAt(message: Record<string, unknown>): Date | null {
+  const v = message.created_at;
+  if (typeof v === "number" && Number.isFinite(v)) return new Date(v * 1000);
+  if (typeof v === "string") {
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? null : new Date(t);
+  }
   return null;
 }
 

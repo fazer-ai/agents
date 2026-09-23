@@ -999,8 +999,11 @@ describe.skipIf(!dbUp)(
           makeClient,
         }),
       ).toBe("remembered");
+      // SOB O RESPONDEDOR DA INBOX, e não sob o observador (issue #742): a thread é a dele, ele
+      // recebeu a mensagem e guarda continuamente. O que este teste protege é o append ser devido
+      // apesar do modo do observador; de quem é o resumo é a outra pergunta, e a resposta é o dono.
       expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
-        String(quietWatcherAgentDbId),
+        String(agentDbId),
       );
     });
 
@@ -1414,6 +1417,229 @@ describe.skipIf(!dbUp)(
       // E o texto é o mesmo pelas duas rotas, que é o que faz a substituição ser inofensiva para o
       // conteúdo: cada recuperação relê a mesma mensagem e renderiza com o mesmo renderizador.
       expect(jobs[0]?.text).toContain("Uma resposta, duas rotas.");
+      // E O AGENTE TAMBÉM (issue #742): a thread é a do respondedor, que recebeu a mensagem e guarda
+      // continuamente, então as duas linhas armam sob ele, e a última a armar não decide nada.
+      expect(jobs[0]?.payload.agentId).toBe(String(agentDbId));
+    });
+
+    // A ORDEM INVERSA (issue #742): a linha do observador é recuperada primeiro. O payload já nasce
+    // sob o respondedor, e o arme do respondedor que vem depois o repete em vez de trocá-lo.
+    test("two ledger rows armed observer first are still filed under the responder", async () => {
+      const convId = 9171;
+      pages.set(convId, [restComposerReply(771, "A outra ordem.")]);
+      const respondedora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 771,
+      });
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 771,
+        mirrored: false,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+
+      // A COMPACTAÇÃO TAMBÉM É A DO DONO: o respondedor a tem desligada e o observador ligada, e o
+      // que o payload carrega é o que resume o atendimento.
+      const { settings } = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: { memory: { compaction: { enabled: false } } } },
+      });
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: observadora,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { settings: settings ?? {} },
+        });
+      }
+      // Antes de a linha do respondedor rodar: nenhum instante em que o payload diga o observador.
+      expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+        String(agentDbId),
+      );
+      expect((await ingestJobs(convId))[0]?.payload.compactionEnabled).toBe(
+        false,
+      );
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: respondedora,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.payload.agentId).toBe(String(agentDbId));
+    });
+
+    // DATADO PELA EMISSÃO, NÃO PELO RECEBIMENTO (issue #742, review r1). O Chatwoot escolhe os
+    // destinatários quando emite: uma resposta emitida antes de o respondedor ser ligado nunca chegou
+    // a ele, mesmo que a entrega do observador tenha sido recebida depois do vínculo. A página relida
+    // traz o `created_at` da mensagem, e é ele que responde, como o payload responde ao vivo.
+    test("a reply emitted before the responder was bound stays the watcher's, whenever it was received", async () => {
+      const convId = 9174;
+      pages.set(convId, [
+        {
+          ...restComposerReply(774, "Emitida antes do vínculo."),
+          created_at: Math.floor((Date.now() - 60 * 60 * 1000) / 1000),
+        },
+      ]);
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 774,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+      // Ligado há 50 minutos: antes do recebimento (40 min, o do `seedStranded`), depois da emissão.
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: WATCHED_INBOX_ID },
+        data: { responderBoundAt: new Date(Date.now() - 50 * 60 * 1000) },
+      });
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: observadora,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+        expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+          String(quietWatcherAgentDbId),
+        );
+      } finally {
+        await suDb.inbox.updateMany({
+          where: { tenantId, chatwootInboxId: WATCHED_INBOX_ID },
+          data: { responderBoundAt: null },
+        });
+      }
+    });
+
+    // E O MESMO RELÓGIO NO OUTRO SENTIDO: emitida bem depois do vínculo, a resposta chegou ao
+    // respondedor, e é dele sem precisar de linha irmã no ledger.
+    test("a reply emitted well after the responder was bound is the responder's", async () => {
+      const convId = 9175;
+      pages.set(convId, [
+        {
+          ...restComposerReply(775, "Emitida depois do vínculo."),
+          created_at: Math.floor((Date.now() - 42 * 60 * 1000) / 1000),
+        },
+      ]);
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 775,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: WATCHED_INBOX_ID },
+        data: { responderBoundAt: new Date(Date.now() - 50 * 60 * 1000) },
+      });
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: observadora,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+        expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+          String(agentDbId),
+        );
+      } finally {
+        await suDb.inbox.updateMany({
+          where: { tenantId, chatwootInboxId: WATCHED_INBOX_ID },
+          data: { responderBoundAt: null },
+        });
+      }
+    });
+
+    // O RESPONDEDOR DESLIGADO NÃO GUARDA NADA, então não é dono (issue #742): a rota do observador
+    // continua devendo o append (ao lado de um respondedor, desligado ou não) e o arma sob o próprio
+    // agente.
+    test("a switched-off responder does not own the watcher's append", async () => {
+      const convId = 9173;
+      pages.set(convId, [
+        restComposerReply(773, "Com o respondedor desligado."),
+      ]);
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 773,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { enabled: false },
+      });
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: observadora,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+        expect((await ingestJobs(convId))[0]?.payload.agentId).toBe(
+          String(quietWatcherAgentDbId),
+        );
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { enabled: true },
+        });
+      }
+    });
+
+    // O RESPONDEDOR QUE NÃO RECEBEU A MENSAGEM NÃO É DONO DELA (issue #742). Ligado depois de ela
+    // chegar, o Chatwoot não lhe entregou nada, então só a rota do observador a guardou, e ela a arma
+    // sob o próprio agente, como o caminho ao vivo faz quando `responderCoversMessage` diz que não.
+    test("a responder bound after the message does not own the watcher's append", async () => {
+      const convId = 9172;
+      pages.set(convId, [
+        restComposerReply(772, "Chegou antes do respondedor."),
+      ]);
+      const observadora = await seedStranded(convId, {
+        inboxId: WATCHED_INBOX_ID,
+        messageId: 772,
+        routeAgentBotId: QUIET_WATCHER_BOT,
+        routeObserved: true,
+      });
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: WATCHED_INBOX_ID },
+        data: { responderBoundAt: new Date() },
+      });
+      try {
+        expect(
+          await recoverStrandedHumanReply({
+            tenantId,
+            deliveryRowId: observadora,
+            base: appDb,
+            makeClient,
+          }),
+        ).toBe("remembered");
+        const jobs = await ingestJobs(convId);
+        expect(jobs[0]?.payload.agentId).toBe(String(quietWatcherAgentDbId));
+      } finally {
+        await suDb.inbox.updateMany({
+          where: { tenantId, chatwootInboxId: WATCHED_INBOX_ID },
+          data: { responderBoundAt: null },
+        });
+      }
     });
 
     // O QUE O JOB FAZ COM CADA DESFECHO, que é onde os vereditos e os adiamentos se separam na

@@ -987,7 +987,115 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       // The responder is production and enabled the whole time: the mode reading would have silenced
       // this route, and the sibling's own unfinished state is what does not.
       expect(await ingestArmedFor(replyId)).toBe(true);
+      // ...AND FILED UNDER THE RESPONDER (issue #742). Its own delivery arms the same job when it
+      // finishes, and the later arm replaces the payload: armed here under the observer, whose
+      // compaction settings summarise the attendance was decided by which route got there last.
+      expect(
+        (
+          (await ingestRowFor(replyId))?.payload as
+            | { agentId?: string }
+            | undefined
+        )?.agentId,
+      ).toBe(String(responderId));
     } finally {
+      await suDb.inbox.updateMany({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        data: { responderBoundAt: null },
+      });
+    }
+  });
+
+  // WHOSE MEMORY IT IS, when the responder does not hold it (issue #742). The observer's route
+  // appends the reply either way; filed under the responder only while that responder remembers
+  // continuously, so a switched-off one or one in `test` leaves it under the observer. And the
+  // compaction the payload carries is the owner's.
+  test("a colleague's reply beside a responder is filed under whoever remembers it", async () => {
+    const { settings, mode } = await suDb.agent.findUniqueOrThrow({
+      where: { id: responderId },
+      select: { settings: true, mode: true },
+    });
+    const variants = [
+      {
+        data: { settings: { memory: { compaction: { enabled: false } } } },
+        owner: responderId,
+        compaction: false,
+      },
+      { data: { enabled: false }, owner: observerId, compaction: true },
+      { data: { mode: "test" }, owner: observerId, compaction: true },
+    ] as const;
+    await suDb.inbox.updateMany({
+      where: { tenantId, chatwootInboxId: SHARED_INBOX },
+      data: { responderBoundAt: new Date(Date.now() - 20_000) },
+    });
+    try {
+      for (const v of variants) {
+        await suDb.agent.update({ where: { id: responderId }, data: v.data });
+        deliverySeq += 1;
+        messageSeq += 1;
+        convOfMessage.set(messageSeq, 88);
+        const replyId = messageSeq;
+        await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `obr-${process.pid}-owner-${deliverySeq}`,
+            event: "message_created",
+            status: "PROCESSING",
+            conversationId: 88,
+            humanReplyShape: "composer",
+            humanReplyMessageId: replyId,
+            routeAgentBotId: RESPONDER_BOT,
+            claimedAt: new Date(),
+            routeRemembers: true,
+          },
+        });
+        const n = normalizeChatwootEvent({
+          event: "message_created",
+          id: replyId,
+          private: false,
+          content: "Já confirmei com o financeiro.",
+          message_type: "outgoing",
+          sender: { id: 5, name: "Ana", type: "user" },
+          conversation: conversation(88, SHARED_INBOX, {
+            assigneeType: "User",
+            status: "open",
+          }),
+        });
+        if (!n) throw new Error("payload did not normalize");
+        const delivery = await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `obr-${process.pid}-${deliverySeq}`,
+            event: "message_created",
+            status: "PENDING",
+          },
+          select: { id: true },
+        });
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OBSERVER_BOT,
+          normalized: n,
+          base: appDb,
+        });
+        const payload = (await ingestRowFor(replyId))?.payload as {
+          agentId: string;
+          compactionEnabled: boolean;
+        };
+        expect(payload.agentId).toBe(String(v.owner));
+        expect(payload.compactionEnabled).toBe(v.compaction);
+        await suDb.agent.update({
+          where: { id: responderId },
+          data: { settings: settings ?? {}, enabled: true, mode },
+        });
+      }
+    } finally {
+      await suDb.agent.update({
+        where: { id: responderId },
+        data: { settings: settings ?? {}, enabled: true, mode },
+      });
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },
         data: { responderBoundAt: null },
@@ -1037,6 +1145,15 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       expect(messageId).toBe(sharedMessage);
       expect(customerFacing()).toEqual([]);
       expect(await ingestArmedFor(messageId)).toBe(true);
+      // The responder never received it, so it holds no part of this append: the observer's own
+      // agent, as before (issue #742).
+      expect(
+        (
+          (await ingestRowFor(messageId))?.payload as
+            | { agentId?: string }
+            | undefined
+        )?.agentId,
+      ).toBe(String(observerId));
     } finally {
       await suDb.inbox.updateMany({
         where: { tenantId, chatwootInboxId: SHARED_INBOX },

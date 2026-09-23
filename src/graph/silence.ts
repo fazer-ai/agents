@@ -299,6 +299,70 @@ export function silenceWasChosen(
   return false;
 }
 
+// WHY THE SILENCE WAS CHOSEN (issue #659). `skip_reply` used to mean two opposite things: "nothing to
+// add" on a conversation reaching its natural end, and "not mine, or I cannot" on one a person should
+// see. Both left the conversation `pending` and bot-owned, and nothing ever takes it out of there, so
+// the second kind sat invisible. The reason is what separates them, and the effect follows from it:
+//
+//   acknowledged   nothing to add. The conversation stays as it is.
+//   not_for_us     not a real conversation (a DMARC report, a payment notice, a newsletter).
+//   needs_human    ours, but the agent cannot resolve it.
+//
+// The last two hand the conversation to `open` with a private note saying why. `open` and not
+// `resolved`: the point is that a person SEES it.
+export const SKIP_REPLY_REASONS = [
+  "acknowledged",
+  "not_for_us",
+  "needs_human",
+] as const;
+export type SkipReplyReason = (typeof SKIP_REPLY_REASONS)[number];
+
+// Beside the mark and for the same reason: only the tool that builds the `ToolMessage` can set it.
+export const SKIP_REPLY_REASON_KEY = "fazer_skip_reason";
+export const SKIP_REPLY_DETAIL_KEY = "fazer_skip_detail";
+
+// Severity, so that two skips in one turn resolve to the one that asks for a person.
+const REASON_WEIGHT: Record<SkipReplyReason, number> = {
+  acknowledged: 0,
+  not_for_us: 1,
+  needs_human: 2,
+};
+
+function readReason(v: unknown): SkipReplyReason | null {
+  return typeof v === "string" &&
+    (SKIP_REPLY_REASONS as readonly string[]).includes(v)
+    ? (v as SkipReplyReason)
+    : null;
+}
+
+// The reason THIS turn chose its silence for, with the same bound and the same mark as
+// `silenceWasChosen` above: null exactly when that answers false. A marked line with no reason on it
+// (a result written before the reason existed) reads as `acknowledged`, the reading that changes
+// nothing about the conversation.
+export function chosenSilence(
+  messages: readonly {
+    getType: () => string;
+    name?: string;
+    additional_kwargs?: Record<string, unknown>;
+  }[],
+): { reason: SkipReplyReason; detail: string | null } | null {
+  let best: { reason: SkipReplyReason; detail: string | null } | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.getType() === "human") break;
+    if (!skipReplyRan(m)) continue;
+    const reason =
+      readReason(m.additional_kwargs?.[SKIP_REPLY_REASON_KEY]) ??
+      "acknowledged";
+    const raw = m.additional_kwargs?.[SKIP_REPLY_DETAIL_KEY];
+    const detail = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+    if (!best || REASON_WEIGHT[reason] > REASON_WEIGHT[best.reason])
+      best = { reason, detail };
+  }
+  return best;
+}
+
 // OUR PROTOCOL TOOL IS NEVER THE ONLY TOOL A FOLLOW-UP BINDS, asked of the toolset that was actually
 // built. A list holding nothing but `skip_reply` means every other source yielded nothing, so this
 // agent is tool-less in practice — and a tool-less deployment is a real configuration (a plain chat

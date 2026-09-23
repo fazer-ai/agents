@@ -1914,7 +1914,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
                 content: "",
                 tool_calls: [
                   { name: "calculator", args: { expression: "2+2" }, id: "c1" },
-                  { name: "skip_reply", args: {}, id: "s1" },
+                  {
+                    name: "skip_reply",
+                    args: { reason: "acknowledged" },
+                    id: "s1",
+                  },
                 ],
               });
             throw new Error("provider 503");

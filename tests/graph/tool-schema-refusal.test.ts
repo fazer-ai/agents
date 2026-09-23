@@ -377,10 +377,13 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // turn is what answers "did the model try to use a tool here", with no error text opened.
     expect(tools(b.rows).length).toBe(0);
     // Two `generate` lines and no `tool` line: the model tried nothing AND answered nothing, which
-    // since issue #773 is a turn the operator is told about rather than one that disappears.
+    // since issue #773 is a turn the operator is told about rather than one that disappears. And
+    // nobody on our side had spoken in this conversation, so since issue #659 the silence also hands
+    // it to a person: the `handoff` line is that.
     expect(b.rows.map((r) => `${r.stage}/${r.status}/${r.level}`)).toEqual([
       "generate/ok/info",
       "generate/ok/warn",
+      "handoff/ok/info",
     ]);
     expect(Object.keys(det(b.rows[0] as Row))).toEqual(["systemPrompt"]);
   });

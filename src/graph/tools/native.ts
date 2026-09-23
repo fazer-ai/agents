@@ -9,9 +9,14 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import {
   SKIP_REPLY_ACK,
+  SKIP_REPLY_DETAIL_KEY,
   SKIP_REPLY_MARK,
+  SKIP_REPLY_REASON_KEY,
+  SKIP_REPLY_REASONS,
   SKIP_REPLY_TOOL,
+  type SkipReplyReason,
 } from "@/graph/silence";
+import { SKIP_NOTE_DETAIL_MAX as SKIP_DETAIL_MAX } from "@/graph/skip-handover";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -1885,15 +1890,18 @@ function reactToMessageTool(ctx: ToolCtx) {
 
 // Deliberately produce NO reply this turn. The agent calls this, then ends without any customer-facing
 // text, so the runtime posts nothing (it already skips an empty reply). The call is recorded in the
-// conversation timeline (via the tool flow log) as a "decided not to respond" marker.
+// conversation timeline (via the tool flow log) as a "decided not to respond" marker, and its REASON
+// decides whether the conversation stays with the bot or goes to a person (issue #659, ../silence.ts).
 function skipReplyTool(_ctx: ToolCtx) {
   return tool(
-    async ({ reason }: { reason?: string }, config: ToolRunnableConfig) => {
+    async (
+      { reason, detail }: { reason: SkipReplyReason; detail?: string },
+      config: ToolRunnableConfig,
+    ) => {
+      const note = detail?.trim() ? `${reason}: ${detail.trim()}` : reason;
       // The ack is what the MODEL reads — LangGraph calls it again after a tool result, and this
       // sentence is the instruction that makes the turn end quiet.
-      const ack = reason
-        ? `${SKIP_REPLY_ACK} (${reason}). Produce no message now.`
-        : `${SKIP_REPLY_ACK}. Produce no message now.`;
+      const ack = `${SKIP_REPLY_ACK} (${note}). Produce no message now.`;
       // ...and the MARK is what identifies the tool, in `additional_kwargs`, out of reach of any
       // response body (round 24). Returned as a whole `ToolMessage` for that, the same
       // direct-tool-output passthrough `failableTool` uses; without a tool_call in scope (a direct
@@ -1904,19 +1912,32 @@ function skipReplyTool(_ctx: ToolCtx) {
         content: ack,
         tool_call_id: id,
         name: SKIP_REPLY_TOOL,
-        additional_kwargs: { [SKIP_REPLY_MARK]: true },
+        additional_kwargs: {
+          [SKIP_REPLY_MARK]: true,
+          [SKIP_REPLY_REASON_KEY]: reason,
+          ...(detail?.trim()
+            ? {
+                [SKIP_REPLY_DETAIL_KEY]: clipText(
+                  detail.trim(),
+                  SKIP_DETAIL_MAX,
+                ),
+              }
+            : {}),
+        },
       });
     },
     {
       name: "skip_reply",
       description:
-        "Decide NOT to send any reply this turn. Use ONLY when a reply would add nothing — e.g. the customer sent just an acknowledgement ('ok', 'blz', 'obrigado') or a bare emoji/reaction, and you've optionally already reacted with react_to_message. After calling this, output NO reply text (end your turn). The decision is recorded in the conversation timeline.",
+        "Decide NOT to send any reply this turn, then output NO reply text (end your turn). `reason` decides what happens next: `acknowledged` when a reply would add nothing (the customer sent just 'ok', 'obrigado' or an emoji, optionally after react_to_message) and the conversation stays with you; `not_for_us` when this is not a real conversation (an automated report, a payment notice, a newsletter, an unsolicited pitch); `needs_human` when it is a real request you cannot resolve. The last two hand the conversation to the team with a private note, and so does ANY skip on a conversation nobody on our side has answered yet.",
       schema: z.object({
-        reason: z
+        reason: z.enum(SKIP_REPLY_REASONS),
+        detail: z
           .string()
+          .max(SKIP_DETAIL_MAX)
           .optional()
           .describe(
-            "Short reason for not replying (e.g. \"customer only sent 'ok'\").",
+            'One short sentence for the team about what this is (e.g. "DMARC report from a mail server"). Shown only when the conversation is handed over.',
           ),
       }),
     },

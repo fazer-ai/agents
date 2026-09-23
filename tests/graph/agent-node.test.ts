@@ -162,7 +162,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (n === 1) {
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: "skip_reply", args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: "skip_reply",
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             }
             return new AIMessage("");
@@ -214,7 +220,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1) {
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             }
             return new AIMessage("Oi! Só passando para lembrar do seu boleto.");
@@ -267,7 +279,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (n === 1) {
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: "skip_reply", args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: "skip_reply",
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             }
             return self.invoke();
@@ -328,7 +346,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (n === 1) {
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             }
             return self.invoke();
@@ -381,7 +405,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             return new AIMessage({
               id: "ai-skip-1",
               content: NARRATION,
-              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              tool_calls: [
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: "c1",
+                },
+              ],
               response_metadata: { finish_reason: "tool_calls" },
               usage_metadata: {
                 input_tokens: 20,
@@ -468,7 +498,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "Só vou reagir e ficar quieto.",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -477,7 +511,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
-              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+              tool_calls: [
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: "c3",
+                },
+              ],
             });
           },
         };
@@ -545,7 +585,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -553,7 +597,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             boundAtLimit.push(names);
             return new AIMessage({
               content: "",
-              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+              tool_calls: [
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: "c3",
+                },
+              ],
             });
           },
         };
@@ -609,7 +659,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -662,7 +716,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "Só vou reagir e ficar quieto.",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -676,7 +734,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
-              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+              tool_calls: [
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: "c3",
+                },
+              ],
             });
           },
         };
@@ -721,7 +785,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             return new AIMessage({
               content: "",
               tool_calls: [
-                { name: SKIP_REPLY_TOOL, args: {}, id: `c${self.rounds}` },
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: `c${self.rounds}`,
+                },
               ],
             });
           },
@@ -831,7 +899,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             if (self.rounds === 2)
               return new AIMessage({
@@ -884,7 +958,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             return new AIMessage("Bom dia! Como posso ajudar?");
           },
@@ -972,7 +1052,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
               return new AIMessage({
                 content: "",
                 tool_calls: [
-                  { name: SKIP_REPLY_TOOL, args: {}, id: `c${self.rounds}` },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: `c${self.rounds}`,
+                  },
                 ],
               });
             if (self.rounds === 3)
@@ -1030,7 +1114,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             if (self.rounds === 2)
               return new AIMessage({
@@ -1089,7 +1179,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             return new AIMessage({
               id: "ai-final",
@@ -1157,7 +1253,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             if (self.rounds <= 3)
               return new AIMessage({
@@ -1344,7 +1446,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
               return new AIMessage({
                 id: "ai-inv-1",
                 content: "Vou reagir e sumir.",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
                 invalid_tool_calls: [
                   {
                     name: "react_to_message",
@@ -1424,7 +1532,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 ],
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
                 response_metadata: {
                   output: [
@@ -1446,7 +1558,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             }
             return new AIMessage({
               content: "",
-              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+              tool_calls: [
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: "c3",
+                },
+              ],
             });
           },
         };
@@ -1568,7 +1686,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -1632,7 +1754,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds === 1)
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             if (self.rounds === 2)
               return new AIMessage({
@@ -1698,7 +1826,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -1753,7 +1885,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 content: "",
                 tool_calls: [
                   { name: "react_to_message", args: {}, id: "c1" },
-                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c2",
+                  },
                 ],
               });
             }
@@ -1763,7 +1899,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
-              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+              tool_calls: [
+                {
+                  name: SKIP_REPLY_TOOL,
+                  args: { reason: "acknowledged" },
+                  id: "c3",
+                },
+              ],
             });
           },
         };
@@ -1817,7 +1959,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             if (self.round === 1) {
               return new AIMessage({
                 content: "",
-                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                tool_calls: [
+                  {
+                    name: SKIP_REPLY_TOOL,
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
+                ],
               });
             }
             return new AIMessage("Oi de novo!");
@@ -2228,7 +2376,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
               return new AIMessage({
                 content: "",
                 tool_calls: [
-                  { name: "skip_reply", args: {}, id: "c1" },
+                  {
+                    name: "skip_reply",
+                    args: { reason: "acknowledged" },
+                    id: "c1",
+                  },
                   { name: "react_to_message", args: {}, id: "c2" },
                 ],
               });

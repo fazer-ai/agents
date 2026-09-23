@@ -77,6 +77,7 @@ import {
 import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
+  chosenSilence,
   FOLLOWUP_SKIP_SENTINEL,
   followupSilenceChannel,
   inertToolsFor,
@@ -85,6 +86,7 @@ import {
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
 } from "./silence";
+import { applySkipHandover, skipHandoverKind } from "./skip-handover";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
 
@@ -333,7 +335,7 @@ export function renderNudge(
   // the reactive path, and leaves a tool call rather than text — so there is nothing to imitate.
   const silenceInstruction =
     silenceChannel === "tool"
-      ? "call the `skip_reply` tool and produce NO text (end your turn)"
+      ? "call the `skip_reply` tool (reason `acknowledged`, unless this conversation needs a person) and produce NO text (end your turn)"
       : `reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else`;
   const directive = canMessageCustomer
     ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`
@@ -2056,6 +2058,33 @@ export async function runAgentNudge(
   // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
   // the final follow-up: label + resolve").
   if (silent || !reply || declaredSilence) {
+    // A SILENCE THAT NAMES A PERSON (issue #659, ./skip-handover.ts): a follow-up that stayed quiet
+    // because the conversation is not one for the agent, or because it needs somebody, hands it to
+    // `open` with a note instead of closing the episode on a stamp nobody reads. Only while the bot
+    // still owns it and no transfer already moved it. The floor for a conversation nobody answered
+    // is not asked here: a follow-up only runs on one our side has spoken in.
+    const chosen =
+      canMessagePost && !handoffState.completed
+        ? chosenSilence(result.messages as BaseMessage[])
+        : null;
+    const handover = chosen ? skipHandoverKind(chosen, true) : null;
+    if (handover && (await stillWanted())) {
+      const opened = await applySkipHandover({
+        client,
+        conversationId,
+        kind: handover,
+        detail: chosen?.detail ?? null,
+        flow,
+      });
+      // The ladder's own resolve would close the conversation just handed to a person. Its labels
+      // still apply.
+      await applyPostActions({
+        canMessage: canMessagePost,
+        ...(opened ? { allowResolve: false } : {}),
+      });
+      await takeBackUndeliveredSilence(drafted.wroteText);
+      return "silent";
+    }
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     await applyPostActions({ canMessage: canMessagePost });

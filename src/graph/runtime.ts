@@ -57,6 +57,7 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 import {
   buildGuardrailGate,
   chatwootNoteSink,
@@ -101,7 +102,12 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import { stillInSameEpisode } from "./reset-episode";
-import { customerFacingReply, silenceWasChosen } from "./silence";
+import {
+  chosenSilence,
+  customerFacingReply,
+  silenceWasChosen,
+} from "./silence";
+import { applySkipHandover, skipHandoverKind } from "./skip-handover";
 import { AgentStatusReporter } from "./status";
 import {
   clearTurnOwning,
@@ -481,6 +487,25 @@ export interface RunLoadedTurnParams {
   // enquanto a janela estava aberta, e a re-checagem pós-geração que já existe suprime o envio mas
   // não desfaz um ticket aberto nem uma chamada HTTP de saída. Quem abre uma janela dessas, diz.
   waitedBeforeInvoke?: boolean;
+}
+
+// Whether anyone on our side has ever spoken in this conversation, read LIVE from the row: the
+// predicate the follow-up gate uses (`ourSideHasSpoken`), asked at the end of the turn because a
+// human reply that landed while the model ran counts. A row that cannot be found answers true, the
+// reading that changes nothing.
+async function ourSideSpokeIn(
+  base: PrismaClient,
+  tenantId: bigint,
+  conversationDbId: bigint | null,
+): Promise<boolean> {
+  if (conversationDbId === null) return true;
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findUnique({
+      where: { id: conversationDbId },
+      select: { lastRepliedMessageId: true, chatwootFirstReplyAt: true },
+    }),
+  );
+  return row ? ourSideHasSpoken(row) : true;
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -2547,6 +2572,9 @@ async function runTurnBody(
       // `resolved` conversation tells the operator this attendance is finished when the agent knows
       // it is not. The rule itself lives in ./close-intent.ts, asked the same way at all three
       // sites — it was answered differently at each until a review round found them one by one.
+      // Asked before the resolve runs, because the resolve spends the flag: a conversation the agent
+      // closed is not one to hand to the queue.
+      const closing = turnState.resolveRequested;
       if (
         !unexplained &&
         mayCloseConversation({
@@ -2561,6 +2589,34 @@ async function runTurnBody(
           base,
           observed: recheck.observed,
         });
+      }
+      // A SILENCE A PERSON HAS TO SEE (issue #659, ./skip-handover.ts): a reason that names one, or
+      // any silence at all on a conversation nobody on our side has ever answered. Only when nothing
+      // else already took the conversation somewhere: a transfer put a person on it, and a resolve
+      // closed it on purpose. An attachment that went out does not stand in the way: the model's own
+      // "a person should see this" still holds after a picture, and a delivered attachment already
+      // stamped the reply mark the floor reads.
+      if (
+        !closing &&
+        handoffState?.completed !== true &&
+        !(await writeCalledOff())
+      ) {
+        const chosen = silenceChosen
+          ? chosenSilence(result.messages as BaseMessage[])
+          : null;
+        const kind = skipHandoverKind(
+          chosen,
+          await ourSideSpokeIn(base, tenantId, loaded.conversationDbId),
+        );
+        if (kind) {
+          await applySkipHandover({
+            client,
+            conversationId,
+            kind,
+            detail: chosen?.detail ?? null,
+            flow,
+          });
+        }
       }
       // Partial here too, and the same rule: a batch where one file failed is an attendance the
       // customer did not fully receive, so it neither closes nor clears the badge.

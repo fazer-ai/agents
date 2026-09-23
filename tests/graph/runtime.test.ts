@@ -160,6 +160,10 @@ function makeResolveClient(
       calls.push(["sendMessage", conversationId, content]);
       return {};
     },
+    sendPrivateNote: async (conversationId: number, content: string) => {
+      calls.push(["sendPrivateNote", conversationId, content]);
+      return {};
+    },
     toggleStatus: async (conversationId: number, status: string) => {
       calls.push(["toggleStatus", conversationId, status]);
       if (opts.mirrorOnToggle) {
@@ -2241,6 +2245,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // correção que neutralize os dois apaga um fato verdadeiro para consertar um falso.
   test("silêncio decidido e nada depois: o fato do turno diz que nada saiu", async () => {
     await seedConversation(9727, null);
+    // O nosso lado já falou aqui: numa conversa que ninguém respondeu, o silêncio passa a abri-la
+    // para uma pessoa (issue #659), e esse efeito não é o assunto deste teste.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 9727 },
+      data: { lastRepliedMessageId: 1 },
+    });
     const calls: Array<[string, number, string]> = [];
     const outcome = await runAgentTurn({
       tenantId,
@@ -3225,8 +3235,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("empty");
-    // Nothing was closed and nothing was sent — that was already true, and is not the defect.
-    expect(calls).toEqual([]);
+    // Nothing was closed and nothing reached the customer. Nobody on our side had ever spoken here,
+    // so since issue #659 the conversation leaves `pending` for a person, with a note saying why.
+    expect(
+      calls.map(([op, id, arg]) => [op, id, op === "toggleStatus" ? arg : ""]),
+    ).toEqual([
+      ["toggleStatus", 9774, "open"],
+      ["sendPrivateNote", 9774, ""],
+    ]);
 
     let warned: Record<string, unknown> | null = null;
     for (let i = 0; i < 30 && !warned; i++) {

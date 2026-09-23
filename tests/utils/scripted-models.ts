@@ -338,7 +338,13 @@ export class SkipThenHandoffModel {
         if (n === 1) {
           return new AIMessage({
             content: "",
-            tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+            tool_calls: [
+              {
+                name: "skip_reply",
+                args: { reason: "acknowledged" },
+                id: "call_skip",
+              },
+            ],
           });
         }
         if (n === 2) {
@@ -379,7 +385,13 @@ export class SkipThenImageModel {
         if (n === 1) {
           return new AIMessage({
             content: "",
-            tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+            tool_calls: [
+              {
+                name: "skip_reply",
+                args: { reason: "acknowledged" },
+                id: "call_skip",
+              },
+            ],
           });
         }
         if (n === 2) {
@@ -416,7 +428,13 @@ export class SkipThenResolveModel {
         if (n === 1) {
           return new AIMessage({
             content: "",
-            tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+            tool_calls: [
+              {
+                name: "skip_reply",
+                args: { reason: "acknowledged" },
+                id: "call_skip",
+              },
+            ],
           });
         }
         if (n === 2) {
@@ -479,7 +497,13 @@ export class SkipOnlyModel {
         return n === 1
           ? new AIMessage({
               content: "",
-              tool_calls: [{ name: "skip_reply", args: {}, id: "call_skip" }],
+              tool_calls: [
+                {
+                  name: "skip_reply",
+                  args: { reason: "acknowledged" },
+                  id: "call_skip",
+                },
+              ],
             })
           : new AIMessage("");
       },

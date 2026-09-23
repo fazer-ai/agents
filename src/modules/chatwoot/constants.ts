@@ -33,6 +33,15 @@ export const CHATWOOT_AUTH_HEADER = "api-access-token";
 // with anything the operator's own automations write there.
 export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
 
+// THE WHOLE REPLY A VOICE NOTE WAS CUT FROM, when the cut took something out (issue #792). The
+// attachment's `transcribed_text` is the words actually said (issue #787), so a URL or an address
+// leaves a hole in it; when the channel refuses the audio, the text sent in its place is read from
+// here instead. Same bag and same measurement as the send id above, and it comes back on the failure
+// webhook because Chatwoot writes `external_error` into this bag with a merge. What it carries is the
+// reply this contact was being sent, so a website inbox showing the bag to the contact shows them
+// nothing they were not already getting.
+export const CHATWOOT_REPLY_TEXT_KEY = "fazer_ai_reply_text";
+
 // THE NAME `/reset` PUTS ON ITS OWN ACKNOWLEDGEMENT, so a later reader can tell where the command's
 // cleanup ENDED (issue #642, round 21).
 //

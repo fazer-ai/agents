@@ -1403,7 +1403,12 @@ async function runTurnBody(
             tts.audio,
             tts.fileName,
             tts.mime,
-            { transcribedText: spoken.speech },
+            {
+              transcribedText: spoken.speech,
+              // What the channel gets as TEXT if it refuses the audio: the speech has holes where
+              // the items were, and the reply does not (issue #792).
+              ...(spoken.speech === text ? {} : { replyText: text }),
+            },
           );
           // AND KEEP THE WORDS WHERE OUR OWN READERS LOOK, which on upstream Chatwoot is the only
           // place they survive (issue #763). `transcribedText` above rides in

@@ -36,8 +36,9 @@ import type { NormalizedChatwootEvent } from "./types";
 //
 //   media      the channel could not obtain or accept the attachment. The same reply as TEXT gets
 //              through, so it is sent, once. The text is the reply the audio was rendered from,
-//              which the voice note carries as `transcribed_text` on its attachment: nothing is
-//              regenerated, and no model runs.
+//              which the voice note carries as `transcribed_text` on its attachment, or whole in its
+//              `content_attributes` when the speech left a URL or an address out (issue #792):
+//              nothing is regenerated, and no model runs.
 //   delivery   the message could not reach the recipient at all (outside the service window,
 //              undeliverable). A text send hits the same wall and leaves a second failed bubble, so
 //              nothing is sent.
@@ -88,10 +89,16 @@ export function channelFailureOf(
     return null;
   if (m.id === null || n.conversationId === null) return null;
   const code = m.externalError.match(/^\s*(\d+)\b/)?.[1] ?? null;
+  // The whole reply when the voice note carries it, which is when its speech had a URL or an address
+  // taken out (issue #792): the transcription is then the sentence with holes in it, and the text
+  // replacing the audio would read broken. The items go again, after the balloon that already
+  // carried them: a repeated link costs less than a sentence that stops mid-way.
   const text =
-    m.attachments
+    m.replyText?.trim() ||
+    (m.attachments
       ?.map((a) => a.transcribedText?.trim() ?? "")
-      .find((t) => t.length > 0) ?? null;
+      .find((t) => t.length > 0) ??
+      null);
   return {
     messageId: m.id,
     conversationId: n.conversationId,

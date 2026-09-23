@@ -74,8 +74,8 @@ export function readLastMessageId(payload: unknown): number | null {
 // Whether any message of this burst is a customer's REACTION (issue #746). The fork's default page
 // carries a reaction only when the message it reacts to is among the page's last twenty of the same
 // conversation, so the flush cannot learn from the page that one is missing. The arm can: it saw the
-// webhook. Sticky across the burst's arms, like `lastMessageId`, so a text typed after an orphan
-// reaction does not hide it.
+// webhook. Sticky across the burst's arms, and across a flush still running, so a text typed after an
+// orphan reaction does not hide it.
 export function readReactionArmed(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return false;
   return (payload as Record<string, unknown>).reactionArmed === true;
@@ -236,8 +236,11 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const lastMessageId = lastCandidate > 0 ? lastCandidate : null;
       const reactionArmed =
         params.reaction === true ||
-        (continuingBurst && readReactionArmed(existing.payload));
-      const prevReactionFrom = continuingBurst
+        (stillLive && readReactionArmed(existing.payload));
+      // Carried across a CLAIMED row too, like `deferringSince` (PR #821, review round 3): a text
+      // that arrives while the reaction's flush runs supersedes that turn, and the flush it arms
+      // would find its own text on the page and never ask for the reaction.
+      const prevReactionFrom = stillLive
         ? readReactionFrom(existing.payload)
         : null;
       const ownReactionFrom =

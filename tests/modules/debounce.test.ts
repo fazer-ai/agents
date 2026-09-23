@@ -588,6 +588,16 @@ describe.skipIf(!dbUp)("debounce", () => {
     await arm(false, 22);
     expect(readReactionArmed(await payloadOf())).toBe(false);
     expect(readReactionFrom(await payloadOf())).toBeNull();
+    // A text that arrives while the reaction's flush RUNS supersedes that turn; the flush it arms
+    // still owes the reaction (PR #821, review round 3).
+    await arm(true, 30);
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+      data: { status: "CLAIMED" },
+    });
+    await arm(false, 31);
+    expect(readReactionArmed(await payloadOf())).toBe(true);
+    expect(readReactionFrom(await payloadOf())).toBe(30);
   });
 
   // /reset retires the burst, but a flush already CLAIMED is past every cancel — and this one is a

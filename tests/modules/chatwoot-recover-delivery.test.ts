@@ -672,6 +672,44 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([[convId, REPLY]]);
   });
 
+  // PR #821, review round 3: what the catch-up read found is part of the freshness answer. Two
+  // stranded reactions the default page leaves out: recovering the older one would answer it after
+  // the customer reacted again, so it is refused like any older message.
+  test("a newer reaction only the catch-up read carries still counts as the customer writing again", async () => {
+    const convId = 8748;
+    const messageId = 9748;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const earlier = pageWith([{ id: messageId - 5, content: "obrigada!" }]);
+    const reactionRow = (id: number, emoji: string) => ({
+      ...(pageWith([{ id, content: emoji }]).payload[0] ?? {}),
+      content_attributes: { is_reaction: true },
+    });
+    const stub = stubChatwoot({
+      page: earlier,
+      recent: earlier,
+      caughtUp: {
+        payload: [
+          reactionRow(messageId, "❤️"),
+          reactionRow(messageId + 2, "😂"),
+        ],
+      },
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(outcome).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+  });
+
   // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW (issue #429).
   //
   // The row's whole purpose is "is this customer still owed a reply?", and after the first balloon

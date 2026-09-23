@@ -536,6 +536,8 @@ async function runRecovery(params: {
   // that ENDS at this id, so the message is in it whatever the conversation's length.
   let raw: unknown;
   let recent: ReturnType<typeof parseChatwootMessages> = [];
+  // What the catch-up read below found past the stranded message, when it was asked.
+  let caughtUp: ReturnType<typeof parseChatwootMessages> = [];
   let live: ReturnType<typeof parseLiveConversation> = null;
   let reconciled: Awaited<ReturnType<typeof reconcileMirrorFromLive>> | null =
     null;
@@ -580,7 +582,10 @@ async function runRecovery(params: {
       const caught = await client.getMessages(conversationId, {
         after: messageId - 1,
       });
-      if (findRawMessage(caught, messageId) !== null) raw = caught;
+      if (findRawMessage(caught, messageId) !== null) {
+        raw = caught;
+        caughtUp = parseChatwootMessages(caught);
+      }
     }
     // The NEWEST page, unanchored, and it answers a different question from the one above: whether
     // the customer has written again since. Two reads because one page cannot hold both ends — the
@@ -593,8 +598,14 @@ async function runRecovery(params: {
     // message neither covers this one nor makes it unanswerable. Left unfetched rather than fetched
     // and ignored: it is a REST round trip per recovery, and a failure on it returns `unreachable`,
     // which spends the recovery's budget over a page nothing was going to read.
+    // ...and what the catch-up read found is part of the answer (PR #821, review round 3): a newer
+    // reaction the default page leaves out is still the customer writing again, and a replay that
+    // missed it would answer the older one after the fact.
     recent = replayPosts
-      ? parseChatwootMessages(await client.getMessages(conversationId))
+      ? mergeById(
+          parseChatwootMessages(await client.getMessages(conversationId)),
+          caughtUp,
+        )
       : [];
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
@@ -1815,4 +1826,13 @@ export function registerDeliveryRecoveryHandler(): void {
   if (registered) return;
   registerJobHandler("DELIVERY_RECOVERY", deliveryRecoveryHandler);
   registered = true;
+}
+
+function mergeById(
+  page: ReturnType<typeof parseChatwootMessages>,
+  more: ReturnType<typeof parseChatwootMessages>,
+): ReturnType<typeof parseChatwootMessages> {
+  if (more.length === 0) return page;
+  const known = new Set(page.map((m) => m.id));
+  return [...page, ...more.filter((m) => !known.has(m.id))];
 }

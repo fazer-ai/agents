@@ -161,7 +161,8 @@ describe("the audit trail", () => {
     expect(text).not.toContain("988887777");
     expect(text).not.toContain("977776666");
     expect(text).not.toContain("cli-42");
-    const after = (audit?.after as Record<string, Record<string, unknown>>)
+    if (!audit) throw new Error("expected an audit row");
+    const after = (audit.after as Record<string, Record<string, unknown>>)
       .contactAuth;
     expect(after?.rule).toEqual({
       kind: "allowlist",

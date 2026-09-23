@@ -150,6 +150,10 @@ export interface HandoffTurnState {
   // Optional because the turn-state shape is spelled out by hand at five call sites that build the
   // toolset, and absent is exactly what it means: nobody declared anything.
   declinedToSpeak?: boolean;
+  // THIS turn closed the conversation itself, through the IMMEDIATE `resolve_conversation` (the
+  // nudge's; the reactive turn defers its close past the graph). The tool boundary's ownership
+  // question reads it: a status the turn wrote is not a person taking over (issue #717).
+  closedByThisTurn?: boolean;
 }
 
 // Whether the handoff supplies this turn's customer-facing text, which is the ONE question both
@@ -1572,6 +1576,7 @@ function resolveConversationTool(ctx: ToolCtx) {
         return "Did not resolve the conversation (the run was called off while this read was in flight).";
       }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
+      if (ctx.handoffState) ctx.handoffState.closedByThisTurn = true;
       // NOTE: Same origin as the deferred path in runtime.ts: the agent judged the request handled.
       if (recordable) {
         await recordResolutionOrigin({

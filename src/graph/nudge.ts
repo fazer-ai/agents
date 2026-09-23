@@ -109,6 +109,7 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import {
   buildNativeTools,
+  type HandoffTurnState,
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
 } from "./tools/native";
@@ -861,8 +862,8 @@ export async function runAgentNudge(
     return (await botOwnsItNowDetailed()).ours === true;
   };
 
-  const handoffState = {
-    customerMessage: null as string | null,
+  const handoffState: HandoffTurnState = {
+    customerMessage: null,
     completed: false,
     declinedToSpeak: false,
   };
@@ -898,7 +899,8 @@ export async function runAgentNudge(
     // A follow-up that may only NOTE started on a conversation that is not the bot's, and keeps
     // doing what it did: what the fence detects is the owner changing during the run.
     ownedAtStart: canMessagePre,
-    handedOffByThisTurn: () => handoffState.completed,
+    ownerChangedByThisTurn: () =>
+      handoffState.completed || handoffState.closedByThisTurn === true,
     ownsNow: mirrorOwnsIt,
     conversationId,
   }).ask;

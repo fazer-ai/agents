@@ -803,6 +803,80 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(rounds).toBe(1);
   });
 
+  // ISSUE #717, review round 1: the follow-up's `resolve_conversation` closes IMMEDIATELY, and a
+  // status webhook mirrored before the next hop reads `resolved`, which is not the bot's. That is the
+  // turn's own close, not a person taking over, so the call after it still runs.
+  test("the follow-up's own close does not read as a takeover at the next hop", async () => {
+    const contactInboxId = 8893;
+    await seedConv(9718, null, new Date(), contactInboxId);
+    const s = stub();
+    const client = {
+      ...(await s.makeClient()),
+      toggleStatus: async (c: number, status: string) => {
+        s.statuses.push([c, status]);
+        await suDb.conversation.updateMany({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: c,
+          },
+          data: { status },
+        });
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    let rounds = 0;
+    class ResolveThenLabelModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-resolve-then-label";
+      }
+      async _generate(): Promise<ChatResult> {
+        rounds += 1;
+        const message =
+          rounds === 1
+            ? new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "resolve_conversation", args: {}, id: "call_717_r" },
+                ],
+              })
+            : rounds === 2
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "set_labels",
+                      args: { add: ["encerrado"], scope: "conversation" },
+                      id: "call_717_l",
+                    },
+                  ],
+                })
+              : new AIMessage("");
+        return { generations: [{ text: "", message }] };
+      }
+    }
+
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9718`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new ResolveThenLabelModel(),
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+
+    expect(s.statuses).toContainEqual([9718, "resolved"]);
+    expect(s.labelSets.flat()).toContain("encerrado");
+    expect(rounds).toBeGreaterThanOrEqual(2);
+  });
+
   // REVIEW ROUND 5, and it is the same non-monotonicity that put the empty terminator there. The
   // fences this path hands down are not all one-way: the channel-redirect one reads `agent.enabled`
   // on every ask, so an operator who switches the agent off during the model call and back on before

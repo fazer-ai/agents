@@ -15,7 +15,7 @@ function fence(
   let reads = 0;
   const f = withOwnershipFence(async () => over.base ?? true, {
     ownedAtStart: over.ownedAtStart ?? true,
-    handedOffByThisTurn: () => over.handedOff ?? false,
+    ownerChangedByThisTurn: () => over.handedOff ?? false,
     ownsNow: async () => {
       reads++;
       return (over.owns ?? (async () => true))();

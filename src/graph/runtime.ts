@@ -129,6 +129,7 @@ import { ToolFlowLogger } from "./tool-flowlog";
 import type { McpLoadDeps } from "./tools/mcp";
 import {
   buildNativeTools,
+  type HandoffTurnState,
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
   type TurnState,
@@ -1092,8 +1093,8 @@ async function runTurnBody(
     documentsInFlight: 0,
     attachmentsSeq: 0,
   };
-  const handoffState = {
-    customerMessage: null as string | null,
+  const handoffState: HandoffTurnState = {
+    customerMessage: null,
     completed: false,
     declinedToSpeak: false,
   };
@@ -1111,7 +1112,8 @@ async function runTurnBody(
     {
       // Unreadable is not ours: the fence then never asks, so a failing read lets the tools run.
       ownedAtStart: await ownershipNow().catch(() => false),
-      handedOffByThisTurn: () => handoffState.completed,
+      ownerChangedByThisTurn: () =>
+        handoffState.completed || handoffState.closedByThisTurn === true,
       ownsNow: ownershipNow,
       conversationId,
     },

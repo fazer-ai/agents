@@ -14,9 +14,9 @@ import logger from "@/api/lib/logger";
 //   - asked only when the conversation was the bot's when the turn started. What it detects is the
 //     conversation CHANGING hands during the turn; a turn that started on a conversation that was
 //     not the bot's (a follow-up that may only note) keeps doing what it did;
-//   - not asked once THIS turn's own transfer completed: the turn changed the owner itself, and the
-//     calls after it in the same answer (a label after the handoff) are the turn's intent, not a
-//     write over somebody;
+//   - not asked once THIS turn changed the owner itself (its own transfer, or the follow-up's
+//     immediate close): the calls after it in the same answer (a label after the handoff) are the
+//     turn's intent, not a write over somebody;
 //   - a read that fails lets the calls run, the rule #711's gate keeps for the same reason: an
 //     unreadable row is not evidence that anybody took the conversation, and the post-generation
 //     recheck still holds the send.
@@ -36,7 +36,7 @@ export function withOwnershipFence(
   fence: () => Promise<boolean>,
   opts: {
     ownedAtStart: boolean;
-    handedOffByThisTurn: () => boolean;
+    ownerChangedByThisTurn: () => boolean;
     ownsNow: () => Promise<boolean>;
     conversationId: number;
   },
@@ -46,7 +46,7 @@ export function withOwnershipFence(
     lostOwnership: () => lost,
     ask: async () => {
       if (!(await fence())) return false;
-      if (!opts.ownedAtStart || opts.handedOffByThisTurn()) return true;
+      if (!opts.ownedAtStart || opts.ownerChangedByThisTurn()) return true;
       const ours = await opts.ownsNow().catch((err: unknown) => {
         logger.warn(
           { err, conv: opts.conversationId },

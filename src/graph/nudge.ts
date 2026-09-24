@@ -871,6 +871,7 @@ export async function runAgentNudge(
       : "";
     if (!text) return "silent";
     if (!(await stillWanted())) return standDown();
+    delivered = true;
     await client.sendPrivateNote(
       conversationId,
       `${OPERATOR_EVENT_NOTE_PREFIX}${text}`,

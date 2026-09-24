@@ -47,6 +47,10 @@ import {
 import { startScheduler, stopScheduler } from "@/modules/scheduler/worker";
 import { ensureAllSpendPolls } from "@/modules/spend-ceiling/arm";
 import { registerSpendPollHandler } from "@/modules/spend-ceiling/poll";
+import {
+  ensureAllInboundSweeps,
+  registerInboundSweepHandlers,
+} from "@/modules/webhooks/inbound/sweep";
 import { registerHeartbeatHandler } from "@/modules/webhooks/outbound/heartbeat";
 import {
   startOutboundWorker,
@@ -174,6 +178,7 @@ if (config.schedulerWorker.enabled) {
   registerHumanReplyRecoveryHandler();
   registerSpendPollHandler();
   registerKnowledgeSourceHandler();
+  registerInboundSweepHandlers();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).
@@ -190,6 +195,12 @@ if (config.schedulerWorker.enabled) {
   // what makes the recovery reach the rows the restart itself created.
   void ensureAllDeliverySweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm Chatwoot delivery sweeps"),
+  );
+  // Arm the per-tenant sweep for inbound deliveries stranded between the ack and the dispatch (issue
+  // #817), for every tenant with an inbound surface. Same reason as the Chatwoot sweep above: a
+  // deploy is what strands them.
+  void ensureAllInboundSweeps().catch((error) =>
+    logger.warn({ error }, "Failed to arm inbound delivery sweeps"),
   );
   // Arm the per-tenant spend ceiling poll for every tenant whose ceiling is on (issue #426), so a
   // row lost to a reset is not a ceiling deciding on a figure frozen at its last poll.

@@ -103,6 +103,12 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Shared (issue #794): one per knowledge source, every ten minutes, one paginated fetch and a
   // reconcile. What it creates is embedded by RAG_INGEST jobs, which are the ones that spend.
   KNOWLEDGE_SOURCE_SYNC: "shared",
+  // Shared, for the DELIVERY_SWEEP reasons (issue #817): a cadence of minutes by design, since a
+  // delivery is not stranded until nothing has moved it for five, and one indexed query per tenant.
+  INBOUND_SWEEP: "shared",
+  // Shared, for the DELIVERY_RECOVERY reasons: the event already waited out the sweep's staleness
+  // window, and what it may spend is a model turn, capped by the shared lane's provider concurrency.
+  INBOUND_REDISPATCH: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -161,6 +167,13 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   MEDIA_TEXT_FALLBACK: false,
   // A fetch and database writes; the embedding it causes is spent by the RAG_INGEST jobs it arms.
   KNOWLEDGE_SOURCE_SYNC: false,
+  // It reads rows and arms jobs. Re-dispatching inline would make this true, and that is why it
+  // arms an INBOUND_REDISPATCH instead, the same split as DELIVERY_SWEEP and DELIVERY_RECOVERY.
+  INBOUND_SWEEP: false,
+  // It runs `processInboundDelivery`, which for a payment or an operator event runs the agent's
+  // nudge turn: a model call. Most re-dispatches are a conversion recorded in one query, but the
+  // flag is about what ONE job may do.
+  INBOUND_REDISPATCH: true,
 };
 
 // How many OBSERVE rows one shared tick claims (issue #621): enough to keep the provider bound busy
@@ -234,6 +247,12 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   MEDIA_TEXT_FALLBACK: false,
   // One row per source, re-armed by its own reschedule: bounded by sources, reused forever.
   KNOWLEDGE_SOURCE_SYNC: false,
+  // One perpetual row per tenant.
+  INBOUND_SWEEP: false,
+  // Kept, because it is armed `once` and its row is what remembers the attempt was made: deleted, the
+  // next sweep pass would arm the same attempt again. Rows exist only for stranded deliveries, which
+  // are rare, and at most one per processing attempt of each.
+  INBOUND_REDISPATCH: false,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -307,6 +326,9 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   MEDIA_TEXT_FALLBACK: true,
   // One per knowledge source, whatever the traffic.
   KNOWLEDGE_SOURCE_SYNC: false,
+  INBOUND_SWEEP: false,
+  // One per stranded delivery, and deliveries follow what the senders post.
+  INBOUND_REDISPATCH: true,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -401,6 +423,15 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // source records the failure where the operator reads it. A failed run does not reach here at all
   // (the handler records it and reschedules); only a throw that escapes the handler does.
   KNOWLEDGE_SOURCE_SYNC: "warn",
+  // Self-rescheduling: its death is stranded inbound events going unretried from then on, which is
+  // the whole of issue #817 back again, silently.
+  INBOUND_SWEEP: "error",
+  // `error`, and not the recovery family's `warn`, because nothing announced this loss before the
+  // job died: the sender got a 2xx, the row is still PENDING or PROCESSING, and no line said so. A
+  // payment the agent never acknowledged, or an operator's event never relayed, with no way back but
+  // this line. (A delivery that runs out of ITS OWN attempts is announced by the processor, at
+  // `error`, and does not reach here: that path returns normally.)
+  INBOUND_REDISPATCH: "error",
 };
 
 // HOW FAR APART ONE KIND'S RETRIES ARE, as the base of `backoffMs` in ./service.ts (issue #744).
@@ -446,6 +477,10 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   OBSERVE: 2_000,
   MEDIA_TEXT_FALLBACK: 2_000,
   KNOWLEDGE_SOURCE_SYNC: 2_000,
+  INBOUND_SWEEP: 2_000,
+  // The recovery family's base, for its reason: armed once per attempt and nothing re-arms the same
+  // attempt, so this ladder is what outlasts a database restart that made the dispatch throw.
+  INBOUND_REDISPATCH: 60_000,
 };
 
 export function kindsInLane(

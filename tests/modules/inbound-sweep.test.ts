@@ -1,0 +1,424 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import type { TenantContext } from "@/lib/tenancy";
+import { createIntegrationInstance } from "@/modules/integrations/service";
+import type { ClaimedJob } from "@/modules/scheduler/service";
+import { getJobHandler } from "@/modules/scheduler/worker";
+import {
+  ensureAllInboundSweeps,
+  redispatchKey,
+  registerInboundSweepHandlers,
+  sweepStrandedInbound,
+} from "@/modules/webhooks/inbound/sweep";
+import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+
+// Issue #817: the receptor acks first and dispatches detached, so a death in between left the row
+// PENDING or PROCESSING with the sender holding a 2xx, and only a redelivery ever retried it. The
+// sweep finds those rows and arms one re-dispatch each; the re-dispatch is the processor itself, so
+// the claim, the attempt cap and the dead-letter line are the processor's and are asserted here only
+// as far as the sweep reaches them.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+const MIN = 60_000;
+
+describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
+  let tenantA = 0n;
+  let tenantB = 0n;
+  let tenantQuiet = 0n;
+  let instanceA = 0n;
+  let instanceB = 0n;
+  let seq = 0;
+
+  const hash = (t: string) =>
+    new Bun.CryptoHasher("sha256").update(t).digest("hex");
+
+  beforeAll(async () => {
+    registerInboundSweepHandlers();
+    const mk = async (slug: string) =>
+      (
+        await suDb.tenant.create({
+          data: { name: slug, slug: `${slug}-${process.pid}` },
+        })
+      ).id;
+    tenantA = await mk("in817a");
+    tenantB = await mk("in817b");
+    tenantQuiet = await mk("in817q");
+    const instance = async (tenantId: bigint, tok: string) =>
+      (
+        await suDb.integrationInstance.create({
+          data: {
+            tenantId,
+            catalogType: "GENERIC",
+            name: "inbound",
+            enabled: true,
+            config: {},
+            routeTokenHash: hash(`${tok}-${process.pid}`),
+            inboundAuthStrategy: "NONE",
+          },
+        })
+      ).id;
+    instanceA = await instance(tenantA, "tok-817a");
+    instanceB = await instance(tenantB, "tok-817b");
+    // The quiet tenant has an OUTBOUND-only instance: no route token, nothing inbound to strand.
+    await suDb.integrationInstance.create({
+      data: {
+        tenantId: tenantQuiet,
+        catalogType: "GENERIC",
+        name: "outbound only",
+        enabled: true,
+        config: {},
+        inboundAuthStrategy: "NONE",
+      },
+    });
+  });
+
+  afterAll(async () => {
+    for (const tid of [tenantA, tenantB, tenantQuiet]) {
+      if (!tid) continue;
+      await clearFlowLog(suDb, { tenantId: tid });
+      for (const tbl of [
+        "scheduler_jobs",
+        "inbound_deliveries",
+        "audit_logs",
+        "integration_instances",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${tbl} WHERE tenant_id = ${tid}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tid}`);
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  async function clear(tid: bigint) {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tid}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM inbound_deliveries WHERE tenant_id = ${tid}`,
+    );
+  }
+
+  function seed(
+    tenantId: bigint,
+    instanceId: bigint,
+    row: {
+      status: "PENDING" | "PROCESSING" | "PROCESSED" | "FAILED";
+      attempts?: number;
+      receivedAgoMs: number;
+      claimedAgoMs?: number | null;
+    },
+  ) {
+    const now = Date.now();
+    seq += 1;
+    return suDb.inboundDelivery.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        dedupeKey: `d817-${process.pid}-${seq}`,
+        payload: { kind: "status_update" },
+        status: row.status,
+        attempts: row.attempts ?? 0,
+        receivedAt: new Date(now - row.receivedAgoMs),
+        claimedAt:
+          row.claimedAgoMs == null ? null : new Date(now - row.claimedAgoMs),
+      },
+    });
+  }
+
+  const jobs = (tenantId: bigint) =>
+    suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "INBOUND_REDISPATCH" },
+      select: { dedupeKey: true, payload: true, status: true, id: true },
+      orderBy: { id: "asc" },
+    });
+
+  function claimed(
+    tenantId: bigint,
+    payload: Record<string, unknown>,
+  ): ClaimedJob {
+    return {
+      id: 0n,
+      tenantId,
+      kind: "INBOUND_REDISPATCH",
+      payload,
+    } as ClaimedJob;
+  }
+
+  test("arms one re-dispatch per stranded row, and none for a row still owned or finished", async () => {
+    await clear(tenantA);
+    const pendingOld = await seed(tenantA, instanceA, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    const staleClaim = await seed(tenantA, instanceA, {
+      status: "PROCESSING",
+      attempts: 1,
+      receivedAgoMs: 11 * MIN,
+      claimedAgoMs: 10 * MIN,
+    });
+    // A claim that predates the `claimedAt` column: judged by receipt, as the processor judges it.
+    const unstamped = await seed(tenantA, instanceA, {
+      status: "PROCESSING",
+      attempts: 1,
+      receivedAgoMs: 10 * MIN,
+      claimedAgoMs: null,
+    });
+    // Owned or done, so never armed.
+    await seed(tenantA, instanceA, { status: "PENDING", receivedAgoMs: MIN });
+    await seed(tenantA, instanceA, {
+      status: "PROCESSING",
+      attempts: 5,
+      receivedAgoMs: 60 * MIN,
+      claimedAgoMs: MIN,
+    });
+    await seed(tenantA, instanceA, {
+      status: "PROCESSED",
+      attempts: 1,
+      receivedAgoMs: 60 * MIN,
+      claimedAgoMs: 59 * MIN,
+    });
+    await seed(tenantA, instanceA, {
+      status: "FAILED",
+      attempts: 5,
+      receivedAgoMs: 60 * MIN,
+      claimedAgoMs: 59 * MIN,
+    });
+
+    const res = await sweepStrandedInbound({ tenantId: tenantA, base: appDb });
+    expect(res.armed).toBe(3);
+    expect((await jobs(tenantA)).map((j) => j.dedupeKey).sort()).toEqual(
+      [
+        redispatchKey(pendingOld.id, 0),
+        redispatchKey(staleClaim.id, 1),
+        redispatchKey(unstamped.id, 1),
+      ].sort(),
+    );
+    for (const j of await jobs(tenantA)) {
+      expect(j.status).toBe("PENDING");
+    }
+  });
+
+  test("the same attempt is armed once; a new attempt that strands again is armed again", async () => {
+    await clear(tenantA);
+    const row = await seed(tenantA, instanceA, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    expect(
+      (await sweepStrandedInbound({ tenantId: tenantA, base: appDb })).armed,
+    ).toBe(1);
+    // A pass after the job died leaves it dead instead of reviving it, which is what bounds a
+    // delivery whose dispatch throws before anything commits.
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId: tenantA, kind: "INBOUND_REDISPATCH" },
+      data: { status: "DEAD" },
+    });
+    expect(
+      (await sweepStrandedInbound({ tenantId: tenantA, base: appDb })).armed,
+    ).toBe(0);
+    expect((await jobs(tenantA)).map((j) => j.status)).toEqual(["DEAD"]);
+    // The re-dispatch claimed it (attempt 1) and then the process died in the middle.
+    await suDb.inboundDelivery.update({
+      where: { id: row.id },
+      data: {
+        status: "PROCESSING",
+        attempts: 1,
+        claimedAt: new Date(Date.now() - 10 * MIN),
+      },
+    });
+    expect(
+      (await sweepStrandedInbound({ tenantId: tenantA, base: appDb })).armed,
+    ).toBe(1);
+    expect((await jobs(tenantA)).map((j) => j.dedupeKey)).toEqual([
+      redispatchKey(row.id, 0),
+      redispatchKey(row.id, 1),
+    ]);
+  });
+
+  test("the re-dispatch runs the processor: a stranded row ends PROCESSED, one claim later", async () => {
+    await clear(tenantA);
+    const row = await seed(tenantA, instanceA, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    await sweepStrandedInbound({ tenantId: tenantA, base: appDb });
+    const [job] = await jobs(tenantA);
+    const handler = getJobHandler("INBOUND_REDISPATCH");
+    expect(handler).toBeDefined();
+    const out = await handler?.(
+      claimed(tenantA, job?.payload as Record<string, unknown>),
+      appDb,
+    );
+    expect(out).toEqual({ outcome: "done" });
+    const after = await suDb.inboundDelivery.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(after.status).toBe("PROCESSED");
+    expect(after.attempts).toBe(1);
+    expect(after.processedAt).not.toBeNull();
+    // Finished rows are not stranded: the next pass arms nothing.
+    expect(
+      (await sweepStrandedInbound({ tenantId: tenantA, base: appDb })).armed,
+    ).toBe(0);
+  });
+
+  test("two re-dispatches of one row race and the row is claimed once", async () => {
+    await clear(tenantA);
+    const row = await seed(tenantA, instanceA, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    const handler = getJobHandler("INBOUND_REDISPATCH");
+    const job = claimed(tenantA, { deliveryId: String(row.id) });
+    await Promise.all([handler?.(job, appDb), handler?.(job, appDb)]);
+    const after = await suDb.inboundDelivery.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(after.status).toBe("PROCESSED");
+    expect(after.attempts).toBe(1);
+  });
+
+  test("a stranded row past its attempt budget ends FAILED and is announced once", async () => {
+    await clear(tenantA);
+    await clearFlowLog(suDb, { tenantId: tenantA });
+    const row = await seed(tenantA, instanceA, {
+      status: "PROCESSING",
+      attempts: 5,
+      receivedAgoMs: 60 * MIN,
+      claimedAgoMs: 10 * MIN,
+    });
+    await sweepStrandedInbound({ tenantId: tenantA, base: appDb });
+    const [job] = await jobs(tenantA);
+    expect(job?.dedupeKey).toBe(redispatchKey(row.id, 5));
+    const handler = getJobHandler("INBOUND_REDISPATCH");
+    await handler?.(
+      claimed(tenantA, job?.payload as Record<string, unknown>),
+      appDb,
+    );
+    expect(
+      (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
+        .status,
+    ).toBe("FAILED");
+    // A second pass finds nothing to arm, so nothing announces twice.
+    expect(
+      (await sweepStrandedInbound({ tenantId: tenantA, base: appDb })).armed,
+    ).toBe(0);
+    const lines = await flowLogRows(suDb, {
+      // flowlog-scope: tenant-wide — "announced once" is about every line the tenant got, and this
+      // tenant belongs to this file alone; a filter by delivery id would hide a second line for it.
+      where: { tenantId: tenantA, stage: "dead_letter" },
+      select: { level: true, detail: true },
+    });
+    expect(lines).toHaveLength(1);
+    const detail = lines[0]?.detail as Record<string, unknown>;
+    expect(lines[0]?.level).toBe("error");
+    expect(detail.unit).toBe("inbound_delivery");
+    expect(detail.deliveryId).toBe(String(row.id));
+    expect(detail.reason).toBe("attempts-exhausted");
+  });
+
+  test("a tenant's sweep arms only its own rows", async () => {
+    await clear(tenantA);
+    await clear(tenantB);
+    await seed(tenantA, instanceA, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    const b = await seed(tenantB, instanceB, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    expect(
+      (await sweepStrandedInbound({ tenantId: tenantB, base: appDb })).armed,
+    ).toBe(1);
+    expect((await jobs(tenantB)).map((j) => j.dedupeKey)).toEqual([
+      redispatchKey(b.id, 0),
+    ]);
+    expect(await jobs(tenantA)).toEqual([]);
+  });
+
+  test("a re-dispatch with no delivery id fails instead of retrying", async () => {
+    const handler = getJobHandler("INBOUND_REDISPATCH");
+    const out = await handler?.(claimed(tenantA, {}), appDb);
+    expect(out?.outcome).toBe("fail");
+  });
+
+  test("the sweep is armed for every tenant with an inbound surface, and only those", async () => {
+    for (const t of [tenantA, tenantB, tenantQuiet]) {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM scheduler_jobs WHERE tenant_id = ${t} AND kind = 'INBOUND_SWEEP'`,
+      );
+    }
+    await ensureAllInboundSweeps(appDb);
+    const armed = await suDb.schedulerJob.findMany({
+      where: {
+        kind: "INBOUND_SWEEP",
+        tenantId: { in: [tenantA, tenantB, tenantQuiet] },
+      },
+      select: { tenantId: true, dedupeKey: true },
+    });
+    expect(armed.map((r) => r.tenantId).sort()).toEqual(
+      [tenantA, tenantB].sort(),
+    );
+    // Its own handler reschedules it, so the row is perpetual.
+    const handler = getJobHandler("INBOUND_SWEEP");
+    const out = await handler?.(
+      {
+        id: 0n,
+        tenantId: tenantA,
+        kind: "INBOUND_SWEEP",
+        payload: {},
+      } as ClaimedJob,
+      appDb,
+    );
+    expect(out?.outcome).toBe("reschedule");
+  });
+
+  test("creating a tenant's first inbound instance arms its sweep", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantQuiet} AND kind = 'INBOUND_SWEEP'`,
+    );
+    const ctx: TenantContext = {
+      tenantId: tenantQuiet,
+      userId: null,
+      role: "TENANT_ADMIN",
+    };
+    const made = await createIntegrationInstance(
+      ctx,
+      { catalogType: "GENERIC", name: "now inbound" },
+      appDb,
+    );
+    expect(made.routeToken).not.toBeNull();
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId: tenantQuiet, kind: "INBOUND_SWEEP" },
+      }),
+    ).toBe(1);
+  });
+});

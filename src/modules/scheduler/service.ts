@@ -80,7 +80,9 @@ export type SchedulerJobKind =
   | "SPEND_CEILING_POLL"
   | "OBSERVE"
   | "MEDIA_TEXT_FALLBACK"
-  | "KNOWLEDGE_SOURCE_SYNC";
+  | "KNOWLEDGE_SOURCE_SYNC"
+  | "INBOUND_SWEEP"
+  | "INBOUND_REDISPATCH";
 
 export interface ClaimedJob {
   id: bigint;

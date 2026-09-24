@@ -3567,6 +3567,95 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // Issue #818, review round 5: the same takeover with the agent switched off inside the same call.
+  // The note is a write to Chatwoot like any other, and a silenced run writes nothing.
+  test("an operator event taken over while the agent is switched off writes no note", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9874, null);
+        const agent = await suDb.agent.findFirstOrThrow({
+          where: { tenantId },
+          select: { id: true },
+        });
+        const s = stub();
+        try {
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:9874`,
+            nudge: {
+              source: "GENERIC",
+              kind: "agent_nudge",
+              framing: "operator_event",
+              text: "Entraram 120 de 400.",
+            },
+            deliverToResolved: true,
+            base: appDb,
+            deps: {
+              makeModel: ((cfg: { model: string }) =>
+                cfg.model === GUARD_MODEL
+                  ? guardrailModel(async () => {
+                      await suDb.conversation.updateMany({
+                        where: {
+                          tenantId,
+                          chatwootInstanceId: instanceId,
+                          chatwootConversationId: 9874,
+                        },
+                        data: {
+                          status: "open",
+                          assigneeType: "User",
+                          assigneeId: 5,
+                        },
+                      });
+                      await suDb.agent.update({
+                        where: { id: agent.id },
+                        data: { enabled: false },
+                      });
+                      return {
+                        content: JSON.stringify({
+                          violated: false,
+                          categories: [],
+                          rationale: "",
+                          suggestedReply: null,
+                        }),
+                      };
+                    })
+                  : new FakeListChatModel({
+                      responses: ["Entraram 120 de 400."],
+                    })) as never,
+              makeClient: s.makeClient,
+              checkpointer: new MemorySaver(),
+              persistUsage: async () => {},
+            },
+          });
+          expect(outcome).toBe("agent-unavailable");
+          expect(s.messages).toEqual([]);
+          expect(s.notes).toEqual([]);
+        } finally {
+          await suDb.agent.update({
+            where: { id: agent.id },
+            data: { enabled: true },
+          });
+        }
+      },
+    );
+  });
+
   // And the window inside the handoff path: the closing line is screened by the guardrail before it
   // goes out, which is a model call, so the answer taken before it is spent by the time it returns.
   // The rendezvous is the judge's own call, the same one the reply branch uses.

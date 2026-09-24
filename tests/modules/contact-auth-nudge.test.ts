@@ -557,6 +557,78 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     ]);
   });
 
+  // Review round 5: the endpoint REFUSES the contact while the person takes over. The refusal is
+  // about approaching the customer; the note is for the person, and would have been written had they
+  // held the conversation before the call.
+  test("a takeover during an authorization call that refuses still leaves the operator event as a note", async () => {
+    await seedConv(9447);
+    const s = stub();
+    const takeOverThenDeny = (async () => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 9447 },
+        data: { assigneeType: "User", assigneeId: 51, status: "open" },
+      });
+      return new Response('{"authorized":false}', { status: 403 });
+    }) as unknown as typeof fetch;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9447`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        framing: "operator_event",
+        text: "Entraram 120 de 400.",
+      },
+      deliverToResolved: true,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["não devia sair"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        contactAuthFetch: takeOverThenDeny,
+      },
+    });
+    expect(outcome).toBe("noted");
+    expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual([
+      `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
+    ]);
+  });
+
+  // And a refusal with the conversation still the bot's stays silent: nobody is there to read it.
+  test("an authorization refusal on a bot-held conversation leaves no note", async () => {
+    await seedConv(9448);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9448`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        framing: "operator_event",
+        text: "Entraram 120 de 400.",
+      },
+      deliverToResolved: true,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["não devia sair"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        contactAuthFetch: (async () =>
+          new Response('{"authorized":false}', {
+            status: 403,
+          })) as unknown as typeof fetch,
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
   // A proactive turn benefits from the endpoint's facts the same way a reactive one does, and the
   // check that produced them is the one that just allowed this send. Asserted on the prompt the
   // model received: this path builds its own graph rather than going through runLoadedTurn, so it

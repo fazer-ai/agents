@@ -824,6 +824,8 @@ export async function runAgentNudge(
   // asks on their behalf, and none can forget to — the contact-auth refusal is the end that proved
   // that rule needs enforcing rather than repeating.
   //
+  // The operator event's verbatim note (issue #818) is the same shape and asks inside itself too.
+  //
   // What is left are the asks that guard something else, and they are enumerable:
   //
   //   1. the entry, covering everything the caller did before this (asked immediately below);
@@ -858,11 +860,15 @@ export async function runAgentNudge(
   // the contact-authorization call, and one during the model call (review round 2). Each of those
   // used to end `silent` or as the model's own note, and the report went with it.
   const operatorEvent = params.nudge.framing === "operator_event";
+  // It asks `stillWanted` itself, the way `applyPostActions` does and for the same reason: it is
+  // reached by six ends after six different waits (the auth call, the thread wait, the model, the
+  // judge), and an agent switched off or to monitoring in any of them writes nothing to Chatwoot.
   const noteOperatorEvent = async (): Promise<RunAgentNudgeOutcome> => {
     const text = params.nudge.text
       ? sanitizeFreeBlock(params.nudge.text, GENERIC_TEXT_MAX_CHARS)
       : "";
     if (!text) return "silent";
+    if (!(await stillWanted())) return standDown();
     await client.sendPrivateNote(
       conversationId,
       `${OPERATOR_EVENT_NOTE_PREFIX}${text}`,
@@ -1282,7 +1288,14 @@ export async function runAgentNudge(
         canMessage: stillOurs === "ours",
         allowResolve: false,
       });
-      return applied === "stale" ? standDown() : "silent";
+      if (applied === "stale") return standDown();
+      // A person who took the conversation during the call is owed the operator's event, whatever
+      // the endpoint said about the contact: the note is for them, not an approach to the customer,
+      // and it is what the event would have been had they held it before the call.
+      if (operatorEvent && stillOurs === "not-ours") {
+        return noteOperatorEvent();
+      }
+      return "silent";
     }
     // Allowed, and the ownership probe above happened BEFORE a round-trip that may have taken ten
     // seconds. The same reason the refusal re-asks: a human who took the conversation during the

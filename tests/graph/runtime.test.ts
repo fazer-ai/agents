@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
+import {
+  awaitAllCallbacks,
+  consumeCallback,
+} from "@langchain/core/callbacks/promises";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
   AIMessage,
@@ -2124,6 +2128,54 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // Então o carimbo da chamada continua sendo o que ele é — a melhor resposta NAQUELE instante, que
   // é tudo que o balão ao vivo pode ter — e o turno escreve um fato próprio quando acaba, sobre o
   // que de fato saiu. A trilha prefere o fato do turno.
+  // A LINHA DA FERRAMENTA SAI DENTRO DO TURNO, com a fila de callbacks ocupada (issue #836). Um
+  // handler sem `awaitHandlers` vai para a fila de segundo plano do LangChain, única no processo e de
+  // concorrência 1: sob carga, o `handleToolEnd` rodava depois de o turno voltar, a linha ainda nem
+  // tinha sido agendada quando o leitor esperou as escritas, e o carimbo `turnDelivered` era lido
+  // tarde. Aqui a fila é ocupada de propósito antes do turno, que é a carga reproduzida sem acaso.
+  test("com a fila de callbacks ocupada, a linha da ferramenta já existe quando o turno volta, carimbada no fim da ferramenta", async () => {
+    await seedConversation(9836, null);
+    const CLOSING = "Já chamo uma pessoa do time.";
+    const calls: Array<[string, number, string]> = [];
+    const hold = consumeCallback(() => Bun.sleep(300), false);
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9836 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SkipThenHandoffModel(CLOSING) as unknown as BaseChatModel,
+          makeClient: makeResolveClient(calls),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 9836 },
+      });
+      // Lido com a fila AINDA ocupada: o que estiver lá só existe se foi escrito dentro do turno.
+      const decisao = await flowLogRow(suDb, {
+        where: {
+          tenantId,
+          conversationId: conv.id,
+          stage: "tool",
+          detail: { path: ["tool"], equals: "skip_reply" },
+        },
+        select: { detail: true },
+      });
+      // E carimbado no instante em que a ferramenta acabou, antes da transferência: `false`.
+      expect(
+        (decisao?.detail as Record<string, unknown> | null)?.turnDelivered,
+      ).toBe(false);
+    } finally {
+      await hold;
+      await awaitAllCallbacks();
+    }
+  });
+
   test("silêncio decidido e transferência depois: o fato do turno diz que saiu mensagem", async () => {
     await seedConversation(9726, null);
     const CLOSING = "Já chamo uma pessoa do time.";
@@ -2153,8 +2205,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // O carimbo da chamada, que é provisório por construção: quando `skip_reply` rodou, a
     // transferência ainda não tinha acontecido.
+    // A linha do `skip_reply`, pelo nome: o turno grava duas linhas `tool` (a do `handoff_to_human`
+    // vem depois e não carrega carimbo), e a ordem em que elas chegam à tabela não é a das chamadas,
+    // porque cada escrita é disparada sem espera. Ler "a primeira linha tool" era ler qualquer uma
+    // das duas (issue #836).
     const decisao = await flowLogRow(suDb, {
-      where: { tenantId, conversationId: conv.id, stage: "tool" },
+      where: {
+        tenantId,
+        conversationId: conv.id,
+        stage: "tool",
+        detail: { path: ["tool"], equals: "skip_reply" },
+      },
       select: { detail: true },
     });
     expect(

@@ -193,6 +193,7 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
       suDb.$transaction(async (tx) => {
         const db = tx as unknown as PrismaClient;
         await db.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+        await seedTrailFor(db);
 
         const withIndex = await planIn(db, FLEET_PAGE);
         // WHICH ROWS ARE READ AT ALL is the assertion, and it is the one that does not move: they

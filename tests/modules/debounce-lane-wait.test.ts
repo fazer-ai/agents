@@ -316,6 +316,37 @@ describe("a failing announcement never costs the drain", () => {
     expect(w.announced.map((a) => a.jobId)).toEqual([2n]);
   });
 
+  test("a row claimed and already finished while the question was open is not announced", async () => {
+    const w = world();
+    w.claimable.push(job(1));
+    await tick(1, w.deps);
+    w.waitingRows.push(row(2, 0));
+    let answer: () => void = () => {};
+    w.set(31_000);
+    const out = await runDebounceTick(base, 1, {
+      ...w.deps,
+      waiting: async (dueBefore, exclude) => {
+        const rows = await w.deps.waiting?.(dueBefore, exclude, base);
+        await new Promise<void>((r) => {
+          answer = r;
+        });
+        return rows ?? [];
+      },
+    });
+    // Job 1 ends, a tick claims row 2 (filling the lane again, so the saturation goes on), and row
+    // 2's run finishes too, all before the answer arrives.
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    w.claimable.push(job(2));
+    w.set(32_000);
+    await runDebounceTick(base, 1, w.deps);
+    for (const release of hung.splice(0)) release();
+    await new Promise((r) => setTimeout(r, 0));
+    answer();
+    await out.reported;
+    expect(w.announced).toEqual([]);
+  });
+
   test("an answer to a question asked during a saturation that has since ended is dropped", async () => {
     const w = world();
     w.claimable.push(job(1));

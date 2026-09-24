@@ -56,11 +56,14 @@ const lane: {
   // Bumped whenever a saturation ends, so an answer to a question asked during the previous one is
   // recognised as stale.
   generation: number;
+  // Every row claimed while a question is open, finished or not: the answer may still list it.
+  claimedWhileAsking: Set<bigint>;
 } = {
   fullSince: null,
   announced: new Set(),
   asking: false,
   generation: 0,
+  claimedWhileAsking: new Set(),
 };
 
 // A row announced as waiting for a slot. `waitedMs` is measured when it is announced, so it is at
@@ -137,6 +140,7 @@ async function announceWaiting(
   const waiting = deps.waiting ?? findWaitingDebounceJobs;
   const announce = deps.announce ?? announceLaneWait;
   const generation = lane.generation;
+  lane.claimedWhileAsking.clear();
   const rows = await waiting(
     new Date(now - thresholdMs),
     [...inFlight, ...lane.announced],
@@ -144,8 +148,9 @@ async function announceWaiting(
   );
   // NOTE: the answer describes the lane as it was when the question was asked, and ticks kept
   // running meanwhile. A saturation that ended since makes the whole answer stale, and a row a tick
-  // claimed since is no longer waiting: announcing it would warn about a running job, and marking it
-  // announced would swallow its next real wait.
+  // claimed since is no longer waiting, whether it is still running or already done: announcing it
+  // would warn about work that was served, and marking it announced would swallow its next real wait.
+  // The rows in flight when the question was asked are excluded from the query itself.
   if (lane.generation !== generation) return;
   const announcements: Array<void | Promise<void>> = [];
   for (const row of rows) {
@@ -153,7 +158,7 @@ async function announceWaiting(
     if (
       waitedMs < thresholdMs ||
       lane.announced.has(row.id) ||
-      inFlight.has(row.id)
+      lane.claimedWhileAsking.has(row.id)
     )
       continue;
     lane.announced.add(row.id);
@@ -209,6 +214,7 @@ export async function runDebounceTick(
   for (const job of jobs) {
     inFlight.add(job.id);
     lane.announced.delete(job.id);
+    if (lane.asking) lane.claimedWhileAsking.add(job.id);
   }
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // strand a slot. The async wrapper turns a synchronous throw into a rejection, so `finally` runs.

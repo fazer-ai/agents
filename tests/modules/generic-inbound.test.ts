@@ -101,26 +101,61 @@ describe("shouldBotHandle alsoResolved", () => {
       status: "resolved",
       assigneeType: null,
       assigneeId: null,
+      resolvedBy: "agent",
     };
     expect(shouldBotHandle(resolved, OURS)).toBe(false);
     expect(shouldBotHandle(resolved, { ...OURS, alsoResolved: true })).toBe(
       true,
     );
-    expect(
-      shouldBotHandle(
-        { status: "resolved", assigneeType: "AgentBot", assigneeId: 9 },
-        { ...OURS, alsoResolved: true },
-      ),
-    ).toBe(true);
+    for (const resolvedBy of ["followup_abandonment", "redirect_closing"]) {
+      expect(
+        shouldBotHandle(
+          {
+            status: "resolved",
+            assigneeType: "AgentBot",
+            assigneeId: 9,
+            resolvedBy,
+          },
+          { ...OURS, alsoResolved: true },
+        ),
+      ).toBe(true);
+    }
   });
   test("a person's, another bot's and a handed-off conversation stay closed", () => {
     for (const e of [
-      { status: "resolved", assigneeType: "User", assigneeId: 3 },
-      { status: "resolved", assigneeType: "AgentBot", assigneeId: 10 },
+      {
+        status: "resolved",
+        assigneeType: "User",
+        assigneeId: 3,
+        resolvedBy: "agent",
+      },
+      {
+        status: "resolved",
+        assigneeType: "AgentBot",
+        assigneeId: 10,
+        resolvedBy: "agent",
+      },
       { status: "open", assigneeType: null, assigneeId: null },
       { status: "snoozed", assigneeType: null, assigneeId: null },
     ]) {
       expect(shouldBotHandle(e, { ...OURS, alsoResolved: true })).toBe(false);
+    }
+  });
+  // An operator resolving in Chatwoot leaves our AgentBot assigned, so the assignee cannot tell that
+  // close from the agent's. Only the recorded origin can, and a close without one is not ours.
+  test("a close nobody on the agent's side recorded is not the bot's, whatever the assignee", () => {
+    for (const resolvedBy of [null, undefined, "console", "legacy_unknown"]) {
+      expect(
+        shouldBotHandle(
+          {
+            status: "resolved",
+            assigneeType: "AgentBot",
+            assigneeId: 9,
+            resolvedBy,
+          },
+          { ...OURS, alsoResolved: true },
+        ),
+      ).toBe(false);
     }
   });
 });

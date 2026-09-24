@@ -564,12 +564,14 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
 
   // Issue #818. The agent schedules a job and then resolves the conversation; the job's event comes
   // back later. `deliverToResolved` lets it reach the customer WITHOUT reopening, while a person's
-  // conversation (assignee a User) and a handed-off one (`open`) stay notes.
+  // conversation (assignee a User), a close nobody on our side made, and a handed-off one (`open`)
+  // stay notes.
   async function seedStatus(
     convId: number,
     status: string,
     assigneeType: string | null,
     assigneeId: number | null = null,
+    resolvedBy: string | null = null,
   ) {
     await suDb.conversation.create({
       data: {
@@ -580,6 +582,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         status,
         assigneeType,
         assigneeId,
+        resolvedBy,
         threadId: `${tenantId}:${instanceId}:${convId}`,
         lastEventAt: new Date(),
         lastInboundAt: new Date(),
@@ -613,7 +616,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   };
 
   test("an operator event reaches a conversation the bot resolved, and does not reopen it", async () => {
-    await seedStatus(8181, "resolved", null);
+    await seedStatus(8181, "resolved", null, null, "agent");
     const { s, run } = runOn(8181, true, "Entraram 120 de 400.");
     expect(await run).toBe("messaged");
     expect(s.messages).toEqual([[8181, "Entraram 120 de 400."]]);
@@ -637,12 +640,46 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
   });
 
-  test("a conversation a person resolved (assignee a User) stays a note, the text as it came", async () => {
-    await seedStatus(8183, "resolved", "User", 55);
+  // Stamped as the agent's close on purpose: a person who assigned themself afterwards holds it, and
+  // the origin must not outrank the assignee.
+  test("a conversation a person holds (assignee a User) stays a note, even when the agent closed it", async () => {
+    await seedStatus(8183, "resolved", "User", 55, "agent");
     const { s, run } = runOn(8183, true, FOLLOWUP_SKIP_SENTINEL);
     expect(await run).toBe("noted");
     expect(s.messages).toEqual([]);
     expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
+  });
+
+  // What an operator's resolve in Chatwoot looks like from here: the operator does not assign
+  // themself, so the AgentBot is still the assignee, and nothing of ours recorded the close. The
+  // assignee alone reads as the bot's; the origin says a person closed it.
+  test("a conversation a person resolved in Chatwoot (AgentBot still assigned, no origin) stays a note", async () => {
+    await seedStatus(8185, "resolved", "AgentBot", null, null);
+    const { s, run } = runOn(8185, true, FOLLOWUP_SKIP_SENTINEL);
+    expect(await run).toBe("noted");
+    expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
+  });
+
+  test("a conversation an operator resolved from our console stays a note", async () => {
+    await seedStatus(8186, "resolved", null, null, "console");
+    const { s, run } = runOn(8186, true, FOLLOWUP_SKIP_SENTINEL);
+    expect(await run).toBe("noted");
+    expect(s.messages).toEqual([]);
+    expect(s.notes.map(([, t]) => t)).toEqual(heldNote);
+  });
+
+  test("a conversation the follow-up closed for the agent still gets the event", async () => {
+    await seedStatus(
+      8187,
+      "resolved",
+      "AgentBot",
+      null,
+      "followup_abandonment",
+    );
+    const { s, run } = runOn(8187, true, "Entraram 120 de 400.");
+    expect(await run).toBe("messaged");
+    expect(s.messages).toEqual([[8187, "Entraram 120 de 400."]]);
   });
 
   test("a handed-off conversation (open, nobody assigned) stays a note, the text as it came", async () => {
@@ -2354,7 +2391,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
             const sel = args.select as Record<string, unknown> | undefined;
             const isOwnershipRead =
               !!sel &&
-              Object.keys(sel).length === 3 &&
+              Object.keys(sel).length === 4 &&
+              sel.resolvedBy === true &&
               sel.assigneeType === true &&
               sel.assigneeId === true &&
               sel.status === true;
@@ -2419,7 +2457,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
             const sel = args.select as Record<string, unknown> | undefined;
             const isOwnershipRead =
               !!sel &&
-              Object.keys(sel).length === 3 &&
+              Object.keys(sel).length === 4 &&
+              sel.resolvedBy === true &&
               sel.assigneeType === true &&
               sel.assigneeId === true &&
               sel.status === true;
@@ -2485,7 +2524,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
             const sel = args.select as Record<string, unknown> | undefined;
             const isOwnershipRead =
               !!sel &&
-              Object.keys(sel).length === 3 &&
+              Object.keys(sel).length === 4 &&
+              sel.resolvedBy === true &&
               sel.assigneeType === true &&
               sel.assigneeId === true &&
               sel.status === true;
@@ -4388,7 +4428,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
                 const sel = args.select as Record<string, unknown> | undefined;
                 const isOwnershipRead =
                   !!sel &&
-                  Object.keys(sel).length === 3 &&
+                  Object.keys(sel).length === 4 &&
+                  sel.resolvedBy === true &&
                   sel.assigneeType === true &&
                   sel.assigneeId === true &&
                   sel.status === true;
@@ -4469,7 +4510,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
                 const sel = args.select as Record<string, unknown> | undefined;
                 const isOwnershipRead =
                   !!sel &&
-                  Object.keys(sel).length === 3 &&
+                  Object.keys(sel).length === 4 &&
+                  sel.resolvedBy === true &&
                   sel.assigneeType === true &&
                   sel.assigneeId === true &&
                   sel.status === true;

@@ -467,6 +467,7 @@ export async function runAgentNudge(
         lastInboundAt: true,
         testActivatedAt: true,
         contactId: true,
+        resolvedBy: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -543,6 +544,8 @@ export async function runAgentNudge(
       assigneeType: conv.assigneeType,
       assigneeId: conv.assigneeId,
       assigneeName: conv.assigneeName,
+      // Who closed it, when it is resolved: `deliverToResolved` speaks only into a close of ours.
+      resolvedBy: conv.resolvedBy,
       lastInboundAt: conv.lastInboundAt,
       channelType: inbox.channelType,
       provider: inbox.provider,
@@ -730,6 +733,10 @@ export async function runAgentNudge(
         assigneeType: decided.assigneeType,
         status: decided.status,
         assigneeId: decided.assigneeId,
+        // The live read carries no origin (Chatwoot never reports who closed it), and the stamp read
+        // before this probe may describe a close the reconcile just replaced. No stamp, so a
+        // `resolved` here is not the bot's: the live path fails closed on `alsoResolved`.
+        resolvedBy: null,
       },
       {
         ourAgentBotId: cfg.agentBotId,
@@ -876,6 +883,7 @@ export async function runAgentNudge(
         assigneeType: loaded.assigneeType,
         status: loaded.status,
         assigneeId: loaded.assigneeId,
+        resolvedBy: loaded.resolvedBy,
       },
       {
         ourAgentBotId: cfg.agentBotId,
@@ -929,6 +937,7 @@ export async function runAgentNudge(
           assigneeType: loaded.assigneeType,
           status: loaded.status,
           assigneeId: loaded.assigneeId,
+          resolvedBy: loaded.resolvedBy,
         },
         {
           ourAgentBotId: cfg.agentBotId,
@@ -991,7 +1000,12 @@ export async function runAgentNudge(
             chatwootConversationId: conversationId,
           },
         },
-        select: { assigneeType: true, status: true, assigneeId: true },
+        select: {
+          assigneeType: true,
+          status: true,
+          assigneeId: true,
+          resolvedBy: true,
+        },
       });
       // O ESTADO ESCRITO INLINE, e não por uma variável que junte os três campos: a varredura de
       // tests/modules/chatwoot-receiver.test.ts anda a lista de argumentos deste `shouldBotHandle`
@@ -1002,6 +1016,7 @@ export async function runAgentNudge(
           assigneeType: conv?.assigneeType ?? null,
           assigneeId: conv?.assigneeId ?? null,
           status: conv?.status ?? null,
+          resolvedBy: conv?.resolvedBy ?? null,
         },
         {
           ourAgentBotId: cfg.agentBotId,
@@ -1055,13 +1070,19 @@ export async function runAgentNudge(
             chatwootConversationId: conversationId,
           },
         },
-        select: { assigneeType: true, status: true, assigneeId: true },
+        select: {
+          assigneeType: true,
+          status: true,
+          assigneeId: true,
+          resolvedBy: true,
+        },
       });
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
           assigneeId: conv?.assigneeId ?? null,
           status: conv?.status ?? null,
+          resolvedBy: conv?.resolvedBy ?? null,
         },
         {
           ourAgentBotId: cfg.agentBotId,

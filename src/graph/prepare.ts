@@ -1810,6 +1810,8 @@ export interface GraphBuildDeps {
   onModelRetry?: (info: ModelRetryInfo) => void;
   // A model call that waited past the capacity threshold for a permit (issue #812).
   onModelPermitWait?: (info: PermitWaitInfo) => void;
+  // The scheduler job's signal (issue #811); see BuildAgentGraphParams.signal.
+  signal?: AbortSignal;
   // Fired when the configured second provider took the turn, so the runtime can put it on the trail.
   // A fallback that answers is a SUCCESSFUL turn, so nothing else on the turn would say it happened
   // — and a cost break-down that cannot see it reads the fallback's spend as the primary's.
@@ -1984,6 +1986,7 @@ export async function buildModelAndGraph(
     onToolLimit: deps.onToolLimit,
     onModelRetry: deps.onModelRetry,
     onModelPermitWait: deps.onModelPermitWait,
+    signal: deps.signal,
     onModelFallback: deps.onModelFallback,
     onModelFallbackFailed: deps.onModelFallbackFailed,
     maxHistoryTokens: cfg.maxHistoryTokens,

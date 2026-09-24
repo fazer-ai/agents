@@ -71,6 +71,7 @@ import {
   jobRetiredStrict,
 } from "@/modules/scheduler/service";
 import {
+  type JobContext,
   type JobResult,
   registerDeadLetterHandler,
   registerJobHandler,
@@ -147,6 +148,8 @@ function err(e: unknown): string {
 // click on the same failed burst still elect one sender. Returns the runtime outcome, or "empty"
 // when there is nothing to answer.
 export interface CoalesceTurnContext {
+  // The scheduler job's signal when a flush runs this (issue #811); the re-engage has none.
+  signal?: AbortSignal;
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -792,6 +795,7 @@ export async function coalesceAndRunTurn(
   // settlement — closing a row mid-turn takes it out of the sweep's sight.
   let foldedIn = false;
   const outcome = await runLoadedTurn({
+    signal: ctx.signal,
     // O PORTÃO DE POSSE DO OUTRO LADO DA ESPERA (issue #757): quando a seleção parou para abrir
     // anexos, a janela entre a checagem de dono do religar e a invocação deixa de ser a rede de um
     // `getMessages` e passa a ser minutos.
@@ -1014,6 +1018,8 @@ export interface FlushDebounceParams {
   job: ClaimedJob;
   base: PrismaClient;
   deps?: RuntimeDeps;
+  // The job's signal, aborted by its deadline (issue #811) and handed to the turn.
+  signal?: AbortSignal;
 }
 
 // A gate exit consumed the burst without a turn, and the ledger has to hear it too.
@@ -1562,6 +1568,10 @@ export async function flushDebounceJob(
   params: FlushDebounceParams,
 ): Promise<JobResult> {
   const { job, base, deps } = params;
+  // Whether the job's deadline ended this run (issue #811). The run was failed and its retry answers
+  // the burst, so the gate exits below (a refusal notice, a hand-over, the settlement that dispenses
+  // the burst) are the retry's to make: each asks this after the waits it follows.
+  const pastDeadline = (): boolean => params.signal?.aborted === true;
   const threadId =
     typeof job.payload.threadId === "string" ? job.payload.threadId : null;
   if (!threadId) return { outcome: "done" };
@@ -1999,6 +2009,10 @@ export async function flushDebounceJob(
   // Lenient (`jobRetired`, not the strict probe): an unreadable retirement row leaves this acting,
   // which is where every caller outside the thread's critical section sits, and the cost of that
   // guess here is a sentence sent once too often.
+  // Whether the announcement has reached the conversation (its message sent, or the conversation
+  // handed to the humans). From then on its remaining acts are this run's to finish, deadline or not:
+  // a retry finds the conversation a person's and never reaches the note that explains it (#811).
+  let ceilingActed = false;
   const stillWanted = async (act: string): Promise<boolean> => {
     if (await jobRetired(job, base)) {
       logger.info(
@@ -2015,6 +2029,15 @@ export async function flushDebounceJob(
     if (!(await agentStillSpeaks(tenantId, ctx.loaded.agentId, base))) {
       logger.info(
         "debounce flush: spend-ceiling %s withheld (conv=%s) — the agent was switched off or flipped to monitoring",
+        act,
+        String(conversationId),
+      );
+      return false;
+    }
+    // NOTE: after the two reads above, the stretch it can fire in (issue #811).
+    if (pastDeadline() && !ceilingActed) {
+      logger.info(
+        "debounce flush: spend-ceiling %s withheld (conv=%s): the job's deadline ended this run",
         act,
         String(conversationId),
       );
@@ -2157,6 +2180,7 @@ export async function flushDebounceJob(
           if (!(await stillOurs("message")) || !(await stillWanted("message")))
             return false;
           await client.sendMessage(conversationId, text);
+          ceilingActed = true;
           return true;
         } catch (err) {
           logger.warn(
@@ -2194,6 +2218,7 @@ export async function flushDebounceJob(
           if (!(await stillOurs("handoff")) || !(await stillWanted("handoff")))
             return false;
           await client.toggleStatus(conversationId, "open");
+          ceilingActed = true;
           return true;
         } catch (err) {
           // Best-effort, like every other handoff: a Chatwoot that will not take the status change
@@ -2319,6 +2344,9 @@ export async function flushDebounceJob(
       },
       contactAuthFlowEvent(auth),
     );
+    // NOTE: the authorization call is the long wait here, and a verdict it returns after the job's
+    // deadline is the retry's to act on (issue #811).
+    if (pastDeadline()) return { outcome: "done" };
     if (auth.outcome !== "allowed") {
       logger.info(
         "debounce flush: contact not authorized (conv=%s outcome=%s), dropping the burst",
@@ -2614,6 +2642,7 @@ export async function flushDebounceJob(
     let claimLostPartial = false;
     const outcome = await coalesceAndRunTurn(
       {
+        signal: params.signal,
         tenantId,
         instanceId,
         conversationId,
@@ -2766,8 +2795,9 @@ export async function flushDebounceJob(
 function debounceFlushHandler(
   job: ClaimedJob,
   base: PrismaClient,
+  ctx?: JobContext,
 ): Promise<JobResult> {
-  return flushDebounceJob({ job, base });
+  return flushDebounceJob({ job, base, signal: ctx?.signal });
 }
 
 // The burst is definitively unanswered: the flush exhausted its attempts and the row is DEAD, so no

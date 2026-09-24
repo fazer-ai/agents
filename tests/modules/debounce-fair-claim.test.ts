@@ -156,6 +156,29 @@ describe.skipIf(!dbUp)(
       expect(next.map((j) => j.id)).toEqual([b]);
     });
 
+    test("a row of another lane in the exclusion list is not counted against its tenant's share", async () => {
+      // The claim's exclusion list also carries every row whose handler still runs in this process
+      // (issue #811), which includes other lanes' kinds. A tenant's FOLLOWUP running on the shared
+      // tick holds none of this lane's slots.
+      await enqueueJob({
+        base: appDb,
+        tenantId: tenantA,
+        kind: "FOLLOWUP",
+        dedupeKey: `fair-followup-${tenantA}`,
+        runAt: new Date(T0 - 60_000),
+        payload: {},
+        rearm: "new-work",
+      });
+      const followup = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId: tenantA, kind: "FOLLOWUP" },
+        select: { id: true },
+      });
+      const a0 = await due(tenantA, "a0", 50);
+      await due(tenantB, "b0", 40);
+      // Shares: a0=1 and b0=1, and a0 is older. Counted, the FOLLOWUP would make a0's share 2.
+      expect((await claim(1, [followup.id])).map((j) => j.id)).toEqual([a0]);
+    });
+
     test("a tenant alone gets every slot, oldest first", async () => {
       const aIds: bigint[] = [];
       for (let i = 0; i < 10; i++)

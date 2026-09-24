@@ -557,7 +557,10 @@ let registered = false;
 export function registerMediaFallbackJob(): void {
   if (registered) return;
   registered = true;
-  registerJobHandler("MEDIA_TEXT_FALLBACK", mediaFallbackHandler);
+  // NOTE: wrapped, because the handler's third parameter is a test seam and not the JobContext.
+  registerJobHandler("MEDIA_TEXT_FALLBACK", (job, base) =>
+    mediaFallbackHandler(job, base),
+  );
 }
 
 registerMediaFallbackJob();

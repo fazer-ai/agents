@@ -349,6 +349,10 @@ async function notePartialDelivery(params: {
 
 export interface RunLoadedTurnParams {
   loaded: AgentConfig;
+  // The signal of the scheduler job this turn runs for (issue #811). When the job's deadline ends it,
+  // the graph's model call and tool boundary stop, and the turn writes nothing outward from then on
+  // (no send, no silence, no receipt) unless its first send had already been claimed.
+  signal?: AbortSignal;
   // WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, reported by the runtime rather than
   // inferred from the outcome (issue #576, PR review round 3). `graph.invoke` persists the channel,
   // so the fact is "the invoke returned" and nothing else — and the outcome word cannot stand in for
@@ -884,7 +888,36 @@ async function runTurnBody(
 ): Promise<RunAgentTurnOutcome> {
   // Every real send in this function is one statement after an ask on this. The default is what a
   // turn with nothing to be exclusive about wants: send.
-  const claimBeforeSend = params.claimBeforeSend ?? (async () => true);
+  const askClaim = params.claimBeforeSend ?? (async () => true);
+  // Whether a send has been claimed. From then on the burst is this turn's and a reply already on its
+  // way finishes, deadline or not.
+  let sendClaimed = false;
+  // The turn's handoff state, once it exists (it is built further down): a transfer that completed is
+  // as spent as a send, and the line it promised is this run's to deliver, since a retry finds the
+  // conversation a person's (issue #811).
+  let handoffOf: HandoffTurnState | undefined;
+  // Whether the job's deadline has ended this run for what is still unsent.
+  const pastDeadline = (): boolean =>
+    params.signal?.aborted === true &&
+    !sendClaimed &&
+    handoffOf?.completed !== true;
+  const claimBeforeSend = async (): Promise<boolean> => {
+    // NOTE: a run its deadline already ended was failed, and its retry answers this burst; a reply
+    // from here would reach the customer after that retry's, or beside it (issue #811). Asked before
+    // the FIRST send only, like the claim: once the claim is won the burst is this turn's, and the
+    // retry finds it claimed. Stopping a split reply halfway would leave the customer a truncated
+    // answer that no retry can complete without repeating the balloons already sent.
+    if (pastDeadline()) {
+      logger.info(
+        "turn: the job's deadline ended this run (conv=%s), not sending",
+        String(params.conversationId),
+      );
+      return false;
+    }
+    const won = await askClaim();
+    if (won) sendClaimed = true;
+    return won;
+  };
   // Applied HERE, before anything reads the config, so the prompt the model is built on, the one
   // the output guardrail judges adherence against, and the one the audited row records are the same
   // prompt. Appending it later, at the graph build, would leave the other two describing a turn
@@ -950,7 +983,12 @@ async function runTurnBody(
       silenced = true;
       return true;
     }
-    return false;
+    // NOTE: a run its job's deadline ended was failed, and its retry answers the burst. Every write it
+    // would still make settles the burst for that retry: a silence, a guardrail's refusal, a receipt
+    // (issue #811). Answered as a withdrawal, which leaves the burst unmarked. Read after the reads
+    // above, which are the stretch a deadline can fire in. Not once a send was claimed: a reply
+    // already on its way is not cut midway.
+    return pastDeadline();
   };
   const standDown = (): "stale" | "agent-unavailable" =>
     silenced ? "agent-unavailable" : "stale";
@@ -1102,6 +1140,7 @@ async function runTurnBody(
     completed: false,
     declinedToSpeak: false,
   };
+  handoffOf = handoffState;
   // The SAME reading every send makes, handed down whole (issue #209 review, round 5). A fence
   // derived from `params.stillWanted` alone let a tool call run — the label write, and the slow-tool
   // ack that posts to the customer — for an agent flipped to monitoring inside the model call, while
@@ -1183,6 +1222,9 @@ async function runTurnBody(
     // operator's signal that the instance, not the model, is what the customer is waiting on.
     onModelPermitWait: (wait) =>
       emitCapacityWait(flow, "model_semaphore", wait),
+    // NOTE: to the graph's model call and tool boundary, never to `graph.invoke` (issue #811; see
+    // BuildAgentGraphParams.signal).
+    signal: params.signal,
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",

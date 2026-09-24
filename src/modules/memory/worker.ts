@@ -6,7 +6,11 @@ import {
   claimDueCompactionJobs,
   reapStaleJobs,
 } from "@/modules/scheduler/service";
-import { announceReaped, runClaimed } from "@/modules/scheduler/worker";
+import {
+  announceReaped,
+  jobDeadlineMs,
+  runClaimed,
+} from "@/modules/scheduler/worker";
 
 // Dedicated drain for MEMORY_COMPACT jobs only, in the shape the debounce lane already established
 // (src/modules/debounce/worker.ts) and for the mirror-image reason.
@@ -115,7 +119,9 @@ export async function runCompactionTick(
   // stall the tick.
   await Promise.allSettled(
     jobs.map((job) =>
-      Promise.resolve(run(job, base)).finally(() => {
+      Promise.resolve(
+        run(job, base, { deadlineMs: jobDeadlineMs(staleMs) }),
+      ).finally(() => {
         inFlight.delete(job.id);
       }),
     ),

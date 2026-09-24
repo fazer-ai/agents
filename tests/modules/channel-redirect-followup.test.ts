@@ -2077,6 +2077,55 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV]);
   });
 
+  // Issue #811. The same stage whose job's deadline already ended: the run was failed and its slot
+  // handed to the next job, so the nudge it would author is one nobody is waiting for, and the retry
+  // would send it a second time. The registration hands the job's signal down to `runAgentNudge`.
+  test("a chat stage its job's deadline already ended sends nothing", async () => {
+    const job = await claimed();
+    const s = stubClient();
+    const controller = new AbortController();
+    controller.abort(new Error("deadline exceeded"));
+    let commits = 0;
+
+    await redirectFollowUpHandler(
+      job,
+      appDb,
+      { ...deps(), makeClient: s.makeClient },
+      {
+        signal: controller.signal,
+        commit: () => {
+          commits++;
+        },
+      },
+    );
+
+    expect(s.sent).toEqual([]);
+    expect(commits).toBe(0);
+  });
+
+  // Issue #811, the other side: a nudge that reached the chat spent the stage, and the run says so,
+  // so that a run past its deadline has its advance written instead of its retry nudging again.
+  test("a chat stage whose nudge reached the chat commits its run", async () => {
+    const job = await claimed();
+    const s = stubClient();
+    let commits = 0;
+
+    await redirectFollowUpHandler(
+      job,
+      appDb,
+      { ...deps(), makeClient: s.makeClient },
+      {
+        signal: new AbortController().signal,
+        commit: () => {
+          commits++;
+        },
+      },
+    );
+
+    expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV]);
+    expect(commits).toBe(1);
+  });
+
   // ── The episode's activation, not the row's ──────────────────────────────────────────────────────
   // A redirect episode is TWO conversations of one person, and `/teste` stamps only the one it was
   // typed in. The bridge between them (`shouldPropagateTestMode`) runs ONCE, at link time, WhatsApp →
@@ -2128,6 +2177,35 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       await restoreProduction();
     }
     expect(wire.filter((u) => u.includes("/messages"))).toHaveLength(1);
+  });
+
+  // Issue #811: the link sent spends stage 2, and the run says so, so that a run past its deadline
+  // has its advance to the closing written instead of its retry sending the link again.
+  test("stage 2 commits its run when the link is sent", async () => {
+    await asTestAgent(null, new Date());
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    let commits = 0;
+    try {
+      await redirectFollowUpHandler(
+        job,
+        appDb,
+        { ...deps(), makeClient: s.makeClient },
+        {
+          signal: new AbortController().signal,
+          commit: () => {
+            commits++;
+          },
+        },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      await restoreProduction();
+    }
+    expect(wire.filter((u) => u.includes("/messages"))).toHaveLength(1);
+    expect(commits).toBe(1);
   });
 
   // The same activation, one stage earlier. Stage 1 messages the WIDGET, so this is the half of the

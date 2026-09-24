@@ -45,6 +45,20 @@ export function isRepairableNudgeRefusal(
   );
 }
 
+// Whether the nudge left something in the conversation: a message, a template, or a private note.
+// What a job that owns an occasion reports as committed (JobContext.commit, issue #811): from here a
+// retry would say it again.
+export function nudgeReachedConversation(
+  outcome: RunAgentNudgeOutcome,
+): boolean {
+  return (
+    outcome === "messaged" ||
+    outcome === "templated" ||
+    outcome === "noted" ||
+    outcome === "noted-window"
+  );
+}
+
 export type NudgeRetryDecision =
   | { retry: true; runAt: Date; attempt: number }
   | { retry: false; attempt: number };

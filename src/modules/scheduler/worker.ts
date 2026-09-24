@@ -10,6 +10,7 @@ import {
   observeClaimLimit,
   sharedProviderConcurrency,
 } from "@/modules/scheduler/lanes";
+import { markRunning, markSettled } from "./running";
 import {
   type ClaimedJob,
   claimDeadLetterAnnouncement,
@@ -21,6 +22,7 @@ import {
   REAPED_DEATH_ERROR,
   type ReapedJob,
   reapStaleJobs,
+  reclaimAfterDeadline,
   rescheduleJob,
 } from "./service";
 
@@ -44,10 +46,74 @@ export type JobResult =
     }
   | { outcome: "fail"; error?: string };
 
+// What a handler is given besides its row. `signal` aborts when the run's deadline fires (issue
+// #811): a handler that passes it to what it awaits is ended by it. `commit` is what a handler calls
+// once it has done what it cannot take back (a message sent, a step stamped): a run past its deadline
+// has its outcome discarded and its retry starts over, which is right for work that never reached the
+// world and wrong for work that did, whose retry would send it again or read its stamp as the step
+// being over. A run that committed has its outcome written after all.
+export interface JobContext {
+  signal: AbortSignal;
+  commit: () => void;
+}
+
 export type JobHandler = (
   job: ClaimedJob,
   base: PrismaClient,
+  ctx?: JobContext,
 ) => Promise<JobResult>;
+
+// The window after which the reaper presumes a CLAIMED row crashed.
+export const SCHEDULER_STALE_MS = 5 * 60_000;
+
+// How long a run may take before it is ended (issue #811): four fifths of the stale window of the
+// reaper that watches its row, so a job is ended by its own deadline, failed through failJob with
+// its backoff and budget, a minute before the reaper would presume it crashed. Derived rather than
+// configured: the deadline only means something below the window, and a window passed in shorter
+// (a lane's own, a test's) carries its deadline down with it.
+export function jobDeadlineMs(staleMs: number): number {
+  return Math.floor(staleMs * 0.8);
+}
+
+export interface RunClaimedOptions {
+  // Defaults to the deadline under the scheduler's own stale window. A lane whose reaper watches a
+  // different window passes its own.
+  deadlineMs?: number;
+}
+
+// The reason a run's signal aborts with, and what the run is failed with.
+export class JobDeadlineError extends Error {
+  constructor(ms: number) {
+    super(`deadline exceeded after ${Math.round(ms / 1000)}s`);
+    this.name = "JobDeadlineError";
+  }
+}
+
+// The handler's promise against the run's deadline. When the deadline fires first, the signal aborts
+// with the JobDeadlineError and the race rejects with it at once, whether or not the handler listens.
+function withinDeadline<T>(
+  running: Promise<T>,
+  ms: number,
+  controller: AbortController,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err = new JobDeadlineError(ms);
+      controller.abort(err);
+      reject(err);
+    }, ms);
+    running.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 
 const handlers = new Map<string, JobHandler>();
 
@@ -221,22 +287,87 @@ async function fail(
 }
 
 // Runs one claimed job through its handler and records the outcome (under the job's tenant scope).
+//
+// Under a DEADLINE (issue #811). Nothing used to end a run that was still going: the reaper re-pends
+// a row whose claim went stale, but the handler holding it kept its slot for as long as whatever it
+// awaited took, and after the reap the same row could be claimed again beside it. When the deadline
+// fires, the handler's signal aborts, the run is failed through failJob like any other failure, and
+// this returns, so the lane's slot is free whether or not the handler listened. What the handler
+// returns afterwards is discarded, and until it does return its row stays out of every claim in this
+// process (./running.ts), so the retry never runs beside it.
 export async function runClaimed(
   job: ClaimedJob,
   base: PrismaClient = basePrisma,
+  opts: RunClaimedOptions = {},
 ): Promise<void> {
   const handler = getJobHandler(job.kind);
   if (!handler) {
     await fail(job, `no handler: ${job.kind}`, base);
     return;
   }
+  const deadlineMs = opts.deadlineMs ?? jobDeadlineMs(SCHEDULER_STALE_MS);
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  let committed = false;
+  // What the deadline failed the run with, which the late write asks the row to still carry.
+  let failedWith = "";
+  // Resolved once the deadline's failure is written (or the run ended without one), so a late outcome
+  // is never written under it.
+  let failureWritten!: () => void;
+  const failureSettled = new Promise<void>((r) => {
+    failureWritten = r;
+  });
+  markRunning(job.id);
+  // NOTE: the async wrapper turns a synchronous throw into a rejection, so the row always leaves the
+  // running set.
+  const running = (async () =>
+    handler(job, base, {
+      signal: controller.signal,
+      commit: () => {
+        committed = true;
+      },
+    }))();
+  running
+    .catch(() => null)
+    .then(async (late) => {
+      if (!controller.signal.aborted) return;
+      await failureSettled;
+      if (committed && late && late.outcome !== "fail") {
+        await settleAfterDeadline(job, late, base, startedAt, failedWith);
+      } else {
+        lateOutcomeDiscarded(job, startedAt);
+      }
+    })
+    .catch((err) =>
+      logger.warn(
+        { err, kind: job.kind, jobId: String(job.id) },
+        "scheduler: could not write the outcome of a run past its deadline",
+      ),
+    )
+    // NOTE: only now, so the row stays out of every claim until its late outcome, if any, is written.
+    .finally(() => markSettled(job.id));
   let result: JobResult;
   try {
-    result = await handler(job, base);
+    result = await withinDeadline(running, deadlineMs, controller);
   } catch (err) {
-    await fail(job, errMsg(err), base);
+    failedWith = errMsg(err);
+    try {
+      await fail(job, failedWith, base);
+    } finally {
+      failureWritten();
+    }
     return;
   }
+  failureWritten();
+  await settle(job, result, base);
+}
+
+// The outcome of a run that still held its claim.
+async function settle(
+  job: ClaimedJob,
+  result: JobResult,
+  base: PrismaClient,
+): Promise<void> {
   if (result.outcome === "done") {
     const { applied } = await completeJob(
       job.tenantId,
@@ -269,6 +400,57 @@ export async function runClaimed(
 // way. Not an error: refusing is the guard working. A handler whose work must not be repeated needs
 // its own exclusion (see the inFlight set in src/modules/memory/worker.ts); the token only decides
 // which write lands.
+// A run failed at its deadline that had committed (JobContext.commit): the row is taken back from the
+// failure and the outcome written through the same path as an ordinary one, so a step stamped is
+// followed by its next step and a reminder sent is not sent again. Taken back only if nothing touched
+// the row since the failure; otherwise the outcome is discarded like any other late one.
+async function settleAfterDeadline(
+  job: ClaimedJob,
+  result: JobResult,
+  base: PrismaClient,
+  startedAt: number,
+  failedWith: string,
+): Promise<void> {
+  const { applied } = await reclaimAfterDeadline(
+    job.tenantId,
+    job.id,
+    job.claimSeq,
+    job.attempts,
+    failedWith,
+    base,
+  );
+  if (!applied) {
+    lateOutcomeDiscarded(job, startedAt);
+    return;
+  }
+  logger.warn(
+    {
+      kind: job.kind,
+      jobId: String(job.id),
+      claimSeq: job.claimSeq,
+      heldMs: Date.now() - startedAt,
+      outcome: result.outcome,
+    },
+    "scheduler: handler returned after its deadline having committed, outcome written",
+  );
+  await settle(job, result, base);
+}
+
+// A handler that returned after its deadline had already ended its run: whatever it returned was not
+// recorded, because the run was failed at the deadline. Worth a line for the same reason the
+// superseded one is: it is the only trace of how long the handler really held on.
+function lateOutcomeDiscarded(job: ClaimedJob, startedAt: number): void {
+  logger.warn(
+    {
+      kind: job.kind,
+      jobId: String(job.id),
+      claimSeq: job.claimSeq,
+      heldMs: Date.now() - startedAt,
+    },
+    "scheduler: handler returned after its deadline, outcome discarded",
+  );
+}
+
 function supersededWarning(job: ClaimedJob, outcome: string): void {
   logger.warn(
     { kind: job.kind, jobId: String(job.id), claimSeq: job.claimSeq, outcome },
@@ -371,11 +553,14 @@ export async function runSchedulerTick(
   // removed — and leaving the costly ones unbounded lets a batch of twenty hold every model permit
   // while a customer's reply waits (see JOB_SPENDS_PROVIDER).
   const gate = new Semaphore(providerConcurrency);
+  // NOTE: the deadline follows the stale window THIS tick reaps with, so neither can be passed in
+  // without the other (issue #811).
+  const deadlineMs = jobDeadlineMs(opts.staleMs);
   const settled = await Promise.allSettled(
     jobs.map((job) =>
       JOB_SPENDS_PROVIDER[job.kind]
-        ? gate.run(() => runClaimed(job, base))
-        : runClaimed(job, base),
+        ? gate.run(() => runClaimed(job, base, { deadlineMs }))
+        : runClaimed(job, base, { deadlineMs }),
     ),
   );
   // NOTE: allSettled DISCARDS rejections, and the serial loop this replaced did not: an `await` that
@@ -422,7 +607,7 @@ export function startScheduler(opts: StartOptions = {}): () => void {
   if (h.timer) return stopScheduler;
   const base = opts.base ?? basePrisma;
   const intervalMs = opts.intervalMs ?? config.schedulerWorker.intervalMs;
-  const staleMs = opts.staleMs ?? 5 * 60_000;
+  const staleMs = opts.staleMs ?? SCHEDULER_STALE_MS;
   const batchSize = opts.batchSize ?? 20;
   h.timer = setInterval(() => {
     if (h.running) return;

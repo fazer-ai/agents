@@ -195,7 +195,13 @@ function searchTool(ctx: RagToolCtx) {
       limit?: number;
       knowledge_base?: string;
     }) => {
+      // How many times the query embedding had to be asked again, for the tool line (issue #844): a
+      // slow search is then attributed to the provider on the line itself, not guessed at.
+      let retries = 0;
       const hits = await searchKnowledge({
+        onEmbeddingRetry: () => {
+          retries += 1;
+        },
         ctx: sysCtx(ctx.tenantId),
         query,
         knowledgeBaseIds: resolveSearchScope(
@@ -210,8 +216,9 @@ function searchTool(ctx: RagToolCtx) {
         ctx.maxDistance != null
           ? hits.filter((h) => h.distance <= (ctx.maxDistance as number))
           : hits;
+      const retried = retries > 0 ? { retries } : {};
       if (grounded.length === 0) {
-        return [NO_GROUNDED_INFO, { sources: [] }] as const;
+        return [NO_GROUNDED_INFO, { sources: [], ...retried }] as const;
       }
       // Structured sources for the playground's Sources panel (INTERNAL traceability only) so the
       // operator can see which passages grounded the answer. `marker` is a 1-based display index for
@@ -228,7 +235,7 @@ function searchTool(ctx: RagToolCtx) {
       // Attribute each passage with its source KB (so the model can ground its answer naturally), but
       // WITHOUT a bracket marker: the model never sees a [n] to copy, so none can leak into the reply.
       const content = grounded.map(passageWithSource).join("\n\n");
-      return [content, { sources }] as const;
+      return [content, { sources, ...retried }] as const;
     },
     {
       name: "search_knowledge",

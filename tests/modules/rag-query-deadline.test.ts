@@ -177,6 +177,40 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
     expect(Date.now() - started).toBeLessThan(400);
   });
 
+  // Review round 2: giving up on an attempt has to cancel it, not only stop waiting on it.
+  test("a host check that answers after the deadline sends nothing", async () => {
+    const p = provider(new Set([1, 2]), () => ({
+      data: [{ embedding: vec(1) }],
+    }));
+    await embedQuery("consulta", compatible, {
+      fetchImpl: p.fetchImpl,
+      assertSafe: async (u) => {
+        await Bun.sleep(250);
+        return new URL(u);
+      },
+      queryBudget: { attemptMs: 60, deadlineMs: 400 },
+    }).catch(() => undefined);
+    await Bun.sleep(500);
+    expect(p.calls()).toBe(0);
+  });
+
+  test("an error body left hanging is closed when the attempt is given up on", async () => {
+    let signals: (AbortSignal | undefined)[] = [];
+    const fetchImpl = (async (_u: string | URL, init?: RequestInit) => {
+      signals = [...signals, init?.signal ?? undefined];
+      return new BunResponse(new ReadableStream({ start() {} }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    await embedQuery("consulta", openai, {
+      fetchImpl,
+      queryBudget: BUDGET,
+    }).catch(() => undefined);
+    expect(signals).toHaveLength(2);
+    expect(signals.every((sig) => sig?.aborted === true)).toBe(true);
+  });
+
   test("an answer on the first attempt reports no retry", async () => {
     const p = provider(new Set([1]), () => ({ data: [{ embedding: vec(1) }] }));
     let retried = 0;

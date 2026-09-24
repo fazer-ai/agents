@@ -88,10 +88,10 @@ import {
 import { readVisionConfig } from "@/modules/vision/settings";
 import {
   clearDeferral,
+  reactionArmedOnThread,
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
-  reactionArmedOnThread,
   readReactionArmed,
   readReactionFrom,
   stampDeferral,

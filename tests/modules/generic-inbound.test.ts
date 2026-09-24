@@ -494,6 +494,39 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
     });
   });
 
+  // Issue #817, review round 2: a re-dispatch runs under a scheduler deadline, and the turn it starts
+  // has to stop when that deadline fires, or it finishes beside the next attempt the sweep arms.
+  test("the caller's deadline signal reaches the nudge turn", async () => {
+    const minted = await ensureConversationRef({
+      tenantId,
+      integrationInstanceId: genericId,
+      threadId: THREAD(),
+      base: appDb,
+    });
+    if (!minted.ok) throw new Error("mint");
+    const r = await post(genericRoute, {
+      event_id: "ev-signal-817",
+      conversation_ref: minted.ref,
+      text: "sinal",
+    });
+    expect(r.outcome).toBe("queued");
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    await processInboundDelivery({
+      deliveryId: r.deliveryId as bigint,
+      tenantId,
+      base: appDb,
+      signal: controller.signal,
+      deps: {
+        runNudge: async (args) => {
+          seen = args.signal;
+          return "messaged";
+        },
+      },
+    });
+    expect(seen).toBe(controller.signal);
+  });
+
   test("a payment carrying a conversation ref as its reference credits and nudges nothing", async () => {
     const minted = await ensureConversationRef({
       tenantId,

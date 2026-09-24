@@ -6,13 +6,17 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   type ClaimedJob,
   enqueueJob,
-  upsertJobRow,
+  upsertJobRows,
 } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobContext,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import {
   PROCESSING_STALE_MS,
+  type ProcessDeps,
   processInboundDelivery,
-  staleClaim,
 } from "./service";
 
 // Brings back inbound deliveries stranded between the ack and the dispatch (issue #817).
@@ -36,13 +40,9 @@ import {
 // wait costs next to nothing, and what waits is a payment or an operator's event the sender will not
 // resend.
 const SWEEP_INTERVAL_MS = 2 * 60_000;
-// One pass's ceiling on ARMS, against a pathological backlog (a long outage of the database under
-// steady traffic). The rest waits one interval.
+// One pass's ceiling, against a pathological backlog (a long outage of the database under steady
+// traffic). The rest waits one interval; rows already armed are not counted against it.
 const BATCH = 200;
-// How many pages of candidates one pass may read to find BATCH rows not yet armed. Only rows whose
-// re-dispatch already died are skipped, and those are rare, so this is a bound against a runaway and
-// not a number any real pass approaches.
-const MAX_PAGES = 20;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -67,66 +67,50 @@ export async function sweepStrandedInbound(params: {
 }): Promise<{ armed: number }> {
   const base = params.base ?? basePrisma;
   const now = params.now ?? Date.now();
-  // PENDING is measured from receipt, with the same window: the route dispatches within
-  // milliseconds of the ack, so a PENDING row that old was never claimed, and taking it any earlier
-  // would only race the route (harmless, the claim is a CAS, but pointless). PROCESSING is measured
-  // by the processor's own rule, shared rather than restated (`staleClaim`).
   const cutoff = new Date(now - PROCESSING_STALE_MS);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    const stranded = {
-      OR: [
-        { status: "PENDING" as const, receivedAt: { lt: cutoff } },
-        { status: "PROCESSING" as const, OR: [...staleClaim(now)] },
-      ],
-    };
-    // PAGED PAST WHAT IS ALREADY ARMED, and the cap counts arms rather than rows read. A row whose
-    // re-dispatch died is still stranded, keeps its attempt count, and is never armed again (that is
-    // the point of `once`), so it stays in this query for good; capping the READ at the oldest N
-    // would let N such rows take every pass and starve every newer delivery behind them (review
-    // round 1). Such rows are few, and the page walk is bounded by MAX_PAGES regardless.
-    let armed = 0;
-    let cursor: bigint | undefined;
-    for (let page = 0; page < MAX_PAGES && armed < BATCH; page += 1) {
-      const rows = await db.inboundDelivery.findMany({
-        where: stranded,
-        select: { id: true, attempts: true },
-        orderBy: { id: "asc" },
-        take: BATCH,
-        ...(cursor !== undefined ? { cursor: { id: cursor }, skip: 1 } : {}),
-      });
-      if (rows.length === 0) break;
-      cursor = rows[rows.length - 1]?.id;
-      const keys = rows.map((r) => redispatchKey(r.id, r.attempts));
-      const existing = new Set(
-        (
-          await db.schedulerJob.findMany({
-            where: {
-              tenantId: params.tenantId,
-              kind: "INBOUND_REDISPATCH",
-              dedupeKey: { in: keys },
-            },
-            select: { dedupeKey: true },
-          })
-        ).map((j) => j.dedupeKey),
-      );
-      for (const row of rows) {
-        if (armed >= BATCH) break;
-        const key = redispatchKey(row.id, row.attempts);
-        // The skip is the barrier a pass relies on; `once` below is its twin for the one case the
-        // read cannot see, a concurrent pass (another replica) arming between the read and the write.
-        if (existing.has(key)) continue;
-        await upsertJobRow(db, {
-          tenantId: params.tenantId,
-          kind: "INBOUND_REDISPATCH",
-          dedupeKey: key,
-          runAt: new Date(now),
-          payload: { deliveryId: String(row.id) },
-          rearm: "once",
-        });
-        armed += 1;
-      }
-      if (rows.length < BATCH) break;
-    }
+    // ONE STATEMENT, and the exclusion of what is already armed is INSIDE it (review rounds 1 and 2).
+    // A row whose re-dispatch died is still stranded and keeps its attempt count, so it stays in any
+    // query that selects by status alone; filtered or paged afterwards, enough of them take every
+    // pass and no newer delivery is ever reached. Excluded before the LIMIT, they cost nothing.
+    //
+    // The stranded rule is the processor's (`staleClaim` in ./service.ts), restated in SQL because
+    // the exclusion is a join Prisma cannot express. PENDING is measured from receipt with the same
+    // window: the route dispatches within milliseconds of the ack, so a PENDING row that old was
+    // never claimed. The key is `redispatchKey`, spelled the same way; tests/modules/
+    // inbound-sweep.test.ts pins both, since a drift in either direction changes what is armed.
+    const rows = await db.$queryRaw<{ id: bigint; attempts: number }[]>`
+      SELECT d.id, d.attempts
+        FROM inbound_deliveries d
+       WHERE d.tenant_id = ${params.tenantId}
+         AND (
+               (d.status = 'PENDING' AND d.received_at < ${cutoff})
+            OR (d.status = 'PROCESSING'
+                AND (d.claimed_at < ${cutoff}
+                     OR (d.claimed_at IS NULL AND d.received_at < ${cutoff})))
+         )
+         AND NOT EXISTS (
+               SELECT 1 FROM scheduler_jobs j
+                WHERE j.tenant_id = d.tenant_id
+                  AND j.kind = 'INBOUND_REDISPATCH'
+                  AND j.dedupe_key = 'inbound-delivery:' || d.id || ':' || d.attempts
+         )
+       ORDER BY d.id
+       LIMIT ${BATCH}`;
+    // One statement for the arms too: a row at a time is a round trip each inside a transaction with
+    // a five-second budget, and a backlog big enough to need this sweep is the one that would blow
+    // it. `once`, so a concurrent pass (another replica) that armed the same key first wins and this
+    // one changes nothing.
+    const armed = await upsertJobRows(db, {
+      tenantId: params.tenantId,
+      kind: "INBOUND_REDISPATCH",
+      rearm: "once",
+      runAt: new Date(now),
+      rows: rows.map((r) => ({
+        dedupeKey: redispatchKey(r.id, r.attempts),
+        payload: { deliveryId: String(r.id) },
+      })),
+    });
     if (armed > 0) {
       logger.warn(
         "inbound sweep: tenant %s had %d stranded deliveries; re-dispatch armed",
@@ -149,9 +133,13 @@ async function inboundSweepHandler(
   };
 }
 
-async function inboundRedispatchHandler(
+// The re-dispatch itself, apart from its registration so a test can hand it a fake nudge (`deps`) and
+// see the deadline arrive where the turn runs.
+export async function redispatchInbound(
   job: ClaimedJob,
   base: PrismaClient,
+  ctx?: JobContext,
+  deps?: ProcessDeps,
 ): Promise<JobResult> {
   const deliveryId = parseDbId(
     typeof job.payload.deliveryId === "string" ? job.payload.deliveryId : null,
@@ -163,8 +151,26 @@ async function inboundRedispatchHandler(
   }
   // A throw propagates on purpose: the scheduler's retry ladder is what outlasts the outage that made
   // the dispatch throw, and its dead-letter line is what says the event was lost when it does not.
-  await processInboundDelivery({ deliveryId, tenantId: job.tenantId, base });
+  //
+  // The run's signal goes down to the nudge turn (review round 2). Without it a turn past the
+  // deadline keeps going after the scheduler has failed the run, and once the claim goes stale the
+  // sweep arms the next attempt beside it: a second message to the customer.
+  await processInboundDelivery({
+    deliveryId,
+    tenantId: job.tenantId,
+    base,
+    signal: ctx?.signal,
+    deps,
+  });
   return { outcome: "done" };
+}
+
+async function inboundRedispatchHandler(
+  job: ClaimedJob,
+  base: PrismaClient,
+  ctx?: JobContext,
+): Promise<JobResult> {
+  return redispatchInbound(job, base, ctx);
 }
 
 let registered = false;

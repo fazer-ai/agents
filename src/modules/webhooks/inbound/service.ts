@@ -39,10 +39,12 @@ import {
 export const PROCESSING_STALE_MS = 5 * 60_000;
 const MAX_PROCESS_ATTEMPTS = 5;
 
-// WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row, in one place, because two readers ask it and
-// they must not disagree: the claim below, which may take such a row, and the inbound sweep
-// (./sweep.ts), which arms a re-dispatch for it (issue #817). A sweep with a looser measure would arm
-// jobs the claim then refuses; a stricter one would leave rows the claim would take.
+// WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row. Two readers ask it and must not disagree: the
+// claim below, which may take such a row, and the inbound sweep (./sweep.ts), which arms a re-dispatch
+// for it (issue #817) and restates this rule in SQL because its query is a join Prisma cannot write.
+// A sweep with a looser measure would arm jobs the claim then refuses; a stricter one would leave rows
+// the claim would take. Change one, change both: tests/modules/inbound-sweep.test.ts drives the sweep
+// through both halves (a stale claim and an unstamped one) and a fresh claim it must leave alone.
 export function staleClaim(now: number = Date.now()) {
   const staleCutoff = new Date(now - PROCESSING_STALE_MS);
   return [
@@ -427,6 +429,10 @@ export interface ProcessParams {
   tenantId: bigint;
   base?: PrismaClient;
   deps?: ProcessDeps;
+  // The deadline of the scheduler job running this, when one is (the inbound sweep's re-dispatch,
+  // issue #817). Handed to the nudge turn so a run past its deadline stops instead of finishing
+  // beside the retry the sweep may arm once the claim goes stale. The route passes none.
+  signal?: AbortSignal;
 }
 
 function buildNudge(
@@ -705,6 +711,7 @@ export async function processInboundDelivery(
       deliverToResolved: plan.deliverToResolved,
       base,
       deps: params.deps?.runtime,
+      signal: params.signal,
     });
   } catch (err) {
     logger.warn(

@@ -1,17 +1,19 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import type { TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   AGENT_EXPORT_KIND,
   AGENT_EXPORT_VERSION,
   importAgent,
 } from "@/modules/agents/transfer";
+import { ensureConversationRef } from "@/modules/integrations/conversation-ref";
 import { createIntegrationInstance } from "@/modules/integrations/service";
-import type { ClaimedJob } from "@/modules/scheduler/service";
+import { type ClaimedJob, upsertJobRows } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import {
   ensureAllInboundSweeps,
+  redispatchInbound,
   redispatchKey,
   registerInboundSweepHandlers,
   sweepStrandedInbound,
@@ -520,5 +522,93 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
     expect(await sweeps()).toBe(0);
     await importAgent(ctx, bundle("real"), appDb);
     expect(await sweeps()).toBe(1);
+  });
+
+  // Review round 2: the run's deadline has to reach the turn, or a turn past it finishes beside the
+  // next attempt. Driven through the re-dispatch with a fake nudge, on a GENERIC event that reaches
+  // the nudge phase.
+  test("the re-dispatch hands its deadline signal to the nudge turn", async () => {
+    await clear(tenantA);
+    const minted = await ensureConversationRef({
+      tenantId: tenantA,
+      integrationInstanceId: instanceA,
+      threadId: `thread-817-${process.pid}`,
+      base: appDb,
+    });
+    if (!minted.ok) throw new Error("mint");
+    seq += 1;
+    const row = await suDb.inboundDelivery.create({
+      data: {
+        tenantId: tenantA,
+        integrationInstanceId: instanceA,
+        dedupeKey: `sig-817-${process.pid}-${seq}`,
+        externalId: minted.ref,
+        payload: { kind: "agent_nudge", text: "sinal" },
+        status: "PENDING",
+        receivedAt: new Date(Date.now() - 10 * MIN),
+      },
+    });
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    const out = await redispatchInbound(
+      claimed(tenantA, { deliveryId: String(row.id) }),
+      appDb,
+      { signal: controller.signal } as Parameters<typeof redispatchInbound>[2],
+      {
+        runNudge: async (args) => {
+          seen = args.signal;
+          return "messaged";
+        },
+      },
+    );
+    expect(out).toEqual({ outcome: "done" });
+    expect(seen).toBe(controller.signal);
+  });
+
+  // The bulk writer's `once` is what the sweep writes with. Through the sweep it is invisible (the
+  // query already skips an armed key), so it is asserted here: an existing row stays exactly as it is,
+  // and a missing one is inserted.
+  test("a bulk `once` arm inserts what is missing and leaves an existing row alone", async () => {
+    await clear(tenantA);
+    const kept = await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenantA,
+        kind: "INBOUND_REDISPATCH",
+        dedupeKey: "once-817-kept",
+        runAt: new Date(Date.now() - MIN),
+        payload: { deliveryId: "1" },
+        status: "DEAD",
+        attempts: 5,
+        lastError: "boom",
+      },
+    });
+    const inserted = await runScopedOn(
+      appDb,
+      { tenantId: tenantA, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        upsertJobRows(db, {
+          tenantId: tenantA,
+          kind: "INBOUND_REDISPATCH",
+          rearm: "once",
+          runAt: new Date(),
+          rows: [
+            { dedupeKey: "once-817-kept", payload: { deliveryId: "2" } },
+            { dedupeKey: "once-817-new", payload: { deliveryId: "3" } },
+          ],
+        }),
+    );
+    expect(inserted).toBe(1);
+    const after = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: kept.id },
+    });
+    expect(after.status).toBe("DEAD");
+    expect(after.attempts).toBe(5);
+    expect(after.lastError).toBe("boom");
+    expect(after.payload).toEqual({ deliveryId: "1" });
+    expect(
+      await suDb.schedulerJob.count({
+        where: { tenantId: tenantA, dedupeKey: "once-817-new" },
+      }),
+    ).toBe(1);
   });
 });

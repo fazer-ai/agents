@@ -306,10 +306,12 @@ export const DATA_FENCE = "⟦external-data⟧";
 // template configured). Explains WHY the follow-up became a private note and what to configure —
 // without it the yellow note reads as a bug. Same hardcoded pt-BR register as the one-shot
 // test-mode/out-of-hours notices in the webhook gate.
-// The note an operator's event becomes when a person holds the conversation (issue #818). pt-BR,
-// the register of the other notes here: it is read by the operator's team, not by the customer.
+// The note an operator's event becomes when the conversation is not the agent's (issue #818): a
+// person holds it, it was handed to the team (`open`, maybe nobody assigned yet), or a person closed
+// it. The wording names what all three share rather than one of them. pt-BR, the register of the
+// other notes here: it is read by the operator's team, not by the customer.
 export const OPERATOR_EVENT_NOTE_PREFIX =
-  "📨 Evento do sistema conectado, NÃO enviado ao cliente porque a conversa está com uma pessoa:\n\n";
+  "📨 Evento do sistema conectado, NÃO enviado ao cliente porque a conversa não está com o agente:\n\n";
 
 export const OUTSIDE_WINDOW_NOTE_PREFIX =
   "⏳ Fora da janela de 24h do WhatsApp: a mensagem abaixo NÃO foi enviada ao cliente. " +
@@ -874,7 +876,7 @@ export async function runAgentNudge(
       `${OPERATOR_EVENT_NOTE_PREFIX}${text}`,
     );
     logger.info(
-      "agentNudge noted (operator event, held by a person): conv=%s source=%s",
+      "agentNudge noted (operator event, conversation not the agent's): conv=%s source=%s",
       String(conversationId),
       params.nudge.source,
     );

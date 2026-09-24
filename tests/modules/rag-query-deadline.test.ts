@@ -27,6 +27,7 @@ const BUDGET = { attemptMs: 60, deadlineMs: 1_200 };
 // connection does.
 function provider(answerOn: Set<number>, body: (n: number) => unknown) {
   let calls = 0;
+  let aborted = 0;
   const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
     calls += 1;
     const n = calls;
@@ -37,16 +38,18 @@ function provider(answerOn: Set<number>, body: (n: number) => unknown) {
       });
     return new Promise<Response>((_, reject) => {
       const signal = init?.signal;
-      const abort = () =>
+      const abort = () => {
+        aborted += 1;
         reject(
           signal?.reason ??
             Object.assign(new Error("aborted"), { name: "AbortError" }),
         );
+      };
       if (signal?.aborted) abort();
       else signal?.addEventListener("abort", abort);
     });
   }) as unknown as typeof fetch;
-  return { fetchImpl, calls: () => calls };
+  return { fetchImpl, calls: () => calls, aborted: () => aborted };
 }
 
 const compatible = {
@@ -97,6 +100,20 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
       expect(elapsed).toBeLessThan(BUDGET.deadlineMs);
     });
 
+    // Giving up on the wait is not enough: the request left behind has to be closed, and nothing may
+    // go on asking the provider after the search has answered (the SDK's own retries would).
+    test(`${path}: an attempt given up on is closed, and nothing keeps calling`, async () => {
+      const p = provider(new Set(), body);
+      await embedQuery("consulta", cfg, {
+        fetchImpl: p.fetchImpl,
+        assertSafe: passThrough,
+        queryBudget: BUDGET,
+      }).catch(() => undefined);
+      await Bun.sleep(1_500);
+      expect(p.calls()).toBe(2);
+      expect(p.aborted()).toBe(2);
+    });
+
     test(`${path}: a stalled attempt is abandoned and the next one answers`, async () => {
       const p = provider(new Set([2]), body);
       let retried = 0;
@@ -125,6 +142,39 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
     }).catch(() => undefined);
     expect(p.calls()).toBe(2);
     expect(Date.now() - started).toBeLessThan(1_550);
+  });
+
+  // Review round 1: the attempt's deadline has to cover what happens outside the request, too.
+  test("a host check that stalls is bounded by the same deadline", async () => {
+    const started = Date.now();
+    const err = await embedQuery("consulta", compatible, {
+      fetchImpl: provider(new Set([1, 2]), () => ({
+        data: [{ embedding: vec(1) }],
+      })).fetchImpl,
+      assertSafe: () => new Promise<URL>(() => {}),
+      queryBudget: { attemptMs: 60, deadlineMs: 400 },
+    }).catch((e: unknown) => e);
+    expect((err as Error).message).toContain("timeout");
+    expect(Date.now() - started).toBeLessThan(400);
+  });
+
+  test("an error body the SDK reads with no timer of its own is bounded too", async () => {
+    const fetchImpl = (async () =>
+      new BunResponse(
+        new ReadableStream({
+          start() {
+            // Headers arrive with a 503; the body never finishes.
+          },
+        }),
+        { status: 503, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const started = Date.now();
+    const err = await embedQuery("consulta", openai, {
+      fetchImpl,
+      queryBudget: { attemptMs: 60, deadlineMs: 400 },
+    }).catch((e: unknown) => e);
+    expect((err as Error).message).toContain("timeout");
+    expect(Date.now() - started).toBeLessThan(400);
   });
 
   test("an answer on the first attempt reports no retry", async () => {

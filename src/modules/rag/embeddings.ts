@@ -331,6 +331,39 @@ function compatibleEndpoint(baseURL: string): string {
   }
 }
 
+// The attempt's deadline over EVERYTHING the attempt awaits (issue #844, review round 1). The time
+// handed to `call` bounds the request it makes, and nothing else: the compatible path resolves the
+// host for the SSRF check before its fetch, and the OpenAI SDK clears its own timer once the headers
+// arrive and then reads an error body with no bound at all. Either can stall past both deadlines, so
+// the attempt is raced against its own. The work left behind is abandoned, not awaited, and its
+// rejection is swallowed so an abandoned attempt cannot surface as an unhandled one.
+async function withinDeadline<T>(
+  call: (timeoutMs: number) => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = call(timeoutMs);
+  work.catch(() => {});
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              Object.assign(new Error("embedding attempt timed out"), {
+                name: "TimeoutError",
+              }),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Each attempt is handed the time it may take. Without a deadline that is the attempt bound alone;
 // with one it is whatever the deadline leaves, and an attempt whose pause alone would reach the
 // deadline is not started: the last failure is the answer.
@@ -347,7 +380,7 @@ async function withTransientRetry<T>(
         ? Number.POSITIVE_INFINITY
         : budget.deadlineMs - (Date.now() - startedAt);
     try {
-      return await call(Math.min(budget.attemptMs, left));
+      return await withinDeadline(call, Math.min(budget.attemptMs, left));
     } catch (err) {
       const delay = COMPATIBLE_RETRY_DELAYS_MS[attempt];
       if (delay === undefined || !isTransient(err, retryStatusless)) throw err;

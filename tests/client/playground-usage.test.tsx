@@ -70,14 +70,26 @@ describe("usageText", () => {
 });
 
 describe("usageText with timing", () => {
+  // The unit's spacing is ICU locale data, not ours: macOS writes "3,4s" in pt-BR and the CI's
+  // Linux writes "3,4 s". The numbers and the rounding are ours, so those are fixed here.
+  const sec = (locale: string, v: number) =>
+    new Intl.NumberFormat(locale, {
+      style: "unit",
+      unit: "second",
+      unitDisplay: "narrow",
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    }).format(v);
+
   test("a live turn says how long it took and how much was model time", async () => {
     const timing = { turnMs: 3420, modelMs: 2910 };
     expect(usageText(await tIn("en"), "en", TURN, timing)).toBe(
-      "In 1,500 (1,024 from cache) · out 100 · 2 calls · 3.4s (model 2.9s)",
+      `In 1,500 (1,024 from cache) · out 100 · 2 calls · ${sec("en", 3.4)} (model ${sec("en", 2.9)})`,
     );
     expect(usageText(await tIn("pt-BR"), "pt-BR", TURN, timing)).toBe(
-      "Entrada 1.500 (1.024 do cache) · saída 100 · 2 chamadas · 3,4s (modelo 2,9s)",
+      `Entrada 1.500 (1.024 do cache) · saída 100 · 2 chamadas · ${sec("pt-BR", 3.4)} (modelo ${sec("pt-BR", 2.9)})`,
     );
+    expect(sec("pt-BR", 3.4)).toStartWith("3,4");
   });
 });
 

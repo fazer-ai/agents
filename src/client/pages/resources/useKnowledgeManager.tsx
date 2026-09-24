@@ -39,6 +39,10 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { docErrorEntry, mergeDocumentEvent } from "@/client/lib/knowledgeDocs";
 import { cn } from "@/client/lib/utils";
+import {
+  KnowledgeSourceSection,
+  SyncedDocNote,
+} from "./KnowledgeSourceSection";
 
 type BasesData = Awaited<
   ReturnType<typeof api.api.v1.knowledge.bases.get>
@@ -147,6 +151,16 @@ export function useKnowledgeManager(opts: {
   const createModal = useModalController();
   const editModal = useModalController<Base>();
   const docsModal = useModalController<BaseRef>();
+  // Whether the open base mirrors a help center (issue #798): its synced documents are then the
+  // source's to change, and the API refuses an edit or a delete with a 409.
+  const [docsHaveSource, setDocsHaveSource] = useState(false);
+  // The last answer about it for the open base, and when its last run landed; null until the section
+  // has read one. Only a CHANGE (a source set or removed from here, a run that landed) makes the
+  // documents list worth reading again: a run adds and removes documents, which the per-document
+  // events cannot do to a list.
+  const docsSourceKnown = useRef<{ has: boolean; ran: number | null } | null>(
+    null,
+  );
   // Add-content is opened from the documents modal's "+Adicionar" button and STACKS on top of it
   // (both live together, but the add form opens over the list instead of replacing it).
   const addContentModal = useModalController<BaseRef>();
@@ -716,6 +730,8 @@ export function useKnowledgeManager(opts: {
   }
 
   async function openDocs(b: BaseRef) {
+    docsSourceKnown.current = null;
+    setDocsHaveSource(false);
     setDocs(null);
     docsModal.open({ id: b.id, name: b.name });
     // Everything issued for the previous session is void, answered or not: this is a different
@@ -1067,6 +1083,13 @@ export function useKnowledgeManager(opts: {
       </span>
     );
   }
+
+  // The same refusal the API gives an edit or a delete of a synced document (`errors.syncedDocumentRefused`
+  // in src/api/locales), said before the click instead of after it.
+  const syncedRefusal = t(
+    "knowledge.source.syncedRefusal",
+    "This document is synced from the help center portal and would be overwritten on the next sync. Fix the article in the portal instead.",
+  );
 
   function sourceIcon(doc: KnowledgeDoc) {
     if (doc.sourceType === "file")
@@ -1483,6 +1506,28 @@ export function useKnowledgeManager(opts: {
         }
       >
         <div className="flex flex-col gap-3">
+          {docsModal.payload && (
+            <KnowledgeSourceSection
+              baseId={docsModal.payload.id}
+              canManage={opts.allowDocumentEdits === true}
+              onSourceChange={(has, ran) => {
+                const before = docsSourceKnown.current;
+                docsSourceKnown.current = { has, ran };
+                setDocsHaveSource(has);
+                // Removing the source turns the synced documents back into ordinary ones, setting it
+                // may adopt some, and a run adds and removes them: the list's own answer is stale.
+                if (
+                  before !== null &&
+                  (before.has !== has || before.ran !== ran) &&
+                  docsModal.payload
+                ) {
+                  void reloadDocs(docsModal.payload.id);
+                  // The page behind the modal counts documents per base, too.
+                  void onChanged();
+                }
+              }}
+            />
+          )}
           <div className="flex justify-end">
             <Button
               size="sm"
@@ -1533,100 +1578,115 @@ export function useKnowledgeManager(opts: {
                 </div>
               )}
               <ul className="flex max-h-[55vh] flex-col gap-2 overflow-y-auto">
-                {docs.map((d) => (
-                  <li
-                    key={d.id}
-                    className="rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm"
-                  >
-                    <div className="flex items-start gap-2">
-                      <div className="min-w-0 flex-1">
-                        <span className="block truncate font-medium text-text-primary">
-                          {d.title}
-                        </span>
-                        {d.fileName && (
-                          <span className="break-all text-text-muted text-xs">
-                            {d.fileName}
+                {docs.map((d) => {
+                  const synced = docsHaveSource && d.externalId != null;
+                  return (
+                    <li
+                      key={d.id}
+                      className="rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm"
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <span className="block truncate font-medium text-text-primary">
+                            {d.title}
                           </span>
-                        )}
-                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          <span className="flex shrink-0 items-center gap-1 text-text-muted text-xs">
-                            {sourceIcon(d)}
-                          </span>
-                          {d.contentChars != null && (
-                            <span className="text-text-muted text-xs">
-                              {t("knowledge.charCount", "{{n}} characters", {
-                                count: Number(d.contentChars),
-                                n: new Intl.NumberFormat(i18n.language).format(
-                                  Number(d.contentChars),
-                                ),
-                              })}
+                          {d.fileName && (
+                            <span className="break-all text-text-muted text-xs">
+                              {d.fileName}
                             </span>
                           )}
-                          {docStatusBadge(d)}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 gap-1">
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() =>
-                            docPreviewModal.open({ id: d.id, title: d.title })
-                          }
-                          aria-label={t(
-                            "knowledge.viewContent",
-                            "View content",
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span className="flex shrink-0 items-center gap-1 text-text-muted text-xs">
+                              {sourceIcon(d)}
+                            </span>
+                            {d.contentChars != null && (
+                              <span className="text-text-muted text-xs">
+                                {t("knowledge.charCount", "{{n}} characters", {
+                                  count: Number(d.contentChars),
+                                  n: new Intl.NumberFormat(
+                                    i18n.language,
+                                  ).format(Number(d.contentChars)),
+                                })}
+                              </span>
+                            )}
+                            {docStatusBadge(d)}
+                            {synced && (
+                              <SyncedDocNote sourceUrl={d.sourceUrl} />
+                            )}
+                          </div>
+                          {synced && opts.allowDocumentEdits && (
+                            <p className="mt-0.5 text-text-muted text-xs">
+                              {syncedRefusal}
+                            </p>
                           )}
-                        >
-                          <Eye className="h-4 w-4" aria-hidden="true" />
-                        </Button>
-                        {opts.allowDocumentEdits && (
+                        </div>
+                        <div className="flex shrink-0 gap-1">
                           <Button
                             variant="secondary"
                             size="sm"
                             onClick={() =>
-                              docEditModal.open({ id: d.id, title: d.title })
+                              docPreviewModal.open({ id: d.id, title: d.title })
                             }
-                            aria-label={t("common.edit", "Edit")}
-                          >
-                            <Pencil className="h-4 w-4" aria-hidden="true" />
-                          </Button>
-                        )}
-                        {(d.status === "FAILED" ||
-                          d.status === "UNINDEXED") && (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => retryDoc(d)}
-                            aria-label={
-                              d.status === "UNINDEXED"
-                                ? t("knowledge.index", "Index")
-                                : t("knowledge.retry", "Retry")
-                            }
-                          >
-                            {d.status === "UNINDEXED" ? (
-                              <Play className="h-4 w-4" aria-hidden="true" />
-                            ) : (
-                              <RefreshCw
-                                className="h-4 w-4"
-                                aria-hidden="true"
-                              />
+                            aria-label={t(
+                              "knowledge.viewContent",
+                              "View content",
                             )}
-                          </Button>
-                        )}
-                        {opts.allowDocumentEdits && (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => askDeleteDoc(d)}
-                            aria-label={t("common.delete", "Delete")}
                           >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            <Eye className="h-4 w-4" aria-hidden="true" />
                           </Button>
-                        )}
+                          {opts.allowDocumentEdits && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() =>
+                                docEditModal.open({ id: d.id, title: d.title })
+                              }
+                              disabled={synced}
+                              title={synced ? syncedRefusal : undefined}
+                              aria-label={t("common.edit", "Edit")}
+                            >
+                              <Pencil className="h-4 w-4" aria-hidden="true" />
+                            </Button>
+                          )}
+                          {(d.status === "FAILED" ||
+                            d.status === "UNINDEXED") && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => retryDoc(d)}
+                              aria-label={
+                                d.status === "UNINDEXED"
+                                  ? t("knowledge.index", "Index")
+                                  : t("knowledge.retry", "Retry")
+                              }
+                            >
+                              {d.status === "UNINDEXED" ? (
+                                <Play className="h-4 w-4" aria-hidden="true" />
+                              ) : (
+                                <RefreshCw
+                                  className="h-4 w-4"
+                                  aria-hidden="true"
+                                />
+                              )}
+                            </Button>
+                          )}
+                          {opts.allowDocumentEdits && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => askDeleteDoc(d)}
+                              disabled={synced}
+                              title={synced ? syncedRefusal : undefined}
+                              aria-label={t("common.delete", "Delete")}
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </Button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </li>
-                ))}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}

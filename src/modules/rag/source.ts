@@ -72,6 +72,10 @@ export interface SourceState {
   lastSyncAt: Date | null;
   lastStatus: string | null;
   lastMessage: string | null;
+  // The last run stopped at its write budget and the next one, a few seconds away, continues it
+  // (issue #798). A reader watching a sync land needs this to know the landed run is not the end;
+  // the scheduled row is the only place it is written, so it is read from there.
+  continuing: boolean;
 }
 
 const DEFAULT_INTERVAL_MINUTES = 10;
@@ -101,9 +105,6 @@ const sysCtx = (tenantId: bigint): TenantContext => ({
   role: "TENANT_ADMIN",
 });
 
-const invalid = (message: string, field: string) =>
-  new AppError(message, 400, undefined, undefined, field);
-
 // Validates and normalizes what an operator sends, and answers the SSRF question once here so a
 // refused URL never reaches the database. The run asks it again before every fetch, because a name
 // that resolved publicly when the source was saved can resolve privately later.
@@ -120,10 +121,22 @@ export async function parseSourceInput(
   intervalMinutes: number;
 }> {
   if (!SOURCE_KINDS.includes(input.kind as SourceKind)) {
-    throw invalid(`unknown source kind: ${String(input.kind)}`, "kind");
+    throw new AppError(
+      `unknown source kind: ${String(input.kind)}`,
+      400,
+      "errors.sourceKindUnknown",
+      { kind: String(input.kind) },
+      "kind",
+    );
   }
   if (typeof input.baseUrl !== "string" || input.baseUrl.trim() === "") {
-    throw invalid("baseUrl is required", "baseUrl");
+    throw new AppError(
+      "baseUrl is required",
+      400,
+      "errors.sourceUrlRequired",
+      undefined,
+      "baseUrl",
+    );
   }
   // The string that is KEPT, held to what the column stores: the URL parser below drops a trailing
   // control character before it validates, so a NUL would pass it and then fail at the database,
@@ -136,15 +149,33 @@ export async function parseSourceInput(
   try {
     parsedUrl = new URL(baseUrl);
   } catch {
-    throw invalid("baseUrl is not a URL", "baseUrl");
+    throw new AppError(
+      "baseUrl is not a URL",
+      400,
+      "errors.sourceUrlInvalid",
+      undefined,
+      "baseUrl",
+    );
   }
   if (parsedUrl.username !== "" || parsedUrl.password !== "") {
-    throw invalid("baseUrl must not carry credentials", "baseUrl");
+    throw new AppError(
+      "baseUrl must not carry credentials",
+      400,
+      "errors.sourceUrlCredentials",
+      undefined,
+      "baseUrl",
+    );
   }
   // Static, so it holds where the address is not resolved (an import): the SSRF check below is the
   // one that knows the scheme rules, but it is also the one that needs DNS.
   if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-    throw invalid("baseUrl must be an http(s) URL", "baseUrl");
+    throw new AppError(
+      "baseUrl must be an http(s) URL",
+      400,
+      "errors.sourceUrlNotHttp",
+      undefined,
+      "baseUrl",
+    );
   }
   // The listing path is appended to this string, and after a `?` or a `#` it would land inside the
   // query or the fragment: the source would save and every run would fetch the wrong page.
@@ -153,7 +184,13 @@ export async function parseSourceInput(
     parsedUrl.hash !== "" ||
     /[?#]/.test(baseUrl)
   ) {
-    throw invalid("baseUrl must not carry a query or a fragment", "baseUrl");
+    throw new AppError(
+      "baseUrl must not carry a query or a fragment",
+      400,
+      "errors.sourceUrlQuery",
+      undefined,
+      "baseUrl",
+    );
   }
   try {
     await assertSafe(baseUrl);
@@ -162,22 +199,46 @@ export async function parseSourceInput(
     // (`EAI_AGAIN`) is the infrastructure's, and reporting it as an invalid field would tell the
     // operator to change a URL that is fine.
     if (err instanceof SsrfError) {
-      throw invalid(`baseUrl is not allowed: ${err.message}`, "baseUrl");
+      throw new AppError(
+        `baseUrl is not allowed: ${err.message}`,
+        400,
+        "errors.sourceUrlNotAllowed",
+        { reason: err.message },
+        "baseUrl",
+      );
     }
     throw err;
   }
   if (typeof input.slug !== "string" || !SLUG.test(input.slug)) {
-    throw invalid("slug is required and must be a portal slug", "slug");
+    throw new AppError(
+      "slug is required and must be a portal slug",
+      400,
+      "errors.sourceSlugInvalid",
+      undefined,
+      "slug",
+    );
   }
   if (typeof input.locale !== "string" || !LOCALE.test(input.locale)) {
-    throw invalid("locale is required and must be a locale code", "locale");
+    throw new AppError(
+      "locale is required and must be a locale code",
+      400,
+      "errors.sourceLocaleInvalid",
+      undefined,
+      "locale",
+    );
   }
   const rawExclude = input.excludeIds ?? [];
   if (
     !Array.isArray(rawExclude) ||
     !rawExclude.every((v) => Number.isSafeInteger(v) && (v as number) > 0)
   ) {
-    throw invalid("excludeIds must be a list of article ids", "excludeIds");
+    throw new AppError(
+      "excludeIds must be a list of article ids",
+      400,
+      "errors.sourceExcludeIdsInvalid",
+      undefined,
+      "excludeIds",
+    );
   }
   const interval = input.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES;
   if (
@@ -185,8 +246,11 @@ export async function parseSourceInput(
     (interval as number) < MIN_INTERVAL_MINUTES ||
     (interval as number) > MAX_INTERVAL_MINUTES
   ) {
-    throw invalid(
+    throw new AppError(
       `intervalMinutes must be between ${MIN_INTERVAL_MINUTES} and ${MAX_INTERVAL_MINUTES}`,
+      400,
+      "errors.sourceIntervalInvalid",
+      { min: MIN_INTERVAL_MINUTES, max: MAX_INTERVAL_MINUTES },
       "intervalMinutes",
     );
   }
@@ -221,8 +285,13 @@ function stateOf(row: {
     lastSyncAt: row.lastSyncAt,
     lastStatus: row.lastStatus,
     lastMessage: row.lastMessage,
+    continuing: false,
   };
 }
+
+// A continuation is armed CONTINUE_AFTER_MS after the run that asked for it; an ordinary next run is
+// at least MIN_INTERVAL_MINUTES away. Anything under a minute from the last run is the former.
+const CONTINUATION_WINDOW_MS = 60_000;
 
 const syncKey = (knowledgeBaseId: bigint) => `source:${knowledgeBaseId}`;
 
@@ -251,10 +320,30 @@ export async function getSource(
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<SourceState | null> {
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.knowledgeSource.findUnique({ where: { knowledgeBaseId } }),
-  );
-  return row ? stateOf(row) : null;
+  const found = await runScopedOn(base, ctx, async (db) => {
+    const row = await db.knowledgeSource.findUnique({
+      where: { knowledgeBaseId },
+    });
+    if (!row) return null;
+    const job = row.lastSyncAt
+      ? await db.schedulerJob.findFirst({
+          where: {
+            kind: "KNOWLEDGE_SOURCE_SYNC",
+            dedupeKey: syncKey(knowledgeBaseId),
+          },
+          select: { runAt: true },
+        })
+      : null;
+    return { row, job };
+  });
+  if (!found) return null;
+  const state = stateOf(found.row);
+  const last = found.row.lastSyncAt;
+  state.continuing =
+    last !== null &&
+    found.job !== null &&
+    found.job.runAt.getTime() - last.getTime() < CONTINUATION_WINDOW_MS;
+  return state;
 }
 
 // Creates or replaces the base's source and arms a sync for now. Replacing keeps the documents: a
@@ -273,7 +362,11 @@ export async function setSource(
       where: { id: knowledgeBaseId },
       select: { id: true },
     });
-    if (!kb) throw new NotFoundError("knowledge base not found");
+    if (!kb)
+      throw new NotFoundError(
+        "knowledge base not found",
+        "errors.knowledgeBaseNotFound",
+      );
     const before = await db.knowledgeSource.findUnique({
       where: { knowledgeBaseId },
     });
@@ -346,7 +439,11 @@ export async function deleteSource(
     const existing = await db.knowledgeSource.findUnique({
       where: { knowledgeBaseId },
     });
-    if (!existing) throw new NotFoundError("knowledge base has no source");
+    if (!existing)
+      throw new NotFoundError(
+        "knowledge base has no source",
+        "errors.sourceMissing",
+      );
     await db.knowledgeSource.delete({ where: { knowledgeBaseId } });
     // The pending run is cancelled IN this transaction, not after it: a source set again right after
     // this commits arms a row under the same key, and a cancel running later would mark that one
@@ -386,8 +483,16 @@ export async function requestSync(
         where: { id: knowledgeBaseId },
         select: { id: true },
       });
-      if (!kb) throw new NotFoundError("knowledge base not found");
-      throw new AppError("knowledge base has no source to sync", 409);
+      if (!kb)
+        throw new NotFoundError(
+          "knowledge base not found",
+          "errors.knowledgeBaseNotFound",
+        );
+      throw new AppError(
+        "knowledge base has no source to sync",
+        409,
+        "errors.sourceMissingToSync",
+      );
     }
     await auditMutation(db, ctx, {
       action: "knowledge_source.sync",

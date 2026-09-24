@@ -57,6 +57,20 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // translate('errors.noExtractableText', 'No extractable text found in this {{kind}} file')
 // translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
 // translate('errors.unsupportedFileType', 'Unsupported file type: {{type}}')
+// translate('errors.sourceKindUnknown', 'The source kind {{kind}} is not supported.')
+// translate('errors.sourceUrlRequired', 'The portal URL is required.')
+// translate('errors.sourceUrlInvalid', 'The portal URL is not a valid URL.')
+// translate('errors.sourceUrlCredentials', 'The portal URL must not carry a user name or password.')
+// translate('errors.sourceUrlNotHttp', 'The portal URL must start with https:// or http://.')
+// translate('errors.sourceUrlQuery', 'The portal URL must not carry a query (?) or a fragment (#).')
+// translate('errors.sourceUrlNotAllowed', 'The server does not reach this address ({{reason}}): it only fetches public https addresses that resolve.')
+// translate('errors.sourceSlugInvalid', 'The portal slug is required and may only use letters, digits, hyphens and underscores.')
+// translate('errors.sourceLocaleInvalid', 'The locale is required and must be a locale code, like pt_BR or en.')
+// translate('errors.sourceExcludeIdsInvalid', 'Excluded articles must be a list of article ids.')
+// translate('errors.sourceIntervalInvalid', 'The interval must be between {{min}} and {{max}} minutes.')
+// translate('errors.sourceMissing', 'This knowledge base has no source.')
+// translate('errors.sourceMissingToSync', 'This knowledge base has no source to sync.')
+// translate('errors.syncedDocumentRefused', 'This document is synced from the help center portal and would be overwritten on the next sync. Fix the article in the portal instead.')
 
 const STRIP_CONTACT_FOOTERS_FIELD = t.Boolean({
   description:

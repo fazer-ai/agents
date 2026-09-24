@@ -158,6 +158,17 @@ describe("agent_settings_set argument schema", () => {
   });
 
   // The two nested shapes the loop above only sees the top of.
+  // Issue #802: the agent's audio check mode is one of three, or null for the instance's; anything
+  // else is refused on write rather than stored and read back as the default.
+  test("the audio check mode accepts the three and null, and refuses anything else", () => {
+    for (const ok of ["off", "shadow", "enforce", null]) {
+      expect(patch.safeParse({ tts: { checkMode: ok } }).success).toBe(true);
+    }
+    for (const bad of ["regenerate", "Enforce", 1]) {
+      expect(patch.safeParse({ tts: { checkMode: bad } }).success).toBe(false);
+    }
+  });
+
   test("the nested shapes are declared too", () => {
     const compaction = BEHAVIOR_PATCH_SHAPE.memory
       .unwrap()

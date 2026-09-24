@@ -32,7 +32,7 @@ import {
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
-import { TTS_MODES } from "@/modules/tts/settings-shared";
+import { TTS_CHECK_MODES, TTS_MODES } from "@/modules/tts/settings-shared";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 
 // The argument shape of the behavior blocks, as a schema instead of a paragraph.
@@ -178,6 +178,10 @@ const tts = z.looseObject({
   style: z.number().nullable().optional().describe("0-1, clamped"),
   speed: z.number().nullable().optional().describe("0.25-4, clamped"),
   speakerBoost: z.boolean().nullable().optional(),
+  checkMode: oneOf(TTS_CHECK_MODES)
+    .nullable()
+    .optional()
+    .describe("null = the instance default"),
 });
 
 const vision = z.looseObject({

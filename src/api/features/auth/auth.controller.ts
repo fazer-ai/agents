@@ -370,6 +370,13 @@ const baseAuthController = new Elysia({
         // Whether stdio MCP transport is enabled server-side (config.mcpStdioEnabled). Surfaced so the
         // MCP connection form can clearly flag a stdio server as inert when the operator has it off.
         mcpStdioEnabled: config.mcpStdioEnabled,
+        // Whether this install runs the audio detector, and the mode an agent that never chose one
+        // gets (issue #802). The address and token stay server-side: the editor only needs to know
+        // whether the per-agent choice can do anything, and what "the default" means.
+        ttsCheck: {
+          configured: config.ttsCheck.url !== "",
+          mode: config.ttsCheck.mode,
+        },
         defaultTenantId:
           defaultTenantId === null ? null : defaultTenantId.toString(),
       };

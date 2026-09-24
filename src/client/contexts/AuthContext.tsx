@@ -15,6 +15,7 @@ import {
 import { api } from "@/client/lib/api";
 import { performLogout } from "@/client/lib/logout";
 import { noteOperator } from "@/client/lib/toolSample";
+import type { TtsCheckMode } from "@/modules/tts/settings-shared";
 
 export interface User {
   id: string;
@@ -50,12 +51,15 @@ interface AuthContextType {
   setupTokenRequired: boolean;
   signupEnabled: boolean;
   mcpStdioEnabled: boolean;
+  // The deployment's audio detector, as far as the editor needs it (issue #802).
+  ttsCheck: { configured: boolean; mode: TtsCheckMode };
   login: (user: User) => void;
   logout: () => Promise<boolean>;
   refresh: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | null>(null);
+// Exported so a test can hand a component what /me would have said without the whole provider.
+export const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -64,6 +68,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [setupTokenRequired, setSetupTokenRequired] = useState(false);
   const [signupEnabled, setSignupEnabled] = useState(false);
   const [mcpStdioEnabled, setMcpStdioEnabled] = useState(false);
+  const [ttsCheck, setTtsCheck] = useState<{
+    configured: boolean;
+    mode: TtsCheckMode;
+  }>({ configured: false, mode: "off" });
   const [loading, setLoading] = useState(true);
 
   // THE ONLY CALLER OF `setUser`, and that is the point rather than a tidiness: what has to happen
@@ -137,6 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSignupEnabled(data.signupEnabled);
         if (typeof data.mcpStdioEnabled === "boolean")
           setMcpStdioEnabled(data.mcpStdioEnabled);
+        if (data.ttsCheck) setTtsCheck(data.ttsCheck);
         return true;
       }
       // NOTE: Eden types `error` as `null` for /me (the route declares no
@@ -237,6 +246,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setupTokenRequired,
         signupEnabled,
         mcpStdioEnabled,
+        ttsCheck,
         login,
         logout,
         refresh,
@@ -244,6 +254,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     >
       {children}
     </AuthContext.Provider>
+  );
+}
+
+// The deployment's audio detector, read without requiring a provider (issue #802): the Behavior tab
+// is also rendered on its own (tests, previews), and there "no detector" is the honest answer.
+export function useTtsCheckInfo(): { configured: boolean; mode: TtsCheckMode } {
+  return (
+    useContext(AuthContext)?.ttsCheck ?? { configured: false, mode: "off" }
   );
 }
 

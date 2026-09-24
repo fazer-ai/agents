@@ -2,8 +2,10 @@ import { TTS_PROVIDER_NAMES } from "./providers";
 
 import {
   readVoiceSettings,
+  TTS_CHECK_MODES,
   TTS_DEFAULTS,
   TTS_MODES,
+  type TtsCheckMode,
   type TtsConfig,
   type TtsMode,
   type TtsVoiceSettings,
@@ -57,6 +59,10 @@ export function readTtsConfig(settings: unknown): TtsConfig {
     normalizeModel: str(bag.normalizeModel),
     normalizeCredentialRef: str(bag.normalizeCredentialRef),
     normalizeBaseURL: str(bag.normalizeBaseURL),
+    // Anything that is not one of the three reads as "the deployment's", never as a mode of its own.
+    checkMode: TTS_CHECK_MODES.includes(str(bag.checkMode) as TtsCheckMode)
+      ? (str(bag.checkMode) as TtsCheckMode)
+      : null,
     ...readVoiceSettings(bag),
   };
 }

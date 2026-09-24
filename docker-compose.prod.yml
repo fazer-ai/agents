@@ -75,6 +75,7 @@ services:
       # NOTE: corrupted-audio check for audio replies (docs/tts.md "Checking the audio"). Empty URL = off;
       # a URL alone = shadow (records a verdict, never changes a send). enforce regenerates up to twice
       # and then replies with text.
+      # TTS_CHECK_MODE is only the DEFAULT: each agent can pick its own in the editor (Behavior, audio).
       - TTS_CHECK_URL=${TTS_CHECK_URL:-}
       - TTS_CHECK_MODE=${TTS_CHECK_MODE:-}
       - TTS_CHECK_TOKEN=${TTS_CHECK_TOKEN:-}
@@ -132,6 +133,19 @@ services:
       interval: 20s
       timeout: 20s
       retries: 10
+
+
+  # OPTIONAL: the corrupted-audio detector (docs/tts.md "Checking the audio"). Uncomment only if this
+  # install sends audio replies. It is heavy: reserve about 4 GB of memory for it (measured, 2.2 GB
+  # and 5 to 7 s on 4 cores per check). No public image is published: point TTS_CHECK_IMAGE at a
+  # detector that answers the contract in docs/tts.md, then set TTS_CHECK_URL=http://audio-check:<its
+  # port> (and TTS_CHECK_TOKEN, if it takes one) on the agents service.
+  # The thresholds of a detector are calibrated on one provider's audio: on another provider, keep
+  # the agents on "Record only" and check its verdicts before choosing "Regenerate".
+  # audio-check:
+  #   image: ${TTS_CHECK_IMAGE}
+  #   restart: always
+  #   mem_limit: 5g
 
 volumes:
   storage:

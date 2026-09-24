@@ -37,9 +37,23 @@ const SAVED = {
   style: 0.2,
   speed: 1.5,
   speakerBoost: false,
+  checkMode: "enforce",
 };
 
 describe("agent editor TTS round-trip", () => {
+  // Issue #802: "Instance default" is stored as null, so saving the tab never pins the agent to the
+  // mode the instance has today, and a value that is not one of the three reads as the default.
+  test("the audio check left on the instance default stays null, and garbage reads as the default", () => {
+    expect(readTtsFormState({}).checkMode).toBe("");
+    expect(ttsSettingsFrom(readTtsFormState({})).checkMode).toBeNull();
+    expect(readTtsFormState({ checkMode: "Enforce" }).checkMode).toBe("");
+    for (const m of ["off", "shadow", "enforce"] as const) {
+      expect(
+        ttsSettingsFrom(readTtsFormState({ checkMode: m })).checkMode,
+      ).toBe(m);
+    }
+  });
+
   test("an agent's saved block survives load → save unchanged", () => {
     const form = readTtsFormState(SAVED);
     expect(ttsSettingsFrom(form)).toEqual(SAVED);

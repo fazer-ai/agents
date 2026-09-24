@@ -24,6 +24,7 @@ import {
 } from "@/graph/markers";
 import { runAgentTurn } from "@/graph/runtime";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import { countMessageTokens } from "@/graph/token-count";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -200,6 +201,52 @@ describe("the agent node", () => {
     expect((await sent({ timezone: "UTC" })).seen[0]).toBe(
       "[16/09/2026 13:05] me manda o orçamento",
     );
+  });
+
+  // Review r1: the date is part of what the provider receives, so the history ceiling counts it. A
+  // ceiling that fits the stored text but not the dated one has to trim.
+  test("the history ceiling counts each message with its date", async () => {
+    const long: BaseMessage[] = [];
+    for (let i = 0; i < 40; i++) {
+      long.push(
+        new HumanMessage({
+          content: "ok",
+          additional_kwargs: sentAtStamp(WEEK_AGO),
+        }),
+        new AIMessage("ok"),
+      );
+    }
+    const stored = long.reduce((n, m) => n + countMessageTokens(m), 0);
+    const dated = datedHistory(long, SP).reduce(
+      (n, m) => n + countMessageTokens(m),
+      0,
+    );
+    expect(dated).toBeGreaterThan(stored);
+    const ceiling = Math.floor((stored + dated) / 2);
+    const seen = async (historyDates: { timezone: string } | null) => {
+      const model = new RecordingModel();
+      const graph = buildAgentGraph({
+        primary: { provider: "openai", model: "test-model" },
+        model: model as unknown as BaseChatModel,
+        systemPrompt: "PROMPT",
+        checkpointer: new MemorySaver(),
+        maxHistoryTokens: ceiling,
+        historyDates,
+      });
+      await graph.invoke(
+        { messages: long },
+        { configurable: { thread_id: "ceiling" } },
+      );
+      const sent = (model.seen[0] ?? []).slice(1);
+      return {
+        n: sent.length,
+        tokens: sent.reduce((n, m) => n + countMessageTokens(m), 0),
+      };
+    };
+    expect((await seen(null)).n).toBe(long.length);
+    const withDates = await seen({ timezone: SP });
+    expect(withDates.n).toBeLessThan(long.length);
+    expect(withDates.tokens).toBeLessThanOrEqual(ceiling);
   });
 
   test("switched off, sends it exactly as stored", async () => {

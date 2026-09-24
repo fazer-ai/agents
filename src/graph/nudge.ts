@@ -2313,11 +2313,12 @@ export async function runAgentNudge(
       // Through `refuse`, because the refused reply is already in the thread: left there, the next
       // turn on this still-bot-owned conversation would read it as said.
       if (!handed) {
-        await applyPostActions({
+        const applied = await applyPostActions({
           canMessage: canMessagePost,
           allowResolve: false,
         });
-        return refuse("silent");
+        // NOTE: the same rule as every other silent end (issue #811).
+        return refuse(applied === "stale" ? standDown() : "silent");
       }
       // The window closed during the judge's call or the transfer. The ordinary template below says
       // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
@@ -2337,8 +2338,9 @@ export async function runAgentNudge(
       }
     }
     if (screened === null) {
-      await applyPostActions({ canMessage: canMessagePost });
-      return "silent";
+      const applied = await applyPostActions({ canMessage: canMessagePost });
+      // NOTE: the same rule as every other silent end (issue #811).
+      return applied === "stale" ? standDown() : "silent";
     }
     // The window is asked again for the same reason the ownership is, and about the same stretch of
     // time: the judge's model call. Both were read before it and are spent here. A mode that has

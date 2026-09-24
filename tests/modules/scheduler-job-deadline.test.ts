@@ -15,6 +15,7 @@ import {
   claimDueDebounceJobs,
   claimDueJobs,
   enqueueJob,
+  enqueueJobUnlessClaimed,
   type SchedulerJobKind,
 } from "@/modules/scheduler/service";
 import {
@@ -369,6 +370,44 @@ describe.skipIf(!dbUp)(
         status: "PENDING",
         payload: { stage: "new" },
         runAt: rearmAt.getTime(),
+      });
+    });
+
+    // The follow-up sweep re-arms its episodes through `enqueueJobUnlessClaimed`, which leaves a
+    // CLAIMED row alone. A row its deadline put back to PENDING while the handler still runs is as
+    // taken as a claimed one: re-armed under it, the step that handler is finishing could not be
+    // written, and the retry would start the episode over.
+    test("a re-arm unless claimed leaves a row whose handler still runs past its deadline", async () => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const next = new Date(Date.now() + 3_600_000);
+      install("HEARTBEAT", async (_job, _base, ctx) => {
+        ctx?.commit();
+        await gate;
+        return { outcome: "reschedule", runAt: next, payload: { step: 1 } };
+      });
+      const job = await claimed("HEARTBEAT", "deadline-sweep-rearm");
+      await runClaimed(job, appDb, { deadlineMs: 100 });
+      const rearmed = await enqueueJobUnlessClaimed({
+        rearm: "same-work",
+        tenantId,
+        kind: "HEARTBEAT",
+        dedupeKey: "deadline-sweep-rearm",
+        runAt: past(),
+        payload: { step: 0 },
+        base: appDb,
+      });
+      expect(rearmed).toBe(false);
+      release();
+      await sleep(300);
+      const row = await suDb.schedulerJob.findUniqueOrThrow({
+        where: { id: job.id },
+      });
+      expect({ payload: row.payload, runAt: row.runAt.getTime() }).toEqual({
+        payload: { step: 1 },
+        runAt: next.getTime(),
       });
     });
 

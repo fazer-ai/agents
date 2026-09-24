@@ -289,6 +289,26 @@ describe("a job's deadline inside the graph (issue #811)", () => {
     }
   });
 
+  test("no silent end of a nudge drops a refused post-action", async () => {
+    // A silent end sent nothing, so a post-action the deadline refused leaves the step to the retry;
+    // an end that reported "silent" over it would have the step stamped and committed with its
+    // labels or resolve missing. So a call whose answer is thrown away must be followed by an end
+    // that did send something.
+    const src = withoutComments(await Bun.file("src/graph/nudge.ts").text());
+    const bare = [...src.matchAll(/\n\s*await applyPostActions\(/g)];
+    expect(bare.length).toBeGreaterThan(0);
+    for (const m of bare) {
+      const after = src.slice(m.index);
+      const end = after
+        .slice(after.indexOf(";") + 1)
+        .match(/return [^;]*;/)?.[0];
+      expect({ end, silent: /"silent"/.test(end ?? "") }).toEqual({
+        end,
+        silent: false,
+      });
+    }
+  });
+
   test("every job kind whose handler runs a model turn hands the turn its job's signal", async () => {
     // The handlers are tested by calling them, which skips the registration, and a registration that
     // wraps its handler is where the signal was dropped twice. A kind that starts running a turn has

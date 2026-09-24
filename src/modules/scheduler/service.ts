@@ -340,10 +340,15 @@ export async function enqueueJobUnlessClaimed(
         })
       : null;
     if (later && (await params.leaveLaterRun?.(later))) return false;
+    // NOTE: a row whose handler still runs counts as claimed, though its deadline put it back to
+    // PENDING: re-armed under it, the work that handler committed could no longer be written, and
+    // the retry would start the episode over (issue #811). The same set every claim excludes.
+    const running = runningJobIds();
     const updated = await db.schedulerJob.updateMany({
       where: {
         ...key,
         status: { not: "CLAIMED" },
+        ...(running.length > 0 ? { id: { notIn: running } } : {}),
         ...(later
           ? { status: "PENDING", runAt: later.runAt }
           : params.leaveLaterRun

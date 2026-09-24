@@ -185,6 +185,13 @@ export const alertChannelsController = new Elysia({
               "New flow stages to filter on, from GET /stages; empty matches all stages.",
           }),
         ),
+        excludeAgentIds: t.Optional(
+          t.Array(t.String(), {
+            maxItems: 200,
+            description:
+              "Replaces the list of agent ids (BigInts as decimal strings) whose flow-log lines never alert on this channel; [] clears it. An id the channel already holds is kept even if its agent was deleted; a new one must name an agent of this tenant.",
+          }),
+        ),
         secretRef: t.Optional(
           t.Nullable(
             t.String({

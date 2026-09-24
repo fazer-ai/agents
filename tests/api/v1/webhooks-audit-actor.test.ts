@@ -353,5 +353,42 @@ describe.skipIf(!dbUp)("the webhook transports name who wrote", () => {
       typeof v === "bigint" ? String(v) : v,
     );
     expect(text).not.toContain("RESTTOKEN");
+
+    // Issue #843: the PATCH body declares `excludeAgentIds`, so the list reaches the service instead
+    // of being refused or dropped by the route. An id naming no agent here is the service's own
+    // answer, which only a field that got through can produce.
+    const kept = await server.handle(
+      req("/alert-channels", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "rest excl",
+          type: "discord",
+          url: outboundUrl("/api/webhooks/9/EXCL"),
+          excludeAgentIds: [],
+        }),
+      }),
+    );
+    expect(kept.status).toBe(200);
+    const exclId = ((await kept.json()) as { channel: { id: string } }).channel
+      .id;
+    const refused = await server.handle(
+      req(`/alert-channels/${exclId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ excludeAgentIds: ["999999999"] }),
+      }),
+    );
+    expect(refused.status).toBe(400);
+    expect(await refused.text()).toContain("999999999");
+    const cleared = await server.handle(
+      req(`/alert-channels/${exclId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ excludeAgentIds: [] }),
+      }),
+    );
+    expect(cleared.status).toBe(200);
+    expect(
+      ((await cleared.json()) as { channel: { excludeAgentIds: string[] } })
+        .channel.excludeAgentIds,
+    ).toEqual([]);
   });
 });

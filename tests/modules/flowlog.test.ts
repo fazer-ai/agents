@@ -12,7 +12,7 @@ import {
 } from "@/modules/flowlog/channels";
 import { listExecutionLogs } from "@/modules/flowlog/read";
 import type { FlowContext } from "@/modules/flowlog/service";
-import { withFlowStage, writeFlowEvent } from "@/modules/flowlog/service";
+import { withFlowStage } from "@/modules/flowlog/service";
 import { flowLogRow } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
@@ -29,42 +29,6 @@ describe("withFlowStage (no context)", () => {
         throw new Error("boom");
       }),
     ).rejects.toThrow("boom");
-  });
-});
-
-// ISSUE #822: a measurement probe (`Bun.sleep` on `PROBE_FLOWLOG_DELAY_MS`) sat at the top of this
-// write for a month, so the environment could delay every flow-log line in production. Set to a
-// value no write could hide, the variable must change nothing. The client throws on first touch, so
-// the write fails fast and is swallowed, which is all this needs: it measures the time before it.
-describe("writeFlowEvent reads no delay from the environment", () => {
-  test("PROBE_FLOWLOG_DELAY_MS no longer holds a write back", async () => {
-    const prev = process.env.PROBE_FLOWLOG_DELAY_MS;
-    process.env.PROBE_FLOWLOG_DELAY_MS = "3000";
-    try {
-      const failing = new Proxy(
-        {},
-        {
-          get() {
-            throw new Error("no database in this test");
-          },
-        },
-      ) as unknown as PrismaClient;
-      const started = performance.now();
-      const out = await writeFlowEvent(
-        {
-          tenantId: 1n,
-          turnId: "probe-822",
-          source: "playground",
-          base: failing,
-        },
-        { stage: "route" },
-      );
-      expect(out.delivered).toBe(false);
-      expect(performance.now() - started).toBeLessThan(1000);
-    } finally {
-      if (prev === undefined) delete process.env.PROBE_FLOWLOG_DELAY_MS;
-      else process.env.PROBE_FLOWLOG_DELAY_MS = prev;
-    }
   });
 });
 

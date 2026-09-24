@@ -5,10 +5,10 @@ import { codeOnly } from "@/tests/utils/source-text";
 //
 // `src/config.ts` is where a variable becomes a setting: it is parsed, validated, given a default and
 // listed where an operator can find it (`.env.example`). A read anywhere else skips all of that, and
-// the one that prompted this file was a measurement probe, `Bun.sleep(Number(process.env.
-// PROBE_FLOWLOG_DELAY_MS ?? 0))`, committed by accident at the top of every flow-log write and shipped
-// in every release for a month: undocumented, unvalidated (a non-numeric value became `NaN`), and
-// on the hot path of every turn. Nothing would have caught it, because nothing asked.
+// the one that prompted this file was a measurement probe, a `Bun.sleep` on an environment variable,
+// committed by accident at the top of every flow-log write and shipped in every release for a month:
+// undocumented, unvalidated (a non-numeric value became `NaN`), and on the hot path of every turn.
+// Nothing would have caught it, because nothing asked.
 //
 // So a file under `src/` that reads the environment is either `src/config.ts` or listed below with the
 // reason it cannot go through it. A new one fails until somebody answers the question; a listed one

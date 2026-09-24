@@ -389,6 +389,10 @@ export function usePlaygroundChat(
   );
 
   const threadId = useRef<string | undefined>(undefined);
+  // Whether the open thread already has a saved session row. Not the same as having a thread id:
+  // a file's read names the thread before any turn ran, and a turn that then fails leaves a thread
+  // with no session behind it, whose first successful turn must still refresh the history list.
+  const sessionSaved = useRef(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
@@ -430,6 +434,7 @@ export function usePlaygroundChat(
           .get();
         if (!data) return;
         threadId.current = tid;
+        sessionSaved.current = true;
         setSessionUsage(data.usage);
         setTurns(
           data.turns.map((rt): PlaygroundTurn => {
@@ -468,6 +473,7 @@ export function usePlaygroundChat(
 
   const newSession = useCallback(() => {
     threadId.current = undefined;
+    sessionSaved.current = false;
     setTurns([]);
     setSessionUsage(NO_USAGE);
   }, []);
@@ -526,7 +532,7 @@ export function usePlaygroundChat(
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || busy || notReady) return;
-    const wasNew = !threadId.current;
+    const wasNew = !sessionSaved.current;
     setInput("");
     setTurns((prev) => [...prev, { role: "user", text }]);
     setSending(true);
@@ -545,6 +551,7 @@ export function usePlaygroundChat(
         return;
       }
       threadId.current = data.threadId;
+      sessionSaved.current = true;
       countUsage(data.usage);
       setTurns((prev) => [
         ...prev,
@@ -595,6 +602,7 @@ export function usePlaygroundChat(
         return;
       }
       threadId.current = data.threadId;
+      sessionSaved.current = true;
       countUsage(data.usage);
       setTurns((prev) => [
         ...prev,
@@ -662,7 +670,7 @@ export function usePlaygroundChat(
   const sendFile = useCallback(
     async (file: File) => {
       if (notReady || busy || recording) return;
-      const wasNew = !threadId.current;
+      const wasNew = !sessionSaved.current;
       const fileUrl = trackUrl(URL.createObjectURL(file));
       setTurns((prev) => [
         ...prev,
@@ -702,6 +710,8 @@ export function usePlaygroundChat(
         // the extraction named, and its line counts the read with the reply (issue #839).
         threadId.current = data.threadId;
         extractUsage = data.usage;
+        // Counted now: the read is billed whether or not the turn after it succeeds.
+        countUsage(extractUsage);
         applyExtraction(kind, extracted);
       } catch {
         clearPendingBubble();
@@ -732,7 +742,8 @@ export function usePlaygroundChat(
           return;
         }
         threadId.current = data.threadId;
-        countUsage(addUsage(data.usage, extractUsage));
+        sessionSaved.current = true;
+        countUsage(data.usage);
         setTurns((prev) => [
           ...prev,
           agentTurn(t, {
@@ -810,7 +821,7 @@ export function usePlaygroundChat(
   const sendRecording = useCallback(
     async (blob: Blob) => {
       if (blob.size === 0) return;
-      const wasNew = !threadId.current;
+      const wasNew = !sessionSaved.current;
       const audioUrl = trackUrl(URL.createObjectURL(blob));
       // Optimistic bubble: the voice note appears immediately (playable) while transcription runs.
       setTurns((prev) => [
@@ -866,6 +877,7 @@ export function usePlaygroundChat(
           return;
         }
         threadId.current = data.threadId;
+        sessionSaved.current = true;
         countUsage(data.usage);
         setTurns((prev) => [
           ...prev,

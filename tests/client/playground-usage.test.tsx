@@ -117,3 +117,105 @@ describe("the turn keeps its usage", () => {
     });
   });
 });
+
+// The hook's own books (issue #839, review round 1): a file's read is billed the moment it lands,
+// whether or not the turn after it succeeds, and a thread the read named is not yet a saved session.
+describe("usePlaygroundChat keeps the session total and the history honest", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const READ: PlaygroundUsage = {
+    ...NO_USAGE,
+    calls: 1,
+    promptTokens: 400,
+    completionTokens: 30,
+  };
+  const REPLY: PlaygroundUsage = {
+    ...NO_USAGE,
+    calls: 1,
+    promptTokens: 900,
+    completionTokens: 50,
+  };
+  const THREAD = "1:playground:7:abc";
+
+  function stub(opts: { failFileTurn: boolean }) {
+    const calls: string[] = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method =
+        (input instanceof Request ? input.method : init?.method) ?? "GET";
+      calls.push(`${method} ${new URL(url, "http://x").pathname}`);
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      if (url.includes("/playground/file/extract"))
+        return json({
+          kind: "image",
+          extracted: "nota",
+          threadId: THREAD,
+          usage: READ,
+        });
+      if (url.includes("/playground/file"))
+        return opts.failFileTurn
+          ? json({ error: "boom" }, 500)
+          : json({
+              reply: "ok",
+              threadId: THREAD,
+              trace: [],
+              sources: [],
+              suppressed: false,
+              usage: REPLY,
+            });
+      if (url.endsWith("/playground") && method === "POST")
+        return json({
+          reply: "ok",
+          threadId: THREAD,
+          trace: [],
+          sources: [],
+          suppressed: false,
+          usage: REPLY,
+        });
+      if (url.includes("/playground/sessions")) return json({ sessions: [] });
+      if (url.includes("/playground/tools")) return json({ tools: [] });
+      return json({});
+    }) as typeof fetch;
+    return calls;
+  }
+
+  test("a read whose turn failed is still counted, and the next turn's success lists the session", async () => {
+    const { renderHook, act } = await import("@testing-library/react");
+    const { usePlaygroundChat } = await import(
+      "@/client/pages/agents/usePlaygroundChat"
+    );
+    stub({ failFileTurn: true });
+    const { result } = renderHook(() => usePlaygroundChat("7", false));
+    await act(async () => {
+      await result.current.sendFile(
+        new File(["x"], "nota.png", { type: "image/png" }),
+      );
+    });
+    // The read was billed and the turn never happened: the total says the read.
+    expect(result.current.sessionUsage).toEqual(READ);
+
+    const after = stub({ failFileTurn: false });
+    await act(async () => {
+      result.current.setInput("oi");
+    });
+    await act(async () => {
+      await result.current.send();
+    });
+    expect(result.current.sessionUsage).toEqual(addUsage(READ, REPLY));
+    // The thread existed since the read, but its session row only now: the history is refreshed.
+    expect(
+      after.filter((c) => c === "GET /api/v1/agents/7/playground/sessions")
+        .length,
+    ).toBeGreaterThan(0);
+  });
+});

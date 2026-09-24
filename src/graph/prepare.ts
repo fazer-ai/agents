@@ -1924,7 +1924,12 @@ export function buildFallbackModel(
   // base URL throws a 400). Uncaught here that would cost the turn the fallback exists to save, and
   // it would cost it on EVERY turn, not just the ones the primary failed.
   try {
-    return { model: makeModel(mc), provider: mc.provider, modelId: mc.model };
+    return {
+      model: makeModel(mc),
+      provider: mc.provider,
+      modelId: mc.model,
+      deadlineMs: PRIMARY_TIMEOUT_MS,
+    };
   } catch (err) {
     logger.warn(
       { err, agentId: String(cfg.agentId) },
@@ -1986,6 +1991,8 @@ export async function buildModelAndGraph(
     onHistoryTrim: deps.onHistoryTrim,
     noReplyChannel: deps.noReplyChannel,
     stillWanted: deps.stillWanted,
-    primaryDeadlineMs: fallback ? undefined : config.agent.modelCallTimeoutMs,
+    primaryDeadlineMs: fallback
+      ? PRIMARY_TIMEOUT_MS
+      : config.agent.modelCallTimeoutMs,
   });
 }

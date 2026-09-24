@@ -80,11 +80,13 @@ export async function llmNormalizeForSpeech(
   text: string,
   callbacks?: BaseCallbackHandler[],
 ): Promise<string> {
-  const res = await runModelCall(() =>
-    model.invoke([new SystemMessage(SYSTEM_PROMPT), new HumanMessage(text)], {
-      signal: AbortSignal.timeout(NORMALIZE_TIMEOUT_MS),
-      callbacks,
-    }),
+  const res = await runModelCall(
+    (signal) =>
+      model.invoke([new SystemMessage(SYSTEM_PROMPT), new HumanMessage(text)], {
+        signal,
+        callbacks,
+      }),
+    { deadlineMs: NORMALIZE_TIMEOUT_MS },
   );
   const out = messageText(res.content).trim();
   return out || text;

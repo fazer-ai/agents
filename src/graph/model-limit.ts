@@ -55,8 +55,10 @@ export interface ModelLabels {
 export interface ModelFallback<T> {
   // The same call, against the other provider. A thunk rather than a model, because only the caller
   // knows what "the same call" means — which messages, which bound tools, and which metadata names
-  // the model for the usage row.
-  run: () => Promise<T>;
+  // the model for the usage row. Handed the deadline's signal, like the primary's thunk.
+  run: (signal: AbortSignal) => Promise<T>;
+  // The fallback's own deadline: it is another provider, with its own ceiling (issue #819).
+  deadlineMs: number;
   // What it runs on, for the lines this module writes about it.
   labels: ModelLabels;
   // Fired when the fallback takes the turn, so the runtime can leave a warn on the trail. `reason`
@@ -91,7 +93,22 @@ export interface PermitWaitInfo {
   thresholdMs: number;
 }
 
-export interface ModelCallOptions<T> {
+// EVERY CALL HAS A DEADLINE (issue #819). `runModelCall` applies it itself, through
+// `callWithDeadline`, so no call through this module can wait on a provider for longer, whatever its
+// adapter does with the signal. `deadlineMs` is the caller's own value; left out, a call gets the
+// agent's `modelCallTimeoutMs`, and `tests/lib/model-call-deadline-sweep.test.ts` keeps every caller
+// under `src/` from leaving it out, so the default is a floor for tests and never a site's policy.
+export type ModelCallOptions<T> = { deadlineMs?: number } & (
+  | ReportingModelCallOptions<T>
+  | {
+      primary?: undefined;
+      onRetry?: undefined;
+      fallback?: undefined;
+      onPermitWait?: undefined;
+    }
+);
+
+interface ReportingModelCallOptions<T> {
   // What `fn` runs on. Required whenever anything is reported at all, which is what keeps a
   // reporting caller from being written without the labels its lines need.
   primary: ModelLabels;
@@ -134,19 +151,25 @@ export function callWithDeadline<T>(
 }
 
 export async function runModelCall<T>(
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   opts?: ModelCallOptions<T>,
 ): Promise<T> {
   const fallback = opts?.fallback;
+  const deadlineMs = opts?.deadlineMs ?? config.agent.modelCallTimeoutMs;
   // ONE attempt at ONE model, carrying the single recovery LangChain cannot make for us. Written
   // once and applied to BOTH models: the fallback answers the customer in the primary's place, so an
   // intermittent empty completion costs it the turn exactly the way it cost the primary one before
   // issue #63 — measured at 1 in 184 on one install, which is not a rate a last resort may ignore.
   // The first version of this invoked the fallback bare, and review found it.
+  //
+  // The deadline is armed per ATTEMPT and inside the permit: a retry gets a fresh one, and time spent
+  // queueing on the semaphore is not spent from it.
   const attemptOn = async (
-    run: () => Promise<T>,
+    call: (signal: AbortSignal) => Promise<T>,
     labels: ModelLabels | undefined,
+    ms: number,
   ): Promise<T> => {
+    const run = () => callWithDeadline(ms, call);
     try {
       return await run();
     } catch (err) {
@@ -200,7 +223,11 @@ export async function runModelCall<T>(
       );
       fallback.onFallback?.({ reason });
       try {
-        return await attemptOn(fallback.run, fallback.labels);
+        return await attemptOn(
+          fallback.run,
+          fallback.labels,
+          fallback.deadlineMs,
+        );
       } catch (fallbackErr) {
         // The fallback is the last thing there is, so what it failed with is what the turn reports.
         // Redacted the same way: a second vendor's prose is no safer than the first's.
@@ -212,7 +239,7 @@ export async function runModelCall<T>(
       }
     };
     try {
-      return await attemptOn(fn, opts?.primary);
+      return await attemptOn(fn, opts?.primary, deadlineMs);
     } catch (err) {
       return failed(err);
     }

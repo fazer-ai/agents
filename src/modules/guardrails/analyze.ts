@@ -239,11 +239,12 @@ async function invokeForVerdict(
   model: BaseChatModel,
   mode: VerdictMode,
   messages: BaseMessage[],
+  signal: AbortSignal,
   callbacks?: BaseCallbackHandler[],
 ): Promise<{ parsed: Record<string, unknown> | null; raw: string }> {
   const asProse = async () => {
     const res = await model.invoke(messages, {
-      signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
+      signal,
       callbacks,
     });
     return { parsed: null, raw: messageText(res.content).trim() };
@@ -266,7 +267,7 @@ async function invokeForVerdict(
         includeRaw: true,
       })
       .invoke(messages, {
-        signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
+        signal,
         callbacks,
       })) as {
       raw: BaseMessage;
@@ -301,8 +302,12 @@ async function runAnalysis(
   if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {
-    const { parsed, raw } = await runModelCall(() =>
-      invokeForVerdict(model, mode, messages, callbacks),
+    // ONE deadline for the verdict, the refused-then-prose retry included (issue #819): the signal
+    // alone is dropped by the Google adapter, and a classifier on the customer's path is the last
+    // call that may hang.
+    const { parsed, raw } = await runModelCall(
+      (signal) => invokeForVerdict(model, mode, messages, signal, callbacks),
+      { deadlineMs: ANALYZE_TIMEOUT_MS },
     );
     return readVerdict(parsed, raw);
   } catch (err) {

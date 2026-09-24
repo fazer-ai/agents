@@ -88,9 +88,12 @@ import {
 import { readVisionConfig } from "@/modules/vision/settings";
 import {
   clearDeferral,
+  reactionArmedOnThread,
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
+  readReactionArmed,
+  readReactionFrom,
   stampDeferral,
 } from "./service";
 import { readDebounceConfig } from "./settings";
@@ -209,6 +212,15 @@ export interface CoalesceTurnContext {
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
   // turn's group. Reengage leaves it unset (it is a manual re-fire, not message grouping).
   coalesceStage?: FlowStage;
+  // THE MESSAGE THAT ARMED THIS FLUSH, and the mark to catch up from when the page does not carry
+  // it (issue #746). See `readBurstPage`.
+  catchUp?: {
+    armedLast: number | null;
+    after: number | null;
+    reactionArmed: boolean;
+    // The burst's earliest reaction, for a conversation with no mark (see `readReactionFrom`).
+    reactionFrom?: number | null;
+  };
 }
 
 // IS THERE A BURST TO ANSWER, and what is it? Step 1 of the coalescing tail, lifted out because two
@@ -238,6 +250,77 @@ interface AnswerableBurst {
   waitedOnMedia: boolean;
 }
 
+// THE PAGE THE BURST IS SELECTED FROM, and the one message it can be missing (issue #746).
+//
+// The fork's default page is built from the last twenty messages that are NOT reactions, plus only
+// the reactions whose `in_reply_to` points at one of them, and `in_reply_to` is resolved inside the
+// same conversation. A customer reacting to a message of an earlier conversation (resolved, so the
+// reaction opens a new one) or to anything older than those twenty sends a reaction that no default
+// page carries. The webhook rendered it, armed this flush with its id, and the flush then found
+// nothing above the mark: no turn, and a conversation left `pending` with nobody on it. Without
+// debounce the same reaction opens its turn, because the direct path renders from the webhook.
+//
+// So when the burst holds a reaction, or the page lacks the message that armed the flush, the fork's
+// catch-up read (by id, no reaction window) is asked from the mark, and what it adds is merged in.
+// Only then: the common flush pays nothing more.
+export async function readBurstPage(
+  client: Awaited<ReturnType<typeof loadChatwootClient>>,
+  conversationId: number,
+  catchUp: CoalesceTurnContext["catchUp"],
+): Promise<ChatwootMessageRow[]> {
+  const page = parseChatwootMessages(await client.getMessages(conversationId));
+  return withCaughtUp(client, conversationId, page, catchUp);
+}
+
+// The catch-up half of `readBurstPage`, for a caller that already holds its page (the observation
+// walk below reads several).
+async function withCaughtUp(
+  client: Awaited<ReturnType<typeof loadChatwootClient>>,
+  conversationId: number,
+  page: ChatwootMessageRow[],
+  catchUp: CoalesceTurnContext["catchUp"],
+): Promise<ChatwootMessageRow[]> {
+  const armedLast = catchUp?.armedLast ?? null;
+  // Asked when the burst holds a reaction, which the page may be missing without the arming message
+  // being missing (a text typed after it), or when the arming message itself is not on the page.
+  const missingArmed =
+    armedLast !== null && !page.some((m) => m.id === armedLast);
+  if (!catchUp?.reactionArmed && !missingArmed) return page;
+  const starts = [armedLast, catchUp?.reactionFrom ?? null].filter(
+    (n): n is number => n !== null,
+  );
+  const after =
+    catchUp?.after ?? (starts.length > 0 ? Math.min(...starts) - 1 : null);
+  if (after === null) return page;
+  // The catch-up read answers at most a hundred rows from `after`, oldest first, so it is read until
+  // it runs dry. Stopping where it meets the page is not enough: the reaction it is asked for sorts
+  // above the page's non-reaction messages, and a stop at the overlap leaves it unread (PR #821,
+  // review round 2). Merging a partial read is worse than not merging: the rows sit below a gap, and
+  // a reply in the gap would be missing from the history the reply-boundary selectors read, so a
+  // request it already closed would come back as unanswered (round 1). A read the cap cuts short
+  // therefore adds nothing.
+  const caught: ChatwootMessageRow[] = [];
+  let cursor = after;
+  for (let read = 0; ; read++) {
+    const batch = parseChatwootMessages(
+      await client.getMessages(conversationId, { after: cursor }),
+    );
+    caught.push(...batch);
+    if (batch.length < CATCH_UP_PAGE) break;
+    if (read + 1 >= CATCH_UP_MAX_READS) return page;
+    cursor = Math.max(...batch.map((m) => m.id));
+  }
+  const known = new Set(page.map((m) => m.id));
+  const added = caught.filter((m) => !known.has(m.id));
+  if (added.length === 0) return page;
+  return [...page, ...added].sort((a, b) => a.id - b.id);
+}
+
+// The fork's `MessageFinder::CATCH_UP_LIMIT`: a full batch means more may follow.
+const CATCH_UP_PAGE = 100;
+// A burst that fell this far behind its page is not one a reaction explains; the page alone answers.
+const CATCH_UP_MAX_READS = 5;
+
 export async function selectAnswerableBurst(
   ctx: Pick<
     CoalesceTurnContext,
@@ -248,6 +331,7 @@ export async function selectAnswerableBurst(
     | "selectPending"
     | "settings"
     | "label"
+    | "catchUp"
   > & {
     // Presente só quando o chamador quer os anexos sem extração abertos antes do render (ver
     // `fillMissingMedia` em CoalesceTurnContext). Os ids são os da linha de log: sem eles a linha
@@ -271,9 +355,7 @@ export async function selectAnswerableBurst(
     base,
     makeClient: deps?.makeClient,
   });
-  const messages = parseChatwootMessages(
-    await client.getMessages(conversationId),
-  );
+  const messages = await readBurstPage(client, conversationId, ctx.catchUp);
   // NOTE: Overlay the in-process media annotations BEFORE selecting/rendering: on upstream Chatwoot
   // the attachment-meta write-back 404s, so this is the only way a voice note's transcription (or a
   // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
@@ -566,9 +648,38 @@ export async function coalesceAndRunTurn(
   //    posting path — is taken by `runLoadedTurn` off `claimReply` below.
   const shouldPost = async (): Promise<PostVerdict> => {
     try {
-      const latest = parseChatwootMessages(
+      const page = parseChatwootMessages(
         await client.getMessages(conversationId),
       );
+      // A REACTION THAT ARRIVED MID-TURN IS ON NO DEFAULT PAGE EITHER (PR #821, review round 6): the
+      // same catch-up read the burst was selected with, from what this turn answers, when this burst
+      // held a reaction or one re-armed the thread while the model ran. Without it the gate reads
+      // "nothing came after me" and the turn posts over the reaction its re-armed flush will answer
+      // again, two replies for one burst.
+      //
+      // A failure of this extra read keeps the page already read (round 7): letting it reach the
+      // catch below would post without asking the page anything, which is weaker than not asking.
+      const latest = await (async () => {
+        try {
+          return ctx.catchUp &&
+            (ctx.catchUp.reactionArmed ||
+              (await reactionArmedOnThread({ tenantId, threadId, base })))
+            ? await withCaughtUp(client, conversationId, page, {
+                armedLast: null,
+                after: targetWatermark,
+                reactionArmed: true,
+              })
+            : page;
+        } catch (e) {
+          logger.warn(
+            "%s: catch-up read before posting failed (conv=%s), judging the page alone: %s",
+            ctx.label,
+            String(conversationId),
+            e instanceof Error ? e.message : String(e),
+          );
+          return page;
+        }
+      })();
       // ASKED BY IDENTITY, not with the arithmetic of the page (issue #698). "A newer message
       // arrived" used to be `maxIncomingId > targetWatermark`, which reads every incoming id above
       // this turn's target as a customer still waiting. Once the selection stopped deciding by a
@@ -1107,6 +1218,9 @@ async function handOverGateExitIfObserving(args: {
   convDbId: bigint;
   contactInboxId: number | null;
   armedLast: number | null;
+  // Whether the burst holds a customer's reaction (issue #746); see `readReactionArmed`.
+  reactionArmed?: boolean;
+  reactionFrom?: number | null;
   // Another BOT holds the conversation (round 16): Chatwoot fans one message out to both routes,
   // and the owner's own delivery of it may be in flight. The burst is still the observer's to
   // remember, but its delivery rows are not this route's to settle — the same scope
@@ -1139,6 +1253,8 @@ async function handOverGateExitIfObserving(args: {
     instanceId: args.instanceId,
     conversationId: args.conversationId,
     armedLast: args.armedLast,
+    reactionArmed: args.reactionArmed,
+    reactionFrom: args.reactionFrom,
     ctx: {
       convDbId: args.convDbId,
       agentId,
@@ -1156,6 +1272,8 @@ async function ingestObservedBurst(args: {
   instanceId: bigint;
   conversationId: number;
   armedLast: number | null;
+  reactionArmed?: boolean;
+  reactionFrom?: number | null;
   ctx: {
     convDbId: bigint;
     agentId: bigint;
@@ -1255,6 +1373,15 @@ async function ingestObservedBurst(args: {
         }
         messages.unshift(...rows);
       }
+      // A REAÇÃO QUE NENHUMA PÁGINA TRAZ (issue #746): a mesma leitura complementar do flush, a
+      // partir do piso que esta caminhada lê, para a observação lembrar o que o cliente reagiu.
+      const caught = await withCaughtUp(client, conversationId, messages, {
+        armedLast,
+        after: floor,
+        reactionArmed: args.reactionArmed === true,
+        reactionFrom: args.reactionFrom ?? null,
+      });
+      if (caught !== messages) messages.splice(0, messages.length, ...caught);
       overlayMediaAnnotations(tenantId, instanceId, messages);
       // POR IDENTIDADE AQUI TAMBÉM (PR #701, review round 6). A observação ingere e MARCA a rajada,
       // então ela tem que enxergar o mesmo conjunto que o flush enxerga: a órfã abaixo da marca, que
@@ -1622,6 +1749,8 @@ export async function flushDebounceJob(
       instanceId,
       conversationId,
       armedLast: readLastMessageId(job.payload),
+      reactionArmed: readReactionArmed(job.payload),
+      reactionFrom: readReactionFrom(job.payload),
       ctx,
       base,
       deps,
@@ -1671,6 +1800,8 @@ export async function flushDebounceJob(
       convDbId: ctx.convDbId,
       contactInboxId: ctx.contactInboxId,
       armedLast: last,
+      reactionArmed: readReactionArmed(job.payload),
+      reactionFrom: readReactionFrom(job.payload),
       heldByAnotherBot: ctx.heldByAnotherBot,
       base,
       deps,
@@ -1809,6 +1940,8 @@ export async function flushDebounceJob(
       instanceId,
       conversationId,
       armedLast: readLastMessageId(job.payload),
+      reactionArmed: readReactionArmed(job.payload),
+      reactionFrom: readReactionFrom(job.payload),
       ctx: {
         convDbId: ctx.convDbId,
         agentId: ctx.loaded.agentId,
@@ -1821,6 +1954,13 @@ export async function flushDebounceJob(
   };
 
   const armedLast = readLastMessageId(job.payload);
+  // The catch-up read the two burst reads below ask (issue #746): see `readBurstPage`.
+  const flushCatchUp = {
+    armedLast,
+    after: ctx.watermark ?? null,
+    reactionArmed: readReactionArmed(job.payload),
+    reactionFrom: readReactionFrom(job.payload),
+  };
   // ONLY WHILE THE SCALAR STILL SPEAKS FOR THE WHOLE BACKLOG (issue #698). The shortcut reads "the
   // mark covers this payload's last id, so there is nothing left to answer and nothing to refuse" —
   // a statement about every message below the mark, which was safe while the selection asked the
@@ -1905,6 +2045,7 @@ export async function flushDebounceJob(
             selectPending,
             settings: ctx.settings,
             label: "debounce flush",
+            catchUp: flushCatchUp,
           },
           base,
           deps,
@@ -2505,6 +2646,7 @@ export async function flushDebounceJob(
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
+        catchUp: flushCatchUp,
         // The flush answers messages ABOVE the mark, so a mark at or past its target says something
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,

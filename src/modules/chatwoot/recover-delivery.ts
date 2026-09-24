@@ -536,6 +536,8 @@ async function runRecovery(params: {
   // that ENDS at this id, so the message is in it whatever the conversation's length.
   let raw: unknown;
   let recent: ReturnType<typeof parseChatwootMessages> = [];
+  // What the catch-up read below found past the stranded message, when it was asked.
+  let caughtUp: ReturnType<typeof parseChatwootMessages> = [];
   let live: ReturnType<typeof parseLiveConversation> = null;
   let reconciled: Awaited<ReturnType<typeof reconcileMirrorFromLive>> | null =
     null;
@@ -571,6 +573,20 @@ async function runRecovery(params: {
         })
       : null;
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
+    // A REACTION THE ANCHORED PAGE CANNOT CARRY (issue #746). The fork pages by the messages that
+    // are not reactions and keeps a reaction only when the message it reacts to is in the same page
+    // of the same conversation, so a customer's reaction to an older message, or to one of an
+    // earlier conversation, is on no `before` page, and reading it as deleted settled a stranded
+    // reaction as `unrecoverable`. The catch-up read lists by id with no such window.
+    if (findRawMessage(raw, messageId) === null) {
+      const caught = await client.getMessages(conversationId, {
+        after: messageId - 1,
+      });
+      if (findRawMessage(caught, messageId) !== null) {
+        raw = caught;
+        caughtUp = parseChatwootMessages(caught);
+      }
+    }
     // The NEWEST page, unanchored, and it answers a different question from the one above: whether
     // the customer has written again since. Two reads because one page cannot hold both ends — the
     // anchored page ends at the stranded message and says nothing about what came after, and the
@@ -582,8 +598,15 @@ async function runRecovery(params: {
     // message neither covers this one nor makes it unanswerable. Left unfetched rather than fetched
     // and ignored: it is a REST round trip per recovery, and a failure on it returns `unreachable`,
     // which spends the recovery's budget over a page nothing was going to read.
+    // ...and what the catch-up read found is part of the answer (PR #821, review round 3): a newer
+    // reaction the default page leaves out is still the customer writing again, and a replay that
+    // missed it would answer the older one after the fact. A read that came back FULL is refused
+    // below before it is trusted as coverage.
     recent = replayPosts
-      ? parseChatwootMessages(await client.getMessages(conversationId))
+      ? mergeById(
+          parseChatwootMessages(await client.getMessages(conversationId)),
+          caughtUp,
+        )
       : [];
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
@@ -659,6 +682,19 @@ async function runRecovery(params: {
   // What it owes is the words reaching memory, and an ingest job carries its own message and nothing
   // else — so a customer who wrote again does not cover this one, exactly as above.
   if (replayPosts) {
+    // A FULL CATCH-UP READ (PR #821, review rounds 4 and 5): a hundred messages at or past this one,
+    // so the read stops short of the newest page and cannot say what sits in the gap. Merged as
+    // coverage it would hide a newer message there; discarded, it would hide the newer reactions it
+    // did carry. Either way the message is a hundred behind, which is further than the page rule
+    // below answers, so it is not answered.
+    if (caughtUp.length >= CATCH_UP_PAGE) {
+      logger.info(
+        "chatwoot recovery: %s has a full catch-up read behind it on conversation %d; not answered",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unrecoverable";
+    }
     const oldestSeen = recent.reduce<number | null>(
       (a, m) => (a === null || m.id < a ? m.id : a),
       null,
@@ -1804,4 +1840,16 @@ export function registerDeliveryRecoveryHandler(): void {
   if (registered) return;
   registerJobHandler("DELIVERY_RECOVERY", deliveryRecoveryHandler);
   registered = true;
+}
+
+// The fork's `MessageFinder::CATCH_UP_LIMIT`: a full catch-up read may have more behind it.
+const CATCH_UP_PAGE = 100;
+
+function mergeById(
+  page: ReturnType<typeof parseChatwootMessages>,
+  more: ReturnType<typeof parseChatwootMessages>,
+): ReturnType<typeof parseChatwootMessages> {
+  if (more.length === 0) return page;
+  const known = new Set(page.map((m) => m.id));
+  return [...page, ...more.filter((m) => !known.has(m.id))];
 }

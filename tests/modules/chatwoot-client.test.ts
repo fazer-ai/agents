@@ -51,6 +51,27 @@ describe("ChatwootClient", () => {
     ).rejects.toThrow();
   });
 
+  // Issue #746: `after` is the fork's catch-up read, which lists by id with no reaction window, and
+  // `before` the page walk. Each is its own query string, and neither is the default page.
+  test("getMessages spells the default page, before and after", async () => {
+    const { fetchImpl, calls } = stub(200, { payload: [] });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.getMessages(42);
+    await client.getMessages(42, { before: 7 });
+    await client.getMessages(42, { after: 3 });
+    const base =
+      "https://chat.example.com/api/v1/accounts/5/conversations/42/messages";
+    expect(calls.map((c) => c.url)).toEqual([
+      base,
+      `${base}?before=7`,
+      `${base}?after=3`,
+    ]);
+    expect(calls[2]?.headers["api-access-token"]).toBe("ADMIN_TOK");
+  });
+
   test("sendMessage uses the bot token and the right URL/body", async () => {
     const { fetchImpl, calls } = stub(200, { id: 1 });
     const client = await createChatwootClient(baseConfig, {

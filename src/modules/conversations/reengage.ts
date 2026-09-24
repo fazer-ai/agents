@@ -20,7 +20,6 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   type ChatwootMessageRow,
-  parseChatwootMessages,
   pendingIncoming,
 } from "@/modules/chatwoot/messages";
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
@@ -30,7 +29,7 @@ import {
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
 import { recordConversationAction } from "@/modules/conversations/audit";
-import { coalesceAndRunTurn } from "@/modules/debounce/handler";
+import { coalesceAndRunTurn, readBurstPage } from "@/modules/debounce/handler";
 import {
   readClaimedMessageIds,
   readHandledWatermark,
@@ -79,6 +78,10 @@ function incomingAfterLastOutgoing(
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       !m.private &&
+      // An operator's reaction is not a reply either, and the catch-up read now brings in the ones
+      // the default page left out: an emoji on an older message would close the request asked
+      // after it (PR #821, review round 1). Same exclusion as `foreignReplyBoundary`.
+      !m.isReaction &&
       m.id > lastOut
     ) {
       lastOut = m.id;
@@ -378,9 +381,20 @@ export async function reengageConversation(
     base,
     makeClient: deps.makeClient,
   });
-  const previewTail = await selectPending(
-    parseChatwootMessages(await preview.getMessages(resolved.conversationId)),
-  );
+  // A REACTION NO DEFAULT PAGE CARRIES (issue #746): the fork keeps a customer's reaction on the
+  // page only when the message it reacts to is among that page's last twenty of the same
+  // conversation. This click has no arm that saw the webhook, so it always asks the catch-up read
+  // from the mark the operator is looking past: one read per click, and a tail holding only such a
+  // reaction is not answered as empty. A conversation with no mark has no floor to read from, and
+  // keeps the default page alone.
+  const catchUp = {
+    armedLast: null,
+    after: floorAtEntry,
+    reactionArmed: true,
+  };
+  const readTail = () =>
+    readBurstPage(preview, resolved.conversationId, catchUp);
+  const previewTail = await selectPending(await readTail());
   if (previewTail.length === 0) return { outcome: "empty" };
 
   // A MESMA PERGUNTA, CEDO, pelo motivo que o portão de assignee logo acima já dá para si mesmo:
@@ -419,9 +433,7 @@ export async function reengageConversation(
   // path: `allowed` and `warning` both go on to coalesce for real, which re-reads anyway, and a
   // warning is a statement about the MONTH rather than about this turn.
   if (ceiling.state === "over") {
-    const freshTail = await selectPending(
-      parseChatwootMessages(await preview.getMessages(resolved.conversationId)),
-    );
+    const freshTail = await selectPending(await readTail());
     if (freshTail.length === 0) return { outcome: "empty" };
   }
   announceSpendCeiling(
@@ -575,6 +587,7 @@ export async function reengageConversation(
         // The same expression the pre-check above used, re-evaluated against a FRESH fetch: the
         // authorization call between them is a round trip long enough for the tail to change.
         selectPending,
+        catchUp,
         // THE ONE CALLER THAT ANSWERS WHAT THE WATERMARK ALREADY COVERS, and this is issue #452 in
         // one line: the tail is chosen from the last OUTGOING message, and a deliberate skip (a
         // human-owned stretch, an out-of-hours silence, a turn that ended without a reply) advances

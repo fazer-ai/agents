@@ -24,6 +24,8 @@ import {
 import {
   armDebounce,
   debounceDedupeKey,
+  readReactionArmed,
+  readReactionFrom,
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
 import {
@@ -269,7 +271,11 @@ async function seedConversation(
 
 function jobFor(
   convId: number,
-  extra: { lastMessageId?: number } = {},
+  extra: {
+    lastMessageId?: number;
+    reactionArmed?: boolean;
+    reactionFrom?: number;
+  } = {},
 ): ClaimedJob {
   return {
     id: phantomJobId,
@@ -281,6 +287,10 @@ function jobFor(
       burstStartedAt: 1,
       ...(extra.lastMessageId != null
         ? { lastMessageId: extra.lastMessageId }
+        : {}),
+      ...(extra.reactionArmed ? { reactionArmed: true } : {}),
+      ...(extra.reactionFrom != null
+        ? { reactionFrom: extra.reactionFrom }
         : {}),
     },
     attempts: 0,
@@ -534,6 +544,60 @@ describe.skipIf(!dbUp)("debounce", () => {
       (rows[0]?.payload as { burstStartedAt: number } | undefined)
         ?.burstStartedAt,
     ).toBe(t0.getTime());
+  });
+
+  // ISSUE #746: the burst remembers it holds a customer's reaction, across a text typed after it,
+  // and a new burst starts without the mark.
+  test("armDebounce keeps a burst's reaction mark until the burst ends", async () => {
+    const thread = threadOf(7465);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    const key = debounceDedupeKey(thread);
+    const payloadOf = async () =>
+      (
+        await suDb.schedulerJob.findFirstOrThrow({
+          where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+          select: { payload: true },
+        })
+      ).payload as Record<string, unknown>;
+    const arm = (reaction: boolean, id: number) =>
+      armDebounce({
+        tenantId,
+        threadId: thread,
+        agentBotId: 9,
+        cfg,
+        lastMessageId: id,
+        reaction,
+        base: appDb,
+      });
+    await arm(true, 20);
+    expect(readReactionArmed(await payloadOf())).toBe(true);
+    await arm(false, 21);
+    expect(readReactionArmed(await payloadOf())).toBe(true);
+    // The earliest reaction of the burst, not the latest arm (PR #821, review round 2).
+    await arm(true, 23);
+    expect(readReactionFrom(await payloadOf())).toBe(20);
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+      data: { status: "DONE" },
+    });
+    await arm(false, 22);
+    expect(readReactionArmed(await payloadOf())).toBe(false);
+    expect(readReactionFrom(await payloadOf())).toBeNull();
+    // A text that arrives while the reaction's flush RUNS supersedes that turn; the flush it arms
+    // still owes the reaction (PR #821, review round 3).
+    await arm(true, 30);
+    await suDb.schedulerJob.updateMany({
+      where: { tenantId, kind: "DEBOUNCE", dedupeKey: key },
+      data: { status: "CLAIMED" },
+    });
+    await arm(false, 31);
+    expect(readReactionArmed(await payloadOf())).toBe(true);
+    expect(readReactionFrom(await payloadOf())).toBe(30);
   });
 
   // /reset retires the burst, but a flush already CLAIMED is past every cancel — and this one is a
@@ -798,6 +862,467 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[800, REPLY]]);
     expect(await watermarkOf(800)).toBe(2);
+  });
+
+  // ISSUE #746. The fork's default page carries a reaction only when the message it reacts to is
+  // among the page's last twenty of the same conversation; `?after=` lists by id with no such window.
+  // This stub serves the two reads the way the fork does, so a reaction to an older message (or to
+  // one of an earlier conversation) is on the catch-up read and on no default page.
+  function makeForkStub(opts: {
+    // A function answers each default read in turn, for a page that changes while the model runs.
+    latest: unknown | (() => unknown);
+    // A function answers each catch-up read by its cursor, for the walk past the fork's cap.
+    after: unknown | ((after: number) => unknown);
+    sent: Array<[number, string]>;
+    reads: Array<{ after?: number }>;
+  }) {
+    const client = {
+      getMessages: async (_conv: number, o?: { after?: number }) => {
+        opts.reads.push(o?.after != null ? { after: o.after } : {});
+        if (o?.after == null) {
+          return typeof opts.latest === "function"
+            ? opts.latest()
+            : opts.latest;
+        }
+        return typeof opts.after === "function"
+          ? opts.after(o.after)
+          : opts.after;
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        opts.sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    return async () => client;
+  }
+
+  const handledHistory = page([
+    { id: 1, content: "quero saber do meu pedido" },
+    { id: 2, content: "Já está a caminho!", type: 1, sender: "agent_bot" },
+  ]);
+
+  test("issue #746: a lone reaction no default page carries still opens its turn", async () => {
+    const convId = 7461;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 10, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: handledHistory,
+          after: page([{ id: 10, content: "❤️", reaction: true }]),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The turn exists and read the reaction; replying is the agent's call, and this model replies.
+    expect(model.seen).toHaveLength(1);
+    expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
+    expect(sent).toEqual([[convId, REPLY]]);
+    expect(await watermarkOf(convId)).toBe(10);
+    // Caught up from the mark, not from the reaction: an earlier orphan of the same burst is above
+    // the mark too.
+    expect(reads).toContainEqual({ after: 2 });
+  });
+
+  test("issue #746: an orphan reaction followed by text in the same burst is not lost behind the text", async () => {
+    const convId = 7462;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      // The text armed last and IS on the page; only the burst's reaction mark asks for the rest.
+      job: jobFor(convId, { lastMessageId: 11, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: page([
+            { id: 1, content: "quero saber do meu pedido" },
+            {
+              id: 2,
+              content: "Já está a caminho!",
+              type: 1,
+              sender: "agent_bot",
+            },
+            { id: 11, content: "chegou hoje, obrigada" },
+          ]),
+          after: page([
+            { id: 10, content: "👍", reaction: true },
+            { id: 11, content: "chegou hoje, obrigada" },
+          ]),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen).toHaveLength(1);
+    expect(model.seen[0]).toContain('<reação do cliente emoji="👍"');
+    expect(model.seen[0]).toContain("chegou hoje, obrigada");
+    expect(await watermarkOf(convId)).toBe(11);
+  });
+
+  test("issue #746: a burst with its arming message on the page and no reaction pays no second read", async () => {
+    const convId = 7463;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const reads: Array<{ after?: number }> = [];
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 3 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeForkStub({
+          latest: page([
+            { id: 1, content: "quero saber do meu pedido" },
+            {
+              id: 2,
+              content: "Já está a caminho!",
+              type: 1,
+              sender: "agent_bot",
+            },
+            { id: 3, content: "e o prazo?" },
+          ]),
+          after: page([]),
+          sent: [],
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads.some((r) => r.after != null)).toBe(false);
+  });
+
+  test("issue #746: an arming message missing from the page is caught up even without the reaction mark", async () => {
+    const convId = 7464;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      // A burst armed before the mark existed: the payload names the reaction's id and nothing else.
+      job: jobFor(convId, { lastMessageId: 12 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: handledHistory,
+          after: page([{ id: 12, content: "🙏", reaction: true }]),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen[0]).toContain('<reação do cliente emoji="🙏"');
+    expect(await watermarkOf(convId)).toBe(12);
+  });
+
+  // The catch-up read stops at a hundred rows (the fork's `CATCH_UP_LIMIT`). A burst further behind
+  // its page than that is walked until the read reaches the page: merging the first hundred alone
+  // would hand the selectors a history with a hole where the operator's reply sits, and a request
+  // that reply closed would be answered again (PR #821, review round 1).
+  const activityRows = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => ({
+      id: from + i,
+      content: "conversa reaberta",
+      type: 2,
+    }));
+
+  test("issue #746: a catch-up read past the fork's cap is walked until it reaches the page", async () => {
+    const convId = 7468;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 104, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          // The operator's reply is only in the gap: the page starts above it.
+          latest: page(activityRows(150, 150)),
+          after: (after: number) =>
+            after === 2
+              ? page([
+                  { id: 3, content: "quero cancelar" },
+                  ...activityRows(4, 102),
+                ])
+              : page([
+                  {
+                    id: 103,
+                    content: "Pronto, cancelei.",
+                    type: 1,
+                    sender: "user",
+                  },
+                  { id: 104, content: "❤️", reaction: true },
+                ]),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The page, then the walk; the post gate re-reads the page after the turn.
+    expect(reads.slice(0, 3)).toEqual([{}, { after: 2 }, { after: 102 }]);
+    expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
+    // The operator's reply is in the walked history, so the request it closed is not answered again.
+    expect(model.seen.join("\n")).not.toContain("quero cancelar");
+  });
+
+  // PR #821, review round 2: meeting the page is not reaching the reaction. The orphan sorts above
+  // the page's non-reaction messages, so the read goes on until it runs dry.
+  test("issue #746: the catch-up read goes past the page to the reaction above it", async () => {
+    const convId = 7471;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 120, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: page(activityRows(100, 119)),
+          after: (after: number) =>
+            page(
+              after === 2
+                ? activityRows(3, 102)
+                : [
+                    ...activityRows(103, 119),
+                    { id: 120, content: "🔥", reaction: true },
+                  ],
+            ),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads.slice(0, 3)).toEqual([{}, { after: 2 }, { after: 102 }]);
+    expect(model.seen[0]).toContain('<reação do cliente emoji="🔥"');
+  });
+
+  // PR #821, review round 2: a conversation the agent never answered has no mark, and the flush was
+  // armed last by the text typed after the reaction. The read starts at the burst's earliest
+  // reaction, not at the arming message.
+  test("issue #746: with no mark, the catch-up read starts at the burst's first reaction", async () => {
+    const convId = 7472;
+    await seedConversation(convId);
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, {
+        lastMessageId: 11,
+        reactionArmed: true,
+        reactionFrom: 10,
+      }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: page([{ id: 11, content: "oi, tudo bem?" }]),
+          after: (after: number) =>
+            page(
+              [
+                { id: 10, content: "👋", reaction: true },
+                { id: 11, content: "oi, tudo bem?" },
+              ].filter((m) => m.id > after),
+            ),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads[1]).toEqual({ after: 9 });
+    expect(model.seen[0]).toContain('<reação do cliente emoji="👋"');
+  });
+
+  // PR #821, review round 6: the post gate asks the catch-up read too. A second orphan reaction that
+  // arrives while the first one's turn runs is on no default page, and the turn would post over it
+  // instead of yielding to the flush it re-armed.
+  test("issue #746: a reaction that arrives mid-turn supersedes a reaction's turn", async () => {
+    const convId = 7473;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    let catchUps = 0;
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 10, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: handledHistory,
+          after: () => {
+            catchUps++;
+            return page([
+              { id: 10, content: "❤️", reaction: true },
+              ...(catchUps > 1
+                ? [{ id: 11, content: "😂", reaction: true }]
+                : []),
+            ]);
+          },
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
+    expect(catchUps).toBe(2);
+    expect(sent).toEqual([]);
+  });
+
+  // PR #821, review round 7: a failure of the gate's extra read keeps the page it already read. The
+  // customer wrote again while the model ran, and the page says so; a failed catch-up must not turn
+  // that into a post.
+  test("issue #746: a failed catch-up read at the post gate still judges the page", async () => {
+    const convId = 7475;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    let pages = 0;
+    let catchUps = 0;
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 10, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: () => {
+            pages++;
+            return pages > 1
+              ? page([
+                  ...handledHistory.payload.map((m) => ({
+                    id: m.id,
+                    content: m.content,
+                    type: m.message_type,
+                  })),
+                  { id: 12, content: "esquece, já resolvi" },
+                ])
+              : handledHistory;
+          },
+          after: () => {
+            catchUps++;
+            if (catchUps > 1) throw new Error("chatwoot: 502 bad gateway");
+            return page([{ id: 10, content: "❤️", reaction: true }]);
+          },
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
+    expect(catchUps).toBe(2);
+    expect(sent).toEqual([]);
+  });
+
+  // The other half: a TEXT burst, and a reaction that re-arms the thread while its turn runs. The
+  // burst itself carries no mark, so the gate learns of the reaction from the thread's debounce row.
+  test("issue #746: a reaction that re-arms the thread mid-turn supersedes a text burst's turn", async () => {
+    const convId = 7474;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    // What the webhook's arm leaves on the thread's row when the reaction lands.
+    await armDebounce({
+      tenantId,
+      threadId: threadOf(convId),
+      agentBotId: 9,
+      cfg: {
+        enabled: true,
+        windowSeconds: 15,
+        maxMessagesPerBurst: 20,
+        maxWindowSeconds: 60,
+      },
+      lastMessageId: 11,
+      reaction: true,
+      base: appDb,
+    });
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 10 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: page([
+            ...handledHistory.payload.map((m) => ({
+              id: m.id,
+              content: m.content,
+              type: m.message_type,
+            })),
+            { id: 10, content: "e o prazo?" },
+          ]),
+          after: page([{ id: 11, content: "🙏", reaction: true }]),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen[0]).toContain("e o prazo?");
+    expect(reads.some((r) => r.after === 10)).toBe(true);
+    expect(sent).toEqual([]);
+  });
+
+  test("issue #746: a catch-up walk the read cap cuts short adds nothing", async () => {
+    const convId = 7469;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 3, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          // Nothing on the page closes anything, so a merged hole would open a turn.
+          latest: page(activityRows(10_000, 10_000)),
+          // Always a full batch, always below the page: the walk never reaches it.
+          after: (after: number) =>
+            page(
+              after === 2
+                ? [
+                    { id: 3, content: "😡", reaction: true },
+                    ...activityRows(4, 102),
+                  ]
+                : activityRows(after + 1, after + 100),
+            ),
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(reads).toEqual([
+      {},
+      { after: 2 },
+      { after: 102 },
+      { after: 202 },
+      { after: 302 },
+      { after: 402 },
+    ]);
+    // A history with a hole is not handed on: the page alone answers, and it holds nothing pending.
+    expect(model.seen).toHaveLength(0);
+    expect(sent).toEqual([]);
   });
 
   // The claim's own table, decided in one place and asked here directly: the paths above prove the

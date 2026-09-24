@@ -5756,6 +5756,7 @@ export async function processChatwootDelivery(
               agentBotId: params.agentBotId,
               cfg,
               lastMessageId: n.message?.id ?? undefined,
+              reaction: n.message?.isReaction === true,
               base,
             });
             armed = true;

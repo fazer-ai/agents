@@ -71,6 +71,47 @@ export function readLastMessageId(payload: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// Whether any message of this burst is a customer's REACTION (issue #746). The fork's default page
+// carries a reaction only when the message it reacts to is among the page's last twenty of the same
+// conversation, so the flush cannot learn from the page that one is missing. The arm can: it saw the
+// webhook. Sticky across the burst's arms, and across a flush still running, so a text typed after an
+// orphan reaction does not hide it.
+export function readReactionArmed(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as Record<string, unknown>).reactionArmed === true;
+}
+
+// The id of the burst's EARLIEST reaction (PR #821, review round 2). A conversation the agent never
+// answered has no mark to catch up from, and the id that armed the flush last is the newest one: a
+// reaction followed by a text would be read past. The flush catches up from here instead.
+export function readReactionFrom(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).reactionFrom;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+// Whether the thread's debounce row carries a reaction right now (PR #821, review round 6). The post
+// gate asks it: a reaction that arrives while a turn runs re-arms this row with the mark, and the
+// default page the gate reads would not carry it, so the turn would post over it instead of yielding
+// to the flush it armed. A database read, so the common post pays no extra Chatwoot call.
+export async function reactionArmedOnThread(params: {
+  tenantId: bigint;
+  threadId: string;
+  base?: PrismaClient;
+}): Promise<boolean> {
+  const base = params.base ?? basePrisma;
+  const row = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    db.schedulerJob.findFirst({
+      where: {
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(params.threadId),
+      },
+      select: { payload: true },
+    }),
+  );
+  return row !== null && readReactionArmed(row.payload);
+}
+
 // Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
 //
 // UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the
@@ -161,6 +202,8 @@ export interface ArmDebounceParams {
   // Chatwoot id of the inbound message arming this flush (see readLastMessageId). Optional: an arm
   // without it keeps the burst's previous high-water mark.
   lastMessageId?: number;
+  // Whether the arming message is a customer's reaction (issue #746): see `readReactionArmed`.
+  reaction?: boolean;
   base?: PrismaClient;
   now?: Date;
 }
@@ -213,6 +256,25 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         : null;
       const lastCandidate = Math.max(prevLast ?? 0, params.lastMessageId ?? 0);
       const lastMessageId = lastCandidate > 0 ? lastCandidate : null;
+      const reactionArmed =
+        params.reaction === true ||
+        (stillLive && readReactionArmed(existing.payload));
+      // Carried across a CLAIMED row too, like `deferringSince` (PR #821, review round 3): a text
+      // that arrives while the reaction's flush runs supersedes that turn, and the flush it arms
+      // would find its own text on the page and never ask for the reaction.
+      const prevReactionFrom = stillLive
+        ? readReactionFrom(existing.payload)
+        : null;
+      const ownReactionFrom =
+        params.reaction === true && params.lastMessageId != null
+          ? params.lastMessageId
+          : null;
+      const reactionFrom =
+        prevReactionFrom === null
+          ? ownReactionFrom
+          : ownReactionFrom === null
+            ? prevReactionFrom
+            : Math.min(prevReactionFrom, ownReactionFrom);
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
@@ -222,6 +284,8 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         agentBotId,
         burstStartedAt,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
+        ...(reactionArmed ? { reactionArmed: true } : {}),
+        ...(reactionFrom !== null ? { reactionFrom } : {}),
         ...(deferringSince !== null ? { deferringSince } : {}),
       } satisfies Prisma.InputJsonObject;
       await upsertJobRow(db, {

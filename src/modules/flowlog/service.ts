@@ -121,7 +121,6 @@ export async function writeFlowEvent(
   ctx: FlowContext,
   ev: FlowEvent,
 ): Promise<{ delivered: boolean }> {
-  await Bun.sleep(Number(process.env.PROBE_FLOWLOG_DELAY_MS ?? 0));
   const base = ctx.base ?? basePrisma;
   const level: FlowLevel = ev.level ?? "info";
   let delivered = true;

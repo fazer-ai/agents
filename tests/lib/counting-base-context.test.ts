@@ -7,9 +7,9 @@ import { countingBase } from "../utils/counting-base";
 // Both used to read the raw COUNT, and the count answers a different question than either asks: the
 // client is shared with writes this run neither started nor awaits — `emitFlowEvent` is one by
 // design — so a detached INSERT still in flight made the count non-zero while the caller held
-// nothing. That was a real CI failure on a green branch, reproducible with
-// `PROBE_FLOWLOG_DELAY_MS=12`, and it is why `heldHere` is answered from the caller's own async
-// context rather than from a number.
+// nothing. That was a real CI failure on a green branch, reproducible by delaying the start of that
+// write by about 12 ms (a local edit to `writeFlowEvent`, never a committed knob: issue #822), and it
+// is why `heldHere` is answered from the caller's own async context rather than from a number.
 //
 // A fake client rather than a database: what is under test is the instrument's bookkeeping, and a
 // real transaction would only make the two answers harder to tell apart.

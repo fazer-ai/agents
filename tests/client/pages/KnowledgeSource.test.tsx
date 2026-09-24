@@ -40,6 +40,8 @@ let putAnswer: { status: number; body: unknown } | null = null;
 let docs: Record<string, unknown>[] = [];
 // When set, the base read waits on it: a response still out when the section closes.
 let baseGate: Promise<void> | null = null;
+// When set, the sync request waits on it: a POST still out when the section closes.
+let syncGate: Promise<void> | null = null;
 
 const realFetch = globalThis.fetch;
 
@@ -63,6 +65,7 @@ function installFetchStub() {
     if (url.includes("/knowledge/embedding-block"))
       return json({ block: null });
     if (url.includes("/source/sync") && method === "POST") {
+      if (syncGate) await syncGate;
       return json({ success: true });
     }
     if (url.includes("/source") && method === "PUT") {
@@ -170,6 +173,7 @@ beforeEach(() => {
   putAnswer = null;
   docs = [];
   baseGate = null;
+  syncGate = null;
   i18n.changeLanguage("en");
   installFetchStub();
 });
@@ -425,6 +429,23 @@ describe("the help center source section", () => {
     expect(sent("GET", "/knowledge/bases/b1").length).toBe(before + 1);
   }, 15_000);
 
+  test("a sync answered after the section closed starts no polling", async () => {
+    source = { ...FAILED_RUN };
+    renderSection();
+    await screen.findByText("https://ajuda.example.com");
+    let open: () => void = () => {};
+    syncGate = new Promise((r) => {
+      open = r;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    await waitFor(() => expect(sent("POST", "/source/sync").length).toBe(1));
+    const before = sent("GET", "/knowledge/bases/b1").length;
+    cleanup();
+    open();
+    await new Promise((r) => setTimeout(r, 4_000));
+    expect(sent("GET", "/knowledge/bases/b1").length).toBe(before);
+  }, 15_000);
+
   test("a read-only surface shows the source and offers no action", async () => {
     source = { ...FAILED_RUN };
     renderSection(false);
@@ -619,4 +640,20 @@ describe("a synced document in the documents list", () => {
     };
     await screen.findByText("Artigo novo", undefined, { timeout: 6_000 });
   }, 10_000);
+
+  test("closing the list with a source half typed asks before discarding it", async () => {
+    docs = [CURATED];
+    await openList();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Set up source" }),
+    );
+    fireEvent.change(screen.getByLabelText(/Portal URL/), {
+      target: { value: "https://ajuda.example.com" },
+    });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await screen.findByRole("button", { name: /^discard$/i });
+    expect(
+      (screen.getByLabelText(/Portal URL/) as HTMLInputElement).value,
+    ).toBe("https://ajuda.example.com");
+  });
 });

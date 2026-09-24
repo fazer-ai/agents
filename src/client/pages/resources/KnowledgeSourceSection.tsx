@@ -10,6 +10,7 @@ import {
   Skeleton,
   useModalController,
   useToast,
+  useUnsavedChanges,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -137,10 +138,13 @@ export function KnowledgeSourceSection({
   // later reaches the screen without the operator reloading.
   const pollUntilRun = useCallback(
     (since: number | null) => {
+      // Asked for by an action whose request outlived the section (a save or a sync answered after
+      // the modal closed): there is nothing left to show the outcome on (review r2).
+      const asked = current.current;
+      if (asked === null) return;
       stopPolling();
       setSyncing(true);
       let tries = 0;
-      const asked = current.current;
       const tick = async () => {
         tries += 1;
         const next = await load();
@@ -175,6 +179,13 @@ export function KnowledgeSourceSection({
       pollTimer.current = null;
     };
   }, [baseId, load]);
+
+  // A draft that differs from what is stored is work the operator would lose by closing the modal, so
+  // the modal asks before discarding it, as every other form here does (docs/modals.md).
+  useUnsavedChanges(
+    editing &&
+      JSON.stringify(draft) !== JSON.stringify(draftOf(source ?? null)),
+  );
 
   function startEditing() {
     setDraft(draftOf(source ?? null));

@@ -10,6 +10,7 @@ import { flushDebounceJob } from "@/modules/debounce/handler";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
+import { HandoffThenReplyModel } from "../utils/scripted-models";
 
 // Issue #811, the half of a job's deadline that reaches the flush. The scheduler ends the RUN at the
 // deadline whatever the handler does; what the flush owes is to stop the WORK: the job's signal goes
@@ -403,6 +404,63 @@ describe.skipIf(!dbUp)(
         "Primeira parte da resposta.",
         "Segunda parte da resposta.",
       ]);
+    });
+
+    // A transfer that completed is as spent as a send: the conversation is a person's now, so a retry
+    // stands down on its ownership gate and the closing line the transfer promised would never be
+    // delivered. A deadline that fires at the transfer does not take that line away.
+    test("a handoff the deadline reaches after the transfer still delivers its closing line", async () => {
+      await seedConversation(2009);
+      const CLOSING = "Já chamo uma pessoa do time.";
+      const sent: string[] = [];
+      const statuses: string[] = [];
+      const controller = new AbortController();
+      const known = {
+        getMessages: async () => ({
+          payload: [
+            {
+              id: 100,
+              content: "quero falar com alguém",
+              message_type: 0,
+              private: false,
+            },
+          ],
+        }),
+        sendMessage: async (_c: number, content: string) => {
+          sent.push(content);
+          return {};
+        },
+        muted: false,
+        listLabels: async () => [],
+        listCustomAttributeDefinitions: async () => [],
+        getConversationLabels: async () => [],
+        toggleStatus: async (_c: number, status: string) => {
+          statuses.push(status);
+          if (status === "open")
+            controller.abort(new Error("deadline exceeded"));
+          return {};
+        },
+      } as Record<string, unknown>;
+      const client = new Proxy(known, {
+        // Anything else the turn asks answers empty; `then` stays undefined so the client is not
+        // read as a promise when it is awaited.
+        get: (t, prop) =>
+          prop in t || prop === "then" ? t[prop as string] : async () => ({}),
+      }) as unknown as ChatwootClient;
+      await flushDebounceJob({
+        job: jobFor(2009),
+        base: appDb,
+        signal: controller.signal,
+        deps: {
+          makeModel: () =>
+            new HandoffThenReplyModel("", CLOSING) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      }).catch(() => undefined);
+      expect(statuses).toContain("open");
+      expect(controller.signal.aborted).toBe(true);
+      expect(sent).toEqual([CLOSING]);
     });
 
     test("a flush whose deadline never fires still answers", async () => {

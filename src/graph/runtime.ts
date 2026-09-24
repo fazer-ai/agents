@@ -830,19 +830,6 @@ export async function runLoadedTurn(
   let decided: boolean | null = null;
   const claimBeforeSend = async (): Promise<boolean> => {
     if (decided !== null) return decided;
-    // NOTE: a run its deadline already ended was failed, and its retry answers this burst; a reply
-    // from here would reach the customer after that retry's, or beside it (issue #811). Asked before
-    // the FIRST send only, like the claim: once the claim is won the burst is this turn's, and the
-    // retry finds it claimed. Stopping a split reply halfway would leave the customer a truncated
-    // answer that no retry can complete without repeating the balloons already sent.
-    if (params.signal?.aborted) {
-      logger.info(
-        "turn: the job's deadline ended this run (conv=%s), not sending",
-        String(params.conversationId),
-      );
-      decided = false;
-      return decided;
-    }
     const claim = await claimReplyBurst({
       tenantId: params.tenantId,
       conversationDbId: target.conversationDbId,
@@ -903,9 +890,30 @@ async function runTurnBody(
   // turn with nothing to be exclusive about wants: send.
   const askClaim = params.claimBeforeSend ?? (async () => true);
   // Whether a send has been claimed. From then on the burst is this turn's and a reply already on its
-  // way finishes, deadline or not (see claimBeforeSend in runLoadedTurn).
+  // way finishes, deadline or not.
   let sendClaimed = false;
+  // The turn's handoff state, once it exists (it is built further down): a transfer that completed is
+  // as spent as a send, and the line it promised is this run's to deliver, since a retry finds the
+  // conversation a person's (issue #811).
+  let handoffOf: HandoffTurnState | undefined;
+  // Whether the job's deadline has ended this run for what is still unsent.
+  const pastDeadline = (): boolean =>
+    params.signal?.aborted === true &&
+    !sendClaimed &&
+    handoffOf?.completed !== true;
   const claimBeforeSend = async (): Promise<boolean> => {
+    // NOTE: a run its deadline already ended was failed, and its retry answers this burst; a reply
+    // from here would reach the customer after that retry's, or beside it (issue #811). Asked before
+    // the FIRST send only, like the claim: once the claim is won the burst is this turn's, and the
+    // retry finds it claimed. Stopping a split reply halfway would leave the customer a truncated
+    // answer that no retry can complete without repeating the balloons already sent.
+    if (pastDeadline()) {
+      logger.info(
+        "turn: the job's deadline ended this run (conv=%s), not sending",
+        String(params.conversationId),
+      );
+      return false;
+    }
     const won = await askClaim();
     if (won) sendClaimed = true;
     return won;
@@ -980,7 +988,7 @@ async function runTurnBody(
     // (issue #811). Answered as a withdrawal, which leaves the burst unmarked. Read after the reads
     // above, which are the stretch a deadline can fire in. Not once a send was claimed: a reply
     // already on its way is not cut midway.
-    return Boolean(params.signal?.aborted && !sendClaimed);
+    return pastDeadline();
   };
   const standDown = (): "stale" | "agent-unavailable" =>
     silenced ? "agent-unavailable" : "stale";
@@ -1132,6 +1140,7 @@ async function runTurnBody(
     completed: false,
     declinedToSpeak: false,
   };
+  handoffOf = handoffState;
   // The SAME reading every send makes, handed down whole (issue #209 review, round 5). A fence
   // derived from `params.stillWanted` alone let a tool call run — the label write, and the slow-tool
   // ack that posts to the customer — for an agent flipped to monitoring inside the model call, while

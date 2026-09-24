@@ -215,9 +215,18 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       },
     };
     const controller = new AbortController();
+    // No fallback started, so none is reported: the failover and the failed provider would both be
+    // lines about a call that was never made.
+    const reported: string[] = [];
     const graph = buildAgentGraph({
       model: primary as unknown as BaseChatModel,
       systemPrompt: "s",
+      onModelFallback: () => {
+        reported.push("fallback");
+      },
+      onModelFallbackFailed: () => {
+        reported.push("fallback-failed");
+      },
       primary: { provider: "openai", model: "test-model" },
       fallback: {
         model: fallback as unknown as BaseChatModel,
@@ -239,6 +248,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
       clearTimeout(timer);
     }
     expect(fallbackCalls).toBe(0);
+    expect(reported).toEqual([]);
     expect((thrown as Error | undefined)?.message).toBe(
       "deadline exceeded after 240s",
     );

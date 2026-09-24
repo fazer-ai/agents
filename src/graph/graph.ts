@@ -875,10 +875,13 @@ export function buildAgentGraph({
           ],
         };
       } catch (err) {
-        onModelFallbackFailed?.({
-          ...second.labels,
-          reason: err instanceof Error ? err.message : "provider error",
-        });
+        // NOTE: a call the job's deadline ended failed on the job, not on the provider (issue #811).
+        if (!jobSignal?.aborted) {
+          onModelFallbackFailed?.({
+            ...second.labels,
+            reason: err instanceof Error ? err.message : "provider error",
+          });
+        }
         throw err;
       }
     }
@@ -908,12 +911,18 @@ export function buildAgentGraph({
               labels: second.labels,
               run: second.run,
               deadlineMs: second.deadlineMs,
+              // NOTE: after the job's deadline no fallback starts (see `second.run`), so there is no
+              // failover to report and no failed provider: the primary failed on the job's deadline
+              // (issue #811).
               onFallback: ({ reason }) => {
+                if (jobSignal?.aborted) return;
                 fallbackHasTheTurn = true;
                 onModelFallback?.({ ...second.labels, reason });
               },
-              onFallbackFailed: ({ reason }) =>
-                onModelFallbackFailed?.({ ...second.labels, reason }),
+              onFallbackFailed: ({ reason }) => {
+                if (jobSignal?.aborted) return;
+                onModelFallbackFailed?.({ ...second.labels, reason });
+              },
             }
           : undefined,
       },

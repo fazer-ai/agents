@@ -8,6 +8,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { type NudgePostActions, runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { HandoffThenReplyModel } from "../utils/scripted-models";
 
 // Issue #811, the nudge's half of a job's deadline: the FOLLOWUP handler hands its job's signal to
 // the nudge, the invoke is aborted by it, and every write after it is refused through `stillWanted`,
@@ -85,6 +86,7 @@ function stub(
   onSend: () => void = () => {},
   onLabels: () => void = () => {},
   onSetLabels: () => void = () => {},
+  onToggle: (status: string) => void = () => {},
 ) {
   const messages: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
@@ -111,6 +113,7 @@ function stub(
     },
     toggleStatus: async (_c: number, status: string) => {
       statuses.push(status);
+      onToggle(status);
       return {};
     },
     toggleTyping: async () => ({}),
@@ -192,6 +195,7 @@ describe.skipIf(!dbUp)(
       await seedConversation(954, 85);
       await seedConversation(955, 86);
       await seedConversation(956, 87);
+      await seedConversation(957, 88);
     });
 
     afterAll(async () => {
@@ -229,9 +233,15 @@ describe.skipIf(!dbUp)(
         onSend?: () => void;
         onLabels?: () => void;
         onSetLabels?: () => void;
+        onToggle?: (status: string) => void;
       } = {},
     ) => {
-      const s = stub(extra.onSend, extra.onLabels, extra.onSetLabels);
+      const s = stub(
+        extra.onSend,
+        extra.onLabels,
+        extra.onSetLabels,
+        extra.onToggle,
+      );
       return {
         s,
         run: () =>
@@ -363,6 +373,28 @@ describe.skipIf(!dbUp)(
       expect(await run()).toBe("silent");
       expect(s.labels).toEqual([["sem-resposta"]]);
       expect(s.statuses).toEqual(["resolved"]);
+    });
+
+    // A transfer that completed is as spent as a send: the conversation is a person's, so the retry
+    // stands down on its ownership gate and the closing line the transfer promised would be lost.
+    test("a nudge's handoff the deadline reaches at the transfer still delivers its closing line", async () => {
+      const CLOSING = "Já chamo uma pessoa do time.";
+      const controller = new AbortController();
+      const { s, run } = nudge(
+        957,
+        new HandoffThenReplyModel("", CLOSING) as unknown as BaseChatModel,
+        controller.signal,
+        undefined,
+        {
+          onToggle: (status) => {
+            if (status === "open")
+              controller.abort(new Error("deadline exceeded"));
+          },
+        },
+      );
+      await run();
+      expect(s.statuses).toContain("open");
+      expect(s.messages.map(([, t]) => t)).toEqual([CLOSING]);
     });
 
     test("a nudge whose deadline never fires still sends", async () => {

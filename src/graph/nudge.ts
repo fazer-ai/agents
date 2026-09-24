@@ -712,6 +712,9 @@ export async function runAgentNudge(
   // the customer, and what the step still owes after it (the labels, the resolve) is the step's own
   // and not the retry's (issue #811).
   let delivered = false;
+  // The turn's handoff state, once it exists: a transfer that completed is as spent as a send, and the
+  // line it promised is owed by this run, since a retry finds the conversation a person's.
+  let handoffOf: HandoffTurnState | undefined;
   const stillWanted = async (strict = false): Promise<boolean> => {
     if (
       params.stillWanted !== undefined &&
@@ -725,8 +728,11 @@ export async function runAgentNudge(
     }
     // NOTE: asked last, after the I/O above, which is the stretch it decays over: a run its deadline
     // ended was already failed, and its retry owns the next step (issue #811). Not once a send has
-    // left: the step is then this run's, which commits it, and no retry performs its post-actions.
-    if (params.signal?.aborted && !delivered) return false;
+    // left, or a transfer completed: the step is then this run's, which commits it, and no retry performs
+    // its post-actions or delivers the line the transfer promised.
+    if (params.signal?.aborted && !delivered && !handoffOf?.completed) {
+      return false;
+    }
     return true;
   };
   const standDown = (): "stale" | "agent-unavailable" =>
@@ -909,6 +915,7 @@ export async function runAgentNudge(
     completed: false,
     declinedToSpeak: false,
   };
+  handoffOf = handoffState;
 
   // THE TOOL BOUNDARY ASKS WHO OWNS IT, TOO (issue #717): a person taking the conversation over while
   // the follow-up's model runs stops the calls that would write over them. The MIRROR, in both modes:
@@ -2155,7 +2162,9 @@ export async function runAgentNudge(
     // NOTE: nothing reached the customer on a silent end, so a refusal of its post-actions is a
     // withdrawal and not a silence: the handler would stamp the step and commit it, and the labels
     // or the resolve it was owed would never run (issue #811).
-    if (promised === "silent" && applied === "stale") return standDown();
+    if (promised === "silent" && applied === "stale") {
+      return refuse(standDown());
+    }
     return promised;
   }
 
@@ -2206,14 +2215,16 @@ export async function runAgentNudge(
         allowResolve: false,
       });
       await takeBackUndeliveredSilence(drafted.wroteText);
-      return applied === "stale" ? standDown() : "silent";
+      if (applied === "stale") return refuse(standDown());
+      return "silent";
     }
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     const applied = await applyPostActions({ canMessage: canMessagePost });
     await takeBackUndeliveredSilence(drafted.wroteText);
     // NOTE: the same rule as the promised line's silent end above (issue #811).
-    return applied === "stale" ? standDown() : "silent";
+    if (applied === "stale") return refuse(standDown());
+    return "silent";
   }
 
   // Message the customer ONLY when the bot still owns the conversation AND we were in message mode;
@@ -2318,7 +2329,8 @@ export async function runAgentNudge(
           allowResolve: false,
         });
         // NOTE: the same rule as every other silent end (issue #811).
-        return refuse(applied === "stale" ? standDown() : "silent");
+        if (applied === "stale") return refuse(standDown());
+        return refuse("silent");
       }
       // The window closed during the judge's call or the transfer. The ordinary template below says
       // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
@@ -2340,7 +2352,8 @@ export async function runAgentNudge(
     if (screened === null) {
       const applied = await applyPostActions({ canMessage: canMessagePost });
       // NOTE: the same rule as every other silent end (issue #811).
-      return applied === "stale" ? standDown() : "silent";
+      if (applied === "stale") return refuse(standDown());
+      return "silent";
     }
     // The window is asked again for the same reason the ownership is, and about the same stretch of
     // time: the judge's model call. Both were read before it and are spent here. A mode that has

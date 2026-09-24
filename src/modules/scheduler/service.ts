@@ -1052,6 +1052,11 @@ export async function revokeJobsByKeyPrefixOn(
   }
 }
 
+// A claim's test-only isolation: one tenant, or the few a test seeded. The claims are cross-tenant by
+// design, so a test that wants to see tenants share one cannot fence it to a single tenant (issue
+// #810). Unset in production.
+export type TenantFence = bigint | readonly bigint[];
+
 // THE CLAIM'S STATEMENT, built here rather than inline so a test can run the exact SQL the lanes
 // run (tests/modules/scheduler-claim-limit.test.ts). Exported for that and for nothing else.
 //
@@ -1076,9 +1081,12 @@ export function claimSql(
   lim: number,
   now: Date,
   kindFilter: Prisma.Sql,
-  tenantId?: bigint,
+  tenantId?: TenantFence,
   excludeIds?: bigint[],
   keyPrefix?: string,
+  // Share the slots between tenants instead of handing them out oldest-first (issue #810). Only the
+  // debounce lane asks for it; see claimDueDebounceJobs.
+  share?: boolean,
 ): Prisma.Sql {
   // The prefix branch takes a row whose run_at is still in the FUTURE, and only for a row that has
   // never failed. Both halves matter and they answer different questions.
@@ -1109,20 +1117,64 @@ export function claimSql(
       ? Prisma.sql`AND run_at <= ${now}`
       : Prisma.sql`AND dedupe_key LIKE ${`${keyPrefix}%`} AND (last_error IS NULL OR run_at <= ${now})`;
   const tenantClause =
-    tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
+    tenantId == null
+      ? Prisma.empty
+      : typeof tenantId === "bigint"
+        ? Prisma.sql`AND tenant_id = ${tenantId}`
+        : Prisma.sql`AND tenant_id IN (${Prisma.join([...tenantId])})`;
   const excludeClause =
     excludeIds && excludeIds.length > 0
       ? Prisma.sql`AND id NOT IN (${Prisma.join(excludeIds)})`
       : Prisma.empty;
-  return Prisma.sql`
-    WITH due AS MATERIALIZED (
+  // SHARED, NOT OLDEST-FIRST (issue #810). Each due row ranks by its tenant's SHARE: how many of
+  // that tenant's rows are already in flight, plus the row's place in that tenant's own queue. The
+  // lowest share goes first and ties go to the older row, so every free slot goes to the tenant with
+  // the least in flight: one tenant's burst queues behind itself instead of in front of everyone, and
+  // a tenant alone still takes every slot, because nothing is ever left idle.
+  //
+  // The rows in flight are exactly `excludeIds` (the drain's in-flight set), whatever their status:
+  // a row re-armed to PENDING during its own flush is still running and still counts.
+  //
+  // Ranked WITHOUT the lock and then locked: Postgres refuses FOR UPDATE on a query with a window
+  // function. A row the ranking counted and SKIP LOCKED then skips only moves the queue up by one.
+  const due = share
+    ? Prisma.sql`
+    inflight AS (
+      ${
+        excludeIds && excludeIds.length > 0
+          ? Prisma.sql`SELECT tenant_id, count(*)::int AS n FROM scheduler_jobs
+      WHERE id IN (${Prisma.join(excludeIds)}) GROUP BY tenant_id`
+          : Prisma.sql`SELECT NULL::bigint AS tenant_id, 0 AS n WHERE false`
+      }
+    ),
+    ranked AS (
+      SELECT j.id, j.run_at,
+        COALESCE(f.n, 0) + ROW_NUMBER() OVER (PARTITION BY j.tenant_id ORDER BY j.run_at, j.id) AS share
+      FROM (
+        SELECT id, tenant_id, run_at FROM scheduler_jobs
+        WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
+          ${tenantClause} ${excludeClause}
+      ) j
+      LEFT JOIN inflight f ON f.tenant_id = j.tenant_id
+    ),
+    due AS MATERIALIZED (
+      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.id = s.id
+      WHERE s.status = 'PENDING'
+      ORDER BY r.share, r.run_at, r.id
+      FOR UPDATE OF s SKIP LOCKED
+      LIMIT ${lim}
+    )`
+    : Prisma.sql`
+    due AS MATERIALIZED (
       SELECT id FROM scheduler_jobs
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
       ORDER BY run_at
       FOR UPDATE SKIP LOCKED
       LIMIT ${lim}
-    )
+    )`;
+  return Prisma.sql`
+    WITH ${due}
     UPDATE scheduler_jobs
     SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
     FROM due
@@ -1143,7 +1195,7 @@ async function claimWhere(
   base: PrismaClient,
   now: Date,
   kindFilter: Prisma.Sql,
-  tenantId?: bigint,
+  tenantId?: TenantFence,
   // Rows this process is already executing, kept out of the claim itself. Since `claimSeq` this is no
   // longer what stops a stale completion — the CAS does that for every kind — so what it still buys
   // is narrower and worth naming: it stops the same key from being EXECUTED twice at once. For a
@@ -1155,6 +1207,7 @@ async function claimWhere(
   // for the barrier below, and the second is the half that matters: a job deferred for a turn sits
   // with run_at a minute out, and those are precisely the messages a starting turn is missing.
   keyPrefix?: string,
+  share?: boolean,
 ): Promise<ClaimedJob[]> {
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
   return asSuperAdminOn(base, async (db) => {
@@ -1169,7 +1222,7 @@ async function claimWhere(
         attempts: number;
         claimSeq: number;
       }>
-    >(claimSql(lim, now, kindFilter, tenantId, excludeIds, keyPrefix));
+    >(claimSql(lim, now, kindFilter, tenantId, excludeIds, keyPrefix, share));
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,
@@ -1281,12 +1334,13 @@ export function countOwedByKeyPrefix(
 }
 
 // The fast debounce tick claims ONLY debounce jobs. `excludeIds` is the drain's in-flight set
-// (../debounce/worker.ts).
+// (../debounce/worker.ts), which is also what the claim reads to share the slots between tenants: the
+// lane is cross-tenant, and oldest-first let one tenant's burst take every slot (issue #810).
 export function claimDueDebounceJobs(
   limit: number,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
-  tenantId?: bigint,
+  tenantId?: TenantFence,
   excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
   return claimWhere(
@@ -1296,6 +1350,8 @@ export function claimDueDebounceJobs(
     laneFilter("debounce"),
     tenantId,
     excludeIds,
+    undefined,
+    true,
   );
 }
 
@@ -1560,7 +1616,11 @@ export async function reapStaleJobs(
 ): Promise<ReapedJob[]> {
   const cutoff = new Date(now.getTime() - staleMs);
   const tenantClause =
-    tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
+    tenantId == null
+      ? Prisma.empty
+      : typeof tenantId === "bigint"
+        ? Prisma.sql`AND tenant_id = ${tenantId}`
+        : Prisma.sql`AND tenant_id IN (${Prisma.join([...tenantId])})`;
   const kindClause =
     kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {

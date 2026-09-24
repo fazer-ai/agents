@@ -12,8 +12,9 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 // does not await. `emitFlowEvent` is exactly that (`src/modules/flowlog/service.ts`) — fire-and-
 // forget by design, because a customer must not wait on a log line — and its transaction runs
 // through this same client. Counting it made this assertion fail whenever that INSERT happened to
-// still be in flight: measured on CI, and reproducible here with `PROBE_FLOWLOG_DELAY_MS=12`, which
-// lands the write on top of the ask.
+// still be in flight: measured on CI, and reproducible here by delaying the start of that write by
+// about 12 ms (a local edit to `writeFlowEvent`, never a committed knob: issue #822), which lands the
+// write on top of the ask.
 //
 // `open` is the raw count of transactions in flight ANYWHERE through this client, which is a leak
 // check ("it left nothing open behind it") and answers nothing about who is asking.

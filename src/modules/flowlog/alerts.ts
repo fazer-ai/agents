@@ -41,6 +41,10 @@ const LABELED_KEYS = [
   // Which limit a `capacity` line waited on (`debounce_lane` | `model_semaphore`, issue #812): the one
   // thing the operator needs to know to act, since the two are raised differently.
   "waitedOn",
+  // What a `channel_error` was classified as, and the channel's own error number (issue #842):
+  // `action` alone says what was done about it, not what the channel answered.
+  "class",
+  "code",
 ] as const;
 // FLAGS whose value is a count or `true`, so only the key's presence carries the why.
 const FLAG_KEYS = [
@@ -49,7 +53,24 @@ const FLAG_KEYS = [
   "silenceTokenSuppressed",
   "silenceTokenInReply",
   "retry",
+  // A turn that ended with no reply, no `skip_reply` and no handoff (issue #842). The line's whole
+  // point, and before it was listed the alert read `[generate] ok` and nothing else.
+  "silenceUnexplained",
+  // A proactive turn that ran beside another invoke holding its thread past the lease (nudge.ts).
+  "threadWaitExpired",
 ] as const;
+// BOOLEANS whose `false` says as much as their `true`, so both are printed, labeled. A presence flag
+// would drop the `false`, and for `resolveDiscarded` that is the case the operator cannot find: the
+// conversation stays pending with no owner, where `true` closed it as handled with nothing sent.
+const BOOLEAN_KEYS = ["resolveDiscarded"] as const;
+// Every `detail` key the body can print, for the fence that holds each warn and error line to name at
+// least one (tests/modules/flowlog-alert-summary.test.ts): a line with none alerts as its bare status.
+export const ALERT_DETAIL_KEYS: readonly string[] = [
+  ...CAUSE_KEYS,
+  ...LABELED_KEYS,
+  ...FLAG_KEYS,
+  ...BOOLEAN_KEYS,
+];
 // On these stages `reason` names what TRIGGERED the work, not what went wrong: `observe` stamps
 // `burst` or `resolved` on every line, so `skipped: burst` would name the wrong thing.
 const TRIGGER_REASON_STAGES: ReadonlySet<string> = new Set(["observe"]);
@@ -96,6 +117,9 @@ function statusWithWhy(ev: FlowEvent & { level: FlowLevel }): string {
   }
   for (const key of FLAG_KEYS) {
     if (detail[key] !== undefined && detail[key] !== false) parts.push(key);
+  }
+  for (const key of BOOLEAN_KEYS) {
+    if (typeof detail[key] === "boolean") parts.push(`${key}=${detail[key]}`);
   }
   return parts.length === 0 ? head : `${head}: ${parts.join(" ")}`;
 }

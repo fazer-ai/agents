@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { EMPTY_COMPLETION_MESSAGE } from "@/graph/empty-completion";
 import { preconditionFlowEvent } from "@/graph/tools/precondition";
-import { alertSummary } from "@/modules/flowlog/alerts";
+import { ALERT_DETAIL_KEYS, alertSummary } from "@/modules/flowlog/alerts";
 import type { FlowEvent } from "@/modules/flowlog/service";
 import type { FlowLevel } from "@/modules/flowlog/stages";
 import { spendCeilingFlowEvent } from "@/modules/spend-ceiling/service";
@@ -203,6 +205,58 @@ describe("alertSummary", () => {
     expect(body.toLowerCase()).not.toContain("zebrafina");
   });
 
+  // Issue #842: the lines a production Discord channel received as `[generate] ok` and nothing else,
+  // with the detail each row carried. Both values of `resolveDiscarded` arrived, and they are the two
+  // different outcomes the operator has to tell apart.
+  test("a turn that ended in silence says so, and whether the conversation was closed", () => {
+    for (const resolveDiscarded of [true, false]) {
+      expect(
+        alertSummary({
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { silenceUnexplained: true, resolveDiscarded },
+        }),
+      ).toBe(
+        `[generate] ok: silenceUnexplained resolveDiscarded=${resolveDiscarded}`,
+      );
+    }
+  });
+
+  test("a proactive turn that ran beside a held thread says so", () => {
+    expect(
+      alertSummary({
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: {
+          threadWaitExpired: true,
+          waitedMs: 30_000,
+          note: "another invoke has held this thread past its lease",
+        },
+      }),
+    ).toBe("[generate] ok: threadWaitExpired");
+  });
+
+  test("a channel failure names its class and the channel's error number", () => {
+    expect(
+      alertSummary({
+        stage: "channel_error",
+        level: "warn",
+        status: "error",
+        detail: {
+          messageId: 991,
+          code: "131053",
+          codeRead: true,
+          class: "media",
+          action: "text_fallback",
+        },
+      }),
+    ).toBe(
+      "[channel_error] error: action=text_fallback class=media code=131053",
+    );
+  });
+
   test("the body stays bounded however long the error is", () => {
     const body = (n: number) =>
       alertSummary({
@@ -212,5 +266,129 @@ describe("alertSummary", () => {
       });
     expect(body(20_000).length).toBe(body(2_000).length);
     expect(body(2_000).length).toBeLessThan(320);
+  });
+});
+
+// THE FENCE issue #842 asked for. A warn or error line with no `errorMessage` is explained by its
+// `detail` alone, and the alert prints only the keys it knows, so a line naming none of them alerts as
+// its bare status: `[generate] ok`, which is what the unexplained-silence line did for as long as
+// nobody listed its key. Read off the source, so the next such line fails here instead of in an
+// operator's channel. A line that is legitimately explained some other way is listed below, with why.
+const EXPLAINED_ELSEWHERE: Record<string, string> = {
+  // Its detail is spread from the drop, which always carries a `reason` (`CommandDrop`).
+  "src/modules/flowlog/command.ts": "reason arrives through ...args.drop",
+};
+
+async function sourceFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (p !== "src/client") out.push(...(await sourceFiles(p)));
+    } else if (e.name.endsWith(".ts")) out.push(p);
+  }
+  return out;
+}
+
+// The text of each `emitFlowEvent(...)` call, by bracket depth.
+function flowEventCalls(src: string): { call: string; line: number }[] {
+  const out: { call: string; line: number }[] = [];
+  for (const m of src.matchAll(/emitFlowEvent\(/g)) {
+    let depth = 1;
+    let j = (m.index ?? 0) + m[0].length;
+    const start = j;
+    while (depth > 0 && j < src.length) {
+      const c = src[j];
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") depth--;
+      j++;
+    }
+    out.push({
+      call: src.slice(start, j),
+      line: src.slice(0, m.index).split("\n").length,
+    });
+  }
+  return out;
+}
+
+// The top-level keys of the `detail: { ... }` literal, comments dropped.
+function detailKeys(call: string): string[] | null {
+  const m = /detail:\s*\{/.exec(call);
+  if (!m) return null;
+  let depth = 1;
+  let i = m.index + m[0].length;
+  let token = "";
+  const keys: string[] = [];
+  const take = () => {
+    const k = /^\s*([A-Za-z_]\w*)\s*(?::|$)/.exec(
+      token.replace(/\/\/[^\n]*/g, ""),
+    );
+    if (k?.[1]) keys.push(k[1]);
+    token = "";
+  };
+  while (depth > 0 && i < call.length) {
+    const c = call[i] as string;
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    if (depth === 1 && c === ",") take();
+    else if (depth >= 1) token += c;
+    i++;
+  }
+  take();
+  return keys;
+}
+
+describe("every warn and error line names what its alert prints", () => {
+  test("the scan reads the line this issue was about, and would have failed on it", () => {
+    const [site] = flowEventCalls(
+      'emitFlowEvent(flow, { stage: "generate", level: "warn", status: "ok", detail: { silenceUnexplained: true, resolveDiscarded } });',
+    );
+    expect(detailKeys(site?.call ?? "")).toEqual([
+      "silenceUnexplained",
+      "resolveDiscarded",
+    ]);
+    expect(
+      ["silenceUnexplained", "resolveDiscarded"].some((k) =>
+        ALERT_DETAIL_KEYS.includes(k),
+      ),
+    ).toBe(true);
+  });
+
+  // The list the fence reads has to be the list the body prints from, in both directions: a key the
+  // body prints but the list omits would fail a line that is in fact explained.
+  test("every key the body prints is on the list the fence reads", () => {
+    const printed: [string, unknown][] = [
+      ["reason", "no_persona"],
+      ["action", "text_fallback"],
+      ["silenceUnexplained", true],
+      ["resolveDiscarded", false],
+    ];
+    for (const [key, value] of printed) {
+      const body = alertSummary({
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: { [key]: value },
+      });
+      expect(body).not.toBe("[generate] ok");
+      expect(ALERT_DETAIL_KEYS).toContain(key);
+    }
+  });
+
+  test("no line without an error message alerts as its bare status", async () => {
+    const silent: string[] = [];
+    for (const file of await sourceFiles("src")) {
+      const src = await readFile(file, "utf8");
+      for (const { call, line } of flowEventCalls(src)) {
+        const level = /level:\s*([^,\n]*)/.exec(call)?.[1] ?? "";
+        if (!/"(?:warn|error)"/.test(level)) continue;
+        if (/errorMessage/.test(call)) continue;
+        if (EXPLAINED_ELSEWHERE[file]) continue;
+        const keys = detailKeys(call) ?? [];
+        if (!keys.some((k) => ALERT_DETAIL_KEYS.includes(k)))
+          silent.push(`${file}:${line} [${keys.join(", ")}]`);
+      }
+    }
+    expect(silent).toEqual([]);
   });
 });

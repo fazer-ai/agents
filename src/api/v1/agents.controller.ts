@@ -49,7 +49,9 @@ import {
 import {
   deletePlaygroundSession,
   getPlaygroundSessionTurns,
+  getPlaygroundSessionUsage,
   listPlaygroundSessions,
+  startPlaygroundThread,
 } from "@/modules/playground/sessions";
 import { listTtsOptions } from "@/modules/tts/listing";
 
@@ -1025,13 +1027,18 @@ export const agentsController = new Elysia({
     "/:id/playground/file/extract",
     async ({ tenantContext, params, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const b = body as { file: File; draft?: string | PlaygroundDraft };
+      const b = body as {
+        file: File;
+        threadId?: string;
+        draft?: string | PlaygroundDraft;
+      };
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundExtract({
           ctx,
           agentId: requireDbId(params.id),
           file: b.file,
+          threadId: b.threadId,
           overrides: parseDraft(b.draft),
         })),
       };
@@ -1052,6 +1059,12 @@ export const agentsController = new Elysia({
         file: t.File({
           description: "The image or document file to extract from.",
         }),
+        threadId: t.Optional(
+          t.String({
+            description:
+              "Playground thread id, shaped tenantId:playground:agentId:uuid, the file is being sent into. Absent or foreign, a fresh one is minted and returned.",
+          }),
+        ),
         draft: t.Optional(
           t.Union([t.String(), playgroundDraftSchema], {
             description:
@@ -1076,6 +1089,7 @@ export const agentsController = new Elysia({
         guardrails?: string;
         kind?: string;
         extracted?: string;
+        turnId?: string;
       };
       const overrides = parseDraft(b.draft);
       return {
@@ -1090,6 +1104,7 @@ export const agentsController = new Elysia({
           guardrails: decodeMultipartFlag(b.guardrails),
           kind: decodeExtractKind(b.kind),
           extracted: decodeMultipartText(b.extracted),
+          turnId: b.turnId,
         })),
       };
     },
@@ -1140,6 +1155,12 @@ export const agentsController = new Elysia({
           t.String({
             description:
               "JSON-encoded precomputed extracted content from step 1; when present, vision extraction is skipped here.",
+          }),
+        ),
+        turnId: t.Optional(
+          t.String({
+            description:
+              "The turnId step 1 returned, so the read and this turn are one turn in the usage ledger. Ignored unless it names a read on this thread that no turn has used yet.",
           }),
         ),
       }),
@@ -1221,12 +1242,76 @@ export const agentsController = new Elysia({
           requireDbId(params.id),
           params.threadId,
         ),
+        // The session's total so far, from the ledger (issue #839).
+        usage: await getPlaygroundSessionUsage(
+          ctx,
+          requireDbId(params.id),
+          params.threadId,
+        ),
       };
     },
     {
       detail: doc(
         "Get playground session turns",
         "Returns the reconstructed turns of a single playground session.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+        threadId: t.String({
+          description:
+            "Playground thread id, shaped tenantId:playground:agentId:uuid.",
+        }),
+      }),
+    },
+  )
+  // A fresh playground thread for a session about to start, so its first call is billed to a thread
+  // the console already holds (issue #839). Only an id: nothing is written until a turn runs on it.
+  .post(
+    "/:id/playground/threads",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      return {
+        instance: instanceIdentity,
+        threadId: await startPlaygroundThread(ctx, requireDbId(params.id)),
+      };
+    },
+    {
+      detail: doc(
+        "Start playground thread",
+        "Returns a fresh playground thread id for a session about to start. Nothing is stored until a turn runs on it.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // The session's total alone, for a console that has to re-read it: a turn that failed after a
+  // billed call leaves that call in the ledger and nothing in the reply (issue #839).
+  .get(
+    "/:id/playground/sessions/:threadId/usage",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      return {
+        instance: instanceIdentity,
+        usage: await getPlaygroundSessionUsage(
+          ctx,
+          requireDbId(params.id),
+          params.threadId,
+        ),
+      };
+    },
+    {
+      detail: doc(
+        "Get playground session usage",
+        "Returns what a playground session has spent so far, summed from the usage ledger.",
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

@@ -2113,6 +2113,10 @@ model LlmUsage {
   // cacheCreationTokens = tokens written to the cache this call (Anthropic, billed at a premium).
   cachedReadTokens    Int      @default(0) @map("cached_read_tokens")
   cacheCreationTokens Int      @default(0) @map("cache_creation_tokens")
+  // The turn this call was billed to, the same id as its ExecutionLog rows and its Langfuse trace
+  // (issue #839). Null for rows from before the column and for a call no turn owns. The playground
+  // groups a reopened session's calls by it, so each message gets back the line it had live.
+  turnId              String?  @map("turn_id")
   createdAt           DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -2120,6 +2124,9 @@ model LlmUsage {
   @@index([tenantId, createdAt])
   @@index([tenantId, agentId])
   @@index([tenantId, inboxId])
+  // A playground session's total (issue #839): the ledger summed by thread. Without it the sum walks
+  // every row of the tenant, inbox traffic included, each time a session is opened.
+  @@index([tenantId, threadId])
   @@map("llm_usage")
 }
 

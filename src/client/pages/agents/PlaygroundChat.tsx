@@ -46,6 +46,7 @@ import { useModalController } from "@/client/components/Modal";
 import { useMediaObjectUrl } from "@/client/components/useMediaObjectUrl";
 import { cn } from "@/client/lib/utils";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
+import { UsageLine } from "./PlaygroundUsage";
 import type {
   PlaygroundSessionMeta,
   PlaygroundTurn,
@@ -179,9 +180,15 @@ export function PlaygroundChat({
 
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center justify-between gap-2 border-border border-b px-3 py-2">
-            <p className="text-text-secondary text-xs">
-              {t("playground.hint", "Tests your live (unsaved) edits.")}
-            </p>
+            <div className="flex min-w-0 flex-col">
+              <p className="text-text-secondary text-xs">
+                {t("playground.hint", "Tests your live (unsaved) edits.")}
+              </p>
+              <UsageLine
+                usage={chat.sessionUsage}
+                label={t("playground.usage.session", "Session")}
+              />
+            </div>
             <div className="flex flex-wrap items-center gap-3">
               <SwitchField
                 checked={chat.guardrails && capabilities.guardrails}
@@ -676,6 +683,7 @@ function TurnBubble({
             ))}
           </div>
         )}
+        <UsageLine usage={turn.usage} timing={turn.timing} />
       </div>
     );
   }
@@ -741,6 +749,9 @@ function TurnBubble({
       {userFile && <FileExtraction turn={turn} />}
       {turn.role === "assistant" && turn.audioUrl && (
         <MediaAudio src={turn.audioUrl} />
+      )}
+      {turn.role === "assistant" && (
+        <UsageLine usage={turn.usage} timing={turn.timing} />
       )}
       {turn.role === "assistant" && (
         <TracePanel turn={turn} onOpenDoc={onOpenDoc} onOpenKb={onOpenKb} />

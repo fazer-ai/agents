@@ -16,12 +16,13 @@ import {
   type TraceEntry,
   type TraceSource,
 } from "@/graph/trace";
+import type { TurnUsage } from "@/graph/usage";
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { documentToolName } from "@/modules/documents/templates";
 import { listThreadMedia } from "./media";
-import { isValidPlaygroundThread } from "./thread";
+import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
 import { type LoadedTurnNote, listThreadTurnNotes } from "./turn-notes";
 
 // Server-side playground session history. The PlaygroundSession table holds ONLY metadata
@@ -161,6 +162,14 @@ export interface RebuiltTurn {
   // client renders a suppression note instead of an empty bubble, because "nothing was sent" and
   // "the agent chose silence" are different statements.
   suppressed?: boolean;
+  // The id of the human message that opened this turn, which the service mints as the turn's own id
+  // (issue #839): the ledger rows of the turn carry the same id, and that is how a reopened session
+  // gives each reply back the usage line it had live. A follow-up opens on its nudge, so it has one
+  // too; a legacy SystemMessage follow-up does not.
+  turnId?: string;
+  // What this turn spent, from the ledger rows carrying its turnId. Absent for a turn from before
+  // the column, and for one whose calls the ledger has no id for.
+  usage?: TurnUsage;
   trace: TraceEntry[];
   sources: TraceSource[];
 }
@@ -201,6 +210,8 @@ export function rebuildPlaygroundTurns(
     });
     const sources = collectTraceSources(trace);
     const human = ty === "human" ? (messages[i] as BaseMessage) : null;
+    const opening = human ? messageId(human) : undefined;
+    const turn = opening ? { turnId: opening } : {};
     const raw = human ? contentToText(human.content) : "";
     // A slice is a FOLLOW-UP when its opening human turn carries the nudge fence, or when it is a
     // system message at all (the legacy shape below). Decided before the reply is read, because it
@@ -218,6 +229,7 @@ export function rebuildPlaygroundTurns(
             text: reply.text,
             followup: true,
             ...(reply.id ? { messageId: reply.id } : {}),
+            ...turn,
             trace,
             sources,
           });
@@ -235,6 +247,7 @@ export function rebuildPlaygroundTurns(
         ...(file.extractKind ? { extractKind: file.extractKind } : {}),
         ...(file.extracted ? { extracted: file.extracted } : {}),
         ...(messageId(human) ? { messageId: messageId(human) } : {}),
+        ...turn,
         trace: [],
         sources: [],
       });
@@ -243,6 +256,7 @@ export function rebuildPlaygroundTurns(
           role: "assistant",
           text: reply.text,
           ...(reply.id ? { messageId: reply.id } : {}),
+          ...turn,
           trace,
           sources,
         });
@@ -321,6 +335,7 @@ function annotatedReply(note: LoadedTurnNote): RebuiltTurn {
   return {
     role: "assistant",
     text: note.reply,
+    ...(note.userMessageId ? { turnId: note.userMessageId } : {}),
     ...(suppressedByGuardrail(note) ? { suppressed: true } : {}),
     trace: verdictsAround(note, []),
     sources: [],
@@ -383,6 +398,8 @@ export function applyTurnNotes(
         role: "assistant",
         text: "",
         suppressed: true,
+        // The note stands for this turn's reply, so it carries the turn's usage line (issue #839).
+        ...(n.userMessageId ? { turnId: n.userMessageId } : {}),
         trace: [...n.guardrails],
         sources: [],
       });
@@ -411,6 +428,83 @@ export function applyTurnNotes(
     }
   }
   for (const pl of placements) if (!placed.has(pl)) out.push(...pl.render());
+  return out;
+}
+
+// Hands each turn's ledger usage to the reply the operator read for it (issue #839): the LAST
+// agent-side bubble carrying that turnId, which is where the live turn drew its line.
+//
+// A turn that billed calls and replied nothing (the agent chose silence, or it failed after a call)
+// showed "(no reply)" with its line live, and the rebuild drops an empty reply, so the bubble is put
+// back after the user's message, with the line. Only where the ledger has rows for that turn: an
+// older turn, from before the column, keeps the transcript it always had. A silent follow-up has no
+// user message on screen to follow, so its calls stay in the session total only.
+export function attachTurnUsage(
+  turns: RebuiltTurn[],
+  byTurn: ReadonlyMap<string, TurnUsage>,
+): RebuiltTurn[] {
+  if (byTurn.size === 0) return turns;
+  const last = new Map<string, number>();
+  turns.forEach((t, i) => {
+    if (t.role === "assistant" && t.turnId && byTurn.has(t.turnId))
+      last.set(t.turnId, i);
+  });
+  const out: RebuiltTurn[] = [];
+  turns.forEach((t, i) => {
+    const usage = t.turnId ? byTurn.get(t.turnId) : undefined;
+    if (t.role === "assistant") {
+      out.push(usage && last.get(t.turnId ?? "") === i ? { ...t, usage } : t);
+      return;
+    }
+    out.push(t);
+    if (usage && t.turnId && !last.has(t.turnId))
+      out.push({
+        role: "assistant",
+        text: "",
+        turnId: t.turnId,
+        usage,
+        trace: [],
+        sources: [],
+      });
+  });
+  return out;
+}
+
+async function usageByTurn(
+  base: PrismaClient,
+  ctx: TenantContext,
+  threadId: string,
+): Promise<Map<string, TurnUsage>> {
+  const tenantId = ctx.tenantId as bigint;
+  const groups = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.groupBy({
+      by: ["turnId"],
+      where: {
+        tenantId,
+        threadId,
+        source: "playground",
+        turnId: { not: null },
+      },
+      _count: { _all: true },
+      _sum: {
+        promptTokens: true,
+        cachedReadTokens: true,
+        cacheCreationTokens: true,
+        completionTokens: true,
+      },
+    }),
+  );
+  const out = new Map<string, TurnUsage>();
+  for (const g of groups) {
+    if (!g.turnId) continue;
+    out.set(g.turnId, {
+      calls: g._count._all,
+      promptTokens: g._sum.promptTokens ?? 0,
+      cachedReadTokens: g._sum.cachedReadTokens ?? 0,
+      cacheCreationTokens: g._sum.cacheCreationTokens ?? 0,
+      completionTokens: g._sum.completionTokens ?? 0,
+    });
+  }
   return out;
 }
 
@@ -542,7 +636,58 @@ export async function getPlaygroundSessionTurns(
       }
     }
   }
-  return turns;
+  return attachTurnUsage(turns, await usageByTurn(base, ctx, threadId));
+}
+
+// A fresh thread for a session about to start (issue #839), so its first call is billed to a thread
+// the console already holds. Only an id: nothing is written until a turn runs on it. The agent is
+// read under the caller's scope first, so an id for another tenant's agent is a 404, not a string.
+export async function startPlaygroundThread(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<string> {
+  const agent = await runScopedOn(base, ctx, (db) =>
+    db.agent.findUnique({ where: { id: agentId }, select: { id: true } }),
+  );
+  if (!agent)
+    throw new NotFoundError("agent not found", "errors.agentNotFound");
+  return newPlaygroundThreadId(ctx.tenantId as bigint, agentId);
+}
+
+// What a session has spent so far, from the ledger (issue #839): the total a reopened session
+// shows. The live turns sum the same rows in process (`sumTurnUsage`), counted only when on this
+// thread, so the two totals are one sum read two ways. The session row existing in OUR tenant-scoped
+// table is the authorization, as in getPlaygroundSessionTurns.
+export async function getPlaygroundSessionUsage(
+  ctx: TenantContext,
+  agentId: bigint,
+  threadId: string,
+  base: PrismaClient = basePrisma,
+): Promise<TurnUsage> {
+  const tenantId = ctx.tenantId as bigint;
+  if (!isValidPlaygroundThread(threadId, tenantId, agentId)) {
+    throw new NotFoundError("session not found", "errors.sessionNotFound");
+  }
+  const agg = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.aggregate({
+      where: { tenantId, threadId, source: "playground" },
+      _count: { _all: true },
+      _sum: {
+        promptTokens: true,
+        cachedReadTokens: true,
+        cacheCreationTokens: true,
+        completionTokens: true,
+      },
+    }),
+  );
+  return {
+    calls: agg._count._all,
+    promptTokens: agg._sum.promptTokens ?? 0,
+    cachedReadTokens: agg._sum.cachedReadTokens ?? 0,
+    cacheCreationTokens: agg._sum.cacheCreationTokens ?? 0,
+    completionTokens: agg._sum.completionTokens ?? 0,
+  };
 }
 
 // Remove a session from history, thread and all — which is what the endpoint has always said it

@@ -72,6 +72,10 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "GET /v1/agents/:id/playground/media/:mediaId": { none: BINARY },
   "GET /v1/agents/:id/playground/sessions": { none: PLAYGROUND },
   "GET /v1/agents/:id/playground/sessions/:threadId": { none: PLAYGROUND },
+  "GET /v1/agents/:id/playground/sessions/:threadId/usage": {
+    none: PLAYGROUND,
+  },
+  "POST /v1/agents/:id/playground/threads": { none: PLAYGROUND },
   "DELETE /v1/agents/:id/playground/sessions/:threadId": { none: PLAYGROUND },
   "POST /v1/agents/models/list": { none: PICKER },
   "POST /v1/agents/tts/list": { none: PICKER },

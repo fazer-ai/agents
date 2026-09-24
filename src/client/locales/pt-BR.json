@@ -2468,7 +2468,18 @@
       "visionDocument": "Leitura de documento",
       "visionImage": "Leitura de imagem"
     },
-    "untitledSession": "Sessão sem título"
+    "untitledSession": "Sessão sem título",
+    "usage": {
+      "cacheWrite": "escrita no cache {{written}}",
+      "calls_zero": "{{count}} chamadas",
+      "calls_one": "{{count}} chamada",
+      "calls_many": "{{count}} chamadas",
+      "calls_other": "{{count}} chamadas",
+      "input": "Entrada {{input}} ({{cached}} do cache)",
+      "output": "saída {{output}}",
+      "session": "Sessão",
+      "timing": "{{turn}} (modelo {{model}})"
+    }
   },
   "resources": {
     "deleteRefsWarning_zero": "{{count}} agentes usam isto e vão parar de funcionar se você excluir.",

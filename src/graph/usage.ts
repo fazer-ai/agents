@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { LLMResult } from "@langchain/core/outputs";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -41,6 +42,9 @@ export interface UsageRow {
   // The DB Inbox.id this usage is attributed to (null in the playground / when unresolved).
   inboxId: bigint | null;
   threadId: string | null;
+  // The turn this call belongs to, when its caller knows one: the id the ExecutionLog and the
+  // Langfuse trace of that turn already carry (issue #839).
+  turnId: string | null;
   model: string;
   node: string | null;
   // "inbox" (real customer traffic) | "playground" (operator test turns).
@@ -53,6 +57,102 @@ export interface UsageRow {
 }
 
 export type UsagePersist = (row: UsageRow) => Promise<void>;
+
+// WHAT ONE TURN SPENT, summed in process for the caller that shows it (the playground, issue #839).
+//
+// The same numbers the ledger rows carry, from the same two places that write them (`UsageCapture`
+// and `recordDirectUsage`), so a turn's line and the ledger cannot disagree about a call. A
+// counter, never attribution: the tenant and thread a row is billed to still come in explicitly,
+// and the async context only answers "is someone summing this turn?". Counted only when the row is
+// on the thread being summed, so the live total and a reopened session's total (the ledger read by
+// that thread) are the same sum.
+export interface TurnUsage {
+  calls: number;
+  promptTokens: number;
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
+  completionTokens: number;
+}
+
+export function emptyTurnUsage(): TurnUsage {
+  return {
+    calls: 0,
+    promptTokens: 0,
+    cachedReadTokens: 0,
+    cacheCreationTokens: 0,
+    completionTokens: 0,
+  };
+}
+
+// How long the turn took and how much of that was spent waiting on a model. Kept beside the usage
+// rather than in it: the ledger has no timing, so a reopened session's total could not carry it,
+// and a number the live total has and the reopened one lacks is two books again.
+export interface TurnTiming {
+  // Wall time of the whole turn, as the server measured it.
+  turnMs: number;
+  // Summed over the calls counted in the usage: the rest of turnMs is everything else the turn did
+  // (tools, retrieval, the checkpointer, the guardrail's own logic).
+  modelMs: number;
+}
+
+const turnUsageSink = new AsyncLocalStorage<{
+  threadId: string;
+  usage: TurnUsage;
+  modelMs: number;
+}>();
+
+// Nested sums on one thread share the outer counter and answer their own share of it: a file turn
+// sums its inline file read AND the turn it then runs, and the turn alone is what the inner call
+// reports. A new counter per level would hide the inner calls from the outer one.
+export async function sumTurnUsage<T>(
+  threadId: string,
+  fn: () => Promise<T>,
+): Promise<{ result: T; usage: TurnUsage; timing: TurnTiming }> {
+  const startedAt = performance.now();
+  const outer = turnUsageSink.getStore();
+  if (outer && outer.threadId === threadId) {
+    const before = { ...outer.usage };
+    const modelBefore = outer.modelMs;
+    const result = await fn();
+    const after = outer.usage;
+    return {
+      result,
+      timing: {
+        turnMs: Math.round(performance.now() - startedAt),
+        modelMs: Math.round(outer.modelMs - modelBefore),
+      },
+      usage: {
+        calls: after.calls - before.calls,
+        promptTokens: after.promptTokens - before.promptTokens,
+        cachedReadTokens: after.cachedReadTokens - before.cachedReadTokens,
+        cacheCreationTokens:
+          after.cacheCreationTokens - before.cacheCreationTokens,
+        completionTokens: after.completionTokens - before.completionTokens,
+      },
+    };
+  }
+  const sink = { threadId, usage: emptyTurnUsage(), modelMs: 0 };
+  const result = await turnUsageSink.run(sink, fn);
+  return {
+    result,
+    usage: sink.usage,
+    timing: {
+      turnMs: Math.round(performance.now() - startedAt),
+      modelMs: Math.round(sink.modelMs),
+    },
+  };
+}
+
+function noteTurnUsage(row: UsageRow, durationMs: number | null): void {
+  const sink = turnUsageSink.getStore();
+  if (!sink || row.threadId !== sink.threadId) return;
+  if (durationMs !== null) sink.modelMs += durationMs;
+  sink.usage.calls += 1;
+  sink.usage.promptTokens += row.promptTokens;
+  sink.usage.cachedReadTokens += row.cachedReadTokens;
+  sink.usage.cacheCreationTokens += row.cacheCreationTokens;
+  sink.usage.completionTokens += row.completionTokens;
+}
 
 // Every `node` the ledger can carry, against the one question a reader asking about the AGENT has to
 // settle first: did the agent take the turn this call was billed for?
@@ -105,6 +205,7 @@ export function defaultUsagePersist(
           conversationId: row.conversationId ?? undefined,
           inboxId: row.inboxId ?? undefined,
           threadId: row.threadId ?? undefined,
+          turnId: row.turnId ?? undefined,
           model: row.model,
           node: row.node ?? undefined,
           source: row.source,
@@ -256,6 +357,7 @@ export function usageAttribution(flow: FlowContext): {
   conversationId: bigint | null;
   inboxId: bigint | null;
   threadId: string | null;
+  turnId: string | null;
   source: UsageSource;
   base?: PrismaClient;
 } {
@@ -265,6 +367,7 @@ export function usageAttribution(flow: FlowContext): {
     conversationId: flow.conversationId ?? null,
     inboxId: flow.inboxId ?? null,
     threadId: flow.threadId ?? null,
+    turnId: flow.turnId ?? null,
     // FlowSource and UsageSource are the same two values ("inbox" | "playground") for the same
     // reason: a row and a log line about one call must not disagree about which traffic it was.
     source: flow.source,
@@ -292,20 +395,24 @@ export async function recordDirectUsage(
     completionTokens: number;
     cachedReadTokens?: number;
     cacheCreationTokens?: number;
+    // How long the caller waited on the provider, retries included, when it measured it.
+    durationMs?: number;
   },
 ): Promise<void> {
   if (row.promptTokens === 0 && row.completionTokens === 0) return;
   const attr = usageAttribution(flow);
+  const usageRow: UsageRow = {
+    ...attr,
+    model: row.model,
+    node: row.node,
+    promptTokens: row.promptTokens,
+    completionTokens: row.completionTokens,
+    cachedReadTokens: row.cachedReadTokens ?? 0,
+    cacheCreationTokens: row.cacheCreationTokens ?? 0,
+  };
+  noteTurnUsage(usageRow, row.durationMs ?? null);
   try {
-    await defaultUsagePersist(attr.base)({
-      ...attr,
-      model: row.model,
-      node: row.node,
-      promptTokens: row.promptTokens,
-      completionTokens: row.completionTokens,
-      cachedReadTokens: row.cachedReadTokens ?? 0,
-      cacheCreationTokens: row.cacheCreationTokens ?? 0,
-    });
+    await defaultUsagePersist(attr.base)(usageRow);
   } catch (err) {
     logger.warn({ err, node: row.node }, "usage: direct capture failed");
   }
@@ -345,6 +452,7 @@ export interface UsageCaptureParams {
   conversationId?: bigint | null;
   inboxId?: bigint | null;
   threadId?: string | null;
+  turnId?: string | null;
   model: string;
   node?: string | null;
   source?: UsageSource;
@@ -362,6 +470,7 @@ export class UsageCapture extends BaseCallbackHandler {
   private readonly conversationId: bigint | null;
   private readonly inboxId: bigint | null;
   private readonly threadId: string | null;
+  private readonly turnId: string | null;
   private readonly model: string;
   private readonly node: string | null;
   private readonly source: UsageSource;
@@ -374,6 +483,7 @@ export class UsageCapture extends BaseCallbackHandler {
     this.conversationId = params.conversationId ?? null;
     this.inboxId = params.inboxId ?? null;
     this.threadId = params.threadId ?? null;
+    this.turnId = params.turnId ?? null;
     this.model = params.model;
     this.node = params.node ?? null;
     this.source = params.source ?? "inbox";
@@ -385,6 +495,8 @@ export class UsageCapture extends BaseCallbackHandler {
   // fire, which on a turn whose primary failed and whose fallback answered is exactly the wrong one.
   // Bounded by the runs in flight on one turn, and erased by whichever of END / ERROR arrives.
   private readonly runModel = new Map<string, string>();
+  // When each in-flight run started, for the turn's model time. Same lifetime as runModel.
+  private readonly runStart = new Map<string, number>();
 
   override async handleLLMStart(
     _llm: unknown,
@@ -395,6 +507,7 @@ export class UsageCapture extends BaseCallbackHandler {
     _tags?: string[],
     metadata?: Record<string, unknown>,
   ): Promise<void> {
+    this.runStart.set(runId, performance.now());
     const named = metadata?.[USAGE_MODEL_METADATA_KEY];
     // PRESENT, not truthy. An empty name is what a model-less `openai-compatible` fallback is
     // called — the server picks, so there is no id to record, and `""` is exactly what this ledger
@@ -406,6 +519,7 @@ export class UsageCapture extends BaseCallbackHandler {
 
   override async handleLLMError(_err: unknown, runId: string): Promise<void> {
     this.runModel.delete(runId);
+    this.runStart.delete(runId);
   }
 
   override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
@@ -417,22 +531,29 @@ export class UsageCapture extends BaseCallbackHandler {
     } = extractTokenUsage(output);
     const model = this.runModel.get(runId) ?? this.model;
     this.runModel.delete(runId);
+    const started = this.runStart.get(runId);
+    this.runStart.delete(runId);
+    const durationMs =
+      started === undefined ? null : performance.now() - started;
     if (promptTokens === 0 && completionTokens === 0) return;
+    const row: UsageRow = {
+      tenantId: this.tenantId,
+      agentId: this.agentId,
+      conversationId: this.conversationId,
+      inboxId: this.inboxId,
+      threadId: this.threadId,
+      turnId: this.turnId,
+      model,
+      node: this.node,
+      source: this.source,
+      promptTokens,
+      completionTokens,
+      cachedReadTokens,
+      cacheCreationTokens,
+    };
+    noteTurnUsage(row, durationMs);
     try {
-      await this.persist({
-        tenantId: this.tenantId,
-        agentId: this.agentId,
-        conversationId: this.conversationId,
-        inboxId: this.inboxId,
-        threadId: this.threadId,
-        model,
-        node: this.node,
-        source: this.source,
-        promptTokens,
-        completionTokens,
-        cachedReadTokens,
-        cacheCreationTokens,
-      });
+      await this.persist(row);
     } catch (err) {
       logger.warn({ err, threadId: this.threadId }, "llm usage capture failed");
     }

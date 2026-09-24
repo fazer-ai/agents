@@ -468,6 +468,7 @@ export async function extractInboundFile(
   }
 
   let extracted: VisionResult;
+  const readStartedAt = performance.now();
   try {
     extracted = await extractWithRetry({
       provider,
@@ -512,6 +513,7 @@ export async function extractInboundFile(
       model: cfg.model || provider.defaultModel,
       node: "vision",
       ...extracted.usage,
+      durationMs: performance.now() - readStartedAt,
     });
   }
   if (!text) return null;
@@ -672,6 +674,7 @@ export async function extractPlaygroundFile(
   });
 
   try {
+    const startedAt = performance.now();
     const extracted = await extractWithRetry({
       provider,
       providerName: cfg.provider,
@@ -696,6 +699,7 @@ export async function extractPlaygroundFile(
         model: cfg.model || provider.defaultModel,
         node: "vision",
         ...extracted.usage,
+        durationMs: performance.now() - startedAt,
       });
     }
     return { kind, text: extracted.text.trim() };

@@ -10,6 +10,43 @@ type PlaygroundData = NonNullable<
   >["data"]
 >;
 
+// What a turn spent, as the provider reported it (issue #839): the same numbers as its ledger rows.
+export type PlaygroundUsage = PlaygroundData["usage"];
+
+// How long a turn took and how much of that was model time. Live turns only: the ledger keeps no
+// timing, so a reopened turn and the session total carry none.
+export type PlaygroundTiming = PlaygroundData["timing"];
+
+export function addTiming(
+  a: PlaygroundTiming,
+  b: PlaygroundTiming | undefined,
+): PlaygroundTiming {
+  if (!b) return a;
+  return { turnMs: a.turnMs + b.turnMs, modelMs: a.modelMs + b.modelMs };
+}
+
+export function addUsage(
+  a: PlaygroundUsage,
+  b: PlaygroundUsage | undefined,
+): PlaygroundUsage {
+  if (!b) return a;
+  return {
+    calls: a.calls + b.calls,
+    promptTokens: a.promptTokens + b.promptTokens,
+    cachedReadTokens: a.cachedReadTokens + b.cachedReadTokens,
+    cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
+    completionTokens: a.completionTokens + b.completionTokens,
+  };
+}
+
+export const NO_USAGE: PlaygroundUsage = {
+  calls: 0,
+  promptTokens: 0,
+  cachedReadTokens: 0,
+  cacheCreationTokens: 0,
+  completionTokens: 0,
+};
+
 export type PlaygroundTurn =
   | {
       role: "user";
@@ -32,7 +69,14 @@ export type PlaygroundTurn =
       pending?: boolean;
     }
   | { role: "error"; text: string }
-  | { role: "note"; text: string; trace?: PlaygroundData["trace"] }
+  | {
+      role: "note";
+      text: string;
+      trace?: PlaygroundData["trace"];
+      // A turn the guardrail emptied, or a follow-up the agent declined, still spent what it spent.
+      usage?: PlaygroundUsage;
+      timing?: PlaygroundTiming;
+    }
   | {
       role: "assistant";
       text: string;
@@ -41,6 +85,9 @@ export type PlaygroundTurn =
       audioUrl?: string;
       trace: PlaygroundData["trace"];
       sources: PlaygroundData["sources"];
+      // Absent on a reopened session's old turns: a ledger row names its thread, not its turn.
+      usage?: PlaygroundUsage;
+      timing?: PlaygroundTiming;
     };
 
 // Session-history metadata, derived from the Eden treaty (list endpoint).
@@ -160,8 +207,14 @@ export function agentTurn(
     audioUrl?: string;
     trace: PlaygroundData["trace"];
     sources: PlaygroundData["sources"];
+    usage?: PlaygroundUsage;
+    timing?: PlaygroundTiming;
   },
 ): PlaygroundTurn {
+  const usage = {
+    ...(r.usage ? { usage: r.usage } : {}),
+    ...(r.timing ? { timing: r.timing } : {}),
+  };
   if (r.suppressed) {
     // A hand-over with no message to the customer empties the reply too, and it is a different
     // outcome from a suppression: the case would reach a person (issue #704). Read off the verdict,
@@ -171,6 +224,7 @@ export function agentTurn(
     );
     return {
       role: "note",
+      ...usage,
       text: handedOff
         ? t(
             "playground.handedOffNote",
@@ -186,6 +240,7 @@ export function agentTurn(
   if (r.silent) {
     return {
       role: "note",
+      ...usage,
       text: t(
         "playground.followup.silent",
         "Follow-up: the agent chose not to send anything.",
@@ -199,6 +254,7 @@ export function agentTurn(
     ...(r.audioUrl ? { audioUrl: r.audioUrl } : {}),
     trace: r.trace,
     sources: r.sources,
+    ...usage,
   };
 }
 
@@ -218,6 +274,10 @@ export function usePlaygroundChat(
   );
   getDraftRef.current = opts.getDraft;
   const [turns, setTurns] = useState<PlaygroundTurn[]>([]);
+  // The open session's total (issue #839). Always the ledger's, re-read after every turn rather than
+  // grown from the replies: a turn can fail after a call it was billed for, and the ledger is the
+  // one place that has it. The per-turn line comes from the reply.
+  const [sessionUsage, setSessionUsage] = useState<PlaygroundUsage>(NO_USAGE);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [followingUp, setFollowingUp] = useState(false);
@@ -345,6 +405,38 @@ export function usePlaygroundChat(
   );
 
   const threadId = useRef<string | undefined>(undefined);
+  // Whether the open thread already has a saved session row. Not the same as having a thread id:
+  // a file's read names the thread before any turn ran, and a turn that then fails leaves a thread
+  // with no session behind it, whose first successful turn must still refresh the history list.
+  const sessionSaved = useRef(false);
+  // Re-reads the session's total from the ledger. Awaited inside each turn, before the chat stops
+  // being busy, so the next turn cannot start between the call and the number it would change.
+  const refreshSessionUsage = useCallback(async () => {
+    const tid = threadId.current;
+    if (!tid) return;
+    try {
+      const { data } = await api.api.v1
+        .agents({ id: agentId })
+        .playground.sessions({ threadId: tid })
+        .usage.get();
+      if (data?.usage && threadId.current === tid) setSessionUsage(data.usage);
+    } catch {
+      // The total stays as it was; the next turn re-reads it.
+    }
+  }, [agentId]);
+
+  // A new session gets its thread BEFORE its first call, so a first turn that fails after being
+  // billed leaves that call on the thread the session keeps, not on one only the server knew.
+  const ensureThread = useCallback(async () => {
+    if (threadId.current) return;
+    const { data } = await api.api.v1
+      .agents({ id: agentId })
+      .playground.threads.post();
+    if (data) threadId.current = data.threadId;
+    // No thread, no turn: a call billed on a thread only the server knew is spend the session would
+    // never show. The caller's catch turns this into the error bubble.
+    if (!threadId.current) throw new Error("playground thread not allocated");
+  }, [agentId]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
@@ -386,6 +478,8 @@ export function usePlaygroundChat(
           .get();
         if (!data) return;
         threadId.current = tid;
+        sessionSaved.current = true;
+        setSessionUsage(data.usage);
         setTurns(
           data.turns.map((rt): PlaygroundTurn => {
             if (rt.role === "user") {
@@ -409,6 +503,9 @@ export function usePlaygroundChat(
               suppressed: rt.suppressed,
               followup: rt.followup,
               ...(ttsM ? { audioUrl: mediaUrl(ttsM.id) } : {}),
+              // The ledger's rows for this turn (issue #839): the same line the turn had live, less
+              // its timing, which the ledger does not keep.
+              ...(rt.usage ? { usage: rt.usage } : {}),
               trace: rt.trace,
               sources: rt.sources,
             });
@@ -423,7 +520,9 @@ export function usePlaygroundChat(
 
   const newSession = useCallback(() => {
     threadId.current = undefined;
+    sessionSaved.current = false;
     setTurns([]);
+    setSessionUsage(NO_USAGE);
   }, []);
 
   const deleteSession = useCallback(
@@ -480,11 +579,12 @@ export function usePlaygroundChat(
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || busy || notReady) return;
-    const wasNew = !threadId.current;
+    const wasNew = !sessionSaved.current;
     setInput("");
     setTurns((prev) => [...prev, { role: "user", text }]);
     setSending(true);
     try {
+      await ensureThread();
       const { data, error: err } = await api.api.v1
         .agents({ id: agentId })
         .playground.post({
@@ -499,6 +599,7 @@ export function usePlaygroundChat(
         return;
       }
       threadId.current = data.threadId;
+      sessionSaved.current = true;
       setTurns((prev) => [
         ...prev,
         agentTurn(t, {
@@ -507,6 +608,8 @@ export function usePlaygroundChat(
           ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
           trace: data.trace,
           sources: data.sources,
+          usage: data.usage,
+          timing: data.timing,
         }),
       ]);
       // A turn on a brand-new thread created a session row — surface it in the sidebar.
@@ -514,6 +617,7 @@ export function usePlaygroundChat(
     } catch {
       pushError();
     } finally {
+      await refreshSessionUsage();
       setSending(false);
     }
   }, [
@@ -528,6 +632,8 @@ export function usePlaygroundChat(
     pushError,
     refreshSessions,
     t,
+    refreshSessionUsage,
+    ensureThread,
   ]);
 
   const simulateFollowup = useCallback(async () => {
@@ -546,6 +652,7 @@ export function usePlaygroundChat(
         return;
       }
       threadId.current = data.threadId;
+      sessionSaved.current = true;
       setTurns((prev) => [
         ...prev,
         agentTurn(t, {
@@ -555,11 +662,14 @@ export function usePlaygroundChat(
           followup: true,
           trace: data.trace,
           sources: data.sources,
+          usage: data.usage,
+          timing: data.timing,
         }),
       ]);
     } catch {
       pushError();
     } finally {
+      await refreshSessionUsage();
       setFollowingUp(false);
     }
   }, [
@@ -571,6 +681,7 @@ export function usePlaygroundChat(
     notReady,
     pushError,
     t,
+    refreshSessionUsage,
   ]);
 
   // Drops the pending flag on the trailing optimistic user bubble (kept, still playable) — used when
@@ -610,7 +721,7 @@ export function usePlaygroundChat(
   const sendFile = useCallback(
     async (file: File) => {
       if (notReady || busy || recording) return;
-      const wasNew = !threadId.current;
+      const wasNew = !sessionSaved.current;
       const fileUrl = trackUrl(URL.createObjectURL(file));
       setTurns((prev) => [
         ...prev,
@@ -629,11 +740,19 @@ export function usePlaygroundChat(
       // Step 1: extract only, and surface the extracted content right away.
       let kind: "image" | "document" | "unsupported";
       let extracted: string;
+      let extractUsage: PlaygroundUsage | undefined;
+      let extractTiming: PlaygroundTiming | undefined;
+      let readTurnId: string | undefined;
       setExtracting(true);
       try {
+        await ensureThread();
         const { data, error: err } = await api.api.v1
           .agents({ id: agentId })
-          .playground.file.extract.post({ file, draft: draftStr });
+          .playground.file.extract.post({
+            file,
+            threadId: threadId.current,
+            draft: draftStr,
+          });
         if (err || !data) {
           clearPendingBubble();
           pushError(err);
@@ -641,12 +760,20 @@ export function usePlaygroundChat(
         }
         kind = data.kind;
         extracted = data.extracted;
+        // The read is billed to the session it is sent into, so the turn below runs on the thread
+        // the extraction named, and its line counts the read with the reply (issue #839).
+        threadId.current = data.threadId;
+        extractUsage = data.usage;
+        extractTiming = data.timing;
+        readTurnId = data.turnId;
         applyExtraction(kind, extracted);
       } catch {
         clearPendingBubble();
         pushError();
         return;
       } finally {
+        // A read billed and then lost still belongs to the session's total.
+        await refreshSessionUsage();
         setExtracting(false);
       }
 
@@ -665,12 +792,16 @@ export function usePlaygroundChat(
             // JSON-encoded: a `{`/`[`-leading extraction would otherwise be auto-parsed by the
             // multipart layer (see the controller's decodeMultipartText).
             extracted: JSON.stringify(extracted),
+            // The read's id, so the ledger keeps the read and the reply as one turn and a reopened
+            // session shows them on one line, as here.
+            turnId: readTurnId,
           });
         if (err || !data) {
           pushError(err);
           return;
         }
         threadId.current = data.threadId;
+        sessionSaved.current = true;
         setTurns((prev) => [
           ...prev,
           agentTurn(t, {
@@ -679,12 +810,15 @@ export function usePlaygroundChat(
             ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
             trace: data.trace,
             sources: data.sources,
+            usage: addUsage(data.usage, extractUsage),
+            timing: addTiming(data.timing, extractTiming),
           }),
         ]);
         if (wasNew) void refreshSessions();
       } catch {
         pushError();
       } finally {
+        await refreshSessionUsage();
         setSending(false);
       }
     },
@@ -703,6 +837,8 @@ export function usePlaygroundChat(
       refreshSessions,
       t,
       trackUrl,
+      refreshSessionUsage,
+      ensureThread,
     ],
   );
 
@@ -746,7 +882,7 @@ export function usePlaygroundChat(
   const sendRecording = useCallback(
     async (blob: Blob) => {
       if (blob.size === 0) return;
-      const wasNew = !threadId.current;
+      const wasNew = !sessionSaved.current;
       const audioUrl = trackUrl(URL.createObjectURL(blob));
       // Optimistic bubble: the voice note appears immediately (playable) while transcription runs.
       setTurns((prev) => [
@@ -785,6 +921,7 @@ export function usePlaygroundChat(
       // Step 2: run the turn reusing the transcription (no second STT) → the agent reply.
       setSending(true);
       try {
+        await ensureThread();
         const { data, error: err } = await api.api.v1
           .agents({ id: agentId })
           .playground.audio.post({
@@ -802,6 +939,7 @@ export function usePlaygroundChat(
           return;
         }
         threadId.current = data.threadId;
+        sessionSaved.current = true;
         setTurns((prev) => [
           ...prev,
           agentTurn(t, {
@@ -810,12 +948,15 @@ export function usePlaygroundChat(
             ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
             trace: data.trace,
             sources: data.sources,
+            usage: data.usage,
+            timing: data.timing,
           }),
         ]);
         if (wasNew) void refreshSessions();
       } catch {
         pushError();
       } finally {
+        await refreshSessionUsage();
         setSending(false);
       }
     },
@@ -831,6 +972,8 @@ export function usePlaygroundChat(
       refreshSessions,
       t,
       trackUrl,
+      refreshSessionUsage,
+      ensureThread,
     ],
   );
 
@@ -914,6 +1057,7 @@ export function usePlaygroundChat(
   return {
     // state
     turns,
+    sessionUsage,
     input,
     setInput,
     sending,

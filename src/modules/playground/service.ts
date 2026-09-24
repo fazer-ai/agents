@@ -77,7 +77,11 @@ import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { planSpokenReply } from "@/modules/tts/spoken";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
-import { type PlaygroundMediaKind, savePlaygroundMedia } from "./media";
+import {
+  listThreadMedia,
+  type PlaygroundMediaKind,
+  savePlaygroundMedia,
+} from "./media";
 import { rebuildPlaygroundTurns, upsertPlaygroundSession } from "./sessions";
 import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
 import { savePlaygroundTurnNote } from "./turn-notes";
@@ -169,6 +173,9 @@ export interface PlaygroundTurnParams {
   guardrails?: boolean;
   // Manual override: force a TTS reply regardless of the agent's mode (the playground toggle).
   forceAudio?: boolean;
+  // The turn's id, when a step before it already billed calls to it (a file turn's read). Minted
+  // here otherwise. Never taken from a request as is: see `claimReadTurnId`.
+  turnId?: string;
   base?: PrismaClient;
   deps?: PlaygroundDeps;
 }
@@ -611,8 +618,9 @@ async function runPlaygroundTurnOnce(
       ? params.threadId
       : newPlaygroundThreadId(tenantId, agentId);
 
-  // One id correlates the ExecutionLog turn, the tool-call logs, and the Langfuse trace (item 10).
-  const turnId = crypto.randomUUID();
+  // One id correlates the ExecutionLog turn, the tool-call logs, the Langfuse trace (item 10) and
+  // the ledger rows (issue #839).
+  const turnId = params.turnId ?? crypto.randomUUID();
   // Execution-flow telemetry, tagged source=playground so it never pages an alert channel and stays
   // out of the dashboard's real view (the Logs page can still filter to it). Built before the graph
   // because the graph's retry callback writes to it.
@@ -726,7 +734,11 @@ async function runPlaygroundTurnOnce(
   // Minted for EVERY turn, not only the ones carrying media: it is also the id a transcript note
   // points at, and the reload places the note next to the message it judged. Left to the reducer,
   // the id exists but nothing here knows it, and the note ends up with nowhere to go.
-  const humanId = crypto.randomUUID();
+  //
+  // It IS the turn id (issue #839): the ledger rows of this turn carry that id, and the human message
+  // is the one thing every turn leaves in the thread, blocked or not, so a reopened session finds
+  // each turn's usage through it.
+  const humanId = turnId;
   const saveInboundMedia = async (): Promise<string | undefined> =>
     params.userMedia
       ? ((await savePlaygroundMedia(base, {
@@ -1226,8 +1238,8 @@ async function runPlaygroundFollowupOnce(
       // system message makes strict providers (Google) reject the call. See graph.ts agentNode.
       {
         messages: [
-          new HumanMessage(
-            renderNudge(
+          new HumanMessage({
+            content: renderNudge(
               nudge,
               true,
               // Same question production answers, asked the same way and of the same thing: THIS
@@ -1236,7 +1248,10 @@ async function runPlaygroundFollowupOnce(
               // stays silent.
               followupSilenceChannel(loadedConfig, tools),
             ),
-          ),
+            // The turn's id, as on a user turn: a reopened session finds the follow-up's usage
+            // through it (issue #839).
+            id: turnId,
+          }),
         ],
       },
       {
@@ -1552,6 +1567,9 @@ export async function runPlaygroundExtract(
   kind: PlaygroundExtractKind;
   extracted: string;
   threadId: string;
+  // The id the read was billed under. The file turn that follows is handed it back, so the read and
+  // the reply are one turn in the ledger as they are on screen (issue #839).
+  turnId: string;
   usage: TurnUsage;
   timing: TurnTiming;
 }> {
@@ -1563,9 +1581,10 @@ export async function runPlaygroundExtract(
   );
   // Log the read as a `vision` stage on the Logs page (source=playground). This is step 1 of the
   // two-step UI flow, so the extraction runs HERE (step 2 reuses the result and skips it).
+  const turnId = crypto.randomUUID();
   const flow: FlowContext = {
     tenantId: params.ctx.tenantId as bigint,
-    turnId: crypto.randomUUID(),
+    turnId,
     source: "playground",
     agentId: params.agentId,
     threadId,
@@ -1587,7 +1606,7 @@ export async function runPlaygroundExtract(
       flow,
     }),
   );
-  return { kind, extracted: text, threadId, usage, timing };
+  return { kind, extracted: text, threadId, turnId, usage, timing };
 }
 
 export interface PlaygroundFileParams {
@@ -1603,6 +1622,9 @@ export interface PlaygroundFileParams {
   // present, vision is skipped here — no redundant round trip, no doubled latency before the reply.
   kind?: PlaygroundExtractKind;
   extracted?: string;
+  // The id the extract-only step billed its read under, sent back by the console. Checked before it
+  // is used, since it arrives from the request: see `claimReadTurnId`.
+  turnId?: string;
   base?: PrismaClient;
   deps?: PlaygroundDeps;
   visionDeps?: { fetchImpl?: typeof fetch };
@@ -1637,6 +1659,48 @@ async function resolveVisionLabel(
   return { provider: cfg?.provider ?? "vision", model: cfg?.model || null };
 }
 
+// The read's id, when the console hands one back with the file turn, only if it is still a read
+// waiting for its turn (issue #839). The id becomes the turn's human message id, and a message id
+// the thread already holds would REPLACE that message (the messages reducer merges by id), so an id
+// replayed from an earlier turn is refused, not trusted. What proves it is a pending read: ledger
+// rows on this thread under it, all of them the read's own, and nothing else in the thread under it
+// yet (no message, no saved media). Anything else gets a fresh id; the read then stays in the
+// session total without a line of its own, which is what a malformed request deserves.
+async function claimReadTurnId(
+  base: PrismaClient,
+  ctx: TenantContext,
+  threadId: string,
+  candidate: string | undefined,
+  checkpointer?: BaseCheckpointSaver,
+): Promise<string | null> {
+  if (!candidate || !UUID_RE.test(candidate)) return null;
+  const tenantId = ctx.tenantId as bigint;
+  const rows = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.findMany({
+      where: { tenantId, threadId, turnId: candidate },
+      select: { node: true },
+    }),
+  );
+  if (rows.length === 0 || rows.some((r) => r.node !== "vision")) return null;
+  const media = await listThreadMedia(ctx, threadId, base);
+  if (media.some((m) => m.messageId === candidate)) return null;
+  const tuple = await (checkpointer ?? (await getCheckpointer())).getTuple({
+    configurable: { thread_id: threadId },
+  });
+  const messages = (
+    tuple?.checkpoint?.channel_values as { messages?: unknown } | undefined
+  )?.messages;
+  if (
+    Array.isArray(messages) &&
+    messages.some((m) => (m as { id?: unknown }).id === candidate)
+  )
+    return null;
+  return candidate;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Image/document round trip in the playground: extract the uploaded file with the agent's vision
 // provider (unless an extraction is supplied), render it as the SAME marker the production inbound
 // path feeds the agent (<imagem> / <documento> / "could not extract"), then run a normal turn.
@@ -1663,6 +1727,14 @@ async function runPlaygroundFileTurnOnce(
   const tenantId = ctx.tenantId as bigint;
   const base = params.base ?? basePrisma;
   const bytes = await readFileUpload(file);
+  const turnId =
+    (await claimReadTurnId(
+      base,
+      ctx,
+      params.threadId,
+      params.turnId,
+      params.deps?.checkpointer,
+    )) ?? crypto.randomUUID();
 
   // Reuse the extract-only step's result when supplied (the UI shows it early); otherwise extract
   // here (logging a `vision` stage). Either way the live draft's vision config overrides the saved one.
@@ -1679,7 +1751,7 @@ async function runPlaygroundFileTurnOnce(
           settings: params.overrides?.settings,
           flow: {
             tenantId,
-            turnId: crypto.randomUUID(),
+            turnId,
             source: "playground",
             agentId,
             threadId: params.threadId,
@@ -1713,6 +1785,7 @@ async function runPlaygroundFileTurnOnce(
     message,
     threadId: params.threadId,
     titleHint: file.name || text || "arquivo",
+    turnId,
     overrides: params.overrides,
     guardrails: params.guardrails,
     // Persist the uploaded file for replay (best-effort).

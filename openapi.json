@@ -10920,6 +10920,10 @@
                   "extracted": {
                     "description": "JSON-encoded precomputed extracted content from step 1; when present, vision extraction is skipped here.",
                     "type": "string"
+                  },
+                  "turnId": {
+                    "description": "The turnId step 1 returned, so the read and this turn are one turn in the usage ledger. Ignored unless it names a read on this thread that no turn has used yet.",
+                    "type": "string"
                   }
                 }
               }
@@ -11011,6 +11015,10 @@
                   "extracted": {
                     "description": "JSON-encoded precomputed extracted content from step 1; when present, vision extraction is skipped here.",
                     "type": "string"
+                  },
+                  "turnId": {
+                    "description": "The turnId step 1 returned, so the read and this turn are one turn in the usage ledger. Ignored unless it names a read on this thread that no turn has used yet.",
+                    "type": "string"
                   }
                 }
               }
@@ -11101,6 +11109,10 @@
                   },
                   "extracted": {
                     "description": "JSON-encoded precomputed extracted content from step 1; when present, vision extraction is skipped here.",
+                    "type": "string"
+                  },
+                  "turnId": {
+                    "description": "The turnId step 1 returned, so the read and this turn are one turn in the usage ledger. Ignored unless it names a read on this thread that no turn has used yet.",
                     "type": "string"
                   }
                 }

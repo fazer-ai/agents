@@ -42,6 +42,9 @@ export interface UsageRow {
   // The DB Inbox.id this usage is attributed to (null in the playground / when unresolved).
   inboxId: bigint | null;
   threadId: string | null;
+  // The turn this call belongs to, when its caller knows one: the id the ExecutionLog and the
+  // Langfuse trace of that turn already carry (issue #839).
+  turnId: string | null;
   model: string;
   node: string | null;
   // "inbox" (real customer traffic) | "playground" (operator test turns).
@@ -202,6 +205,7 @@ export function defaultUsagePersist(
           conversationId: row.conversationId ?? undefined,
           inboxId: row.inboxId ?? undefined,
           threadId: row.threadId ?? undefined,
+          turnId: row.turnId ?? undefined,
           model: row.model,
           node: row.node ?? undefined,
           source: row.source,
@@ -353,6 +357,7 @@ export function usageAttribution(flow: FlowContext): {
   conversationId: bigint | null;
   inboxId: bigint | null;
   threadId: string | null;
+  turnId: string | null;
   source: UsageSource;
   base?: PrismaClient;
 } {
@@ -362,6 +367,7 @@ export function usageAttribution(flow: FlowContext): {
     conversationId: flow.conversationId ?? null,
     inboxId: flow.inboxId ?? null,
     threadId: flow.threadId ?? null,
+    turnId: flow.turnId ?? null,
     // FlowSource and UsageSource are the same two values ("inbox" | "playground") for the same
     // reason: a row and a log line about one call must not disagree about which traffic it was.
     source: flow.source,
@@ -446,6 +452,7 @@ export interface UsageCaptureParams {
   conversationId?: bigint | null;
   inboxId?: bigint | null;
   threadId?: string | null;
+  turnId?: string | null;
   model: string;
   node?: string | null;
   source?: UsageSource;
@@ -463,6 +470,7 @@ export class UsageCapture extends BaseCallbackHandler {
   private readonly conversationId: bigint | null;
   private readonly inboxId: bigint | null;
   private readonly threadId: string | null;
+  private readonly turnId: string | null;
   private readonly model: string;
   private readonly node: string | null;
   private readonly source: UsageSource;
@@ -475,6 +483,7 @@ export class UsageCapture extends BaseCallbackHandler {
     this.conversationId = params.conversationId ?? null;
     this.inboxId = params.inboxId ?? null;
     this.threadId = params.threadId ?? null;
+    this.turnId = params.turnId ?? null;
     this.model = params.model;
     this.node = params.node ?? null;
     this.source = params.source ?? "inbox";
@@ -533,6 +542,7 @@ export class UsageCapture extends BaseCallbackHandler {
       conversationId: this.conversationId,
       inboxId: this.inboxId,
       threadId: this.threadId,
+      turnId: this.turnId,
       model,
       node: this.node,
       source: this.source,

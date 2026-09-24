@@ -1675,6 +1675,7 @@ export function buildCallbacks(
     conversationId: resolveUsageConversation(cfg, args),
     inboxId: cfg.inboxDbId,
     threadId: args.threadId,
+    turnId: args.turnId ?? null,
     model: args.model ?? cfg.mc.model,
     node: args.node ?? "agent",
     source: args.source,

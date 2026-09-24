@@ -12,10 +12,14 @@ import type { TenantContext } from "@/lib/tenancy";
 import {
   runPlaygroundExtract,
   runPlaygroundFileTurn,
+  runPlaygroundFollowup,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
 import {
+  attachTurnUsage,
+  getPlaygroundSessionTurns,
   getPlaygroundSessionUsage,
+  type RebuiltTurn,
   startPlaygroundThread,
 } from "@/modules/playground/sessions";
 import { isValidPlaygroundThread } from "@/modules/playground/thread";
@@ -382,6 +386,128 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     ]);
   });
 
+  // Reload (the operator's report on PR #840): the lines were in the browser only, so a refresh kept
+  // the total and dropped every turn's line. Through the REAL checkpointer, since the reopened
+  // transcript is read from it and the per-turn usage joins on the ids it stored.
+  test("a reopened session gives each reply the line its turn had live, a follow-up's included", async () => {
+    const first = await runPlaygroundTurn({
+      ctx: ctx(),
+      agentId,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel },
+    });
+    const second = await runPlaygroundTurn({
+      ctx: ctx(),
+      agentId,
+      message: "e agora?",
+      threadId: first.threadId,
+      guardrails: false,
+      base: appDb,
+      deps: { makeModel },
+    });
+    const nudge = await runPlaygroundFollowup({
+      ctx: ctx(),
+      agentId,
+      threadId: first.threadId,
+      guardrails: false,
+      base: appDb,
+      deps: { makeModel },
+    });
+    // (0) three turns that spent differently, so a line landing on the wrong reply shows
+    expect(first.usage.calls).toBe(2);
+    expect(second.usage.calls).toBe(1);
+    expect(nudge.silent).toBe(false);
+
+    const turns = await getPlaygroundSessionTurns(
+      ctx(),
+      agentId,
+      first.threadId,
+      appDb,
+    );
+    const replies = turns.filter((t) => t.role === "assistant");
+    expect(replies.map((t) => t.usage)).toEqual([
+      first.usage,
+      second.usage,
+      nudge.usage,
+    ]);
+    // The line is the reply's, never the user's bubble.
+    expect(turns.filter((t) => t.role === "user").map((t) => t.usage)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
+  test("a reopened file turn shows its read and its reply on one line, and a replayed read id is refused", async () => {
+    const vision = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "Uma nota fiscal." } }],
+          usage: { prompt_tokens: 400, completion_tokens: 30 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const PNG = Uint8Array.from(
+      atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      ),
+      (c) => c.charCodeAt(0),
+    );
+    const file = new File([PNG], "nota.png", { type: "image/png" });
+    const read = await runPlaygroundExtract({
+      ctx: ctx(),
+      agentId: visionAgentId,
+      file,
+      base: appDb,
+      visionDeps: { fetchImpl: vision },
+    });
+    const turn = await runPlaygroundFileTurn({
+      ctx: ctx(),
+      agentId: visionAgentId,
+      file,
+      threadId: read.threadId,
+      kind: read.kind,
+      extracted: read.extracted,
+      turnId: read.turnId,
+      base: appDb,
+      deps: { makeModel },
+    });
+    // The same id a second time, as a replayed request would send it. Taken as the turn's id, it
+    // would name the first turn's human message and the reducer would overwrite that message.
+    const replay = await runPlaygroundFileTurn({
+      ctx: ctx(),
+      agentId: visionAgentId,
+      file,
+      threadId: read.threadId,
+      kind: read.kind,
+      extracted: read.extracted,
+      turnId: read.turnId,
+      base: appDb,
+      deps: { makeModel },
+    });
+
+    const turns = await getPlaygroundSessionTurns(
+      ctx(),
+      visionAgentId,
+      read.threadId,
+      appDb,
+    );
+    // Both user turns survived: the replay did not overwrite the first.
+    expect(turns.filter((t) => t.role === "user")).toHaveLength(2);
+    const [one, two] = turns.filter((t) => t.role === "assistant");
+    expect(one?.usage).toEqual({
+      calls: read.usage.calls + turn.usage.calls,
+      promptTokens: read.usage.promptTokens + turn.usage.promptTokens,
+      cachedReadTokens:
+        read.usage.cachedReadTokens + turn.usage.cachedReadTokens,
+      cacheCreationTokens:
+        read.usage.cacheCreationTokens + turn.usage.cacheCreationTokens,
+      completionTokens:
+        read.usage.completionTokens + turn.usage.completionTokens,
+    });
+    expect(two?.usage).toEqual(replay.usage);
+  });
+
   test("a new session's thread is handed out for the caller's own agent only", async () => {
     const tid = await startPlaygroundThread(ctx(), agentId, appDb);
     expect(isValidPlaygroundThread(tid, tenantId, agentId)).toBe(true);
@@ -414,6 +540,41 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
         appDb,
       ),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("attachTurnUsage", () => {
+  const U = { ...emptyTurnUsage(), calls: 1, promptTokens: 10 };
+  const turn = (role: "user" | "assistant", turnId?: string): RebuiltTurn => ({
+    role,
+    text: role,
+    ...(turnId ? { turnId } : {}),
+    trace: [],
+    sources: [],
+  });
+
+  test("the line goes to the last reply of its turn, and a turn with no reply keeps none", () => {
+    const out = attachTurnUsage(
+      [
+        turn("user", "a"),
+        turn("assistant", "a"),
+        turn("assistant", "a"),
+        turn("user", "b"),
+        turn("assistant"),
+      ],
+      new Map([
+        ["a", U],
+        ["b", { ...U, calls: 2 }],
+        ["lost", { ...U, calls: 3 }],
+      ]),
+    );
+    expect(out.map((t) => t.usage)).toEqual([
+      undefined,
+      undefined,
+      U,
+      undefined,
+      undefined,
+    ]);
   });
 });
 

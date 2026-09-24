@@ -1089,6 +1089,7 @@ export const agentsController = new Elysia({
         guardrails?: string;
         kind?: string;
         extracted?: string;
+        turnId?: string;
       };
       const overrides = parseDraft(b.draft);
       return {
@@ -1103,6 +1104,7 @@ export const agentsController = new Elysia({
           guardrails: decodeMultipartFlag(b.guardrails),
           kind: decodeExtractKind(b.kind),
           extracted: decodeMultipartText(b.extracted),
+          turnId: b.turnId,
         })),
       };
     },
@@ -1153,6 +1155,12 @@ export const agentsController = new Elysia({
           t.String({
             description:
               "JSON-encoded precomputed extracted content from step 1; when present, vision extraction is skipped here.",
+          }),
+        ),
+        turnId: t.Optional(
+          t.String({
+            description:
+              "The turnId step 1 returned, so the read and this turn are one turn in the usage ledger. Ignored unless it names a read on this thread that no turn has used yet.",
           }),
         ),
       }),

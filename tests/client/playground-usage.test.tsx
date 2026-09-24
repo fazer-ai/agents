@@ -172,6 +172,7 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     completionTokens: 10,
   };
   const THREAD = "1:playground:7:abc";
+  const READ_TURN = "0b6f1c3e-5a4e-4d7a-9c1e-2f3a4b5c6d7e";
 
   function server(opts: {
     failTurns: number;
@@ -185,6 +186,7 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     let failuresLeft = opts.failTurns;
     const sessionLists: number[] = [];
     const turnPosts: string[] = [];
+    const fileTurnIds: (string | null)[] = [];
     globalThis.fetch = (async (
       input: RequestInfo | URL,
       init?: RequestInit,
@@ -229,14 +231,35 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
           kind: "image",
           extracted: "nota",
           threadId: THREAD,
+          turnId: READ_TURN,
           usage: READ,
           timing: { turnMs: 5, modelMs: 4 },
         });
       }
       if (url.includes("/playground/file")) {
         turnPosts.push(url);
+        const body = req
+          ? await req.formData()
+          : (init?.body as FormData | undefined);
+        fileTurnIds.push((body?.get("turnId") as string | null) ?? null);
         return turn();
       }
+      if (url.includes("/playground/sessions/"))
+        return json({
+          threadId: THREAD,
+          usage: ledger.get(THREAD) ?? NO_USAGE,
+          turns: [
+            { role: "user", text: "oi", turnId: "t1", trace: [], sources: [] },
+            {
+              role: "assistant",
+              text: "ok",
+              turnId: "t1",
+              usage: REPLY,
+              trace: [],
+              sources: [],
+            },
+          ],
+        });
       if (url.endsWith("/playground") && method === "POST") {
         turnPosts.push(url);
         return turn();
@@ -248,7 +271,7 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
       if (url.includes("/playground/tools")) return json({ tools: [] });
       return json({});
     }) as typeof fetch;
-    return { sessionLists, turnPosts };
+    return { sessionLists, turnPosts, fileTurnIds };
   }
 
   async function mount() {
@@ -327,6 +350,29 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     await sendText(result, "oi");
     expect(srv.turnPosts).toEqual([]);
     expect(result.current.turns.at(-1)?.role).toBe("error");
+  });
+
+  test("the file turn hands the read's id back, so the ledger keeps them as one turn", async () => {
+    const { act } = await import("@testing-library/react");
+    const srv = server({ failTurns: 0 });
+    const { result } = await mount();
+    await act(async () => {
+      await result.current.sendFile(
+        new File(["x"], "nota.png", { type: "image/png" }),
+      );
+    });
+    expect(srv.fileTurnIds).toEqual([READ_TURN]);
+  });
+
+  test("a reopened session shows each reply's line from the server", async () => {
+    const { act } = await import("@testing-library/react");
+    server({ failTurns: 0 });
+    const { result } = await mount();
+    await act(async () => {
+      await result.current.loadSession(THREAD);
+    });
+    const reply = result.current.turns.at(-1);
+    expect(reply?.role === "assistant" && reply.usage).toEqual(REPLY);
   });
 
   test("a read billed and then lost is still in the total", async () => {

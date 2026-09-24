@@ -162,6 +162,14 @@ export interface RebuiltTurn {
   // client renders a suppression note instead of an empty bubble, because "nothing was sent" and
   // "the agent chose silence" are different statements.
   suppressed?: boolean;
+  // The id of the human message that opened this turn, which the service mints as the turn's own id
+  // (issue #839): the ledger rows of the turn carry the same id, and that is how a reopened session
+  // gives each reply back the usage line it had live. A follow-up opens on its nudge, so it has one
+  // too; a legacy SystemMessage follow-up does not.
+  turnId?: string;
+  // What this turn spent, from the ledger rows carrying its turnId. Absent for a turn from before
+  // the column, and for one whose calls the ledger has no id for.
+  usage?: TurnUsage;
   trace: TraceEntry[];
   sources: TraceSource[];
 }
@@ -202,6 +210,8 @@ export function rebuildPlaygroundTurns(
     });
     const sources = collectTraceSources(trace);
     const human = ty === "human" ? (messages[i] as BaseMessage) : null;
+    const opening = human ? messageId(human) : undefined;
+    const turn = opening ? { turnId: opening } : {};
     const raw = human ? contentToText(human.content) : "";
     // A slice is a FOLLOW-UP when its opening human turn carries the nudge fence, or when it is a
     // system message at all (the legacy shape below). Decided before the reply is read, because it
@@ -219,6 +229,7 @@ export function rebuildPlaygroundTurns(
             text: reply.text,
             followup: true,
             ...(reply.id ? { messageId: reply.id } : {}),
+            ...turn,
             trace,
             sources,
           });
@@ -236,6 +247,7 @@ export function rebuildPlaygroundTurns(
         ...(file.extractKind ? { extractKind: file.extractKind } : {}),
         ...(file.extracted ? { extracted: file.extracted } : {}),
         ...(messageId(human) ? { messageId: messageId(human) } : {}),
+        ...turn,
         trace: [],
         sources: [],
       });
@@ -244,6 +256,7 @@ export function rebuildPlaygroundTurns(
           role: "assistant",
           text: reply.text,
           ...(reply.id ? { messageId: reply.id } : {}),
+          ...turn,
           trace,
           sources,
         });
@@ -322,6 +335,7 @@ function annotatedReply(note: LoadedTurnNote): RebuiltTurn {
   return {
     role: "assistant",
     text: note.reply,
+    ...(note.userMessageId ? { turnId: note.userMessageId } : {}),
     ...(suppressedByGuardrail(note) ? { suppressed: true } : {}),
     trace: verdictsAround(note, []),
     sources: [],
@@ -412,6 +426,65 @@ export function applyTurnNotes(
     }
   }
   for (const pl of placements) if (!placed.has(pl)) out.push(...pl.render());
+  return out;
+}
+
+// Hands each turn's ledger usage to the reply the operator read for it (issue #839): the LAST
+// agent-side bubble carrying that turnId, which is where the live turn drew its line. A turn with no
+// such bubble (a failed one, or a follow-up that stayed silent) keeps its calls in the session
+// total only, as it did live.
+export function attachTurnUsage(
+  turns: RebuiltTurn[],
+  byTurn: ReadonlyMap<string, TurnUsage>,
+): RebuiltTurn[] {
+  if (byTurn.size === 0) return turns;
+  const last = new Map<string, number>();
+  turns.forEach((t, i) => {
+    if (t.role === "assistant" && t.turnId && byTurn.has(t.turnId))
+      last.set(t.turnId, i);
+  });
+  return turns.map((t, i) =>
+    t.turnId && last.get(t.turnId) === i
+      ? { ...t, usage: byTurn.get(t.turnId) }
+      : t,
+  );
+}
+
+async function usageByTurn(
+  base: PrismaClient,
+  ctx: TenantContext,
+  threadId: string,
+): Promise<Map<string, TurnUsage>> {
+  const tenantId = ctx.tenantId as bigint;
+  const groups = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.groupBy({
+      by: ["turnId"],
+      where: {
+        tenantId,
+        threadId,
+        source: "playground",
+        turnId: { not: null },
+      },
+      _count: { _all: true },
+      _sum: {
+        promptTokens: true,
+        cachedReadTokens: true,
+        cacheCreationTokens: true,
+        completionTokens: true,
+      },
+    }),
+  );
+  const out = new Map<string, TurnUsage>();
+  for (const g of groups) {
+    if (!g.turnId) continue;
+    out.set(g.turnId, {
+      calls: g._count._all,
+      promptTokens: g._sum.promptTokens ?? 0,
+      cachedReadTokens: g._sum.cachedReadTokens ?? 0,
+      cacheCreationTokens: g._sum.cacheCreationTokens ?? 0,
+      completionTokens: g._sum.completionTokens ?? 0,
+    });
+  }
   return out;
 }
 
@@ -543,7 +616,7 @@ export async function getPlaygroundSessionTurns(
       }
     }
   }
-  return turns;
+  return attachTurnUsage(turns, await usageByTurn(base, ctx, threadId));
 }
 
 // A fresh thread for a session about to start (issue #839), so its first call is billed to a thread

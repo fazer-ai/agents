@@ -503,6 +503,9 @@ export function usePlaygroundChat(
               suppressed: rt.suppressed,
               followup: rt.followup,
               ...(ttsM ? { audioUrl: mediaUrl(ttsM.id) } : {}),
+              // The ledger's rows for this turn (issue #839): the same line the turn had live, less
+              // its timing, which the ledger does not keep.
+              ...(rt.usage ? { usage: rt.usage } : {}),
               trace: rt.trace,
               sources: rt.sources,
             });
@@ -739,6 +742,7 @@ export function usePlaygroundChat(
       let extracted: string;
       let extractUsage: PlaygroundUsage | undefined;
       let extractTiming: PlaygroundTiming | undefined;
+      let readTurnId: string | undefined;
       setExtracting(true);
       try {
         await ensureThread();
@@ -761,6 +765,7 @@ export function usePlaygroundChat(
         threadId.current = data.threadId;
         extractUsage = data.usage;
         extractTiming = data.timing;
+        readTurnId = data.turnId;
         applyExtraction(kind, extracted);
       } catch {
         clearPendingBubble();
@@ -787,6 +792,9 @@ export function usePlaygroundChat(
             // JSON-encoded: a `{`/`[`-leading extraction would otherwise be auto-parsed by the
             // multipart layer (see the controller's decodeMultipartText).
             extracted: JSON.stringify(extracted),
+            // The read's id, so the ledger keeps the read and the reply as one turn and a reopened
+            // session shows them on one line, as here.
+            turnId: readTurnId,
           });
         if (err || !data) {
           pushError(err);

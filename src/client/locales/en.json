@@ -2320,7 +2320,9 @@
     "deleteSessionMessage": "This deletes the saved session and its transcript. This cannot be undone.",
     "deleteSessionTitle": "Delete session",
     "empty": "(no reply)",
-    "error": "Could not get a reply. Check the model is configured (General tab).",
+    "error": "The server answered with an error and did not say why.",
+    "errorLogs": "See this turn in Logs ({{turnId}})",
+    "errorUnreachable": "Could not reach the server. Check the connection and try again.",
     "file": {
       "extracted": "Extracted content",
       "extracting": "Extracting…",

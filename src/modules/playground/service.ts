@@ -5,6 +5,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
 import { sentAtStamp } from "@/graph/markers";
@@ -214,6 +215,83 @@ function resolvePlaygroundThread(
   return threadId && isValidPlaygroundThread(threadId, tenantId, agentId)
     ? threadId
     : newPlaygroundThreadId(tenantId, agentId);
+}
+
+// WHAT A FAILED PLAYGROUND TURN TELLS THE OPERATOR (issue #841). A refusal the code raised on purpose
+// (an AppError) already says why, and only gains the turn id, so the console can link the turn's lines
+// on the Logs page. Anything else used to reach the app's catch-all, which answers a bare 500 in plain
+// text, and the console threw the text away and blamed the model. Here it becomes a refusal of its
+// own, under the same rule as the catch-all (`api/lib/unhandled-error.ts`): the error's text reaches
+// the client in development only. In production the operator is told where the cause is instead,
+// which is the server log, where it is written with the turn id so a search for that id finds it, and
+// the Logs page gets a line for the turn saying it failed, in our words, never the error's.
+//
+// The id is READ at failure time, not taken up front, because a file turn only knows its id after it
+// has checked the read id the console sent (`claimReadTurnId`).
+async function asPlaygroundTurn<T>(
+  at: {
+    ctx: TenantContext;
+    agentId: bigint;
+    threadId: string;
+    base?: PrismaClient;
+    turnId: () => string;
+  },
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    const turnId = at.turnId();
+    if (e instanceof AppError) {
+      e.turnId ??= turnId;
+      throw e;
+    }
+    const tenantId = at.ctx.tenantId as bigint;
+    logger.error(
+      {
+        err: e,
+        turnId,
+        tenantId: String(tenantId),
+        agentId: String(at.agentId),
+      },
+      "playground turn failed",
+    );
+    emitFlowEvent(
+      // No agent on this context: a context that names one also has to carry the agent's debug
+      // mode (tests/modules/flowlog-debug-mode.test.ts), which is read off a config this failure may
+      // never have got to load. The line is found by its turn, which is what the console links.
+      {
+        tenantId,
+        turnId,
+        source: "playground",
+        threadId: at.threadId,
+        base: at.base,
+      },
+      {
+        stage: "generate",
+        level: "error",
+        status: "error",
+        errorMessage: "unhandled server error",
+      },
+    );
+    // Production first: the sentence the operator reads there is ours, and the text of the error
+    // stays in the server log (`api/lib/unhandled-error.ts`).
+    if (config.env !== "development") {
+      const failed = new AppError(
+        "The turn failed on the server. The cause is in the server log, under the id of this turn.",
+        500,
+        "errors.playgroundTurnFailed",
+      );
+      failed.turnId = turnId;
+      throw failed;
+    }
+    const detail = new AppError(
+      clipText(e instanceof Error ? e.message : String(e), 500),
+      500,
+    );
+    detail.turnId = turnId;
+    throw detail;
+  }
 }
 
 // Surfaces a model/tool invocation failure to the operator with the provider's own message when
@@ -597,8 +675,13 @@ export async function runPlaygroundTurn(
     params.ctx.tenantId as bigint,
     params.agentId,
   );
-  const { result, usage, timing } = await sumTurnUsage(threadId, () =>
-    runPlaygroundTurnOnce({ ...params, threadId }),
+  const turnId = params.turnId ?? crypto.randomUUID();
+  const { result, usage, timing } = await asPlaygroundTurn(
+    { ...params, threadId, turnId: () => turnId },
+    () =>
+      sumTurnUsage(threadId, () =>
+        runPlaygroundTurnOnce({ ...params, threadId, turnId }),
+      ),
   );
   return { ...result, usage, timing };
 }
@@ -1082,14 +1165,20 @@ export async function runPlaygroundFollowup(
     params.ctx.tenantId as bigint,
     params.agentId,
   );
-  const { result, usage, timing } = await sumTurnUsage(threadId, () =>
-    runPlaygroundFollowupOnce({ ...params, threadId }),
+  const turnId = crypto.randomUUID();
+  const { result, usage, timing } = await asPlaygroundTurn(
+    { ...params, threadId, turnId: () => turnId },
+    () =>
+      sumTurnUsage(threadId, () =>
+        runPlaygroundFollowupOnce({ ...params, threadId }, turnId),
+      ),
   );
   return { ...result, usage, timing };
 }
 
 async function runPlaygroundFollowupOnce(
   params: PlaygroundFollowupParams,
+  turnId: string,
 ): Promise<Omit<PlaygroundFollowupResult, "usage" | "timing">> {
   const { ctx, agentId } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -1101,8 +1190,8 @@ async function runPlaygroundFollowupOnce(
       ? params.threadId
       : newPlaygroundThreadId(tenantId, agentId);
 
-  // One id correlates the tool-call logs and the Langfuse trace for this simulated follow-up.
-  const turnId = crypto.randomUUID();
+  // One id correlates the tool-call logs and the Langfuse trace for this simulated follow-up; the
+  // entry point minted it, so a failure is reported under the same one (issue #841).
   // Flow telemetry tagged source=playground (never pages an alert channel, stays out of the
   // dashboard) so the simulated follow-up's tool calls show up in the Logs page (item 3). Built
   // before the graph because the graph's retry callback writes to it.
@@ -1483,51 +1572,65 @@ export async function runPlaygroundAudioTurn(
   params: PlaygroundAudioParams,
 ): Promise<PlaygroundAudioResult> {
   const { ctx, agentId, file } = params;
-  const { bytes, mimeType } = await normalizeAudioUpload(file);
-
-  // Reuse the transcribe-only step's result when supplied (the UI shows it early); otherwise
-  // transcribe here. Either way the live draft's STT config overrides the saved one.
-  const transcription =
-    params.transcription !== undefined
-      ? params.transcription
-      : await transcribePlaygroundAudio({
-          ctx,
-          agentId,
-          audio: bytes,
-          mimeType,
-          base: params.base,
-          deps: params.sttDeps,
-          settings: params.overrides?.settings,
-        });
-
-  // Faithful rendering: the agent sees exactly what production would feed it for a voice note.
-  const message = renderInboundMessage({
-    text: "",
-    transcribedText: transcription,
-    attachmentTypes: ["audio"],
-  });
-  const turn = await runPlaygroundTurn({
-    ctx,
+  // The voice note's transcription runs before the turn, so the turn's id and thread are settled
+  // here, and a failure in either step is reported as the same turn (issue #841).
+  const threadId = resolvePlaygroundThread(
+    params.threadId,
+    ctx.tenantId as bigint,
     agentId,
-    message,
-    threadId: params.threadId,
-    // Title the session by the clean transcription, not the <mensagem-de-audio> wrapper.
-    titleHint: transcription,
-    overrides: params.overrides,
-    guardrails: params.guardrails,
-    // Persist the recording for replay, and let TTS "mirror" trigger (the user sent audio).
-    userMedia: {
-      kind: "user_audio",
-      mime: mimeType ?? "audio/webm",
-      fileName: file.name || "recording.webm",
-      bytes,
+  );
+  const turnId = crypto.randomUUID();
+  return asPlaygroundTurn(
+    { ctx, agentId, threadId, base: params.base, turnId: () => turnId },
+    async () => {
+      const { bytes, mimeType } = await normalizeAudioUpload(file);
+
+      // Reuse the transcribe-only step's result when supplied (the UI shows it early); otherwise
+      // transcribe here. Either way the live draft's STT config overrides the saved one.
+      const transcription =
+        params.transcription !== undefined
+          ? params.transcription
+          : await transcribePlaygroundAudio({
+              ctx,
+              agentId,
+              audio: bytes,
+              mimeType,
+              base: params.base,
+              deps: params.sttDeps,
+              settings: params.overrides?.settings,
+            });
+
+      // Faithful rendering: the agent sees exactly what production would feed it for a voice note.
+      const message = renderInboundMessage({
+        text: "",
+        transcribedText: transcription,
+        attachmentTypes: ["audio"],
+      });
+      const turn = await runPlaygroundTurn({
+        ctx,
+        agentId,
+        message,
+        threadId,
+        turnId,
+        // Title the session by the clean transcription, not the <mensagem-de-audio> wrapper.
+        titleHint: transcription,
+        overrides: params.overrides,
+        guardrails: params.guardrails,
+        // Persist the recording for replay, and let TTS "mirror" trigger (the user sent audio).
+        userMedia: {
+          kind: "user_audio",
+          mime: mimeType ?? "audio/webm",
+          fileName: file.name || "recording.webm",
+          bytes,
+        },
+        userSentAudio: true,
+        forceAudio: params.forceAudio,
+        base: params.base,
+        deps: params.deps,
+      });
+      return { transcription, ...turn };
     },
-    userSentAudio: true,
-    forceAudio: params.forceAudio,
-    base: params.base,
-    deps: params.deps,
-  });
-  return { transcription, ...turn };
+  );
 }
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -1573,7 +1676,6 @@ export async function runPlaygroundExtract(
   usage: TurnUsage;
   timing: TurnTiming;
 }> {
-  const bytes = await readFileUpload(params.file);
   const threadId = resolvePlaygroundThread(
     params.threadId,
     params.ctx.tenantId as bigint,
@@ -1582,31 +1684,37 @@ export async function runPlaygroundExtract(
   // Log the read as a `vision` stage on the Logs page (source=playground). This is step 1 of the
   // two-step UI flow, so the extraction runs HERE (step 2 reuses the result and skips it).
   const turnId = crypto.randomUUID();
-  const flow: FlowContext = {
-    tenantId: params.ctx.tenantId as bigint,
-    turnId,
-    source: "playground",
-    agentId: params.agentId,
-    threadId,
-    base: params.base,
-  };
-  const {
-    result: { kind, text },
-    usage,
-    timing,
-  } = await sumTurnUsage(threadId, () =>
-    extractPlaygroundFile({
-      ctx: params.ctx,
-      agentId: params.agentId,
-      file: bytes,
-      mimeType: params.file.type || null,
-      base: params.base,
-      deps: params.visionDeps,
-      settings: params.overrides?.settings,
-      flow,
-    }),
+  return asPlaygroundTurn(
+    { ...params, threadId, turnId: () => turnId },
+    async () => {
+      const bytes = await readFileUpload(params.file);
+      const flow: FlowContext = {
+        tenantId: params.ctx.tenantId as bigint,
+        turnId,
+        source: "playground",
+        agentId: params.agentId,
+        threadId,
+        base: params.base,
+      };
+      const {
+        result: { kind, text },
+        usage,
+        timing,
+      } = await sumTurnUsage(threadId, () =>
+        extractPlaygroundFile({
+          ctx: params.ctx,
+          agentId: params.agentId,
+          file: bytes,
+          mimeType: params.file.type || null,
+          base: params.base,
+          deps: params.visionDeps,
+          settings: params.overrides?.settings,
+          flow,
+        }),
+      );
+      return { kind, extracted: text, threadId, turnId, usage, timing };
+    },
   );
-  return { kind, extracted: text, threadId, turnId, usage, timing };
 }
 
 export interface PlaygroundFileParams {
@@ -1714,14 +1822,24 @@ export async function runPlaygroundFileTurn(
     params.agentId,
   );
   // The file read below and the turn after it are one turn to the operator, so one sum covers both.
-  const { result, usage, timing } = await sumTurnUsage(threadId, () =>
-    runPlaygroundFileTurnOnce({ ...params, threadId }),
+  // The id is only known once the read id the console sent has been checked, inside the turn; until
+  // then a failure is reported under a fresh one.
+  let turnId: string = crypto.randomUUID();
+  const { result, usage, timing } = await asPlaygroundTurn(
+    { ...params, threadId, turnId: () => turnId },
+    () =>
+      sumTurnUsage(threadId, () =>
+        runPlaygroundFileTurnOnce({ ...params, threadId }, (id) => {
+          turnId = id;
+        }),
+      ),
   );
   return { ...result, usage, timing };
 }
 
 async function runPlaygroundFileTurnOnce(
   params: PlaygroundFileParams & { threadId: string },
+  onTurnId: (turnId: string) => void,
 ): Promise<PlaygroundFileResult> {
   const { ctx, agentId, file } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -1735,6 +1853,7 @@ async function runPlaygroundFileTurnOnce(
       params.turnId,
       params.deps?.checkpointer,
     )) ?? crypto.randomUUID();
+  onTurnId(turnId);
 
   // Reuse the extract-only step's result when supplied (the UI shows it early); otherwise extract
   // here (logging a `vision` stage). Either way the live draft's vision config overrides the saved one.

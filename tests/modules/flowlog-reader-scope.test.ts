@@ -220,6 +220,8 @@ const FLOWLOG_READERS: Record<string, number> = {
   // the zero and the one have to come off the same query.
   "tests/modules/alert-channel-test.test.ts": 2,
   "tests/modules/channel-failure.test.ts": 1,
+  // #841: the line a playground turn that failed unhandled leaves, read by the turn's own id.
+  "tests/modules/playground-turn-failure.test.ts": 1,
   "tests/modules/chatwoot-command-dropped.test.ts": 2,
   "tests/modules/chatwoot-gate-trail.test.ts": 1,
   "tests/modules/chatwoot-human-reply-takeover.test.ts": 1,

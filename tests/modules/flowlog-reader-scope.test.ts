@@ -197,6 +197,8 @@ export function isScoped(reader: Reader, scoping: Scoping): boolean {
 }
 
 const FLOWLOG_READERS: Record<string, number> = {
+  // #812: the capacity lines one conversation produced, read by its conversation.
+  "tests/modules/capacity-wait-db.test.ts": 1,
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,

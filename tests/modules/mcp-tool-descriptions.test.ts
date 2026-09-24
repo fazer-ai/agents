@@ -657,6 +657,10 @@ describe("MCP tool descriptions", () => {
   // tree 31,350 and 60,186, so 31,365 and 60,202 with the same 15 and 16. The three descriptions were
   // cut by 197 from their first draft to what a caller cannot read off the schema: that only
   // documents with an external id are the sync's, and that removing the source keeps them.
+  //
+  // SCHEMA RAISED by the `capacity` flow stage (#812), one more enum value wherever a tool filters or
+  // subscribes by stage, like `channel_error` above: this tree measures 60,208 against the base's
+  // 60,186, so 60,224 with the same 16. No tool and no description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -666,7 +670,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_365);
-    expect(schema).toBeLessThanOrEqual(60_202);
+    expect(schema).toBeLessThanOrEqual(60_224);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

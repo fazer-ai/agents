@@ -83,6 +83,14 @@ export interface ModelRetryInfo extends ModelLabels {
   error: unknown;
 }
 
+// A wait for a permit that outlasted the operator's threshold (issue #812). `waitedMs` is measured
+// when it is reported, which is while the call is STILL waiting: at least the threshold, never the
+// whole wait.
+export interface PermitWaitInfo {
+  waitedMs: number;
+  thresholdMs: number;
+}
+
 export interface ModelCallOptions<T> {
   // What `fn` runs on. Required whenever anything is reported at all, which is what keeps a
   // reporting caller from being written without the labels its lines need.
@@ -93,6 +101,12 @@ export interface ModelCallOptions<T> {
   // the agent turn. None of the bounds in `model-fallback` apply to a model built without one; the
   // agent turn bounds that call with `callWithDeadline` instead (issue #809).
   fallback?: ModelFallback<T>;
+  // Fired ONCE when this call has waited for a permit past `config.agent.capacityWaitAlertMs`, and
+  // while it still waits, so the operator hears about a saturated instance during the wait rather
+  // than after it. Reported at the threshold and not at the grant for a second reason: every call
+  // queued behind the same saturation crosses it together, which is what lets the alert bus
+  // coalesce them into one alert with a count. Best-effort: a throw here is swallowed.
+  onPermitWait?: (info: PermitWaitInfo) => void;
 }
 
 // A deadline on ONE model call, retries included, that holds whether or not the adapter honours the
@@ -147,7 +161,29 @@ export async function runModelCall<T>(
     }
   };
 
+  // NOTE: armed before the queue and cleared as the permit is granted. A permit that is free now is
+  // granted in the next microtask, long before any timer can fire, so an uncontended call reports
+  // nothing.
+  const onPermitWait = opts?.onPermitWait;
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  if (onPermitWait) {
+    const thresholdMs = config.agent.capacityWaitAlertMs;
+    const queuedAt = performance.now();
+    waitTimer = setTimeout(() => {
+      try {
+        onPermitWait({
+          waitedMs: Math.round(performance.now() - queuedAt),
+          thresholdMs,
+        });
+      } catch (err) {
+        logger.warn({ err }, "reporting a model permit wait failed");
+      }
+    }, thresholdMs);
+    waitTimer.unref?.();
+  }
+
   return sem().run(async () => {
+    clearTimeout(waitTimer);
     // Reached with the error the PROVIDER raised, which is the whole reason the decision lives here
     // rather than at the call site. One lane up, the error has already been through
     // `describeProviderFault` and is one of our own three words: `statusOf` still reads (the status

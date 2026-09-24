@@ -22,6 +22,7 @@ import {
   callWithDeadline,
   type ModelLabels,
   type ModelRetryInfo,
+  type PermitWaitInfo,
   runModelCall,
 } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
@@ -61,6 +62,9 @@ export interface BuildAgentGraphParams {
   // model-limit). Same purpose as onToolLimit: without it a recovered turn looks like a clean one
   // and the fault rate stays invisible.
   onModelRetry?: (info: ModelRetryInfo) => void;
+  // Fired when this node's model call has waited past the capacity threshold for a permit of the
+  // process-wide semaphore (issue #812), so the runtime can put a `capacity` warn on the trail.
+  onModelPermitWait?: (info: PermitWaitInfo) => void;
   // The second provider, already built and already bounded (see ./model-fallback). Absent for every
   // agent that configured none, which is every agent today, and absent means the node behaves
   // exactly as it did.
@@ -555,6 +559,7 @@ export function buildAgentGraph({
   maxToolCalls,
   onToolLimit,
   onModelRetry,
+  onModelPermitWait,
   primary,
   fallback,
   onModelFallback,
@@ -819,6 +824,7 @@ export function buildAgentGraph({
               await runModelCall(second.run, {
                 primary: second.labels,
                 onRetry: onModelRetry,
+                onPermitWait: onModelPermitWait,
               }),
             ),
           ],
@@ -846,6 +852,7 @@ export function buildAgentGraph({
       {
         primary,
         onRetry: onModelRetry,
+        onPermitWait: onModelPermitWait,
         fallback: second
           ? {
               labels: second.labels,

@@ -1299,6 +1299,40 @@ export function claimDueDebounceJobs(
   );
 }
 
+// A due row of the debounce lane that nobody has claimed yet.
+export interface WaitingDebounceJob {
+  id: bigint;
+  tenantId: bigint;
+  runAt: Date;
+  dedupeKey: string;
+}
+
+// Who is waiting for a slot of the debounce lane: its rows due at or before `dueBefore` and still
+// PENDING, oldest first (issue #812). Read-only. The drain asks only while its lane is full, and only
+// to announce a wait, so a bounded page is enough: the rows past it are announced on a later tick.
+export function findWaitingDebounceJobs(
+  dueBefore: Date,
+  excludeIds: bigint[],
+  base: PrismaClient = basePrisma,
+  tenantId?: bigint,
+  limit = 100,
+): Promise<WaitingDebounceJob[]> {
+  return asSuperAdminOn(base, (db) =>
+    db.schedulerJob.findMany({
+      where: {
+        ...(tenantId != null ? { tenantId } : {}),
+        kind: { in: kindsInLane("debounce") },
+        status: "PENDING",
+        runAt: { lte: dueBefore },
+        ...(excludeIds.length > 0 ? { id: { notIn: excludeIds } } : {}),
+      },
+      orderBy: { runAt: "asc" },
+      take: limit,
+      select: { id: true, tenantId: true, runAt: true, dedupeKey: true },
+    }),
+  );
+}
+
 // The compaction lane claims ONLY compaction jobs. It exists for BUDGET, not for duration: it fires
 // for every agent on every closed attendance (it ships on by default) and takes permits from the same
 // model semaphore a customer's turn queues on, so its batch is sized to a fraction of that budget

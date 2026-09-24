@@ -38,6 +38,9 @@ const LABELED_KEYS = [
   "action",
   "direction",
   "strandedOn",
+  // Which limit a `capacity` line waited on (`debounce_lane` | `model_semaphore`, issue #812): the one
+  // thing the operator needs to know to act, since the two are raised differently.
+  "waitedOn",
 ] as const;
 // FLAGS whose value is a count or `true`, so only the key's presence carries the why.
 const FLAG_KEYS = [

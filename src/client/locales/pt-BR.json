@@ -2032,6 +2032,7 @@
       "playground": "Playground"
     },
     "stage": {
+      "capacity": "Capacidade",
       "channel_error": "Falha no canal",
       "command": "Comando de controle",
       "contact_auth": "Autorização do contato",

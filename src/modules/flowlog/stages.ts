@@ -58,6 +58,11 @@ export const FLOW_STAGES = [
   // per bus because it is one question ("what did the system give up on?"), which is what an
   // operator subscribes a channel to; `detail.unit` says which bus inside it (issue #356).
   "dead_letter",
+  // NOT a turn step either: a reply that WAITED for capacity past the operator's threshold (issue
+  // #812), either a due debounce flush with no free slot in its lane or a model call with no free
+  // permit in the process-wide semaphore. `detail.waitedOn` says which. Its own stage so a channel can
+  // subscribe to saturation without subscribing to every generate warning.
+  "capacity",
 ] as const;
 export type FlowStage = (typeof FLOW_STAGES)[number];
 

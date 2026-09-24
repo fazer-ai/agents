@@ -271,7 +271,8 @@ let registered = false;
 export function registerIngestJob(): void {
   if (registered) return;
   registered = true;
-  registerJobHandler("INGEST_MESSAGE", ingestHandler);
+  // NOTE: wrapped, because the handler's third parameter is a test seam and not the JobContext.
+  registerJobHandler("INGEST_MESSAGE", (job, base) => ingestHandler(job, base));
 }
 
 registerIngestJob();

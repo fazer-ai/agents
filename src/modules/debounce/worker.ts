@@ -9,7 +9,11 @@ import {
   findWaitingDebounceJobs,
   type WaitingDebounceJob,
 } from "@/modules/scheduler/service";
-import { runClaimed } from "@/modules/scheduler/worker";
+import {
+  jobDeadlineMs,
+  runClaimed,
+  SCHEDULER_STALE_MS,
+} from "@/modules/scheduler/worker";
 import { debounceDedupeKey } from "./service";
 
 // Dedicated FAST drain for DEBOUNCE jobs only (inbound message coalescing). Kept separate from the
@@ -81,6 +85,8 @@ export interface LaneWait {
 export interface DebounceTickDeps {
   claim?: typeof claimDueDebounceJobs;
   run?: typeof runClaimed;
+  // The run's deadline; production derives it from the reaper's stale window.
+  deadlineMs?: number;
   now?: () => Date;
   waiting?: (
     dueBefore: Date,
@@ -220,7 +226,10 @@ export async function runDebounceTick(
   // strand a slot. The async wrapper turns a synchronous throw into a rejection, so `finally` runs.
   const settled = Promise.allSettled(
     jobs.map((job) =>
-      (async () => run(job, base))().finally(() => {
+      (async () =>
+        run(job, base, {
+          deadlineMs: deps.deadlineMs ?? jobDeadlineMs(SCHEDULER_STALE_MS),
+        }))().finally(() => {
         inFlight.delete(job.id);
       }),
     ),

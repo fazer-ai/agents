@@ -233,6 +233,9 @@ export interface NudgePostActions {
 }
 
 export interface RunAgentNudgeParams {
+  // The signal of the scheduler job this nudge runs for (issue #811). Its deadline aborts the invoke,
+  // and every write the nudge would make afterwards is refused through `stillWanted`.
+  signal?: AbortSignal;
   tenantId: bigint;
   threadId: string;
   nudge: AgentNudge;
@@ -705,6 +708,10 @@ export async function runAgentNudge(
   // flip to monitoring answers those retries at the config load. The episode is asked first, so a
   // run that lost both answers "stale".
   let silenced = false;
+  // Whether a send has left, set immediately before each one: from then on the message may be with
+  // the customer, and what the step still owes after it (the labels, the resolve) is the step's own
+  // and not the retry's (issue #811).
+  let delivered = false;
   const stillWanted = async (strict = false): Promise<boolean> => {
     if (
       params.stillWanted !== undefined &&
@@ -716,6 +723,10 @@ export async function runAgentNudge(
       silenced = true;
       return false;
     }
+    // NOTE: asked last, after the I/O above, which is the stretch it decays over: a run its deadline
+    // ended was already failed, and its retry owns the next step (issue #811). Not once a send has
+    // left: the step is then this run's, which commits it, and no retry performs its post-actions.
+    if (params.signal?.aborted && !delivered) return false;
     return true;
   };
   const standDown = (): "stale" | "agent-unavailable" =>
@@ -1026,7 +1037,11 @@ export async function runAgentNudge(
     // heaviest thing this function does: closing a conversation the operator has just cleared and
     // handed back to the agent is not a label to peel off, it is the attendance ended. Same rule as
     // the ask at the top, applied to the wait between them.
-    if (allowResolve && actions.resolve && (await stillWanted())) {
+    if (allowResolve && actions.resolve) {
+      // NOTE: reported like the two asks above, not skipped in silence: an end that stayed quiet
+      // hands its step to the retry on "stale", and a resolve refused here is one that retry owes
+      // (issue #811).
+      if (!(await stillWanted())) return "stale";
       try {
         await client.toggleStatus(conversationId, "resolved");
         // NOTE: A follow-up ladder only advances while the customer stays silent (an inbound ends the
@@ -1193,6 +1208,9 @@ export async function runAgentNudge(
     // operator's signal that the instance, not the model, is what the customer is waiting on.
     onModelPermitWait: (wait) =>
       emitCapacityWait(flow, "model_semaphore", wait),
+    // NOTE: to the graph's model call and tool boundary, never to `graph.invoke` (issue #811; see
+    // BuildAgentGraphParams.signal).
+    signal: params.signal,
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
@@ -1392,6 +1410,7 @@ export async function runAgentNudge(
     // needs to read is what the transfer promised. A judge that objected to it has already said so,
     // in its own note on this same conversation.
     const noteOutsideWindow = async () => {
+      delivered = true;
       await client.sendPrivateNote(
         conversationId,
         `${OUTSIDE_WINDOW_NOTE_PREFIX}${line}`,
@@ -1411,6 +1430,7 @@ export async function runAgentNudge(
       // both answers above it are spent by the time it returns. The reply branch does exactly this.
       if (!(await stillWanted())) return "stale";
       if (sendModeNow() !== "freeform") return await noteOutsideWindow();
+      delivered = true;
       await client.sendMessage(conversationId, sign(line2));
       await recordProactiveSpeech();
       logger.info(
@@ -2131,7 +2151,11 @@ export async function runAgentNudge(
   if (promised === "stale") return refuse(standDown());
   if (promised) {
     if (promised !== "silent") markFollowUp(promised);
-    await applyPostActions({ canMessage: canMessagePost });
+    const applied = await applyPostActions({ canMessage: canMessagePost });
+    // NOTE: nothing reached the customer on a silent end, so a refusal of its post-actions is a
+    // withdrawal and not a silence: the handler would stamp the step and commit it, and the labels
+    // or the resolve it was owed would never run (issue #811).
+    if (promised === "silent" && applied === "stale") return standDown();
     return promised;
   }
 
@@ -2177,18 +2201,19 @@ export async function runAgentNudge(
       // The ladder's own resolve would close the conversation the reason asked a person to see, and
       // that holds whether or not the status change landed: a failed hand-over leaves it pending,
       // which is still better than closed with nobody told. Its labels still apply.
-      await applyPostActions({
+      const applied = await applyPostActions({
         canMessage: canMessagePost,
         allowResolve: false,
       });
       await takeBackUndeliveredSilence(drafted.wroteText);
-      return "silent";
+      return applied === "stale" ? standDown() : "silent";
     }
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
-    await applyPostActions({ canMessage: canMessagePost });
+    const applied = await applyPostActions({ canMessage: canMessagePost });
     await takeBackUndeliveredSilence(drafted.wroteText);
-    return "silent";
+    // NOTE: the same rule as the promised line's silent end above (issue #811).
+    return applied === "stale" ? standDown() : "silent";
   }
 
   // Message the customer ONLY when the bot still owns the conversation AND we were in message mode;
@@ -2298,6 +2323,7 @@ export async function runAgentNudge(
       // nothing about a transfer, so it is not sent in the line's place: the operator gets the line
       // as a note, which is what `deliverPromisedLine` does for the tool's own transfer.
       if (screened !== null && sendModeNow() !== "freeform") {
+        delivered = true;
         await client.sendPrivateNote(
           conversationId,
           `${OUTSIDE_WINDOW_NOTE_PREFIX}${screened}`,
@@ -2320,6 +2346,7 @@ export async function runAgentNudge(
     // where the reply can still fall through to the template/note branch below instead of being
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
+      delivered = true;
       await client.sendMessage(conversationId, sign(screened));
       await recordProactiveSpeech();
       logger.info(
@@ -2343,6 +2370,7 @@ export async function runAgentNudge(
         cfg.contactName,
       );
       if (payload) {
+        delivered = true;
         await client.sendTemplate(conversationId, payload);
         await recordProactiveSpeech();
         logger.info(
@@ -2359,6 +2387,7 @@ export async function runAgentNudge(
     // Outside the window with no usable template → leave the intended message as an internal note,
     // EXPLAINED (pt-BR, same register as the test-mode/out-of-hours notices): an unexplained yellow
     // note reads as a bug to the operator (community post "Followup indo como conversa privada").
+    delivered = true;
     await client.sendPrivateNote(
       conversationId,
       `${OUTSIDE_WINDOW_NOTE_PREFIX}${reply}`,
@@ -2372,6 +2401,7 @@ export async function runAgentNudge(
     await applyPostActions({ canMessage: canMessagePost, allowResolve: false });
     return "noted-window";
   }
+  delivered = true;
   await client.sendPrivateNote(conversationId, reply);
   logger.info(
     "agentNudge noted: conv=%s source=%s",

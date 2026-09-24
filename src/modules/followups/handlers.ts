@@ -27,7 +27,11 @@ import {
   jobRetired,
   jobRetiredStrict,
 } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobContext,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import {
   type FollowUpStep,
   isNewFollowUpEpisode,
@@ -470,6 +474,8 @@ export async function followUpHandler(
   job: ClaimedJob,
   base: PrismaClient,
   deps?: RuntimeDeps,
+  // The run's context (issue #811): its signal goes to the nudge, and a stamp that lands commits it.
+  run?: JobContext,
 ): Promise<JobResult> {
   const threadId =
     typeof job.payload.threadId === "string" ? job.payload.threadId : null;
@@ -705,6 +711,10 @@ export async function followUpHandler(
          WHERE id = ${ctx.conv.id}
            AND ${jobNotRetiredSql(job)}`),
     );
+    // NOTE: the stamp is the step being spent: the sweep and the next step anchor on it, and a step-0
+    // retry reads it as the episode already handled. A run past its deadline has to write the
+    // outcome that follows it, or the sequence ends here (issue #811).
+    if (stamped > 0) run?.commit();
     return stamped > 0;
   };
 
@@ -754,6 +764,7 @@ export async function followUpHandler(
     ? Math.round((Date.now() - lastEventAt.getTime()) / 60_000)
     : stepDelayMinutes(step);
   const nudgeOutcome = await runAgentNudge({
+    signal: run?.signal,
     tenantId,
     threadId,
     nudge: inactivityNudge({
@@ -879,7 +890,10 @@ let registered = false;
 export function registerFollowUpHandlers(): void {
   if (registered) return;
   registerJobHandler("FOLLOWUP_SWEEP", sweepHandler);
-  registerJobHandler("FOLLOWUP", followUpHandler);
+  // NOTE: wrapped, because the handler's third parameter is a test seam and not the JobContext.
+  registerJobHandler("FOLLOWUP", (job, base, ctx) =>
+    followUpHandler(job, base, undefined, ctx),
+  );
   registered = true;
 }
 

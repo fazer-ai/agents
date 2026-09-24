@@ -349,6 +349,10 @@ async function notePartialDelivery(params: {
 
 export interface RunLoadedTurnParams {
   loaded: AgentConfig;
+  // The signal of the scheduler job this turn runs for (issue #811). When the job's deadline ends it,
+  // the graph's model call and tool boundary stop, and the turn writes nothing outward from then on
+  // (no send, no silence, no receipt) unless its first send had already been claimed.
+  signal?: AbortSignal;
   // WHETHER THE CUSTOMER'S MESSAGE ENDED UP IN THE THREAD, reported by the runtime rather than
   // inferred from the outcome (issue #576, PR review round 3). `graph.invoke` persists the channel,
   // so the fact is "the invoke returned" and nothing else — and the outcome word cannot stand in for
@@ -826,6 +830,19 @@ export async function runLoadedTurn(
   let decided: boolean | null = null;
   const claimBeforeSend = async (): Promise<boolean> => {
     if (decided !== null) return decided;
+    // NOTE: a run its deadline already ended was failed, and its retry answers this burst; a reply
+    // from here would reach the customer after that retry's, or beside it (issue #811). Asked before
+    // the FIRST send only, like the claim: once the claim is won the burst is this turn's, and the
+    // retry finds it claimed. Stopping a split reply halfway would leave the customer a truncated
+    // answer that no retry can complete without repeating the balloons already sent.
+    if (params.signal?.aborted) {
+      logger.info(
+        "turn: the job's deadline ended this run (conv=%s), not sending",
+        String(params.conversationId),
+      );
+      decided = false;
+      return decided;
+    }
     const claim = await claimReplyBurst({
       tenantId: params.tenantId,
       conversationDbId: target.conversationDbId,
@@ -884,7 +901,15 @@ async function runTurnBody(
 ): Promise<RunAgentTurnOutcome> {
   // Every real send in this function is one statement after an ask on this. The default is what a
   // turn with nothing to be exclusive about wants: send.
-  const claimBeforeSend = params.claimBeforeSend ?? (async () => true);
+  const askClaim = params.claimBeforeSend ?? (async () => true);
+  // Whether a send has been claimed. From then on the burst is this turn's and a reply already on its
+  // way finishes, deadline or not (see claimBeforeSend in runLoadedTurn).
+  let sendClaimed = false;
+  const claimBeforeSend = async (): Promise<boolean> => {
+    const won = await askClaim();
+    if (won) sendClaimed = true;
+    return won;
+  };
   // Applied HERE, before anything reads the config, so the prompt the model is built on, the one
   // the output guardrail judges adherence against, and the one the audited row records are the same
   // prompt. Appending it later, at the graph build, would leave the other two describing a turn
@@ -950,7 +975,12 @@ async function runTurnBody(
       silenced = true;
       return true;
     }
-    return false;
+    // NOTE: a run its job's deadline ended was failed, and its retry answers the burst. Every write it
+    // would still make settles the burst for that retry: a silence, a guardrail's refusal, a receipt
+    // (issue #811). Answered as a withdrawal, which leaves the burst unmarked. Read after the reads
+    // above, which are the stretch a deadline can fire in. Not once a send was claimed: a reply
+    // already on its way is not cut midway.
+    return Boolean(params.signal?.aborted && !sendClaimed);
   };
   const standDown = (): "stale" | "agent-unavailable" =>
     silenced ? "agent-unavailable" : "stale";
@@ -1183,6 +1213,9 @@ async function runTurnBody(
     // operator's signal that the instance, not the model, is what the customer is waiting on.
     onModelPermitWait: (wait) =>
       emitCapacityWait(flow, "model_semaphore", wait),
+    // NOTE: to the graph's model call and tool boundary, never to `graph.invoke` (issue #811; see
+    // BuildAgentGraphParams.signal).
+    signal: params.signal,
     onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",

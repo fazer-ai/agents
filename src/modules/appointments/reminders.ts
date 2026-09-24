@@ -2,7 +2,11 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
-import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
+import {
+  isRepairableNudgeRefusal,
+  nextNudgeRetry,
+  nudgeReachedConversation,
+} from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -28,7 +32,11 @@ import {
   jobRetired,
   jobRetiredStrict,
 } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobContext,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { readVaultRefId } from "@/modules/vault/service";
 
@@ -859,6 +867,9 @@ export async function appointmentReminderHandler(
   job: ClaimedJob,
   base: PrismaClient,
   deps?: RuntimeDeps,
+  // The run's context (issue #811): its signal goes to the nudge, and a reminder that reached the
+  // conversation commits it.
+  ctx?: JobContext,
 ): Promise<JobResult> {
   const p = job.payload;
   const threadId = typeof p.threadId === "string" ? p.threadId : null;
@@ -944,6 +955,7 @@ export async function appointmentReminderHandler(
   if (await retired()) return { outcome: "done" };
 
   const outcome = await runAgentNudge({
+    signal: ctx?.signal,
     tenantId,
     threadId,
     // And once more inside, where the nudge re-asks its own questions across the model call. Three
@@ -978,6 +990,9 @@ export async function appointmentReminderHandler(
     base,
     deps,
   });
+  // NOTE: sent is spent: a run past its deadline that got this far has its `done` written, or its
+  // retry sends the reminder a second time (issue #811).
+  if (nudgeReachedConversation(outcome)) ctx?.commit();
   // NOTE: A reminder offset is an occasion, and it is spent exactly once. When the nudge posted nothing
   // for a reason that may be repaired, retrying the SAME row is what keeps the customer's reminder
   // from disappearing because a credential was broken for ten minutes.
@@ -1012,8 +1027,8 @@ export async function appointmentReminderHandler(
 let registered = false;
 export function registerAppointmentReminderHandler(): void {
   if (registered) return;
-  registerJobHandler("APPOINTMENT_REMINDER", (job, base) =>
-    appointmentReminderHandler(job, base),
+  registerJobHandler("APPOINTMENT_REMINDER", (job, base, ctx) =>
+    appointmentReminderHandler(job, base, undefined, ctx),
   );
   registered = true;
   logger.debug("appointment-reminder handler registered");

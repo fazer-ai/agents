@@ -849,6 +849,70 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(s.sent.length).toBeGreaterThan(0);
   });
 
+  // (#811) A reminder whose job's deadline already fired sends nothing: that run was failed, and its
+  // retry is the one that reminds. Without the signal the late run and its retry would both send.
+  test("a run its job's deadline already ended sends nothing", async () => {
+    const job = await armed("reminder:evt-deadline:60", {
+      isLast: true,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    const deadline = new AbortController();
+    deadline.abort(new Error("deadline exceeded"));
+    let commits = 0;
+
+    await appointmentReminderHandler(
+      job,
+      appDb,
+      {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+      {
+        signal: deadline.signal,
+        commit: () => {
+          commits++;
+        },
+      },
+    ).catch(() => undefined);
+
+    expect(s.sent).toEqual([]);
+    expect(commits).toBe(0);
+  });
+
+  // (#811) The other side: a reminder that reached the conversation is spent, and the run says so, so
+  // that a run past its deadline has its `done` written instead of its retry sending it again.
+  test("a reminder that reached the conversation commits its run", async () => {
+    const job = await armed("reminder:evt-commit:60", {
+      isLast: true,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let commits = 0;
+
+    await appointmentReminderHandler(
+      job,
+      appDb,
+      {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+      {
+        signal: new AbortController().signal,
+        commit: () => {
+          commits++;
+        },
+      },
+    );
+
+    expect(s.sent.length).toBe(1);
+    expect(commits).toBe(1);
+  });
+
   // (#352, round 8) Two operator systems may both answer with `42` — that is why the record and the
   // dedupe key carry the provider. The PAYLOAD had to carry it too: without it the reminder turn
   // holds an id and no way to say which system issued it, and the sentence it was given points at

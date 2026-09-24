@@ -268,7 +268,10 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
 
     await runClaimed(mine, appDb);
 
-    // DONE here would mean the re-arm was consumed by the run that never saw it.
-    expect((await rowOf(id)).status).toBe("CLAIMED");
+    // DONE here would mean the re-arm was consumed by the run that never saw it. PENDING and not
+    // CLAIMED: the claim the handler makes mid-run no longer takes its own row back, because a row
+    // whose handler still runs in this process stays out of every claim here (issue #811), so the
+    // new arm waits for whoever claims it next.
+    expect((await rowOf(id)).status).toBe("PENDING");
   });
 });

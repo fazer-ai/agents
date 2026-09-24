@@ -2,7 +2,11 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
-import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
+import {
+  isRepairableNudgeRefusal,
+  nextNudgeRetry,
+  nudgeReachedConversation,
+} from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
@@ -19,7 +23,11 @@ import {
   jobRetiredStrict,
   retireJobsByDedupeKey,
 } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type JobContext,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import {
   buildTemplatePayload,
   type ProactiveSendMode,
@@ -480,6 +488,9 @@ export async function redirectFollowUpHandler(
   job: ClaimedJob,
   base: PrismaClient,
   deps?: RuntimeDeps,
+  // The run's context (issue #811): its signal goes to the chat stage's nudge, and a nudge that
+  // reached the conversation commits it.
+  ctx?: JobContext,
 ): Promise<JobResult> {
   const payload = parseRedirectFollowUpPayload(job.payload);
   if (!payload) return { outcome: "done" };
@@ -735,6 +746,7 @@ export async function redirectFollowUpHandler(
   if (payload.stage === "chat") {
     if (cfg.chatFollowupEnabled) {
       const outcome = await runAgentNudge({
+        signal: ctx?.signal,
         tenantId,
         threadId: payload.widgetThreadId,
         nudge: chatFollowupNudge(
@@ -759,6 +771,9 @@ export async function redirectFollowUpHandler(
         stillWanted: async ({ strict }) => (await fence({ strict })) === "go",
         deps,
       });
+      // NOTE: a nudge that reached the chat spends the stage: a run past its deadline that got this far
+      // has its advance written, or its retry nudges the lead a second time (issue #811).
+      if (nudgeReachedConversation(outcome)) ctx?.commit();
       // NOTE: This stage is the only one of the three that needs an agent to author anything, so it is
       // the only one that can lose its turn to a refusal. Retry the SAME stage rather than advancing:
       // the ladder's stages are an escalation, and spending the softest one on a message nobody
@@ -835,6 +850,8 @@ export async function redirectFollowUpHandler(
         base,
         now: new Date(),
       });
+      // NOTE: the link sent spends the stage, like the chat stage's nudge (issue #811).
+      if (outcome === "sent") ctx?.commit();
       if (outcome !== "sent") {
         logger.info(
           "channel-redirect: WhatsApp follow-up %s (widget thread=%s)",
@@ -861,7 +878,7 @@ export async function redirectFollowUpHandler(
   // stage === "closing" — the ladder's terminal give-up: post the closing on BOTH channels + resolve, once.
   if (await retired()) return { outcome: "done" };
   if (cfg.closingEnabled && entryInboxId !== null) {
-    await deliverRedirectClosing({
+    const closing = await deliverRedirectClosing({
       stillWanted: async () => !(await retired()),
       fence,
       tenantId,
@@ -873,6 +890,9 @@ export async function redirectFollowUpHandler(
       base,
       deps,
     });
+    // NOTE: its own stamp already answers a retry "already-closed"; committed anyway, so the rule is
+    // the same for every stage that sends (issue #811).
+    if (closing === "delivered") ctx?.commit();
   }
   return { outcome: "done" };
 }
@@ -880,8 +900,8 @@ export async function redirectFollowUpHandler(
 let registered = false;
 export function registerRedirectFollowUpHandlers(): void {
   if (registered) return;
-  registerJobHandler("REDIRECT_FOLLOWUP", (job, base) =>
-    redirectFollowUpHandler(job, base),
+  registerJobHandler("REDIRECT_FOLLOWUP", (job, base, ctx) =>
+    redirectFollowUpHandler(job, base, undefined, ctx),
   );
   registered = true;
   logger.debug("channel-redirect follow-up handler registered");

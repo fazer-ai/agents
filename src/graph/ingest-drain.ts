@@ -6,7 +6,11 @@ import {
   countOwedByKeyPrefix,
   reapStaleJobs,
 } from "@/modules/scheduler/service";
-import { announceReaped, runClaimed } from "@/modules/scheduler/worker";
+import {
+  announceReaped,
+  jobDeadlineMs,
+  runClaimed,
+} from "@/modules/scheduler/worker";
 
 // Kept apart from ./ingest-job.ts on purpose. The handler there reaches for `armCompaction`, and
 // compaction is one of the readers that has to call this — importing the handler's module to get the
@@ -100,7 +104,9 @@ export async function drainPendingIngest(
       if (claimed.length === 0) break;
       for (const job of claimed) {
         seen.push(job.id);
-        await runClaimed(job, base);
+        await runClaimed(job, base, {
+          deadlineMs: jobDeadlineMs(STALE_CLAIM_MS),
+        });
       }
     }
     const owed = await countOwedByKeyPrefix(

@@ -405,7 +405,9 @@ const GUARD_CALLS: Record<string, number> = {
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
   // and the boot re-arm's before it reaches the log (issue #794).
   "src/modules/rag/source.ts": 3,
-  "src/modules/scheduler/service.ts": 2,
+  // The third reads it back: a run past its deadline takes its row back only while the row still
+  // carries the failure that deadline wrote, compared in the form `failJob` stored it (issue #811).
+  "src/modules/scheduler/service.ts": 3,
   // The Langfuse error text, before it reaches `poll_error` (issue #426, review round 1).
   "src/modules/spend-ceiling/poll.ts": 1,
   "src/modules/webhooks/outbound/worker.ts": 1,

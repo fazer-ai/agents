@@ -745,6 +745,68 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect((await mirroredConv(CONV)).assigneeId).toBe(INBOX_A);
   });
 
+  test("(2i) o prazo do job (issue #811): um follow-up cujo sinal já abortou não envia", async () => {
+    const CONV = 4312;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      assigneeType: "AgentBot",
+      assigneeId: INBOX_A,
+    });
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "pending",
+      meta: {
+        assignee_type: "AgentBot",
+        assignee: { id: INBOX_A, name: "Guard" },
+      },
+    }));
+    const deadline = new AbortController();
+    deadline.abort(new Error("deadline exceeded"));
+    let commits = 0;
+    await followUpHandler(jobFor(CONV), appDb, handlerDeps(s), {
+      signal: deadline.signal,
+      commit: () => {
+        commits++;
+      },
+    }).catch(() => undefined);
+    // O que (2h) envia, aqui não sai: a execução já foi falhada no prazo e a retentativa é dona do passo.
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    // E nada foi gasto, então o desfecho tardio segue descartado e a retentativa refaz o passo.
+    expect(commits).toBe(0);
+  });
+
+  // O outro lado: um passo que carimbou `last_follow_up_at` gastou o passo, e a execução diz isso ao
+  // runtime. Passado o prazo, é o que faz o próximo passo ser gravado em vez de a retentativa do passo
+  // 0 ler o carimbo como episódio já tratado e encerrar a sequência (issue #811).
+  test("(2j) o prazo do job (issue #811): um passo que carimbou marca a execução como comprometida", async () => {
+    const CONV = 4313;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      assigneeType: "AgentBot",
+      assigneeId: INBOX_A,
+    });
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "pending",
+      meta: {
+        assignee_type: "AgentBot",
+        assignee: { id: INBOX_A, name: "Guard" },
+      },
+    }));
+    let commits = 0;
+    await followUpHandler(jobFor(CONV), appDb, handlerDeps(s), {
+      signal: new AbortController().signal,
+      commit: () => {
+        commits++;
+      },
+    });
+    expect(s.sent.length).toBe(1);
+    expect(commits).toBeGreaterThan(0);
+  });
+
   test("(2c) live gate pós-invoke: resolve DURANTE o turno do modelo → nada postado, espelho reconciliado", async () => {
     const CONV = 4310;
     // Dentro da janela de 24h: sem o gate pós-invoke, o texto iria como sendMessage ao cliente.

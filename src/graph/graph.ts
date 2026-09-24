@@ -132,6 +132,13 @@ export interface BuildAgentGraphParams {
   // one was built (the primary then has one attempt), the agent's `modelCallTimeoutMs` when none was
   // (see buildModelAndGraph). Absent means that same default (issue #819: no call runs unbounded).
   primaryDeadlineMs?: number;
+  // The signal of the scheduler job this graph runs for (issue #811). It is NOT handed to
+  // `graph.invoke`: aborting an invoke between a checkpointed tool call and its result leaves the
+  // thread with a call no `ToolMessage` answers, which the providers then reject on every later turn
+  // (see `refuseCalledOffCalls`), and the invoke would reject while the tool is still running. It
+  // reaches the model call, and the tool boundary refuses calls once it has aborted, the same way a
+  // called-off turn does, so the graph ends in a consistent state and only after its work has stopped.
+  signal?: AbortSignal;
 }
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -587,6 +594,7 @@ export function buildAgentGraph({
   stillWanted,
   noReplyChannel,
   primaryDeadlineMs,
+  signal: jobSignal,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -646,7 +654,7 @@ export function buildAgentGraph({
     onToolLimit?.(info);
   };
 
-  const agentNode = async (state: typeof MessagesAnnotation.State) => {
+  const agentNodeBody = async (state: typeof MessagesAnnotation.State) => {
     // Exactly one system message, and it must be first: prepend the configured prompt and drop any
     // system message that leaked into the history (e.g. a proactive nudge persisted as a
     // SystemMessage by an older build). Providers like Google reject a second one outright with
@@ -828,17 +836,23 @@ export function buildAgentGraph({
             labels: { provider: fallback.provider, model: fallback.modelId },
             // The same 45 s the fallback's SDK is given, held by the race on an adapter that drops it.
             deadlineMs: fallback.deadlineMs ?? PRIMARY_TIMEOUT_MS,
-            run: (signal: AbortSignal) =>
-              (hardLimit
-                ? (cappedFallback ?? fallback.model)
-                : fallbackLlm
+            run: (deadline: AbortSignal) => {
+              // NOTE: a primary ended by the job's deadline reads as a timeout, which is what hands
+              // the turn to the fallback; after the deadline there is no turn to hand (issue #811).
+              if (jobSignal?.aborted) return Promise.reject(jobSignal.reason);
+              const signal = jobSignal
+                ? AbortSignal.any([deadline, jobSignal])
+                : deadline;
+              return (
+                hardLimit ? (cappedFallback ?? fallback.model) : fallbackLlm
               ).invoke(messages, {
                 signal,
                 // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
                 // reaches the handlers it already had, while `callbacks` replaces them — which
                 // would have billed this call to the primary's name or dropped the Langfuse trace.
                 metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
-              }),
+              });
+            },
           }
         : null;
 
@@ -871,10 +885,19 @@ export function buildAgentGraph({
 
     const primaryLlm = hardLimit ? capped : llm;
     // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of joining
-    // it (measured). Safe today because no caller hands `graph.invoke` a signal of its own; one that
-    // starts to would need the two combined here.
+    // it (measured). The job's deadline is joined here with the call's own, which `runModelCall`
+    // hands in, so a deadline that ends the job ends this call too (issue #811).
     const response = await runModelCall(
-      (signal) => primaryLlm.invoke(messages, { signal }),
+      (deadline) => {
+        // NOTE: a job past its deadline starts no primary call, which a permit wait or a slow tool can
+        // otherwise reach with the signal already aborted: an adapter that ignores the signal would
+        // still bill a reply nobody can deliver (issue #811).
+        if (jobSignal?.aborted) return Promise.reject(jobSignal.reason);
+        const signal = jobSignal
+          ? AbortSignal.any([deadline, jobSignal])
+          : deadline;
+        return primaryLlm.invoke(messages, { signal });
+      },
       {
         deadlineMs: primaryDeadlineMs,
         primary,
@@ -896,6 +919,20 @@ export function buildAgentGraph({
       },
     );
     return { messages: [...narration, silenced(response)] };
+  };
+
+  // The node as the graph runs it. A model call ended by the job's deadline (issue #811) fails with
+  // whatever the provider layer made of the abort ("timeout", or "provider error"); the run is
+  // reported with the job's own error instead, which is ours to publish and names the deadline.
+  const agentNode = async (state: typeof MessagesAnnotation.State) => {
+    try {
+      return await agentNodeBody(state);
+    } catch (err) {
+      if (jobSignal?.aborted && jobSignal.reason instanceof Error) {
+        throw jobSignal.reason;
+      }
+      throw err;
+    }
   };
 
   // ONCE PER TURN, the same closure argument the two flags above make. It says the tool boundary
@@ -931,20 +968,25 @@ export function buildAgentGraph({
   const refuseCalledOffCalls = async (
     state: typeof MessagesAnnotation.State,
   ): Promise<{ messages: BaseMessage[] } | null> => {
-    if (!stillWanted) return null;
+    if (!stillWanted && !jobSignal) return null;
     // No guard on an empty list, and the mutation battery is why: `toolsCondition` routes here only
     // when the last message is an assistant turn carrying tool calls, so the empty case is not a
     // case. A check for it survived every mutation, which is what a dead condition looks like.
     const last = state.messages.at(-1);
     const calls =
       last?.getType() === "ai" ? ((last as AIMessage).tool_calls ?? []) : [];
-    const wanted = await stillWanted().catch((err) => {
-      logger.warn(
-        { err },
-        "graph: could not read whether the turn is still wanted; letting its tool calls run",
-      );
-      return true;
-    });
+    const fenceSays = !stillWanted
+      ? true
+      : await stillWanted().catch((err) => {
+          logger.warn(
+            { err },
+            "graph: could not read whether the turn is still wanted; letting its tool calls run",
+          );
+          return true;
+        });
+    // NOTE: a run its job's deadline ended is called off like any other (issue #811), and it is read
+    // AFTER the fence, whose reads are the stretch a deadline can fire in.
+    const wanted = fenceSays && !jobSignal?.aborted;
     if (wanted) return null;
     calledOffAtTools = true;
     logger.info(

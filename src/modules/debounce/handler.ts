@@ -71,6 +71,7 @@ import {
   jobRetiredStrict,
 } from "@/modules/scheduler/service";
 import {
+  type JobContext,
   type JobResult,
   registerDeadLetterHandler,
   registerJobHandler,
@@ -147,6 +148,8 @@ function err(e: unknown): string {
 // click on the same failed burst still elect one sender. Returns the runtime outcome, or "empty"
 // when there is nothing to answer.
 export interface CoalesceTurnContext {
+  // The scheduler job's signal when a flush runs this (issue #811); the re-engage has none.
+  signal?: AbortSignal;
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -792,6 +795,7 @@ export async function coalesceAndRunTurn(
   // settlement — closing a row mid-turn takes it out of the sweep's sight.
   let foldedIn = false;
   const outcome = await runLoadedTurn({
+    signal: ctx.signal,
     // O PORTÃO DE POSSE DO OUTRO LADO DA ESPERA (issue #757): quando a seleção parou para abrir
     // anexos, a janela entre a checagem de dono do religar e a invocação deixa de ser a rede de um
     // `getMessages` e passa a ser minutos.
@@ -1014,6 +1018,8 @@ export interface FlushDebounceParams {
   job: ClaimedJob;
   base: PrismaClient;
   deps?: RuntimeDeps;
+  // The job's signal, aborted by its deadline (issue #811) and handed to the turn.
+  signal?: AbortSignal;
 }
 
 // A gate exit consumed the burst without a turn, and the ledger has to hear it too.
@@ -2614,6 +2620,7 @@ export async function flushDebounceJob(
     let claimLostPartial = false;
     const outcome = await coalesceAndRunTurn(
       {
+        signal: params.signal,
         tenantId,
         instanceId,
         conversationId,
@@ -2766,8 +2773,9 @@ export async function flushDebounceJob(
 function debounceFlushHandler(
   job: ClaimedJob,
   base: PrismaClient,
+  ctx?: JobContext,
 ): Promise<JobResult> {
-  return flushDebounceJob({ job, base });
+  return flushDebounceJob({ job, base, signal: ctx?.signal });
 }
 
 // The burst is definitively unanswered: the flush exhausted its attempts and the row is DEAD, so no

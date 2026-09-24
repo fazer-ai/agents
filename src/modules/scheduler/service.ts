@@ -16,6 +16,7 @@ import {
   kindsInLane,
   type SchedulerLane,
 } from "@/modules/scheduler/lanes";
+import { runningJobIds } from "./running";
 
 // Durable job store for the scheduler (follow-ups, sweeps, retries).
 //
@@ -1132,8 +1133,10 @@ export function claimSql(
   // the least in flight: one tenant's burst queues behind itself instead of in front of everyone, and
   // a tenant alone still takes every slot, because nothing is ever left idle.
   //
-  // The rows in flight are exactly `excludeIds` (the drain's in-flight set), whatever their status:
-  // a row re-armed to PENDING during its own flush is still running and still counts.
+  // The rows in flight are exactly `excludeIds` of this lane's kinds (the drain's in-flight set, plus
+  // a row whose run a deadline ended while its handler still runs), whatever their status: a row
+  // re-armed to PENDING during its own flush is still running and still counts. A row of another
+  // kind in that list is another lane's, and holds none of these slots.
   //
   // Ranked WITHOUT the lock and then locked: Postgres refuses FOR UPDATE on a query with a window
   // function. A row the ranking counted and SKIP LOCKED then skips only moves the queue up by one.
@@ -1149,7 +1152,7 @@ export function claimSql(
       ${
         excludeIds && excludeIds.length > 0
           ? Prisma.sql`SELECT tenant_id, count(*)::int AS n FROM scheduler_jobs
-      WHERE id IN (${Prisma.join(excludeIds)}) GROUP BY tenant_id`
+      WHERE id IN (${Prisma.join(excludeIds)}) AND ${kindFilter} GROUP BY tenant_id`
           : Prisma.sql`SELECT NULL::bigint AS tenant_id, 0 AS n WHERE false`
       }
     ),
@@ -1229,7 +1232,19 @@ async function claimWhere(
         attempts: number;
         claimSeq: number;
       }>
-    >(claimSql(lim, now, kindFilter, tenantId, excludeIds, keyPrefix, share));
+    >(
+      claimSql(
+        lim,
+        now,
+        kindFilter,
+        tenantId,
+        // NOTE: plus every row whose handler still runs here, including one whose run its deadline
+        // already ended and failed back to PENDING (./running.ts, issue #811).
+        [...new Set([...(excludeIds ?? []), ...runningJobIds()])],
+        keyPrefix,
+        share,
+      ),
+    );
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,
@@ -1597,6 +1612,43 @@ export async function failJob(
   // the same reason completeJob reports it (issue #164 review round 2) — the failure ordering is no
   // less invisible than the success one.
   return { deadLettered: dead && count > 0, applied: count > 0 };
+}
+
+// A run its deadline failed, taken back so the outcome of the work it committed can be written
+// (issue #811). Only the row exactly as `failJob` left it: PENDING under the SAME claim token, which
+// no claim has touched since, because a claim bumps the token and the row was kept out of every claim
+// while its handler ran, AND still carrying that failure's attempt count and error. The token alone
+// is not enough: a re-arm (`jobRowWrites`) puts the row back to PENDING without bumping it, and the
+// work it armed is newer than this run's outcome; every re-arm that touches the row clears
+// `last_error`. A row the fifth failure dead-lettered is not taken back: its death was already
+// announced. `claimed_at` is renewed so the reaper, which dates a claim by it, does not take the row
+// between this and the outcome.
+export async function reclaimAfterDeadline(
+  tenantId: bigint,
+  id: bigint,
+  claimSeq: number,
+  // What the run was claimed with and failed with: the values `failJob` wrote.
+  attempts: number,
+  error: string,
+  base: PrismaClient = basePrisma,
+): Promise<{ applied: boolean }> {
+  const count = await runScopedOn(
+    base,
+    sysCtx(tenantId),
+    (db) =>
+      db.$executeRaw`
+        UPDATE scheduler_jobs
+           SET status = 'CLAIMED'::"SchedulerJobStatus",
+               claimed_at = now(),
+               updated_at = now()
+         WHERE id = ${id}
+           AND tenant_id = ${tenantId}
+           AND status = 'PENDING'
+           AND claim_seq = ${claimSeq}
+           AND attempts = ${attempts + 1}
+           AND last_error = ${sanitizeErrorMessage(error)}`,
+  );
+  return { applied: count > 0 };
 }
 
 // Reaper: a CLAIMED row older than `staleMs` is presumed crashed → back to PENDING (attempts++ so

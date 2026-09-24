@@ -344,6 +344,8 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/graph/prepare.ts": [2, "flow-event"],
   "src/graph/runtime.ts": [4, "flow-event"],
   "src/graph/tool-flowlog.ts": [2, "flow-event"],
+  // #841: a playground turn that failed unhandled. A fixed sentence, never the error's text.
+  "src/modules/playground/service.ts": [1, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],

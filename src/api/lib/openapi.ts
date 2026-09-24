@@ -49,6 +49,9 @@ const STATUS_DESCRIPTION: Record<number, string> = {
   // that has been reached is a documented outcome of the playground endpoints. A description naming
   // only the limiter would be false about every route that lists this status.
   429: "Too many requests — rate limited, or a spend ceiling has been reached.",
+  // Declared only where the body says more than the bare 500 every route can answer: the playground's
+  // turn entry points, whose failure names the turn it ended (issue #841).
+  500: "Internal error — the request failed on the server.",
   502: "Bad gateway — an upstream dependency failed.",
 };
 
@@ -56,7 +59,16 @@ const STATUS_DESCRIPTION: Record<number, string> = {
 // builders can never drift apart in the published spec.
 function errorSchema(status: number): typeof ErrorResponse {
   return t.Object(
-    { error: t.String(), field: t.Optional(t.String()) },
+    {
+      error: t.String(),
+      field: t.Optional(t.String()),
+      turnId: t.Optional(
+        t.String({
+          description:
+            "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+        }),
+      ),
+    },
     { description: STATUS_DESCRIPTION[status] ?? "Error." },
   );
 }

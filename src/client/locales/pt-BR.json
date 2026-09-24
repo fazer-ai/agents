@@ -2382,7 +2382,9 @@
     "deleteSessionMessage": "Isto exclui a sessão salva e seu histórico. Não pode ser desfeito.",
     "deleteSessionTitle": "Excluir sessão",
     "empty": "(sem resposta)",
-    "error": "Não foi possível obter resposta. Verifique se o modelo está configurado (aba Geral).",
+    "error": "O servidor respondeu com erro e não disse o motivo.",
+    "errorLogs": "Ver este turno nos Logs ({{turnId}})",
+    "errorUnreachable": "Não foi possível falar com o servidor. Confira a conexão e tente de novo.",
     "file": {
       "extracted": "Conteúdo extraído",
       "extracting": "Extraindo…",

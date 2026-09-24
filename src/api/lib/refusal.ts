@@ -35,6 +35,8 @@ import { ActiveTenantNotFoundError, type AppError } from "@/lib/errors";
 export interface RefusalBody {
   error: string;
   field?: string;
+  // The playground turn the refusal ended (issue #841), for the console's link to its log lines.
+  turnId?: string;
 }
 
 export function refusalBody(
@@ -52,7 +54,11 @@ export function refusalBody(
   // NOTE: a blank name is not a name: it would put the key on the wire for a client to match against
   // nothing, which is worse than the honest silence of not naming a field at all.
   const field = error.field?.trim();
-  return field ? { error: message, field } : { error: message };
+  return {
+    error: message,
+    ...(field ? { field } : {}),
+    ...(error.turnId ? { turnId: error.turnId } : {}),
+  };
 }
 
 // The other half of what a refusal answers, and the reason it is a separate function: the body is

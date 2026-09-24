@@ -254,6 +254,62 @@ describe("a job's deadline inside the graph (issue #811)", () => {
     );
   });
 
+  test("a fallback already running when the deadline fires is ended by it", async () => {
+    // The fallback's own call gets the per-call deadline from `runModelCall`; the job's has to be
+    // joined to it, or a fallback that started before the deadline runs on for its full 45 s.
+    const primary = {
+      async invoke() {
+        throw Object.assign(new Error("service unavailable"), { status: 503 });
+      },
+      bindTools() {
+        return primary;
+      },
+    };
+    let sawAbort = false;
+    const fallback = {
+      async invoke(_m: BaseMessage[], opts?: { signal?: AbortSignal }) {
+        await new Promise<void>((_, reject) => {
+          opts?.signal?.addEventListener("abort", () => {
+            sawAbort = true;
+            const err = new Error("Request was aborted.");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+        return new AIMessage("never");
+      },
+      bindTools() {
+        return fallback;
+      },
+    };
+    const controller = new AbortController();
+    const graph = buildAgentGraph({
+      model: primary as unknown as BaseChatModel,
+      systemPrompt: "s",
+      primary: { provider: "openai", model: "test-model" },
+      fallback: {
+        model: fallback as unknown as BaseChatModel,
+        provider: "anthropic",
+        modelId: "claude-haiku-4-5",
+      },
+      signal: controller.signal,
+    });
+    const timer = setTimeout(
+      () => controller.abort(new Error("deadline exceeded after 240s")),
+      100,
+    );
+    const t = performance.now();
+    try {
+      await graph
+        .invoke({ messages: [new HumanMessage("oi")] })
+        .catch(() => {});
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(sawAbort).toBe(true);
+    expect(performance.now() - t).toBeLessThan(2_000);
+  });
+
   test("no graph invoke in the runtime or the nudge is handed a signal", async () => {
     // The structural half: the two places a job's turn invokes its graph build the invoke's options
     // next to `recursionLimit`, and none of them may carry `signal`.

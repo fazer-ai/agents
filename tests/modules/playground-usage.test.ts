@@ -16,6 +16,7 @@ import {
   runPlaygroundTurn,
 } from "@/modules/playground/service";
 import {
+  applyTurnNotes,
   attachTurnUsage,
   getPlaygroundSessionTurns,
   getPlaygroundSessionUsage,
@@ -575,6 +576,33 @@ describe("attachTurnUsage", () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+describe("a blocked turn keeps its line on reopen", () => {
+  // The input screening refused the turn, so the thread never received it and the transcript note
+  // rebuilds it. The screening was billed, and the live note showed that line.
+  test("the suppression note stands for the turn's reply, with or without a template", () => {
+    const U = { ...emptyTurnUsage(), calls: 1, promptTokens: 300 };
+    const note = (id: string, reply: string) => ({
+      messageId: null,
+      anchorMessageId: null,
+      userMessageId: id,
+      userText: "fale do concorrente",
+      reply,
+      guardrails: [],
+      createdAt: new Date(),
+    });
+    const turns = attachTurnUsage(
+      applyTurnNotes([], [note("a", ""), note("b", "[bloqueado]")]),
+      new Map([
+        ["a", U],
+        ["b", { ...U, calls: 2 }],
+      ]),
+    );
+    expect(
+      turns.filter((t) => t.role === "assistant").map((t) => t.usage?.calls),
+    ).toEqual([1, 2]);
   });
 });
 

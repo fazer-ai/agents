@@ -398,6 +398,8 @@ export function applyTurnNotes(
         role: "assistant",
         text: "",
         suppressed: true,
+        // The note stands for this turn's reply, so it carries the turn's usage line (issue #839).
+        ...(n.userMessageId ? { turnId: n.userMessageId } : {}),
         trace: [...n.guardrails],
         sources: [],
       });

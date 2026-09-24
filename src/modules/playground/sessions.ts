@@ -432,9 +432,13 @@ export function applyTurnNotes(
 }
 
 // Hands each turn's ledger usage to the reply the operator read for it (issue #839): the LAST
-// agent-side bubble carrying that turnId, which is where the live turn drew its line. A turn with no
-// such bubble (a failed one, or a follow-up that stayed silent) keeps its calls in the session
-// total only, as it did live.
+// agent-side bubble carrying that turnId, which is where the live turn drew its line.
+//
+// A turn that billed calls and replied nothing (the agent chose silence, or it failed after a call)
+// showed "(no reply)" with its line live, and the rebuild drops an empty reply, so the bubble is put
+// back after the user's message, with the line. Only where the ledger has rows for that turn: an
+// older turn, from before the column, keeps the transcript it always had. A silent follow-up has no
+// user message on screen to follow, so its calls stay in the session total only.
 export function attachTurnUsage(
   turns: RebuiltTurn[],
   byTurn: ReadonlyMap<string, TurnUsage>,
@@ -445,11 +449,25 @@ export function attachTurnUsage(
     if (t.role === "assistant" && t.turnId && byTurn.has(t.turnId))
       last.set(t.turnId, i);
   });
-  return turns.map((t, i) =>
-    t.turnId && last.get(t.turnId) === i
-      ? { ...t, usage: byTurn.get(t.turnId) }
-      : t,
-  );
+  const out: RebuiltTurn[] = [];
+  turns.forEach((t, i) => {
+    const usage = t.turnId ? byTurn.get(t.turnId) : undefined;
+    if (t.role === "assistant") {
+      out.push(usage && last.get(t.turnId ?? "") === i ? { ...t, usage } : t);
+      return;
+    }
+    out.push(t);
+    if (usage && t.turnId && !last.has(t.turnId))
+      out.push({
+        role: "assistant",
+        text: "",
+        turnId: t.turnId,
+        usage,
+        trace: [],
+        sources: [],
+      });
+  });
+  return out;
 }
 
 async function usageByTurn(

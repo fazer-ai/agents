@@ -439,6 +439,32 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     ]);
   });
 
+  test("a turn that replied nothing comes back as the same empty reply, with its line", async () => {
+    const quiet = (() => new SpendingModel("", AGENT_SPEND)) as never;
+    const r = await runPlaygroundTurn({
+      ctx: ctx(),
+      agentId,
+      message: "obrigado",
+      guardrails: false,
+      base: appDb,
+      deps: { makeModel: quiet },
+    });
+    // (0) the turn really billed a call and answered nothing
+    expect(r.reply).toBe("");
+    expect(r.usage.calls).toBe(1);
+    const turns = await getPlaygroundSessionTurns(
+      ctx(),
+      agentId,
+      r.threadId,
+      appDb,
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:obrigado",
+      "assistant:",
+    ]);
+    expect(turns[1]?.usage).toEqual(r.usage);
+  });
+
   test("a reopened file turn shows its read and its reply on one line, and a replayed read id is refused", async () => {
     const vision = (async () =>
       new Response(
@@ -554,14 +580,15 @@ describe("attachTurnUsage", () => {
     sources: [],
   });
 
-  test("the line goes to the last reply of its turn, and a turn with no reply keeps none", () => {
+  test("the line goes to the last reply of its turn, and a turn that replied nothing gets its bubble back", () => {
     const out = attachTurnUsage(
       [
         turn("user", "a"),
         turn("assistant", "a"),
         turn("assistant", "a"),
         turn("user", "b"),
-        turn("assistant"),
+        turn("user", "old"),
+        turn("assistant", "old"),
       ],
       new Map([
         ["a", U],
@@ -569,13 +596,18 @@ describe("attachTurnUsage", () => {
         ["lost", { ...U, calls: 3 }],
       ]),
     );
-    expect(out.map((t) => t.usage)).toEqual([
-      undefined,
-      undefined,
-      U,
-      undefined,
-      undefined,
+    expect(out.map((t) => `${t.role}:${t.turnId}:${t.usage?.calls}`)).toEqual([
+      "user:a:undefined",
+      "assistant:a:undefined",
+      "assistant:a:1",
+      "user:b:undefined",
+      // "(no reply)", as live, right after the message it answered, and before the next turn.
+      "assistant:b:2",
+      "user:old:undefined",
+      // A turn the ledger has no rows for keeps what it had.
+      "assistant:old:undefined",
     ]);
+    expect(out[4]?.text).toBe("");
   });
 });
 

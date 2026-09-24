@@ -7619,6 +7619,59 @@ describe.skipIf(!dbUp)("debounce", () => {
       await clearFlowLog(suDb, { tenantId });
     });
 
+    // Issue #811, the other side: once the announcement reached the conversation, its remaining acts
+    // are this run's. A deadline that fires inside the hand-over does not withhold the note that
+    // explains it, because a retry finds the conversation a person's and never reaches the note.
+    test("a ceiling announcement the deadline reaches at the hand-over still leaves its note", async () => {
+      await seedConversation(8112);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const controller = new AbortController();
+      const stub = makeResolveStub({
+        pages: [page([{ id: 7, content: "oi" }])],
+        sent,
+        calls: { getMessages: 0 },
+        toggles,
+        notes,
+        order: [],
+      });
+      const makeClient = (async (...args: Parameters<typeof stub>) => {
+        const client = await stub(...args);
+        return new Proxy(client, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver);
+            if (prop !== "toggleStatus" || typeof value !== "function") {
+              return typeof value === "function" ? value.bind(target) : value;
+            }
+            return async (...a: unknown[]) => {
+              const out = await value.apply(target, a);
+              controller.abort(new Error("deadline exceeded"));
+              return out;
+            };
+          },
+        });
+      }) as typeof stub;
+      await flushDebounceJob({
+        job: jobFor(8112, { lastMessageId: 7 }),
+        base: appDb,
+        signal: controller.signal,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient,
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(controller.signal.aborted).toBe(true);
+      expect(sent).toEqual([[8112, CEILING_COPY]]);
+      expect(toggles).toEqual([[8112, "open"]]);
+      expect(notes.length).toBe(1);
+      expect(await watermarkOf(8112)).toBe(7);
+      await clearFlowLog(suDb, { tenantId });
+    });
+
     // A HUMAN CLAIMING THE CONVERSATION WHILE THE GATE DECIDES. The gate at the top of the flush
     // judged the instant before two database reads, and `open` is not a neutral write: it ends the
     // bot's attribution and puts the conversation back in the routing queue, so applying it to a

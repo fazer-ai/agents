@@ -2009,6 +2009,10 @@ export async function flushDebounceJob(
   // Lenient (`jobRetired`, not the strict probe): an unreadable retirement row leaves this acting,
   // which is where every caller outside the thread's critical section sits, and the cost of that
   // guess here is a sentence sent once too often.
+  // Whether the announcement has reached the conversation (its message sent, or the conversation
+  // handed to the humans). From then on its remaining acts are this run's to finish, deadline or not:
+  // a retry finds the conversation a person's and never reaches the note that explains it (#811).
+  let ceilingActed = false;
   const stillWanted = async (act: string): Promise<boolean> => {
     if (await jobRetired(job, base)) {
       logger.info(
@@ -2031,7 +2035,7 @@ export async function flushDebounceJob(
       return false;
     }
     // NOTE: after the two reads above, the stretch it can fire in (issue #811).
-    if (pastDeadline()) {
+    if (pastDeadline() && !ceilingActed) {
       logger.info(
         "debounce flush: spend-ceiling %s withheld (conv=%s): the job's deadline ended this run",
         act,
@@ -2176,6 +2180,7 @@ export async function flushDebounceJob(
           if (!(await stillOurs("message")) || !(await stillWanted("message")))
             return false;
           await client.sendMessage(conversationId, text);
+          ceilingActed = true;
           return true;
         } catch (err) {
           logger.warn(
@@ -2213,6 +2218,7 @@ export async function flushDebounceJob(
           if (!(await stillOurs("handoff")) || !(await stillWanted("handoff")))
             return false;
           await client.toggleStatus(conversationId, "open");
+          ceilingActed = true;
           return true;
         } catch (err) {
           // Best-effort, like every other handoff: a Chatwoot that will not take the status change

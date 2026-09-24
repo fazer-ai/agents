@@ -357,6 +357,9 @@ describe("summarizeAttendance", () => {
     expect(src).toContain(
       "providerFailure(err, attemptSignal?.aborted === true)",
     );
+    // And the signal read is the one `runModelCall` handed this attempt (issue #819), not a variable
+    // left unset: unset, every timeout reads as "provider error" again.
+    expect(src).toContain("attemptSignal = signal;");
   });
 
   test("a provider failure is reported, and never throws into the job", async () => {

@@ -247,6 +247,7 @@ describe("runModelCall with something behind the primary", () => {
       primary: PRIMARY,
       fallback: {
         labels: FALLBACK_LABELS,
+        deadlineMs: 5_000,
         run: () => {
           fallbackCalls += 1;
           return Promise.resolve("from the fallback");
@@ -270,6 +271,7 @@ describe("runModelCall with something behind the primary", () => {
       primary: PRIMARY,
       fallback: {
         labels: FALLBACK_LABELS,
+        deadlineMs: 5_000,
         run: () => {
           fallbackCalls += 1;
           return Promise.resolve("from the fallback");
@@ -301,6 +303,7 @@ describe("runModelCall with something behind the primary", () => {
         primary: PRIMARY,
         fallback: {
           labels: FALLBACK_LABELS,
+          deadlineMs: 5_000,
           // The SAME return type as the primary, which is the type system holding the design: the
           // fallback answers the customer, so whatever it returns has to be a reply the turn can post.
           run: () => {
@@ -330,6 +333,7 @@ describe("runModelCall with something behind the primary", () => {
       onRetry: ({ provider, model }) => retries.push({ provider, model }),
       fallback: {
         labels: FALLBACK_LABELS,
+        deadlineMs: 5_000,
         run: () => fallbackModel.invoke([{ role: "user", content: "oi" }]),
       },
     });
@@ -365,6 +369,7 @@ describe("runModelCall with something behind the primary", () => {
       primary: PRIMARY,
       fallback: {
         labels: FALLBACK_LABELS,
+        deadlineMs: 5_000,
         run: () =>
           Promise.reject(
             Object.assign(new Error("the second vendor's own prose"), {

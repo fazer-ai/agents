@@ -248,7 +248,8 @@ export async function summarizeAttendance(
   // timed out" that does not come from the response. Every other tell — the error's name, its
   // message — is written by someone else.
   //
-  // Made INSIDE the callback, which is not a detail. `runModelCall` waits on the process-wide model
+  // Made INSIDE the callback, which is not a detail, and now by `runModelCall` itself (issue #819),
+  // which also cuts an adapter deaf to it by a race. `runModelCall` waits on the process-wide model
   // semaphore BEFORE it calls this, and calls it a SECOND time when the provider returns an empty
   // completion. A signal created outside would spend its budget queueing behind other turns and hand
   // the retry whatever was left — so on a fleet busy enough for the wait to approach the ceiling,
@@ -257,24 +258,27 @@ export async function summarizeAttendance(
   // one the error came from.
   let attemptSignal: AbortSignal | undefined;
   try {
-    const res = await runModelCall(() => {
-      attemptSignal = AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS);
-      return model.invoke(
-        [
-          new SystemMessage(SYSTEM_PROMPT),
-          // NOTE: The transcript is never interpolated into the system prompt. Everything in a
-          // system message reads to the model as an instruction from the operator, and this text was
-          // written by the customer.
-          new HumanMessage(
-            `${TRANSCRIPT_TAG}\n${transcript}\n${TRANSCRIPT_CLOSE}`,
-          ),
-        ],
-        {
-          signal: attemptSignal,
-          ...(callbacks ? { callbacks } : {}),
-        },
-      );
-    });
+    const res = await runModelCall(
+      (signal) => {
+        attemptSignal = signal;
+        return model.invoke(
+          [
+            new SystemMessage(SYSTEM_PROMPT),
+            // NOTE: The transcript is never interpolated into the system prompt. Everything in a
+            // system message reads to the model as an instruction from the operator, and this text was
+            // written by the customer.
+            new HumanMessage(
+              `${TRANSCRIPT_TAG}\n${transcript}\n${TRANSCRIPT_CLOSE}`,
+            ),
+          ],
+          {
+            signal,
+            ...(callbacks ? { callbacks } : {}),
+          },
+        );
+      },
+      { deadlineMs: SUMMARIZE_TIMEOUT_MS },
+    );
     const text = contentToText(res.content).trim();
     if (!text) return { summary: "", error: "empty completion" };
     return { summary: clipText(text, ATTENDANCE_SUMMARY_MAX) };

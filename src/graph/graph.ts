@@ -19,8 +19,8 @@ import logger from "@/api/lib/logger";
 import { datedHistory } from "@/graph/history-dates";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
+import { PRIMARY_TIMEOUT_MS } from "@/graph/model-fallback";
 import {
-  callWithDeadline,
   type ModelLabels,
   type ModelRetryInfo,
   type PermitWaitInfo,
@@ -38,6 +38,9 @@ export interface FallbackModel {
   model: BaseChatModel;
   provider: string;
   modelId: string;
+  // The deadline on each call to it (issue #819). Absent means `PRIMARY_TIMEOUT_MS`, the ceiling its
+  // SDK is built with, which the Google adapter drops and this race holds.
+  deadlineMs?: number;
 }
 
 // Minimal functional supervisor: an agent node over the persisted message history, with an
@@ -125,9 +128,9 @@ export interface BuildAgentGraphParams {
   // prose that goes nowhere and is paid for by the token. Absent means the ordinary turn, which does
   // answer somebody.
   noReplyChannel?: boolean;
-  // The deadline on each call to the PRIMARY, retries included (issue #809). Set exactly when nothing
-  // else bounds that call, which is when no fallback was built (see buildModelAndGraph); absent means
-  // the call runs as it did.
+  // The deadline on each call to the PRIMARY, retries included (issue #809): the fallback's 45 s when
+  // one was built (the primary then has one attempt), the agent's `modelCallTimeoutMs` when none was
+  // (see buildModelAndGraph). Absent means that same default (issue #819: no call runs unbounded).
   primaryDeadlineMs?: number;
 }
 
@@ -823,11 +826,14 @@ export function buildAgentGraph({
       fallback && fallbackLlm
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
-            run: () =>
+            // The same 45 s the fallback's SDK is given, held by the race on an adapter that drops it.
+            deadlineMs: fallback.deadlineMs ?? PRIMARY_TIMEOUT_MS,
+            run: (signal: AbortSignal) =>
               (hardLimit
                 ? (cappedFallback ?? fallback.model)
                 : fallbackLlm
               ).invoke(messages, {
+                signal,
                 // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
                 // reaches the handlers it already had, while `callbacks` replaces them — which
                 // would have billed this call to the primary's name or dropped the Langfuse trace.
@@ -846,6 +852,7 @@ export function buildAgentGraph({
             ...narration,
             silenced(
               await runModelCall(second.run, {
+                deadlineMs: second.deadlineMs,
                 primary: second.labels,
                 onRetry: onModelRetry,
                 onPermitWait: onModelPermitWait,
@@ -867,13 +874,9 @@ export function buildAgentGraph({
     // it (measured). Safe today because no caller hands `graph.invoke` a signal of its own; one that
     // starts to would need the two combined here.
     const response = await runModelCall(
-      () =>
-        primaryDeadlineMs === undefined
-          ? primaryLlm.invoke(messages)
-          : callWithDeadline(primaryDeadlineMs, (signal) =>
-              primaryLlm.invoke(messages, { signal }),
-            ),
+      (signal) => primaryLlm.invoke(messages, { signal }),
       {
+        deadlineMs: primaryDeadlineMs,
         primary,
         onRetry: onModelRetry,
         onPermitWait: onModelPermitWait,
@@ -881,6 +884,7 @@ export function buildAgentGraph({
           ? {
               labels: second.labels,
               run: second.run,
+              deadlineMs: second.deadlineMs,
               onFallback: ({ reason }) => {
                 fallbackHasTheTurn = true;
                 onModelFallback?.({ ...second.labels, reason });

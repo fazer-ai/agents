@@ -30,9 +30,36 @@ export interface EmbeddingConfig {
 export interface EmbeddingDeps {
   fetchImpl?: typeof fetch;
   assertSafe?: typeof assertSafeOutboundUrl;
+  // Told each time a query embedding is about to be asked again, so the search that paid for it can
+  // say so on its tool line (issue #844). The ingest does not report retries anywhere.
+  onRetry?: (err: unknown) => void;
+  // The query's two deadlines, for a test that cannot wait seconds for a stalled request.
+  queryBudget?: QueryBudget;
 }
 
+// The INGEST's wait for one request. Nobody is waiting on a reply and a failure is terminal (the
+// document lands in FAILED), so a slow endpoint is given its time.
 const EMBEDDING_TIMEOUT_MS = 60_000;
+
+// A QUERY IS A CUSTOMER WAITING (issue #844). `embedQuery` runs inside a live turn's
+// `search_knowledge`, the console's test search and the MCP search, and it used to wait as the
+// ingest does: 60 s per attempt on the compatible path, three attempts, and on the SDK path the
+// OpenAI client's own 10 minutes per attempt under LangChain's six retries. Measured in production:
+// searches of 139 s and 158 s that returned normally, in minutes where every other call ran under a
+// second. A query embedding answers in well under a second, so an attempt still open after a few
+// seconds is a stalled connection, not a slow answer, and asking again beats waiting on it.
+//
+// `attemptMs` bounds one request; `deadlineMs` bounds the whole search, retries and their pauses
+// included, and sits well under the turn's own deadline (`PRIMARY_TIMEOUT_MS`, 45 s), so a search
+// that gives up leaves the turn time to answer without it.
+export interface QueryBudget {
+  attemptMs: number;
+  deadlineMs: number;
+}
+export const QUERY_BUDGET: QueryBudget = {
+  attemptMs: 8_000,
+  deadlineMs: 20_000,
+};
 
 // The same bound `@langchain/openai` applies on the SDK path (`batchSize = 512`). It is here because
 // `embedTexts` is handed EVERY chunk of a document at once (`documents.ts`), which has no size cap:
@@ -90,19 +117,39 @@ function isTransient(err: unknown, retryStatusless: boolean): boolean {
 // transport failure, which otherwise looks identical: neither carries a status.
 class UnusableResponseError extends Error {}
 
-function client(cfg: EmbeddingConfig, deps: EmbeddingDeps): OpenAIEmbeddings {
+function client(
+  cfg: EmbeddingConfig,
+  deps: EmbeddingDeps,
+  // A query attempt's own cancellation, with LangChain's six retries off so the one loop that
+  // retries is ours and the deadline covers it. Absent for the ingest, which keeps the SDK's defaults.
+  query?: { signal: AbortSignal },
+): OpenAIEmbeddings {
+  // LangChain's `embedQuery` takes no signal, so the attempt's reaches the request through the fetch
+  // the SDK is given: aborting it closes the request and any error body still being read, which the
+  // SDK's own timer stops covering once the headers arrive.
+  const baseFetch = deps.fetchImpl ?? fetch;
+  const fetchImpl = query
+    ? (((url: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        baseFetch(url, {
+          ...init,
+          signal: init?.signal
+            ? AbortSignal.any([init.signal, query.signal])
+            : query.signal,
+        })) as typeof fetch)
+    : deps.fetchImpl;
   const configuration = {
     ...(cfg.baseURL ? { baseURL: cfg.baseURL } : {}),
-    // Only when injected: undefined here would still be a key the SDK sees, and the point is that
-    // production keeps the global fetch. It exists so a test can assert what this path SENDS —
-    // which is the reason the compatible path below exists at all: with no `encoding_format` of its
-    // own the SDK adds `base64`, and a good many self-hosted servers answer that with a 400.
-    ...(deps.fetchImpl ? { fetch: deps.fetchImpl } : {}),
+    // Only when injected or wrapped: undefined here would still be a key the SDK sees, and the point
+    // is that the ingest keeps the global fetch. It exists so a test can assert what this path SENDS
+    // — which is the reason the compatible path below exists at all: with no `encoding_format` of
+    // its own the SDK adds `base64`, and a good many self-hosted servers answer that with a 400.
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
   };
   return new OpenAIEmbeddings({
     model: cfg.model,
     apiKey: cfg.apiKey,
     ...(Object.keys(configuration).length ? { configuration } : {}),
+    ...(query ? { maxRetries: 0 } : {}),
   });
 }
 
@@ -138,6 +185,7 @@ async function embedCompatibleBatch(
   texts: string[],
   cfg: EmbeddingConfig & { baseURL: string },
   deps: EmbeddingDeps,
+  signal: AbortSignal,
 ): Promise<number[][]> {
   // BEFORE EVERY FETCH, not once per document. `assertSafeOutboundUrl` resolves the hostname, and a
   // tenant-controlled name can answer publicly for the check and privately a moment later; a
@@ -149,6 +197,9 @@ async function embedCompatibleBatch(
   // the connection are still two lookups. Pinning the vetted address is the only thing that closes
   // it, and it is not what any other outbound path here does.
   const url = await compatibleTarget(cfg.baseURL, deps);
+  // An attempt given up on while the host was being resolved sends nothing (issue #844, review round
+  // 2): the search has already moved on, and a request now would be billed for an answer nobody reads.
+  signal.throwIfAborted();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const res = await fetchImpl(url, {
     method: "POST",
@@ -158,7 +209,7 @@ async function embedCompatibleBatch(
     },
     body: JSON.stringify({ model: cfg.model, input: texts }),
     redirect: "error",
-    signal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS),
+    signal,
   });
   if (!res.ok) throw await providerResponseError(res);
   // A 2xx whose body is not JSON is a response that ARRIVED and cannot be used, and it has to be
@@ -296,16 +347,65 @@ function compatibleEndpoint(baseURL: string): string {
   }
 }
 
-async function withTransientRetry<T>(
-  call: () => Promise<T>,
-  retryStatusless: boolean,
+// The attempt's deadline over EVERYTHING the attempt awaits, and its end (issue #844, review rounds
+// 1 and 2). A timeout on the request alone left two waits unbounded: the compatible path resolves the
+// host for the SSRF check before its fetch, and the OpenAI SDK clears its own timer once the headers
+// arrive and then reads an error body with no bound at all. So the attempt is raced against its
+// deadline, and at the deadline its signal is aborted: the request and any body still being read are
+// closed, and a host check that answers late sends nothing. The rejection of the work left behind is
+// swallowed, so an abandoned attempt cannot surface as an unhandled one.
+async function withinDeadline<T>(
+  call: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
 ): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = call(controller.signal);
+  work.catch(() => {});
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const err = Object.assign(new Error("embedding attempt timed out"), {
+            name: "TimeoutError",
+          });
+          controller.abort(err);
+          reject(err);
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Each attempt is handed the time it may take. Without a deadline that is the attempt bound alone;
+// with one it is whatever the deadline leaves, and an attempt whose pause alone would reach the
+// deadline is not started: the last failure is the answer.
+async function withTransientRetry<T>(
+  call: (signal: AbortSignal) => Promise<T>,
+  retryStatusless: boolean,
+  budget: { attemptMs: number; deadlineMs?: number },
+  onRetry?: (err: unknown) => void,
+): Promise<T> {
+  const startedAt = Date.now();
   for (let attempt = 0; ; attempt++) {
+    const left =
+      budget.deadlineMs === undefined
+        ? Number.POSITIVE_INFINITY
+        : budget.deadlineMs - (Date.now() - startedAt);
     try {
-      return await call();
+      return await withinDeadline(call, Math.min(budget.attemptMs, left));
     } catch (err) {
       const delay = COMPATIBLE_RETRY_DELAYS_MS[attempt];
       if (delay === undefined || !isTransient(err, retryStatusless)) throw err;
+      if (
+        budget.deadlineMs !== undefined &&
+        Date.now() - startedAt + delay >= budget.deadlineMs
+      )
+        throw err;
+      onRetry?.(err);
       await Bun.sleep(delay);
     }
   }
@@ -370,8 +470,10 @@ export async function embedTexts(
   for (const batch of batchesOf(texts)) {
     const vectors = await throughProvider(() =>
       withTransientRetry(
-        () => embedCompatibleBatch(batch, { ...cfg, baseURL }, deps),
+        (signal) =>
+          embedCompatibleBatch(batch, { ...cfg, baseURL }, deps, signal),
         true,
+        { attemptMs: EMBEDDING_TIMEOUT_MS },
       ),
     ).catch(unwrapOurOwn);
     for (const v of vectors) out.push(assertWidth(v, cfg));
@@ -385,15 +487,26 @@ export async function embedQuery(
   deps: EmbeddingDeps = {},
 ): Promise<number[]> {
   const baseURL = cfg.baseURL;
-  const vector = await throughProvider(async () => {
-    if (baseURL) {
-      const vectors = await withTransientRetry(
-        () => embedCompatibleBatch([text], { ...cfg, baseURL }, deps),
-        false,
-      );
-      return vectors[0] as number[];
-    }
-    return client(cfg, deps).embedQuery(text);
-  }).catch(unwrapOurOwn);
+  // One loop for both paths, so the SDK path is held to the same two deadlines: it used to retry
+  // inside LangChain, where neither was ours to set.
+  const vector = await throughProvider(() =>
+    withTransientRetry(
+      async (signal) => {
+        if (baseURL) {
+          const vectors = await embedCompatibleBatch(
+            [text],
+            { ...cfg, baseURL },
+            deps,
+            signal,
+          );
+          return vectors[0] as number[];
+        }
+        return client(cfg, deps, { signal }).embedQuery(text);
+      },
+      false,
+      deps.queryBudget ?? QUERY_BUDGET,
+      deps.onRetry,
+    ),
+  ).catch(unwrapOurOwn);
   return assertWidth(vector, cfg);
 }

@@ -196,6 +196,46 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.errorMessage).toContain("HTTP 400");
   });
 
+  // Issue #844: a slow search is attributed on its own line. `search_knowledge` counts the times its
+  // query embedding was asked again and puts the count in its artifact; the line carries it only
+  // when there was one.
+  test("a tool that had to ask again says how many times, and only then", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
+    for (const [run, artifact] of [
+      ["run-retried", { sources: [], retries: 2 }],
+      ["run-clean", { sources: [] }],
+      ["run-zero", { sources: [], retries: 0 }],
+    ] as const) {
+      logger.handleToolStart(
+        {} as never,
+        "{}",
+        run,
+        undefined,
+        undefined,
+        undefined,
+        "search_knowledge",
+      );
+      logger.handleToolEnd(
+        new ToolMessage({
+          content: "passagem",
+          tool_call_id: run,
+          name: "search_knowledge",
+          artifact,
+        }),
+        run,
+      );
+    }
+    const rows = await pollToolRows(flow.turnId, 3);
+    const details = rows.map((r) => r.detail as Record<string, unknown>);
+    expect(details.map((d) => d.retries).sort()).toEqual([
+      2,
+      undefined,
+      undefined,
+    ]);
+    expect(details.filter((d) => "retries" in d)).toHaveLength(1);
+  });
+
   test("a ToolMessage with status error logs ONE warn/error line carrying the message", async () => {
     const flow = flowCtx();
     const logger = new ToolFlowLogger(flow);

@@ -31,6 +31,8 @@ export interface SearchParams {
   limit?: number;
   efSearch?: number;
   base?: PrismaClient;
+  // Told each time the query embedding is asked again (issue #844), so a slow search can say why.
+  onEmbeddingRetry?: () => void;
 }
 
 export async function searchKnowledge(
@@ -66,7 +68,12 @@ export async function searchKnowledge(
   if (!prep) return [];
 
   // Phase 2 (NO tx): embed the query (network).
-  const queryEmbedding = await embedQuery(params.query, prep.cfg);
+  const onRetry = params.onEmbeddingRetry;
+  const queryEmbedding = await embedQuery(
+    params.query,
+    prep.cfg,
+    onRetry ? { onRetry: () => onRetry() } : {},
+  );
 
   // Phase 3 (scoped tx): KNN search (raw SQL, RLS-fenced).
   const rows = await runScopedOn(base, ctx, (db) =>

@@ -50,6 +50,21 @@ function parseToolInput(
 
 // A tool run's output reaches the callback as a ToolMessage-like object; surface its `content` (the
 // text the model sees) rather than the LangChain wrapper. Other shapes pass through unchanged.
+// How many times a tool had to ask its provider again before it answered, when it says so in its
+// artifact (`search_knowledge`'s query embedding, issue #844). Only a positive count: the key is
+// absent on a line that retried nothing, so its presence is the signal.
+function toolRetries(output: unknown): number | undefined {
+  const artifact =
+    output && typeof output === "object" && "artifact" in output
+      ? (output as { artifact: unknown }).artifact
+      : undefined;
+  const n =
+    artifact && typeof artifact === "object"
+      ? (artifact as { retries?: unknown }).retries
+      : undefined;
+  return typeof n === "number" && n > 0 ? n : undefined;
+}
+
 function toolOutputValue(output: unknown): unknown {
   if (output && typeof output === "object" && "content" in output) {
     return (output as { content: unknown }).content;
@@ -175,6 +190,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     this.starts.delete(runId);
     const failed = isErrorToolOutput(output);
     const value = toolOutputValue(output);
+    const retries = toolRetries(output);
     // NOTE: Integration failure returned as a friendly string (failableTool): ONE line, level warn —
     // same level as handleToolError, so alert channels (minLevel warn) can subscribe (issue #40).
     emitFlowEvent(this.flow, {
@@ -186,6 +202,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
         tool: s.tool,
         args: s.args,
         output: this.describe(value, null),
+        ...(retries !== undefined ? { retries } : {}),
         // NOTE: Asked HERE and not at handleToolStart, because a model may emit `skip_reply`
         // alongside the tool that speaks (the documented parallel batch), and ToolNode runs a batch
         // concurrently: at the start of a 0ms decision the companion has not recorded anything yet.

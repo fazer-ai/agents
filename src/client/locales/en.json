@@ -2338,7 +2338,7 @@
     "guardrailsHelp": "This option applies the same checks in the Playground as in real conversations.\n\nYou test the result a customer would get when talking to the agent.\n\nThis increases cost: one extra analysis for the message and another for the reply. Relevance adds one more when it runs with another reply check.",
     "guardrailsUnavailable": "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
     "handedOffNote": "Nothing would be sent to the customer: the guardrail would hand the case to the team.",
-    "hint": "Uses the saved config.",
+    "hint": "Tests your live (unsaved) edits.",
     "historyEmpty": "No saved sessions yet.",
     "image": {
       "loadFailed": "Could not load the image."

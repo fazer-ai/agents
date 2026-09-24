@@ -313,6 +313,9 @@ export interface AgentConfig {
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
   memoryCompaction: boolean;
+  // Whether each person's message reaches the model behind the date it was sent
+  // (agent.settings.memory.historyDates, issue #755). Rendered in `timezone` above.
+  historyDates: boolean;
   // The summariser's own model, as an override of the agent's, plus the credential it names. Same
   // three-field shape as the speech rewrite above; resolved through graph/model-override.ts.
   memoryCompactionOverride: ModelOverride;
@@ -542,7 +545,8 @@ export async function loadAgentConfig(
   // than quietly falling back to the agent's key on a provider that may not accept it. Failing is
   // right here where skipping is right for the rewrite: a skipped rewrite costs one sentence's
   // delivery, a summary written by the wrong model is memory this contact carries forever.
-  const memoryCfg = readMemoryConfig(effSettings).compaction;
+  const memoryRead = readMemoryConfig(effSettings);
+  const memoryCfg = memoryRead.compaction;
   let memoryCompactionApiKey = "";
   let memoryCompactionCredentialBaseUrl: string | null = null;
   if (memoryCfg.enabled && memoryCfg.credentialRef) {
@@ -898,6 +902,7 @@ export async function loadAgentConfig(
     maxToolCalls: limits.maxToolCalls,
     maxHistoryTokens: limits.maxHistoryTokens,
     memoryCompaction: memoryCfg.enabled,
+    historyDates: memoryRead.historyDates.enabled,
     memoryCompactionOverride: {
       provider: memoryCfg.provider,
       model: memoryCfg.model,
@@ -1977,6 +1982,7 @@ export async function buildModelAndGraph(
     onModelFallback: deps.onModelFallback,
     onModelFallbackFailed: deps.onModelFallbackFailed,
     maxHistoryTokens: cfg.maxHistoryTokens,
+    historyDates: cfg.historyDates ? { timezone: cfg.timezone } : null,
     onHistoryTrim: deps.onHistoryTrim,
     noReplyChannel: deps.noReplyChannel,
     stillWanted: deps.stillWanted,

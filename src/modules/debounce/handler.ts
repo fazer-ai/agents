@@ -1431,6 +1431,7 @@ async function ingestObservedBurst(args: {
           messageId: m.id,
           text,
           role: "customer",
+          sentAt: m.createdAt ?? null,
           agentId: ctx.agentId,
           compactionEnabled,
           base,

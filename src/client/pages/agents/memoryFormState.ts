@@ -8,9 +8,11 @@ import type { MemoryState } from "./BehaviorTab";
 // pair is what makes the next such field impossible to add silently.
 
 export function memoryToForm(settings: unknown): MemoryState {
-  const c = readMemoryConfig(settings).compaction;
+  const read = readMemoryConfig(settings);
+  const c = read.compaction;
   return {
     compactionEnabled: c.enabled,
+    historyDatesEnabled: read.historyDates.enabled,
     provider: c.provider ?? "",
     model: c.model ?? "",
     credentialRef: c.credentialRef ?? "",
@@ -26,6 +28,7 @@ export function memoryToStored(form: MemoryState): {
     credentialRef: string | null;
     baseURL: string | null;
   };
+  historyDates: { enabled: boolean };
 } {
   return {
     compaction: {
@@ -38,6 +41,7 @@ export function memoryToStored(form: MemoryState): {
       credentialRef: form.credentialRef || null,
       baseURL: form.baseURL || null,
     },
+    historyDates: { enabled: form.historyDatesEnabled },
   };
 }
 

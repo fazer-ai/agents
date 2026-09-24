@@ -784,6 +784,7 @@ export async function recoverStrandedHumanReply(
       messageId,
       text,
       role: "human_agent",
+      sentAt: messageCreatedAt(message),
       agentId: owner.agentId,
       compactionEnabled: readMemoryConfig(owner.settings).compaction.enabled,
       base,

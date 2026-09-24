@@ -120,6 +120,7 @@ export function behaviorTabProps(
     setLimits: noop,
     memory: {
       compactionEnabled: false,
+      historyDatesEnabled: true,
       provider: "",
       model: "",
       credentialRef: "",

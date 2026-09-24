@@ -1345,6 +1345,8 @@
     "memoryCompaction": "Summarize attendances that have ended",
     "memoryCredentialHint": "Required when summaries use another provider; without its own key, the attendance is not summarized.",
     "memoryHelp": "Memory keeps this contact's conversations on this channel available to the agent for future replies.\n\nWhen an attendance ends, the agent replaces its messages with a summary of key details, agreements, and open issues. The current attendance stays complete.\n\nExact wording is lost, so turn this off if the agent must quote past conversations. Every closed attendance is summarized, including those handled by your team, but only after the customer receives a reply.",
+    "memoryHistoryDates": "Show the agent when each message was sent",
+    "memoryHistoryDatesHelp": "Each message from the customer or your team reaches the agent with the date and time it was sent, in the agent's timezone.\n\nWithout it, a customer who comes back a week later is answered as if the whole conversation were happening now: an expired deadline is taken up again, an old answer is repeated.\n\nThe agent's own replies are not dated, and messages from before this setting existed stay undated.",
     "memoryModel": "Summary model",
     "memoryModelHelp": "Leave this on the agent's model unless you've compared alternatives.\n\nThe summary isn't read once: it becomes what the agent knows about that contact from then on, and is never rewritten.\n\nThis is the wrong place to cut costs: on one vendor's cheapest model, the customer's name was lost in one attendance in five.",
     "memorySameAsAgent": "Same as the agent",

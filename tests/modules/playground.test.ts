@@ -7,6 +7,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { stampedSentAt } from "@/graph/markers";
 import { loadAgentConfig } from "@/graph/prepare";
 import { FOLLOWUP_SKIP_SENTINEL, SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
@@ -417,6 +418,28 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.reply).toBe(reply);
     expect(spoken).toEqual([]);
     expect(r.ttsMediaId).toBeUndefined();
+  });
+
+  // Issue #755: the playground dates what the operator types with the instant it says it was
+  // written, so a session shows the history the way a real turn would send it.
+  test("the operator's message is kept with the instant it was written", async () => {
+    const checkpointer = new MemorySaver();
+    const before = Date.now();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: fakeModel, checkpointer },
+    });
+    const human = (await threadMessages(checkpointer, r.threadId)).find(
+      (m) => m.getType() === "human",
+    );
+    const at = human ? stampedSentAt(human) : null;
+    expect(at).not.toBeNull();
+    // Truncated to the minute by the prompt clock the playground shares with the time variables.
+    expect(at?.getTime() ?? 0).toBeGreaterThanOrEqual(before - 60_000);
+    expect(at?.getTime() ?? 0).toBeLessThanOrEqual(Date.now());
   });
 
   test("a forged threadId (real conversation shape) is rejected → fresh thread", async () => {

@@ -22,6 +22,7 @@ import {
   conversationDividerMessage,
   conversationStamp,
   humanAgentMessage,
+  sentAtStamp,
 } from "./markers";
 import { resetLandedAfter, threadResetBoundary } from "./reset-episode";
 import {
@@ -109,6 +110,9 @@ export function ingestedMessages(
   conversationId: number | null,
   writeDivider: boolean,
   messageId?: number,
+  // When Chatwoot recorded it (issue #755). Kept even for a late message that claims no attendance:
+  // the date is about the message, not about where the thread is.
+  sentAt?: Date | null,
 ): BaseMessage[] {
   const id = messageId === undefined ? undefined : `ingest:${messageId}`;
   const dividerId = id === undefined ? undefined : `${id}:divider`;
@@ -116,7 +120,7 @@ export function ingestedMessages(
   // claiming one. The types say so rather than a comment saying so.
   const divides = writeDivider && conversationId !== null;
   if (role === "human_agent") {
-    const reply = humanAgentMessage(conversationId, text, id);
+    const reply = humanAgentMessage(conversationId, text, id, sentAt);
     return divides
       ? [
           conversationDividerMessage(conversationId, undefined, dividerId),
@@ -126,13 +130,16 @@ export function ingestedMessages(
   }
   return [
     divides
-      ? conversationDividerMessage(conversationId, text, id)
+      ? conversationDividerMessage(conversationId, text, id, sentAt)
       : new HumanMessage({
           ...(id ? { id } : {}),
           content: text,
-          ...(conversationId === null
-            ? {}
-            : { additional_kwargs: conversationStamp(conversationId) }),
+          additional_kwargs: {
+            ...(conversationId === null
+              ? {}
+              : conversationStamp(conversationId)),
+            ...sentAtStamp(sentAt),
+          },
         }),
   ];
 }
@@ -152,6 +159,9 @@ export interface IngestMessageParams {
   text: string;
   // Who said it. Decides attribution in the channel and, through it, in the permanent memory.
   role: IngestRole;
+  // When Chatwoot recorded the message, shown to the model in front of it (issue #755). Absent
+  // leaves it undated, never dated "now".
+  sentAt?: Date | null;
   base?: PrismaClient;
   checkpointer?: BaseCheckpointSaver;
   // Fired when this message OPENED a new attendance on the thread, carrying the display_id of the
@@ -533,6 +543,7 @@ export async function ingestMessageIntoThread(
               movesFrontier ? conversationId : null,
               claim.writeDivider,
               messageId,
+              params.sentAt,
             ),
           },
           THREAD_STATE_NODE,

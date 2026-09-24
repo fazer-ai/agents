@@ -317,6 +317,8 @@ interface LimitsState {
 // "run on the agent's model", which is what every agent that never touched this means.
 export interface MemoryState {
   compactionEnabled: boolean;
+  // Each message reaches the model behind the date it was sent (issue #755). On by default.
+  historyDatesEnabled: boolean;
   provider: string;
   model: string;
   credentialRef: string;
@@ -3587,6 +3589,20 @@ export function BehaviorTab({
                 )}
               </div>
             )}
+            <SwitchField
+              checked={memory.historyDatesEnabled}
+              onCheckedChange={(v) =>
+                setMemory((prev) => ({ ...prev, historyDatesEnabled: v }))
+              }
+              label={t(
+                "editor.memoryHistoryDates",
+                "Show the agent when each message was sent",
+              )}
+              help={t(
+                "editor.memoryHistoryDatesHelp",
+                "Each message from the customer or your team reaches the agent with the date and time it was sent, in the agent's timezone.\n\nWithout it, a customer who comes back a week later is answered as if the whole conversation were happening now: an expired deadline is taken up again, an old answer is repeated.\n\nThe agent's own replies are not dated, and messages from before this setting existed stay undated.",
+              )}
+            />
           </Section>
 
           <Section

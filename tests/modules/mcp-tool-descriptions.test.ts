@@ -259,7 +259,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // carry the same fields. 450 characters on top of the #646 raise. Trimmed first, by 100: the clause
 // says what the action does and the field only what the type cannot (that empty is a choice, and the
 // cap). Re-measured on the tree that ships: 25,875.
-const SETTINGS_SCHEMA_CEILING = 25_890;
+//
+// RAISED for issue #755 by `memory.historyDates.enabled`, the switch that dates each message in the
+// history the model reads: one object and one boolean, 164 characters. Trimmed first, by 45: the
+// description says only what the name cannot (that it is on by default). Re-measured on the tree
+// that ships: 26,054.
+const SETTINGS_SCHEMA_CEILING = 26_070;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -661,6 +666,9 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED by the `capacity` flow stage (#812), one more enum value wherever a tool filters or
   // subscribes by stage, like `channel_error` above: this tree measures 60,208 against the base's
   // 60,186, so 60,224 with the same 16. No tool and no description changed.
+  //
+  // SCHEMA RAISED by `memory.historyDates` (#755), the same 163 characters as the settings ceiling
+  // above: this tree measures 60,387, so 60,403 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -670,7 +678,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_365);
-    expect(schema).toBeLessThanOrEqual(60_224);
+    expect(schema).toBeLessThanOrEqual(60_403);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

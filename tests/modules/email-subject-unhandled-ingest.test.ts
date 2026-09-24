@@ -54,12 +54,13 @@ let instanceId: bigint;
 // and this fold is the only memory of it there will ever be.
 function inboundEmail(
   messageId: number,
-  opts: { content: string; subject?: string },
+  opts: { content: string; subject?: string; createdAt?: number },
 ) {
   return normalizeChatwootEvent({
     event: "message_created",
     id: messageId,
     content: opts.content,
+    ...(opts.createdAt ? { created_at: opts.createdAt } : {}),
     message_type: "incoming",
     private: false,
     content_attributes: opts.subject
@@ -113,6 +114,18 @@ async function deliver(n: NonNullable<ReturnType<typeof inboundEmail>>) {
   });
 }
 
+const armedPayload = async (messageId: number) =>
+  (
+    await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        payload: { path: ["messageId"], equals: messageId },
+      },
+      select: { payload: true },
+    })
+  )?.payload as Record<string, unknown> | undefined;
+
 const armedText = async (messageId: number) => {
   const row = await suDb.schedulerJob.findFirst({
     where: {
@@ -158,6 +171,20 @@ describe.skipIf(!dbUp)("the email nobody answered still reaches memory", () => {
         agentId: agent.id,
       },
     });
+  });
+
+  // Issue #755: the instant the webhook payload carries travels with the fold, so the model later
+  // reads when the customer wrote it and not when somebody finally answered.
+  test("the fold carries the instant the customer wrote it", async () => {
+    const n = inboundEmail(6104, {
+      content: "segue o comprovante",
+      createdAt: 1_789_563_900,
+    });
+    if (!n) throw new Error("the event did not normalize");
+    await deliver(n);
+    expect((await armedPayload(6104))?.sentAt).toBe(
+      new Date(1_789_563_900 * 1000).toISOString(),
+    );
   });
 
   test("a body-less email is folded in as its subject, not dropped", async () => {

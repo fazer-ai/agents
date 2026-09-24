@@ -8,6 +8,7 @@ import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { armIngest, ingestDedupeKey, ingestHandler } from "@/graph/ingest-job";
+import { stampedSentAt } from "@/graph/markers";
 import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
@@ -95,6 +96,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     conversationId: number,
     messageId: number,
     text: string,
+    sentAt?: Date,
   ): Promise<ClaimedJob> {
     const graphThreadId = contactInboxThreadId(
       tenantId,
@@ -110,6 +112,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       messageId,
       text,
       role: "customer",
+      ...(sentAt ? { sentAt } : {}),
       agentId: 1n,
       compactionEnabled: false,
       base: appDb,
@@ -183,6 +186,41 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
   // that such a blob lives in a plain String column, never in a Prisma `Json` one: a Json payload is
   // what gets logged or serialized whole, and it would carry a contact's own words with it. The
   // ciphertext therefore has its own column, and what stays in the JSON must be metadata only.
+  // Issue #755: the instant Chatwoot recorded crosses the queue with the message, so a message folded
+  // in while nobody answered is still shown to the model with the date it was sent.
+  test("the message's instant crosses the queue and lands on the message", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12555;
+    const at = new Date("2026-09-16T13:05:00.000Z");
+    const job = await armAndClaim(contactInboxId, 981, 310, "segue", at);
+    expect((job.payload as { sentAt?: string }).sentAt).toBe(at.toISOString());
+    expect((await ingestHandler(job, appDb, saver)).outcome).toBe("done");
+    const cp = await saver.get({
+      configurable: {
+        thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      },
+    });
+    const [m] = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(m && stampedSentAt(m)).toEqual(at);
+  });
+
+  test("a job armed without one, by an older build or a caller that did not know, stays undated", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12556;
+    const job = await armAndClaim(contactInboxId, 982, 311, "oi");
+    expect("sentAt" in (job.payload as object)).toBe(false);
+    expect((await ingestHandler(job, appDb, saver)).outcome).toBe("done");
+    const cp = await saver.get({
+      configurable: {
+        thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      },
+    });
+    const [m] = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(m && stampedSentAt(m)).toBeNull();
+  });
+
   test("the message body is stored outside the JSON payload", async () => {
     const contactInboxId = 12510;
     const graphThreadId = contactInboxThreadId(

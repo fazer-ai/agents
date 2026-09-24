@@ -16,6 +16,7 @@ import {
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import logger from "@/api/lib/logger";
+import { datedHistory } from "@/graph/history-dates";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
 import {
@@ -85,6 +86,10 @@ export interface BuildAgentGraphParams {
   // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
   // null/undefined = send the whole thread, which is the historical behavior.
   maxHistoryTokens?: number | null;
+  // Whether each person's message reaches the model behind the date it was sent, and in which
+  // timezone (agent.settings.memory.historyDates, issue #755; see ./history-dates.ts). null/undefined
+  // sends the history as it is stored, which is what every caller that does not pass it gets.
+  historyDates?: { timezone: string } | null;
   // Fired when a turn actually dropped messages, so the runtime can put it in the turn trail.
   // Trimming that leaves no trace is indistinguishable, from the operator's chair, from the agent
   // forgetting things on its own.
@@ -525,18 +530,27 @@ function isEmptyAssistantTurn(
 // Applies the per-agent history ceiling, if there is one. Best-effort: trimming is an optimization
 // and must never cost a customer their answer, so a throw falls back to the full history — slow and
 // expensive, but exactly the behavior that shipped before the ceiling existed.
+//
+// Counted AS SENT (issue #755, review r1): with dates on, each person's message reaches the provider
+// behind one, and on a history of short messages that prefix is most of the weight — measured, 2,000
+// alternating "ok"s went from 10,000 estimated tokens to 21,000. Counting the stored text would let a
+// ceiling set against the provider's limit pass twice that. The window still keeps the STORED
+// messages; the date is rendered on the way out, as before.
 function applyHistoryCeiling(
   full: BaseMessage[],
   maxHistoryTokens: number | null | undefined,
   onHistoryTrim: BuildAgentGraphParams["onHistoryTrim"],
+  historyDates?: { timezone: string } | null,
 ): BaseMessage[] {
   if (!maxHistoryTokens) return full;
   try {
-    const window = selectHistoryWindow(
-      full,
-      maxHistoryTokens,
-      countMessageTokens,
-    );
+    const count = historyDates
+      ? (m: BaseMessage) =>
+          countMessageTokens(
+            datedHistory([m], historyDates.timezone)[0] as BaseMessage,
+          )
+      : countMessageTokens;
+    const window = selectHistoryWindow(full, maxHistoryTokens, count);
     if (window.dropped > 0) {
       onHistoryTrim?.({
         kept: window.kept.length,
@@ -565,6 +579,7 @@ export function buildAgentGraph({
   onModelFallback,
   onModelFallbackFailed,
   maxHistoryTokens,
+  historyDates,
   onHistoryTrim,
   stillWanted,
   noReplyChannel,
@@ -641,7 +656,12 @@ export function buildAgentGraph({
     // NOTE: Bound the history BEFORE the tool-call budget below, so both read the same window. The
     // window always keeps the last human message and everything after it, so the tool count is not
     // affected by the trim; this ordering is about the two never disagreeing.
-    const history = applyHistoryCeiling(full, maxHistoryTokens, onHistoryTrim);
+    const history = applyHistoryCeiling(
+      full,
+      maxHistoryTokens,
+      onHistoryTrim,
+      historyDates,
+    );
 
     // Tool-call budget for this turn. Hard limit reached → invoke the RAW model (no tools bound), so
     // the response carries no tool_calls and toolsCondition routes to END. Approaching it (N-2) →
@@ -792,7 +812,11 @@ export function buildAgentGraph({
     const sent = narration.length
       ? history.map((m) => narration.find((n) => n.id === m.id) ?? m)
       : history;
-    const messages = [new SystemMessage(prompt), ...sent, ...wrapUp];
+    // Dated on the way out; the window above already counted each message with its date.
+    const shown = historyDates
+      ? datedHistory(sent, historyDates.timezone)
+      : sent;
+    const messages = [new SystemMessage(prompt), ...shown, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
     const second =

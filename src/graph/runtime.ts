@@ -95,6 +95,7 @@ import {
   conversationDividerMessage,
   conversationStamp,
   humanHandbackMessage,
+  sentAtStamp,
   turnWasCalledOff,
 } from "./markers";
 import type { ResolvedModelConfig } from "./models";
@@ -2323,10 +2324,16 @@ async function runTurnBody(
                 : []),
               // Stamped with the conversation it belongs to: that stamp, not the divider, is what the
               // compaction cut reads to find where this attendance starts.
+              // And with the instant it was sent (issue #755), the same one `{{idade_ultima_mensagem}}`
+              // reads: for a debounced burst that is its newest member, which is when the customer
+              // finished saying it. Unknown stays unstamped rather than becoming the turn's clock.
               new HumanMessage({
                 id: inputMessageId,
                 content: text,
-                additional_kwargs: conversationStamp(conversationId),
+                additional_kwargs: {
+                  ...conversationStamp(conversationId),
+                  ...sentAtStamp(loaded.promptOpts.messageAt),
+                },
               }),
             ],
           },

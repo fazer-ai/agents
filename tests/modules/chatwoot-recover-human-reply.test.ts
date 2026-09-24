@@ -521,6 +521,31 @@ describe.skipIf(!dbUp)(
     // varredura arma a releitura: a mensagem é lida de volta pelo id que a linha guarda desde a #469, e
     // o append é armado com o PAPEL certo — `human_agent`, que é o que põe a resposta em
     // `recent_agent_message_ids` em vez de fingir que o cliente a escreveu (#187).
+    // Issue #755: the reply is dated with the instant Chatwoot recorded for it, which travels with
+    // the append so the model later reads when the attendant said it.
+    test("the recovered reply carries the instant Chatwoot recorded for it", async () => {
+      const convId = 9755;
+      pages.set(convId, [
+        {
+          ...restComposerReply(700, "Seu contrato segue em anexo."),
+          created_at: 1_789_563_900,
+        },
+      ]);
+      const rowId = await seedStranded(convId);
+      expect(
+        await recoverStrandedHumanReply({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("remembered");
+      const jobs = await ingestJobs(convId);
+      expect(jobs[0]?.payload.sentAt).toBe(
+        new Date(1_789_563_900 * 1000).toISOString(),
+      );
+    });
+
     test("the lost reply is read back by id and queued for the contact's memory", async () => {
       const convId = 9101;
       pages.set(convId, [

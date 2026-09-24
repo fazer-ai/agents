@@ -656,16 +656,30 @@ export async function coalesceAndRunTurn(
       // held a reaction or one re-armed the thread while the model ran. Without it the gate reads
       // "nothing came after me" and the turn posts over the reaction its re-armed flush will answer
       // again, two replies for one burst.
-      const latest =
-        ctx.catchUp &&
-        (ctx.catchUp.reactionArmed ||
-          (await reactionArmedOnThread({ tenantId, threadId, base })))
-          ? await withCaughtUp(client, conversationId, page, {
-              armedLast: null,
-              after: targetWatermark,
-              reactionArmed: true,
-            })
-          : page;
+      //
+      // A failure of this extra read keeps the page already read (round 7): letting it reach the
+      // catch below would post without asking the page anything, which is weaker than not asking.
+      const latest = await (async () => {
+        try {
+          return ctx.catchUp &&
+            (ctx.catchUp.reactionArmed ||
+              (await reactionArmedOnThread({ tenantId, threadId, base })))
+            ? await withCaughtUp(client, conversationId, page, {
+                armedLast: null,
+                after: targetWatermark,
+                reactionArmed: true,
+              })
+            : page;
+        } catch (e) {
+          logger.warn(
+            "%s: catch-up read before posting failed (conv=%s), judging the page alone: %s",
+            ctx.label,
+            String(conversationId),
+            e instanceof Error ? e.message : String(e),
+          );
+          return page;
+        }
+      })();
       // ASKED BY IDENTITY, not with the arithmetic of the page (issue #698). "A newer message
       // arrived" used to be `maxIncomingId > targetWatermark`, which reads every incoming id above
       // this turn's target as a customer still waiting. Once the selection stopped deciding by a

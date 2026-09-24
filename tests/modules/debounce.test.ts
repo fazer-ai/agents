@@ -869,7 +869,8 @@ describe.skipIf(!dbUp)("debounce", () => {
   // This stub serves the two reads the way the fork does, so a reaction to an older message (or to
   // one of an earlier conversation) is on the catch-up read and on no default page.
   function makeForkStub(opts: {
-    latest: unknown;
+    // A function answers each default read in turn, for a page that changes while the model runs.
+    latest: unknown | (() => unknown);
     // A function answers each catch-up read by its cursor, for the walk past the fork's cap.
     after: unknown | ((after: number) => unknown);
     sent: Array<[number, string]>;
@@ -878,7 +879,11 @@ describe.skipIf(!dbUp)("debounce", () => {
     const client = {
       getMessages: async (_conv: number, o?: { after?: number }) => {
         opts.reads.push(o?.after != null ? { after: o.after } : {});
-        if (o?.after == null) return opts.latest;
+        if (o?.after == null) {
+          return typeof opts.latest === "function"
+            ? opts.latest()
+            : opts.latest;
+        }
         return typeof opts.after === "function"
           ? opts.after(o.after)
           : opts.after;
@@ -1170,6 +1175,52 @@ describe.skipIf(!dbUp)("debounce", () => {
                 ? [{ id: 11, content: "😂", reaction: true }]
                 : []),
             ]);
+          },
+          sent,
+          reads,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(model.seen[0]).toContain('<reação do cliente emoji="❤️"');
+    expect(catchUps).toBe(2);
+    expect(sent).toEqual([]);
+  });
+
+  // PR #821, review round 7: a failure of the gate's extra read keeps the page it already read. The
+  // customer wrote again while the model ran, and the page says so; a failed catch-up must not turn
+  // that into a post.
+  test("issue #746: a failed catch-up read at the post gate still judges the page", async () => {
+    const convId = 7475;
+    await seedConversation(convId, { lastHandledMessageId: 2 });
+    const sent: Array<[number, string]> = [];
+    const reads: Array<{ after?: number }> = [];
+    const model = new CaptureReplyModel(REPLY);
+    let pages = 0;
+    let catchUps = 0;
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 10, reactionArmed: true }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeForkStub({
+          latest: () => {
+            pages++;
+            return pages > 1
+              ? page([
+                  ...handledHistory.payload.map((m) => ({
+                    id: m.id,
+                    content: m.content,
+                    type: m.message_type,
+                  })),
+                  { id: 12, content: "esquece, já resolvi" },
+                ])
+              : handledHistory;
+          },
+          after: () => {
+            catchUps++;
+            if (catchUps > 1) throw new Error("chatwoot: 502 bad gateway");
+            return page([{ id: 10, content: "❤️", reaction: true }]);
           },
           sent,
           reads,

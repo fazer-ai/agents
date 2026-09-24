@@ -64,9 +64,21 @@ describe("playgroundFailure", () => {
 
   test("a call that got no answer is a failure to reach the server", async () => {
     const t = (await i18n("en")).t.bind(null) as never;
-    expect(playgroundFailure(undefined, t).text).toBe(
-      "Could not reach the server. Check the connection and try again.",
-    );
+    const unreachable =
+      "Could not reach the server. Check the connection and try again.";
+    expect(playgroundFailure(undefined, t).text).toBe(unreachable);
+    // How Eden hands back a request that never connected: status 503, the fetch's TypeError as value.
+    expect(
+      playgroundFailure(
+        {
+          status: 503,
+          value: new TypeError(
+            "Unable to connect. Is the computer able to access the url?",
+          ),
+        },
+        t,
+      ).text,
+    ).toBe(unreachable);
   });
 });
 

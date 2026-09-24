@@ -205,8 +205,8 @@ const UNHANDLED_PLACEHOLDER = "Something went wrong";
 // call carried one: a refusal's JSON `error`, or a plain-text body, which is the unhandled failure's
 // detail in development. Otherwise a sentence that says what is known and nothing more: the old one
 // pointed at the model's configuration on every failure, and the failure that prompted this was a
-// database error with the model configured. A call that never got an answer (`err` absent) is a
-// failure to reach the server, which is a different thing to tell the operator.
+// database error with the model configured. A call that never got an answer is a failure to reach
+// the server, which is a different thing to tell the operator.
 export function playgroundFailure(
   err: unknown,
   t: (key: string, fallback: string) => string,
@@ -228,9 +228,13 @@ export function playgroundFailure(
         : undefined;
   const turnId =
     typeof body?.turnId === "string" && body.turnId ? body.turnId : undefined;
+  // A request that never reached the server is not an answer, even though the client hands it back
+  // as one: Eden turns a failed `fetch` into an error of status 503 whose value is the fetch's own
+  // TypeError (measured against a closed port), so its presence says nothing about the server.
+  const answered = !!err && !(value instanceof Error);
   const text =
     reason ??
-    (err
+    (answered
       ? t(
           "playground.error",
           "The server answered with an error and did not say why.",

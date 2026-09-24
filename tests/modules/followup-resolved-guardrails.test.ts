@@ -212,6 +212,8 @@ async function seedConversation(
     // QUANDO o nosso lado falou (issue #750). Default nulo: é o estado de toda linha anterior à
     // coluna, e é nele que a cerca tem de continuar caindo em `lastInboundAt`.
     lastRepliedAt?: Date | null;
+    // Um envio PROATIVO que chegou ao cliente (issue #816). Default nulo, que é toda linha anterior.
+    lastProactiveAt?: Date | null;
   },
 ) {
   await suDb.conversation.create({
@@ -231,6 +233,7 @@ async function seedConversation(
         over.lastRepliedMessageId === undefined ? 1 : over.lastRepliedMessageId,
       chatwootFirstReplyAt: over.chatwootFirstReplyAt ?? null,
       lastRepliedAt: over.lastRepliedAt ?? null,
+      lastProactiveAt: over.lastProactiveAt ?? null,
     },
   });
 }
@@ -999,6 +1002,24 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.notes.length).toBe(1);
   });
 
+  // (4h) Issue #816: a conversa em que só um envio proativo falou passa pelo portão do HANDLER, e
+  // não só pela varredura. É o handler que decide se o passo sai, lendo o mesmo predicado; se ele não
+  // lesse a coluna, a varredura enfileiraria e o passo cairia aqui sem postar nada.
+  test("(4h) o handler do passo 0 atende a conversa em que só um envio proativo falou", async () => {
+    const CONV = 4397;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      lastRepliedMessageId: null,
+      chatwootFirstReplyAt: null,
+      lastProactiveAt: new Date(Date.now() - 3 * HOUR),
+    });
+    const s = stubClient(() => ({ id: CONV, status: "pending", meta: {} }));
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent.length + s.notes.length).toBe(1);
+  });
+
   // (4e) O mesmo portão com as DUAS datas na mesa, que é o caso comum: o cliente falou antes do arm,
   // nós respondemos depois. Quem decide é a mais recente das duas; preferir a do cliente por ser a do
   // cliente descarta a conversa aqui, depois de ela ter passado na varredura.
@@ -1085,6 +1106,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     const SILENT = 4350;
     const BOT_SPOKE = 4351;
     const HUMAN_SPOKE = 4352;
+    const NUDGE_SPOKE = 4353;
     const quiet = {
       lastEventAt: new Date(Date.now() - 2 * HOUR),
       lastInboundAt: new Date(Date.now() - 2 * HOUR),
@@ -1106,6 +1128,15 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       ...quiet,
       lastRepliedMessageId: null,
       chatwootFirstReplyAt: new Date(Date.now() - 3 * HOUR),
+    });
+
+    // Só um envio proativo falou aqui (issue #816): um lembrete ou um `agent_nudge` que chegou ao
+    // cliente, sem nenhuma resposta nossa e sem humano. Nenhuma das duas marcas acima o vê.
+    await seedConversation(NUDGE_SPOKE, inboxAId, {
+      ...quiet,
+      lastRepliedMessageId: null,
+      chatwootFirstReplyAt: null,
+      lastProactiveAt: new Date(Date.now() - 3 * HOUR),
     });
 
     registerFollowUpHandlers();
@@ -1131,6 +1162,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       (j) => (j.payload as { threadId?: string }).threadId,
     );
     expect(threads).not.toContain(threadOf(SILENT));
+    expect(threads).toContain(threadOf(NUDGE_SPOKE));
     // Controle positivo, e é ele que separa "a cláusula funciona" de "a varredura não rodou": as
     // duas conversas engajadas passam pelos mesmos arms, na mesma passada.
     expect(threads).toContain(threadOf(BOT_SPOKE));

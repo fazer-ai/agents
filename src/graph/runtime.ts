@@ -518,6 +518,7 @@ export async function handoverRow(
       select: {
         lastRepliedMessageId: true,
         chatwootFirstReplyAt: true,
+        lastProactiveAt: true,
         assigneeType: true,
         assigneeId: true,
         status: true,

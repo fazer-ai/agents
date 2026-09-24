@@ -233,6 +233,7 @@ async function sweepHandler(
         AND (
           c.last_replied_message_id IS NOT NULL
           OR c.chatwoot_first_reply_at IS NOT NULL
+          OR c.last_proactive_at IS NOT NULL
         )
         AND (
           c.last_follow_up_at IS NULL
@@ -499,6 +500,7 @@ export async function followUpHandler(
         // The fence's own axis (issue #750); see the note beside it below.
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
+        lastProactiveAt: true,
       },
     });
     if (!conv?.inboxId) return null;

@@ -2477,7 +2477,8 @@
       "calls_other": "{{count}} chamadas",
       "input": "Entrada {{input}} ({{cached}} do cache)",
       "output": "saída {{output}}",
-      "session": "Sessão"
+      "session": "Sessão",
+      "timing": "{{turn}} (modelo {{model}})"
     }
   },
   "resources": {

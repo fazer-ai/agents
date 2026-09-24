@@ -1259,6 +1259,39 @@ export const agentsController = new Elysia({
       }),
     },
   )
+  // The session's total alone, for a console that has to re-read it: a turn that failed after a
+  // billed call leaves that call in the ledger and nothing in the reply (issue #839).
+  .get(
+    "/:id/playground/sessions/:threadId/usage",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      return {
+        instance: instanceIdentity,
+        usage: await getPlaygroundSessionUsage(
+          ctx,
+          requireDbId(params.id),
+          params.threadId,
+        ),
+      };
+    },
+    {
+      detail: doc(
+        "Get playground session usage",
+        "Returns what a playground session has spent so far, summed from the usage ledger.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+        threadId: t.String({
+          description:
+            "Playground thread id, shaped tenantId:playground:agentId:uuid.",
+        }),
+      }),
+    },
+  )
   .delete(
     "/:id/playground/sessions/:threadId",
     async ({ tenantContext, params }) => {

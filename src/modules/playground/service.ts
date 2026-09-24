@@ -47,7 +47,7 @@ import {
   type TraceSource,
   traceGuardrail,
 } from "@/graph/trace";
-import { sumTurnUsage, type TurnUsage } from "@/graph/usage";
+import { sumTurnUsage, type TurnTiming, type TurnUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -192,6 +192,8 @@ export interface PlaygroundTurnResult {
   // any guardrail, speech normalization or file read on the way): the same numbers its ledger rows
   // carry (issue #839).
   usage: TurnUsage;
+  // How long the turn took, and how much of it was spent waiting on a model.
+  timing: TurnTiming;
 }
 
 // The thread a playground call runs on: the caller's when it belongs to this tenant and agent,
@@ -588,15 +590,15 @@ export async function runPlaygroundTurn(
     params.ctx.tenantId as bigint,
     params.agentId,
   );
-  const { result, usage } = await sumTurnUsage(threadId, () =>
+  const { result, usage, timing } = await sumTurnUsage(threadId, () =>
     runPlaygroundTurnOnce({ ...params, threadId }),
   );
-  return { ...result, usage };
+  return { ...result, usage, timing };
 }
 
 async function runPlaygroundTurnOnce(
   params: PlaygroundTurnParams,
-): Promise<Omit<PlaygroundTurnResult, "usage">> {
+): Promise<Omit<PlaygroundTurnResult, "usage" | "timing">> {
   const { ctx, agentId, message } = params;
   const tenantId = ctx.tenantId as bigint;
   const base = params.base ?? basePrisma;
@@ -1049,8 +1051,9 @@ export interface PlaygroundFollowupResult {
   // The agent DID write a follow-up and the guardrail removed it. Mutually exclusive with `silent`:
   // both mean nothing is sent, and only this one has a verdict behind it.
   suppressed: boolean;
-  // What the simulated follow-up spent (see PlaygroundTurnResult.usage).
+  // What the simulated follow-up spent, and how long it took (see PlaygroundTurnResult).
   usage: TurnUsage;
+  timing: TurnTiming;
 }
 
 // Simulate a proactive follow-up in the playground: inject the SAME inactivity nudge the scheduler
@@ -1067,15 +1070,15 @@ export async function runPlaygroundFollowup(
     params.ctx.tenantId as bigint,
     params.agentId,
   );
-  const { result, usage } = await sumTurnUsage(threadId, () =>
+  const { result, usage, timing } = await sumTurnUsage(threadId, () =>
     runPlaygroundFollowupOnce({ ...params, threadId }),
   );
-  return { ...result, usage };
+  return { ...result, usage, timing };
 }
 
 async function runPlaygroundFollowupOnce(
   params: PlaygroundFollowupParams,
-): Promise<Omit<PlaygroundFollowupResult, "usage">> {
+): Promise<Omit<PlaygroundFollowupResult, "usage" | "timing">> {
   const { ctx, agentId } = params;
   const tenantId = ctx.tenantId as bigint;
   const base = params.base ?? basePrisma;
@@ -1550,6 +1553,7 @@ export async function runPlaygroundExtract(
   extracted: string;
   threadId: string;
   usage: TurnUsage;
+  timing: TurnTiming;
 }> {
   const bytes = await readFileUpload(params.file);
   const threadId = resolvePlaygroundThread(
@@ -1570,6 +1574,7 @@ export async function runPlaygroundExtract(
   const {
     result: { kind, text },
     usage,
+    timing,
   } = await sumTurnUsage(threadId, () =>
     extractPlaygroundFile({
       ctx: params.ctx,
@@ -1582,7 +1587,7 @@ export async function runPlaygroundExtract(
       flow,
     }),
   );
-  return { kind, extracted: text, threadId, usage };
+  return { kind, extracted: text, threadId, usage, timing };
 }
 
 export interface PlaygroundFileParams {
@@ -1645,10 +1650,10 @@ export async function runPlaygroundFileTurn(
     params.agentId,
   );
   // The file read below and the turn after it are one turn to the operator, so one sum covers both.
-  const { result, usage } = await sumTurnUsage(threadId, () =>
+  const { result, usage, timing } = await sumTurnUsage(threadId, () =>
     runPlaygroundFileTurnOnce({ ...params, threadId }),
   );
-  return { ...result, usage };
+  return { ...result, usage, timing };
 }
 
 async function runPlaygroundFileTurnOnce(

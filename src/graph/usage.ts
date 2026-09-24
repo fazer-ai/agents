@@ -81,9 +81,21 @@ export function emptyTurnUsage(): TurnUsage {
   };
 }
 
+// How long the turn took and how much of that was spent waiting on a model. Kept beside the usage
+// rather than in it: the ledger has no timing, so a reopened session's total could not carry it,
+// and a number the live total has and the reopened one lacks is two books again.
+export interface TurnTiming {
+  // Wall time of the whole turn, as the server measured it.
+  turnMs: number;
+  // Summed over the calls counted in the usage: the rest of turnMs is everything else the turn did
+  // (tools, retrieval, the checkpointer, the guardrail's own logic).
+  modelMs: number;
+}
+
 const turnUsageSink = new AsyncLocalStorage<{
   threadId: string;
   usage: TurnUsage;
+  modelMs: number;
 }>();
 
 // Nested sums on one thread share the outer counter and answer their own share of it: a file turn
@@ -92,14 +104,20 @@ const turnUsageSink = new AsyncLocalStorage<{
 export async function sumTurnUsage<T>(
   threadId: string,
   fn: () => Promise<T>,
-): Promise<{ result: T; usage: TurnUsage }> {
+): Promise<{ result: T; usage: TurnUsage; timing: TurnTiming }> {
+  const startedAt = performance.now();
   const outer = turnUsageSink.getStore();
   if (outer && outer.threadId === threadId) {
     const before = { ...outer.usage };
+    const modelBefore = outer.modelMs;
     const result = await fn();
     const after = outer.usage;
     return {
       result,
+      timing: {
+        turnMs: Math.round(performance.now() - startedAt),
+        modelMs: Math.round(outer.modelMs - modelBefore),
+      },
       usage: {
         calls: after.calls - before.calls,
         promptTokens: after.promptTokens - before.promptTokens,
@@ -110,14 +128,22 @@ export async function sumTurnUsage<T>(
       },
     };
   }
-  const sink = { threadId, usage: emptyTurnUsage() };
+  const sink = { threadId, usage: emptyTurnUsage(), modelMs: 0 };
   const result = await turnUsageSink.run(sink, fn);
-  return { result, usage: sink.usage };
+  return {
+    result,
+    usage: sink.usage,
+    timing: {
+      turnMs: Math.round(performance.now() - startedAt),
+      modelMs: Math.round(sink.modelMs),
+    },
+  };
 }
 
-function noteTurnUsage(row: UsageRow): void {
+function noteTurnUsage(row: UsageRow, durationMs: number | null): void {
   const sink = turnUsageSink.getStore();
   if (!sink || row.threadId !== sink.threadId) return;
+  if (durationMs !== null) sink.modelMs += durationMs;
   sink.usage.calls += 1;
   sink.usage.promptTokens += row.promptTokens;
   sink.usage.cachedReadTokens += row.cachedReadTokens;
@@ -363,6 +389,8 @@ export async function recordDirectUsage(
     completionTokens: number;
     cachedReadTokens?: number;
     cacheCreationTokens?: number;
+    // How long the caller waited on the provider, retries included, when it measured it.
+    durationMs?: number;
   },
 ): Promise<void> {
   if (row.promptTokens === 0 && row.completionTokens === 0) return;
@@ -376,7 +404,7 @@ export async function recordDirectUsage(
     cachedReadTokens: row.cachedReadTokens ?? 0,
     cacheCreationTokens: row.cacheCreationTokens ?? 0,
   };
-  noteTurnUsage(usageRow);
+  noteTurnUsage(usageRow, row.durationMs ?? null);
   try {
     await defaultUsagePersist(attr.base)(usageRow);
   } catch (err) {
@@ -458,6 +486,8 @@ export class UsageCapture extends BaseCallbackHandler {
   // fire, which on a turn whose primary failed and whose fallback answered is exactly the wrong one.
   // Bounded by the runs in flight on one turn, and erased by whichever of END / ERROR arrives.
   private readonly runModel = new Map<string, string>();
+  // When each in-flight run started, for the turn's model time. Same lifetime as runModel.
+  private readonly runStart = new Map<string, number>();
 
   override async handleLLMStart(
     _llm: unknown,
@@ -468,6 +498,7 @@ export class UsageCapture extends BaseCallbackHandler {
     _tags?: string[],
     metadata?: Record<string, unknown>,
   ): Promise<void> {
+    this.runStart.set(runId, performance.now());
     const named = metadata?.[USAGE_MODEL_METADATA_KEY];
     // PRESENT, not truthy. An empty name is what a model-less `openai-compatible` fallback is
     // called — the server picks, so there is no id to record, and `""` is exactly what this ledger
@@ -479,6 +510,7 @@ export class UsageCapture extends BaseCallbackHandler {
 
   override async handleLLMError(_err: unknown, runId: string): Promise<void> {
     this.runModel.delete(runId);
+    this.runStart.delete(runId);
   }
 
   override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
@@ -490,6 +522,10 @@ export class UsageCapture extends BaseCallbackHandler {
     } = extractTokenUsage(output);
     const model = this.runModel.get(runId) ?? this.model;
     this.runModel.delete(runId);
+    const started = this.runStart.get(runId);
+    this.runStart.delete(runId);
+    const durationMs =
+      started === undefined ? null : performance.now() - started;
     if (promptTokens === 0 && completionTokens === 0) return;
     const row: UsageRow = {
       tenantId: this.tenantId,
@@ -505,7 +541,7 @@ export class UsageCapture extends BaseCallbackHandler {
       cachedReadTokens,
       cacheCreationTokens,
     };
-    noteTurnUsage(row);
+    noteTurnUsage(row, durationMs);
     try {
       await this.persist(row);
     } catch (err) {

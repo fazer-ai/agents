@@ -2413,7 +2413,8 @@
       "calls_other": "{{count}} calls",
       "input": "In {{input}} ({{cached}} from cache)",
       "output": "out {{output}}",
-      "session": "Session"
+      "session": "Session",
+      "timing": "{{turn}} (model {{model}})"
     }
   },
   "resources": {

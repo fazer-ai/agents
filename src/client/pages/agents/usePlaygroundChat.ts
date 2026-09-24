@@ -13,6 +13,18 @@ type PlaygroundData = NonNullable<
 // What a turn spent, as the provider reported it (issue #839): the same numbers as its ledger rows.
 export type PlaygroundUsage = PlaygroundData["usage"];
 
+// How long a turn took and how much of that was model time. Live turns only: the ledger keeps no
+// timing, so a reopened turn and the session total carry none.
+export type PlaygroundTiming = PlaygroundData["timing"];
+
+export function addTiming(
+  a: PlaygroundTiming,
+  b: PlaygroundTiming | undefined,
+): PlaygroundTiming {
+  if (!b) return a;
+  return { turnMs: a.turnMs + b.turnMs, modelMs: a.modelMs + b.modelMs };
+}
+
 export function addUsage(
   a: PlaygroundUsage,
   b: PlaygroundUsage | undefined,
@@ -63,6 +75,7 @@ export type PlaygroundTurn =
       trace?: PlaygroundData["trace"];
       // A turn the guardrail emptied, or a follow-up the agent declined, still spent what it spent.
       usage?: PlaygroundUsage;
+      timing?: PlaygroundTiming;
     }
   | {
       role: "assistant";
@@ -74,6 +87,7 @@ export type PlaygroundTurn =
       sources: PlaygroundData["sources"];
       // Absent on a reopened session's old turns: a ledger row names its thread, not its turn.
       usage?: PlaygroundUsage;
+      timing?: PlaygroundTiming;
     };
 
 // Session-history metadata, derived from the Eden treaty (list endpoint).
@@ -194,9 +208,13 @@ export function agentTurn(
     trace: PlaygroundData["trace"];
     sources: PlaygroundData["sources"];
     usage?: PlaygroundUsage;
+    timing?: PlaygroundTiming;
   },
 ): PlaygroundTurn {
-  const usage = r.usage ? { usage: r.usage } : {};
+  const usage = {
+    ...(r.usage ? { usage: r.usage } : {}),
+    ...(r.timing ? { timing: r.timing } : {}),
+  };
   if (r.suppressed) {
     // A hand-over with no message to the customer empties the reply too, and it is a different
     // outcome from a suppression: the case would reach a person (issue #704). Read off the verdict,
@@ -525,8 +543,22 @@ export function usePlaygroundChat(
               "Could not get a reply. Check the model is configured (General tab).",
             );
       setTurns((prev) => [...prev, { role: "error", text }]);
+      // A turn can fail after a call it was billed for (screened, then the agent failed): the ledger
+      // has the row and the reply has nothing, so the total is re-read rather than left short.
+      const tid = threadId.current;
+      if (tid) {
+        void api.api.v1
+          .agents({ id: agentId })
+          .playground.sessions({ threadId: tid })
+          .usage.get()
+          .then(({ data }) => {
+            if (data?.usage && threadId.current === tid)
+              setSessionUsage(data.usage);
+          })
+          .catch(() => {});
+      }
     },
-    [t],
+    [agentId, t],
   );
 
   const send = useCallback(async () => {
@@ -562,6 +594,7 @@ export function usePlaygroundChat(
           trace: data.trace,
           sources: data.sources,
           usage: data.usage,
+          timing: data.timing,
         }),
       ]);
       // A turn on a brand-new thread created a session row — surface it in the sidebar.
@@ -614,6 +647,7 @@ export function usePlaygroundChat(
           trace: data.trace,
           sources: data.sources,
           usage: data.usage,
+          timing: data.timing,
         }),
       ]);
     } catch {
@@ -690,6 +724,7 @@ export function usePlaygroundChat(
       let kind: "image" | "document" | "unsupported";
       let extracted: string;
       let extractUsage: PlaygroundUsage | undefined;
+      let extractTiming: PlaygroundTiming | undefined;
       setExtracting(true);
       try {
         const { data, error: err } = await api.api.v1
@@ -710,6 +745,7 @@ export function usePlaygroundChat(
         // the extraction named, and its line counts the read with the reply (issue #839).
         threadId.current = data.threadId;
         extractUsage = data.usage;
+        extractTiming = data.timing;
         // Counted now: the read is billed whether or not the turn after it succeeds.
         countUsage(extractUsage);
         applyExtraction(kind, extracted);
@@ -753,6 +789,7 @@ export function usePlaygroundChat(
             trace: data.trace,
             sources: data.sources,
             usage: addUsage(data.usage, extractUsage),
+            timing: addTiming(data.timing, extractTiming),
           }),
         ]);
         if (wasNew) void refreshSessions();
@@ -888,6 +925,7 @@ export function usePlaygroundChat(
             trace: data.trace,
             sources: data.sources,
             usage: data.usage,
+            timing: data.timing,
           }),
         ]);
         if (wasNew) void refreshSessions();

@@ -683,7 +683,7 @@ function TurnBubble({
             ))}
           </div>
         )}
-        <UsageLine usage={turn.usage} />
+        <UsageLine usage={turn.usage} timing={turn.timing} />
       </div>
     );
   }
@@ -750,7 +750,9 @@ function TurnBubble({
       {turn.role === "assistant" && turn.audioUrl && (
         <MediaAudio src={turn.audioUrl} />
       )}
-      {turn.role === "assistant" && <UsageLine usage={turn.usage} />}
+      {turn.role === "assistant" && (
+        <UsageLine usage={turn.usage} timing={turn.timing} />
+      )}
       {turn.role === "assistant" && (
         <TracePanel turn={turn} onOpenDoc={onOpenDoc} onOpenKb={onOpenKb} />
       )}

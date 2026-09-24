@@ -74,6 +74,8 @@ class SpendingModel extends BaseChatModel {
     _options: this["ParsedCallOptions"],
     _run?: CallbackManagerForLLMRun,
   ): Promise<ChatResult> {
+    // Long enough to be measured, so the model time below is a number the call produced.
+    await Bun.sleep(MODEL_MS);
     const s = this.spend;
     const message = new AIMessage({
       content: this.reply,
@@ -101,6 +103,7 @@ class SpendingModel extends BaseChatModel {
   }
 }
 
+const MODEL_MS = 30;
 const AGENT_SPEND: Spend = { input: 1200, output: 80, cached: 1024 };
 const JUDGE_SPEND: Spend = { input: 300, output: 20, written: 256 };
 const VERDICT = JSON.stringify({
@@ -247,6 +250,9 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     });
     // The cached share is a PART of the input, not added to it.
     expect(r.usage.promptTokens).toBe(1500);
+    // Two calls of at least MODEL_MS each were waited on, inside a turn that took longer still.
+    expect(r.timing.modelMs).toBeGreaterThanOrEqual(2 * MODEL_MS - 2);
+    expect(r.timing.turnMs).toBeGreaterThanOrEqual(r.timing.modelMs);
   });
 
   test("the reopened session's total is the ledger's, and equals the live turns summed", async () => {

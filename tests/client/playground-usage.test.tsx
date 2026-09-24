@@ -69,6 +69,18 @@ describe("usageText", () => {
   });
 });
 
+describe("usageText with timing", () => {
+  test("a live turn says how long it took and how much was model time", async () => {
+    const timing = { turnMs: 3420, modelMs: 2910 };
+    expect(usageText(await tIn("en"), "en", TURN, timing)).toBe(
+      "In 1,500 (1,024 from cache) · out 100 · 2 calls · 3.4s (model 2.9s)",
+    );
+    expect(usageText(await tIn("pt-BR"), "pt-BR", TURN, timing)).toBe(
+      "Entrada 1.500 (1.024 do cache) · saída 100 · 2 chamadas · 3,4s (modelo 2,9s)",
+    );
+  });
+});
+
 describe("UsageLine", () => {
   test("a turn that made no model call draws nothing", () => {
     render(<UsageLine usage={NO_USAGE} />);
@@ -138,6 +150,13 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     promptTokens: 900,
     completionTokens: 50,
   };
+  // The failed turn was screened before the agent failed: the ledger has that call, the reply nothing.
+  const SCREEN: PlaygroundUsage = {
+    ...NO_USAGE,
+    calls: 1,
+    promptTokens: 200,
+    completionTokens: 10,
+  };
   const THREAD = "1:playground:7:abc";
 
   function stub(opts: { failFileTurn: boolean }) {
@@ -182,12 +201,35 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
           suppressed: false,
           usage: REPLY,
         });
+      if (url.endsWith("/usage"))
+        return json({
+          usage: addUsage(READ, opts.failFileTurn ? SCREEN : NO_USAGE),
+        });
       if (url.includes("/playground/sessions")) return json({ sessions: [] });
       if (url.includes("/playground/tools")) return json({ tools: [] });
       return json({});
     }) as typeof fetch;
     return calls;
   }
+
+  test("a file turn counts its read and its reply, once each", async () => {
+    const { renderHook, act } = await import("@testing-library/react");
+    const { usePlaygroundChat } = await import(
+      "@/client/pages/agents/usePlaygroundChat"
+    );
+    stub({ failFileTurn: false });
+    const { result } = renderHook(() => usePlaygroundChat("7", false));
+    await act(async () => {
+      await result.current.sendFile(
+        new File(["x"], "nota.png", { type: "image/png" }),
+      );
+    });
+    expect(result.current.sessionUsage).toEqual(addUsage(READ, REPLY));
+    const turn = result.current.turns.at(-1);
+    expect(turn?.role === "assistant" && turn.usage).toEqual(
+      addUsage(READ, REPLY),
+    );
+  });
 
   test("a read whose turn failed is still counted, and the next turn's success lists the session", async () => {
     const { renderHook, act } = await import("@testing-library/react");
@@ -201,8 +243,12 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
         new File(["x"], "nota.png", { type: "image/png" }),
       );
     });
-    // The read was billed and the turn never happened: the total says the read.
-    expect(result.current.sessionUsage).toEqual(READ);
+    // The read was billed, and so was the screening of the turn that then failed: the reply carried
+    // neither, so the total is the ledger's, re-read after the failure.
+    const { waitFor } = await import("@testing-library/react");
+    await waitFor(() =>
+      expect(result.current.sessionUsage).toEqual(addUsage(READ, SCREEN)),
+    );
 
     const after = stub({ failFileTurn: false });
     await act(async () => {
@@ -211,7 +257,9 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     await act(async () => {
       await result.current.send();
     });
-    expect(result.current.sessionUsage).toEqual(addUsage(READ, REPLY));
+    expect(result.current.sessionUsage).toEqual(
+      addUsage(addUsage(READ, SCREEN), REPLY),
+    );
     // The thread existed since the read, but its session row only now: the history is refreshed.
     expect(
       after.filter((c) => c === "GET /api/v1/agents/7/playground/sessions")

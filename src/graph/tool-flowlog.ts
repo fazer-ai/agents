@@ -99,6 +99,13 @@ function isErrorToolOutput(output: unknown): boolean {
 // fire-and-forget (emitFlowEvent never throws into the turn).
 export class ToolFlowLogger extends BaseCallbackHandler {
   name = "fazerai-tool-flowlog";
+  // INLINE, not on LangChain's background queue. Left at the default, a handler runs on one
+  // process-wide queue (concurrency 1, `LANGCHAIN_CALLBACKS_BACKGROUND` unset) behind every other
+  // backgrounded callback, so under load `handleToolEnd` ran AFTER the turn had returned: the line
+  // was not even scheduled when a reader settled, and `turnDelivered` was asked late, answering for
+  // a moment after the tool ended. Awaiting costs nothing here: every handler is synchronous and
+  // the write itself stays fire-and-forget (emitFlowEvent).
+  override awaitHandlers = true;
 
   private readonly flow: FlowContext;
   // What a tool call leaves in `detail`: the shape of each value by default, which is what keeps the

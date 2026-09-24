@@ -5916,6 +5916,39 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(await watermarkOf(840)).toBe(7);
     });
 
+    // Issue #811. A verdict the authorization endpoint returns after the job's deadline is the
+    // retry's: the run was already failed, and dispensing the burst here would leave that retry
+    // nothing to reconsider. The control is the test above, where the same refusal advances the mark.
+    test("a refusal that returns after the job's deadline leaves the burst to the retry", async () => {
+      await seedConversation(8110);
+      await seedContactOn(8110, 81);
+      const sent: Array<[number, string]> = [];
+      const controller = new AbortController();
+      const out = await flushDebounceJob({
+        job: jobFor(8110, { lastMessageId: 7 }),
+        base: appDb,
+        signal: controller.signal,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: (async () => {
+            controller.abort(new Error("deadline exceeded"));
+            return new Response(JSON.stringify({ authorized: false }), {
+              status: 200,
+            });
+          }) as unknown as typeof fetch,
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([]);
+      expect(await watermarkOf(8110)).toBeNull();
+    });
+
     test("a refused contact closes the orphan below the mark too", async () => {
       // PR #701, review round 3 (P1). O portão decide ANTES de qualquer busca no Chatwoot, então ele
       // não sabe nomear os membros e grava a faixa. A faixa começa na marca, e a órfã que esta PR
@@ -7538,6 +7571,51 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(order).toEqual(["message", "toggle", "note"]);
       // The burst counts as handled, so it is not re-flushed into the same wall forever.
       expect(await watermarkOf(910)).toBe(7);
+      await clearFlowLog(suDb, { tenantId });
+    });
+
+    // Issue #811. The same refusal with the job's deadline firing during the ceiling's own read: the
+    // run was failed and its retry answers the burst, so the notice, the hand-over and the settlement
+    // are the retry's. The test above is its control.
+    test("a ceiling verdict read after the job's deadline leaves the burst to the retry", async () => {
+      await seedConversation(8111);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const controller = new AbortController();
+      const slow = appDb.$extends({
+        query: {
+          async $allOperations({ model, operation, args, query }) {
+            if (model === "SpendCostSnapshot" && operation === "findUnique") {
+              controller.abort(new Error("deadline exceeded"));
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as PrismaClient;
+      const out = await flushDebounceJob({
+        job: jobFor(8111, { lastMessageId: 7 }),
+        base: slow,
+        signal: controller.signal,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+            notes: [],
+            order: [],
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(controller.signal.aborted).toBe(true);
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([]);
+      expect(await watermarkOf(8111)).toBeNull();
       await clearFlowLog(suDb, { tenantId });
     });
 

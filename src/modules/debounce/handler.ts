@@ -1568,6 +1568,10 @@ export async function flushDebounceJob(
   params: FlushDebounceParams,
 ): Promise<JobResult> {
   const { job, base, deps } = params;
+  // Whether the job's deadline ended this run (issue #811). The run was failed and its retry answers
+  // the burst, so the gate exits below (a refusal notice, a hand-over, the settlement that dispenses
+  // the burst) are the retry's to make: each asks this after the waits it follows.
+  const pastDeadline = (): boolean => params.signal?.aborted === true;
   const threadId =
     typeof job.payload.threadId === "string" ? job.payload.threadId : null;
   if (!threadId) return { outcome: "done" };
@@ -2026,6 +2030,15 @@ export async function flushDebounceJob(
       );
       return false;
     }
+    // NOTE: after the two reads above, the stretch it can fire in (issue #811).
+    if (pastDeadline()) {
+      logger.info(
+        "debounce flush: spend-ceiling %s withheld (conv=%s): the job's deadline ended this run",
+        act,
+        String(conversationId),
+      );
+      return false;
+    }
     return true;
   };
   // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, the second half of that rule and the one the watermark
@@ -2325,6 +2338,9 @@ export async function flushDebounceJob(
       },
       contactAuthFlowEvent(auth),
     );
+    // NOTE: the authorization call is the long wait here, and a verdict it returns after the job's
+    // deadline is the retry's to act on (issue #811).
+    if (pastDeadline()) return { outcome: "done" };
     if (auth.outcome !== "allowed") {
       logger.info(
         "debounce flush: contact not authorized (conv=%s outcome=%s), dropping the burst",

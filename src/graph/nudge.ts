@@ -534,6 +534,35 @@ export async function runAgentNudge(
     // was not, with nothing in the settings saying so.
     fullDetail: cfg.fullDetail,
   };
+  // OUR SIDE SPOKE (issue #816). A nudge claims no customer message, so the reply marks never saw
+  // it, and a conversation answered only by one read as unanswered to every reader of
+  // `ourSideHasSpoken`: the follow-up sweep never picked it up, and a later silent turn handed it
+  // over as if nobody had ever spoken. Stamped AFTER the send that reached the customer (a message or
+  // a template, never an internal note), so a refused or failed send marks nothing.
+  //
+  // Best-effort: the customer already has the message, and a throw here would fail the nudge into a
+  // retry that sends it again. A lost stamp costs the answer "nobody spoke", which is today's.
+  const recordProactiveSpeech = async (): Promise<void> => {
+    try {
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        // By the conversation's natural key rather than the id loaded with the config, which is
+        // null when no mirror row existed yet and would then stamp nothing on the row a webhook
+        // creates meanwhile.
+        db.conversation.updateMany({
+          where: {
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+          data: { lastProactiveAt: new Date() },
+        }),
+      );
+    } catch (err) {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not record that our side spoke",
+      );
+    }
+  };
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
     emitFlowEvent(flow, {
       stage: "generate",
@@ -1383,6 +1412,7 @@ export async function runAgentNudge(
       if (!(await stillWanted())) return "stale";
       if (sendModeNow() !== "freeform") return await noteOutsideWindow();
       await client.sendMessage(conversationId, sign(line2));
+      await recordProactiveSpeech();
       logger.info(
         "agentNudge handed off: conv=%s source=%s",
         String(conversationId),
@@ -2291,6 +2321,7 @@ export async function runAgentNudge(
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
       await client.sendMessage(conversationId, sign(screened));
+      await recordProactiveSpeech();
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
         String(conversationId),
@@ -2313,6 +2344,7 @@ export async function runAgentNudge(
       );
       if (payload) {
         await client.sendTemplate(conversationId, payload);
+        await recordProactiveSpeech();
         logger.info(
           "agentNudge templated (outside 24h window): conv=%s source=%s template=%s",
           String(conversationId),

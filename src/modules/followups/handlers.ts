@@ -218,7 +218,8 @@ async function sweepHandler(
         -- advances when the webhook for the message we sent comes back, and the conversation
         -- recovered from the backlog carries an old one. Without the floor it is selected as idle for
         -- days at the very instant the customer receives the answer. Mirrors lastActivityAt() in TS.
-        AND GREATEST(c.last_event_at, c.last_replied_at) < ${cutoff}
+        -- And a proactive send that reached the customer (issue #816): movement, not a new silence.
+        AND GREATEST(c.last_event_at, c.last_replied_at, c.last_proactive_at) < ${cutoff}
         -- WHEN THE CURRENT SILENCE BEGAN, and not "when the customer last spoke" (issue #750). The
         -- two disagree on exactly the conversation this sweep is for: a row the mirror created from
         -- an event that is not a message carries NO inbound instant, so the old form answered "no
@@ -233,6 +234,7 @@ async function sweepHandler(
         AND (
           c.last_replied_message_id IS NOT NULL
           OR c.chatwoot_first_reply_at IS NOT NULL
+          OR c.last_proactive_at IS NOT NULL
         )
         AND (
           c.last_follow_up_at IS NULL
@@ -499,6 +501,7 @@ export async function followUpHandler(
         // The fence's own axis (issue #750); see the note beside it below.
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
+        lastProactiveAt: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -656,7 +659,11 @@ export async function followUpHandler(
   // configuration the instant was computed from so the sweep can tell when it no longer holds.
   const anchor =
     stepIndex === 0
-      ? lastActivityAt(lastEventAt, ctx.conv.lastRepliedAt)
+      ? lastActivityAt(
+          lastEventAt,
+          ctx.conv.lastRepliedAt,
+          ctx.conv.lastProactiveAt,
+        )
       : lastFollowUpAt;
   if (anchor) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;

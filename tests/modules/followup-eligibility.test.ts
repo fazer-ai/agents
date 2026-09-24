@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   type FollowUpLiveness,
   isFollowUpLive,
+  ourSideHasSpoken,
 } from "@/modules/followups/eligibility";
 
 // Decision table: one row per reason the handler drops a claimed follow-up job. The console indicator
@@ -194,5 +195,38 @@ describe("slate limpo: as duas âncoras do silêncio saem juntas", () => {
       );
       expect(janela).toContain("lastRepliedAt: null,");
     }
+  });
+});
+
+// The predicate itself, one half at a time (issue #816 added the third).
+describe("ourSideHasSpoken", () => {
+  const none = {
+    lastRepliedMessageId: null,
+    chatwootFirstReplyAt: null,
+    lastProactiveAt: null,
+  };
+  test("nobody spoke", () => {
+    expect(ourSideHasSpoken(none)).toBe(false);
+  });
+  test("the agent replied", () => {
+    expect(ourSideHasSpoken({ ...none, lastRepliedMessageId: 7 })).toBe(true);
+  });
+  test("a person replied", () => {
+    expect(
+      ourSideHasSpoken({ ...none, chatwootFirstReplyAt: new Date() }),
+    ).toBe(true);
+  });
+  test("a reader that did not select the proactive column reads as not spoken", () => {
+    expect(
+      ourSideHasSpoken({
+        ...none,
+        lastProactiveAt: undefined as unknown as null,
+      }),
+    ).toBe(false);
+  });
+  test("only a proactive message reached the customer", () => {
+    expect(ourSideHasSpoken({ ...none, lastProactiveAt: new Date() })).toBe(
+      true,
+    );
   });
 });

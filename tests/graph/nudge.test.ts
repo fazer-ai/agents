@@ -381,6 +381,23 @@ async function seedConv(
   });
 }
 
+// What our side spoke, as the conversation row records it (issue #816): the proactive stamp, and
+// the two reply marks a nudge must leave alone because it claims no customer message.
+async function speechOf(convId: number) {
+  return suDb.conversation.findFirstOrThrow({
+    where: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      chatwootConversationId: convId,
+    },
+    select: {
+      lastProactiveAt: true,
+      lastRepliedAt: true,
+      lastRepliedMessageId: true,
+    },
+  });
+}
+
 describe.skipIf(!dbUp)("runAgentNudge", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -481,6 +498,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     expect(s.messages).toEqual([[900, "Pagamento confirmado!"]]);
     expect(s.notes).toEqual([]);
+    // Our side spoke (issue #816), and it answered no customer message: the reply marks stay put.
+    const spoke = await speechOf(900);
+    expect(spoke.lastProactiveAt).not.toBeNull();
+    expect(spoke.lastRepliedAt).toBeNull();
+    expect(spoke.lastRepliedMessageId).toBeNull();
   });
 
   // The other half of the #454 cause fix. A follow-up must ALWAYS have a way to say nothing: the
@@ -1399,6 +1421,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     // The closing line, once: the model's final text is the second copy and never goes out.
     expect(s.messages).toEqual([[999, "Vou te encaminhar para o time."]]);
+    // The transfer's promised line reached the customer, so our side spoke (issue #816).
+    expect((await speechOf(999)).lastProactiveAt).not.toBeNull();
     // The label DOES apply. It is how the operator triages what the bot left behind, and the branch
     // below (`noted-window`) keeps it for the same reason.
     expect(s.labelSets).toEqual([["follow-up"]]);
@@ -2341,6 +2365,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(
       messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
     ).toBe(false);
+    // Nothing reached the customer from a conversation a person holds.
+    expect((await speechOf(960)).lastProactiveAt).toBeNull();
   });
 
   // NOT WHILE A HUMAN STILL OWNS IT (issue #457, review round 3). A nudge on a human-held conversation
@@ -3450,6 +3476,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(s.notes).toEqual([
           [9965, `${OUTSIDE_WINDOW_NOTE_PREFIX}Pagamento confirmado!`],
         ]);
+        // A note is written to the operator, not to the customer: our side did not speak.
+        expect((await speechOf(9965)).lastProactiveAt).toBeNull();
         // The judge was never even asked: this text was never going to the customer.
         expect(seen).toEqual([]);
       },
@@ -5199,6 +5227,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(judged).toBe(true);
         expect(outcome).toBe("templated");
         expect(s.templates).toEqual([[9975, "reengage"]]);
+        // An approved template reaches the customer, so it counts as our side speaking.
+        expect((await speechOf(9975)).lastProactiveAt).not.toBeNull();
         expect(s.messages).toEqual([]);
         expect(s.notes).toEqual([]);
         // A template DID reach the customer, so unlike the note branch this one resolves.

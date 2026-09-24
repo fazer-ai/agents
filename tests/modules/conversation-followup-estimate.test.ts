@@ -71,6 +71,8 @@ let convStepOptOutArmedStep1 = 0n;
 let convStepOptOutStepGone = 0n;
 let convOurReplyRestartedEpisode = 0n;
 let convRepliedAtFloorsTheCadence = 0n;
+let convProactiveFloorsTheCadence = 0n;
+let proactiveFloorDueAt = "";
 let convGoneStepAndOurReply = 0n;
 let cadenceFloorDueAt = "";
 let convNoBotRowArmed = 0n;
@@ -662,6 +664,32 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     convRepliedAtFloorsTheCadence = c334.id;
     cadenceFloorDueAt = new Date(
       RESPONDIDA_AS.getTime() + 2 * 60_000,
+    ).toISOString();
+
+    // Issue #816, rodada 1: o mesmo piso para um envio PROATIVO. Um lembrete que acabou de chegar
+    // (e cujo webhook ainda não voltou) é a última coisa que aconteceu na conversa, e a contagem do
+    // console tem que sair dele, como a do handler e a da varredura.
+    const PROATIVO_AS = new Date("2026-06-18T23:30:00Z");
+    const c3816 = await suDb.conversation.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootConversationId: 3816,
+        inboxId: stepOptOutInbox.id,
+        status: "pending",
+        assigneeType: null,
+        threadId: `${tenant}:${inst}:3816`,
+        lastRepliedMessageId: null,
+        lastInboundAt: new Date("2026-06-18T22:00:00Z"),
+        lastEventAt: new Date("2026-06-18T22:00:05Z"),
+        lastRepliedAt: null,
+        lastProactiveAt: PROATIVO_AS,
+        lastFollowUpAt: null,
+      },
+    });
+    convProactiveFloorsTheCadence = c3816.id;
+    proactiveFloorDueAt = new Date(
+      PROATIVO_AS.getTime() + 2 * 60_000,
     ).toISOString();
 
     // Issue #750, rodada 4: os dois estados juntos. O operador encurtou a sequência (o job pendente
@@ -1517,6 +1545,16 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.nextStep).toBe(1);
     expect(d.followUp?.nextRunAt).toBe(cadenceFloorDueAt);
+  });
+
+  test("(#816) a contagem sai do envio proativo, não do evento antigo do espelho", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convProactiveFloorsTheCadence,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).toBe(proactiveFloorDueAt);
   });
 
   // Issue #750: um job de passo inexistente não pode esconder o episódio que a nossa resposta abriu.

@@ -83,6 +83,11 @@ export type MirrorHolder = "ours" | "not-ours" | "not-asked";
 // `conversation_reply` MCP tool, sent with the bot token and wrote neither mark; #655 removed them,
 // so every remaining way our side speaks to the customer writes one of these two.
 //
+// A PROACTIVE message is our side speaking too (issue #816). A nudge claims no customer message, so
+// it writes neither mark above; `runAgentNudge` stamps `lastProactiveAt` once a follow-up, reminder,
+// redirect follow-up or inbound `agent_nudge` has reached the customer (a message or a template,
+// never an internal note), and that is the third half here.
+//
 //   - A reply from before the claim column existed (migration `20260831000000_reply_burst_claim`,
 //     which adds no backfill). It heals on use — the next reply writes the claim, and any human
 //     reply re-mirrors `first_reply_created_at`, which Chatwoot recomputes and ships on every
@@ -92,8 +97,15 @@ export type MirrorHolder = "ours" | "not-ours" | "not-asked";
 export function ourSideHasSpoken(c: {
   lastRepliedMessageId: number | null;
   chatwootFirstReplyAt: Date | null;
+  lastProactiveAt: Date | null;
 }): boolean {
-  return c.lastRepliedMessageId !== null || c.chatwootFirstReplyAt !== null;
+  return (
+    c.lastRepliedMessageId !== null ||
+    c.chatwootFirstReplyAt !== null ||
+    // Loose on purpose: a reader that forgot to select the column hands `undefined`, and that must
+    // read as "not spoken", never as the opposite.
+    c.lastProactiveAt != null
+  );
 }
 
 export function isFollowUpLive(s: FollowUpLiveness): boolean {

@@ -611,6 +611,7 @@ async function loadConvRef(
   // it, and they have to read what the sweep reads.
   lastRepliedAt: Date | null;
   chatwootFirstReplyAt: Date | null;
+  lastProactiveAt: Date | null;
   inbox: {
     id: bigint;
     name: string;
@@ -646,6 +647,7 @@ async function loadConvRef(
         // reads or the indicator promises a follow-up that never fires (issue #750).
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
+        lastProactiveAt: true,
         inbox: {
           select: {
             id: true,
@@ -1182,7 +1184,11 @@ export async function getConversationDetail(
     const supersededLaterStepJob =
       job != null && jobStepIndex > 0 && newEpisode;
     // The inactivity floor, the same one the handler and the SQL use: our reply counts as movement.
-    const movedAt = lastActivityAt(conv.lastEventAt, conv.lastRepliedAt);
+    const movedAt = lastActivityAt(
+      conv.lastEventAt,
+      conv.lastRepliedAt,
+      conv.lastProactiveAt,
+    );
     const fencedStep0Job =
       job != null &&
       jobStepIndex === 0 &&

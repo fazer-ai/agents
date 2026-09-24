@@ -874,6 +874,13 @@ model Conversation {
   // a backfilled value would assert a moment nobody measured, and the fallback keeps today's
   // behaviour for everything already in flight.
   lastRepliedAt            DateTime? @map("last_replied_at")
+  // When our side last spoke PROACTIVELY and it reached the customer (issue #816): a follow-up, an
+  // appointment reminder, a channel-redirect follow-up or an inbound `agent_nudge`, as a message or an
+  // approved template. A nudge claims no customer message, so it moves neither reply mark above;
+  // this is what `ourSideHasSpoken` reads for it. Deliberately NOT part of the follow-up's silence
+  // key (`GREATEST(last_inbound_at, last_replied_at)`): a follow-up step that moved it would open a
+  // new episode and restart its own ladder. NULL on rows that predate it.
+  lastProactiveAt          DateTime? @map("last_proactive_at")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

@@ -43,6 +43,9 @@ let docs: Record<string, unknown>[] = [];
 let baseGate: Promise<void> | null = null;
 // When set, the sync request waits on it: a POST still out when the section closes.
 let syncGate: Promise<void> | null = null;
+// When set, the NEXT base read is held on it and then answers with the source it saw when it was
+// asked: a read that was out while something changed the source.
+let holdNextRead: Promise<void> | null = null;
 
 const realFetch = globalThis.fetch;
 
@@ -101,6 +104,19 @@ function installFetchStub() {
     }
     if (/\/knowledge\/bases\/[^/]+$/.test(url) && method === "GET") {
       if (baseGate) await baseGate;
+      if (holdNextRead) {
+        const held = holdNextRead;
+        holdNextRead = null;
+        const seen = source;
+        await held;
+        return json({
+          base: {
+            id: "b1",
+            name: "Base",
+            source: seen ? { continuing: false, ...seen } : null,
+          },
+        });
+      }
       return json({
         base: {
           id: "b1",
@@ -199,6 +215,7 @@ beforeEach(() => {
   docs = [];
   baseGate = null;
   syncGate = null;
+  holdNextRead = null;
   i18n.changeLanguage("en");
   installFetchStub();
 });
@@ -479,6 +496,43 @@ describe("the help center source section", () => {
     open();
     await new Promise((r) => setTimeout(r, 4_000));
     expect(sent("GET", "/knowledge/bases/b1").length).toBe(before);
+  }, 15_000);
+
+  test("a polling read that was out when the source was removed does not bring it back", async () => {
+    source = { ...FAILED_RUN };
+    renderSection();
+    await screen.findByText("https://ajuda.example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    await waitFor(() => expect(sent("POST", "/source/sync").length).toBe(1));
+    // The next re-read is asked while the source still exists, and held there; the run has landed.
+    source = {
+      ...FAILED_RUN,
+      lastSyncAt: "2026-09-20T10:05:00.000Z",
+      lastStatus: "ok",
+    };
+    let release: () => void = () => {};
+    holdNextRead = new Promise((r) => {
+      release = r;
+    });
+    const before = sent("GET", "/knowledge/bases/b1").length;
+    await waitFor(
+      () => expect(sent("GET", "/knowledge/bases/b1").length).toBe(before + 1),
+      { timeout: 5_000 },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Remove source" }),
+    );
+    await screen.findByText(/does not mirror a help center/);
+    const afterRemoval = sent("GET", "/knowledge/bases/b1").length;
+    release();
+    // Past the next tick: the removal stopped the polling, so the held read schedules nothing.
+    await new Promise((r) => setTimeout(r, 3_500));
+    expect(sent("GET", "/knowledge/bases/b1").length).toBe(afterRemoval);
+    expect(shows(/does not mirror a help center/)).toBe(true);
+    expect(shows("https://ajuda.example.com")).toBe(false);
+    expect(hasSource).toBe(false);
   }, 15_000);
 
   test("a read-only surface shows the source and offers no action", async () => {

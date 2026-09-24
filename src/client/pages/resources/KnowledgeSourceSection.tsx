@@ -106,6 +106,12 @@ export function KnowledgeSourceSection({
   // one, or for a section already closed, is dropped (docs/modals.md, the modal session).
   const current = useRef<string | null>(baseId);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Generations, as docs/modals.md prescribes for a modal that fetches (review r5). Every read bumps
+  // `readGen` and only the newest one may write, so a polling read still out when a removal re-reads
+  // cannot land after it and bring the removed source back. `pollGen` is bumped by every stop, so a
+  // tick whose read was out when polling stopped does not schedule another.
+  const readGen = useRef(0);
+  const pollGen = useRef(0);
   const onSourceChangeRef = useRef(onSourceChange);
   onSourceChangeRef.current = onSourceChange;
 
@@ -113,11 +119,13 @@ export function KnowledgeSourceSection({
     KnowledgeSource | null | undefined
   > => {
     const asked = baseId;
+    const gen = ++readGen.current;
     try {
       const { data, error } = await api.api.v1.knowledge
         .bases({ id: asked })
         .get();
-      if (current.current !== asked) return undefined;
+      if (current.current !== asked || readGen.current !== gen)
+        return undefined;
       if (error || !data) {
         setLoadFailed(true);
         return undefined;
@@ -128,12 +136,14 @@ export function KnowledgeSourceSection({
       onSourceChangeRef.current(next !== null, next ? lastRunTime(next) : null);
       return next;
     } catch {
-      if (current.current === asked) setLoadFailed(true);
+      if (current.current === asked && readGen.current === gen)
+        setLoadFailed(true);
       return undefined;
     }
   }, [baseId]);
 
   const stopPolling = useCallback(() => {
+    pollGen.current += 1;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     setSyncing(false);
@@ -148,6 +158,7 @@ export function KnowledgeSourceSection({
       const asked = current.current;
       if (asked === null) return;
       stopPolling();
+      const polling = pollGen.current;
       setSyncing(true);
       let tries = 0;
       let seen = since;
@@ -155,8 +166,9 @@ export function KnowledgeSourceSection({
       const tick = async () => {
         tries += 1;
         const next = await load();
-        // Closed or moved to another base while this read was out: nothing to keep polling for.
-        if (current.current !== asked) return;
+        // Closed, moved to another base, or stopped by an action while this read was out: nothing to
+        // keep polling for.
+        if (current.current !== asked || pollGen.current !== polling) return;
         const ran = next ? lastRunTime(next) : null;
         if (ran !== null && (seen === null || ran > seen)) {
           seen = ran;

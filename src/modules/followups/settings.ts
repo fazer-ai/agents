@@ -104,12 +104,19 @@ export function followUpEpisodeKey(silenceStart: Date): string {
 // conversation has been idle for days and fires the first step at once, minutes after the customer
 // received the answer — and the conversation recovered from the backlog, which is the one issue #750
 // admits, is exactly the one whose `lastEventAt` is old. We know firsthand that we spoke: that is the
-// floor. Identical in SQL: GREATEST(c.last_event_at, c.last_replied_at).
+// floor. Identical in SQL: GREATEST(c.last_event_at, c.last_replied_at, c.last_proactive_at).
+//
+// A PROACTIVE send is movement too (issue #816, review round 1), for the same reason: a reminder or
+// an inbound `agent_nudge` that just reached a conversation with an old `lastEventAt` would otherwise
+// read as days of idleness and fire step 0 right behind it. It moves the ACTIVITY floor only, never
+// the silence start (`silenceStartedAt`) the episode key is built from, which would restart the
+// ladder at every step.
 export function lastActivityAt(
   lastEventAt: Date | null,
   lastRepliedAt: Date | null,
+  lastProactiveAt: Date | null,
 ): Date | null {
-  return laterOf(lastEventAt, lastRepliedAt);
+  return laterOf(laterOf(lastEventAt, lastRepliedAt), lastProactiveAt);
 }
 
 export function isNewFollowUpEpisode(

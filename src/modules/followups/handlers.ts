@@ -218,7 +218,8 @@ async function sweepHandler(
         -- advances when the webhook for the message we sent comes back, and the conversation
         -- recovered from the backlog carries an old one. Without the floor it is selected as idle for
         -- days at the very instant the customer receives the answer. Mirrors lastActivityAt() in TS.
-        AND GREATEST(c.last_event_at, c.last_replied_at) < ${cutoff}
+        -- And a proactive send that reached the customer (issue #816): movement, not a new silence.
+        AND GREATEST(c.last_event_at, c.last_replied_at, c.last_proactive_at) < ${cutoff}
         -- WHEN THE CURRENT SILENCE BEGAN, and not "when the customer last spoke" (issue #750). The
         -- two disagree on exactly the conversation this sweep is for: a row the mirror created from
         -- an event that is not a message carries NO inbound instant, so the old form answered "no
@@ -658,7 +659,11 @@ export async function followUpHandler(
   // configuration the instant was computed from so the sweep can tell when it no longer holds.
   const anchor =
     stepIndex === 0
-      ? lastActivityAt(lastEventAt, ctx.conv.lastRepliedAt)
+      ? lastActivityAt(
+          lastEventAt,
+          ctx.conv.lastRepliedAt,
+          ctx.conv.lastProactiveAt,
+        )
       : lastFollowUpAt;
   if (anchor) {
     const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;

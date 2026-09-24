@@ -1094,6 +1094,60 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect((runAt as Date).getTime()).toBeGreaterThan(Date.now() + 55 * 60_000);
   });
 
+  // (4i) Issue #816, review round 1: um envio PROATIVO que acabou de chegar também é movimento. Um
+  // lembrete numa conversa com `lastEventAt` antigo (o webhook da nossa mensagem ainda não voltou)
+  // não pode ser lido como dias de silêncio, nem na varredura nem no handler, ou o passo 0 sai logo
+  // atrás dele.
+  test("(4i) a varredura não pega a conversa em que um envio proativo acabou de chegar", async () => {
+    const CONV = 4398;
+    // Silêncio de 2h: depois do arm (a cerca da #750 deixa passar) e além do passo de 60 min, de
+    // modo que só o piso de atividade separa "já é hora" de "acabamos de falar".
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      lastRepliedMessageId: null,
+      lastProactiveAt: new Date(),
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    if (!sweep) throw new Error("unreachable");
+    await sweep(
+      {
+        id: phantomJobId,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    const jobs = await suDb.schedulerJob.findMany({
+      where: { tenantId, kind: "FOLLOWUP", status: "PENDING" },
+      select: { payload: true },
+    });
+    expect(
+      jobs.map((j) => (j.payload as { threadId?: string }).threadId),
+    ).not.toContain(threadOf(CONV));
+  });
+
+  test("(4j) o handler do passo 0 remarca em vez de cobrar logo atrás de um envio proativo", async () => {
+    const CONV = 4399;
+    // Silêncio de 2h: depois do arm (a cerca da #750 deixa passar) e além do passo de 60 min, de
+    // modo que só o piso de atividade separa "já é hora" de "acabamos de falar".
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      lastRepliedMessageId: null,
+      lastProactiveAt: new Date(),
+    });
+    const s = stubClient(() => ({ id: CONV, status: "pending", meta: {} }));
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
   // (7) Issue #652: o relato da comunidade. Um agente que decide, corretamente, não responder (um
   // relatório DMARC, uma notificação de pagamento, uma newsletter) chama `skip_reply`, que encerra o
   // turno e deixa a conversa exatamente como a varredura a seleciona: pending, do bot, silenciosa.

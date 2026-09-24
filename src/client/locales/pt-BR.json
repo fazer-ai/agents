@@ -1386,6 +1386,8 @@
     "memoryCompaction": "Resumir atendimentos encerrados",
     "memoryCredentialHint": "Obrigatória se o resumo usa outro fornecedor; sem uma chave própria, o atendimento não é resumido.",
     "memoryHelp": "A memória reúne os atendimentos deste contato neste canal para o agente usar nas próximas conversas.\n\nQuando um atendimento termina, o agente troca as mensagens por um resumo do que importa, como dados do contato, acordos e pendências. O atendimento atual permanece completo.\n\nA redação exata se perde, então desligue se o agente precisar citar conversas antigas. Cada atendimento encerrado gera um resumo, inclusive os conduzidos pela equipe, mas isso acontece depois da resposta ao cliente.",
+    "memoryHistoryDates": "Mostrar ao agente quando cada mensagem foi enviada",
+    "memoryHistoryDatesHelp": "Cada mensagem do cliente ou da sua equipe chega ao agente com a data e a hora em que foi enviada, no fuso horário do agente.\n\nSem isso, um cliente que volta uma semana depois é atendido como se a conversa inteira estivesse acontecendo agora: um prazo vencido é retomado, uma resposta antiga é repetida.\n\nAs respostas do próprio agente não são datadas, e as mensagens anteriores a esta opção continuam sem data.",
     "memoryModel": "Modelo do resumo",
     "memoryModelHelp": "Deixe no modelo do agente, a menos que você tenha comparado as alternativas.\n\nO resumo não é lido uma vez: ele vira o que o agente sabe daquele contato dali em diante e nunca é reescrito.\n\nEste é o lugar errado para cortar custos: no modelo mais barato de um fornecedor, o nome do cliente se perdeu em um atendimento a cada cinco.",
     "memorySameAsAgent": "Igual ao do agente",

@@ -7,6 +7,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
+import { sentAtStamp } from "@/graph/markers";
 import type { ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { type AgentNudge, renderNudge } from "@/graph/nudge";
@@ -766,7 +767,14 @@ export async function runPlaygroundTurn(
   // Everything screened before the graph belongs ahead of the graph's own entries in the trace.
   const beforeGraph = gTrace.length;
 
-  const human = new HumanMessage({ content: text, id: humanId });
+  // Dated with the instant the playground says it was written, simulation included (issue #755), so
+  // an operator testing "the customer comes back a week later" sees the history the way a real turn
+  // would send it.
+  const human = new HumanMessage({
+    content: text,
+    id: humanId,
+    additional_kwargs: sentAtStamp(loaded.promptOpts.messageAt),
+  });
 
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   try {

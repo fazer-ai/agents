@@ -53,6 +53,17 @@ export interface MemoryConfig {
     credentialRef: string | null;
     baseURL: string | null;
   };
+  // WHEN EACH MESSAGE WAS SENT, in front of it, in what the model reads (issue #755). The history is
+  // plain text otherwise, so a customer who vanishes for a week and comes back with "segue" is
+  // answered as if the whole thread were happening now: a deadline that already passed is taken up
+  // again, a fact that aged is repeated. On by default for the same reason compaction is — an
+  // install that never looks for the switch is exactly the one that has the problem.
+  //
+  // The date is ABSOLUTE and rendered at call time from the instant stored on the message, so it is
+  // byte-identical on every later turn and the prompt cache keeps the history prefix it already had.
+  historyDates: {
+    enabled: boolean;
+  };
 }
 
 function defaults(): MemoryConfig {
@@ -64,7 +75,15 @@ function defaults(): MemoryConfig {
       credentialRef: null,
       baseURL: null,
     },
+    historyDates: { enabled: true },
   };
+}
+
+// NOTE: Only an explicit false turns a default-ON switch off. Absent, malformed, or anything truthy
+// reads as the default — a bag written by an older build has no key at all, and that has to mean
+// "the default", not "off".
+function explicitlyOff(raw: unknown): boolean {
+  return raw === false || raw === "false";
 }
 
 export function readMemoryConfig(settings: unknown): MemoryConfig {
@@ -72,20 +91,26 @@ export function readMemoryConfig(settings: unknown): MemoryConfig {
   if (!settings || typeof settings !== "object") return def;
   const m = (settings as Record<string, unknown>).memory;
   if (!m || typeof m !== "object") return def;
-  const c = (m as Record<string, unknown>).compaction;
-  if (!c || typeof c !== "object") return def;
-  // NOTE: Only an explicit false turns it off. Absent, malformed, or anything truthy reads as the
-  // default — a bag written by an older build has no `memory` key at all, and that has to mean "the
-  // default", not "off".
+  const block = m as Record<string, unknown>;
+  const h = block.historyDates;
+  const historyDates = {
+    enabled: !(
+      h &&
+      typeof h === "object" &&
+      explicitlyOff((h as Record<string, unknown>).enabled)
+    ),
+  };
+  const c = block.compaction;
+  if (!c || typeof c !== "object") return { ...def, historyDates };
   const bag = c as Record<string, unknown>;
-  const raw = bag.enabled;
   return {
     compaction: {
-      enabled: !(raw === false || raw === "false"),
+      enabled: !explicitlyOff(bag.enabled),
       provider: str(bag.provider),
       model: str(bag.model),
       credentialRef: str(bag.credentialRef),
       baseURL: str(bag.baseURL),
     },
+    historyDates,
   };
 }

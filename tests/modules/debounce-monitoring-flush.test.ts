@@ -88,6 +88,8 @@ function page(
     type?: number;
     sender?: string;
     senderId?: number;
+    // Epoch seconds, as Chatwoot sends `created_at` (issue #755).
+    createdAt?: number;
   }>,
 ) {
   return {
@@ -96,6 +98,7 @@ function page(
       content: m.content,
       message_type: m.type ?? 0,
       private: false,
+      ...(m.createdAt ? { created_at: m.createdAt } : {}),
       ...(m.sender ? { sender: { id: m.senderId ?? 9, type: m.sender } } : {}),
     })),
   };
@@ -361,7 +364,8 @@ describe.skipIf(!dbUp)(
       const s = stub([
         page([
           { id: 1, content: "oi" },
-          { id: 2, content: "quero cancelar" },
+          // Issue #755: this one carries its instant, and it has to reach the fold.
+          { id: 2, content: "quero cancelar", createdAt: 1_789_563_900 },
         ]),
       ]);
       try {
@@ -383,6 +387,19 @@ describe.skipIf(!dbUp)(
         expect(keys.map((k) => k.split(":").slice(-2).join(":"))).toEqual([
           "94100:1",
           "94100:2",
+        ]);
+        const sentAt = (
+          await suDb.schedulerJob.findMany({
+            where: { tenantId, kind: "INGEST_MESSAGE" },
+            select: { payload: true },
+          })
+        ).map((r) => {
+          const p = r.payload as { messageId?: number; sentAt?: string };
+          return [p.messageId, p.sentAt ?? null];
+        });
+        expect(sentAt.sort()).toEqual([
+          [1, null],
+          [2, new Date(1_789_563_900 * 1000).toISOString()],
         ]);
         expect(await watermarkOf(CONV_OBSERVED)).toBe(2);
       } finally {

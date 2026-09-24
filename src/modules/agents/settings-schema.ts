@@ -524,6 +524,16 @@ const memory = z.looseObject({
       baseURL: baseURL(),
     })
     .optional(),
+  historyDates: z
+    .looseObject({
+      enabled: z
+        .boolean()
+        .optional()
+        .describe(
+          "date each sent message in the model's history; default TRUE",
+        ),
+    })
+    .optional(),
 });
 
 const modelFallback = z.looseObject({

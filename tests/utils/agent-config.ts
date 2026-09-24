@@ -102,6 +102,7 @@ export function makeConfig(
     maxToolCalls: 10,
     maxHistoryTokens: null,
     memoryCompaction: true,
+    historyDates: true,
     memoryCompactionOverride: {},
     memoryCompactionApiKey: "",
     memoryCompactionCredentialBaseUrl: null,

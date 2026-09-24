@@ -2087,6 +2087,7 @@ async function ingestUnhandledMessage(args: {
         messageId,
         text,
         role,
+        sentAt: n.message.createdAt ?? null,
         agentId: args.agentId,
         compactionEnabled: args.compactionEnabled,
         base,

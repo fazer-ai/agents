@@ -16,6 +16,7 @@ import {
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import logger from "@/api/lib/logger";
+import { datedHistory } from "@/graph/history-dates";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
 import {
@@ -85,6 +86,10 @@ export interface BuildAgentGraphParams {
   // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
   // null/undefined = send the whole thread, which is the historical behavior.
   maxHistoryTokens?: number | null;
+  // Whether each person's message reaches the model behind the date it was sent, and in which
+  // timezone (agent.settings.memory.historyDates, issue #755; see ./history-dates.ts). null/undefined
+  // sends the history as it is stored, which is what every caller that does not pass it gets.
+  historyDates?: { timezone: string } | null;
   // Fired when a turn actually dropped messages, so the runtime can put it in the turn trail.
   // Trimming that leaves no trace is indistinguishable, from the operator's chair, from the agent
   // forgetting things on its own.
@@ -565,6 +570,7 @@ export function buildAgentGraph({
   onModelFallback,
   onModelFallbackFailed,
   maxHistoryTokens,
+  historyDates,
   onHistoryTrim,
   stillWanted,
   noReplyChannel,
@@ -792,7 +798,12 @@ export function buildAgentGraph({
     const sent = narration.length
       ? history.map((m) => narration.find((n) => n.id === m.id) ?? m)
       : history;
-    const messages = [new SystemMessage(prompt), ...sent, ...wrapUp];
+    // Dated AFTER the window above is cut, so the ceiling counts what is stored and a date never
+    // decides which message survives; the few tokens it adds are well inside the ceiling's slack.
+    const shown = historyDates
+      ? datedHistory(sent, historyDates.timezone)
+      : sent;
+    const messages = [new SystemMessage(prompt), ...shown, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
     const second =

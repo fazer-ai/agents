@@ -64,6 +64,30 @@ export function stampedConversationId(message: BaseMessage): number | null {
   return typeof raw === "number" ? raw : null;
 }
 
+// WHEN A MESSAGE WAS SENT, stamped on the message itself (issue #755), as the instant Chatwoot
+// recorded for it. What the model reads is rendered from it at call time (./history-dates.ts), never
+// written into `content`: the summarizer and the playground read the stored text, and a date baked in
+// there would be quoted as something the customer said.
+//
+// Absent is not "now". A message whose instant we never had — every message written before this
+// existed, a system event, an assistant reply — simply carries no date, and is shown without one.
+const SENT_AT_KWARG = "fazerSentAt";
+
+export function sentAtStamp(
+  at: Date | null | undefined,
+): Record<string, unknown> {
+  return at instanceof Date && Number.isFinite(at.getTime())
+    ? { [SENT_AT_KWARG]: at.toISOString() }
+    : {};
+}
+
+export function stampedSentAt(message: BaseMessage): Date | null {
+  const raw = message.additional_kwargs?.[SENT_AT_KWARG];
+  if (typeof raw !== "string") return null;
+  const at = new Date(raw);
+  return Number.isFinite(at.getTime()) ? at : null;
+}
+
 // WHICH ATTENDANCE THE THREAD IS ON, which is the last stamped message's — not "any message stamped
 // with X exists somewhere". A conversation can be REOPENED after another has already run on this
 // thread (an operator picking an old one back up, a human agent replying in it), so a stamp appearing
@@ -101,6 +125,7 @@ export function conversationDividerMessage(
   conversationId: number,
   trailingText?: string,
   id?: string,
+  sentAt?: Date | null,
 ): HumanMessage {
   return new HumanMessage({
     ...(id ? { id } : {}),
@@ -110,6 +135,8 @@ export function conversationDividerMessage(
     additional_kwargs: {
       [MARKER_KWARG]: "divider" satisfies SystemMarker,
       ...conversationStamp(conversationId),
+      // Only when it carries the customer's words: a bare divider is ours, and was never sent.
+      ...(trailingText ? sentAtStamp(sentAt) : {}),
     },
   });
 }
@@ -196,6 +223,7 @@ export function humanAgentMessage(
   conversationId: number | null,
   text: string,
   id?: string,
+  sentAt?: Date | null,
 ): HumanMessage {
   return new HumanMessage({
     ...(id ? { id } : {}),
@@ -203,6 +231,7 @@ export function humanAgentMessage(
     additional_kwargs: {
       [MARKER_KWARG]: "human_agent" satisfies SystemMarker,
       ...(conversationId === null ? {} : conversationStamp(conversationId)),
+      ...sentAtStamp(sentAt),
     },
   });
 }

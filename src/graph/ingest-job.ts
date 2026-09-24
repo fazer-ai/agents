@@ -83,6 +83,9 @@ export interface ArmIngestParams {
   messageId: number;
   text: string;
   role: IngestRole;
+  // When Chatwoot recorded the message (issue #755). Optional because a caller that does not know
+  // must say nothing rather than "now"; a job armed by an older build carries none either.
+  sentAt?: Date | null;
   agentId: bigint;
   compactionEnabled: boolean;
   base?: PrismaClient;
@@ -111,6 +114,9 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
       graphThreadId: params.graphThreadId,
       messageId: params.messageId,
       role: params.role,
+      ...(params.sentAt && Number.isFinite(params.sentAt.getTime())
+        ? { sentAt: params.sentAt.toISOString() }
+        : {}),
       agentId: String(params.agentId),
       compactionEnabled: params.compactionEnabled,
     },
@@ -150,6 +156,8 @@ function parsePayload(
   const conversationId = n("conversationId");
   const contactInboxId = n("contactInboxId");
   const messageId = n("messageId");
+  const sentAtRaw = s("sentAt");
+  const sentAt = sentAtRaw === null ? null : new Date(sentAtRaw);
   if (
     instanceId === null ||
     agentId === null ||
@@ -169,6 +177,7 @@ function parsePayload(
     messageId,
     text,
     role,
+    sentAt: sentAt && Number.isFinite(sentAt.getTime()) ? sentAt : null,
     agentId: BigInt(agentId),
     compactionEnabled: payload.compactionEnabled === true,
   };
@@ -226,6 +235,7 @@ export async function ingestHandler(
     messageId: p.messageId,
     text: p.text,
     role: p.role,
+    sentAt: p.sentAt,
     base,
     ...(checkpointer ? { checkpointer } : {}),
     onAttendanceClosed: (previousConversationId) =>

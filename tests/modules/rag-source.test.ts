@@ -706,6 +706,28 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     }
   });
 
+  // Issue #798: the console follows a sync through its batches, and the one thing that says a landed
+  // run is not the end is the next run being a continuation rather than the interval's.
+  test("the source says when the next run continues the last one", async () => {
+    await configure();
+    await sync(portal({ articles: () => BASIC }));
+    const last = (await getSource(ctx(), kb, appDb))?.lastSyncAt;
+    if (!last) throw new Error("the run recorded no time");
+    const armAt = (ms: number) =>
+      suDb.schedulerJob.updateMany({
+        where: {
+          tenantId,
+          kind: "KNOWLEDGE_SOURCE_SYNC",
+          dedupeKey: `source:${kb}`,
+        },
+        data: { runAt: new Date(last.getTime() + ms) },
+      });
+    expect((await armAt(15_000)).count).toBe(1);
+    expect((await getSource(ctx(), kb, appDb))?.continuing).toBe(true);
+    await armAt(5 * 60_000);
+    expect((await getSource(ctx(), kb, appDb))?.continuing).toBe(false);
+  });
+
   test("a run's outcome is written only onto the source it read", async () => {
     await configure();
     await sync(portal({ articles: () => BASIC }));

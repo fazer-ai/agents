@@ -72,6 +72,10 @@ export interface SourceState {
   lastSyncAt: Date | null;
   lastStatus: string | null;
   lastMessage: string | null;
+  // The last run stopped at its write budget and the next one, a few seconds away, continues it
+  // (issue #798). A reader watching a sync land needs this to know the landed run is not the end;
+  // the scheduled row is the only place it is written, so it is read from there.
+  continuing: boolean;
 }
 
 const DEFAULT_INTERVAL_MINUTES = 10;
@@ -221,8 +225,13 @@ function stateOf(row: {
     lastSyncAt: row.lastSyncAt,
     lastStatus: row.lastStatus,
     lastMessage: row.lastMessage,
+    continuing: false,
   };
 }
+
+// A continuation is armed CONTINUE_AFTER_MS after the run that asked for it; an ordinary next run is
+// at least MIN_INTERVAL_MINUTES away. Anything under a minute from the last run is the former.
+const CONTINUATION_WINDOW_MS = 60_000;
 
 const syncKey = (knowledgeBaseId: bigint) => `source:${knowledgeBaseId}`;
 
@@ -251,10 +260,30 @@ export async function getSource(
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<SourceState | null> {
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.knowledgeSource.findUnique({ where: { knowledgeBaseId } }),
-  );
-  return row ? stateOf(row) : null;
+  const found = await runScopedOn(base, ctx, async (db) => {
+    const row = await db.knowledgeSource.findUnique({
+      where: { knowledgeBaseId },
+    });
+    if (!row) return null;
+    const job = row.lastSyncAt
+      ? await db.schedulerJob.findFirst({
+          where: {
+            kind: "KNOWLEDGE_SOURCE_SYNC",
+            dedupeKey: syncKey(knowledgeBaseId),
+          },
+          select: { runAt: true },
+        })
+      : null;
+    return { row, job };
+  });
+  if (!found) return null;
+  const state = stateOf(found.row);
+  const last = found.row.lastSyncAt;
+  state.continuing =
+    last !== null &&
+    found.job !== null &&
+    found.job.runAt.getTime() - last.getTime() < CONTINUATION_WINDOW_MS;
+  return state;
 }
 
 // Creates or replaces the base's source and arms a sync for now. Replacing keeps the documents: a

@@ -31,12 +31,11 @@ export type KnowledgeSource = NonNullable<BaseDetail["source"]>;
 // scheduler job, so its outcome lands on the row some seconds later and nothing announces it.
 //
 // A landed run is not always the end: one that hit its write budget records itself and schedules the
-// next batch 15s later (CONTINUE_AFTER_MS in src/modules/rag/source.ts), and the source says nothing
-// structured about that. So after a run lands the section keeps reading until SETTLE_TRIES pass with
-// no newer one, which outlasts that gap, and every batch that lands on the way refreshes the list.
+// next batch seconds later, which the source reports as `continuing`. The section keeps reading
+// through those, every batch refreshing the list, and the budget of reads counts from the last
+// progress, so a long sync is followed to its end and a stuck one is not followed forever.
 const POLL_MS = 3_000;
-const POLL_TRIES = 60;
-const SETTLE_TRIES = 8;
+const POLL_TRIES = 20;
 
 interface Draft {
   baseUrl: string;
@@ -140,7 +139,7 @@ export function KnowledgeSourceSection({
     setSyncing(false);
   }, []);
 
-  // Re-reads until a run newer than `since` lands and no further batch follows it, which is how a run
+  // Re-reads until a run newer than `since` lands and no continuation follows it, which is how a run
   // the scheduler finishes later reaches the screen without the operator reloading.
   const pollUntilRun = useCallback(
     (since: number | null) => {
@@ -153,7 +152,6 @@ export function KnowledgeSourceSection({
       let tries = 0;
       let seen = since;
       let landed = false;
-      let quiet = 0;
       const tick = async () => {
         tries += 1;
         const next = await load();
@@ -163,13 +161,11 @@ export function KnowledgeSourceSection({
         if (ran !== null && (seen === null || ran > seen)) {
           seen = ran;
           landed = true;
-          quiet = 0;
-        } else if (landed) {
-          quiet += 1;
+          tries = 0;
         }
         if (
           next === null ||
-          (landed && quiet >= SETTLE_TRIES) ||
+          (landed && next !== undefined && !next.continuing) ||
           tries >= POLL_TRIES
         ) {
           stopPolling();
@@ -242,8 +238,8 @@ export function KnowledgeSourceSection({
         .source.put({
           kind: "chatwoot_portal",
           baseUrl: draft.baseUrl.trim(),
-          ...(draft.slug.trim() ? { slug: draft.slug.trim() } : {}),
-          ...(draft.locale.trim() ? { locale: draft.locale.trim() } : {}),
+          slug: draft.slug.trim(),
+          locale: draft.locale.trim(),
           excludeIds,
           intervalMinutes: interval,
         });
@@ -395,14 +391,14 @@ export function KnowledgeSourceSection({
         />
       </FormField>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <FormField label={t("knowledge.source.slug", "Portal slug")}>
+        <FormField label={t("knowledge.source.slug", "Portal slug")} required>
           <Input
             value={draft.slug}
             onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
             disabled={busy}
           />
         </FormField>
-        <FormField label={t("knowledge.source.locale", "Locale")}>
+        <FormField label={t("knowledge.source.locale", "Locale")} required>
           <Input
             value={draft.locale}
             onChange={(e) => setDraft({ ...draft, locale: e.target.value })}
@@ -459,7 +455,14 @@ export function KnowledgeSourceSection({
           onClick={() => {
             void save();
           }}
-          disabled={busy || draft.baseUrl.trim() === ""}
+          // The API requires all three (review r4): a blank slug or locale is refused, and the locale
+          // placeholder is a hint, not a default.
+          disabled={
+            busy ||
+            draft.baseUrl.trim() === "" ||
+            draft.slug.trim() === "" ||
+            draft.locale.trim() === ""
+          }
         >
           {t("knowledge.source.save", "Save source")}
         </Button>

@@ -32,6 +32,7 @@ type Source = {
   lastSyncAt: string | null;
   lastStatus: string | null;
   lastMessage: string | null;
+  continuing?: boolean;
 };
 
 let source: Source | null = null;
@@ -71,11 +72,18 @@ function installFetchStub() {
     if (url.includes("/source") && method === "PUT") {
       if (putAnswer) return json(putAnswer.body, putAnswer.status);
       const b = body as Partial<Source>;
+      // As the API does (parseSourceInput): slug and locale are required, no defaults.
+      if (!b.slug || !b.locale) {
+        return json(
+          { error: "slug and locale are required", field: "slug" },
+          422,
+        );
+      }
       source = {
         kind: "chatwoot_portal",
         baseUrl: b.baseUrl ?? "",
-        slug: b.slug ?? "portal",
-        locale: b.locale ?? "pt-BR",
+        slug: b.slug,
+        locale: b.locale,
         excludeIds: b.excludeIds ?? [],
         intervalMinutes: b.intervalMinutes ?? 10,
         lastSyncAt: null,
@@ -94,7 +102,11 @@ function installFetchStub() {
     if (/\/knowledge\/bases\/[^/]+$/.test(url) && method === "GET") {
       if (baseGate) await baseGate;
       return json({
-        base: { id: "b1", name: "Base", source },
+        base: {
+          id: "b1",
+          name: "Base",
+          source: source ? { continuing: false, ...source } : null,
+        },
       });
     }
     return realFetch(input as RequestInfo | URL, init);
@@ -162,6 +174,19 @@ const FAILED_RUN: Source = {
   lastStatus: "error",
   lastMessage: "the portal listing answered HTTP 404",
 };
+
+// The three fields the API requires, so a test about something else can get past them.
+function fillRequired(url = "https://ajuda.example.com") {
+  fireEvent.change(screen.getByLabelText(/Portal URL/), {
+    target: { value: url },
+  });
+  fireEvent.change(screen.getByLabelText(/Portal slug/), {
+    target: { value: "clinica" },
+  });
+  fireEvent.change(screen.getByLabelText(/Locale/), {
+    target: { value: "pt-BR" },
+  });
+}
 
 const shows = (text: string | RegExp) => screen.queryAllByText(text).length > 0;
 const sent = (method: string, part: string) =>
@@ -236,12 +261,27 @@ describe("the help center source section", () => {
     await screen.findByText(/does not mirror a help center/);
     expect(hasSource).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Set up source" }));
+    // Save waits for the three fields the API requires; the locale placeholder is not a value.
     fireEvent.change(screen.getByLabelText(/Portal URL/), {
       target: { value: "https://ajuda.example.com" },
     });
+    const save = () =>
+      screen.getByRole("button", { name: "Save source" }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    // Each of the other two is required on its own.
     fireEvent.change(screen.getByLabelText(/Portal slug/), {
       target: { value: "clinica" },
     });
+    expect(save().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/Portal slug/), {
+      target: { value: "" },
+    });
+    fireEvent.change(screen.getByLabelText(/Locale/), {
+      target: { value: "pt-BR" },
+    });
+    expect(save().disabled).toBe(true);
+    fillRequired();
+    expect(save().disabled).toBe(false);
     fireEvent.change(screen.getByLabelText(/Excluded article ids/), {
       target: { value: "12, 40 12" },
     });
@@ -255,6 +295,7 @@ describe("the help center source section", () => {
       kind: "chatwoot_portal",
       baseUrl: "https://ajuda.example.com",
       slug: "clinica",
+      locale: "pt-BR",
       excludeIds: [12, 40],
       intervalMinutes: 30,
     });
@@ -269,9 +310,7 @@ describe("the help center source section", () => {
     renderSection();
     await screen.findByText(/does not mirror a help center/);
     fireEvent.click(screen.getByRole("button", { name: "Set up source" }));
-    fireEvent.change(screen.getByLabelText(/Portal URL/), {
-      target: { value: "http://ajuda.example.com" },
-    });
+    fillRequired("http://ajuda.example.com");
     fireEvent.click(screen.getByRole("button", { name: "Save source" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("the portal URL must be https");
@@ -285,9 +324,7 @@ describe("the help center source section", () => {
     renderSection();
     await screen.findByText(/does not mirror a help center/);
     fireEvent.click(screen.getByRole("button", { name: "Set up source" }));
-    fireEvent.change(screen.getByLabelText(/Portal URL/), {
-      target: { value: "https://ajuda.example.com" },
-    });
+    fillRequired();
     fireEvent.change(screen.getByLabelText(/Excluded article ids/), {
       target: { value: "12, abc" },
     });
@@ -300,9 +337,7 @@ describe("the help center source section", () => {
     renderSection();
     await screen.findByText(/does not mirror a help center/);
     fireEvent.click(screen.getByRole("button", { name: "Set up source" }));
-    fireEvent.change(screen.getByLabelText(/Portal URL/), {
-      target: { value: "https://ajuda.example.com" },
-    });
+    fillRequired();
     fireEvent.change(screen.getByLabelText(/Sync interval/), {
       target: { value: "2.5" },
     });
@@ -679,6 +714,7 @@ describe("a synced document in the documents list", () => {
       lastSyncAt: "2026-09-20T10:05:00.000Z",
       lastStatus: "ok",
       lastMessage: "created 1; more to do, continuing shortly",
+      continuing: true,
     };
     await screen.findByText("Lote um", undefined, { timeout: 6_000 });
     // The page behind the modal counts documents too, so it is told.

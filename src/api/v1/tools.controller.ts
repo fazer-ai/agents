@@ -24,6 +24,9 @@ import {
 // src/api/locales/*.json from these lines and prunes anything nothing references, and
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.toolConversationRefIntegrationInvalid', 'The conversation reference has to be for a generic webhook integration of this workspace.')
+// translate('errors.toolConversationRefFieldReserved', 'The field name conversation_ref is reserved for the conversation reference the agent creates. Give the field another name.')
+// translate('errors.toolConversationRefIntegrationRequired', 'This tool sends the conversation reference (conversation_ref), so it has to name the generic webhook integration the reference is for.')
 // translate('errors.toolDefinitionNotFound', 'Tool definition not found.')
 // translate('errors.toolNameTaken', 'That tool name is already in use.')
 // translate('errors.toolNameReserved', 'That name belongs to a built-in tool; choose another.')
@@ -144,6 +147,12 @@ export const writeBody = t.Object({
     t.Union([t.Record(t.String(), t.Unknown()), t.Null()], {
       description:
         'What this tool\'s RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:"book"|"cancel", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: "data.items.0.id". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. "feegow"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: "google_calendar".',
+    }),
+  ),
+  conversationRefIntegrationId: t.Optional(
+    t.Union([t.String(), t.Integer(), t.Null()], {
+      description:
+        "The GENERIC (generic webhook) integration instance this tool hands `{{conversation_ref}}` for: an opaque handle to the current conversation, stable per (instance, conversation), that the operator's own system later sends back to that instance's webhook as `conversation_ref` to make the agent speak into this conversation. Required when any template of the tool uses `{{conversation_ref}}`, refused otherwise; null clears it. A tool using the variable refuses to run where there is no conversation (the playground, the test endpoint).",
     }),
   ),
   ackEnabled: t.Optional(

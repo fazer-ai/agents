@@ -1346,6 +1346,10 @@ const FENCED: {
     model: "ToolDefinition",
     file: "src/modules/tool-definitions/service.ts",
     exempt: {},
+    whole: {
+      conversationRefIntegrationId:
+        "projected whole, as a decimal string, because the audit columns are jsonb and JSON has no BigInt (issue #818)",
+    },
   },
   {
     model: "CodeToolDefinition",

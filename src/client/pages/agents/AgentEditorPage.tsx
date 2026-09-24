@@ -2478,6 +2478,12 @@ function AgentEditor() {
           'Tool "{{tool}}" credential "{{credential}}" was not found here, so it was left unset.',
           p,
         );
+      case "httpToolConversationRefNotFound":
+        return t(
+          "editor.importWarning.httpToolConversationRefNotFound",
+          'Tool "{{tool}}" hands the conversation reference to the generic webhook "{{integration}}", which was not found here, so the tool will refuse to run until one is chosen.',
+          p,
+        );
       case "mcpReused":
         return t(
           "editor.importWarning.mcpReused",

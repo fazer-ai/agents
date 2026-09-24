@@ -14,6 +14,12 @@ export const INBOUND_EVENT_KINDS = [
 ] as const;
 export type InboundEventKind = (typeof INBOUND_EVENT_KINDS)[number];
 
+// The longest event text a GENERIC delivery may carry (issue #818). Sized to one WhatsApp message
+// (4096) with room for the agent's framing: the text is meant to reach the customer whole, so a body
+// past this is REFUSED at the mapper rather than clipped — a clipped report is a report missing its
+// last lines, and nobody would know. The nudge renderer clips at the same bound as a backstop.
+export const GENERIC_TEXT_MAX_CHARS = 4000;
+
 // A mapper's pure output. externalId correlates to a thread via IntegrationExternalRef;
 // dedupeKey drives idempotency. All other fields are an allowlisted, PII-bounded projection —
 // `summary` is text WE normalized, never the raw external JSON (prompt-injection boundary).
@@ -26,6 +32,9 @@ export interface NormalizedInboundEvent {
   currency?: string;
   status?: string;
   summary?: string;
+  // The event's own message, multi-line, for an event whose content is the point (GENERIC, #818).
+  // Distinct from `summary`, which is a one-line label WE wrote.
+  text?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -45,7 +54,9 @@ export interface InboundMapper {
   map(raw: unknown): MapResult;
 }
 
-export type CatalogKind = "TOOLPACK" | "MCP" | "NATIVE";
+// WEBHOOK: inbound only, no tools of its own (GENERIC, #818). What it gives the agent reaches it
+// through the operator's HTTP tools (`{{conversation_ref}}`) and through the events it delivers.
+export type CatalogKind = "TOOLPACK" | "MCP" | "NATIVE" | "WEBHOOK";
 
 export interface CatalogEntry {
   catalogType: string;
@@ -60,4 +71,8 @@ export interface CatalogEntry {
   // generic default. This is not a preference: a provider that hardcodes its header name leaves the
   // operator nothing to configure on their side, so the convention has to live here (issue #107).
   inboundAuthHeader?: string;
+  // An entry whose inbound makes the agent MESSAGE A CUSTOMER cannot be left open (GENERIC, #818):
+  // `NONE` is refused at write, and an instance created without a strategy gets the default above
+  // instead of `NONE`. Absent keeps the historical default, which Asaas instances were created under.
+  requiresInboundAuth?: boolean;
 }

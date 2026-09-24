@@ -54,6 +54,8 @@ export function IntegrationsPanel() {
         return t("integrations.kind.MCP", "MCP");
       case "TOOLPACK":
         return t("integrations.kind.TOOLPACK", "Tools");
+      case "WEBHOOK":
+        return t("integrations.kind.WEBHOOK", "Inbound webhook");
       default:
         return kind ?? "";
     }

@@ -41,10 +41,19 @@ import {
 } from "@/modules/vault/secret-types";
 import {
   CONTEXT_VAR_NAMES,
+  HTTP_TOOL_ONLY_VAR_NAMES,
   normalizeToolShapes,
   type ToolShapePatch,
 } from "./normalize";
 import { DEFAULT_HTTP_METHOD } from "./service";
+
+// Every name the runtime resolves itself rather than taking from the model: the context variables,
+// and `{{conversation_ref}}` (issue #818), which `buildHttpTool` mints on the call. Neither is an
+// orphan placeholder.
+const RUNTIME_VAR_NAMES = new Set<string>([
+  ...CONTEXT_VAR_NAMES,
+  ...HTTP_TOOL_ONLY_VAR_NAMES,
+]);
 
 // The SAME grammar the runtime interpolates with (`PLACEHOLDER` in graph/tools/http.ts): the braces
 // take surrounding whitespace, so a reader matching only the tight spelling would call a working
@@ -545,7 +554,7 @@ function buildsARequest(
     // asks `n in input` and finds Object.prototype's member. Undeclared, and still not an orphan.
     if (name in {}) continue;
     if (ai.names.has(name)) continue;
-    if ((CONTEXT_VAR_NAMES as readonly string[]).includes(name)) continue;
+    if (RUNTIME_VAR_NAMES.has(name)) continue;
     const value = fixed.get(name);
     if (value === undefined) return false;
     // A FIXED field brings its own dependencies, and the runtime tracks them: a `path` whose value is
@@ -555,7 +564,7 @@ function buildsARequest(
     for (const dep of namesIn(value)) {
       if (dep === "secret") continue;
       if (dep in {}) continue;
-      if ((CONTEXT_VAR_NAMES as readonly string[]).includes(dep)) continue;
+      if (RUNTIME_VAR_NAMES.has(dep)) continue;
       return false;
     }
   }

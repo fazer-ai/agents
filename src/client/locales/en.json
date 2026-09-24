@@ -1283,6 +1283,7 @@
       "httpGrantNotFound": "Tool \"{{name}}\" was not found, so its grant was skipped.",
       "httpToolAmbiguous": "{{n}} tools here already answer to the name \"{{name}}\", so the bundled tool was not imported. Rename them apart and import again.",
       "httpToolBodyIgnored": "Tool \"{{name}}\" had a request body in a shape this version does not accept, so it was reduced to the part that was actually being sent. The request is unchanged; open it under Body to check it.",
+      "httpToolConversationRefNotFound": "Tool \"{{tool}}\" hands the conversation reference to the generic webhook \"{{integration}}\", which was not found here, so the tool will refuse to run until one is chosen.",
       "httpToolCredNotFound": "Tool \"{{tool}}\" credential \"{{credential}}\" was not found here, so it was left unset.",
       "httpToolMethodUnsupported": "Tool \"{{name}}\" asks for the HTTP method {{method}}, which is not one this platform sends, so the tool was not imported. The rest of the agent was.",
       "httpToolRenamed": "Tool \"{{name}}\" carries the name of a built-in tool, so it was imported as \"{{renamed}}\"; a prompt that names it must follow.",
@@ -1691,6 +1692,7 @@
         "label": "Asaas"
       },
       "GENERIC": {
+        "description": "Your own system speaking back into a conversation. An HTTP tool hands it a reference to the conversation when the agent calls it; later your system sends an event with that reference to this webhook, and the agent passes it on to the customer (or leaves a private note when a person holds the conversation).",
         "label": "Generic webhook"
       },
       "GOOGLE_CALENDAR": {
@@ -1738,6 +1740,8 @@
       "folderSelected": "Selected folder:",
       "foldersError": "Could not list folders. Check the credential's Drive scope and try again.",
       "foldersFromCredential": "Folders from the connected account",
+      "instructions": "Guidance for the agent",
+      "instructionsHint": "Read by the agent with every event this webhook delivers. By default it passes the event's text on as written; say here what else to do.",
       "loadCalendars": "Load",
       "loadFolders": "Load",
       "minutesOption": "{{n}} min",
@@ -1790,7 +1794,8 @@
     "kind": {
       "MCP": "MCP",
       "NATIVE": "Native",
-      "TOOLPACK": "Tools"
+      "TOOLPACK": "Tools",
+      "WEBHOOK": "Inbound webhook"
     },
     "loadError": "Could not load this integration.",
     "name": "Name",
@@ -1804,12 +1809,14 @@
     "type": "Integration",
     "webhook": {
       "explain": "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
+      "explainGeneric": "After saving, give this URL and its secret to your system. An HTTP tool that sends {{ref}} hands your system a reference to the conversation; your system then POSTs events with that reference here, and the agent passes each one on to the customer (or leaves a private note when a person holds the conversation).",
       "rotate": "Generate new URL",
       "rotateConfirm": "Generate",
       "rotateError": "Could not generate.",
       "rotateMessage": "The current URL stops working immediately. You must paste the new one into the provider's panel, or payment notifications stop arriving.",
       "rotateTitle": "Generate a new URL",
       "title": "Payment webhook",
+      "titleGeneric": "Incoming webhook",
       "url": "Webhook URL",
       "urlHint": "Paste this into the provider's panel.",
       "urlMissing": "This integration was created before the URL could be shown again, so we no longer have it. Generate a new one and update it in the provider's panel.",
@@ -2651,6 +2658,12 @@
       "conversation": "Conversation",
       "utility": "Utility"
     },
+    "conversationRefIntegration": "Webhook for the conversation reference",
+    "conversationRefIntegrationGone": "Integration no longer available",
+    "conversationRefIntegrationHint": "The generic webhook integration your system sends events to with the reference this tool hands it. Required while the tool sends the conversation reference.",
+    "conversationRefIntegrationNone": "No generic webhook integration yet: create one under Integrations",
+    "conversationRefIntegrationPick": "Choose an integration",
+    "conversationRefNoTest": "This tool sends the conversation reference, which only exists inside a conversation, so it cannot be tested here. Try it from a test conversation.",
     "credential": "Credential",
     "credentialHint": "The selected credential is added to requests automatically.",
     "credentialHintHeader": "Will be injected automatically into the {{name}} header.",
@@ -2768,6 +2781,8 @@
       "contactPhoneDesc": "The contact's phone, if known.",
       "conversationId": "Conversation ID",
       "conversationIdDesc": "Chatwoot conversation id.",
+      "conversationRef": "Conversation reference",
+      "conversationRefDesc": "A reference to this conversation for your own system to send events back through a generic webhook integration.",
       "inboxId": "Inbox ID",
       "inboxIdDesc": "Chatwoot inbox (channel) id.",
       "inboxName": "Inbox name",

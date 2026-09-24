@@ -1763,6 +1763,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
+          conversation_ref_integration_id: z
+            .union([z.string(), z.number().int()])
+            .nullable()
+            .optional()
+            .describe(
+              "GENERIC integration id this tool mints {{conversation_ref}} for (your system posts it back to that webhook). Required when a template uses it; null clears.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },
@@ -1784,6 +1791,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
+          conversation_ref_integration_id?: string | number | null;
           dry_run?: boolean;
         },
         eff,
@@ -1825,6 +1833,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
+          conversation_ref_integration_id: z
+            .union([z.string(), z.number().int()])
+            .nullable()
+            .optional()
+            .describe(
+              "GENERIC integration id this tool mints {{conversation_ref}} for (your system posts it back to that webhook). Required when a template uses it; null clears.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },
@@ -1847,6 +1862,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
+          conversation_ref_integration_id?: string | number | null;
           dry_run?: boolean;
         },
         eff,

@@ -1,3 +1,4 @@
+import { closedByTheAgentSide } from "@/modules/conversations/resolution-origin";
 import { CHATWOOT_REPLY_TEXT_KEY } from "./constants";
 import type { RenderableLocation, RenderableMessage } from "./render";
 import type {
@@ -505,15 +506,31 @@ export function effectiveAssignee(
     : held;
 }
 
+// `alsoResolved` is the one caller that may speak into a conversation the bot itself closed: an
+// event the operator's own system sends back for a job the customer asked for (issue #818). The
+// agent resolving the conversation after scheduling the job is the ordinary flow there, and reading
+// `resolved` as "not ours" would turn every later event into a private note. It is still refused
+// while anybody else holds the conversation, and `open` (handed to humans) stays closed.
+//
+// WHO closed it is read from the recorded origin, never from the assignee: an operator resolving in
+// Chatwoot does not assign themself, so the conversation comes back `resolved` with the AgentBot
+// still as assignee (docs/chatwoot.md, "Resolution origin"), and the assignee alone would let an
+// event message a customer a person just closed. A caller that has no stamp to pass gets the note.
 export function shouldBotHandle(
   e: {
     assigneeType: string | null;
     status: string | null;
     assigneeId?: number | null;
+    resolvedBy?: string | null;
   },
-  opts: { ourAgentBotId?: number | null } = {},
+  opts: { ourAgentBotId?: number | null; alsoResolved?: boolean } = {},
 ): boolean {
-  if (e.status !== "pending") return false;
+  const statusIsOurs =
+    e.status === "pending" ||
+    (opts.alsoResolved === true &&
+      e.status === "resolved" &&
+      closedByTheAgentSide(e.resolvedBy));
+  if (!statusIsOurs) return false;
   return !heldByAnotherParty(e, opts);
 }
 

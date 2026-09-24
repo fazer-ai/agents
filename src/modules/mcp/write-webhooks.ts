@@ -11,7 +11,7 @@ import {
 } from "@/modules/flowlog/channels";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import {
-  assertUsableHeaderNames,
+  assertIntegrationWritable,
   createIntegrationInstance,
   deleteIntegrationInstance,
   getIntegrationInstance,
@@ -597,7 +597,12 @@ export async function integrationCreate(
     // Before the preview, not only before the write: `dry_run` defaults to true, so the preview is
     // the operator's FIRST answer, and one that approves what the apply refuses is worse than no
     // preview at all (issue #248).
-    if (args.config) assertUsableHeaderNames(args.config);
+    assertIntegrationWritable(args.catalog_type, {
+      config: args.config,
+      inboundAuthStrategy: args.inbound_auth_strategy as
+        | InboundAuthStrategy
+        | undefined,
+    });
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,
@@ -713,7 +718,7 @@ export async function integrationUpdate(
       afterProj[k] = patch[k];
     }
     const target = `integration:${id}`;
-    if (patch.config) assertUsableHeaderNames(patch.config);
+    assertIntegrationWritable(current.catalogType, patch);
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,

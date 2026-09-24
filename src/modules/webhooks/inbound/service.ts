@@ -8,6 +8,10 @@ import { AppError, UnauthorizedError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { makeStorableDeep, unstorableProblem } from "@/lib/text";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
+import {
+  CONVERSATION_REF_KIND,
+  correlateConversationRef,
+} from "@/modules/integrations/conversation-ref";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   type ResolvedInboundRoute,
@@ -111,6 +115,7 @@ function toStoredPayload(n: NormalizedInboundEvent): Record<string, unknown> {
   if (n.currency !== undefined) p.currency = n.currency;
   if (n.status !== undefined) p.status = n.status;
   if (n.summary !== undefined) p.summary = n.summary;
+  if (n.text !== undefined) p.text = n.text;
   if (n.metadata !== undefined) p.metadata = n.metadata;
   if (n.occurredAt) p.occurredAt = n.occurredAt.toISOString();
   return p;
@@ -120,7 +125,16 @@ export interface ReceiveResult {
   ack: true;
   deliveryId?: bigint;
   tenantId?: bigint;
-  outcome: "queued" | "duplicate" | "ignored" | "no-mapper" | "invalid";
+  outcome:
+    | "queued"
+    | "duplicate"
+    | "ignored"
+    | "no-mapper"
+    | "invalid"
+    // A GENERIC event whose `conversation_ref` does not correlate on this instance (issue #818). Said
+    // to the sender NOW, because nothing will ever act on it and the sender is the only party that
+    // can stop: a periodic job keeps firing at a dead handle otherwise. Nothing is persisted.
+    | "uncorrelated";
 }
 
 export interface ReceiveParams {
@@ -248,6 +262,26 @@ export async function receiveInbound(
       tenantId: route.tenantId,
       outcome: "invalid",
     };
+  }
+
+  // A GENERIC delivery is correlated BEFORE the ack (issue #818), so the sender learns a dead handle
+  // from the response instead of from silence. Only the ref's existence is decided here; dispatch
+  // re-correlates under its own claim, since the ref can go (instance deleted) in between.
+  if (route.catalogType === "GENERIC") {
+    const threadId = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
+      correlateConversationRef(db, {
+        tenantId: route.tenantId,
+        integrationInstanceId: route.id,
+        ref: result.event.externalId,
+      }),
+    );
+    if (!threadId) {
+      logger.info(
+        "inbound: GENERIC delivery uncorrelated (instance %s)",
+        String(route.id),
+      );
+      return { ack: true, tenantId: route.tenantId, outcome: "uncorrelated" };
+    }
   }
 
   const { id, duplicate } = await persistInbound(base, route, result.event);
@@ -386,6 +420,7 @@ export interface ProcessParams {
 function buildNudge(
   payload: Record<string, unknown>,
   source: string,
+  instanceConfig: Record<string, unknown>,
   // WHICH OCCASION THIS IS, and the delivery row is the answer: one row is one event, a redelivery
   // of that row is the same event, and two events on one conversation are two rows. Nothing else in
   // this descriptor separates them — an inbound nudge carries no `step` and no `refs`, so two
@@ -401,13 +436,31 @@ function buildNudge(
     value: typeof payload.value === "number" ? payload.value : null,
     currency: asString(payload.currency) ?? null,
     summary: asString(payload.summary) ?? null,
+    // GENERIC (issue #818): the sender's own text, relayed rather than followed up on, with the
+    // operator's guidance for this instance. The guidance is TRUSTED operator text and travels in
+    // the instructions lane; the text stays fenced.
+    ...(source === "GENERIC"
+      ? {
+          text: asString(payload.text) ?? null,
+          framing: "operator_event" as const,
+          ...(asString(instanceConfig.instructions)?.trim()
+            ? { instructions: asString(instanceConfig.instructions)?.trim() }
+            : {}),
+        }
+      : {}),
   };
 }
 
 type ProcessPlan =
   | { kind: "skip" }
   | { kind: "done" }
-  | { kind: "nudge"; threadId: string; nudge: AgentNudge };
+  | {
+      kind: "nudge";
+      threadId: string;
+      nudge: AgentNudge;
+      // GENERIC events reach a conversation the bot itself resolved (issue #818).
+      deliverToResolved: boolean;
+    };
 
 // Two phases. Phase A (one tx): CAS claim + read + DB-only effects (conversion/status_update),
 // marking PROCESSED inside the same tx so the effect and processedAt commit together. For
@@ -537,8 +590,14 @@ export async function processInboundDelivery(
         if (corr?.recorded && notify) {
           return {
             kind: "nudge",
+            deliverToResolved: false,
             threadId: corr.threadId,
-            nudge: buildNudge(payload, source, params.deliveryId),
+            nudge: buildNudge(
+              payload,
+              source,
+              instanceConfig,
+              params.deliveryId,
+            ),
           };
         }
         await markProcessed();
@@ -548,18 +607,20 @@ export async function processInboundDelivery(
       if (kind === "agent_nudge") {
         // Correlate externalId → thread here (DB); defer the network turn to Phase B. An
         // uncorrelated nudge has nothing to act on — mark processed and stop.
-        const ref = delivery.externalId
-          ? await db.integrationExternalRef.findUnique({
-              where: {
-                tenantId_externalId: {
-                  tenantId: params.tenantId,
-                  externalId: delivery.externalId,
-                },
-              },
-              select: { threadId: true },
-            })
-          : null;
-        if (!ref) {
+        //
+        // A GENERIC ref correlates only on the instance that minted it; every other source keeps
+        // its toolpack's refs and never reads a `conversation_ref` (issue #818).
+        const generic = source === "GENERIC";
+        const threadId = !delivery.externalId
+          ? null
+          : generic
+            ? await correlateConversationRef(db, {
+                tenantId: params.tenantId,
+                integrationInstanceId: delivery.integrationInstanceId,
+                ref: delivery.externalId,
+              })
+            : await toolpackRefThread(db, params.tenantId, delivery.externalId);
+        if (!threadId) {
           logger.info(
             "inbound agent_nudge uncorrelated (source=%s); dropping",
             source,
@@ -569,8 +630,9 @@ export async function processInboundDelivery(
         }
         return {
           kind: "nudge",
-          threadId: ref.threadId,
-          nudge: buildNudge(payload, source, params.deliveryId),
+          threadId,
+          deliverToResolved: generic,
+          nudge: buildNudge(payload, source, instanceConfig, params.deliveryId),
         };
       }
 
@@ -634,6 +696,7 @@ export async function processInboundDelivery(
       tenantId: params.tenantId,
       threadId: plan.threadId,
       nudge: plan.nudge,
+      deliverToResolved: plan.deliverToResolved,
       base,
       deps: params.deps?.runtime,
     });
@@ -669,11 +732,8 @@ async function dispatchConversion(
     logger.info("inbound conversion without externalId; dropping");
     return null;
   }
-  const ref = await db.integrationExternalRef.findUnique({
-    where: { tenantId_externalId: { tenantId, externalId } },
-    select: { threadId: true },
-  });
-  if (!ref) {
+  const refThreadId = await toolpackRefThread(db, tenantId, externalId);
+  if (!refThreadId) {
     logger.info(
       "inbound conversion uncorrelated (source=%s); dropping",
       source,
@@ -687,7 +747,7 @@ async function dispatchConversion(
     data: [
       {
         tenantId,
-        threadId: ref.threadId,
+        threadId: refThreadId,
         source,
         value,
         currency,
@@ -700,9 +760,26 @@ async function dispatchConversion(
   if (result.count === 0) {
     logger.info(
       "inbound conversion already recorded (thread=%s source=%s)",
-      ref.threadId,
+      refThreadId,
       source,
     );
   }
-  return { threadId: ref.threadId, recorded: result.count > 0 };
+  return { threadId: refThreadId, recorded: result.count > 0 };
+}
+
+// The thread a toolpack's own correlation id points at (an Asaas payment's `externalReference`, a
+// Resend email id). A `conversation_ref` is NOT one of them (issue #818): it is a handle to a
+// conversation, minted for one GENERIC instance, and a payment carrying it as its reference would
+// otherwise credit a conversion — and nudge the customer — through a door it was never handed to.
+async function toolpackRefThread(
+  db: ScopedDb,
+  tenantId: bigint,
+  externalId: string,
+): Promise<string | null> {
+  const ref = await db.integrationExternalRef.findUnique({
+    where: { tenantId_externalId: { tenantId, externalId } },
+    select: { threadId: true, kind: true },
+  });
+  if (!ref || ref.kind === CONVERSATION_REF_KIND) return null;
+  return ref.threadId;
 }

@@ -167,6 +167,22 @@ export const RESOLUTION_ORIGINS = [
 
 export type ResolutionOrigin = (typeof RESOLUTION_ORIGINS)[number];
 
+/**
+ * Closes our own side made without a person deciding it: the agent's tool and the two automations
+ * that act for it. `console` is an operator, and a NULL stamp is anybody outside our code (an
+ * operator in Chatwoot, an automation rule, `auto_resolve_after`), so neither is here. Asked by
+ * `shouldBotHandle` before an operator event may speak into a resolved conversation (issue #818).
+ */
+const CLOSED_BY_THE_AGENT_SIDE: ReadonlySet<string> = new Set<ResolutionOrigin>(
+  ["agent", "followup_abandonment", "redirect_closing"],
+);
+
+export function closedByTheAgentSide(
+  resolvedBy: string | null | undefined,
+): boolean {
+  return resolvedBy != null && CLOSED_BY_THE_AGENT_SIDE.has(resolvedBy);
+}
+
 export function isResolutionOrigin(v: unknown): v is ResolutionOrigin {
   return (
     typeof v === "string" &&

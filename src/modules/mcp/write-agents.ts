@@ -48,6 +48,7 @@ import {
   storableResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
 import {
+  assertToolConversationRefResolvable,
   assertToolDefinitionCreatable,
   assertToolDefinitionPatchValid,
   assertToolNameAvailable,
@@ -509,6 +510,7 @@ export interface ToolWriteArgs {
   expected_statuses?: number[];
   ack_enabled?: boolean;
   ack_message?: string | null;
+  conversation_ref_integration_id?: string | number | null;
 }
 
 // Map snake_case tool args → the service's camelCase shape, resolving credential_ref NAME → vault:<id>.
@@ -560,6 +562,12 @@ export async function buildToolPatch(
     patch.expectedStatuses = normalizeExpectedStatuses(args.expected_statuses);
   if (args.ack_enabled !== undefined) patch.ackEnabled = args.ack_enabled;
   if (args.ack_message !== undefined) patch.ackMessage = args.ack_message;
+  if (args.conversation_ref_integration_id !== undefined) {
+    patch.conversationRefIntegrationId =
+      args.conversation_ref_integration_id === ""
+        ? null
+        : args.conversation_ref_integration_id;
+  }
   if (args.credential_ref !== undefined) {
     if (args.credential_ref === null || args.credential_ref === "") {
       patch.credentialRef = null;
@@ -721,6 +729,14 @@ export async function toolCreate(
         input.credentialRef,
         base,
       );
+      // `{{conversation_ref}}` names its integration (issue #818), asked of the canonical shapes the
+      // apply would store.
+      await assertToolConversationRefResolvable(
+        ctx,
+        { ...toolShapesOf(input), ...norm.shapes },
+        parsed.conversationRefIntegrationId,
+        base,
+      );
       // NOTE: INSIDE the branch, like the two checks above it and for a plainer reason: the apply
       // recomputes this from the row it wrote, so reading the vault out here was a scoped
       // transaction whose answer that path throws away.
@@ -849,6 +865,25 @@ export async function toolUpdate(
       if (parsed.name !== undefined) {
         await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);
         afterProj.name = parsed.name;
+      }
+      // The effective pair for `{{conversation_ref}}` (issue #818), under the same condition the
+      // apply judges it: only when the patch names a template or the integration.
+      if (
+        parsed.conversationRefIntegrationId !== undefined ||
+        parsed.urlTemplate !== undefined ||
+        parsed.headers !== undefined ||
+        parsed.query !== undefined ||
+        parsed.body !== undefined ||
+        parsed.inputSchema !== undefined
+      ) {
+        await assertToolConversationRefResolvable(
+          ctx,
+          { ...toolShapesOf(current), ...norm.shapes },
+          parsed.conversationRefIntegrationId !== undefined
+            ? parsed.conversationRefIntegrationId
+            : current.conversationRefIntegrationId,
+          base,
+        );
       }
       // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
       // says nothing about the templates and a patch that only rewrites a template says nothing

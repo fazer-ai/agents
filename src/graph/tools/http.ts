@@ -16,7 +16,10 @@ import {
   extractAppointment,
   readAppointmentDeclaration,
 } from "@/modules/tool-definitions/appointment";
-import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import {
+  normalizeToolShapes,
+  renderedVariableNames,
+} from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
   MODEL_RESPONSE_CHAR_LIMIT,
@@ -78,7 +81,16 @@ export interface HttpToolDef {
   // by readResponseTemplate; anything it cannot make sense of declares nothing, which is the raw
   // body and the clip this file has always handed over.
   outputSchema?: unknown;
+  // The GENERIC integration instance this tool hands `{{conversation_ref}}` for (issue #818). A tool
+  // whose templates use the variable and name no instance refuses to run: sending an empty handle
+  // would be a request the receiver stores and can never use.
+  conversationRefIntegrationId?: bigint | null;
 }
+
+// The context variable an HTTP tool uses to hand the operator's system a handle to THIS
+// conversation (issue #818). Not in `deps.context` like the others: it is minted on demand, only for
+// a tool that renders it, because minting is a database write and every other variable is free.
+export const CONVERSATION_REF_VAR = "conversation_ref";
 
 // How long a tool call waits before it is aborted, when the caller names nothing. EXPORTED
 // because a caller that is MORE patient than this reports a success the runtime would never
@@ -155,6 +167,17 @@ export interface HttpToolDeps {
     eventId: string,
     opts?: { provider?: string; tool?: string },
   ) => Promise<void>;
+  // Mints (or re-reads) this conversation's `{{conversation_ref}}` for a GENERIC instance (issue
+  // #818). Bound to the tenant + THIS conversation's thread in prepare.ts; absent where there is no
+  // conversation to hand (the playground) and on a muted turn, whose client refuses what the turn
+  // sends and must not hand out a door to a later send either. Absent ⇒ a tool that renders the
+  // variable refuses to run.
+  conversationRef?: (
+    integrationInstanceId: bigint,
+  ) => Promise<
+    | { ok: true; ref: string }
+    | { ok: false; reason: "instance_missing" | "instance_not_generic" }
+  >;
   // Reports what went wrong INSIDE a tool that still returns success to the model. Two kinds reach
   // it, and they share this channel because they share the property that makes them dangerous: the
   // call succeeded, so nothing else anywhere says a word. A declared appointment path that does not
@@ -552,7 +575,7 @@ export function buildHttpTool(
   def: HttpToolDef,
   deps: HttpToolDeps,
 ): StructuredToolInterface {
-  const context = deps.context ?? {};
+  const baseContext = deps.context ?? {};
   // NOTE: self-heal shapes authored before write-time normalization existed (or written straight to the
   // DB): a JSON-Schema-shaped inputSchema becomes the compact map and known single-brace {var}
   // placeholders become {{var}}, so pre-fix rows work without re-creation.
@@ -565,7 +588,7 @@ export function buildHttpTool(
       inputSchema: def.inputSchema,
     },
     {},
-    Object.keys(context),
+    Object.keys(baseContext),
   );
   const urlTemplate = shapes.urlTemplate as string;
   const headerTemplates = (shapes.headers ?? {}) as Record<string, string>;
@@ -578,6 +601,8 @@ export function buildHttpTool(
   const timeoutMs = deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS;
   const maxChars = deps.maxResponseChars ?? MODEL_RESPONSE_CHAR_LIMIT;
   const expectedStatuses = normalizeExpectedStatuses(def.expectedStatuses);
+  const usesConversationRef =
+    renderedVariableNames(shapes).has(CONVERSATION_REF_VAR);
 
   // Schema = the AI-filled fields. When an ack is configured, the model MUST write the holding message
   // itself (__wait_message is required, not optional): the operator's ackMessage is only a TONE example,
@@ -611,7 +636,55 @@ export function buildHttpTool(
     : urlTemplate;
 
   return failableTool(
-    async (input: Record<string, unknown>) => {
+    async (rawInput: Record<string, unknown>) => {
+      let input = rawInput;
+      // 0a. `{{conversation_ref}}` (issue #818), minted BEFORE anything is sent — the ack included —
+      // and before the request, because the receiver may call back while this call is still running
+      // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
+      // words the model can pass on.
+      let context = baseContext;
+      if (usesConversationRef) {
+        const refused = (why: string): string => {
+          deps.onNoEffect?.(def.name);
+          return `Could not call the tool (${why}).`;
+        };
+        if (def.conversationRefIntegrationId == null) {
+          return refused(
+            "it sends a conversation reference but names no integration to hand it for",
+          );
+        }
+        if (!deps.conversationRef) {
+          return refused(
+            "there is no conversation here to hand a reference for",
+          );
+        }
+        const minted = await deps.conversationRef(
+          def.conversationRefIntegrationId,
+        );
+        if (!minted.ok) {
+          return refused(
+            minted.reason === "instance_missing"
+              ? "the integration it hands the conversation reference for no longer exists"
+              : "the integration it hands the conversation reference for is not a generic webhook",
+          );
+        }
+        context = { ...baseContext, [CONVERSATION_REF_VAR]: minted.ref };
+        // The mint is a transaction, and the ack below asks the send fence only AFTER it has sent. So
+        // the wait the mint adds is fenced here, before anything can leave: an agent switched off,
+        // flipped to monitoring or taken over during it sends neither the ack nor the request. The ref
+        // stays minted, which costs nothing: it is stable per conversation and correlates nothing new.
+        if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+          return refused("the run was called off before the request was sent");
+        }
+        // The minted ref is the only value the name can have. The write refuses a field of that name,
+        // and this covers a row that reached the table another way: every renderer reads the input
+        // before the context, so a model-filled `conversation_ref` would otherwise go out instead.
+        if (CONVERSATION_REF_VAR in input) {
+          const { [CONVERSATION_REF_VAR]: _shadow, ...rest } = input;
+          input = rest;
+        }
+      }
+
       // 0. Ack (the model-written holding message): required when an ack is configured. The schema
       // already enforces non-empty, so this is a defensive guard — if a provider somehow let an empty
       // value through, return an error string (and DON'T run the request) so the model retries the
@@ -645,7 +718,7 @@ export function buildHttpTool(
       const fixedValues: Record<string, string> = {};
       const fixedMissingDeps = new Map<string, Set<string>>();
       for (const f of fields) {
-        if (f.source === "fixed") {
+        if (f.source === "fixed" && f.name !== CONVERSATION_REF_VAR) {
           const missing = new Set<string>();
           fixedValues[f.name] = interpolate(f.value, (n) => {
             const v = n === "secret" ? secret : ctxLookup(n);
@@ -810,7 +883,11 @@ export function buildHttpTool(
             const ph = value.match(LONE_PLACEHOLDER)?.[1];
             if (ph && ph in input) {
               if (input[ph] != null) payload[k] = input[ph];
-            } else if (ph && isAiFieldName(ph)) {
+            } else if (
+              ph &&
+              isAiFieldName(ph) &&
+              !(ph === CONVERSATION_REF_VAR && CONVERSATION_REF_VAR in context)
+            ) {
               // known aiField the model omitted → omit the key
             } else {
               payload[k] = interpolate(value, lookupWithSecret);

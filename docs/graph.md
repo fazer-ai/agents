@@ -181,7 +181,6 @@ So the agent has full context even for messages no turn handled, the receiver (`
 
 - Subgraphs (qualifier, proposal_writer, kanban_mover, human_handoff) and the supervisor router.
 - Tools framework (native Chatwoot tools, custom HTTP `ToolDefinition`, integration toolpacks, MCP via `@langchain/mcp-adapters`) with the per-agent allowlist.
-- `agentNudge` consumption (inbound domain events injected as a normalized system turn).
 - `interrupt()`/resume for human handoff + KB approval.
 - Langfuse `CallbackHandler` (per-tenant/conversation) + `LlmUsage` capture at the source.
 - Per-node model config; model/MCP cache keyed by `tenantId`.

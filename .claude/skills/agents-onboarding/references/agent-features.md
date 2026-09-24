@@ -40,6 +40,23 @@ agent_settings_set {
   ser `vault:<id>`; REST não resolve por nome).
 - A chave (OpenAI/ElevenLabs) é credencial do vault, preenchida por deeplink como qualquer outra (`08` §2).
 
+### Checagem do áudio sintetizado: oferecer quando a resposta em áudio fica ligada
+
+**Gatilho:** um agente fica com `tts.mode` diferente de `never`, seja porque você ligou acima, seja porque o import já trouxe assim (a Maria vem com `mirror`). Com `tts.mode: never` em todos os agentes, este trecho não existe para a instalação: não ofereça, não mencione.
+
+Por que existe: de vez em quando a síntese volta quebrada com o texto certo (fala embolada que não forma palavra, um zumbido sem fala, ou um buraco mudo no meio da frase), e nada no envio percebe. Um detector separado ouve cada áudio antes (ou depois) de sair. Contrato e comportamento em `docs/tts.md`, seção "Checking the audio".
+
+1. **Já existe detector?** Se o `TTS_CHECK_URL` já está no serviço agents (o campo **Audio check** / **Verificação do áudio** da aba Behavior aparece habilitado; sem URL ele fica desabilitado dizendo o que falta), não ofereça outro serviço nem meça memória de novo. Sem perguntar nada, o agente segue o padrão da instalação (**Instance default** / **Padrão da instalação**, `checkMode: null`); para dar a ele um modo próprio (passo 5), pergunte antes ao usuário e só grave com o sim.
+2. **Existe uma imagem de detector?** Não há imagem pública. O detector é qualquer serviço que responda ao contrato de `docs/tts.md`, e o compose só referencia `${TTS_CHECK_IMAGE}`. Se o usuário não tem uma imagem, diga isso em uma linha e siga: sem imagem, não defina `TTS_CHECK_URL`, `TTS_CHECK_MODE` nem `checkMode`. Não invente nome de imagem ou registry.
+3. **Folga de memória.** Meça no host a memória disponível (a linha `mem` da sondagem da [1b](01b-brownfield.md), ou `free -h` pelo SSH). O detector precisa de **cerca de 4 GB livres** (o compose reserva `mem_limit: 5g`). Sem essa folga, diga ao usuário que o detector não cabe nesta máquina por memória, e siga o onboarding: o áudio funciona sem ele. Não suba com limite menor.
+4. **A oferta, em uma frase, com pergunta:** "Às vezes a voz sintetizada sai quebrada (embolada, zumbindo ou com um trecho mudo) e ninguém percebe; posso subir um detector que confere cada áudio, ele ocupa cerca de 4 GB de memória do servidor. Quer?" Sem um sim explícito, nada abaixo acontece: **nunca instale em silêncio**.
+5. **Aceito:**
+   - descomente o serviço `audio-check` no compose da instalação (o bloco já vem comentado nos três compose de deploy) com `TTS_CHECK_IMAGE` apontando para a imagem do usuário;
+   - no serviço agents, defina `TTS_CHECK_URL=http://audio-check:<porta do detector>` e `TTS_CHECK_TOKEN` só se o detector exigir um; **nunca** `TTS_CHECK_MODE` sem `TTS_CHECK_URL` (o boot recusa);
+   - redeploy do serviço agents: a URL é env, lida no boot;
+   - modo do agente em `settings.tts.checkMode` (`agent_settings_set` bloco `tts`, `PATCH /api/v1/agents/:id`, ou o campo na aba Behavior): comece em `shadow` (**Record only** / **Só registrar**), que só registra o veredito sem segurar a resposta. Os limiares do detector foram calibrados no áudio de um provedor; passe para `enforce` (**Regenerate** / **Regenerar**) só depois de ouvir o que ele marcou no tráfego real desta instalação. `off` desliga para este agente, e `null` segue o padrão da instalação (`TTS_CHECK_MODE`; com URL e sem modo, é `shadow`);
+   - confirme: gere uma resposta em áudio (playground com `reply_with_audio`) e procure no `/logs` a linha do estágio `tts_check` (**Audio check** / **Verificação do áudio**) desse turno.
+
 ### Links de afiliado da fazer.ai (ElevenLabs + Asaas)
 
 Quando o usuário **não tem conta** no ElevenLabs (voz) ou no Asaas (cobrança PIX), ofereça o **link de

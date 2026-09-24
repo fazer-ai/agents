@@ -1620,7 +1620,7 @@
     "transferWithSummary": "Publicar um resumo privado antes de transferir para um humano",
     "tts": "Respostas em áudio (text-to-speech)",
     "ttsCheckEnforce": "Regenerar",
-    "ttsCheckMode": "Checagem do áudio",
+    "ttsCheckMode": "Verificação do áudio",
     "ttsCheckModeDefault": "Padrão da instalação ({{mode}})",
     "ttsCheckModeDocs": "Como configurar",
     "ttsCheckModeHelp": "Às vezes um áudio sintetizado sai com defeito: fala embolada, um zumbido ou um trecho mudo. O detector escuta cada um antes do envio.\n\nSó registrar grava o veredito e não muda nada. Regenerar sintetiza de novo um áudio com defeito e manda texto se continuar falhando.\n\nOs limites do detector foram calibrados no áudio de um provedor: em outro provedor, comece em Só registrar e confira o que ele sinaliza.",

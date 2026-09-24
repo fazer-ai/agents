@@ -10,13 +10,27 @@ export class Semaphore {
     this.available = Math.max(1, Math.floor(permits));
   }
 
-  private acquire(): Promise<void> {
+  // A waiter whose `signal` aborts leaves the queue with the signal's reason and takes no permit
+  // (issue #834): removed from the queue, so the next release goes to whoever is behind it. An abort
+  // after the permit was granted changes nothing, since the task is already running.
+  private acquire(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.available > 0) {
       this.available -= 1;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.waiters.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      const grant = () => {
+        signal?.removeEventListener("abort", leave);
+        resolve();
+      };
+      const leave = () => {
+        const at = this.waiters.indexOf(grant);
+        if (at !== -1) this.waiters.splice(at, 1);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", leave, { once: true });
+      this.waiters.push(grant);
     });
   }
 
@@ -30,8 +44,8 @@ export class Semaphore {
     }
   }
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    await this.acquire(signal);
     try {
       return await fn();
     } finally {

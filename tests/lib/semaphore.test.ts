@@ -98,6 +98,130 @@ describe("Semaphore", () => {
     expect(order).toEqual(["holder", "a", "b", "c"]);
   });
 
+  // Issue #834: a job past its deadline was left in the queue until a permit freed, which under
+  // saturation is minutes. The waiter that leaves must take no permit with it and leave none behind:
+  // the next waiter gets the one released, and the semaphore is exactly as wide afterwards.
+  test("a waiter whose signal aborts leaves the queue at once, with the signal's reason", async () => {
+    const sem = new Semaphore(1);
+    let releaseHolder: () => void = () => {};
+    const holder = sem.run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseHolder = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    let ran = false;
+    const leaving = sem
+      .run(async () => {
+        ran = true;
+      }, controller.signal)
+      .then(
+        () => "resolved",
+        (err: Error) => err.message,
+      );
+    const behind = sem.run(async () => "behind");
+    await tick();
+    controller.abort(new Error("deadline exceeded after 240s"));
+    // Out while the holder still holds: the wait ended with the abort, not with a release.
+    expect(await leaving).toBe("deadline exceeded after 240s");
+    expect(ran).toBe(false);
+    releaseHolder();
+    await holder;
+    expect(await behind).toBe("behind");
+  });
+
+  test("a signal already aborted takes no permit, even a free one", async () => {
+    const sem = new Semaphore(1);
+    const controller = new AbortController();
+    controller.abort(new Error("deadline exceeded after 240s"));
+    let ran = false;
+    await expect(
+      sem.run(async () => {
+        ran = true;
+      }, controller.signal),
+    ).rejects.toThrow("deadline exceeded after 240s");
+    expect(ran).toBe(false);
+    // The permit is still there, and there is still only one.
+    let active = 0;
+    let maxActive = 0;
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        sem.run(async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await tick();
+          active -= 1;
+        }),
+      ),
+    );
+    expect(maxActive).toBe(1);
+  });
+
+  test("an abort after the permit was granted does not end the task, and the permit comes back once", async () => {
+    const sem = new Semaphore(1);
+    const controller = new AbortController();
+    const task = sem.run(async () => {
+      await tick();
+      return "done";
+    }, controller.signal);
+    await tick();
+    controller.abort(new Error("late"));
+    expect(await task).toBe("done");
+    let active = 0;
+    let maxActive = 0;
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        sem.run(async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await tick();
+          active -= 1;
+        }),
+      ),
+    );
+    expect(maxActive).toBe(1);
+  });
+
+  test("waiters that left do not narrow or widen the semaphore", async () => {
+    const sem = new Semaphore(3);
+    const holders: Array<() => void> = [];
+    const held = Array.from({ length: 3 }, () =>
+      sem.run(
+        () =>
+          new Promise<void>((resolve) => {
+            holders.push(resolve);
+          }),
+      ),
+    );
+    const controller = new AbortController();
+    const leaving = Array.from({ length: 5 }, () =>
+      sem.run(async () => {}, controller.signal).catch(() => "left"),
+    );
+    await tick();
+    controller.abort(new Error("deadline"));
+    expect(await Promise.all(leaving)).toEqual(Array(5).fill("left"));
+    for (const release of holders) release();
+    await Promise.all(held);
+    const burst = async () => {
+      let active = 0;
+      let maxActive = 0;
+      await Promise.all(
+        Array.from({ length: 10 }, () =>
+          sem.run(async () => {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await tick();
+            active -= 1;
+          }),
+        ),
+      );
+      return maxActive;
+    };
+    expect(await burst()).toBe(3);
+    expect(await burst()).toBe(3);
+  });
+
   test("clamps non-positive permits to at least 1 (no deadlock)", async () => {
     const sem = new Semaphore(0);
     const ok = await sem.run(() => Promise.resolve("ran"));

@@ -867,6 +867,7 @@ export function buildAgentGraph({
             silenced(
               await runModelCall(second.run, {
                 deadlineMs: second.deadlineMs,
+                signal: jobSignal,
                 primary: second.labels,
                 onRetry: onModelRetry,
                 onPermitWait: onModelPermitWait,
@@ -903,6 +904,7 @@ export function buildAgentGraph({
       },
       {
         deadlineMs: primaryDeadlineMs,
+        signal: jobSignal,
         primary,
         onRetry: onModelRetry,
         onPermitWait: onModelPermitWait,

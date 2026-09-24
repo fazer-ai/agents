@@ -98,7 +98,15 @@ export interface PermitWaitInfo {
 // adapter does with the signal. `deadlineMs` is the caller's own value; left out, a call gets the
 // agent's `modelCallTimeoutMs`, and `tests/lib/model-call-deadline-sweep.test.ts` keeps every caller
 // under `src/` from leaving it out, so the default is a floor for tests and never a site's policy.
-export type ModelCallOptions<T> = { deadlineMs?: number } & (
+export type ModelCallOptions<T> = {
+  deadlineMs?: number;
+  // The caller's own end, which today is a job's deadline (issue #834). It ends the wait for a
+  // permit: a call whose signal aborts leaves the queue with the signal's reason and takes no permit,
+  // so a run past its deadline stops holding its row in the running set until a permit frees. It
+  // does not reach `fn`, which is handed the call's own deadline; a caller that wants the model call
+  // itself ended joins the two there, as the agent turn does.
+  signal?: AbortSignal;
+} & (
   | ReportingModelCallOptions<T>
   | {
       primary?: undefined;
@@ -205,43 +213,49 @@ export async function runModelCall<T>(
     waitTimer.unref?.();
   }
 
-  return sem().run(async () => {
-    clearTimeout(waitTimer);
-    // Reached with the error the PROVIDER raised, which is the whole reason the decision lives here
-    // rather than at the call site. One lane up, the error has already been through
-    // `describeProviderFault` and is one of our own three words: `statusOf` still reads (the status
-    // rides along), but "timeout" has become a message on an Error named "Error", so a predicate
-    // asking the SDK's question would answer no to the exact case it exists for.
-    const failed = async (err: unknown): Promise<T> => {
-      const described = describeProviderFault(err);
-      if (!fallback || !isFallbackWorthy(err)) throw described;
-      const reason =
-        described instanceof Error ? described.message : "provider error";
-      logger.warn(
-        { err },
-        "primary model provider failed; handing the turn to the fallback",
-      );
-      fallback.onFallback?.({ reason });
-      try {
-        return await attemptOn(
-          fallback.run,
-          fallback.labels,
-          fallback.deadlineMs,
+  // NOTE: cleared on every way out of the wait, a call that left the queue included: a wait that
+  // ended is no longer one to report (issue #834).
+  try {
+    return await sem().run(async () => {
+      clearTimeout(waitTimer);
+      // Reached with the error the PROVIDER raised, which is the whole reason the decision lives here
+      // rather than at the call site. One lane up, the error has already been through
+      // `describeProviderFault` and is one of our own three words: `statusOf` still reads (the status
+      // rides along), but "timeout" has become a message on an Error named "Error", so a predicate
+      // asking the SDK's question would answer no to the exact case it exists for.
+      const failed = async (err: unknown): Promise<T> => {
+        const described = describeProviderFault(err);
+        if (!fallback || !isFallbackWorthy(err)) throw described;
+        const reason =
+          described instanceof Error ? described.message : "provider error";
+        logger.warn(
+          { err },
+          "primary model provider failed; handing the turn to the fallback",
         );
-      } catch (fallbackErr) {
-        // The fallback is the last thing there is, so what it failed with is what the turn reports.
-        // Redacted the same way: a second vendor's prose is no safer than the first's.
-        const out = describeProviderFault(fallbackErr);
-        fallback.onFallbackFailed?.({
-          reason: out instanceof Error ? out.message : "provider error",
-        });
-        throw out;
+        fallback.onFallback?.({ reason });
+        try {
+          return await attemptOn(
+            fallback.run,
+            fallback.labels,
+            fallback.deadlineMs,
+          );
+        } catch (fallbackErr) {
+          // The fallback is the last thing there is, so what it failed with is what the turn reports.
+          // Redacted the same way: a second vendor's prose is no safer than the first's.
+          const out = describeProviderFault(fallbackErr);
+          fallback.onFallbackFailed?.({
+            reason: out instanceof Error ? out.message : "provider error",
+          });
+          throw out;
+        }
+      };
+      try {
+        return await attemptOn(fn, opts?.primary, deadlineMs);
+      } catch (err) {
+        return failed(err);
       }
-    };
-    try {
-      return await attemptOn(fn, opts?.primary, deadlineMs);
-    } catch (err) {
-      return failed(err);
-    }
-  });
+    }, opts?.signal);
+  } finally {
+    clearTimeout(waitTimer);
+  }
 }

@@ -883,6 +883,9 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     await expect(deleteDocument(ctx(), d.id, appDb)).rejects.toBeInstanceOf(
       ConflictError,
     );
+    await expect(deleteDocument(ctx(), d.id, appDb)).rejects.toMatchObject({
+      translationKey: "errors.syncedDocumentRefused",
+    });
     await updateDocument(
       ctx(),
       curated,
@@ -1214,6 +1217,12 @@ describe("knowledge source input (issue #794)", () => {
       parseSourceInput({ ...good, baseUrl }, (u) =>
         assertSafeOutboundUrl(u, { allowPrivate: false }),
       ),
-    ).rejects.toMatchObject({ statusCode: 400, field: "baseUrl" });
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      field: "baseUrl",
+      // A console caller reads this in its own language (issue #798); the English reason stays in
+      // the message, which is the log line.
+      translationKey: "errors.sourceUrlNotAllowed",
+    });
   });
 });

@@ -1084,8 +1084,8 @@ export function useKnowledgeManager(opts: {
     );
   }
 
-  // The same refusal the API gives an edit or a delete of a synced document (SYNCED_DOCUMENT_REFUSAL
-  // in src/modules/rag/documents.ts), said before the click instead of after it.
+  // The same refusal the API gives an edit or a delete of a synced document (`errors.syncedDocumentRefused`
+  // in src/api/locales), said before the click instead of after it.
   const syncedRefusal = t(
     "knowledge.source.syncedRefusal",
     "This document is synced from the help center portal and would be overwritten on the next sync. Fix the article in the portal instead.",

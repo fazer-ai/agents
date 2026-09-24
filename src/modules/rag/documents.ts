@@ -224,13 +224,6 @@ export interface CreateDocumentParams {
   base?: PrismaClient;
 }
 
-// A synced document is the source's to change (issue #794): an edit through the document API or an
-// MCP tool would be overwritten on the next sync, silently or not depending on timing, so it is
-// refused while the base still has a source. With the source removed the documents keep their
-// external ids (so a source put back readopts them) and become ordinary documents again.
-export const SYNCED_DOCUMENT_REFUSAL =
-  "This document is synced from the knowledge base's help center portal and would be overwritten on the next sync; fix the article in the portal instead";
-
 // The same question for a caller that previews before writing (the MCP tools): a preview that said
 // "ok" for a write the apply then refuses is the #510 shape.
 export async function assertDocumentNotSynced(
@@ -266,6 +259,10 @@ async function holdSource(db: ScopedDb, fence: SourceFence): Promise<void> {
   }
 }
 
+// A synced document is the source's to change (issue #794): an edit through the document API or an
+// MCP tool would be overwritten on the next sync, silently or not depending on timing, so it is
+// refused while the base still has a source. With the source removed the documents keep their
+// external ids (so a source put back readopts them) and become ordinary documents again.
 async function refuseSyncedWrite(db: ScopedDb, id: bigint): Promise<void> {
   const doc = await db.knowledgeDocument.findUnique({
     where: { id },
@@ -275,7 +272,10 @@ async function refuseSyncedWrite(db: ScopedDb, id: bigint): Promise<void> {
     },
   });
   if (doc?.externalId != null && doc.kb.source) {
-    throw new ConflictError(SYNCED_DOCUMENT_REFUSAL);
+    throw new ConflictError(
+      "This document is synced from the knowledge base's help center portal and would be overwritten on the next sync; fix the article in the portal instead",
+      "errors.syncedDocumentRefused",
+    );
   }
 }
 

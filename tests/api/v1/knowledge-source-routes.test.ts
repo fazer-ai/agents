@@ -87,6 +87,7 @@ function call(
   path: string,
   key: string,
   body?: unknown,
+  lang?: string,
 ): Promise<Response> {
   return server.handle(
     new BunRequest(`http://localhost/api/v1/knowledge${path}`, {
@@ -94,6 +95,7 @@ function call(
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${key}`,
+        ...(lang ? { "accept-language": lang } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     }),
@@ -192,6 +194,100 @@ describe.skipIf(!dbUp)("knowledge base source routes (issue #794)", () => {
         status,
       ]);
     }
+    expect(
+      await su?.knowledgeSource.findUnique({ where: { knowledgeBaseId: kb } }),
+    ).toBeNull();
+  });
+
+  // The console shows the refusal next to the form, so it has to arrive in the caller's language
+  // (issue #798): before the keys, a pt-BR screen read "slug is required and must be a portal slug".
+  test("a pt-BR caller reads every refusal in Portuguese, naming the field", async () => {
+    const cases: [unknown, string, string][] = [
+      [{ ...GOOD, baseUrl: "" }, "baseUrl", "A URL do portal é obrigatória."],
+      [
+        { ...GOOD, baseUrl: "não é url" },
+        "baseUrl",
+        "A URL do portal não é uma URL válida.",
+      ],
+      [
+        { ...GOOD, baseUrl: "https://u:p@ajuda.loja-exemplo.com.br" },
+        "baseUrl",
+        "A URL do portal não pode levar usuário nem senha.",
+      ],
+      [
+        { ...GOOD, baseUrl: "ftp://ajuda.loja-exemplo.com.br" },
+        "baseUrl",
+        "A URL do portal precisa começar com https:// ou http://.",
+      ],
+      [
+        { ...GOOD, baseUrl: "https://ajuda.loja-exemplo.com.br/?x=1" },
+        "baseUrl",
+        "A URL do portal não pode ter query (?) nem fragmento (#).",
+      ],
+      [
+        { ...GOOD, kind: "url_crawl" },
+        "kind",
+        "O tipo de fonte url_crawl não é suportado.",
+      ],
+      [
+        { ...GOOD, slug: "a/b" },
+        "slug",
+        "O slug do portal é obrigatório e só aceita letras, números, hífen e sublinhado.",
+      ],
+      [
+        { ...GOOD, locale: "" },
+        "locale",
+        "O idioma é obrigatório e precisa ser um código de idioma, como pt_BR ou en.",
+      ],
+      [
+        { ...GOOD, excludeIds: [0] },
+        "excludeIds",
+        "Os artigos excluídos precisam ser uma lista de ids de artigo.",
+      ],
+      [
+        { ...GOOD, intervalMinutes: 1 },
+        "intervalMinutes",
+        "O intervalo precisa estar entre 5 e 1440 minutos.",
+      ],
+    ];
+    for (const [body, field, sentence] of cases) {
+      const res = await call(
+        "PUT",
+        `/bases/${kb}/source`,
+        adminKey,
+        body,
+        "pt-BR",
+      );
+      const payload = (await res.json()) as { error?: string; field?: string };
+      expect([res.status, payload.field, payload.error]).toEqual([
+        400,
+        field,
+        sentence,
+      ]);
+    }
+    const sync = await call(
+      "POST",
+      `/bases/${kb}/source/sync`,
+      adminKey,
+      undefined,
+      "pt-BR",
+    );
+    const remove = await call(
+      "DELETE",
+      `/bases/${kb}/source`,
+      adminKey,
+      undefined,
+      "pt-BR",
+    );
+    const missing = "Esta base de conhecimento não tem fonte.";
+    const nothingToSync =
+      "Esta base de conhecimento não tem fonte para sincronizar.";
+    expect([
+      sync.status,
+      ((await sync.json()) as { error?: string }).error,
+      remove.status,
+      ((await remove.json()) as { error?: string }).error,
+    ]).toEqual([409, nothingToSync, 404, missing]);
     expect(
       await su?.knowledgeSource.findUnique({ where: { knowledgeBaseId: kb } }),
     ).toBeNull();

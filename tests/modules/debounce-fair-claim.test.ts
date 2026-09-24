@@ -7,11 +7,13 @@ import {
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { asSuperAdminOn } from "@/lib/tenancy";
 import { runDebounceTick } from "@/modules/debounce/worker";
 import {
   type ClaimedJob,
   claimDueDebounceJobs,
+  claimSql,
   enqueueJob,
 } from "@/modules/scheduler/service";
 
@@ -221,6 +223,50 @@ describe.skipIf(!dbUp)(
       } finally {
         release();
         await tx;
+      }
+    });
+
+    test("a row re-armed into the future between the claim's snapshot and its lock is not claimed", async () => {
+      // The claim ranks from its statement snapshot and locks afterwards. A re-arm that commits in
+      // between leaves the snapshot's version due, and Postgres re-checks only the locked row's own
+      // predicates against the new version. `fair_claim_pause()` holds the claim right there, once.
+      await suDb.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION fair_claim_pause() RETURNS boolean LANGUAGE plpgsql VOLATILE AS $$
+        BEGIN
+          IF current_setting('fair_claim.pause', true) = 'on' THEN
+            PERFORM set_config('fair_claim.pause', 'off', true);
+            PERFORM pg_sleep(1.5);
+          END IF;
+          RETURN true;
+        END $$`);
+      try {
+        const a0 = await due(tenantA, "a0", 30);
+        const kinds = Prisma.sql`kind IN ('DEBOUNCE') AND fair_claim_pause()`;
+        const tenantId = [tenantA, tenantB, tenantC];
+        // The production claim's own wrapper and statement, with the pause in the kind filter.
+        const claiming = asSuperAdminOn(appDb, async (db) => {
+          await db.$executeRaw`SELECT set_config('fair_claim.pause', 'on', true)`;
+          return db.$queryRaw<Array<{ id: bigint }>>(
+            claimSql(4, new Date(), kinds, tenantId, [], undefined, true),
+          );
+        });
+        await sleep(500);
+        // What armDebounce does when a message lands inside the window: the same row, pushed out.
+        await suDb.schedulerJob.update({
+          where: { id: a0 },
+          data: { runAt: new Date(Date.now() + 60_000) },
+        });
+        const claimed = await claiming;
+        expect(claimed.map((j) => j.id)).not.toContain(a0);
+        const row = await suDb.schedulerJob.findUniqueOrThrow({
+          where: { id: a0 },
+          select: { status: true },
+        });
+        expect(row.status).toBe("PENDING");
+      } finally {
+        await suDb.$executeRawUnsafe(
+          `DROP FUNCTION IF EXISTS fair_claim_pause()`,
+        );
       }
     });
 

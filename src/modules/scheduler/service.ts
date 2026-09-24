@@ -1137,6 +1137,12 @@ export function claimSql(
   //
   // Ranked WITHOUT the lock and then locked: Postgres refuses FOR UPDATE on a query with a window
   // function. A row the ranking counted and SKIP LOCKED then skips only moves the queue up by one.
+  //
+  // The lock step repeats every predicate on the locked row itself. The ranking reads the statement's
+  // snapshot, and when a row changed after it Postgres re-checks only the LOCKED relation's own
+  // conditions against the new version: a re-arm that pushed run_at into the future in between would
+  // otherwise still be claimed and flushed inside its new window. `ranked` names its columns apart so
+  // the repeated clauses can only resolve to `s`.
   const due = share
     ? Prisma.sql`
     inflight AS (
@@ -1148,7 +1154,7 @@ export function claimSql(
       }
     ),
     ranked AS (
-      SELECT j.id, j.run_at,
+      SELECT j.id AS ranked_id, j.run_at AS ranked_run_at,
         COALESCE(f.n, 0) + ROW_NUMBER() OVER (PARTITION BY j.tenant_id ORDER BY j.run_at, j.id) AS share
       FROM (
         SELECT id, tenant_id, run_at FROM scheduler_jobs
@@ -1158,9 +1164,10 @@ export function claimSql(
       LEFT JOIN inflight f ON f.tenant_id = j.tenant_id
     ),
     due AS MATERIALIZED (
-      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.id = s.id
-      WHERE s.status = 'PENDING'
-      ORDER BY r.share, r.run_at, r.id
+      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
+      WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
+        ${tenantClause} ${excludeClause}
+      ORDER BY r.share, r.ranked_run_at, r.ranked_id
       FOR UPDATE OF s SKIP LOCKED
       LIMIT ${lim}
     )`

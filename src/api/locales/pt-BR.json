@@ -181,6 +181,7 @@
     "observeTakenBack": "Esta observação foi desfeita enquanto o vínculo ainda estava em andamento. Tente de novo.",
     "passwordChangeUnavailable": "A troca de senha não está disponível para esta conta",
     "passwordRequired": "Sua senha é obrigatória para confirmar esta ação",
+    "playgroundTurnFailed": "O turno falhou no servidor. A causa está no log do servidor, sob o id deste turno.",
     "proEdition": "Este recurso requer a edição Pro",
     "promptTooLong": "O prompt do sistema é longo demais: {{len}} caracteres (limite {{max}}).",
     "providerListUnexpectedResponse": "{{provider}} respondeu à requisição da lista em um formato inesperado.",

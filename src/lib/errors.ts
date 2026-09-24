@@ -37,6 +37,11 @@ export class AppError extends Error {
   // refusal wants to reuse. Absent whenever the refusal is not about one input: see
   // src/api/lib/refusal.ts for what the wire then carries. Issue #231.
   readonly field?: string;
+  // NOTE: optional. The playground turn this refusal ended, so the console can point at its lines on
+  // the Logs page (issue #841). Set by the playground's own entry points on the way out, which is
+  // why it is not a constructor argument: the error is usually raised far below the code that knows
+  // which turn it belongs to.
+  turnId?: string;
   constructor(
     message: string,
     statusCode: number,

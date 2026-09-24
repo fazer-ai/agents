@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
   Button,
   Input,
@@ -747,6 +747,9 @@ function TurnBubble({
         </div>
       )}
       {userFile && <FileExtraction turn={turn} />}
+      {turn.role === "error" && turn.turnId && (
+        <ErrorLogsLink turnId={turn.turnId} />
+      )}
       {turn.role === "assistant" && turn.audioUrl && (
         <MediaAudio src={turn.audioUrl} />
       )}
@@ -757,6 +760,23 @@ function TurnBubble({
         <TracePanel turn={turn} onOpenDoc={onOpenDoc} onOpenKb={onOpenKb} />
       )}
     </div>
+  );
+}
+
+// Where the cause of a failed turn is when the bubble cannot say it (issue #841): the turn's lines on
+// the Logs page, and the id the server log files the failure under.
+export function ErrorLogsLink({ turnId }: { turnId: string }) {
+  const { t } = useTranslation();
+  return (
+    <Link
+      to={`/logs?source=playground&turnId=${encodeURIComponent(turnId)}`}
+      className="text-text-muted text-xs underline"
+      data-testid="playground-error-logs"
+    >
+      {t("playground.errorLogs", "See this turn in Logs ({{turnId}})", {
+        turnId,
+      })}
+    </Link>
   );
 }
 

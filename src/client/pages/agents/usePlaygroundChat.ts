@@ -68,7 +68,9 @@ export type PlaygroundTurn =
       // Optimistic bubble shown while the transcription/extraction/reply is in flight.
       pending?: boolean;
     }
-  | { role: "error"; text: string }
+  // `turnId`: the turn the failure ended, when the server named it, for the link to its lines on the
+  // Logs page (issue #841).
+  | { role: "error"; text: string; turnId?: string }
   | {
       role: "note";
       text: string;
@@ -195,6 +197,55 @@ function loadSim(agentId: string): PersistedSim {
 // NOTE: `silent` has no reload counterpart, and that predates this hook's guardrail work: a
 // follow-up the agent declined leaves an empty AI message, which the rebuild drops by design. Only
 // turns the guardrail acted on get a stored note.
+// The app's catch-all answer to an unhandled failure outside development (`src/app.ts`). It says
+// nothing the generic sentence does not, so it is not shown as if it were the server's reason.
+const UNHANDLED_PLACEHOLDER = "Something went wrong";
+
+// What a failed playground call tells the operator (issue #841). The server's own reason when the
+// call carried one: a refusal's JSON `error`, or a plain-text body, which is the unhandled failure's
+// detail in development. Otherwise a sentence that says what is known and nothing more: the old one
+// pointed at the model's configuration on every failure, and the failure that prompted this was a
+// database error with the model configured. A call that never got an answer is a failure to reach
+// the server, which is a different thing to tell the operator.
+export function playgroundFailure(
+  err: unknown,
+  t: (key: string, fallback: string) => string,
+): { text: string; turnId?: string } {
+  const value =
+    err && typeof err === "object"
+      ? (err as { value?: unknown }).value
+      : undefined;
+  const body =
+    value && typeof value === "object"
+      ? (value as { error?: unknown; turnId?: unknown })
+      : undefined;
+  const plain = typeof value === "string" ? value.trim() : "";
+  const reason =
+    typeof body?.error === "string" && body.error
+      ? body.error
+      : plain && plain !== UNHANDLED_PLACEHOLDER
+        ? plain
+        : undefined;
+  const turnId =
+    typeof body?.turnId === "string" && body.turnId ? body.turnId : undefined;
+  // A request that never reached the server is not an answer, even though the client hands it back
+  // as one: Eden turns a failed `fetch` into an error of status 503 whose value is the fetch's own
+  // TypeError (measured against a closed port), so its presence says nothing about the server.
+  const answered = !!err && !(value instanceof Error);
+  const text =
+    reason ??
+    (answered
+      ? t(
+          "playground.error",
+          "The server answered with an error and did not say why.",
+        )
+      : t(
+          "playground.errorUnreachable",
+          "Could not reach the server. Check the connection and try again.",
+        ));
+  return turnId ? { text, turnId } : { text };
+}
+
 export function agentTurn(
   t: (key: string, fallback: string) => string,
   r: {
@@ -560,18 +611,10 @@ export function usePlaygroundChat(
   // available), not as a detached generic error line.
   const pushError = useCallback(
     (err?: unknown) => {
-      const serverMessage =
-        err && typeof err === "object"
-          ? (err as { value?: { error?: unknown } }).value?.error
-          : undefined;
-      const text =
-        typeof serverMessage === "string" && serverMessage
-          ? serverMessage
-          : t(
-              "playground.error",
-              "Could not get a reply. Check the model is configured (General tab).",
-            );
-      setTurns((prev) => [...prev, { role: "error", text }]);
+      setTurns((prev) => [
+        ...prev,
+        { role: "error", ...playgroundFailure(err, t) },
+      ]);
     },
     [t],
   );

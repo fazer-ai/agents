@@ -1522,6 +1522,8 @@ export function useKnowledgeManager(opts: {
                   docsModal.payload
                 ) {
                   void reloadDocs(docsModal.payload.id);
+                  // The page behind the modal counts documents per base, too.
+                  void onChanged();
                 }
               }}
             />

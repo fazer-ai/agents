@@ -470,9 +470,12 @@ describe("parseExcludeIds", () => {
 });
 
 describe("a synced document in the documents list", () => {
+  let changed = 0;
   function Harness({ edits = true }: { edits?: boolean }) {
     const m = useKnowledgeManager({
-      onChanged: () => {},
+      onChanged: () => {
+        changed += 1;
+      },
       allowDocumentEdits: edits,
     });
     return (
@@ -656,4 +659,42 @@ describe("a synced document in the documents list", () => {
       (screen.getByLabelText(/Portal URL/) as HTMLInputElement).value,
     ).toBe("https://ajuda.example.com");
   });
+
+  test("a sync that runs in batches keeps the list following every batch, and tells the page", async () => {
+    source = { ...FAILED_RUN };
+    docs = [SYNCED, CURATED];
+    await openList();
+    await screen.findByText("https://ajuda.example.com");
+    changed = 0;
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    await waitFor(() => expect(sent("POST", "/source/sync").length).toBe(1));
+    // The first batch hits its write budget and lands; the next one is scheduled after it.
+    docs = [
+      SYNCED,
+      { ...SYNCED, id: "d3", title: "Lote um", externalId: "78" },
+      CURATED,
+    ];
+    source = {
+      ...FAILED_RUN,
+      lastSyncAt: "2026-09-20T10:05:00.000Z",
+      lastStatus: "ok",
+      lastMessage: "created 1; more to do, continuing shortly",
+    };
+    await screen.findByText("Lote um", undefined, { timeout: 6_000 });
+    // The page behind the modal counts documents too, so it is told.
+    expect(changed).toBeGreaterThanOrEqual(1);
+    docs = [
+      SYNCED,
+      { ...SYNCED, id: "d3", title: "Lote um", externalId: "78" },
+      { ...SYNCED, id: "d4", title: "Lote dois", externalId: "79" },
+      CURATED,
+    ];
+    source = {
+      ...FAILED_RUN,
+      lastSyncAt: "2026-09-20T10:05:20.000Z",
+      lastStatus: "ok",
+      lastMessage: "created 1",
+    };
+    await screen.findByText("Lote dois", undefined, { timeout: 6_000 });
+  }, 20_000);
 });

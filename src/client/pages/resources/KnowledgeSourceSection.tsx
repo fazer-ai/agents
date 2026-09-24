@@ -29,8 +29,14 @@ export type KnowledgeSource = NonNullable<BaseDetail["source"]>;
 
 // How often, and for how long, the section re-reads the source after it armed a run. The run is a
 // scheduler job, so its outcome lands on the row some seconds later and nothing announces it.
+//
+// A landed run is not always the end: one that hit its write budget records itself and schedules the
+// next batch 15s later (CONTINUE_AFTER_MS in src/modules/rag/source.ts), and the source says nothing
+// structured about that. So after a run lands the section keeps reading until SETTLE_TRIES pass with
+// no newer one, which outlasts that gap, and every batch that lands on the way refreshes the list.
 const POLL_MS = 3_000;
-const POLL_TRIES = 20;
+const POLL_TRIES = 60;
+const SETTLE_TRIES = 8;
 
 interface Draft {
   baseUrl: string;
@@ -134,8 +140,8 @@ export function KnowledgeSourceSection({
     setSyncing(false);
   }, []);
 
-  // Re-reads until the last run is newer than `since`, which is how a run the scheduler finishes
-  // later reaches the screen without the operator reloading.
+  // Re-reads until a run newer than `since` lands and no further batch follows it, which is how a run
+  // the scheduler finishes later reaches the screen without the operator reloading.
   const pollUntilRun = useCallback(
     (since: number | null) => {
       // Asked for by an action whose request outlived the section (a save or a sync answered after
@@ -145,15 +151,25 @@ export function KnowledgeSourceSection({
       stopPolling();
       setSyncing(true);
       let tries = 0;
+      let seen = since;
+      let landed = false;
+      let quiet = 0;
       const tick = async () => {
         tries += 1;
         const next = await load();
         // Closed or moved to another base while this read was out: nothing to keep polling for.
         if (current.current !== asked) return;
         const ran = next ? lastRunTime(next) : null;
+        if (ran !== null && (seen === null || ran > seen)) {
+          seen = ran;
+          landed = true;
+          quiet = 0;
+        } else if (landed) {
+          quiet += 1;
+        }
         if (
           next === null ||
-          (ran !== null && (since === null || ran > since)) ||
+          (landed && quiet >= SETTLE_TRIES) ||
           tries >= POLL_TRIES
         ) {
           stopPolling();

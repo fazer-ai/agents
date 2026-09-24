@@ -127,6 +127,15 @@
     "editTitle": "Editar canal de alerta",
     "emptyDescription": "Adicione um canal Discord ou webhook para ser avisado quando uma etapa falhar.",
     "emptyTitle": "Nenhum canal de alerta",
+    "excludeAgents": "Agentes que nunca alertam aqui",
+    "excludeAgentsEmpty": "Nenhum agente ainda.",
+    "excludeAgentsHint": "Os avisos e erros deles continuam em Logs; só este canal deixa de alertar. Use para agentes de teste que dividem a instância com os de produção.",
+    "excludeAgentsLoadFailed": "Não foi possível carregar os agentes. A lista atual fica como está.",
+    "excludedCount_zero": "{{count}} agentes excluídos",
+    "excludedCount_one": "{{count}} agente excluído",
+    "excludedCount_many": "{{count}} agentes excluídos",
+    "excludedCount_other": "{{count}} agentes excluídos",
+    "excludedDeletedAgent": "Agente apagado #{{id}}",
     "minLevel": {
       "error": "Apenas erros",
       "warn": "Avisos e erros"

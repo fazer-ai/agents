@@ -682,6 +682,12 @@ describe("MCP tool descriptions", () => {
   // Measured over the three raises above: 60,523 before, 61,199 with it, so 61,215 with the same
   // 16. The description was cut from 330 to what a caller cannot read off the schema; the mechanism
   // is on the REST field. Descriptions are unchanged.
+  //
+  // BOTH RAISED by `exclude_agent_ids` on `alert_channel_create` and `alert_channel_update` (#843):
+  // the list of agents whose lines never alert on that channel. Measured 31,350 and 61,199 before,
+  // 31,401 and 61,355 with it, so 31,416 and 61,371 with the same 15 and 16. The one description
+  // that names it says only what the schema cannot (the lines are still logged); the update tool's
+  // description does not repeat it.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -690,8 +696,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(31_365);
-    expect(schema).toBeLessThanOrEqual(61_215);
+    expect(desc).toBeLessThanOrEqual(31_416);
+    expect(schema).toBeLessThanOrEqual(61_371);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

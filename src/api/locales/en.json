@@ -8,6 +8,7 @@
     "agentNotRunnable": "This agent has no runnable model configured.",
     "agentObservesInboxes": "This agent observes inboxes. Remove it as an observer first.",
     "alertChannelNotFound": "Alert channel not found",
+    "alertChannelUnknownAgent": "Unknown agent: {{id}}",
     "apiKeyNotFound": "API key not found",
     "apiKeyRequiresSession": "This is done from a signed-in session, not with an API key",
     "audioTooLarge": "Audio file is too large",

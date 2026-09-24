@@ -41,6 +41,12 @@ const VAULT_ENTRY = {
   status: "active",
 };
 
+// The tenant's agents, for the exclusion chips (issue #843).
+const ROSTER = [
+  { id: "11", name: "Battery agent" },
+  { id: "12", name: "Production agent" },
+];
+
 function channel(over: Record<string, unknown> = {}) {
   return {
     id: "3",
@@ -50,6 +56,7 @@ function channel(over: Record<string, unknown> = {}) {
     enabled: true,
     minLevel: "error",
     stages: [],
+    excludeAgentIds: [] as string[],
     hasSecret: true,
     secretRef: "vault:7",
     signingState: "signed",
@@ -100,6 +107,13 @@ describe("AlertChannelsSection", () => {
       body: init?.body ? JSON.parse(String(init.body)) : null,
     });
     if (url.includes("/api/v1/vault")) return json({ entries: [VAULT_ENTRY] });
+    if (url.includes("/api/v1/agents"))
+      return json({
+        agents: ROSTER,
+        total: ROSTER.length,
+        page: 1,
+        pageSize: 100,
+      });
     if (url.includes("/api/v1/alert-channels")) {
       if (method === "GET") return json({ channels });
       if (url.endsWith("/test")) return json({ result: testResult });
@@ -518,5 +532,57 @@ describe("AlertChannelsSection", () => {
     // The other half of the prefill: an untouched empty picker is still untouched, so it must not
     // send a stale ref from the component's last session either.
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
+  });
+
+  // ── excluded agents (issue #843) ──
+  //
+  // The dialog sends the whole list on every save, so what it opens with is what it keeps: an
+  // untouched save must send back exactly the stored ids, including one whose agent is gone (the
+  // server accepts a kept id), and a toggle must add or drop exactly one.
+  test("an untouched save sends the stored exclusions back, a deleted agent's included", async () => {
+    channels = [channel({ excludeAgentIds: ["11", "99"] })];
+    await openEditor();
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Battery agent", hidden: true })
+          .getAttribute("aria-pressed"),
+      ).toBe("true"),
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "Production agent", hidden: true })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+    // The id with no agent behind it is on screen, so it can be seen and dropped.
+    expect(
+      screen.getByRole("button", { name: /#99/, hidden: true }),
+    ).toBeTruthy();
+    const body = await save();
+    expect(body.excludeAgentIds).toEqual(["11", "99"]);
+  });
+
+  test("picking an agent excludes it, and dropping the deleted one removes it", async () => {
+    channels = [channel({ excludeAgentIds: ["99"] })];
+    await openEditor();
+    await waitFor(() =>
+      expect(
+        screen.queryAllByRole("button", {
+          name: "Production agent",
+          hidden: true,
+        }).length,
+      ).toBe(1),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Production agent", hidden: true }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /#99/, hidden: true }));
+    const body = await save();
+    expect(body.excludeAgentIds).toEqual(["12"]);
+  });
+
+  test("the list says how many agents a channel leaves out", async () => {
+    const text = await listShows({ excludeAgentIds: ["11", "12"] });
+    expect(text).toMatch(/2 (agents excluded|agentes excluídos)/);
   });
 });

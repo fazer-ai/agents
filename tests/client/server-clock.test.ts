@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   noteServerDate,
   resetServerClock,
@@ -58,7 +58,14 @@ describe("the offset comes off the response, and only when it is readable", () =
   test("`serverNowDate` is the same instant as a Date", () => {
     const ahead = new Date(Date.now() + 600_000);
     noteServerDate(withDate(ahead.toUTCString()));
-    expect(serverNowDate().getTime()).toBe(serverNow());
+    // Both read the browser clock, so an unfrozen one can tick between the two calls and the
+    // comparison fails by a millisecond (measured on CI, PR #840).
+    const now = spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      expect(serverNowDate().getTime()).toBe(serverNow());
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 

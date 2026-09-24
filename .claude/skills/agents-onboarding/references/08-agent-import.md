@@ -62,4 +62,4 @@ Ligue a credencial de embedding no tenant **via MCP**: `tenant_settings_update {
 
 ## 6. Gate antes de seguir
 
-Não declare o import pronto com aviso aberto: **todos os docs da KB READY** + **grounding verificado** no playground (pergunte algo que só a KB sabe); STT/TTS/visão sinalizados → conectar credencial ou desligar a feature. Detalhe + features opcionais (voz, Google OAuth) em [`agent-features.md`](agent-features.md).
+Não declare o import pronto com aviso aberto: **todos os docs da KB READY** + **grounding verificado** no playground (pergunte algo que só a KB sabe); STT/TTS/visão sinalizados → conectar credencial ou desligar a feature. Detalhe + features opcionais (voz, Google OAuth) em [`agent-features.md`](agent-features.md). Agente importado com `tts.mode` diferente de `never` (a Maria vem com `mirror`) passa pela oferta da checagem do áudio de lá.

@@ -43,12 +43,23 @@ A memória do grafo é por **contato+canal** (`tenant:instance:ci:<contactInboxI
 - Respondeu **balão-a-balão** (uma resposta por mensagem) → **debounce off**.
 - Não respondeu fora de horário / mandou template ou nota num envio proativo → **service-window**/business-hours (a janela de 24h só governa **proativo**; resposta reativa é sempre in-window).
 - Não respondeu em áudio → **tts.mode** (`never` por padrão) ou credencial TTS faltando.
+- Áudio chegou **quebrado** (embolado, zumbindo, com trecho mudo) → primeiro o detector de áudio: ver a seção abaixo.
 - Áudio recebido virou "peça texto" → **stt** desabilitado ou sem credencial.
 - Não usou a base → grant **RAG** ausente/vazio (fail-closed) ou embedding do tenant não configurado.
 
 ### Embedding é por-tenant (não por-KB nem do modelo do agente)
 
 Sem o embedding configurado no nível do **tenant** (`tenant_settings`), os docs da KB vão para FAILED e o grounding falha. É config de tenant, separada da chave do modelo do agente. Reindexar a base não recupera docs já FAILED: use o **retry por documento** (MCP `knowledge_document_retry`).
+
+### Áudio embolado, zumbido ou trecho mudo: comece pelo detector
+
+A síntese às vezes volta quebrada com o texto certo, e o envio não percebe. Antes de trocar provedor, voz ou modelo, leia a linha do estágio `tts_check` (**Audio check** / **Verificação do áudio** no `/logs`) do turno do relato:
+
+- `outcome`: `passed` (o detector ouviu e aprovou), `flagged` (marcou como quebrado em `shadow` e o áudio saiu assim mesmo), `regenerated` (em `enforce`, sintetizou de novo), `rejected` (as regenerações falharam e a resposta saiu em texto), `called_off` (o turno foi cancelado antes de regenerar), `unavailable` (o detector falhou).
+- `verdict`: o tipo de defeito que o detector viu (`balbucio`, `zumbido`, `buraco_mudo`, ...), e `score`.
+- **`unavailable` não é aprovado**: o áudio saiu **sem** checagem (fora do ar, timeout de `TTS_CHECK_TIMEOUT_MS`, resposta não-2xx ou ilegível; o `reason` diz qual). Investigue o serviço `audio-check` e o `TTS_CHECK_URL`.
+- **Sem nenhuma linha `tts_check`** no turno: não há detector rodando (`TTS_CHECK_URL` vazio) ou o agente está com `checkMode: off`. O relato é exatamente o que ele pega; ofereça-o ao usuário pelo caminho do onboarding (`agent-features.md`, "Checagem do áudio sintetizado": memória, imagem e sim explícito).
+- `flagged` repetido num agente em `shadow` é o sinal para considerar `enforce`, depois de ouvir os áudios marcados.
 
 ### Resposta em áudio só é PTT no WhatsApp se for Ogg/Opus
 

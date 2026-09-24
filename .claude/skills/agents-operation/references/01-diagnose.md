@@ -13,12 +13,13 @@ Objetivo: de "a conversa deu errado" até "o estágio X divergiu por causa de Y"
 
 Página **`/logs`** (cards agrupados por turno, paginação keyset) ou `GET /v1/logs` (TENANT_ADMIN) / MCP `logs_query`. Filtros: `conversationId`, `agentId`, `turnId`, `stage`, `level`, `since/until`, `source` (default `inbox`; `playground` é separado).
 
-- **Um `turnId` por turno.** Cada linha é um estágio: `stt`, `embed`, `generate`, `tts`, `split`, `handoff` (+ erros). Filtre pelo `conversationId` e leia os turnos em ordem.
+- **Um `turnId` por turno.** Cada linha é um estágio: `stt`, `embed`, `generate`, `tts`, `tts_check`, `split`, `handoff` (+ erros). Filtre pelo `conversationId` e leia os turnos em ordem.
 - O `detail` é livre de PII (ids/contagens/enums); `errorMessage` é sanitizado. Você vê **o que** falhou e **onde**, não o texto da mensagem.
 - Leitura de sintomas:
   - erro/anomalia em `stt` → transcrição do áudio (provider/credencial).
   - resposta sem usar a KB, ou erro de embedding → ver `generate` (a busca RAG roda **dentro** do span `generate`; `embed` ainda não é emitido separado).
   - resposta errada/ferramenta errada → `generate` (prompt, grants, chamadas de tool).
+  - áudio quebrado (embolado, zumbido, trecho mudo) → `tts_check` (**Audio check** / **Verificação do áudio**) primeiro; ausente = sem detector ou `checkMode: off` (ver `gotchas.md`).
   - sem áudio quando deveria → `tts`. Balões estranhos → `split`. Não transferiu → `handoff`.
 
 ## 3. Trace no Langfuse

@@ -14,7 +14,11 @@ import {
   runPlaygroundFileTurn,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
-import { getPlaygroundSessionUsage } from "@/modules/playground/sessions";
+import {
+  getPlaygroundSessionUsage,
+  startPlaygroundThread,
+} from "@/modules/playground/sessions";
+import { isValidPlaygroundThread } from "@/modules/playground/thread";
 import { clearFlowLog } from "../utils/flowlog";
 
 // Issue #839: each playground turn says what it spent, over every model call it made, and the
@@ -376,6 +380,29 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       "agent",
       "vision",
     ]);
+  });
+
+  test("a new session's thread is handed out for the caller's own agent only", async () => {
+    const tid = await startPlaygroundThread(ctx(), agentId, appDb);
+    expect(isValidPlaygroundThread(tid, tenantId, agentId)).toBe(true);
+    // A turn run on it keeps it, so the first call is billed where the console already looks.
+    const r = await runPlaygroundTurn({
+      ctx: ctx(),
+      agentId,
+      message: "oi",
+      threadId: tid,
+      guardrails: false,
+      base: appDb,
+      deps: { makeModel, checkpointer: new MemorySaver() },
+    });
+    expect(r.threadId).toBe(tid);
+    await expect(
+      startPlaygroundThread(
+        { tenantId: tenantId + 999_999n, userId: null, role: "TENANT_ADMIN" },
+        agentId,
+        appDb,
+      ),
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 
   test("a thread outside the fence has no total to read", async () => {

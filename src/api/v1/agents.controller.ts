@@ -51,6 +51,7 @@ import {
   getPlaygroundSessionTurns,
   getPlaygroundSessionUsage,
   listPlaygroundSessions,
+  startPlaygroundThread,
 } from "@/modules/playground/sessions";
 import { listTtsOptions } from "@/modules/tts/listing";
 
@@ -1255,6 +1256,31 @@ export const agentsController = new Elysia({
         threadId: t.String({
           description:
             "Playground thread id, shaped tenantId:playground:agentId:uuid.",
+        }),
+      }),
+    },
+  )
+  // A fresh playground thread for a session about to start, so its first call is billed to a thread
+  // the console already holds (issue #839). Only an id: nothing is written until a turn runs on it.
+  .post(
+    "/:id/playground/threads",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      return {
+        instance: instanceIdentity,
+        threadId: await startPlaygroundThread(ctx, requireDbId(params.id)),
+      };
+    },
+    {
+      detail: doc(
+        "Start playground thread",
+        "Returns a fresh playground thread id for a session about to start. Nothing is stored until a turn runs on it.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
         }),
       }),
     },

@@ -130,8 +130,10 @@ describe("the turn keeps its usage", () => {
   });
 });
 
-// The hook's own books (issue #839, review round 1): a file's read is billed the moment it lands,
-// whether or not the turn after it succeeds, and a thread the read named is not yet a saved session.
+// The hook's own books (issue #839, review rounds 1 to 3). The session total is the LEDGER's, re-read
+// after every turn: a turn can fail after a call it was billed for, and only the ledger has that
+// call. A new session gets its thread before its first call, so such a call lands on the thread the
+// session keeps. The fake server below keeps a ledger per thread, the way the real one does.
 describe("usePlaygroundChat keeps the session total and the history honest", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {
@@ -150,7 +152,7 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     promptTokens: 900,
     completionTokens: 50,
   };
-  // The failed turn was screened before the agent failed: the ledger has that call, the reply nothing.
+  // A turn screened before the agent failed: the ledger has that call, the reply has nothing.
   const SCREEN: PlaygroundUsage = {
     ...NO_USAGE,
     calls: 1,
@@ -159,66 +161,98 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
   };
   const THREAD = "1:playground:7:abc";
 
-  function stub(opts: { failFileTurn: boolean }) {
-    const calls: string[] = [];
+  function server(opts: { failTurns: number }) {
+    const ledger = new Map<string, PlaygroundUsage>();
+    const bill = (tid: string, u: PlaygroundUsage) =>
+      ledger.set(tid, addUsage(ledger.get(tid) ?? NO_USAGE, u));
+    let failuresLeft = opts.failTurns;
+    const sessionLists: number[] = [];
     globalThis.fetch = (async (
       input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
-      const url = String(input instanceof Request ? input.url : input);
-      const method =
-        (input instanceof Request ? input.method : init?.method) ?? "GET";
-      calls.push(`${method} ${new URL(url, "http://x").pathname}`);
+      const req = input instanceof Request ? input : null;
+      const url = String(req ? req.url : input);
+      const method = (req ? req.method : init?.method) ?? "GET";
       const json = (body: unknown, status = 200) =>
         new Response(JSON.stringify(body), {
           status,
           headers: { "content-type": "application/json" },
         });
-      if (url.includes("/playground/file/extract"))
-        return json({
-          kind: "image",
-          extracted: "nota",
-          threadId: THREAD,
-          usage: READ,
-        });
-      if (url.includes("/playground/file"))
-        return opts.failFileTurn
-          ? json({ error: "boom" }, 500)
-          : json({
-              reply: "ok",
-              threadId: THREAD,
-              trace: [],
-              sources: [],
-              suppressed: false,
-              usage: REPLY,
-            });
-      if (url.endsWith("/playground") && method === "POST")
-        return json({
+      const reply = () =>
+        json({
           reply: "ok",
           threadId: THREAD,
           trace: [],
           sources: [],
           suppressed: false,
           usage: REPLY,
+          timing: { turnMs: 10, modelMs: 8 },
         });
+      const turn = () => {
+        if (failuresLeft > 0) {
+          failuresLeft -= 1;
+          bill(THREAD, SCREEN);
+          return json({ error: "boom" }, 500);
+        }
+        bill(THREAD, REPLY);
+        return reply();
+      };
+      if (url.endsWith("/playground/threads"))
+        return json({ threadId: THREAD });
       if (url.endsWith("/usage"))
+        return json({ usage: ledger.get(THREAD) ?? NO_USAGE });
+      if (url.includes("/playground/file/extract")) {
+        bill(THREAD, READ);
         return json({
-          usage: addUsage(READ, opts.failFileTurn ? SCREEN : NO_USAGE),
+          kind: "image",
+          extracted: "nota",
+          threadId: THREAD,
+          usage: READ,
+          timing: { turnMs: 5, modelMs: 4 },
         });
-      if (url.includes("/playground/sessions")) return json({ sessions: [] });
+      }
+      if (url.includes("/playground/file")) return turn();
+      if (url.endsWith("/playground") && method === "POST") return turn();
+      if (url.endsWith("/playground/sessions")) {
+        sessionLists.push(Date.now());
+        return json({ sessions: [] });
+      }
       if (url.includes("/playground/tools")) return json({ tools: [] });
       return json({});
     }) as typeof fetch;
-    return calls;
+    return { sessionLists };
   }
 
-  test("a file turn counts its read and its reply, once each", async () => {
-    const { renderHook, act } = await import("@testing-library/react");
+  async function mount() {
+    const { renderHook } = await import("@testing-library/react");
     const { usePlaygroundChat } = await import(
       "@/client/pages/agents/usePlaygroundChat"
     );
-    stub({ failFileTurn: false });
-    const { result } = renderHook(() => usePlaygroundChat("7", false));
+    return renderHook(() => usePlaygroundChat("7", false));
+  }
+
+  async function sendText(
+    result: {
+      current: ReturnType<
+        typeof import("@/client/pages/agents/usePlaygroundChat").usePlaygroundChat
+      >;
+    },
+    text: string,
+  ) {
+    const { act } = await import("@testing-library/react");
+    await act(async () => {
+      result.current.setInput(text);
+    });
+    await act(async () => {
+      await result.current.send();
+    });
+  }
+
+  test("a file turn shows its read and its reply on one line, and the total is the ledger's", async () => {
+    const { act } = await import("@testing-library/react");
+    server({ failTurns: 0 });
+    const { result } = await mount();
     await act(async () => {
       await result.current.sendFile(
         new File(["x"], "nota.png", { type: "image/png" }),
@@ -231,39 +265,32 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     );
   });
 
-  test("a read whose turn failed is still counted, and the next turn's success lists the session", async () => {
-    const { renderHook, act } = await import("@testing-library/react");
-    const { usePlaygroundChat } = await import(
-      "@/client/pages/agents/usePlaygroundChat"
-    );
-    stub({ failFileTurn: true });
-    const { result } = renderHook(() => usePlaygroundChat("7", false));
+  test("a first turn that fails after a billed call still shows that call in the total", async () => {
+    server({ failTurns: 1 });
+    const { result } = await mount();
+    await sendText(result, "oi");
+    // The session's thread existed before the call, so the screening billed on it is in the total.
+    expect(result.current.sessionUsage).toEqual(SCREEN);
+    await sendText(result, "de novo");
+    expect(result.current.sessionUsage).toEqual(addUsage(SCREEN, REPLY));
+  });
+
+  test("a read whose turn failed is counted, and the retry's success lists the session", async () => {
+    const { act } = await import("@testing-library/react");
+    const srv = server({ failTurns: 1 });
+    const { result } = await mount();
     await act(async () => {
       await result.current.sendFile(
         new File(["x"], "nota.png", { type: "image/png" }),
       );
     });
-    // The read was billed, and so was the screening of the turn that then failed: the reply carried
-    // neither, so the total is the ledger's, re-read after the failure.
-    const { waitFor } = await import("@testing-library/react");
-    await waitFor(() =>
-      expect(result.current.sessionUsage).toEqual(addUsage(READ, SCREEN)),
-    );
-
-    const after = stub({ failFileTurn: false });
-    await act(async () => {
-      result.current.setInput("oi");
-    });
-    await act(async () => {
-      await result.current.send();
-    });
+    expect(result.current.sessionUsage).toEqual(addUsage(READ, SCREEN));
+    const listedBefore = srv.sessionLists.length;
+    await sendText(result, "oi");
     expect(result.current.sessionUsage).toEqual(
       addUsage(addUsage(READ, SCREEN), REPLY),
     );
     // The thread existed since the read, but its session row only now: the history is refreshed.
-    expect(
-      after.filter((c) => c === "GET /api/v1/agents/7/playground/sessions")
-        .length,
-    ).toBeGreaterThan(0);
+    expect(srv.sessionLists.length).toBeGreaterThan(listedBefore);
   });
 });

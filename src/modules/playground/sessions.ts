@@ -22,7 +22,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { documentToolName } from "@/modules/documents/templates";
 import { listThreadMedia } from "./media";
-import { isValidPlaygroundThread } from "./thread";
+import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
 import { type LoadedTurnNote, listThreadTurnNotes } from "./turn-notes";
 
 // Server-side playground session history. The PlaygroundSession table holds ONLY metadata
@@ -544,6 +544,22 @@ export async function getPlaygroundSessionTurns(
     }
   }
   return turns;
+}
+
+// A fresh thread for a session about to start (issue #839), so its first call is billed to a thread
+// the console already holds. Only an id: nothing is written until a turn runs on it. The agent is
+// read under the caller's scope first, so an id for another tenant's agent is a 404, not a string.
+export async function startPlaygroundThread(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<string> {
+  const agent = await runScopedOn(base, ctx, (db) =>
+    db.agent.findUnique({ where: { id: agentId }, select: { id: true } }),
+  );
+  if (!agent)
+    throw new NotFoundError("agent not found", "errors.agentNotFound");
+  return newPlaygroundThreadId(ctx.tenantId as bigint, agentId);
 }
 
 // What a session has spent so far, from the ledger (issue #839): the total a reopened session

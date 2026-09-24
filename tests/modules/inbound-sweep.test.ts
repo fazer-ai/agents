@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import {
+  AGENT_EXPORT_KIND,
+  AGENT_EXPORT_VERSION,
+  importAgent,
+} from "@/modules/agents/transfer";
 import { createIntegrationInstance } from "@/modules/integrations/service";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
@@ -48,6 +53,7 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
   let tenantA = 0n;
   let tenantB = 0n;
   let tenantQuiet = 0n;
+  let tenantImport = 0n;
   let instanceA = 0n;
   let instanceB = 0n;
   let seq = 0;
@@ -66,6 +72,7 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
     tenantA = await mk("in817a");
     tenantB = await mk("in817b");
     tenantQuiet = await mk("in817q");
+    tenantImport = await mk("in817i");
     const instance = async (tenantId: bigint, tok: string) =>
       (
         await suDb.integrationInstance.create({
@@ -96,13 +103,15 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
   });
 
   afterAll(async () => {
-    for (const tid of [tenantA, tenantB, tenantQuiet]) {
+    for (const tid of [tenantA, tenantB, tenantQuiet, tenantImport]) {
       if (!tid) continue;
       await clearFlowLog(suDb, { tenantId: tid });
       for (const tbl of [
         "scheduler_jobs",
         "inbound_deliveries",
         "audit_logs",
+        "agent_tool_selections",
+        "agents",
         "integration_instances",
       ]) {
         await suDb.$executeRawUnsafe(
@@ -420,5 +429,96 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
         where: { tenantId: tenantQuiet, kind: "INBOUND_SWEEP" },
       }),
     ).toBe(1);
+  });
+
+  // Review round 1: a row whose re-dispatch died keeps its attempt count and stays stranded, so a
+  // pass that read only the oldest N rows would hand every pass to N such rows and never reach a newer
+  // delivery. More than one page of them here, and the newer row must still be armed.
+  test("rows whose re-dispatch already died do not starve a newer stranded row", async () => {
+    await clear(tenantA);
+    const now = Date.now();
+    const dead = 205;
+    await suDb.inboundDelivery.createMany({
+      data: Array.from({ length: dead }, (_, k) => ({
+        tenantId: tenantA,
+        integrationInstanceId: instanceA,
+        dedupeKey: `poison-817-${process.pid}-${k}`,
+        payload: { kind: "status_update" },
+        status: "PENDING" as const,
+        attempts: 0,
+        receivedAt: new Date(now - 60 * MIN + k),
+      })),
+    });
+    const poisoned = await suDb.inboundDelivery.findMany({
+      where: { tenantId: tenantA, dedupeKey: { startsWith: "poison-817-" } },
+      select: { id: true, attempts: true },
+    });
+    await suDb.schedulerJob.createMany({
+      data: poisoned.map((p) => ({
+        tenantId: tenantA,
+        kind: "INBOUND_REDISPATCH" as const,
+        dedupeKey: redispatchKey(p.id, p.attempts),
+        runAt: new Date(now),
+        payload: { deliveryId: String(p.id) },
+        status: "DEAD" as const,
+        attempts: 5,
+      })),
+    });
+    const fresh = await seed(tenantA, instanceA, {
+      status: "PENDING",
+      receivedAgoMs: 10 * MIN,
+    });
+    const res = await sweepStrandedInbound({ tenantId: tenantA, base: appDb });
+    expect(res.armed).toBe(1);
+    const live = await suDb.schedulerJob.findMany({
+      where: {
+        tenantId: tenantA,
+        kind: "INBOUND_REDISPATCH",
+        status: "PENDING",
+      },
+      select: { dedupeKey: true },
+    });
+    expect(live.map((j) => j.dedupeKey)).toEqual([redispatchKey(fresh.id, 0)]);
+  });
+
+  // Review round 1: an agent import creates its integrations with a route token each, and it can be
+  // the tenant's first inbound surface, which the boot arm never saw.
+  test("an agent import that brings an integration arms the sweep, and its dry run does not", async () => {
+    const ctx: TenantContext = {
+      tenantId: tenantImport,
+      userId: null,
+      role: "TENANT_ADMIN",
+    };
+    const bundle = (name: string) => ({
+      version: AGENT_EXPORT_VERSION,
+      kind: AGENT_EXPORT_KIND,
+      agent: {
+        name,
+        systemPrompt: "x",
+        modelConfig: {},
+        settings: {},
+        transferWithSummary: false,
+        businessHours: null,
+        followUpHours: null,
+        tools: [],
+        credentials: [],
+      },
+      components: {
+        httpTools: [],
+        mcpServers: [],
+        integrations: [
+          { catalogType: "GENERIC", name: `hook-${name}`, config: {} },
+        ],
+        knowledgeBases: [],
+      },
+    });
+    const sweeps = () =>
+      suDb.schedulerJob.count({
+        where: { tenantId: tenantImport, kind: "INBOUND_SWEEP" },
+      });
+    await importAgent(ctx, bundle("dry"), appDb, { dryRun: true });
+    expect(await sweeps()).toBe(0);
+    await importAgent(ctx, bundle("real"), appDb);
+    expect(await sweeps()).toBe(1);
   });
 });

@@ -36,9 +36,13 @@ import {
 // wait costs next to nothing, and what waits is a payment or an operator's event the sender will not
 // resend.
 const SWEEP_INTERVAL_MS = 2 * 60_000;
-// One pass's ceiling, against a pathological backlog (a long outage of the database under steady
-// traffic). The rest waits one interval.
+// One pass's ceiling on ARMS, against a pathological backlog (a long outage of the database under
+// steady traffic). The rest waits one interval.
 const BATCH = 200;
+// How many pages of candidates one pass may read to find BATCH rows not yet armed. Only rows whose
+// re-dispatch already died are skipped, and those are rare, so this is a bound against a runaway and
+// not a number any real pass approaches.
+const MAX_PAGES = 20;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -69,35 +73,59 @@ export async function sweepStrandedInbound(params: {
   // by the processor's own rule, shared rather than restated (`staleClaim`).
   const cutoff = new Date(now - PROCESSING_STALE_MS);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    const rows = await db.inboundDelivery.findMany({
-      where: {
-        OR: [
-          { status: "PENDING", receivedAt: { lt: cutoff } },
-          { status: "PROCESSING", OR: [...staleClaim(now)] },
-        ],
-      },
-      select: { id: true, attempts: true },
-      orderBy: { receivedAt: "asc" },
-      take: BATCH,
-    });
+    const stranded = {
+      OR: [
+        { status: "PENDING" as const, receivedAt: { lt: cutoff } },
+        { status: "PROCESSING" as const, OR: [...staleClaim(now)] },
+      ],
+    };
+    // PAGED PAST WHAT IS ALREADY ARMED, and the cap counts arms rather than rows read. A row whose
+    // re-dispatch died is still stranded, keeps its attempt count, and is never armed again (that is
+    // the point of `once`), so it stays in this query for good; capping the READ at the oldest N
+    // would let N such rows take every pass and starve every newer delivery behind them (review
+    // round 1). Such rows are few, and the page walk is bounded by MAX_PAGES regardless.
     let armed = 0;
-    for (const row of rows) {
-      const before = await db.schedulerJob.count({
-        where: {
+    let cursor: bigint | undefined;
+    for (let page = 0; page < MAX_PAGES && armed < BATCH; page += 1) {
+      const rows = await db.inboundDelivery.findMany({
+        where: stranded,
+        select: { id: true, attempts: true },
+        orderBy: { id: "asc" },
+        take: BATCH,
+        ...(cursor !== undefined ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      if (rows.length === 0) break;
+      cursor = rows[rows.length - 1]?.id;
+      const keys = rows.map((r) => redispatchKey(r.id, r.attempts));
+      const existing = new Set(
+        (
+          await db.schedulerJob.findMany({
+            where: {
+              tenantId: params.tenantId,
+              kind: "INBOUND_REDISPATCH",
+              dedupeKey: { in: keys },
+            },
+            select: { dedupeKey: true },
+          })
+        ).map((j) => j.dedupeKey),
+      );
+      for (const row of rows) {
+        if (armed >= BATCH) break;
+        const key = redispatchKey(row.id, row.attempts);
+        // The skip is the barrier a pass relies on; `once` below is its twin for the one case the
+        // read cannot see, a concurrent pass (another replica) arming between the read and the write.
+        if (existing.has(key)) continue;
+        await upsertJobRow(db, {
           tenantId: params.tenantId,
           kind: "INBOUND_REDISPATCH",
-          dedupeKey: redispatchKey(row.id, row.attempts),
-        },
-      });
-      await upsertJobRow(db, {
-        tenantId: params.tenantId,
-        kind: "INBOUND_REDISPATCH",
-        dedupeKey: redispatchKey(row.id, row.attempts),
-        runAt: new Date(now),
-        payload: { deliveryId: String(row.id) },
-        rearm: "once",
-      });
-      if (before === 0) armed += 1;
+          dedupeKey: key,
+          runAt: new Date(now),
+          payload: { deliveryId: String(row.id) },
+          rearm: "once",
+        });
+        armed += 1;
+      }
+      if (rows.length < BATCH) break;
     }
     if (armed > 0) {
       logger.warn(

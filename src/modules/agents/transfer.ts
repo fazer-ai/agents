@@ -1,4 +1,5 @@
 // Agent export/import (item 3) — share + reuse an agent's full configuration across tenants/
+
 // instances WITHOUT ever moving a secret. This whole module is a Full-distribution feature.
 //
 // The export is a self-contained JSON that references everything BY NAME (never by id and never the
@@ -15,6 +16,7 @@
 
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import {
@@ -117,6 +119,7 @@ import {
   type VaultEntryFacts,
 } from "@/modules/vault/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
+import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import {
   AGENT_SELECT,
   type AgentDto,
@@ -1179,7 +1182,7 @@ export async function importAgent(
   const components = parsed.data.components;
   const warnings: ImportWarning[] = [];
 
-  return runScopedOn(base, ctx, async (db) => {
+  const imported = await runScopedOn(base, ctx, async (db) => {
     // Recreate bundled business-hours schedules FIRST so the agent's hours / follow-up names resolve
     // below (instead of falling back to a same-name match or being left unset).
     if (components?.businessHours?.length) {
@@ -1554,6 +1557,19 @@ export async function importAgent(
     if (e instanceof DryRunRollback) return e.result;
     throw e;
   });
+  // Every integration an import creates gets a route token (above), so an import can be the moment
+  // a tenant first has an inbound surface, and the boot arm only reached tenants that had one then
+  // (issue #817, review round 1). After the commit and never on a dry run, which wrote nothing;
+  // best-effort, like the arm on `createIntegrationInstance`.
+  if (!opts.dryRun && components?.integrations?.length) {
+    await ensureInboundSweep(tenantId, base).catch((err) =>
+      logger.warn(
+        { tenantId: String(tenantId), err },
+        "inbound sweep arm failed on agent import; next boot arms it",
+      ),
+    );
+  }
+  return imported;
 }
 
 // An integration config may reference a business-hours schedule by id (Google Calendar's

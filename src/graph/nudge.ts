@@ -1647,6 +1647,8 @@ export async function runAgentNudge(
         ? null
         : (params.deps?.turnWaitDeadline ?? turnWaitDeadline)();
     let esperaEstourou = false;
+    // Set when the wait below ends because a person took the conversation (review round 3).
+    let takenOverInWait = false;
     let claim: {
       writeDivider: boolean;
       advanceMarker: boolean;
@@ -1862,6 +1864,7 @@ export async function runAgentNudge(
                   detail: posse.closed,
                 });
               }
+              takenOverInWait = true;
               return null;
             }
           }
@@ -1993,6 +1996,11 @@ export async function runAgentNudge(
     // `stillWanted` said no inside the critical section: the run was retired while this got here.
     // The latched reason, not the literal (round 13): the strict ask inside the claim reads the
     // switch and the mode too, and a reminder abandoned as "stale" is one the ladder never retries.
+    // A person who took the conversation during the wait is not a retirement: an operator's event
+    // goes to them, as at every other takeover end (review round 3). Nothing was generated yet.
+    if (claim === null && operatorEvent && takenOverInWait) {
+      return noteOperatorEvent();
+    }
     if (claim === null) return standDown();
     if (claim.closedConversationId !== null && contactInboxId !== null) {
       // Outside the critical section: this arms a job of its own and has no business inside the
@@ -2440,6 +2448,10 @@ export async function runAgentNudge(
       // repetition — and "the human owns it" is a different fact from "we could not ask".
       if (owned === "not-ours" && params.requireLiveBotOwnership)
         return refuse("stale");
+      // A person took an operator's event over during the judge's call: same end as the probe above.
+      if (owned === "not-ours" && operatorEvent) {
+        return refuse(await noteOperatorEvent());
+      }
       canMessagePost = owned === "ours";
     }
 

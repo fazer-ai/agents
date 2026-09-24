@@ -6,7 +6,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { runAgentNudge } from "@/graph/nudge";
+import { OPERATOR_EVENT_NOTE_PREFIX, runAgentNudge } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph } from "@/graph/thread-state";
@@ -64,18 +64,22 @@ let inboxDbId = 0n;
 
 function stub() {
   const messages: Array<[number, string]> = [];
+  const notes: Array<[number, string]> = [];
   const client = {
     sendMessage: async (c: number, t: string) => {
       messages.push([c, t]);
       return {};
     },
-    sendPrivateNote: async () => ({}),
+    sendPrivateNote: async (c: number, t: string) => {
+      notes.push([c, t]);
+      return {};
+    },
     getConversationLabels: async () => [],
     setConversationLabels: async () => ({}),
     toggleStatus: async () => ({}),
     sendTemplate: async () => ({}),
   } as unknown as ChatwootClient;
-  return { client, messages, makeClient: async () => client };
+  return { client, messages, notes, makeClient: async () => client };
 }
 
 async function seedConv(convId: number, contactInboxId: number) {
@@ -458,6 +462,57 @@ describe.skipIf(!dbUp)(
       expect(
         rows.map((r) => ((r.detail ?? {}) as Record<string, unknown>).outcome),
       ).toContain("taken_over");
+    }, 15_000);
+
+    // agents#818, rodada 3 de review: o mesmo portão com um evento do operador. Quem assumiu recebe
+    // o relatório como veio, em nota privada, em vez de o evento sumir como `stale`.
+    test("quem assume durante a espera recebe o evento do operador como nota", async () => {
+      const contactInboxId = 8931;
+      await seedConv(8931, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const invokeMaisVelho = await markTurnOwning(owner, appDb);
+      const s = stub();
+      const modelo = new SlowReplyModel("RESP-N", 0);
+      const nudge = runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:8931`,
+        nudge: {
+          source: "GENERIC",
+          kind: "agent_nudge",
+          framing: "operator_event",
+          text: "Entraram 120 de 400.",
+        },
+        deliverToResolved: true,
+        base: appDb,
+        deps: {
+          makeModel: () => modelo as never,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(await terminouEm(nudge, 300)).toBe(AINDA_ESPERANDO);
+      await suDb.conversation.updateMany({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 8931,
+        },
+        data: { assigneeType: "User", assigneeId: 4242, status: "open" },
+      });
+      await clearTurnOwning(owner, appDb, invokeMaisVelho);
+
+      expect(await nudge).toBe("noted");
+      expect(s.messages).toHaveLength(0);
+      expect(modelo.calls).toBe(0);
+      expect(s.notes.map(([, t]) => t)).toEqual([
+        `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
+      ]);
     }, 15_000);
 
     // "NÃO DEU PARA VERIFICAR" NÃO É "UMA PESSOA ASSUMIU" — achado da rodada 2 de review, e ele

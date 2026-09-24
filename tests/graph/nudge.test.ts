@@ -3451,6 +3451,82 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // Issue #818, review round 3: a person taking an operator's event over during the judge's call
+  // gets the report as it came; the judged relay never reaches anyone.
+  test("an operator event taken over while the judge reads becomes the person's note", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      },
+      async () => {
+        await seedConv(9871, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9871`,
+          nudge: {
+            source: "GENERIC",
+            kind: "agent_nudge",
+            framing: "operator_event",
+            text: "Entraram 120 de 400.",
+          },
+          deliverToResolved: true,
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    await suDb.conversation.updateMany({
+                      where: {
+                        tenantId,
+                        chatwootInstanceId: instanceId,
+                        chatwootConversationId: 9871,
+                      },
+                      data: {
+                        status: "open",
+                        assigneeType: "User",
+                        assigneeId: 5,
+                      },
+                    });
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Entraram 120 de 400."],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("noted");
+        expect(s.messages).toEqual([]);
+        expect(s.notes.map(([, t]) => t)).toEqual([
+          `${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`,
+        ]);
+      },
+    );
+  });
+
   // And the window inside the handoff path: the closing line is screened by the guardrail before it
   // goes out, which is a model call, so the answer taken before it is spent by the time it returns.
   // The rendezvous is the judge's own call, the same one the reply branch uses.

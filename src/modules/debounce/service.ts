@@ -90,6 +90,28 @@ export function readReactionFrom(payload: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// Whether the thread's debounce row carries a reaction right now (PR #821, review round 6). The post
+// gate asks it: a reaction that arrives while a turn runs re-arms this row with the mark, and the
+// default page the gate reads would not carry it, so the turn would post over it instead of yielding
+// to the flush it armed. A database read, so the common post pays no extra Chatwoot call.
+export async function reactionArmedOnThread(params: {
+  tenantId: bigint;
+  threadId: string;
+  base?: PrismaClient;
+}): Promise<boolean> {
+  const base = params.base ?? basePrisma;
+  const row = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    db.schedulerJob.findFirst({
+      where: {
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(params.threadId),
+      },
+      select: { payload: true },
+    }),
+  );
+  return row !== null && readReactionArmed(row.payload);
+}
+
 // Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
 //
 // UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the

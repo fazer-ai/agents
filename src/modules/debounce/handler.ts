@@ -91,6 +91,7 @@ import {
   readBurstStart,
   readDeferringSince,
   readLastMessageId,
+  reactionArmedOnThread,
   readReactionArmed,
   readReactionFrom,
   stampDeferral,
@@ -647,9 +648,24 @@ export async function coalesceAndRunTurn(
   //    posting path — is taken by `runLoadedTurn` off `claimReply` below.
   const shouldPost = async (): Promise<PostVerdict> => {
     try {
-      const latest = parseChatwootMessages(
+      const page = parseChatwootMessages(
         await client.getMessages(conversationId),
       );
+      // A REACTION THAT ARRIVED MID-TURN IS ON NO DEFAULT PAGE EITHER (PR #821, review round 6): the
+      // same catch-up read the burst was selected with, from what this turn answers, when this burst
+      // held a reaction or one re-armed the thread while the model ran. Without it the gate reads
+      // "nothing came after me" and the turn posts over the reaction its re-armed flush will answer
+      // again, two replies for one burst.
+      const latest =
+        ctx.catchUp &&
+        (ctx.catchUp.reactionArmed ||
+          (await reactionArmedOnThread({ tenantId, threadId, base })))
+          ? await withCaughtUp(client, conversationId, page, {
+              armedLast: null,
+              after: targetWatermark,
+              reactionArmed: true,
+            })
+          : page;
       // ASKED BY IDENTITY, not with the arithmetic of the page (issue #698). "A newer message
       // arrived" used to be `maxIncomingId > targetWatermark`, which reads every incoming id above
       // this turn's target as a customer still waiting. Once the selection stopped deciding by a

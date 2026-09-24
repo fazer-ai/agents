@@ -279,6 +279,31 @@ const EXPLAINED_ELSEWHERE: Record<string, string> = {
   "src/modules/flowlog/command.ts": "reason arrives through ...args.drop",
 };
 
+// The keys such a line carries that the alert does NOT print, each with why it may stay out of the
+// body. The line's cause is printed from another key; these are context for the Logs page (ids,
+// counts, measurements, the verdict an `outcome` already summarises). A key that is on no list fails
+// the fence below even when the line also carries a printed key, which is the shape the verifier
+// used to break the first version of this fence: a new cause added BESIDE `silenceUnexplained`
+// would have shipped silent, because "names at least one printed key" was already true.
+const NOT_A_CAUSE: Record<string, string> = {
+  attempt: "tts_check: which try this was; `outcome` says what was done",
+  codeRead:
+    "channel_error: whether `code` was present, which the body already shows by printing it or not",
+  command: "command: the command name; the drop's `reason` is the cause",
+  corrupted:
+    "tts_check: the line is warn only when true, so the level already says it",
+  fallbackFrom: "the model given up on; `fallbackReason` says why",
+  messageId: "an id to find the message by, never a cause",
+  mode: "tts_check: the check's configured mode, not an outcome",
+  node: "which graph node retried; `retry` is the printed flag",
+  score: "tts_check: the detector's raw number",
+  thresholdMs: "capacity: the configured threshold the wait crossed",
+  toolCalls: "how many calls ran; `toolLimitHit` is the printed flag",
+  verdict: "tts_check: the detector's label; `outcome` is the printed cause",
+  waitedMs:
+    "a duration, also in `durationMs`; the stage and its other keys say what waited",
+};
+
 async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
   for (const e of await readdir(dir, { withFileTypes: true })) {
@@ -390,5 +415,30 @@ describe("every warn and error line names what its alert prints", () => {
       }
     }
     expect(silent).toEqual([]);
+  });
+
+  test("every key such a line sets is printed or declared as context", async () => {
+    const unclassified: string[] = [];
+    const used = new Set<string>();
+    for (const file of await sourceFiles("src")) {
+      const src = await readFile(file, "utf8");
+      for (const { call, line } of flowEventCalls(src)) {
+        const level = /level:\s*([^,\n]*)/.exec(call)?.[1] ?? "";
+        if (!/"(?:warn|error)"/.test(level)) continue;
+        if (/errorMessage/.test(call)) continue;
+        for (const k of detailKeys(call) ?? []) {
+          used.add(k);
+          if (!ALERT_DETAIL_KEYS.includes(k) && !(k in NOT_A_CAUSE))
+            unclassified.push(`${file}:${line} [${k}]`);
+        }
+      }
+    }
+    expect(unclassified).toEqual([]);
+    // Both lists stay honest: a key cannot be context and printed at once, and an entry no line sets
+    // any more is removed rather than left to excuse a future key of the same name.
+    expect(
+      Object.keys(NOT_A_CAUSE).filter((k) => ALERT_DETAIL_KEYS.includes(k)),
+    ).toEqual([]);
+    expect(Object.keys(NOT_A_CAUSE).filter((k) => !used.has(k))).toEqual([]);
   });
 });

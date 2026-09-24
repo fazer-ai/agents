@@ -39,8 +39,10 @@ import {
   Textarea,
 } from "@/client/components";
 import { Markdown } from "@/client/components/Markdown";
+import { useTtsCheckInfo } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
+import { AGENTS_REPO_URL } from "@/client/lib/navigation";
 import {
   STT_DEFAULT_MODEL,
   TTS_DEFAULT_MODEL,
@@ -83,6 +85,10 @@ import {
   type ObservabilityConfig,
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
+import {
+  TTS_CHECK_MODES,
+  type TtsCheckMode,
+} from "@/modules/tts/settings-shared";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
@@ -1260,6 +1266,14 @@ export function BehaviorTab({
   onOpenPlayground,
 }: BehaviorTabProps) {
   const { t, i18n } = useTranslation();
+  // Whether this install runs the audio detector, and its default mode (issue #802).
+  const ttsCheck = useTtsCheckInfo();
+  const checkModeLabel = (m: TtsCheckMode) =>
+    m === "enforce"
+      ? t("editor.ttsCheckEnforce", "Regenerate")
+      : m === "shadow"
+        ? t("editor.ttsCheckShadow", "Record only")
+        : t("editor.ttsCheckOff", "Off");
 
   // The signature's "insert variable" helper, the same affordance the prompt editor has and for the
   // same reason: `{{nome_agente}}` is only useful to someone who knows it exists, and a chip that
@@ -2541,6 +2555,59 @@ export function BehaviorTab({
                     </div>
                   </div>
                 )}
+                <FormField
+                  label={t("editor.ttsCheckMode", "Audio check")}
+                  help={t(
+                    "editor.ttsCheckModeHelp",
+                    "A synthesized voice note sometimes comes out broken: babbling, a hum or a silent gap. The detector listens to each one before it goes out.\n\nRecord only logs the verdict and changes nothing. Regenerate synthesizes a broken one again, and sends text if it keeps failing.\n\nThe detector's thresholds were calibrated on one provider's audio: on another provider, start on Record only and check what it flags.",
+                  )}
+                  description={
+                    ttsCheck.configured ? undefined : (
+                      <>
+                        {t(
+                          "editor.ttsCheckModeUnavailable",
+                          "This install runs no audio detector (TTS_CHECK_URL).",
+                        )}{" "}
+                        <a
+                          href={`${AGENTS_REPO_URL}/blob/main/docs/tts.md#checking-the-audio-tts_check_-issue-779`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                        >
+                          {t("editor.ttsCheckModeDocs", "How to set it up")}
+                        </a>
+                      </>
+                    )
+                  }
+                >
+                  <Select
+                    value={ttsCheck.configured ? tts.checkMode : ""}
+                    disabled={!ttsCheck.configured}
+                    onChange={(e) =>
+                      setTts({
+                        ...tts,
+                        checkMode: e.target.value as TtsFormState["checkMode"],
+                      })
+                    }
+                  >
+                    <option value="">
+                      {t(
+                        "editor.ttsCheckModeDefault",
+                        "Instance default ({{mode}})",
+                        {
+                          mode: checkModeLabel(
+                            ttsCheck.configured ? ttsCheck.mode : "off",
+                          ),
+                        },
+                      )}
+                    </option>
+                    {TTS_CHECK_MODES.map((m) => (
+                      <option key={m} value={m}>
+                        {checkModeLabel(m)}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
               </>
             )}
           </Section>

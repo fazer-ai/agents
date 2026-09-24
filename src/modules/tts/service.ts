@@ -231,7 +231,13 @@ export async function synthesizeReply(
   // Synthesized ONCE per attempt from the same `speech`: a regeneration repeats the synthesis and
   // never the rewrite above, which is a billed model call whose output did not change.
   let out = await synth(1);
-  const check = params.check ?? config.ttsCheck;
+  // The deployment owns the detector; the agent may pick what the check does with it (issue #802),
+  // and one that never picked follows the deployment's mode.
+  const deployment = params.check ?? config.ttsCheck;
+  const check: TtsCheckConfig = {
+    ...deployment,
+    mode: cfg.checkMode ?? deployment.mode,
+  };
   if (check.mode === "off" || !check.url) return out;
 
   const ask = (audio: TtsResult, attempt: number) =>

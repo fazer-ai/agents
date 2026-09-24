@@ -1,5 +1,9 @@
 import type { LevelWithSilentOrString } from "pino";
 import packageInfo from "@/../package.json";
+import {
+  TTS_CHECK_MODES,
+  type TtsCheckMode,
+} from "@/modules/tts/settings-shared";
 
 const {
   NODE_ENV,
@@ -227,8 +231,13 @@ const parseHops = (raw: string | undefined, envName: string): number => {
 // inferred from anything but the URL: with no detector there is nothing to call, and with one the
 // default is `shadow`, the mode that records and never changes a send. `enforce` is the one that
 // holds a reply back, and holding a reply back is not a thing a deployment should drift into.
-export const TTS_CHECK_MODES = ["off", "shadow", "enforce"] as const;
-export type TtsCheckMode = (typeof TTS_CHECK_MODES)[number];
+//
+// The list lives in the TTS settings module because an agent can now pick one of them too (issue
+// #802), and the console reads that module; re-exported here so the deployment side keeps one name.
+export {
+  TTS_CHECK_MODES,
+  type TtsCheckMode,
+} from "@/modules/tts/settings-shared";
 
 export const parseTtsCheckMode = (
   rawMode: string | undefined,
@@ -545,8 +554,10 @@ const config = {
   // and pass the SSRF guard.
   mcpStdioEnabled: MCP_STDIO_ENABLED === "true",
   // NOTE: Corrupted-audio check for synthesized replies (issue #779, docs/tts.md "Checking the
-  // audio"). A deployment-level detector, not a per-agent setting: it is infrastructure the operator
-  // runs (an HTTP service next to this one), the same way the database is. Empty URL = off.
+  // audio"). The detector is deployment-level: it is infrastructure the operator runs (an HTTP
+  // service next to this one), the same way the database is, so its address and token stay here.
+  // Empty URL = off. `mode` is the DEFAULT for an agent that never chose one; an agent can pick its
+  // own (`settings.tts.checkMode`, issue #802), which applies only while a URL is set.
   ttsCheck: {
     url: ttsCheckUrl,
     mode: parseTtsCheckMode(TTS_CHECK_MODE, ttsCheckUrl),

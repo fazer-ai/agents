@@ -44,6 +44,12 @@ export const VOICE_SETTINGS_DEFAULTS: TtsVoiceSettings = {
   speakerBoost: null,
 };
 
+// What an audio check can do with a synthesized reply (issues #779, #802): nothing, record the
+// verdict, or hold a corrupted audio back and synthesize it again. Declared here, and not in
+// config.ts, because the console offers the choice per agent and reads this module.
+export const TTS_CHECK_MODES = ["off", "shadow", "enforce"] as const;
+export type TtsCheckMode = (typeof TTS_CHECK_MODES)[number];
+
 export interface TtsConfig extends TtsVoiceSettings {
   mode: TtsMode;
   provider: string;
@@ -63,6 +69,11 @@ export interface TtsConfig extends TtsVoiceSettings {
   normalizeModel: string | null;
   normalizeCredentialRef: string | null;
   normalizeBaseURL: string | null;
+  // The audio check for this agent's replies (issue #802). null = the deployment's `TTS_CHECK_MODE`,
+  // which is what every agent saved before this existed means, so an install behaves as it did.
+  // Honoured only while the deployment has a detector (`TTS_CHECK_URL`): with none there is nothing
+  // to call, whatever the agent says.
+  checkMode: TtsCheckMode | null;
 }
 
 export const TTS_DEFAULTS: TtsConfig = {
@@ -77,6 +88,7 @@ export const TTS_DEFAULTS: TtsConfig = {
   normalizeModel: null,
   normalizeCredentialRef: null,
   normalizeBaseURL: null,
+  checkMode: null,
   ...VOICE_SETTINGS_DEFAULTS,
 };
 

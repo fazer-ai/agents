@@ -378,6 +378,55 @@ describe.skipIf(!dbUp)("tts audio check", () => {
     await appDb.$disconnect();
   });
 
+  // Issue #802: the agent picks the mode, the deployment owns the detector. `check` here stands for
+  // the deployment (`config.ttsCheck`), and `cfg.checkMode` for the agent's own choice.
+  describe("the agent's own mode", () => {
+    const run = async (
+      agent: TtsConfig["checkMode"],
+      deployment: TtsCheckConfig,
+      answers: Array<Record<string, unknown> | "down"> = [CORRUPTED],
+    ) => {
+      const p = countingProvider();
+      const d = scriptedDetector(answers);
+      const out = await synthesizeReply({
+        tenantId,
+        cfg: { ...cfgOf(), checkMode: agent },
+        text: REPLY,
+        base: appDb,
+        deps: { fetchImpl: p.fetchImpl, checkFetchImpl: d.fetchImpl },
+        check: deployment,
+      });
+      return { out, syntheses: p.rec.calls, checks: d.rec.calls };
+    };
+
+    test("regenerate on an agent overrides a deployment that is off", async () => {
+      const r = await run("enforce", { ...CHECK, mode: "off" });
+      expect(r.out).toBeNull();
+      expect(r.syntheses).toBe(3);
+      expect(r.checks).toBe(3);
+    });
+
+    test("off on an agent overrides a deployment that regenerates", async () => {
+      const r = await run("off", { ...CHECK, mode: "enforce" });
+      expect(r.out).not.toBeNull();
+      expect(r.checks).toBe(0);
+    });
+
+    test("an agent that never chose follows the deployment", async () => {
+      const r = await run(null, { ...CHECK, mode: "enforce" }, [CLEAN]);
+      expect(r.out).not.toBeNull();
+      expect(r.checks).toBe(1);
+      expect((await run(null, { ...CHECK, mode: "off" })).checks).toBe(0);
+    });
+
+    test("with no detector, the agent's choice calls nothing and the audio goes out", async () => {
+      const r = await run("enforce", { ...CHECK, url: "", mode: "off" });
+      expect(r.out).not.toBeNull();
+      expect(r.syntheses).toBe(1);
+      expect(r.checks).toBe(0);
+    });
+  });
+
   test("off: the detector is never called", async () => {
     const p = countingProvider();
     const d = scriptedDetector([CORRUPTED]);

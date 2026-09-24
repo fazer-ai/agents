@@ -83,3 +83,16 @@ describe("shouldReplyWithAudio", () => {
     expect(shouldReplyWithAudio("preference", false, null)).toBe(false);
   });
 });
+
+// Issue #802: the agent's own audio check mode. Anything but the three reads as "the instance's".
+describe("readTtsConfig checkMode", () => {
+  test("the three modes are kept, anything else is the instance default", () => {
+    expect(readTtsConfig(undefined).checkMode).toBeNull();
+    for (const m of ["off", "shadow", "enforce"] as const) {
+      expect(readTtsConfig({ tts: { checkMode: m } }).checkMode).toBe(m);
+    }
+    for (const bad of ["Enforce", "regenerate", 1, true, ""]) {
+      expect(readTtsConfig({ tts: { checkMode: bad } }).checkMode).toBeNull();
+    }
+  });
+});

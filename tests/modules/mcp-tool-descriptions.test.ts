@@ -264,7 +264,11 @@ const SETTINGS_DESC_CEILING = 2_000;
 // history the model reads: one object and one boolean, 164 characters. Trimmed first, by 45: the
 // description says only what the name cannot (that it is on by default). Re-measured on the tree
 // that ships: 26,054.
-const SETTINGS_SCHEMA_CEILING = 26_070;
+//
+// RAISED for issue #802 by `tts.checkMode`, the audio check an agent can pick for itself: a nullable
+// enum of three, 136 characters. Trimmed first, by 22: the description says only what null means.
+// Re-measured on the tree that ships: 26,190.
+const SETTINGS_SCHEMA_CEILING = 26_205;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -669,6 +673,9 @@ describe("MCP tool descriptions", () => {
   //
   // SCHEMA RAISED by `memory.historyDates` (#755), the same 163 characters as the settings ceiling
   // above: this tree measures 60,387, so 60,403 with the same 16. No description changed.
+  //
+  // SCHEMA RAISED by `tts.checkMode` (#802), the same 136 characters as the settings ceiling above:
+  // this tree measures 60,523, so 60,539 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -678,7 +685,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_365);
-    expect(schema).toBeLessThanOrEqual(60_403);
+    expect(schema).toBeLessThanOrEqual(60_539);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

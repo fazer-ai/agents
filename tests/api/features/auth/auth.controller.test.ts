@@ -322,6 +322,27 @@ describe("authController", () => {
         signupEnabled: true,
       });
     });
+
+    // Issue #802: the editor needs to know whether the per-agent audio check can do anything, and
+    // what "the instance default" means. The address and the token never leave the server.
+    test("says whether the audio detector runs, and its default mode, and nothing else about it", async () => {
+      const original = { ...config.ttsCheck };
+      try {
+        config.ttsCheck.url = "http://detector.internal:9000";
+        config.ttsCheck.mode = "shadow";
+        config.ttsCheck.token = "detector-secret";
+        const on = (await createTestClient().auth.me.get()).data;
+        expect(on?.ttsCheck).toEqual({ configured: true, mode: "shadow" });
+        expect(JSON.stringify(on)).not.toContain("detector.internal");
+        expect(JSON.stringify(on)).not.toContain("detector-secret");
+        config.ttsCheck.url = "";
+        config.ttsCheck.mode = "off";
+        const off = (await createTestClient().auth.me.get()).data;
+        expect(off?.ttsCheck).toEqual({ configured: false, mode: "off" });
+      } finally {
+        Object.assign(config.ttsCheck, original);
+      }
+    });
   });
 
   describe("POST /auth/login with OAuth-only user", () => {

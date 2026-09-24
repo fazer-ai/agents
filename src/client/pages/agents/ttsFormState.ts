@@ -7,8 +7,10 @@ import type {
 import {
   clampVoiceSetting,
   readVoiceSettings,
+  TTS_CHECK_MODES,
   TTS_DEFAULTS,
   TTS_MODES,
+  type TtsCheckMode,
   type TtsMode,
 } from "@/modules/tts/settings-shared";
 import {
@@ -50,6 +52,9 @@ export interface TtsFormState {
   style: string;
   speed: string;
   speakerBoost: boolean | null;
+  // The audio check for this agent (issue #802). "" = the instance's default, which is stored as
+  // null so saving the tab never pins the agent to whatever the instance says today.
+  checkMode: TtsCheckMode | "";
 }
 
 function str(v: unknown): string {
@@ -100,6 +105,9 @@ export function readTtsFormState(block: unknown): TtsFormState {
     style: num(voice.style),
     speed: num(voice.speed),
     speakerBoost: voice.speakerBoost ?? null,
+    checkMode: TTS_CHECK_MODES.includes(str(tt.checkMode) as TtsCheckMode)
+      ? (str(tt.checkMode) as TtsCheckMode)
+      : "",
   };
 }
 
@@ -128,6 +136,7 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
     style: clampVoiceSetting("style", numOrNull(tts.style)),
     speed: clampVoiceSetting("speed", numOrNull(tts.speed)),
     speakerBoost: tts.speakerBoost,
+    checkMode: tts.checkMode || null,
   };
 }
 

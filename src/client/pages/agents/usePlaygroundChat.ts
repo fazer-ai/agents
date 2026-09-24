@@ -433,6 +433,9 @@ export function usePlaygroundChat(
       .agents({ id: agentId })
       .playground.threads.post();
     if (data) threadId.current = data.threadId;
+    // No thread, no turn: a call billed on a thread only the server knew is spend the session would
+    // never show. The caller's catch turns this into the error bubble.
+    if (!threadId.current) throw new Error("playground thread not allocated");
   }, [agentId]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -764,6 +767,8 @@ export function usePlaygroundChat(
         pushError();
         return;
       } finally {
+        // A read billed and then lost still belongs to the session's total.
+        await refreshSessionUsage();
         setExtracting(false);
       }
 

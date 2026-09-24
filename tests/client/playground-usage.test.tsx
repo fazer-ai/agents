@@ -161,12 +161,18 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
   };
   const THREAD = "1:playground:7:abc";
 
-  function server(opts: { failTurns: number }) {
+  function server(opts: {
+    failTurns: number;
+    failThreads?: boolean;
+    // The read is billed and then its answer is lost.
+    failExtract?: boolean;
+  }) {
     const ledger = new Map<string, PlaygroundUsage>();
     const bill = (tid: string, u: PlaygroundUsage) =>
       ledger.set(tid, addUsage(ledger.get(tid) ?? NO_USAGE, u));
     let failuresLeft = opts.failTurns;
     const sessionLists: number[] = [];
+    const turnPosts: string[] = [];
     globalThis.fetch = (async (
       input: RequestInfo | URL,
       init?: RequestInit,
@@ -199,11 +205,14 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
         return reply();
       };
       if (url.endsWith("/playground/threads"))
-        return json({ threadId: THREAD });
+        return opts.failThreads
+          ? json({ error: "down" }, 500)
+          : json({ threadId: THREAD });
       if (url.endsWith("/usage"))
         return json({ usage: ledger.get(THREAD) ?? NO_USAGE });
       if (url.includes("/playground/file/extract")) {
         bill(THREAD, READ);
+        if (opts.failExtract) return json({ error: "lost" }, 500);
         return json({
           kind: "image",
           extracted: "nota",
@@ -212,8 +221,14 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
           timing: { turnMs: 5, modelMs: 4 },
         });
       }
-      if (url.includes("/playground/file")) return turn();
-      if (url.endsWith("/playground") && method === "POST") return turn();
+      if (url.includes("/playground/file")) {
+        turnPosts.push(url);
+        return turn();
+      }
+      if (url.endsWith("/playground") && method === "POST") {
+        turnPosts.push(url);
+        return turn();
+      }
       if (url.endsWith("/playground/sessions")) {
         sessionLists.push(Date.now());
         return json({ sessions: [] });
@@ -221,7 +236,7 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
       if (url.includes("/playground/tools")) return json({ tools: [] });
       return json({});
     }) as typeof fetch;
-    return { sessionLists };
+    return { sessionLists, turnPosts };
   }
 
   async function mount() {
@@ -292,5 +307,25 @@ describe("usePlaygroundChat keeps the session total and the history honest", () 
     );
     // The thread existed since the read, but its session row only now: the history is refreshed.
     expect(srv.sessionLists.length).toBeGreaterThan(listedBefore);
+  });
+
+  test("with no thread for the session, no billed call is made", async () => {
+    const srv = server({ failTurns: 0, failThreads: true });
+    const { result } = await mount();
+    await sendText(result, "oi");
+    expect(srv.turnPosts).toEqual([]);
+    expect(result.current.turns.at(-1)?.role).toBe("error");
+  });
+
+  test("a read billed and then lost is still in the total", async () => {
+    const { act } = await import("@testing-library/react");
+    server({ failTurns: 0, failExtract: true });
+    const { result } = await mount();
+    await act(async () => {
+      await result.current.sendFile(
+        new File(["x"], "nota.png", { type: "image/png" }),
+      );
+    });
+    expect(result.current.sessionUsage).toEqual(READ);
   });
 });

@@ -218,6 +218,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // #605: two readers in one test, and the second is the first one's control. The alert-channel test
   // send must write no line the alerting path would itself route, and the tenant is minutes old, so
   // the zero and the one have to come off the same query.
+  "tests/modules/alert-channel-exclude-agents.test.ts": 1,
   "tests/modules/alert-channel-test.test.ts": 2,
   "tests/modules/channel-failure.test.ts": 1,
   // #841: the line a playground turn that failed unhandled leaves, read by the turn's own id.

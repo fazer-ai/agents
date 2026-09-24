@@ -120,7 +120,12 @@ export async function dispatchAlertsForEvent(
   await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
     const channels = await db.alertChannel.findMany({
       where: { enabled: true },
-      select: { id: true, minLevel: true, stages: true },
+      select: {
+        id: true,
+        minLevel: true,
+        stages: true,
+        excludeAgentIds: true,
+      },
     });
     if (channels.length === 0) return;
     const summary = alertSummary(ev);
@@ -129,6 +134,10 @@ export async function dispatchAlertsForEvent(
       if ((LEVEL_RANK[ch.minLevel] ?? 2) > rank) continue;
       // stage allowlist (empty = all stages).
       if (ch.stages.length > 0 && !ch.stages.includes(ev.stage)) continue;
+      // agents this channel leaves out (issue #843). A line with no agent is never excluded: the
+      // list names agents, and an unrouted or tenant-wide line belongs to none of them.
+      if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))
+        continue;
       // Coalesce a burst: bump an existing pending delivery for this (channel, stage, level),
       // else insert one. A rare race may insert two rows; the worker's window still coalesces most.
       const bumped = await db.alertDelivery.updateMany({

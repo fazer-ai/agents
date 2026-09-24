@@ -8,6 +8,7 @@
     "agentNotRunnable": "Este agente não tem um modelo executável configurado.",
     "agentObservesInboxes": "Este agente observa caixas de entrada. Remova-o como observador antes.",
     "alertChannelNotFound": "Canal de alerta não encontrado",
+    "alertChannelUnknownAgent": "Agente desconhecido: {{id}}",
     "apiKeyNotFound": "Chave de API não encontrada",
     "apiKeyRequiresSession": "Isto é feito a partir de uma sessão autenticada, não com uma API key",
     "audioTooLarge": "O arquivo de áudio é muito grande",

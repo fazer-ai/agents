@@ -29550,6 +29550,14 @@
                       "type": "string"
                     }
                   },
+                  "excludeAgentIds": {
+                    "maxItems": 200,
+                    "description": "Agent ids (BigInts as decimal strings) whose flow-log lines never alert on this channel; their lines stay in the log. Each must name an agent of this tenant.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "secretRef": {
                     "anyOf": [
                       {
@@ -29612,6 +29620,14 @@
                       "type": "string"
                     }
                   },
+                  "excludeAgentIds": {
+                    "maxItems": 200,
+                    "description": "Agent ids (BigInts as decimal strings) whose flow-log lines never alert on this channel; their lines stay in the log. Each must name an agent of this tenant.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "secretRef": {
                     "anyOf": [
                       {
@@ -29669,6 +29685,14 @@
                   },
                   "stages": {
                     "description": "Flow stages to filter on, from GET /stages; empty matches all stages.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "excludeAgentIds": {
+                    "maxItems": 200,
+                    "description": "Agent ids (BigInts as decimal strings) whose flow-log lines never alert on this channel; their lines stay in the log. Each must name an agent of this tenant.",
                     "type": "array",
                     "items": {
                       "type": "string"

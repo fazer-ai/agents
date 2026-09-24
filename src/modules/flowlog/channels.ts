@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -37,6 +38,10 @@ export interface AlertChannelDto {
   enabled: boolean;
   minLevel: string;
   stages: string[];
+  // Agents whose lines this channel never alerts on (issue #843), as decimal strings. Stored as
+  // written: an id whose agent was deleted since stays until the channel is saved without it, and
+  // matches nothing meanwhile.
+  excludeAgentIds: string[];
   // Whether an HMAC signing secret is configured (the value never leaves the vault).
   //
   // Derivable from `secretRef` below, and kept because it is the published v1 shape and the MCP
@@ -79,6 +84,7 @@ const SELECT = {
   enabled: true,
   minLevel: true,
   stages: true,
+  excludeAgentIds: true,
   secretRef: true,
   createdAt: true,
   updatedAt: true,
@@ -120,6 +126,7 @@ function toDto(
     enabled: boolean;
     minLevel: string;
     stages: string[];
+    excludeAgentIds: bigint[];
     secretRef: string | null;
     createdAt: Date;
     updatedAt: Date;
@@ -135,6 +142,7 @@ function toDto(
     enabled: row.enabled,
     minLevel: row.minLevel,
     stages: row.stages,
+    excludeAgentIds: row.excludeAgentIds.map(String),
     hasSecret: row.secretRef !== null,
     secretRef: readable,
     signingState: signingStateOf(
@@ -171,6 +179,7 @@ function auditProjection(row: {
   enabled: boolean;
   minLevel: string;
   stages: string[];
+  excludeAgentIds: bigint[];
   secretRef: string | null;
 }) {
   return {
@@ -179,6 +188,7 @@ function auditProjection(row: {
     urlMasked: maskUrl(row.url),
     minLevel: row.minLevel,
     stages: row.stages,
+    excludeAgentIds: row.excludeAgentIds.map(String),
     enabled: row.enabled,
     secretRef: readableVaultRef(row.secretRef),
     secretRefOpaque:
@@ -223,6 +233,65 @@ function assertStages(stages: string[]): string[] {
   return out;
 }
 
+// The agents a channel leaves out, checked against the tenant's own (issue #843): an id that names no
+// agent here is refused rather than stored, because a typo would otherwise leave the battery alerting
+// with the channel claiming it is excluded. Read under the caller's scope, so another tenant's agent
+// is "no such agent" too. Deduplicated, in first-seen order, like the stages.
+//
+// `kept` is what the channel already holds. Those ids pass without the lookup: an agent deleted
+// after it was excluded leaves its id behind, and refusing it would make every later save of the
+// channel fail on a field the operator never touched. Only an id being ADDED has to exist.
+async function checkExcludedAgents(
+  db: Pick<PrismaClient, "agent">,
+  ids: readonly string[],
+  kept: readonly bigint[] = [],
+): Promise<bigint[]> {
+  const out: bigint[] = [];
+  const seen = new Set<string>();
+  for (const raw of ids) {
+    const id = parseDbId(raw);
+    if (id === null) {
+      throw new AppError(
+        `unknown agent: ${raw}`,
+        400,
+        "errors.alertChannelUnknownAgent",
+        { id: raw },
+      );
+    }
+    if (!seen.has(String(id))) {
+      seen.add(String(id));
+      out.push(id);
+    }
+  }
+  const added = out.filter((id) => !kept.includes(id));
+  if (added.length === 0) return out;
+  const found = await db.agent.findMany({
+    where: { id: { in: added } },
+    select: { id: true },
+  });
+  const known = new Set(found.map((a) => a.id));
+  const missing = added.find((id) => !known.has(id));
+  if (missing !== undefined) {
+    throw new AppError(
+      `unknown agent: ${missing}`,
+      400,
+      "errors.alertChannelUnknownAgent",
+      { id: String(missing) },
+    );
+  }
+  return out;
+}
+
+export async function assertExcludedAgents(
+  ctx: TenantContext,
+  ids: readonly string[],
+  base: PrismaClient = basePrisma,
+  kept: readonly string[] = [],
+): Promise<bigint[]> {
+  const keptIds = kept.flatMap((k) => parseDbId(k) ?? []);
+  return runScopedOn(base, ctx, (db) => checkExcludedAgents(db, ids, keptIds));
+}
+
 // The one-row form of the list's batch read. It is a second round trip after the write transaction
 // rather than a read inside it, on purpose: the write already committed, and a vault read that fails
 // must not roll back a saved channel.
@@ -261,6 +330,7 @@ export const alertChannelCreateSchema = z
     url: z.string().min(1).max(2048),
     minLevel: z.enum(FLOW_LEVELS).optional(),
     stages: z.array(z.string()).optional(),
+    excludeAgentIds: z.array(z.string()).max(200).optional(),
     secretRef: z.string().min(1).max(128).nullish(),
     enabled: z.boolean().optional(),
   })
@@ -297,6 +367,12 @@ export async function createAlertChannel(
     stages: parsed.stages ?? [],
   })) as string[];
   const row = await runScopedOn(base, ctx, async (db) => {
+    // Checked in the transaction the row is written in, so an agent deleted between the check and
+    // the insert is not stored as a fresh exclusion.
+    const excludeAgentIds = await checkExcludedAgents(
+      db,
+      parsed.excludeAgentIds ?? [],
+    );
     const secretRef = parsed.secretRef
       ? await requireVaultRef(db, parsed.secretRef, "secretRef")
       : null;
@@ -308,6 +384,7 @@ export async function createAlertChannel(
         url: encryptJson(parsed.url),
         minLevel: parsed.minLevel ?? "error",
         stages,
+        excludeAgentIds,
         secretRef,
         enabled: parsed.enabled ?? true,
       },
@@ -330,6 +407,7 @@ export const alertChannelUpdateSchema = z
     url: z.string().min(1).max(2048).optional(),
     minLevel: z.enum(FLOW_LEVELS).optional(),
     stages: z.array(z.string()).optional(),
+    excludeAgentIds: z.array(z.string()).max(200).optional(),
     secretRef: z.string().min(1).max(128).nullish(),
     enabled: z.boolean().optional(),
   })
@@ -354,10 +432,12 @@ export async function updateAlertChannel(
   if (parsed.url !== undefined) data.url = encryptJson(parsed.url);
   if (parsed.minLevel !== undefined) data.minLevel = parsed.minLevel;
   if (stages !== undefined) data.stages = stages;
+  // excludeAgentIds is checked inside the transaction below, against the row it replaces.
+  const excludeAgentIds = parsed.excludeAgentIds;
   // secretRef: undefined = leave; null = clear; string = set.
   if (parsed.secretRef !== undefined) data.secretRef = parsed.secretRef;
   if (parsed.enabled !== undefined) data.enabled = parsed.enabled;
-  if (Object.keys(data).length === 0) {
+  if (Object.keys(data).length === 0 && excludeAgentIds === undefined) {
     throw new AppError(
       "no updatable fields provided",
       400,
@@ -381,6 +461,14 @@ export async function updateAlertChannel(
       where: { id },
       select: SELECT,
     });
+    // Skipped for a missing row, so a foreign id still answers 404 below and not "unknown agent".
+    if (excludeAgentIds !== undefined && current) {
+      data.excludeAgentIds = await checkExcludedAgents(
+        db,
+        excludeAgentIds,
+        current.excludeAgentIds,
+      );
+    }
     // updateMany → count 0 for a foreign/missing id under RLS → NotFound (never a cross-tenant write).
     const res = await db.alertChannel.updateMany({ where: { id }, data });
     if (res.count === 0 || !current)

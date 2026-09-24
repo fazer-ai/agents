@@ -2183,6 +2183,11 @@ model AlertChannel {
   minLevel  String   @default("error") @map("min_level")
   // Stage allowlist; empty = all stages.
   stages    String[] @default([])
+  // Agents whose lines never alert on this channel (issue #843), e.g. an evaluation battery's test
+  // agents beside production on one instance. Their lines stay in the flow log, which the battery
+  // reads; only this channel's dispatch skips them. No FK: an id whose agent is deleted matches
+  // nothing and is harmless.
+  excludeAgentIds BigInt[] @default([]) @map("exclude_agent_ids")
   // Vault ref for the HMAC signing secret (webhook type only).
   secretRef String?  @map("secret_ref")
   createdAt DateTime @default(now()) @map("created_at")

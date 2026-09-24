@@ -41,6 +41,24 @@ const labelCls = "mb-1 block font-medium text-sm text-text-primary";
 const selectCls =
   "w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none";
 
+type AgentOption = { id: string; name: string };
+
+// The whole roster, for the exclusion chips. Paged by creation so a rename elsewhere cannot move a
+// row between pages mid-walk; null when a page fails, because a partial roster would render an
+// excluded agent as a bare id and invite the operator to drop it.
+async function loadAgentOptions(): Promise<AgentOption[] | null> {
+  const out: AgentOption[] = [];
+  for (let page = 1; page <= 50; page += 1) {
+    const res = await api.api.v1.agents.get({
+      query: { orderBy: "createdAt", order: "asc", page, pageSize: 100 },
+    });
+    if (res.error || !res.data) return null;
+    for (const a of res.data.agents) out.push({ id: a.id, name: a.name });
+    if (res.data.agents.length === 0 || out.length >= res.data.total) break;
+  }
+  return out;
+}
+
 interface ChannelModalPayload {
   channel?: AlertChannel;
 }
@@ -60,6 +78,11 @@ function AlertChannelModal({
   const [url, setUrl] = useState("");
   const [minLevel, setMinLevel] = useState<"warn" | "error">("error");
   const [stages, setStages] = useState<Set<string>>(new Set());
+  // Agents whose lines never alert here (issue #843). Sent whole on every save: the server accepts
+  // an id the channel already held even when its agent is gone, so an untouched list always saves.
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [agentOptions, setAgentOptions] = useState<AgentOption[] | null>(null);
+  const [agentsFailed, setAgentsFailed] = useState(false);
   const [secretRef, setSecretRef] = useState("");
   // Whether the operator touched the picker at all. The wire needs to tell "left this alone" apart
   // from "chose this", because an untouched field is OMITTED and a sent one is obeyed — and the
@@ -98,6 +121,13 @@ function AlertChannelModal({
     // Loaded, not blanked: the save below sends `secretRef` unconditionally and the service reads a
     // null there as "clear it", so a blank field here unsigns the channel on a save that meant to
     // change the name. The URL above CAN start blank because the PATCH omits it when it is.
+    setExcluded(new Set(ch?.excludeAgentIds ?? []));
+    setAgentOptions(null);
+    setAgentsFailed(false);
+    void loadAgentOptions().then((opts) => {
+      if (opts) setAgentOptions(opts);
+      else setAgentsFailed(true);
+    });
     setSecretRef(ch?.secretRef ?? "");
     setSecretTouched(false);
     setEnabled(ch?.enabled ?? true);
@@ -111,6 +141,18 @@ function AlertChannelModal({
       else next.add(s);
       return next;
     });
+
+  const toggleExcluded = (id: string) =>
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  // Excluded ids with no agent behind them: shown, so the operator can see and drop them.
+  const staleExcluded = agentOptions
+    ? [...excluded].filter((id) => !agentOptions.some((a) => a.id === id))
+    : [];
 
   const allStagesChecked = stages.size === FLOW_STAGES.length;
   const toggleAllStages = () =>
@@ -141,6 +183,7 @@ function AlertChannelModal({
       type,
       minLevel,
       stages: allStagesChecked ? [] : [...stages],
+      excludeAgentIds: [...excluded],
       enabled,
     };
     if (secretRefChanged) body.secretRef = secretRef.trim() || null;
@@ -173,6 +216,7 @@ function AlertChannelModal({
           type,
           minLevel,
           stages: stagesArr,
+          excludeAgentIds: [...excluded],
           enabled,
         };
         if (secretRefChanged) patch.secretRef = ref;
@@ -188,6 +232,7 @@ function AlertChannelModal({
             url: url.trim(),
             minLevel,
             stages: stagesArr,
+            excludeAgentIds: [...excluded],
             secretRef: ref,
             enabled,
           })
@@ -370,6 +415,74 @@ function AlertChannelModal({
               );
             })}
           </div>
+        </fieldset>
+
+        <fieldset>
+          <legend className={labelCls}>
+            {t("alerts.excludeAgents", "Agents that never alert here")}
+          </legend>
+          <p className="mb-2 text-text-muted text-xs">
+            {t(
+              "alerts.excludeAgentsHint",
+              "Their warnings and errors still appear in Logs; only this channel skips them. Use it for test agents that share the instance with production.",
+            )}
+          </p>
+          {agentsFailed ? (
+            <p className="text-error text-xs">
+              {t(
+                "alerts.excludeAgentsLoadFailed",
+                "Could not load the agents. The current list is kept as it is.",
+              )}
+            </p>
+          ) : !agentOptions ? (
+            <p className="text-text-muted text-xs">
+              {t("common.loading", "Loading…")}
+            </p>
+          ) : agentOptions.length === 0 && staleExcluded.length === 0 ? (
+            <p className="text-text-muted text-xs">
+              {t("alerts.excludeAgentsEmpty", "No agents yet.")}
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {agentOptions.map((a) => {
+                const checked = excluded.has(a.id);
+                return (
+                  <button
+                    key={a.id}
+                    type="button"
+                    disabled={loading}
+                    aria-pressed={checked}
+                    onClick={() => toggleExcluded(a.id)}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                      {
+                        "border-accent bg-accent-soft text-text-primary":
+                          checked,
+                        "border-border text-text-secondary hover:bg-bg-hover":
+                          !checked,
+                      },
+                    )}
+                  >
+                    {a.name}
+                  </button>
+                );
+              })}
+              {staleExcluded.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={loading}
+                  aria-pressed={true}
+                  onClick={() => toggleExcluded(id)}
+                  className="rounded-full border border-accent bg-accent-soft px-2.5 py-1 text-text-primary text-xs"
+                >
+                  {t("alerts.excludedDeletedAgent", "Deleted agent #{{id}}", {
+                    id,
+                  })}
+                </button>
+              ))}
+            </div>
+          )}
         </fieldset>
 
         {type === "webhook" && (
@@ -697,6 +810,11 @@ export function AlertChannelsSection() {
                   {ch.stages.length > 0
                     ? ch.stages.map((s) => flowStageLabel(s, t)).join(", ")
                     : t("alerts.allStages", "All stages")}
+                  {ch.excludeAgentIds.length > 0 && " · "}
+                  {ch.excludeAgentIds.length > 0 &&
+                    t("alerts.excludedCount", "{{count}} agents excluded", {
+                      count: ch.excludeAgentIds.length,
+                    })}
                   {signingLabel(ch, t)}
                   {" · "}
                   {t("alerts.createdAt", "Created {{date}}", {

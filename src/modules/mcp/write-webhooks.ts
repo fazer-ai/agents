@@ -4,6 +4,7 @@ import { AppError } from "@/lib/errors";
 import { sendAlertChannelTest } from "@/modules/flowlog/channel-test";
 import {
   assertAlertChannelWritable,
+  assertExcludedAgents,
   createAlertChannel,
   deleteAlertChannel,
   listAlertChannels,
@@ -322,6 +323,7 @@ export interface AlertChannelCreateArgs {
   url_ref: string;
   min_level?: "info" | "warn" | "error";
   stages?: string[];
+  exclude_agent_ids?: string[];
   secret_ref?: string | null;
   enabled?: boolean;
   dry_run?: boolean;
@@ -357,6 +359,8 @@ export async function alertChannelCreate(
         url: urlValue.value,
         stages: args.stages ?? [],
       });
+      // the agent ids are answered the same way the apply answers them, so a typo fails here
+      await assertExcludedAgents(ctx, args.exclude_agent_ids ?? [], base);
     } catch (e) {
       return failOf(e);
     }
@@ -370,6 +374,7 @@ export async function alertChannelCreate(
         urlRef: args.url_ref,
         minLevel: args.min_level ?? "error",
         stages: args.stages ?? [],
+        excludeAgentIds: args.exclude_agent_ids ?? [],
         secretRef: args.secret_ref ?? null,
         enabled: args.enabled ?? true,
       },
@@ -386,6 +391,7 @@ export async function alertChannelCreate(
         url: url.value,
         minLevel: args.min_level,
         stages: args.stages,
+        excludeAgentIds: args.exclude_agent_ids,
         secretRef,
         enabled: args.enabled,
       },
@@ -404,6 +410,7 @@ export interface AlertChannelUpdateArgs {
   url_ref?: string;
   min_level?: "info" | "warn" | "error";
   stages?: string[];
+  exclude_agent_ids?: string[];
   secret_ref?: string | null;
   enabled?: boolean;
   dry_run?: boolean;
@@ -415,6 +422,7 @@ interface AlertChannelPatch {
   url?: string;
   minLevel?: "info" | "warn" | "error";
   stages?: string[];
+  excludeAgentIds?: string[];
   secretRef?: string | null;
   enabled?: boolean;
 }
@@ -449,6 +457,8 @@ export async function alertChannelUpdate(
   if (args.type !== undefined) nonSecret.type = args.type;
   if (args.min_level !== undefined) nonSecret.minLevel = args.min_level;
   if (args.stages !== undefined) nonSecret.stages = args.stages;
+  if (args.exclude_agent_ids !== undefined)
+    nonSecret.excludeAgentIds = args.exclude_agent_ids;
   if (args.enabled !== undefined) nonSecret.enabled = args.enabled;
   const urlRotated = args.url_ref !== undefined;
   const secretRotated = args.secret_ref !== undefined;
@@ -480,6 +490,14 @@ export async function alertChannelUpdate(
         url: urlValue,
         stages: nonSecret.stages,
       });
+      if (nonSecret.excludeAgentIds !== undefined) {
+        await assertExcludedAgents(
+          ctx,
+          nonSecret.excludeAgentIds,
+          base,
+          current.excludeAgentIds,
+        );
+      }
       return ok({
         dryRun: true,
         target,

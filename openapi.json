@@ -10450,6 +10450,10 @@
                     "type": "string",
                     "format": "binary"
                   },
+                  "threadId": {
+                    "description": "Playground thread id, shaped tenantId:playground:agentId:uuid, the file is being sent into. Absent or foreign, a fresh one is minted and returned.",
+                    "type": "string"
+                  },
                   "draft": {
                     "description": "Live, unsaved config override as a JSON string or object; its vision config wins so an unsaved credential is testable.",
                     "anyOf": [
@@ -10521,6 +10525,10 @@
                     "type": "string",
                     "format": "binary"
                   },
+                  "threadId": {
+                    "description": "Playground thread id, shaped tenantId:playground:agentId:uuid, the file is being sent into. Absent or foreign, a fresh one is minted and returned.",
+                    "type": "string"
+                  },
                   "draft": {
                     "description": "Live, unsaved config override as a JSON string or object; its vision config wins so an unsaved credential is testable.",
                     "anyOf": [
@@ -10591,6 +10599,10 @@
                     "description": "The image or document file to extract from.",
                     "type": "string",
                     "format": "binary"
+                  },
+                  "threadId": {
+                    "description": "Playground thread id, shaped tenantId:playground:agentId:uuid, the file is being sent into. Absent or foreign, a fresh one is minted and returned.",
+                    "type": "string"
                   },
                   "draft": {
                     "description": "Live, unsaved config override as a JSON string or object; its vision config wins so an unsaved credential is testable.",

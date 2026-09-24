@@ -49,6 +49,7 @@ import {
 import {
   deletePlaygroundSession,
   getPlaygroundSessionTurns,
+  getPlaygroundSessionUsage,
   listPlaygroundSessions,
 } from "@/modules/playground/sessions";
 import { listTtsOptions } from "@/modules/tts/listing";
@@ -1025,13 +1026,18 @@ export const agentsController = new Elysia({
     "/:id/playground/file/extract",
     async ({ tenantContext, params, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const b = body as { file: File; draft?: string | PlaygroundDraft };
+      const b = body as {
+        file: File;
+        threadId?: string;
+        draft?: string | PlaygroundDraft;
+      };
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundExtract({
           ctx,
           agentId: requireDbId(params.id),
           file: b.file,
+          threadId: b.threadId,
           overrides: parseDraft(b.draft),
         })),
       };
@@ -1052,6 +1058,12 @@ export const agentsController = new Elysia({
         file: t.File({
           description: "The image or document file to extract from.",
         }),
+        threadId: t.Optional(
+          t.String({
+            description:
+              "Playground thread id, shaped tenantId:playground:agentId:uuid, the file is being sent into. Absent or foreign, a fresh one is minted and returned.",
+          }),
+        ),
         draft: t.Optional(
           t.Union([t.String(), playgroundDraftSchema], {
             description:
@@ -1217,6 +1229,12 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         turns: await getPlaygroundSessionTurns(
+          ctx,
+          requireDbId(params.id),
+          params.threadId,
+        ),
+        // The session's total so far, from the ledger (issue #839).
+        usage: await getPlaygroundSessionUsage(
           ctx,
           requireDbId(params.id),
           params.threadId,

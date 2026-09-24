@@ -2406,7 +2406,15 @@
       "visionDocument": "Document reading",
       "visionImage": "Image reading"
     },
-    "untitledSession": "Untitled session"
+    "untitledSession": "Untitled session",
+    "usage": {
+      "cacheWrite": "cache write {{written}}",
+      "calls_one": "{{count}} call",
+      "calls_other": "{{count}} calls",
+      "input": "In {{input}} ({{cached}} from cache)",
+      "output": "out {{output}}",
+      "session": "Session"
+    }
   },
   "resources": {
     "deleteRefsWarning_one": "{{count}} agent uses this and will stop working if you delete it.",

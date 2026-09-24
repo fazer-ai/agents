@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { LLMResult } from "@langchain/core/outputs";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -53,6 +54,76 @@ export interface UsageRow {
 }
 
 export type UsagePersist = (row: UsageRow) => Promise<void>;
+
+// WHAT ONE TURN SPENT, summed in process for the caller that shows it (the playground, issue #839).
+//
+// The same numbers the ledger rows carry, from the same two places that write them (`UsageCapture`
+// and `recordDirectUsage`), so a turn's line and the ledger cannot disagree about a call. A
+// counter, never attribution: the tenant and thread a row is billed to still come in explicitly,
+// and the async context only answers "is someone summing this turn?". Counted only when the row is
+// on the thread being summed, so the live total and a reopened session's total (the ledger read by
+// that thread) are the same sum.
+export interface TurnUsage {
+  calls: number;
+  promptTokens: number;
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
+  completionTokens: number;
+}
+
+export function emptyTurnUsage(): TurnUsage {
+  return {
+    calls: 0,
+    promptTokens: 0,
+    cachedReadTokens: 0,
+    cacheCreationTokens: 0,
+    completionTokens: 0,
+  };
+}
+
+const turnUsageSink = new AsyncLocalStorage<{
+  threadId: string;
+  usage: TurnUsage;
+}>();
+
+// Nested sums on one thread share the outer counter and answer their own share of it: a file turn
+// sums its inline file read AND the turn it then runs, and the turn alone is what the inner call
+// reports. A new counter per level would hide the inner calls from the outer one.
+export async function sumTurnUsage<T>(
+  threadId: string,
+  fn: () => Promise<T>,
+): Promise<{ result: T; usage: TurnUsage }> {
+  const outer = turnUsageSink.getStore();
+  if (outer && outer.threadId === threadId) {
+    const before = { ...outer.usage };
+    const result = await fn();
+    const after = outer.usage;
+    return {
+      result,
+      usage: {
+        calls: after.calls - before.calls,
+        promptTokens: after.promptTokens - before.promptTokens,
+        cachedReadTokens: after.cachedReadTokens - before.cachedReadTokens,
+        cacheCreationTokens:
+          after.cacheCreationTokens - before.cacheCreationTokens,
+        completionTokens: after.completionTokens - before.completionTokens,
+      },
+    };
+  }
+  const sink = { threadId, usage: emptyTurnUsage() };
+  const result = await turnUsageSink.run(sink, fn);
+  return { result, usage: sink.usage };
+}
+
+function noteTurnUsage(row: UsageRow): void {
+  const sink = turnUsageSink.getStore();
+  if (!sink || row.threadId !== sink.threadId) return;
+  sink.usage.calls += 1;
+  sink.usage.promptTokens += row.promptTokens;
+  sink.usage.cachedReadTokens += row.cachedReadTokens;
+  sink.usage.cacheCreationTokens += row.cacheCreationTokens;
+  sink.usage.completionTokens += row.completionTokens;
+}
 
 // Every `node` the ledger can carry, against the one question a reader asking about the AGENT has to
 // settle first: did the agent take the turn this call was billed for?
@@ -296,16 +367,18 @@ export async function recordDirectUsage(
 ): Promise<void> {
   if (row.promptTokens === 0 && row.completionTokens === 0) return;
   const attr = usageAttribution(flow);
+  const usageRow: UsageRow = {
+    ...attr,
+    model: row.model,
+    node: row.node,
+    promptTokens: row.promptTokens,
+    completionTokens: row.completionTokens,
+    cachedReadTokens: row.cachedReadTokens ?? 0,
+    cacheCreationTokens: row.cacheCreationTokens ?? 0,
+  };
+  noteTurnUsage(usageRow);
   try {
-    await defaultUsagePersist(attr.base)({
-      ...attr,
-      model: row.model,
-      node: row.node,
-      promptTokens: row.promptTokens,
-      completionTokens: row.completionTokens,
-      cachedReadTokens: row.cachedReadTokens ?? 0,
-      cacheCreationTokens: row.cacheCreationTokens ?? 0,
-    });
+    await defaultUsagePersist(attr.base)(usageRow);
   } catch (err) {
     logger.warn({ err, node: row.node }, "usage: direct capture failed");
   }
@@ -418,21 +491,23 @@ export class UsageCapture extends BaseCallbackHandler {
     const model = this.runModel.get(runId) ?? this.model;
     this.runModel.delete(runId);
     if (promptTokens === 0 && completionTokens === 0) return;
+    const row: UsageRow = {
+      tenantId: this.tenantId,
+      agentId: this.agentId,
+      conversationId: this.conversationId,
+      inboxId: this.inboxId,
+      threadId: this.threadId,
+      model,
+      node: this.node,
+      source: this.source,
+      promptTokens,
+      completionTokens,
+      cachedReadTokens,
+      cacheCreationTokens,
+    };
+    noteTurnUsage(row);
     try {
-      await this.persist({
-        tenantId: this.tenantId,
-        agentId: this.agentId,
-        conversationId: this.conversationId,
-        inboxId: this.inboxId,
-        threadId: this.threadId,
-        model,
-        node: this.node,
-        source: this.source,
-        promptTokens,
-        completionTokens,
-        cachedReadTokens,
-        cacheCreationTokens,
-      });
+      await this.persist(row);
     } catch (err) {
       logger.warn({ err, threadId: this.threadId }, "llm usage capture failed");
     }

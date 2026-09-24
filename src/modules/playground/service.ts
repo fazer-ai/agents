@@ -47,6 +47,7 @@ import {
   type TraceSource,
   traceGuardrail,
 } from "@/graph/trace";
+import { sumTurnUsage, type TurnUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -187,6 +188,23 @@ export interface PlaygroundTurnResult {
   // Persisted-media ids (for in-session playback via the media endpoint).
   userMediaId?: string;
   ttsMediaId?: string;
+  // What the turn spent, as the provider reported it, over every model call it made (the agent and
+  // any guardrail, speech normalization or file read on the way): the same numbers its ledger rows
+  // carry (issue #839).
+  usage: TurnUsage;
+}
+
+// The thread a playground call runs on: the caller's when it belongs to this tenant and agent,
+// otherwise a fresh one. Resolved BEFORE the call so the usage sum and every row it counts name the
+// same thread.
+function resolvePlaygroundThread(
+  threadId: string | undefined,
+  tenantId: bigint,
+  agentId: bigint,
+): string {
+  return threadId && isValidPlaygroundThread(threadId, tenantId, agentId)
+    ? threadId
+    : newPlaygroundThreadId(tenantId, agentId);
 }
 
 // Surfaces a model/tool invocation failure to the operator with the provider's own message when
@@ -565,6 +583,20 @@ function lastAiMessageId(messages: unknown[]): string | undefined {
 export async function runPlaygroundTurn(
   params: PlaygroundTurnParams,
 ): Promise<PlaygroundTurnResult> {
+  const threadId = resolvePlaygroundThread(
+    params.threadId,
+    params.ctx.tenantId as bigint,
+    params.agentId,
+  );
+  const { result, usage } = await sumTurnUsage(threadId, () =>
+    runPlaygroundTurnOnce({ ...params, threadId }),
+  );
+  return { ...result, usage };
+}
+
+async function runPlaygroundTurnOnce(
+  params: PlaygroundTurnParams,
+): Promise<Omit<PlaygroundTurnResult, "usage">> {
   const { ctx, agentId, message } = params;
   const tenantId = ctx.tenantId as bigint;
   const base = params.base ?? basePrisma;
@@ -1017,6 +1049,8 @@ export interface PlaygroundFollowupResult {
   // The agent DID write a follow-up and the guardrail removed it. Mutually exclusive with `silent`:
   // both mean nothing is sent, and only this one has a verdict behind it.
   suppressed: boolean;
+  // What the simulated follow-up spent (see PlaygroundTurnResult.usage).
+  usage: TurnUsage;
 }
 
 // Simulate a proactive follow-up in the playground: inject the SAME inactivity nudge the scheduler
@@ -1028,6 +1062,20 @@ export interface PlaygroundFollowupResult {
 export async function runPlaygroundFollowup(
   params: PlaygroundFollowupParams,
 ): Promise<PlaygroundFollowupResult> {
+  const threadId = resolvePlaygroundThread(
+    params.threadId,
+    params.ctx.tenantId as bigint,
+    params.agentId,
+  );
+  const { result, usage } = await sumTurnUsage(threadId, () =>
+    runPlaygroundFollowupOnce({ ...params, threadId }),
+  );
+  return { ...result, usage };
+}
+
+async function runPlaygroundFollowupOnce(
+  params: PlaygroundFollowupParams,
+): Promise<Omit<PlaygroundFollowupResult, "usage">> {
   const { ctx, agentId } = params;
   const tenantId = ctx.tenantId as bigint;
   const base = params.base ?? basePrisma;
@@ -1482,6 +1530,9 @@ export interface PlaygroundExtractOnlyParams {
   ctx: TenantContext;
   agentId: bigint;
   file: File;
+  // The session the file is being sent into, so the read is billed to it (issue #839). Absent or
+  // foreign, a fresh thread is minted and returned, and the turn that follows runs on it.
+  threadId?: string;
   // Live draft (live-edit popup): its vision config overrides the saved one (test an unsaved key).
   overrides?: AgentConfigOverrides;
   base?: PrismaClient;
@@ -1494,8 +1545,18 @@ export interface PlaygroundExtractOnlyParams {
 // latency it would add before the reply).
 export async function runPlaygroundExtract(
   params: PlaygroundExtractOnlyParams,
-): Promise<{ kind: PlaygroundExtractKind; extracted: string }> {
+): Promise<{
+  kind: PlaygroundExtractKind;
+  extracted: string;
+  threadId: string;
+  usage: TurnUsage;
+}> {
   const bytes = await readFileUpload(params.file);
+  const threadId = resolvePlaygroundThread(
+    params.threadId,
+    params.ctx.tenantId as bigint,
+    params.agentId,
+  );
   // Log the read as a `vision` stage on the Logs page (source=playground). This is step 1 of the
   // two-step UI flow, so the extraction runs HERE (step 2 reuses the result and skips it).
   const flow: FlowContext = {
@@ -1503,19 +1564,25 @@ export async function runPlaygroundExtract(
     turnId: crypto.randomUUID(),
     source: "playground",
     agentId: params.agentId,
+    threadId,
     base: params.base,
   };
-  const { kind, text } = await extractPlaygroundFile({
-    ctx: params.ctx,
-    agentId: params.agentId,
-    file: bytes,
-    mimeType: params.file.type || null,
-    base: params.base,
-    deps: params.visionDeps,
-    settings: params.overrides?.settings,
-    flow,
-  });
-  return { kind, extracted: text };
+  const {
+    result: { kind, text },
+    usage,
+  } = await sumTurnUsage(threadId, () =>
+    extractPlaygroundFile({
+      ctx: params.ctx,
+      agentId: params.agentId,
+      file: bytes,
+      mimeType: params.file.type || null,
+      base: params.base,
+      deps: params.visionDeps,
+      settings: params.overrides?.settings,
+      flow,
+    }),
+  );
+  return { kind, extracted: text, threadId, usage };
 }
 
 export interface PlaygroundFileParams {
@@ -1572,6 +1639,21 @@ async function resolveVisionLabel(
 export async function runPlaygroundFileTurn(
   params: PlaygroundFileParams,
 ): Promise<PlaygroundFileResult> {
+  const threadId = resolvePlaygroundThread(
+    params.threadId,
+    params.ctx.tenantId as bigint,
+    params.agentId,
+  );
+  // The file read below and the turn after it are one turn to the operator, so one sum covers both.
+  const { result, usage } = await sumTurnUsage(threadId, () =>
+    runPlaygroundFileTurnOnce({ ...params, threadId }),
+  );
+  return { ...result, usage };
+}
+
+async function runPlaygroundFileTurnOnce(
+  params: PlaygroundFileParams & { threadId: string },
+): Promise<PlaygroundFileResult> {
   const { ctx, agentId, file } = params;
   const tenantId = ctx.tenantId as bigint;
   const base = params.base ?? basePrisma;
@@ -1595,6 +1677,7 @@ export async function runPlaygroundFileTurn(
             turnId: crypto.randomUUID(),
             source: "playground",
             agentId,
+            threadId: params.threadId,
             base,
           },
         });

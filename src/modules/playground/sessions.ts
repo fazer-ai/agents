@@ -16,6 +16,7 @@ import {
   type TraceEntry,
   type TraceSource,
 } from "@/graph/trace";
+import type { TurnUsage } from "@/graph/usage";
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -543,6 +544,41 @@ export async function getPlaygroundSessionTurns(
     }
   }
   return turns;
+}
+
+// What a session has spent so far, from the ledger (issue #839): the total a reopened session
+// shows. The live turns sum the same rows in process (`sumTurnUsage`), counted only when on this
+// thread, so the two totals are one sum read two ways. The session row existing in OUR tenant-scoped
+// table is the authorization, as in getPlaygroundSessionTurns.
+export async function getPlaygroundSessionUsage(
+  ctx: TenantContext,
+  agentId: bigint,
+  threadId: string,
+  base: PrismaClient = basePrisma,
+): Promise<TurnUsage> {
+  const tenantId = ctx.tenantId as bigint;
+  if (!isValidPlaygroundThread(threadId, tenantId, agentId)) {
+    throw new NotFoundError("session not found", "errors.sessionNotFound");
+  }
+  const agg = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.aggregate({
+      where: { tenantId, threadId, source: "playground" },
+      _count: { _all: true },
+      _sum: {
+        promptTokens: true,
+        cachedReadTokens: true,
+        cacheCreationTokens: true,
+        completionTokens: true,
+      },
+    }),
+  );
+  return {
+    calls: agg._count._all,
+    promptTokens: agg._sum.promptTokens ?? 0,
+    cachedReadTokens: agg._sum.cachedReadTokens ?? 0,
+    cacheCreationTokens: agg._sum.cacheCreationTokens ?? 0,
+    completionTokens: agg._sum.completionTokens ?? 0,
+  };
 }
 
 // Remove a session from history, thread and all — which is what the endpoint has always said it

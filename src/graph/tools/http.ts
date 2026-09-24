@@ -669,6 +669,13 @@ export function buildHttpTool(
           );
         }
         context = { ...baseContext, [CONVERSATION_REF_VAR]: minted.ref };
+        // The mint is a transaction, and the ack below asks the send fence only AFTER it has sent. So
+        // the wait the mint adds is fenced here, before anything can leave: an agent switched off,
+        // flipped to monitoring or taken over during it sends neither the ack nor the request. The ref
+        // stays minted, which costs nothing: it is stable per conversation and correlates nothing new.
+        if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
+          return refused("the run was called off before the request was sent");
+        }
         // The minted ref is the only value the name can have. The write refuses a field of that name,
         // and this covers a row that reached the table another way: every renderer reads the input
         // before the context, so a model-filled `conversation_ref` would otherwise go out instead.

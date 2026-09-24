@@ -151,6 +151,36 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
     expect(out).toContain("Could not call the tool");
     expect(acks).toEqual([]);
   });
+
+  // Review round 9: the mint is a wait, and the ack asks the send fence only after sending. An agent
+  // switched off (or taken over) while the ref was minted sends neither the ack nor the request.
+  test("a run called off while the ref is minted sends neither the ack nor the request", async () => {
+    const acks: string[] = [];
+    let wanted = true;
+    let requests = 0;
+    const tool = buildHttpTool(def({ ackMessage: "Um instante." }), {
+      resolveCredential: async () => null,
+      fetchImpl: (async () => {
+        requests += 1;
+        return new Response("{}", { status: 200 });
+      }) as unknown as typeof fetch,
+      emitAck: async (m) => {
+        acks.push(m);
+        return true;
+      },
+      stillWanted: async () => wanted,
+      conversationRef: async () => {
+        wanted = false;
+        return { ok: true as const, ref: "cr_x" };
+      },
+    });
+    const out = (await tool.invoke({
+      __wait_message: "Já vejo isso.",
+    })) as unknown as string;
+    expect(out).toContain("called off");
+    expect(acks).toEqual([]);
+    expect(requests).toBe(0);
+  });
 });
 
 describe("the minted ref is the only value the name can have (review round 1)", () => {

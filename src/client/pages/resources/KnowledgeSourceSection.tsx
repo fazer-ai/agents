@@ -78,8 +78,10 @@ export function KnowledgeSourceSection({
   baseId: string;
   // Whether this console may change the source (the Knowledge page; the agent editor only reads).
   canManage: boolean;
-  // Told whether the base has a source, which is what makes its documents read-only.
-  onSourceChange: (hasSource: boolean) => void;
+  // Told whether the base has a source, which is what makes its documents read-only, and when its
+  // last run landed (epoch ms, null when it never ran): a run adds and removes documents, so the list
+  // beside this section is stale the moment that instant moves.
+  onSourceChange: (hasSource: boolean, lastRunAt: number | null) => void;
 }) {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -94,8 +96,9 @@ export function KnowledgeSourceSection({
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  // The base this section is about right now: a read that answers for another one is dropped.
-  const current = useRef(baseId);
+  // The base this section is about right now, null once it is gone: a read that answers for another
+  // one, or for a section already closed, is dropped (docs/modals.md, the modal session).
+  const current = useRef<string | null>(baseId);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onSourceChangeRef = useRef(onSourceChange);
   onSourceChangeRef.current = onSourceChange;
@@ -116,7 +119,7 @@ export function KnowledgeSourceSection({
       const next = data.base.source ?? null;
       setLoadFailed(false);
       setSource(next);
-      onSourceChangeRef.current(next !== null);
+      onSourceChangeRef.current(next !== null, next ? lastRunTime(next) : null);
       return next;
     } catch {
       if (current.current === asked) setLoadFailed(true);
@@ -137,9 +140,12 @@ export function KnowledgeSourceSection({
       stopPolling();
       setSyncing(true);
       let tries = 0;
+      const asked = current.current;
       const tick = async () => {
         tries += 1;
         const next = await load();
+        // Closed or moved to another base while this read was out: nothing to keep polling for.
+        if (current.current !== asked) return;
         const ran = next ? lastRunTime(next) : null;
         if (
           next === null ||
@@ -164,6 +170,7 @@ export function KnowledgeSourceSection({
     setFormError(null);
     void load();
     return () => {
+      current.current = null;
       if (pollTimer.current) clearTimeout(pollTimer.current);
       pollTimer.current = null;
     };

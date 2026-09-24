@@ -38,6 +38,8 @@ let source: Source | null = null;
 const calls: Array<{ method: string; url: string; body: unknown }> = [];
 let putAnswer: { status: number; body: unknown } | null = null;
 let docs: Record<string, unknown>[] = [];
+// When set, the base read waits on it: a response still out when the section closes.
+let baseGate: Promise<void> | null = null;
 
 const realFetch = globalThis.fetch;
 
@@ -87,6 +89,7 @@ function installFetchStub() {
       return json({ documents: docs, embeddingBlock: null, nextCursor: null });
     }
     if (/\/knowledge\/bases\/[^/]+$/.test(url) && method === "GET") {
+      if (baseGate) await baseGate;
       return json({
         base: { id: "b1", name: "Base", source },
       });
@@ -166,6 +169,7 @@ beforeEach(() => {
   calls.length = 0;
   putAnswer = null;
   docs = [];
+  baseGate = null;
   i18n.changeLanguage("en");
   installFetchStub();
 });
@@ -381,6 +385,46 @@ describe("the help center source section", () => {
     expect(hasSource).toBe(false);
   });
 
+  test("an answer that lands after the section closed is not reported", async () => {
+    source = { ...FAILED_RUN };
+    let open: () => void = () => {};
+    baseGate = new Promise((r) => {
+      open = r;
+    });
+    renderSection();
+    await waitFor(() =>
+      expect(sent("GET", "/knowledge/bases/b1").length).toBe(1),
+    );
+    cleanup();
+    open();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hasSource).toBeNull();
+  });
+
+  test("closing the section while a re-read is out stops the polling there", async () => {
+    source = { ...FAILED_RUN };
+    renderSection();
+    await screen.findByText("https://ajuda.example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    await waitFor(() => expect(sent("POST", "/source/sync").length).toBe(1));
+    // The first re-read is held open, and the section closes while it is out.
+    let open: () => void = () => {};
+    baseGate = new Promise((r) => {
+      open = r;
+    });
+    const before = sent("GET", "/knowledge/bases/b1").length;
+    await waitFor(
+      () => expect(sent("GET", "/knowledge/bases/b1").length).toBe(before + 1),
+      { timeout: 5_000 },
+    );
+    cleanup();
+    baseGate = null;
+    open();
+    // Past the next tick: nothing is left to ask about.
+    await new Promise((r) => setTimeout(r, 4_000));
+    expect(sent("GET", "/knowledge/bases/b1").length).toBe(before + 1);
+  }, 15_000);
+
   test("a read-only surface shows the source and offers no action", async () => {
     source = { ...FAILED_RUN };
     renderSection(false);
@@ -553,4 +597,26 @@ describe("a synced document in the documents list", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(docReads()).toBe(before + 1);
   });
+
+  test("a sync that lands re-reads the list, so a new article shows up", async () => {
+    source = { ...FAILED_RUN };
+    docs = [SYNCED, CURATED];
+    await openList();
+    await screen.findByText("https://ajuda.example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+    await waitFor(() => expect(sent("POST", "/source/sync").length).toBe(1));
+    // The run brings an article the list never had; no per-document event can insert it.
+    docs = [
+      SYNCED,
+      { ...SYNCED, id: "d3", title: "Artigo novo", externalId: "78" },
+      CURATED,
+    ];
+    source = {
+      ...FAILED_RUN,
+      lastSyncAt: "2026-09-20T10:05:00.000Z",
+      lastStatus: "ok",
+      lastMessage: "3 articles",
+    };
+    await screen.findByText("Artigo novo", undefined, { timeout: 6_000 });
+  }, 10_000);
 });

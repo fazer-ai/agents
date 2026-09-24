@@ -154,9 +154,13 @@ export function useKnowledgeManager(opts: {
   // Whether the open base mirrors a help center (issue #798): its synced documents are then the
   // source's to change, and the API refuses an edit or a delete with a 409.
   const [docsHaveSource, setDocsHaveSource] = useState(false);
-  // The last answer about it for the open base, null until the section has read one: only a CHANGE
-  // (a source set or removed from here) makes the documents list worth reading again.
-  const docsSourceKnown = useRef<boolean | null>(null);
+  // The last answer about it for the open base, and when its last run landed; null until the section
+  // has read one. Only a CHANGE (a source set or removed from here, a run that landed) makes the
+  // documents list worth reading again: a run adds and removes documents, which the per-document
+  // events cannot do to a list.
+  const docsSourceKnown = useRef<{ has: boolean; ran: number | null } | null>(
+    null,
+  );
   // Add-content is opened from the documents modal's "+Adicionar" button and STACKS on top of it
   // (both live together, but the add form opens over the list instead of replacing it).
   const addContentModal = useModalController<BaseRef>();
@@ -1506,13 +1510,17 @@ export function useKnowledgeManager(opts: {
             <KnowledgeSourceSection
               baseId={docsModal.payload.id}
               canManage={opts.allowDocumentEdits === true}
-              onSourceChange={(has) => {
+              onSourceChange={(has, ran) => {
                 const before = docsSourceKnown.current;
-                docsSourceKnown.current = has;
+                docsSourceKnown.current = { has, ran };
                 setDocsHaveSource(has);
-                // Removing the source turns the synced documents back into ordinary ones, and
-                // setting it may adopt some: either way the list's own answer is now stale.
-                if (before !== null && before !== has && docsModal.payload) {
+                // Removing the source turns the synced documents back into ordinary ones, setting it
+                // may adopt some, and a run adds and removes them: the list's own answer is stale.
+                if (
+                  before !== null &&
+                  (before.has !== has || before.ran !== ran) &&
+                  docsModal.payload
+                ) {
                   void reloadDocs(docsModal.payload.id);
                 }
               }}

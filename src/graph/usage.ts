@@ -74,6 +74,9 @@ export interface TurnUsage {
   cachedReadTokens: number;
   cacheCreationTokens: number;
   completionTokens: number;
+  // The calls by the step that made them, keyed by the ledger's `node` (issue #858): the detail the
+  // screens show, so "3 calls" says which three. A row with no node is the agent's (#316).
+  byNode: Record<string, number>;
 }
 
 export function emptyTurnUsage(): TurnUsage {
@@ -83,7 +86,36 @@ export function emptyTurnUsage(): TurnUsage {
     cachedReadTokens: 0,
     cacheCreationTokens: 0,
     completionTokens: 0,
+    byNode: {},
   };
+}
+
+// The node a row is counted under on screen: a row from before the column was always written is the
+// agent's, the same reading `NON_AGENT_TURN_NODES` gives it.
+export function usageNode(node: string | null): string {
+  return node ?? "agent";
+}
+
+// One ledger group (a `groupBy` bucket) added into a running usage, so every reader folds rows the
+// same way.
+export function addUsageGroup(
+  into: TurnUsage,
+  g: {
+    node: string | null;
+    calls: number;
+    promptTokens: number | null;
+    cachedReadTokens: number | null;
+    cacheCreationTokens: number | null;
+    completionTokens: number | null;
+  },
+): void {
+  into.calls += g.calls;
+  into.promptTokens += g.promptTokens ?? 0;
+  into.cachedReadTokens += g.cachedReadTokens ?? 0;
+  into.cacheCreationTokens += g.cacheCreationTokens ?? 0;
+  into.completionTokens += g.completionTokens ?? 0;
+  const node = usageNode(g.node);
+  into.byNode[node] = (into.byNode[node] ?? 0) + g.calls;
 }
 
 // How long the turn took and how much of that was spent waiting on a model. Kept beside the usage
@@ -113,7 +145,7 @@ export async function sumTurnUsage<T>(
   const startedAt = performance.now();
   const outer = turnUsageSink.getStore();
   if (outer && outer.threadId === threadId) {
-    const before = { ...outer.usage };
+    const before = { ...outer.usage, byNode: { ...outer.usage.byNode } };
     const modelBefore = outer.modelMs;
     const result = await fn();
     const after = outer.usage;
@@ -130,6 +162,11 @@ export async function sumTurnUsage<T>(
         cacheCreationTokens:
           after.cacheCreationTokens - before.cacheCreationTokens,
         completionTokens: after.completionTokens - before.completionTokens,
+        byNode: Object.fromEntries(
+          Object.entries(after.byNode)
+            .map(([n, c]) => [n, c - (before.byNode[n] ?? 0)] as const)
+            .filter(([, c]) => c > 0),
+        ),
       },
     };
   }
@@ -154,6 +191,8 @@ function noteTurnUsage(row: UsageRow): void {
   sink.usage.cachedReadTokens += row.cachedReadTokens;
   sink.usage.cacheCreationTokens += row.cacheCreationTokens;
   sink.usage.completionTokens += row.completionTokens;
+  const node = usageNode(row.node);
+  sink.usage.byNode[node] = (sink.usage.byNode[node] ?? 0) + 1;
 }
 
 // Every `node` the ledger can carry, against the one question a reader asking about the AGENT has to

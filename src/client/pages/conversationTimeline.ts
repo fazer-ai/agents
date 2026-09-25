@@ -68,6 +68,9 @@ export type Timeline = {
   followUpBadges: Map<string, FollowUpBadgeInfo>;
   // the key of the LAST (latest) follow-up bubble — where the "sequence complete" line anchors (item 19).
   lastFollowUpKey: string | null;
+  // message key → the turn whose usage sits at the foot of that bubble (issue #858): the last loaded
+  // message among the ones the turn created.
+  usageOnMessage: Map<string, TurnUsageEntry>;
 };
 
 export function messageKey(m: Message, i: number): string {
@@ -174,11 +177,30 @@ export function buildTimeline(
       entry: e,
     });
   });
-  // What each turn spent (issue #853), at the time of its last billed call. While older messages are
-  // still to page in, a turn older than the oldest loaded message waits for them: its line would
-  // otherwise stack above the first bubble, far from the exchange it belongs to. With the whole
-  // thread loaded every line shows, including a turn that opened the conversation (an event, a
-  // follow-up) and so ran before its own first message.
+  // What each turn spent (issues #853 and #858). It sits at the foot of the last message the turn
+  // created that is on screen, and only a turn with none keeps a line of its own in the timeline, at
+  // the time of its last billed call: a silent turn, a turn whose messages are not loaded, a turn
+  // from before its messages were recorded. Dropping those would leave the header's total with
+  // parts the screen no longer shows.
+  //
+  // While older messages are still to page in, a line older than the oldest loaded message waits for
+  // them: it would otherwise stack above the first bubble, far from the exchange it belongs to. With
+  // the whole thread loaded every line shows, including a turn that opened the conversation (an
+  // event, a follow-up) and so ran before its own first message.
+  const keyById = new Map<number, string>();
+  messages.forEach((m, i) => {
+    if (m.id != null) keyById.set(m.id, messageKey(m, i));
+  });
+  const usageOnMessage = new Map<string, TurnUsageEntry>();
+  const unplaced: TurnUsageEntry[] = [];
+  for (const u of turnUsage) {
+    const key = [...u.messageIds]
+      .reverse()
+      .map((id) => keyById.get(id))
+      .find((k) => k !== undefined);
+    if (key && !usageOnMessage.has(key)) usageOnMessage.set(key, u);
+    else unplaced.push(u);
+  }
   const oldest = messages.reduce<number | null>(
     (min, m) =>
       m.createdAt == null
@@ -188,7 +210,7 @@ export function buildTimeline(
           : Math.min(min, m.createdAt * 1000),
     null,
   );
-  turnUsage.forEach((u, i) => {
+  unplaced.forEach((u, i) => {
     const at = Date.parse(u.at);
     if (olderPending && oldest !== null && at < oldest) return;
     items.push({
@@ -200,5 +222,5 @@ export function buildTimeline(
     });
   });
   items.sort((a, b) => a.at - b.at || a.seq - b.seq);
-  return { items, followUpBadges, lastFollowUpKey };
+  return { items, followUpBadges, lastFollowUpKey, usageOnMessage };
 }

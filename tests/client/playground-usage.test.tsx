@@ -3,7 +3,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 import i18next from "i18next";
-import { UsageLine, usageText } from "@/client/components/TokenUsage";
+import {
+  UsageFigure,
+  usageDetail,
+  usageFigureText,
+} from "@/client/components/TokenUsage";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import {
@@ -13,9 +17,10 @@ import {
   type PlaygroundUsage,
 } from "@/client/pages/agents/usePlaygroundChat";
 
-// Issue #839: what a playground turn spent, in the words the operator reads. The rule the line
-// carries is the one from #706: the cached share is always said, as a PART of the input (never
-// subtracted from it, never left out), and a cache write only when there was one.
+// Issues #839 and #858: what a playground turn spent, in the words the operator reads. One figure is
+// always on screen, the input tokens; the rest is in the popover. The rule the detail carries is the
+// one from #706: the cached share is always said, as a PART of the input (never subtracted from it,
+// never left out), and a cache write only when there was one.
 
 afterEach(cleanup);
 
@@ -29,7 +34,7 @@ async function tIn(lng: "en" | "pt-BR") {
     },
     interpolation: { escapeValue: false },
   });
-  return i.t.bind(i) as unknown as Parameters<typeof usageText>[0];
+  return i.t.bind(i) as unknown as Parameters<typeof usageDetail>[0];
 }
 
 const TURN: PlaygroundUsage = {
@@ -38,38 +43,87 @@ const TURN: PlaygroundUsage = {
   cachedReadTokens: 1024,
   cacheCreationTokens: 0,
   completionTokens: 100,
+  byNode: { agent: 1, guardrail: 1 },
 };
 
-describe("usageText", () => {
-  test("the input carries its cached share, the output and the calls follow", async () => {
-    expect(usageText(await tIn("en"), "en", TURN)).toBe(
-      "In 1,500 (1,024 from cache) · out 100 · 2 calls",
+describe("the figure on screen", () => {
+  test("is the input tokens, compact", async () => {
+    expect(usageFigureText(await tIn("en"), "en", TURN)).toBe(
+      "1.5K input tokens",
     );
-    expect(usageText(await tIn("pt-BR"), "pt-BR", TURN)).toBe(
-      "Entrada 1.500 (1.024 do cache) · saída 100 · 2 chamadas",
-    );
+    // The compact form's space is ICU's no-break space; the words are ours.
+    expect(
+      usageFigureText(await tIn("pt-BR"), "pt-BR", {
+        ...TURN,
+        promptTokens: 12345,
+      }).replace(/\u00a0/g, " "),
+    ).toBe("12,3 mil tokens de entrada");
+  });
+});
+
+describe("the detail", () => {
+  test("the input carries its cached share, then the output and the calls by step", async () => {
+    const en = usageDetail(await tIn("en"), "en", TURN);
+    expect(en).toMatchObject({
+      input: "1,500",
+      cached: "1,024",
+      cachedPct: 68,
+      cacheWrite: null,
+      output: "100",
+      calls: 2,
+    });
+    expect(en.steps.map((s) => [s.label, s.calls])).toEqual([
+      ["agent", 1],
+      ["guardrail check", 1],
+    ]);
+    const pt = usageDetail(await tIn("pt-BR"), "pt-BR", TURN);
+    expect([pt.input, pt.cached, pt.output]).toEqual(["1.500", "1.024", "100"]);
+    expect(pt.steps.map((s) => s.label)).toEqual([
+      "agente",
+      "verificação de guardrails",
+    ]);
   });
 
-  test("a turn with nothing from cache still says so, rather than showing the input alone", async () => {
-    expect(
-      usageText(await tIn("en"), "en", { ...TURN, cachedReadTokens: 0 }),
-    ).toBe("In 1,500 (0 from cache) · out 100 · 2 calls");
+  test("a turn with nothing from cache still says so, as a zero share", async () => {
+    const d = usageDetail(await tIn("en"), "en", {
+      ...TURN,
+      cachedReadTokens: 0,
+    });
+    expect([d.cached, d.cachedPct]).toEqual(["0", 0]);
   });
 
   test("a cache write shows only when there was one", async () => {
     expect(
-      usageText(await tIn("pt-BR"), "pt-BR", {
+      usageDetail(await tIn("pt-BR"), "pt-BR", {
+        ...TURN,
+        cacheCreationTokens: 256,
+      }).cacheWrite,
+    ).toBe("256");
+    expect(usageDetail(await tIn("en"), "en", TURN).cacheWrite).toBeNull();
+  });
+
+  test("a step the words do not know is shown by its name", async () => {
+    expect(
+      usageDetail(await tIn("en"), "en", {
         ...TURN,
         calls: 1,
-        cacheCreationTokens: 256,
-      }),
-    ).toBe(
-      "Entrada 1.500 (1.024 do cache) · escrita no cache 256 · saída 100 · 1 chamada",
-    );
+        byNode: { brand_new_step: 1 },
+      }).steps.map((s) => s.label),
+    ).toEqual(["brand_new_step"]);
+  });
+
+  test("the busiest step comes first", async () => {
+    expect(
+      usageDetail(await tIn("en"), "en", {
+        ...TURN,
+        calls: 4,
+        byNode: { agent: 1, guardrail: 3 },
+      }).steps.map((s) => s.node),
+    ).toEqual(["guardrail", "agent"]);
   });
 });
 
-describe("usageText with timing", () => {
+describe("the detail with timing", () => {
   // The unit's spacing is ICU locale data, not ours: macOS writes "3,4s" in pt-BR and the CI's
   // Linux writes "3,4 s". The numbers and the rounding are ours, so those are fixed here.
   const sec = (locale: string, v: number) =>
@@ -81,28 +135,46 @@ describe("usageText with timing", () => {
       maximumFractionDigits: 1,
     }).format(v);
 
-  test("a live turn says how long it took and how much was model time", async () => {
+  test("a timed turn says how long it took and how much of it was the model", async () => {
     const timing = { turnMs: 3420, modelMs: 2910 };
-    expect(usageText(await tIn("en"), "en", TURN, timing)).toBe(
-      `In 1,500 (1,024 from cache) · out 100 · 2 calls · ${sec("en", 3.4)} (model ${sec("en", 2.9)})`,
-    );
-    expect(usageText(await tIn("pt-BR"), "pt-BR", TURN, timing)).toBe(
-      `Entrada 1.500 (1.024 do cache) · saída 100 · 2 chamadas · ${sec("pt-BR", 3.4)} (modelo ${sec("pt-BR", 2.9)})`,
-    );
+    expect(usageDetail(await tIn("en"), "en", TURN, timing)).toMatchObject({
+      turn: sec("en", 3.4),
+      model: sec("en", 2.9),
+      modelPct: 85,
+    });
+    const pt = usageDetail(await tIn("pt-BR"), "pt-BR", TURN, timing);
+    expect([pt.turn, pt.model]).toEqual([sec("pt-BR", 3.4), sec("pt-BR", 2.9)]);
     expect(sec("pt-BR", 3.4)).toStartWith("3,4");
+  });
+
+  test("an unknown time is left out, never shown as zero", async () => {
+    expect(
+      usageDetail(await tIn("en"), "en", TURN, { turnMs: null, modelMs: null }),
+    ).toMatchObject({ turn: null, model: null, modelPct: null });
+    expect(
+      usageDetail(await tIn("en"), "en", TURN, { turnMs: 2000, modelMs: null }),
+    ).toMatchObject({ turn: sec("en", 2), model: null, modelPct: null });
+  });
+
+  test("the model's share never passes the whole", async () => {
+    // Calls the turn awaited in parallel can sum past its wall time.
+    expect(
+      usageDetail(await tIn("en"), "en", TURN, { turnMs: 1000, modelMs: 1500 })
+        .modelPct,
+    ).toBe(100);
   });
 });
 
-describe("UsageLine", () => {
+describe("UsageFigure", () => {
   test("a turn that made no model call draws nothing", () => {
-    render(<UsageLine usage={NO_USAGE} />);
+    render(<UsageFigure usage={NO_USAGE} />);
     expect(screen.queryByTestId("token-usage")).toBeNull();
-    render(<UsageLine usage={undefined} />);
+    render(<UsageFigure usage={undefined} />);
     expect(screen.queryByTestId("token-usage")).toBeNull();
   });
 
   test("the session total names itself", () => {
-    render(<UsageLine usage={TURN} label="Session" />);
+    render(<UsageFigure usage={TURN} label="Session" />);
     expect(screen.getByTestId("token-usage").textContent).toStartWith(
       "Session: ",
     );
@@ -138,6 +210,7 @@ describe("the turn keeps its usage", () => {
       cachedReadTokens: 2048,
       cacheCreationTokens: 0,
       completionTokens: 200,
+      byNode: { agent: 2, guardrail: 2 },
     });
   });
 });

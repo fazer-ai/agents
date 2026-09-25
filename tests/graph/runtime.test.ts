@@ -2256,6 +2256,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       cachedReadTokens: 1024,
       cacheCreationTokens: 0,
       completionTokens: 100,
+      byNode: { agent: 2 },
     });
     expect(usage.turns.map((t) => t.usage)).toEqual(
       spends.map((s) => ({
@@ -2264,6 +2265,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         cachedReadTokens: s.cached,
         cacheCreationTokens: 0,
         completionTokens: s.output,
+        byNode: { agent: 1 },
       })),
     );
     // The line's turn is the turn the activity trail and the Langfuse trace name: the same id the

@@ -56,7 +56,7 @@ import {
   useToast,
 } from "@/client/components";
 import { MonitoringBadge } from "@/client/components/MonitoringBadge";
-import { UsageLine } from "@/client/components/TokenUsage";
+import { UsageFigure } from "@/client/components/TokenUsage";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
@@ -178,10 +178,14 @@ function MessageBubble({
   followUpBadge,
   quotedText,
   quotedLabel,
+  turnUsage,
 }: {
   m: Message;
   convId: string;
   followUpBadge?: FollowUpBadgeInfo;
+  // What the turn that created this message spent (issue #858), when this is the last of its
+  // messages on screen.
+  turnUsage?: TurnUsageEntry;
   // The quoted/replied-to message's preview (item 11): a short snippet + who said it. null when this
   // message is not a reply, or the referenced message isn't in the loaded window.
   quotedText?: string | null;
@@ -206,6 +210,15 @@ function MessageBubble({
         <p className="whitespace-pre-wrap text-sm text-text-primary">
           {m.content}
         </p>
+        {(when || turnUsage) && (
+          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px] text-text-muted">
+            {when && <span>{when}</span>}
+            {when && turnUsage && <span aria-hidden="true">·</span>}
+            {turnUsage && (
+              <UsageFigure usage={turnUsage.usage} timing={turnUsage} />
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -279,15 +292,23 @@ function MessageBubble({
         {followUpBadge && (
           <FollowUpBadge badge={followUpBadge} outgoing={outgoing} />
         )}
-        {when && (
-          <p
+        {(when || turnUsage) && (
+          <div
             className={cn(
-              "mt-1 text-[10px]",
+              "mt-1 flex flex-wrap items-center gap-x-1.5 text-[10px]",
               outgoing ? "text-accent-foreground/70" : "text-text-muted",
             )}
           >
-            {when}
-          </p>
+            {when && <span>{when}</span>}
+            {when && turnUsage && <span aria-hidden="true">·</span>}
+            {turnUsage && (
+              <UsageFigure
+                usage={turnUsage.usage}
+                timing={turnUsage}
+                tone={outgoing ? "onAccent" : "muted"}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -356,7 +377,8 @@ const MessageBubbleMemo = memo(
     a.followUpBadge?.integrationName === b.followUpBadge?.integrationName &&
     (a.followUpBadge == null) === (b.followUpBadge == null) &&
     a.quotedText === b.quotedText &&
-    a.quotedLabel === b.quotedLabel,
+    a.quotedLabel === b.quotedLabel &&
+    a.turnUsage === b.turnUsage,
 );
 
 // Safety net: a live indicator that never received its "finished" event (e.g. the socket dropped
@@ -398,8 +420,9 @@ type ActivityState = {
   delivered?: boolean | null;
 } | null;
 
-// What one agent turn spent, as the provider reported it (issue #853): the playground's per-turn line,
-// drawn in the timeline at the time of the turn's last billed call.
+// What one agent turn spent, for a turn with no message of its own on screen (issue #858): a silent
+// turn, one whose messages are not loaded, one from before its messages were recorded. Drawn in the
+// timeline at the time of its last billed call, in the same form the bubbles carry.
 function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
   return (
     <div
@@ -407,7 +430,7 @@ function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
       data-testid="turn-usage"
     >
       <Gauge className="h-3 w-3 shrink-0 text-text-muted" aria-hidden="true" />
-      <UsageLine usage={turn.usage} />
+      <UsageFigure usage={turn.usage} timing={turn} />
     </div>
   );
 }
@@ -1767,9 +1790,13 @@ export function ConversationDetailPage() {
                   </p>
                 )}
                 <div className="mt-1" data-testid="conversation-usage">
-                  <UsageLine
+                  <UsageFigure
                     usage={conv.usage.total}
                     label={t("conversation.usage.total", "Tokens")}
+                    title={t(
+                      "conversation.usage.totalTitle",
+                      "This conversation's usage",
+                    )}
                   />
                 </div>
               </div>
@@ -2093,6 +2120,7 @@ export function ConversationDetailPage() {
                           quotedText={quotedText}
                           quotedLabel={quotedLabel}
                           followUpBadge={timeline.followUpBadges.get(item.key)}
+                          turnUsage={timeline.usageOnMessage.get(item.key)}
                         />
                         {followUpComplete &&
                           item.key === timeline.lastFollowUpKey && (

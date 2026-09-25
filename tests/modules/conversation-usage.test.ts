@@ -235,6 +235,13 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
       cachedReadTokens: 600,
       cacheCreationTokens: 2500,
       completionTokens: 375,
+      byNode: {
+        agent: 2,
+        guardrail: 1,
+        vision: 1,
+        tts_normalize: 1,
+        memory_compact: 1,
+      },
     });
     expect(usage.turns).toEqual([
       {
@@ -247,7 +254,12 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           cachedReadTokens: 600,
           cacheCreationTokens: 0,
           completionTokens: 75,
+          byNode: { agent: 1, guardrail: 1, vision: 1 },
         },
+        // No closing line was written for these seeded turns, and no call was timed.
+        messageIds: [],
+        turnMs: null,
+        modelMs: null,
       },
       {
         turnId: "tB",
@@ -258,7 +270,11 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           cachedReadTokens: 0,
           cacheCreationTokens: 2500,
           completionTokens: 200,
+          byNode: { agent: 1, tts_normalize: 1 },
         },
+        messageIds: [],
+        turnMs: null,
+        modelMs: null,
       },
     ]);
     // Positive control for the exclusions above: the rows left out are there, and each is read
@@ -274,6 +290,47 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
     const usage = await usageOf(conv.id);
     expect(usage.total.calls).toBe(0);
     expect(usage.turns).toEqual([]);
+  });
+
+  // Issue #858: a turn is hung on the messages its closing line names (#855), and the line gives
+  // its wall time; a line that is not a closing one (no turnMs) names nothing.
+  test("a turn carries the message ids and the time its closing line recorded", async () => {
+    const conv = await newConversation();
+    await bill({
+      conversationId: conv.id,
+      turnId: "tClosed",
+      node: "agent",
+      input: 100,
+      output: 10,
+      at: "2026-09-25T14:00:00Z",
+    });
+    await bill({
+      conversationId: conv.id,
+      turnId: "tOpen",
+      node: "agent",
+      input: 100,
+      output: 10,
+      at: "2026-09-25T14:01:00Z",
+    });
+    const line = (turnId: string, detail: Record<string, unknown>) =>
+      suDb.executionLog.create({
+        data: {
+          tenantId,
+          turnId,
+          conversationId: conv.id,
+          stage: "generate",
+          source: "inbox",
+          detail: detail as never,
+        },
+      });
+    await line("tClosed", { turnMs: 4200, sentMessageIds: [501, 502, "x"] });
+    await line("tOpen", { sentMessageIds: [900] });
+    const usage = await usageOf(conv.id);
+    const byTurn = Object.fromEntries(usage.turns.map((t) => [t.turnId, t]));
+    expect(byTurn.tClosed?.messageIds).toEqual([501, 502]);
+    expect(byTurn.tClosed?.turnMs).toBe(4200);
+    expect(byTurn.tOpen?.messageIds).toEqual([]);
+    expect(byTurn.tOpen?.turnMs).toBeNull();
   });
 
   test("the observer's calls are billed to the conversation it watched", async () => {

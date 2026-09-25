@@ -16,7 +16,7 @@ import {
   type TraceEntry,
   type TraceSource,
 } from "@/graph/trace";
-import type { TurnUsage } from "@/graph/usage";
+import { addUsageGroup, emptyTurnUsage, type TurnUsage } from "@/graph/usage";
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -478,7 +478,7 @@ async function usageByTurn(
   const tenantId = ctx.tenantId as bigint;
   const groups = await runScopedOn(base, ctx, (db) =>
     db.llmUsage.groupBy({
-      by: ["turnId"],
+      by: ["turnId", "node"],
       where: {
         tenantId,
         threadId,
@@ -497,13 +497,16 @@ async function usageByTurn(
   const out = new Map<string, TurnUsage>();
   for (const g of groups) {
     if (!g.turnId) continue;
-    out.set(g.turnId, {
+    const usage = out.get(g.turnId) ?? emptyTurnUsage();
+    addUsageGroup(usage, {
+      node: g.node,
       calls: g._count._all,
-      promptTokens: g._sum.promptTokens ?? 0,
-      cachedReadTokens: g._sum.cachedReadTokens ?? 0,
-      cacheCreationTokens: g._sum.cacheCreationTokens ?? 0,
-      completionTokens: g._sum.completionTokens ?? 0,
+      promptTokens: g._sum.promptTokens,
+      cachedReadTokens: g._sum.cachedReadTokens,
+      cacheCreationTokens: g._sum.cacheCreationTokens,
+      completionTokens: g._sum.completionTokens,
     });
+    out.set(g.turnId, usage);
   }
   return out;
 }
@@ -669,8 +672,10 @@ export async function getPlaygroundSessionUsage(
   if (!isValidPlaygroundThread(threadId, tenantId, agentId)) {
     throw new NotFoundError("session not found", "errors.sessionNotFound");
   }
-  const agg = await runScopedOn(base, ctx, (db) =>
-    db.llmUsage.aggregate({
+  // Grouped by step, so the session total names its calls the way each turn does (issue #858).
+  const groups = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.groupBy({
+      by: ["node"],
       where: { tenantId, threadId, source: "playground" },
       _count: { _all: true },
       _sum: {
@@ -681,13 +686,18 @@ export async function getPlaygroundSessionUsage(
       },
     }),
   );
-  return {
-    calls: agg._count._all,
-    promptTokens: agg._sum.promptTokens ?? 0,
-    cachedReadTokens: agg._sum.cachedReadTokens ?? 0,
-    cacheCreationTokens: agg._sum.cacheCreationTokens ?? 0,
-    completionTokens: agg._sum.completionTokens ?? 0,
-  };
+  const usage = emptyTurnUsage();
+  for (const g of groups) {
+    addUsageGroup(usage, {
+      node: g.node,
+      calls: g._count._all,
+      promptTokens: g._sum.promptTokens,
+      cachedReadTokens: g._sum.cachedReadTokens,
+      cacheCreationTokens: g._sum.cacheCreationTokens,
+      completionTokens: g._sum.completionTokens,
+    });
+  }
+  return usage;
 }
 
 // Remove a session from history, thread and all — which is what the endpoint has always said it

@@ -685,7 +685,8 @@
       "tool": "Usou uma ferramenta"
     },
     "usage": {
-      "total": "Consumo"
+      "total": "Consumo",
+      "totalTitle": "Consumo desta conversa"
     },
     "viewLogs": "Ver logs",
     "voicePref": {
@@ -2499,7 +2500,8 @@
     },
     "untitledSession": "Sessão sem título",
     "usage": {
-      "session": "Sessão"
+      "session": "Sessão",
+      "sessionTitle": "Consumo desta sessão"
     }
   },
   "resources": {
@@ -2648,14 +2650,35 @@
     "light": "Claro"
   },
   "tokenUsage": {
-    "cacheWrite": "escrita no cache {{written}}",
-    "calls_zero": "{{count}} chamadas",
-    "calls_one": "{{count}} chamada",
-    "calls_many": "{{count}} chamadas",
-    "calls_other": "{{count}} chamadas",
-    "input": "Entrada {{input}} ({{cached}} do cache)",
-    "output": "saída {{output}}",
-    "timing": "{{turn}} (modelo {{model}})"
+    "cachedShare": "{{cached}} do cache ({{pct}}%)",
+    "cacheWriteLabel": "Escrita no cache",
+    "callsTitle_zero": "{{count}} chamadas ao modelo",
+    "callsTitle_one": "{{count}} chamada ao modelo",
+    "callsTitle_many": "{{count}} chamadas ao modelo",
+    "callsTitle_other": "{{count}} chamadas ao modelo",
+    "detailLabel": "Detalhe do consumo",
+    "figure": "{{input}} tokens de entrada",
+    "inputLabel": "Entrada",
+    "modelLabel": "Modelo",
+    "modelShare": "{{pct}}% do turno esperando o modelo",
+    "node": {
+      "agent": "agente",
+      "guardrail": "verificação de guardrails",
+      "memoryCompact": "resumo de memória",
+      "nudge": "mensagem proativa",
+      "observer": "observador",
+      "ttsNormalize": "reescrita para voz",
+      "vision": "leitura de imagem ou documento"
+    },
+    "outputLabel": "Saída",
+    "stepCalls_zero": "{{count}} chamadas",
+    "stepCalls_one": "{{count}} chamada",
+    "stepCalls_many": "{{count}} chamadas",
+    "stepCalls_other": "{{count}} chamadas",
+    "timeTitle": "Tempo",
+    "tokens": "Tokens consumidos",
+    "turnLabel": "Turno",
+    "turnTitle": "Consumo deste turno"
   },
   "toolpackTools": {
     "argNote": {

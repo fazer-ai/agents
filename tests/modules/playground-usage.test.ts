@@ -256,6 +256,8 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       cachedReadTokens: 1024,
       cacheCreationTokens: 256,
       completionTokens: AGENT_SPEND.output + JUDGE_SPEND.output,
+      // Issue #858: which step made each call.
+      byNode: { agent: 1, guardrail: 1 },
     });
     // The cached share is a PART of the input, not added to it.
     expect(r.usage.promptTokens).toBe(1500);
@@ -301,6 +303,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
         first.usage.cacheCreationTokens + second.usage.cacheCreationTokens,
       completionTokens:
         first.usage.completionTokens + second.usage.completionTokens,
+      byNode: { agent: 2, guardrail: 1 },
     });
   });
 
@@ -341,6 +344,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       cachedReadTokens: 0,
       cacheCreationTokens: 0,
       completionTokens: 30,
+      byNode: { vision: 1 },
     });
     expect((await ledger(read.threadId)).map((x) => x.node)).toEqual([
       "vision",
@@ -531,6 +535,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
         read.usage.cacheCreationTokens + turn.usage.cacheCreationTokens,
       completionTokens:
         read.usage.completionTokens + turn.usage.completionTokens,
+      byNode: { vision: 1, agent: 1 },
     });
     expect(two?.usage).toEqual(replay.usage);
   });
@@ -683,6 +688,7 @@ describe("sumTurnUsage", () => {
       calls: 1,
       promptTokens: 10,
       completionTokens: 1,
+      byNode: { agent: 1 },
     });
     // Every row is still written: the sum observes the ledger, it does not gate it.
     expect(rows).toHaveLength(3);
@@ -704,12 +710,15 @@ describe("sumTurnUsage", () => {
       calls: 1,
       promptTokens: 7,
       completionTokens: 2,
+      // The inner sum's share of the steps too, not the outer counter's.
+      byNode: { agent: 1 },
     });
     expect(outer.usage).toEqual({
       ...emptyTurnUsage(),
       calls: 2,
       promptTokens: 12,
       completionTokens: 3,
+      byNode: { agent: 2 },
     });
   });
 

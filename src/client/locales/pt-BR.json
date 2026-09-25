@@ -1980,7 +1980,7 @@
     "docDeleteError": "Não foi possível excluir o documento.",
     "docDeleteMessage": "Excluir \"{{title}}\"?",
     "docDeleteTitle": "Excluir documento",
-    "docEditHint": "Editar o conteúdo reindexa o documento (ele é reembedado).",
+    "docEditHint": "Editar o título ou o conteúdo reindexa o documento (ele é reembedado).",
     "docEditTitle": "Editar: {{title}}",
     "docError": {
       "embeddingEmpty": "A credencial de embedding está vazia. Preencha-a e indexe novamente.",

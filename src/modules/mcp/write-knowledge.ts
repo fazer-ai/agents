@@ -6,6 +6,7 @@ import {
   assertChunkingUpdatable,
   assertDocumentNotSynced,
   assertDocumentRetryable,
+  assertDocumentTitleUsable,
   createDocument,
   deleteDocument,
   type EmbeddingBlock,
@@ -340,7 +341,7 @@ export async function knowledgeDocumentDelete(
 // Edit a document in place (issue #708), the twin of `PATCH /v1/knowledge/documents/:id`. Without it
 // an MCP client concluded that editing meant delete and recreate, which loses the id (and with it any
 // sync that reconciles by id) and leaves the document out of search while it re-embeds. A changed
-// text re-ingests; a title alone does not.
+// text or title re-ingests (the title is part of every chunk's vector, issue #857).
 export async function knowledgeDocumentUpdate(
   principal: VerifiedToken,
   args: {
@@ -370,6 +371,7 @@ export async function knowledgeDocumentUpdate(
   ]);
   if (bad) return bad;
   try {
+    assertDocumentTitleUsable(args.title);
     const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;
     if (args.dry_run !== false) {
@@ -386,9 +388,12 @@ export async function knowledgeDocumentUpdate(
           title: args.title ?? current.title,
           contentChars: (args.text ?? current.content).length,
         },
-        // The same question the service asks, on the text it already has: an unchanged body is not
-        // re-embedded, so the preview does not promise a re-index the apply will not do.
-        reindexes: args.text !== undefined && args.text !== current.content,
+        // The same question the service asks, on what it already has: an unchanged body and an
+        // unchanged title are not re-embedded, so the preview does not promise a re-index the apply
+        // will not do. A title is part of every chunk's vector (issue #857), so it counts as a change.
+        reindexes:
+          (args.text !== undefined && args.text !== current.content) ||
+          (args.title !== undefined && args.title !== current.title),
       });
     }
     const doc = await updateDocument(
@@ -444,12 +449,14 @@ export async function knowledgeDocumentRetry(
 // Bulk re-index a whole base in one call (the "index all" for an imported base). If the tenant's
 // embedding credential is unconfigured or its secret is not filled yet, nothing is queued and the
 // result is `blocked` (with a fillAt deeplink for a pending credential) — a missing prerequisite, not
-// an error. include_failed also recovers genuine FAILED docs (a batched per-document retry).
+// an error. include_failed also recovers genuine FAILED docs (a batched per-document retry), and
+// include_indexed re-embeds the READY ones (issue #857: a base indexed before titles entered the vectors).
 export async function knowledgeReindex(
   principal: VerifiedToken,
   args: {
     knowledge_base_id: string;
     include_failed?: boolean;
+    include_indexed?: boolean;
     dry_run?: boolean;
   },
   deps: WriteDeps = {},
@@ -465,6 +472,7 @@ export async function knowledgeReindex(
     const dryRun = args.dry_run !== false;
     const result = await reindexKnowledgeBase(ctx, id, base, {
       includeFailed: args.include_failed === true,
+      includeIndexed: args.include_indexed === true,
       dryRun,
     });
     if (result.blocked) {
@@ -488,7 +496,7 @@ export async function knowledgeReindex(
         dryRun: true,
         target,
         wouldQueue: result.queued,
-        note: "Re-queues UNINDEXED documents (add include_failed to also recover FAILED). Acts ONLY when dry_run is false.",
+        note: "Re-queues UNINDEXED documents (add include_failed to also recover FAILED, include_indexed to re-embed READY ones). Acts ONLY when dry_run is false.",
       });
     }
     return ok({ dryRun: false, applied: true, target, queued: result.queued });

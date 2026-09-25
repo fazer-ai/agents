@@ -290,7 +290,9 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(after[2]).toMatchObject({ status: "READY" });
   });
 
-  test("a changed title alone updates the title without re-embedding", async () => {
+  // Issue #857: the title is part of every chunk's vector, so a title change re-embeds (the text,
+  // what the agent reads, stays as it was).
+  test("a changed title alone updates the title and re-embeds", async () => {
     await configure();
     let arts = BASIC;
     await sync(portal({ articles: () => arts }));
@@ -304,7 +306,7 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(d).toMatchObject({
       title: "Horário de atendimento no feriado",
       content: "MARCADOR-103-v1",
-      status: "READY",
+      status: "PENDING",
     });
   });
 

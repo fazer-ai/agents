@@ -369,7 +369,7 @@ const TABLE: Record<string, Row> = {
     args: { document_id: NOPE, title: "t" },
     why: "document does not exist",
     pastOwnership:
-      "the preview reads the row the apply edits, and asks the same question the service does about a re-index: whether the text moved.",
+      "the preview reads the row the apply edits, asks the same question the service does about a re-index (whether the text or the title moved), and refuses a blank title through the same `assertDocumentTitleUsable` the service calls.",
   },
   knowledge_edit: {
     args: { approval_id: "abc", title: "t" },

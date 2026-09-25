@@ -34756,7 +34756,7 @@
           "Resources"
         ],
         "summary": "Update document",
-        "description": "Edit a document's title and/or text. Changing the text re-ingests and re-embeds it.",
+        "description": "Edit a document's title and/or text. Changing either re-ingests and re-embeds it: the title is part of every chunk's vector.",
         "parameters": [
           {
             "name": "id",
@@ -34788,7 +34788,7 @@
                 "properties": {
                   "title": {
                     "minLength": 1,
-                    "description": "New title for the document.",
+                    "description": "New title for the document; not blank. A changed title re-embeds the document.",
                     "type": "string"
                   },
                   "text": {
@@ -34805,7 +34805,7 @@
                 "properties": {
                   "title": {
                     "minLength": 1,
-                    "description": "New title for the document.",
+                    "description": "New title for the document; not blank. A changed title re-embeds the document.",
                     "type": "string"
                   },
                   "text": {
@@ -34822,7 +34822,7 @@
                 "properties": {
                   "title": {
                     "minLength": 1,
-                    "description": "New title for the document.",
+                    "description": "New title for the document; not blank. A changed title re-embeds the document.",
                     "type": "string"
                   },
                   "text": {
@@ -35276,7 +35276,7 @@
           "Resources"
         ],
         "summary": "Index pending knowledge-base documents",
-        "description": "Queue ingestion + embedding for every not-yet-indexed (UNINDEXED) document in the base, e.g. after importing an agent that bundled its documents. Pass includeFailed=true to also re-queue FAILED documents (bulk recovery). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and `blocked` explains why (the documents keep their status).",
+        "description": "Queue ingestion + embedding for every not-yet-indexed (UNINDEXED) document in the base, e.g. after importing an agent that bundled its documents. Pass includeFailed=true to also re-queue FAILED documents (bulk recovery), and includeIndexed=true to re-embed the documents already indexed too (a base indexed before document titles went into the vectors gets them this way). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and `blocked` explains why (the documents keep their status).",
         "parameters": [
           {
             "name": "id",
@@ -35293,6 +35293,15 @@
             "required": false,
             "schema": {
               "description": "Also re-queue FAILED documents (bulk recovery of genuine ingestion errors), not just UNINDEXED.",
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "includeIndexed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Also re-embed READY documents: the whole base is indexed again, with each document's title in its vectors.",
               "type": "boolean"
             }
           },

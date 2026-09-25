@@ -696,7 +696,8 @@ const md5 = (text: string) =>
 
 // One reconcile of a base against its portal. Writes go through the document functions, so every
 // change is audited and re-embedded exactly as an operator's would be, and only when something moved:
-// an unchanged article costs a comparison, not a write, and never an embedding.
+// an unchanged article costs a comparison, not a write, and never an embedding. A changed title
+// re-embeds too, since the title is part of every chunk's vector (issue #857); a moved URL does not.
 export async function syncKnowledgeSource(
   tenantId: bigint,
   knowledgeBaseId: bigint,

@@ -282,8 +282,11 @@ describe.skipIf(!dbUp)("the Knowledge page names who wrote", () => {
       data: { status: "UNINDEXED" },
     });
     expect(
-      (await server.handle(req(`/bases/${kbId}/reindex`, { method: "POST" })))
-        .status,
+      (
+        await server.handle(
+          req(`/bases/${kbId}/reindex?includeIndexed=true`, { method: "POST" }),
+        )
+      ).status,
     ).toBe(200);
 
     const suggested = await server.handle(
@@ -362,6 +365,10 @@ describe.skipIf(!dbUp)("the Knowledge page names who wrote", () => {
       "knowledge_document.delete",
       "knowledge.delete",
     ]);
+    // The query flag reaches the service (issue #857): the row records the re-index it asked for.
+    expect(
+      all.find((r) => r.action === "knowledge.reindex")?.after,
+    ).toMatchObject({ includeIndexed: true });
     // The whole point of moving the trail down a layer: the console had no `audit` in it, so every
     // one of these rows exists only because the service writes it, and each names the session that
     // asked.

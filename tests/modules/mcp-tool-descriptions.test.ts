@@ -698,6 +698,12 @@ describe("MCP tool descriptions", () => {
   // SCHEMA RAISED by `tts.textInstead` and its three `textOver*` limits (#856), the same 548
   // characters as the settings ceiling above: this tree measures 61,903, so 61,919 with the same 16.
   // No description changed.
+  //
+  // BOTH RAISED by `include_indexed` on `knowledge_reindex` (#857): the title now enters every
+  // chunk's vector, and a base indexed before that needs an explicit re-embed of its READY documents.
+  // Measured 31,416 and 61,371 before, 31,503 and 61,392 with it; on top of #856 the schema ceiling
+  // is 61,940, the same 21 over its 61,919. The reindex description names the flag and why a base
+  // would need it; `knowledge_document_update` says a title change re-embeds too.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -706,8 +712,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(31_416);
-    expect(schema).toBeLessThanOrEqual(61_919);
+    expect(desc).toBeLessThanOrEqual(31_503);
+    expect(schema).toBeLessThanOrEqual(61_940);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

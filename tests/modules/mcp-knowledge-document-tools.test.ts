@@ -173,7 +173,8 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
     expect(row.status).toBe("INDEXED");
   });
 
-  test("a title-only edit keeps the id and does not re-index", async () => {
+  // Issue #857: the title is part of every chunk's vector, so renaming re-embeds.
+  test("a title-only edit keeps the id and re-indexes", async () => {
     const preview = data<Record<string, unknown>>(
       await knowledgeDocumentUpdate(
         principal(tenantId),
@@ -181,7 +182,7 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
         deps(),
       ),
     );
-    expect(preview.reindexes).toBe(false);
+    expect(preview.reindexes).toBe(true);
     const r = data<Record<string, unknown>>(
       await knowledgeDocumentUpdate(
         principal(tenantId),
@@ -198,7 +199,21 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
       where: { id: doc },
     });
     expect(row.title).toBe("Horário de atendimento");
-    expect(row.status).toBe("INDEXED");
+    expect(row.status).toBe("PENDING");
+  });
+
+  // The preview must refuse what the apply refuses: a title of spaces passes the empty-string check
+  // but not the service's blank one, so a preview that said ok would promise an edit that fails.
+  test("a blank title is refused by the preview and by the apply alike", async () => {
+    for (const dry_run of [undefined, false]) {
+      const r = (await knowledgeDocumentUpdate(
+        principal(tenantId),
+        { document_id: String(doc), title: "   ", dry_run },
+        deps(),
+      )) as { ok: boolean; error?: string };
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain("title must not be blank");
+    }
   });
 
   test("a text edit keeps the id, re-queues the document, and is audited", async () => {

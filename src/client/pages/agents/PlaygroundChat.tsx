@@ -43,7 +43,7 @@ import {
   type ConfirmPayload,
 } from "@/client/components/ConfirmDialog";
 import { useModalController } from "@/client/components/Modal";
-import { UsageLine } from "@/client/components/TokenUsage";
+import { UsageFigure } from "@/client/components/TokenUsage";
 import { useMediaObjectUrl } from "@/client/components/useMediaObjectUrl";
 import { cn } from "@/client/lib/utils";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
@@ -184,9 +184,13 @@ export function PlaygroundChat({
               <p className="text-text-secondary text-xs">
                 {t("playground.hint", "Tests your live (unsaved) edits.")}
               </p>
-              <UsageLine
+              <UsageFigure
                 usage={chat.sessionUsage}
                 label={t("playground.usage.session", "Session")}
+                title={t(
+                  "playground.usage.sessionTitle",
+                  "This session's usage",
+                )}
               />
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -683,7 +687,7 @@ function TurnBubble({
             ))}
           </div>
         )}
-        <UsageLine usage={turn.usage} timing={turn.timing} />
+        <UsageFigure usage={turn.usage} timing={turn.timing} />
       </div>
     );
   }
@@ -721,9 +725,16 @@ function TurnBubble({
             />
           )}
           {turn.role === "assistant" ? (
-            turn.text ? (
-              <Markdown>{turn.text}</Markdown>
-            ) : null
+            <>
+              {turn.text ? <Markdown>{turn.text}</Markdown> : null}
+              {/* What the turn spent, at the foot of the reply it produced, as on the conversation
+                  screen (issue #858). */}
+              {turn.usage && turn.usage.calls > 0 && (
+                <div className="mt-1 flex justify-end">
+                  <UsageFigure usage={turn.usage} timing={turn.timing} />
+                </div>
+              )}
+            </>
           ) : turn.role === "user" ? (
             <div className="flex flex-col gap-1.5">
               {turn.audioUrl && <MediaAudio src={turn.audioUrl} />}
@@ -752,9 +763,6 @@ function TurnBubble({
       )}
       {turn.role === "assistant" && turn.audioUrl && (
         <MediaAudio src={turn.audioUrl} />
-      )}
-      {turn.role === "assistant" && (
-        <UsageLine usage={turn.usage} timing={turn.timing} />
       )}
       {turn.role === "assistant" && (
         <TracePanel turn={turn} onOpenDoc={onOpenDoc} onOpenKb={onOpenKb} />

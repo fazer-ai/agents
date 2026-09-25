@@ -667,7 +667,8 @@
       "tool": "Used a tool"
     },
     "usage": {
-      "total": "Tokens"
+      "total": "Tokens",
+      "totalTitle": "This conversation's usage"
     },
     "viewLogs": "View logs",
     "voicePref": {
@@ -2435,7 +2436,8 @@
     },
     "untitledSession": "Untitled session",
     "usage": {
-      "session": "Session"
+      "session": "Session",
+      "sessionTitle": "This session's usage"
     }
   },
   "resources": {
@@ -2580,12 +2582,31 @@
     "light": "Light"
   },
   "tokenUsage": {
-    "cacheWrite": "cache write {{written}}",
-    "calls_one": "{{count}} call",
-    "calls_other": "{{count}} calls",
-    "input": "In {{input}} ({{cached}} from cache)",
-    "output": "out {{output}}",
-    "timing": "{{turn}} (model {{model}})"
+    "cachedShare": "{{cached}} from cache ({{pct}}%)",
+    "cacheWriteLabel": "Cache write",
+    "callsTitle_one": "{{count}} model call",
+    "callsTitle_other": "{{count}} model calls",
+    "detailLabel": "Usage detail",
+    "figure": "{{input}} input tokens",
+    "inputLabel": "Input",
+    "modelLabel": "Model",
+    "modelShare": "{{pct}}% of the turn waiting on the model",
+    "node": {
+      "agent": "agent",
+      "guardrail": "guardrail check",
+      "memoryCompact": "memory summary",
+      "nudge": "proactive message",
+      "observer": "observer",
+      "ttsNormalize": "rewrite for speech",
+      "vision": "image or document read"
+    },
+    "outputLabel": "Output",
+    "stepCalls_one": "{{count}} call",
+    "stepCalls_other": "{{count}} calls",
+    "timeTitle": "Time",
+    "tokens": "Tokens used",
+    "turnLabel": "Turn",
+    "turnTitle": "This turn's usage"
   },
   "toolpackTools": {
     "argNote": {

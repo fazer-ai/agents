@@ -2643,7 +2643,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_document_update",
       {
         description:
-          "Edit a document's title and/or text in place, keeping its id; changed text is re-embedded. Previews and changes NOTHING unless dry_run is false.",
+          "Edit a document's title and/or text in place, keeping its id; a changed text or title is re-embedded. Previews and changes NOTHING unless dry_run is false.",
         inputSchema: {
           document_id: z.string(),
           title: z.string().optional(),
@@ -2684,10 +2684,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "knowledge_reindex",
       {
         description:
-          "Bulk-index a knowledge base: re-queue every not-yet-indexed (UNINDEXED) document in one call — the 'index all' after an agent import. Set include_failed to also recover FAILED docs. If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and the result is `blocked` (with a fillAt deeplink for a pending credential) — fix that first, then re-run. Previews (counts + any block) and acts ONLY when dry_run is false.",
+          "Bulk-index a knowledge base: re-queue every not-yet-indexed (UNINDEXED) document in one call — the 'index all' after an agent import. Set include_failed to also recover FAILED docs, include_indexed to re-embed READY ones (a base indexed before titles entered the vectors). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and the result is `blocked` (with a fillAt deeplink for a pending credential) — fix that first, then re-run. Previews (counts + any block) and acts ONLY when dry_run is false.",
         inputSchema: {
           knowledge_base_id: z.string(),
           include_failed: z.boolean().optional(),
+          include_indexed: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2695,6 +2696,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: {
           knowledge_base_id: string;
           include_failed?: boolean;
+          include_indexed?: boolean;
           dry_run?: boolean;
         },
         eff,

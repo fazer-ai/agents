@@ -1776,7 +1776,7 @@ export function useKnowledgeManager(opts: {
               required
               hint={t(
                 "knowledge.docEditHint",
-                "Editing the content re-indexes the document (it is re-embedded).",
+                "Editing the title or the content re-indexes the document (it is re-embedded).",
               )}
               error={editDocRefusal.at("text", editDocText)}
             >

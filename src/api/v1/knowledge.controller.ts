@@ -585,7 +585,7 @@ export const knowledgeController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Update document",
-        "Edit a document's title and/or text. Changing the text re-ingests and re-embeds it.",
+        "Edit a document's title and/or text. Changing either re-ingests and re-embeds it: the title is part of every chunk's vector.",
       ),
       response: errors(400, 401, 403, 404, 422),
       params: t.Object({
@@ -595,7 +595,8 @@ export const knowledgeController = new Elysia({
         title: t.Optional(
           t.String({
             minLength: 1,
-            description: "New title for the document.",
+            description:
+              "New title for the document; not blank. A changed title re-embeds the document.",
           }),
         ),
         text: t.Optional(
@@ -650,7 +651,10 @@ export const knowledgeController = new Elysia({
         ctxOrThrow(tenantContext),
         requireDbId(params.id),
         undefined,
-        { includeFailed: query.includeFailed === true },
+        {
+          includeFailed: query.includeFailed === true,
+          includeIndexed: query.includeIndexed === true,
+        },
       );
       return { instance: instanceIdentity, ...result };
     },
@@ -658,7 +662,7 @@ export const knowledgeController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Index pending knowledge-base documents",
-        "Queue ingestion + embedding for every not-yet-indexed (UNINDEXED) document in the base, e.g. after importing an agent that bundled its documents. Pass includeFailed=true to also re-queue FAILED documents (bulk recovery). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and `blocked` explains why (the documents keep their status).",
+        "Queue ingestion + embedding for every not-yet-indexed (UNINDEXED) document in the base, e.g. after importing an agent that bundled its documents. Pass includeFailed=true to also re-queue FAILED documents (bulk recovery), and includeIndexed=true to re-embed the documents already indexed too (a base indexed before document titles went into the vectors gets them this way). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and `blocked` explains why (the documents keep their status).",
       ),
       response: errors(400, 401, 403, 404, 422),
       params: t.Object({
@@ -671,6 +675,12 @@ export const knowledgeController = new Elysia({
           t.Boolean({
             description:
               "Also re-queue FAILED documents (bulk recovery of genuine ingestion errors), not just UNINDEXED.",
+          }),
+        ),
+        includeIndexed: t.Optional(
+          t.Boolean({
+            description:
+              "Also re-embed READY documents: the whole base is indexed again, with each document's title in its vectors.",
           }),
         ),
       }),

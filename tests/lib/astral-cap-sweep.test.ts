@@ -308,6 +308,16 @@ const CAPS: {
       return readSignatureConfig({ signature: { text: s } }).text;
     },
   },
+  {
+    // The document title prepended to every chunk's embedding input (#857). An emoji in an article
+    // title is ordinary, and an orphan half here would reach the embeddings provider on every chunk.
+    name: "rag: embeddingInput title",
+    cap: 300,
+    run: async (s) => {
+      const { embeddingInput } = await import("@/modules/rag/documents");
+      return embeddingInput(s, "chunk");
+    },
+  },
 ];
 
 describe("no text cap ever cuts an astral character in half", () => {

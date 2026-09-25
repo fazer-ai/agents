@@ -344,7 +344,8 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
 
   // A title-only edit is metadata: the chunks are the content, so nothing is re-embedded and the
   // document does not leave the state it was in.
-  test("renaming a document records the rename and does not re-index it", async () => {
+  // Issue #857: the title is part of every chunk's vector, so a rename re-queues the document.
+  test("renaming a document records the rename and re-indexes it", async () => {
     const doc = await makeDoc();
     await suDb.knowledgeDocument.update({
       where: { id: doc.id },
@@ -358,17 +359,17 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     expect(row?.before).toMatchObject({ status: "READY" });
     expect(row?.after).toMatchObject({
       title: "Outro título",
-      status: "READY",
+      status: "PENDING",
       chars: BODY.length,
-      reindexed: false,
+      reindexed: true,
     });
-    // And the document really did not go back to the queue: it is still the indexed one.
+    // And the document really went back to the queue, with its old chunks still answering meanwhile.
     expect(
       await suDb.knowledgeDocument.findUniqueOrThrow({
         where: { id: doc.id },
         select: { status: true, chunkCount: true },
       }),
-    ).toEqual({ status: "READY", chunkCount: 3 });
+    ).toEqual({ status: "PENDING", chunkCount: 3 });
     await collect();
     await deleteDocument(ctx(), doc.id, appDb);
   });
@@ -432,7 +433,11 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     expect(rest).toEqual([]);
     expect(row?.action).toBe("knowledge.reindex");
     expect(row?.target).toBe(`knowledge_base:${kbId}`);
-    expect(row?.after).toEqual({ queued: 2, includeFailed: false });
+    expect(row?.after).toEqual({
+      queued: 2,
+      includeFailed: false,
+      includeIndexed: false,
+    });
     // The jobs, committed with the transition and with the row that counts them. Enqueuing after
     // the commit is what leaves documents in PENDING with no job: they are no longer UNINDEXED, so
     // the next bulk re-index does not select them either.

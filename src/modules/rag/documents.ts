@@ -11,7 +11,7 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { firstUnstorableField } from "@/lib/text";
+import { clipText, firstUnstorableField } from "@/lib/text";
 import {
   markUndisclosed,
   redactEndpoint,
@@ -203,6 +203,33 @@ export function refuseUnstorable(
       // holding the character (#231). Without it every one of these answered `{ error }` alone and
       // the four titles/texts this helper guards could not be placed anywhere.
       bad.what,
+    );
+  }
+}
+
+// What a chunk's vector is computed from (issue #857): the document's title, a blank line, the chunk.
+// A help center article's title is the question the customer asks, and its body often never restates
+// it, so a vector of the body alone misses the article whose name is the question. Only the VECTOR
+// sees the title: the chunk stored, returned by search and read by the agent is the chunk alone, and
+// its size is still the base's `chunkSize`. The title is capped so a long one cannot crowd the chunk
+// out of the embedding input, and a blank one adds nothing.
+export const EMBED_TITLE_MAX_CHARS = 300;
+export function embeddingInput(title: string, chunk: string): string {
+  const head = clipText(title.trim(), EMBED_TITLE_MAX_CHARS).trim();
+  return head ? `${head}\n\n${chunk}` : chunk;
+}
+
+// A title of spaces is one the vector would drop (issue #857). Asked in the core, not only through
+// `minLength: 1` on the REST body, because the MCP tool and the sync reach `updateDocument` too; and
+// ONE function, because the MCP preview asks it as well and must refuse what the apply refuses.
+export function assertDocumentTitleUsable(title: string | undefined): void {
+  if (title !== undefined && title.trim() === "") {
+    throw new AppError(
+      "title must not be blank",
+      400,
+      undefined,
+      undefined,
+      "title",
     );
   }
 }
@@ -605,9 +632,10 @@ export interface UpdateDocumentParams {
   bySource?: SourceFence;
 }
 
-// Edit a document's title and/or text. Changing the text RE-INGESTS it (status → PENDING → the
-// RAG_INGEST job re-chunks + re-embeds, replacing the old chunks — same path as retry/create); a
-// title-only edit just updates the metadata, no re-embed (the chunks are the content, not the title).
+// Edit a document's title and/or text. Changing either RE-INGESTS it (status → PENDING → the
+// RAG_INGEST job re-chunks + re-embeds, replacing the old chunks — same path as retry/create): the
+// text because it is what the chunks are, the title because every chunk's vector is computed with it
+// (`embeddingInput`, issue #857). A value equal to the stored one is not a change and embeds nothing.
 export async function updateDocument(
   ctx: TenantContext,
   id: bigint,
@@ -627,6 +655,7 @@ export async function updateDocument(
     ["title", params.title],
     ["text", params.text],
   ]);
+  assertDocumentTitleUsable(params.title);
 
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
     if (params.bySource) await holdSource(db, params.bySource);
@@ -644,15 +673,15 @@ export async function updateDocument(
     // `hasText` here rather than in the statement: a null comparand is DISTINCT FROM any content,
     // so the SQL answers `true` for a title-only edit. Asking it in the query would mean binding the
     // body a second time, which is the transfer this helper exists to avoid.
-    const reingest = hasText && existing.textMoved;
+    const titleMoved = hasTitle && params.title !== existing.row.title;
+    const reingest = (hasText && existing.textMoved) || titleMoved;
     await db.knowledgeDocument.update({
       where: { id },
       data: {
         ...(hasTitle ? { title: params.title } : {}),
         ...(hasUrl ? { sourceUrl: params.sourceUrl } : {}),
-        ...(reingest
-          ? { content: params.text, status: "PENDING", error: null }
-          : {}),
+        ...(hasText && existing.textMoved ? { content: params.text } : {}),
+        ...(reingest ? { status: "PENDING", error: null } : {}),
       },
       select: { id: true },
     });
@@ -834,16 +863,28 @@ export async function readEmbeddingBlock(
 
 // Queues ingestion for every UNINDEXED document in a knowledge base — the bulk "index all" after an
 // agent import that bundled the source text. Pass `includeFailed` to also re-queue FAILED docs (bulk
-// recovery of genuine ingestion errors — the same PENDING → ingest path as the per-document retry). If
-// the embedding prerequisite is missing, nothing is queued and `blocked` explains why (docs stay put).
+// recovery of genuine ingestion errors — the same PENDING → ingest path as the per-document retry),
+// and `includeIndexed` to re-embed the READY ones too: the step that brings a base indexed before
+// issue #857 onto vectors that carry the title. It is the operator's step and not a boot migration on
+// purpose: re-embedding every document of every tenant on upgrade spends the tenants' embedding
+// credits without asking, and a base answers searches the whole time either way. If the embedding
+// prerequisite is missing, nothing is queued and `blocked` explains why (docs stay put).
 export async function reindexKnowledgeBase(
   ctx: TenantContext,
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
-  opts: { includeFailed?: boolean; dryRun?: boolean } = {},
+  opts: {
+    includeFailed?: boolean;
+    includeIndexed?: boolean;
+    dryRun?: boolean;
+  } = {},
 ): Promise<ReindexResult> {
   const tenantId = ctx.tenantId as bigint;
-  const statuses = opts.includeFailed ? ["UNINDEXED", "FAILED"] : ["UNINDEXED"];
+  const statuses = [
+    "UNINDEXED",
+    ...(opts.includeFailed ? ["FAILED"] : []),
+    ...(opts.includeIndexed ? ["READY"] : []),
+  ];
   const outcome = await runScopedOn(base, ctx, async (db) => {
     const kb = await db.knowledgeBase.findUnique({
       where: { id: knowledgeBaseId },
@@ -900,6 +941,7 @@ export async function reindexKnowledgeBase(
         after: {
           queued: moved.length,
           includeFailed: opts.includeFailed === true,
+          includeIndexed: opts.includeIndexed === true,
         },
       });
     }
@@ -1001,7 +1043,7 @@ async function runIngestJobForTenant(
     if (count === 0) return null;
     return db.knowledgeDocument.findUnique({
       where: { id: documentId },
-      select: { content: true },
+      select: { content: true, title: true },
     });
   });
   if (!claimed) return { outcome: "done" };
@@ -1018,7 +1060,14 @@ async function runIngestJobForTenant(
       chunkSize: kb.chunkSize,
       chunkOverlap: kb.chunkOverlap,
     });
-    const vectors = chunks.length ? await embedTexts(chunks, emb.config) : [];
+    // The title rides in the vector and never in the chunk (issue #857): read under the claim with
+    // the content, so a title edited mid-run re-arms the job exactly as a text edit does.
+    const vectors = chunks.length
+      ? await embedTexts(
+          chunks.map((c) => embeddingInput(claimed.title, c)),
+          emb.config,
+        )
+      : [];
 
     // NOTE: step 4, publish — release the mark, then replace the chunks (one scoped transaction).
     const published = await runScopedOn(base, sysCtx(tenantId), async (db) => {

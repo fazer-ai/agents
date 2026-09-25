@@ -22,6 +22,7 @@ import {
   User,
   UserCheck,
   Volume2,
+  Webhook,
   Wrench,
 } from "lucide-react";
 import {
@@ -61,6 +62,13 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 import { isAdminRole } from "@/client/lib/roles";
 import { type TurnFacts, toolLabel } from "@/client/lib/tool-label";
 import { cn, formatRelativeTime } from "@/client/lib/utils";
+import {
+  buildTimeline,
+  type FollowUpBadgeInfo,
+  followUpBadgeText,
+  type Message,
+  type TrailEntry,
+} from "./conversationTimeline";
 
 // Eden-derived types for the dynamic /conversations/:id routes (metadata shell + the separate
 // thread, fetched independently so a slow Chatwoot only spins the messages area).
@@ -68,11 +76,6 @@ type MetaResp = Awaited<
   ReturnType<ReturnType<typeof api.api.v1.conversations>["get"]>
 >;
 type ConversationDetail = NonNullable<MetaResp["data"]>["conversation"];
-type MessagesResp = Awaited<
-  ReturnType<ReturnType<typeof api.api.v1.conversations>["messages"]["get"]>
->;
-type Message = NonNullable<MessagesResp["data"]>["messages"][number];
-type TrailEntry = NonNullable<ConversationDetail>["trail"][number];
 
 type BadgeVariant = "primary" | "secondary" | "success" | "warning" | "info";
 const STATUS_VARIANT: Record<string, BadgeVariant> = {
@@ -137,7 +140,34 @@ function MessageAttachment({
   );
 }
 
-type FollowUpBadgeInfo = { step: number | null; total: number };
+function useFollowUpBadgeLabel(b: FollowUpBadgeInfo): string {
+  const { t } = useTranslation();
+  return followUpBadgeText(b, t);
+}
+
+function FollowUpBadge({
+  badge,
+  outgoing,
+}: {
+  badge: FollowUpBadgeInfo;
+  outgoing: boolean;
+}) {
+  const label = useFollowUpBadgeLabel(badge);
+  const Icon = badge.kind === "event" ? Webhook : Megaphone;
+  return (
+    <span
+      className={cn(
+        "mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-[10px]",
+        outgoing
+          ? "bg-accent-foreground/15 text-accent-foreground/90"
+          : "bg-bg-secondary text-text-muted",
+      )}
+    >
+      <Icon className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
 
 function MessageBubble({
   m,
@@ -244,26 +274,7 @@ function MessageBubble({
           </div>
         ) : null}
         {followUpBadge && (
-          <span
-            className={cn(
-              "mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-[10px]",
-              outgoing
-                ? "bg-accent-foreground/15 text-accent-foreground/90"
-                : "bg-bg-secondary text-text-muted",
-            )}
-          >
-            <Megaphone className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
-            {followUpBadge.step != null
-              ? t(
-                  "conversation.followUp.badgeN",
-                  "Follow-up {{step}}/{{total}}",
-                  {
-                    step: followUpBadge.step,
-                    total: followUpBadge.total,
-                  },
-                )
-              : t("conversation.followUp.badge", "Follow-up")}
-          </span>
+          <FollowUpBadge badge={followUpBadge} outgoing={outgoing} />
         )}
         {when && (
           <p
@@ -336,8 +347,10 @@ const MessageBubbleMemo = memo(
   (a, b) =>
     a.convId === b.convId &&
     sameMessage(a.m, b.m) &&
+    a.followUpBadge?.kind === b.followUpBadge?.kind &&
     a.followUpBadge?.step === b.followUpBadge?.step &&
     a.followUpBadge?.total === b.followUpBadge?.total &&
+    a.followUpBadge?.integrationName === b.followUpBadge?.integrationName &&
     (a.followUpBadge == null) === (b.followUpBadge == null) &&
     a.quotedText === b.quotedText &&
     a.quotedLabel === b.quotedLabel,
@@ -406,6 +419,16 @@ function TrailMarker({ entry }: { entry: TrailEntry }) {
             step: entry.step,
           })
         : t("conversation.trail.followUpSent", "Follow-up sent");
+  } else if (entry.kind === "redirect") {
+    Icon = Megaphone;
+    label = t("conversation.trail.redirectSent", "Redirect follow-up sent");
+  } else if (entry.kind === "event") {
+    Icon = Webhook;
+    label = entry.integrationName
+      ? t("conversation.trail.eventHandled", "Event: {{name}}", {
+          name: entry.integrationName,
+        })
+      : t("conversation.trail.eventHandledUnnamed", "External event");
   } else {
     label =
       toolPhrase ??
@@ -544,93 +567,6 @@ function AgentActivityIndicator({ activity }: { activity: ActivityState }) {
       </div>
     </div>
   );
-}
-
-// Merge the message thread and the activity trail into one time-ordered timeline. Messages carry a
-// unix-seconds createdAt; trail markers an ISO `at`. A message with no timestamp (system/activity
-// line) inherits the previous item's time so it keeps its place instead of jumping to the top. `seq`
-// is a stable tiebreaker for equal timestamps.
-type TimelineItem =
-  | { kind: "message"; at: number; seq: number; key: string; m: Message }
-  | { kind: "trail"; at: number; seq: number; key: string; entry: TrailEntry };
-
-type Timeline = {
-  items: TimelineItem[];
-  // message key → the follow-up badge to stamp on that outgoing bubble (item 20).
-  followUpBadges: Map<string, FollowUpBadgeInfo>;
-  // the key of the LAST (latest) follow-up bubble — where the "sequence complete" line anchors (item 19).
-  lastFollowUpKey: string | null;
-};
-
-function messageKey(m: Message, i: number): string {
-  return m.id != null ? `m-${m.id}` : `m-idx-${i}`;
-}
-
-function buildTimeline(
-  messages: Message[],
-  trail: TrailEntry[],
-  totalSteps: number,
-): Timeline {
-  // A follow-up send no longer draws its own trail line (item 20): match it to the outgoing bubble it
-  // produced (the reply posted right after the generate log) and stamp a badge on that bubble. One
-  // bubble per send; a send we can't match (message not loaded / timing window missed) falls back to a
-  // trail marker so nothing is silently lost.
-  const followUpEntries = trail.filter((e) => e.kind === "followup");
-  const otherEntries = trail.filter((e) => e.kind !== "followup");
-  const followUpBadges = new Map<string, FollowUpBadgeInfo>();
-  const claimed = new Set<number>();
-  const matched: { key: string; at: number }[] = [];
-  const unmatched: TrailEntry[] = [];
-  const sortedFollowUps = [...followUpEntries].sort(
-    (a, b) => Date.parse(a.at) - Date.parse(b.at),
-  );
-  for (const f of sortedFollowUps) {
-    const fAt = Date.parse(f.at);
-    let bestIdx = -1;
-    for (let i = 0; i < messages.length; i++) {
-      if (claimed.has(i)) continue;
-      const m = messages[i];
-      if (m?.messageType !== 1 || m.createdAt == null) continue;
-      const mAt = m.createdAt * 1000;
-      // The reply lands at or shortly after the generate log (small back-tolerance for clock skew).
-      if (mAt >= fAt - 5_000 && mAt <= fAt + 300_000) {
-        bestIdx = i;
-        break;
-      }
-    }
-    const m = bestIdx === -1 ? undefined : messages[bestIdx];
-    if (!m) {
-      unmatched.push(f);
-      continue;
-    }
-    claimed.add(bestIdx);
-    const key = messageKey(m, bestIdx);
-    followUpBadges.set(key, { step: f.step, total: totalSteps });
-    matched.push({ key, at: (m.createdAt ?? 0) * 1000 });
-  }
-  const lastFollowUpKey = matched.length
-    ? matched.reduce((a, b) => (b.at >= a.at ? b : a)).key
-    : null;
-
-  const items: TimelineItem[] = [];
-  let last = 0;
-  messages.forEach((m, i) => {
-    const at = m.createdAt != null ? m.createdAt * 1000 : last;
-    last = at;
-    items.push({ kind: "message", at, seq: i, key: messageKey(m, i), m });
-  });
-  // Tool markers + any follow-up sends we couldn't pin to a bubble.
-  [...otherEntries, ...unmatched].forEach((e, i) => {
-    items.push({
-      kind: "trail",
-      at: Date.parse(e.at),
-      seq: messages.length + i,
-      key: `t-${e.id}`,
-      entry: e,
-    });
-  });
-  items.sort((a, b) => a.at - b.at || a.seq - b.seq);
-  return { items, followUpBadges, lastFollowUpKey };
 }
 
 // Compact cadence unit for the sequence tooltip ("2 min", "1 h", "3 d"). Abbreviations read the same

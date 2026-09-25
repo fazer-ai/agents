@@ -716,6 +716,129 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(spoke.lastRepliedMessageId).toBeNull();
   });
 
+  // Issue #846: the line records where the turn came from and the message it sent, so the console
+  // stops inferring "Follow-up" from the source and stops guessing the bubble by time.
+  async function originLine(convId: number) {
+    for (let i = 0; i < 30; i++) {
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "generate",
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+        },
+        select: { detail: true },
+      });
+      const hit = rows
+        .map((r) => r.detail as Record<string, unknown> | null)
+        .find((d) => typeof d?.outcome === "string");
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  }
+
+  test("an inbound event records its origin, its integration and the message it sent", async () => {
+    await seedConv(8461, null);
+    const s = stub();
+    (s.client as unknown as Record<string, unknown>).sendMessage = async (
+      c: number,
+      t: string,
+    ) => {
+      s.messages.push([c, t]);
+      return { id: 77001 };
+    };
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:8461`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        text: "Pedido 12 saiu para entrega",
+        framing: "operator_event",
+        integrationInstanceId: "4242",
+      },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Seu pedido saiu!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(await originLine(8461)).toMatchObject({
+      trigger: "GENERIC",
+      outcome: "messaged",
+      origin: "event",
+      messageId: 77001,
+      integrationInstanceId: "4242",
+    });
+  });
+
+  test("an inactivity follow-up records its origin and message, and names no integration", async () => {
+    await seedConv(8462, null);
+    const s = stub();
+    (s.client as unknown as Record<string, unknown>).sendMessage = async (
+      c: number,
+      t: string,
+    ) => {
+      s.messages.push([c, t]);
+      return { id: 77002 };
+    };
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:8462`,
+      nudge: {
+        source: "followup",
+        kind: "inactivity",
+        step: 1,
+        integrationInstanceId: "4242",
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Oi de novo!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    const line = await originLine(8462);
+    expect(line).toMatchObject({
+      origin: "followup",
+      messageId: 77002,
+      step: 1,
+    });
+    expect(line).not.toHaveProperty("integrationInstanceId");
+  });
+
+  test("an event that only left a note records no message to badge", async () => {
+    await seedConv(8463, "User");
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:8463`,
+      nudge: {
+        source: "GENERIC",
+        kind: "agent_nudge",
+        text: "Pedido 13 cancelado",
+        framing: "operator_event",
+        integrationInstanceId: "4242",
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["x"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("noted");
+    const line = await originLine(8463);
+    expect(line).toMatchObject({ origin: "event", outcome: "noted" });
+    expect(line).not.toHaveProperty("messageId");
+  });
+
   // The other half of the #454 cause fix. A follow-up must ALWAYS have a way to say nothing: the
   // directive now asks for `skip_reply`, and `skip_reply` is an operator-revocable native tool. An
   // agent that revoked it would leave the model with no silence channel at all — and a follow-up

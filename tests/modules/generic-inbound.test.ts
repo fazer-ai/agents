@@ -493,6 +493,8 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       framing: "operator_event",
       text: "Entraram 120 de 400\nPróxima às 16:30",
       instructions: "Mande o relatório como veio.",
+      // Issue #846: which instance spoke, so the conversation can name it.
+      integrationInstanceId: String(genericId),
     });
   });
 

@@ -567,7 +567,10 @@
     "error": "Could not load the conversation.",
     "followUp": {
       "badge": "Follow-up",
+      "badgeEvent": "Event: {{name}}",
+      "badgeEventUnnamed": "External event",
       "badgeN": "Follow-up {{step}}/{{total}}",
+      "badgeRedirect": "Redirect follow-up",
       "cadenceFirst": "after {{delay}} of silence",
       "cadenceNext": "{{delay}} after the previous",
       "closedToday": "Closed today ({{label}})",
@@ -645,8 +648,11 @@
     "trail": {
       "args": "Arguments",
       "error": "Error",
+      "eventHandled": "Event: {{name}}",
+      "eventHandledUnnamed": "External event",
       "followUpSent": "Follow-up sent",
       "followUpSentN": "Follow-up {{step}} sent",
+      "redirectSent": "Redirect follow-up sent",
       "reminderSent": "Reminder sent",
       "result": "Result",
       "tool": "Used a tool"
